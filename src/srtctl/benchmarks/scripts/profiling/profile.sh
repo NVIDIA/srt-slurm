@@ -11,6 +11,7 @@
 model_name="${PROFILE_MODEL_NAME:-deepseek-ai/DeepSeek-R1}"
 head_node="${HEAD_NODE:-127.0.0.1}"
 head_port="${HEAD_PORT:-8000}"
+worker_port="${PROFILE_WORKER_PORT:-6100}"
 
 # Parse arguments
 n_prefill=$1
@@ -83,8 +84,8 @@ start_profile_on_worker() {
         ACTIVITIES='["CUDA_PROFILER"]'
     fi
     
-    echo "Starting profiling on http://${ip}:30000 (steps ${start_step}-${stop_step})"
-    curl -sS -X POST "http://${ip}:30000/start_profile" \
+    echo "Starting profiling on http://${ip}:${worker_port} (steps ${start_step}-${stop_step})"
+    curl -sS -X POST "http://${ip}:${worker_port}/start_profile" \
         -H "Content-Type: application/json" \
         -d "{\"start_step\": ${start_step}, \"num_steps\": ${num_steps}, \"activities\": ${ACTIVITIES}}" || true
 }
@@ -164,4 +165,3 @@ if [[ -n "${SGLANG_TORCH_PROFILER_DIR}" ]]; then
 fi
 
 exit ${exit_code}
-

@@ -1,12 +1,14 @@
-.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4
+.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check golden-check tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
+PROCESS_EXPORTER_VERSION ?= 0.8.7
 LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
+TACHOMETER_RELEASE ?= latest
+CPU_POWER_EXPORTER_RELEASE ?= latest
 
-default:
-	./run_dashboard.sh
+default: check
 
 # === CI targets ===
 lint:
@@ -20,27 +22,113 @@ test:
 test-cov:
 	uv run pytest tests/ --cov=srtctl --cov-report=term-missing --cov-report=html
 
+# Regenerate docs/schema-reference.md (2.0) and docs/legacy-v1.md (v1) from the code
+schema-docs:
+	uv run srtctl schema-docs
+
+# Fail if docs/schema-reference.md or docs/legacy-v1.md is stale (also enforced by CI and tests/test_schema_docs.py)
+schema-docs-check:
+	uv run srtctl schema-docs --check
+
 # Run lint + tests in one command
-check: lint test
+check: lint schema-docs-check test
+
+# Golden equality: migrate every known v1 recipe in memory and prove the resolved
+# config is unchanged. Extracts the historical recipes from the last commit that
+# carried recipes/ (same corpus as the CI job).
+GOLDEN_RECIPES_COMMIT ?= e6e9d8b9bee3e6c85e6f121eb4dacd88d8ca1d2c
+golden-check:
+	@rm -rf /tmp/srt-golden && mkdir -p /tmp/srt-golden
+	@git archive $(GOLDEN_RECIPES_COMMIT) recipes | tar -x -C /tmp/srt-golden
+	uv run srtctl migrate --verify -f examples -f /tmp/srt-golden/recipes
 	@echo "✓ All checks passed"
 
-# Runners
-gb200-fp8:
-	srtctl apply -f recipes/gb200-fp8/1k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp8/1k1k/max-tpt-2p1d.yaml
-	srtctl apply -f recipes/gb200-fp8/1k1k/mid-curve-3p1d.yaml
-	srtctl apply -f recipes/gb200-fp8/8k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp8/8k1k/mid-curve-5p1d.yaml
+tachometer-scraper:
+	cargo build --release --locked --bin tachometer-scraper
+	install -Dm755 target/release/tachometer-scraper bin/tachometer-scraper
 
-gb200-fp4:
-	srtctl apply -f recipes/gb200-fp4/1k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp4/1k1k/max-tpt.yaml
-	srtctl apply -f recipes/gb200-fp4/1k1k/mid-curve.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/max-tpt.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/mid-curve.yaml
+tachometer-scraper-download:
+	@set -eu; \
+	case "$(ARCH)" in \
+		x86_64)  asset="tachometer-scraper-x86_64-unknown-linux-gnu"; file_pattern="x86-64" ;; \
+		aarch64) asset="tachometer-scraper-aarch64-unknown-linux-gnu"; file_pattern="aarch64" ;; \
+		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
+	esac; \
+	if [ -f bin/tachometer-scraper ] && file bin/tachometer-scraper | grep -q "$$file_pattern"; then \
+		echo "Tachometer scraper already installed at bin/tachometer-scraper ($(ARCH))"; \
+		exit 0; \
+	fi; \
+	if [ "$(TACHOMETER_RELEASE)" = "latest" ]; then \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/latest/download"; \
+	else \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/download/$(TACHOMETER_RELEASE)"; \
+	fi; \
+	tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	echo "Downloading $$asset from srt-slurm $(TACHOMETER_RELEASE)"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset" --output "$$tmp_dir/$$asset"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset.sha256" --output "$$tmp_dir/$$asset.sha256"; \
+	(cd "$$tmp_dir" && sha256sum --check "$$asset.sha256"); \
+	install -Dm755 "$$tmp_dir/$$asset" bin/tachometer-scraper; \
+	echo "Installed Tachometer scraper at bin/tachometer-scraper"
 
-setup:
+examples:
+	@find examples -type f -name '*.yaml' -print | sort
+
+cpu-power-exporter:
+	cargo build --release --locked --bin cpu-power-exporter
+	install -Dm755 target/release/cpu-power-exporter bin/cpu-power-exporter
+	@# A locally built binary is not a release. Leaving the marker behind would
+	@# tell a later pinned download that the tag is already installed.
+	rm -f bin/.cpu-power-exporter.release
+
+cpu-power-exporter-download:
+	@set -eu; \
+	case "$(ARCH)" in \
+		x86_64)  asset="cpu-power-exporter-x86_64-unknown-linux-musl"; file_pattern="x86-64" ;; \
+		aarch64) asset="cpu-power-exporter-aarch64-unknown-linux-musl"; file_pattern="aarch64" ;; \
+		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
+	esac; \
+	marker=bin/.cpu-power-exporter.release; \
+	installed=$$(cat "$$marker" 2>/dev/null || echo ""); \
+	if [ -f bin/cpu-power-exporter ]; then \
+		if ! command -v file >/dev/null 2>&1; then \
+			echo "Cannot check the architecture of bin/cpu-power-exporter: file(1) is not installed"; \
+			echo "Downloading the $(ARCH) asset rather than trusting or deleting it"; \
+		elif ! file bin/cpu-power-exporter | grep -q "$$file_pattern"; then \
+			echo "Removing bin/cpu-power-exporter: not a $(ARCH) binary"; \
+			rm -f bin/cpu-power-exporter "$$marker"; \
+		elif [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ] || [ "$$installed" = "$(CPU_POWER_EXPORTER_RELEASE)" ]; then \
+			echo "cpu-power-exporter $$installed already installed at bin/cpu-power-exporter ($(ARCH))"; \
+			exit 0; \
+		fi; \
+	fi; \
+	if [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ]; then \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/latest/download"; \
+	else \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/download/$(CPU_POWER_EXPORTER_RELEASE)"; \
+		rm -f bin/cpu-power-exporter "$$marker"; \
+	fi; \
+	tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	echo "Downloading $$asset from srt-slurm $(CPU_POWER_EXPORTER_RELEASE)"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset" --output "$$tmp_dir/$$asset"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset.sha256" --output "$$tmp_dir/$$asset.sha256"; \
+	(cd "$$tmp_dir" && sha256sum --check "$$asset.sha256"); \
+	install -Dm755 "$$tmp_dir/$$asset" bin/cpu-power-exporter; \
+	printf '%s' "$(CPU_POWER_EXPORTER_RELEASE)" > "$$marker"; \
+	echo "Installed cpu-power-exporter $(CPU_POWER_EXPORTER_RELEASE) at bin/cpu-power-exporter"
+
+cpu-power-exporter-setup:
+	@set -eu; \
+	if [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ]; then \
+		$(MAKE) --no-print-directory cpu-power-exporter-download || \
+		  echo "Warning: cpu-power-exporter download failed (optional for non-CPU-power recipes)"; \
+	else \
+		$(MAKE) --no-print-directory cpu-power-exporter-download; \
+	fi
+
+setup: tachometer-scraper-download cpu-power-exporter-setup
 	@echo "📦 Setting up configs and logs directories..."
 	@mkdir -p logs
 	@echo "🖥️  Using architecture: $(ARCH)"
@@ -57,7 +145,11 @@ setup:
 		echo "⬇️  Downloading NATS ($(NATS_VERSION)) for $$ARCH_SHORT..."; \
 		NATS_DEB="nats-server-$(NATS_VERSION)-$$ARCH_SHORT.deb"; \
 		NATS_URL="https://github.com/nats-io/nats-server/releases/download/$(NATS_VERSION)/$$NATS_DEB"; \
-		wget -q --show-progress --tries=3 --waitretry=5 "$$NATS_URL" -O "configs/$$NATS_DEB"; \
+		if ! wget -q --show-progress --tries=3 --waitretry=5 "$$NATS_URL" -O "configs/$$NATS_DEB"; then \
+			rm -f "configs/$$NATS_DEB"; \
+			echo "❌ Failed to download NATS from $$NATS_URL"; \
+			exit 1; \
+		fi; \
 		echo "📁 Extracting NATS binary..."; \
 		TMP_DIR=$$(mktemp -d); \
 		dpkg-deb -x "configs/$$NATS_DEB" "$$TMP_DIR"; \
@@ -82,12 +174,36 @@ setup:
 		echo "⬇️  Downloading ETCD ($(ETCD_VERSION)) for $$ARCH_SHORT..."; \
 		ETCD_TAR="etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT.tar.gz"; \
 		ETCD_URL="https://github.com/etcd-io/etcd/releases/download/$(ETCD_VERSION)/$$ETCD_TAR"; \
-		wget -q --show-progress --tries=3 --waitretry=5 "$$ETCD_URL" -O "configs/$$ETCD_TAR"; \
+		if ! wget -q --show-progress --tries=3 --waitretry=5 "$$ETCD_URL" -O "configs/$$ETCD_TAR"; then \
+			rm -f "configs/$$ETCD_TAR"; \
+			echo "❌ Failed to download ETCD from $$ETCD_URL"; \
+			exit 1; \
+		fi; \
 		echo "📁 Extracting ETCD binaries..."; \
 		tar -xzf "configs/$$ETCD_TAR" --strip-components=1 -C configs etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcd etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcdctl; \
 		chmod +x configs/etcd configs/etcdctl; \
 		rm "configs/$$ETCD_TAR"; \
 		echo "✅ ETCD installed to configs/etcd"; \
+	fi; \
+	echo ""; \
+	echo "--- process-exporter $(PROCESS_EXPORTER_VERSION) (Tachometer per-process/thread telemetry) ---"; \
+	if [ -f configs/process-exporter ] && file configs/process-exporter | grep -q "$$ARCH_FILE_PATTERN"; then \
+		echo "✅ process-exporter already installed at configs/process-exporter ($(ARCH))"; \
+	else \
+		echo "⬇️  Downloading process-exporter ($(PROCESS_EXPORTER_VERSION)) for $$ARCH_SHORT..."; \
+		PE_NAME="process-exporter-$(PROCESS_EXPORTER_VERSION).linux-$$ARCH_SHORT"; \
+		PE_TAR="$$PE_NAME.tar.gz"; \
+		PE_URL="https://github.com/ncabatoff/process-exporter/releases/download/v$(PROCESS_EXPORTER_VERSION)/$$PE_TAR"; \
+		if ! wget -q --show-progress --tries=3 --waitretry=5 "$$PE_URL" -O "configs/$$PE_TAR"; then \
+			rm -f "configs/$$PE_TAR"; \
+			echo "❌ Failed to download process-exporter from $$PE_URL"; \
+			exit 1; \
+		fi; \
+		echo "📁 Extracting process-exporter binary..."; \
+		tar -xzf "configs/$$PE_TAR" --strip-components=1 -C configs "$$PE_NAME/process-exporter"; \
+		chmod +x configs/process-exporter; \
+		rm "configs/$$PE_TAR"; \
+		echo "✅ process-exporter installed to configs/process-exporter"; \
 	fi; \
 	echo ""; \
 	echo "--- uv (compute node arch: $(ARCH)) ---"; \

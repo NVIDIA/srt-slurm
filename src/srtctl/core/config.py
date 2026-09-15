@@ -15,6 +15,7 @@ import fnmatch
 import logging
 import os
 import re
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -73,9 +74,91 @@ def load_cluster_config() -> dict[str, Any] | None:
 
         # Dump back to dict for compatibility
         return schema.dump(validated)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Failed to load or validate srtslurm.yaml: {e}")
         return None
+
+
+# Keys whose string values name a container image. Any such leaf anywhere in a
+# recipe resolves against the cluster `containers:` alias map.
+CONTAINER_ALIAS_KEYS: frozenset[str] = frozenset({"container", "container_image", "image", "nginx_container"})
+
+# Sub-trees the alias walker never enters: `identity` declares the pullable image a
+# run *should* be using (verification only, never an alias); the rest are free-form
+# maps (environment variables, engine flags, mounts) where a key happening to be
+# called `image` is user data, not a container reference.
+_CONTAINER_ALIAS_SKIP_KEYS: frozenset[str] = frozenset(
+    {
+        "identity",
+        "environment",
+        "prefill_environment",
+        "decode_environment",
+        "aggregated_environment",
+        "env",
+        "args",
+        "extra_args",
+        "prefill_extra_args",
+        "decode_extra_args",
+        "aggregated_extra_args",
+        "container_mounts",
+        "sbatch_directives",
+        "srun_options",
+        "sglang_config",
+        "vllm_config",
+        "trtllm_config",
+        "mocker_config",
+        "store_config",
+    }
+)
+
+
+def resolve_container_aliases(config: dict[str, Any], containers: Mapping[str, str]) -> list[str]:
+    """Replace every container-alias leaf in ``config`` with its ``containers:`` value, in place.
+
+    Walks the whole recipe once. A leaf is any string under a key in
+    :data:`CONTAINER_ALIAS_KEYS` whose value is a key of ``containers``; literal
+    paths and registry URIs are left alone. This is the single place container
+    aliases resolve (model, frontend, nginx, benchmark, exporters, Mooncake,
+    services), so a new block that names an image needs no resolver code.
+
+    Returns one human-readable note per resolved leaf.
+    """
+    notes: list[str] = []
+
+    def walk(node: Any, path: tuple[Any, ...]) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in _CONTAINER_ALIAS_SKIP_KEYS:
+                    continue
+                if key in CONTAINER_ALIAS_KEYS and isinstance(value, str) and value in containers:
+                    node[key] = containers[value]
+                    dotted = ".".join(str(part) for part in (*path, key))
+                    notes.append(f"Resolved container alias {dotted}: '{value}' -> '{containers[value]}'")
+                elif isinstance(value, dict | list):
+                    walk(value, (*path, key))
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, (*path, index))
+
+    walk(config, ())
+    return notes
+
+
+# Renamed frontend types: {schema-1 value: schema-2 value}. In schema 1 recipes
+# ``frontend.type: sglang`` was the SGLang Model Gateway; in 2.0 that router is
+# ``sglang-router`` and ``sglang`` is the router-free single worker.
+SCHEMA1_FRONTEND_RENAMES: dict[str, str] = {"sglang": "sglang-router"}
+
+
+def apply_schema1_frontend_rename(config: dict[str, Any]) -> dict[str, Any]:
+    """Give a schema 1 recipe its historical frontend meaning, in place."""
+    version = config.get("schema", 1)
+    frontend = config.get("frontend")
+    if isinstance(version, int) and not isinstance(version, bool) and version < 2 and isinstance(frontend, dict):
+        renamed = SCHEMA1_FRONTEND_RENAMES.get(frontend.get("type"))
+        if renamed:
+            frontend["type"] = renamed
+    return config
 
 
 def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: dict[str, Any] | None) -> dict[str, Any]:
@@ -85,7 +168,8 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     This applies:
     1. Default SLURM settings (account, partition, time_limit)
     2. Model path alias resolution
-    3. Container alias resolution
+    3. Container alias resolution for every container-typed key (see
+       :func:`resolve_container_aliases`)
 
     Args:
         user_config: User's YAML config as dict
@@ -96,6 +180,18 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     """
     # Deep copy to avoid mutating original
     config = copy.deepcopy(user_config)
+
+    # Normalize the 2.0 ``roles:`` authoring block into the existing internal
+    # fields (resources.*_workers, backend.*_environment, backend.<engine>_config.*)
+    # before anything else reads them. No-op for legacy recipes.
+    from srtctl.core.placement import expand_placement
+    from srtctl.core.roles import expand_roles
+    from srtctl.services.normalize import expand_services
+
+    expand_roles(config)
+    expand_placement(config)
+    expand_services(config)
+    apply_schema1_frontend_rename(config)
 
     if cluster_config is None:
         return config
@@ -114,6 +210,37 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         slurm["time_limit"] = cluster_config["default_time_limit"]
         logger.debug(f"Applied default time_limit: {slurm['time_limit']}")
 
+    # GPU-topology facts inherited from the cluster when the recipe omits them.
+    # gpu_type and gpus_per_node describe the machine, not the deployment, so a
+    # recipe can move between clusters by leaving them to srtslurm.yaml.
+    resources_defaults = config.get("resources")
+    if isinstance(resources_defaults, dict):
+        if not resources_defaults.get("gpu_type") and cluster_config.get("default_gpu_type"):
+            resources_defaults["gpu_type"] = cluster_config["default_gpu_type"]
+            logger.debug("Applied default gpu_type: %s", resources_defaults["gpu_type"])
+        if "gpus_per_node" not in resources_defaults and cluster_config.get("gpus_per_node") is not None:
+            resources_defaults["gpus_per_node"] = cluster_config["gpus_per_node"]
+            logger.debug("Applied cluster gpus_per_node: %s", resources_defaults["gpus_per_node"])
+
+    default_sbatch_directives = cluster_config.get("default_sbatch_directives")
+    if isinstance(default_sbatch_directives, dict):
+        sbatch_directives = config.setdefault("sbatch_directives", {})
+        for key, value in default_sbatch_directives.items():
+            sbatch_directives.setdefault(key, value)
+        logger.debug("Applied default sbatch_directives: %s", default_sbatch_directives)
+
+    # Apply cluster-level het-job default. Without this, a recipe with
+    # `het_jobs: None` would defer the cluster default at render-time but skip
+    # SrtConfig validation (which only fires on `het_jobs is True`). Writing
+    # the cluster value into the resolved recipe ensures __post_init__ catches
+    # bad combinations (het + trtllm, het + agg, ...) at load time.
+    resources = config.get("resources")
+    if isinstance(resources, dict) and resources.get("het_jobs") is None:
+        cluster_het = cluster_config.get("use_het_jobs")
+        if cluster_het is not None:
+            resources["het_jobs"] = bool(cluster_het)
+            logger.debug("Applied cluster use_het_jobs default: %s", cluster_het)
+
     # Resolve model path alias
     model = config.get("model", {})
     model_path = model.get("path", "")
@@ -124,71 +251,37 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         model["path"] = resolved_path
         logger.debug(f"Resolved model alias '{model_path}' -> '{resolved_path}'")
 
-    # Resolve container alias
-    container = model.get("container", "")
-
+    # Resolve every container alias in one pass (model.container,
+    # frontend.container_image / nginx_container, benchmark.container_image,
+    # exporter images, mooncake_kv_store.container, services, ...).
     containers = cluster_config.get("containers")
-    if containers and container in containers:
-        resolved_container = containers[container]
-        model["container"] = resolved_container
-        logger.debug(f"Resolved container alias '{container}' -> '{resolved_container}'")
+    if containers:
+        for note in resolve_container_aliases(config, containers):
+            logger.debug(note)
 
     # Apply reporting defaults (if not specified in user config)
     if "reporting" not in config and cluster_config.get("reporting"):
         config["reporting"] = cluster_config["reporting"]
         logger.debug("Applied cluster reporting config")
 
-    # Resolve frontend nginx_container alias
-    frontend = config.get("frontend", {})
-    nginx_container = frontend.get("nginx_container", "")
+    if "health_check" not in config and cluster_config.get("default_health_check"):
+        config["health_check"] = cluster_config["default_health_check"]
+        logger.debug("Applied default_health_check: %s", config["health_check"])
 
-    if containers and nginx_container in containers:
-        resolved_nginx = containers[nginx_container]
-        frontend["nginx_container"] = resolved_nginx
-        config["frontend"] = frontend
-        logger.debug(f"Resolved nginx_container alias '{nginx_container}' -> '{resolved_nginx}'")
+    # Cluster-wide host setup (e.g. locking GPU clocks on nodes that need it).
+    # Whole-block replace, like default_health_check: a recipe that sets
+    # host_setup owns it entirely, so `host_setup: {commands: []}` is the way to
+    # opt a single run out of the cluster default.
+    if "host_setup" not in config and cluster_config.get("default_host_setup"):
+        config["host_setup"] = cluster_config["default_host_setup"]
+        logger.debug("Applied default_host_setup: %s", config["host_setup"])
 
     # Cluster-level default for nginx nofile ulimit (job yaml wins if present).
+    frontend = config.get("frontend", {})
     if "nginx_raise_ulimit" not in frontend and cluster_config.get("nginx_raise_ulimit") is not None:
         frontend["nginx_raise_ulimit"] = cluster_config["nginx_raise_ulimit"]
         config["frontend"] = frontend
         logger.debug(f"Applied cluster nginx_raise_ulimit: {frontend['nginx_raise_ulimit']}")
-
-    # Resolve benchmark.container_image alias for benches that ship their own
-    # eval container (e.g. NeMo Skills for accuracy benchmarks). Mirrors how
-    # model.container and frontend.nginx_container resolve against the same
-    # `containers:` map.
-    benchmark = config.get("benchmark", {})
-    benchmark_container = benchmark.get("container_image", "")
-
-    if containers and benchmark_container in containers:
-        resolved_bench = containers[benchmark_container]
-        benchmark["container_image"] = resolved_bench
-        config["benchmark"] = benchmark
-        logger.debug(f"Resolved benchmark.container_image alias '{benchmark_container}' -> '{resolved_bench}'")
-
-    # Resolve telemetry container aliases (scraper + dcgm/node exporters). All
-    # three are nullable in the schema; only resolve fields that are set.
-    telemetry = config.get("telemetry")
-    if telemetry and containers:
-        scraper_image = telemetry.get("container_image")
-        if scraper_image and scraper_image in containers:
-            resolved_scraper = containers[scraper_image]
-            telemetry["container_image"] = resolved_scraper
-            logger.debug(f"Resolved telemetry.container_image alias '{scraper_image}' -> '{resolved_scraper}'")
-
-        for exporter_key in ("dcgm_exporter", "node_exporter"):
-            exporter = telemetry.get(exporter_key)
-            if not exporter:
-                continue
-            exporter_image = exporter.get("container_image")
-            if exporter_image and exporter_image in containers:
-                resolved_exporter = containers[exporter_image]
-                exporter["container_image"] = resolved_exporter
-                logger.debug(
-                    f"Resolved telemetry.{exporter_key}.container_image alias "
-                    f"'{exporter_image}' -> '{resolved_exporter}'"
-                )
 
     return config
 
@@ -330,6 +423,23 @@ def generate_override_configs(
     raw_config: dict[str, Any],
     selector: str | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
+    """Expand an override-format config into independent variants.
+
+    Wraps :func:`_expand_override_variants` and carries a top-level ``schema``
+    key (declared beside ``base``, not inside it) into every variant so each one
+    loads at the version the file declares.
+    """
+    variants = _expand_override_variants(raw_config, selector=selector)
+    if "schema" in raw_config:
+        for _suffix, config in variants:
+            config.setdefault("schema", raw_config["schema"])
+    return variants
+
+
+def _expand_override_variants(
+    raw_config: dict[str, Any],
+    selector: str | None = None,
+) -> list[tuple[str, dict[str, Any]]]:
     """Expand a raw config with base + override_* + zip_override_* keys into independent configs.
 
     Args:
@@ -459,22 +569,26 @@ def resolve_override_yaml(
     for suffix, merged_plain in plain_variants:
         if suffix == "base":
             # No override applied — return the base CommentedMap as-is.
-            results.append(("base", base_cm))
-            continue
-
-        override_key = f"override_{suffix}"
-        if override_key in raw_cm and isinstance(raw_cm[override_key], CommentedMap):
-            # Regular override: merge CommentedMaps so override comments are kept.
-            result_cm = comment_aware_merge(base_cm, raw_cm[override_key])
-            # Preserve auto-generated fields from the existing override expansion,
-            # such as the synthesized name when the override does not set one.
-            if "name" in merged_plain:
-                result_cm["name"] = merged_plain["name"]
+            result_cm = base_cm
         else:
-            # zip_override variant (values were lists → now scalars) or any
-            # other case: merge the plain resolved dict into the base CommentedMap
-            # so at least base field order and comments are preserved.
-            result_cm = comment_aware_merge(base_cm, merged_plain)
+            override_key = f"override_{suffix}"
+            if override_key in raw_cm and isinstance(raw_cm[override_key], CommentedMap):
+                # Regular override: merge CommentedMaps so override comments are kept.
+                result_cm = comment_aware_merge(base_cm, raw_cm[override_key])
+                # Preserve auto-generated fields from the existing override expansion,
+                # such as the synthesized name when the override does not set one.
+                if "name" in merged_plain:
+                    result_cm["name"] = merged_plain["name"]
+            else:
+                # zip_override variant (values were lists → now scalars) or any
+                # other case: merge the plain resolved dict into the base CommentedMap
+                # so at least base field order and comments are preserved.
+                result_cm = comment_aware_merge(base_cm, merged_plain)
+
+        # The file-level `schema` key lives beside `base`; each resolved variant
+        # is a standalone recipe, so it declares the version itself.
+        if "schema" in raw_plain and "schema" not in result_cm:
+            result_cm.insert(0, "schema", raw_plain["schema"])
 
         results.append((suffix, result_cm))
 
@@ -510,7 +624,7 @@ def validate_config_file(path: Path | str) -> list[str]:
         # Override format — expand and validate each variant
         try:
             variants = generate_override_configs(raw)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return [f"{path}: failed to expand overrides: {e}"]
 
         cluster_config = load_cluster_config()
@@ -519,13 +633,23 @@ def validate_config_file(path: Path | str) -> list[str]:
             resolved = resolve_config_with_defaults(config_dict, cluster_config)
             try:
                 schema.load(resolved)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 errors.append(f"{path} [{suffix}]: {e}")
+    elif "sweep" in raw:
+        # Sweep format — expand every combination; the expander validates each one
+        from .sweep import generate_sweep_configs
+
+        try:
+            expanded = generate_sweep_configs(raw)
+        except Exception as e:  # noqa: BLE001
+            return [f"{path}: failed to expand sweep: {e}"]
+        if not expanded:
+            errors.append(f"{path}: sweep expanded to zero jobs")
     else:
         # Plain config
         try:
             load_config(path)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             errors.append(f"{path}: {e}")
 
     return errors
@@ -546,6 +670,285 @@ def get_srtslurm_setting(key: str, default: Any = None) -> Any:
     if cluster_config and key in cluster_config:
         return cluster_config[key]
     return default
+
+
+def git_clone_command_prefix() -> list[str]:
+    """Return the ``git`` invocation every clone/fetch in srtctl should start from.
+
+    Some clusters see intermittent git smart-HTTP failures negotiating HTTP/2
+    against github.com (stalls, or truncated responses that git misreports as
+    "could not read Username" auth-prompt failures) on certain network paths --
+    observed on both a login host and its compute nodes. Setting
+    ``git_http_version: "HTTP/1.1"`` in srtslurm.yaml works around this for
+    every git clone/fetch srtctl performs, cluster-wide, without touching
+    individual recipes or call sites.
+    """
+    version = get_srtslurm_setting("git_http_version")
+    if not version:
+        return ["git"]
+    return ["git", "-c", f"http.version={version}"]
+
+
+def _setdefault_nested(parent: dict, key: str, values: dict) -> None:
+    """``parent[key]`` becomes a dict and gains ``values`` without clobbering."""
+    child = parent.get(key)
+    if not isinstance(child, dict):
+        child = {}
+        parent[key] = child
+    for k, v in values.items():
+        child.setdefault(k, v)
+
+
+def _trtllm_modes_in_use(cfg: dict) -> tuple[str, ...]:
+    """Engine modes the layout uses: mirror ``ResourceConfig.is_disaggregated``.
+
+    A ``prefill_nodes`` / ``decode_nodes`` pair means prefill + decode, otherwise
+    the single aggregated role.
+    """
+    resources = cfg.get("resources")
+    if not isinstance(resources, dict):
+        resources = {}
+    disaggregated = resources.get("prefill_nodes") is not None or resources.get("decode_nodes") is not None
+    return ("prefill", "decode") if disaggregated else ("aggregated",)
+
+
+def _setdefault_trtllm_engine_keys(
+    cfg: dict,
+    backend: dict,
+    defaults: dict,
+    skip_section: Callable[[dict], bool] | None = None,
+) -> dict[str, dict]:
+    """``setdefault`` ``defaults`` into every ``trtllm_config.<mode>`` section.
+
+    Sections for the modes the layout uses are created when absent or null, so a
+    recipe with no ``trtllm_config`` gets the defaults too; a section for an
+    unused mode is only touched when the recipe already carries it. A value that
+    is neither a mapping nor null is left alone so schema validation reports it.
+    ``skip_section`` lets a caller leave a section untouched based on its
+    contents. Explicit recipe values are never clobbered. Returns the sections
+    touched, keyed by mode, so callers can report explicit opt-outs.
+    """
+    trtllm_config = backend.get("trtllm_config")
+    if trtllm_config is None:
+        trtllm_config = {}
+        backend["trtllm_config"] = trtllm_config
+    elif not isinstance(trtllm_config, dict):
+        return {}
+
+    modes_in_use = _trtllm_modes_in_use(cfg)
+    touched: dict[str, dict] = {}
+    for mode in ("prefill", "decode", "aggregated"):
+        section = trtllm_config.get(mode)
+        if section is None:
+            if mode not in modes_in_use:
+                continue
+            section = {}
+            trtllm_config[mode] = section
+        elif not isinstance(section, dict):
+            continue
+        if skip_section is not None and skip_section(section):
+            continue
+        for key, value in defaults.items():
+            section.setdefault(key, value)
+        touched[mode] = section
+    return touched
+
+
+def expand_observability(cfg: dict) -> dict:
+    """Expand ``observability.enabled`` into the individual launch flags.
+
+    One knob, six effects -- see :class:`~srtctl.core.schema.ObservabilityConfig`
+    for the rationale and the full list. Mutates ``cfg`` in place and returns it.
+
+    Defaults preserve explicit recipe values. The tri-state combined publishing
+    setting treats null as unset, while explicit False remains a master opt-out.
+    Enabling observability never overrides a recipe that deliberately disables
+    publication.
+
+    No-op unless ``observability.enabled`` is truthy.
+    """
+    from srtctl.core.schema import (
+        ANALYTICS_ENGINE_CONFIG,
+        ANALYTICS_REQUEST_TRACE_ENV,
+        ANALYTICS_SPAN_ENV,
+    )
+
+    observability = cfg.get("observability")
+    if not isinstance(observability, dict) or not observability.get("enabled"):
+        return cfg
+
+    # --- traces leg: SPAN_CLOSED lines on prefill, decode and frontend -------
+    backend = cfg.get("backend")
+    if not isinstance(backend, dict):
+        backend = {}
+        cfg["backend"] = backend
+
+    for mode in ("prefill", "decode", "aggregated"):
+        _setdefault_nested(backend, f"{mode}_environment", ANALYTICS_SPAN_ENV)
+
+    frontend = cfg.get("frontend")
+    if not isinstance(frontend, dict):
+        frontend = {}
+        cfg["frontend"] = frontend
+    _setdefault_nested(frontend, "env", ANALYTICS_SPAN_ENV)
+
+    # --- request-trace leg: per-request phase timings, frontend only ---------
+    # Complements the span leg rather than duplicating it. Spans decompose the
+    # router but stop at one opaque handle_payload per worker; these records
+    # carry prefill_wait / prefill / kv_transfer_estimated for the same request,
+    # keyed by x_request_id so all three legs join on one id.
+    _setdefault_nested(frontend, "env", ANALYTICS_REQUEST_TRACE_ENV)
+
+    # --- metrics leg: engine metrics on the worker /metrics surface ----------
+    # Metrics-only publication defaults on independently of observability.
+    # Keep observability as the existing superset that also enables KV events.
+    if backend.get("type", "sglang") == "trtllm":
+        # None preserves an omitted setting through schema dumps; treat it as
+        # unset here too. An explicit False must remain the master opt-out.
+        if backend.get("publish_events_and_metrics") is None:
+            backend["publish_events_and_metrics"] = True
+        if frontend.get("type", "dynamo") == "dynamo" and backend["publish_events_and_metrics"] is False:
+            logger.warning(
+                "observability.enabled but backend.publish_events_and_metrics is explicitly false "
+                "— srt-slurm will enable neither metrics nor KV-event publication. "
+                "This opt-out takes precedence over backend.publish_metrics."
+            )
+
+        # Sections for the modes the layout uses are created when the recipe has
+        # none, so a recipe without trtllm_config still gets the iteration-level
+        # gauges the capture reads. expand_trtllm_engine_defaults runs after
+        # this and must find True already in place.
+        sections = _setdefault_trtllm_engine_keys(cfg, backend, ANALYTICS_ENGINE_CONFIG)
+        opted_out = [
+            f"{mode}.{key}"
+            for mode, section in sections.items()
+            for key in ANALYTICS_ENGINE_CONFIG
+            if section.get(key) is False
+        ]
+        if opted_out:
+            # Also reached by a saved or locked recipe: the load step bakes the
+            # resolved engine keys in, so a later observability.enabled: true
+            # meets an explicit false rather than an omission.
+            logger.warning(
+                "observability.enabled but trtllm_config sets %s: false — the iteration-level "
+                "trtllm_kv_cache_* gauges (enable_iter_perf_stats) and per-request histograms "
+                "(return_perf_metrics) need true; remove the explicit false to get them back.",
+                ", ".join(opted_out),
+            )
+
+    logger.info(
+        "observability.enabled: expanded span-event env (prefill/decode/frontend), "
+        "publish_events_and_metrics and per-iteration engine stats"
+    )
+    return cfg
+
+
+def expand_trtllm_serve_defaults(cfg: dict) -> dict:
+    """Bake the trtllm-serve worker-metrics default into the TRT-LLM engine configs.
+
+    trtllm-serve registers a worker's Prometheus route (``/prometheus/metrics``)
+    only when the engine runs with ``return_perf_metrics: true`` (TensorRT-LLM
+    ``serve/openai_server.py``, ``register_routes``); TensorRT-LLM's own default
+    is ``false``. Tachometer scrapes that route on every run, so without this
+    default every trtllm-serve worker endpoint answers HTTP 404 and the capture
+    silently has no worker-level data.
+
+    Applies to every ``frontend.type: trtllm_serve`` recipe with a TRT-LLM
+    backend, independent of ``observability.enabled``. The engine sections for
+    the modes the recipe uses (prefill + decode for a disaggregated
+    ``resources`` block, ``aggregated`` otherwise) are created when absent, so a
+    recipe with no ``trtllm_config`` gets the default too. Every write is a
+    ``setdefault``: an explicit ``return_perf_metrics: false`` in the recipe
+    wins, but is reported loudly. Mutates ``cfg`` in place and returns it.
+    """
+    from srtctl.core.schema import TRTLLM_SERVE_ENGINE_DEFAULTS
+
+    frontend = cfg.get("frontend")
+    if not isinstance(frontend, dict) or frontend.get("type") != "trtllm_serve":
+        return cfg
+    backend = cfg.get("backend")
+    if not isinstance(backend, dict) or backend.get("type", "sglang") != "trtllm":
+        return cfg
+
+    sections = _setdefault_trtllm_engine_keys(cfg, backend, TRTLLM_SERVE_ENGINE_DEFAULTS)
+    opted_out = [mode for mode, section in sections.items() if section.get("return_perf_metrics") is False]
+    if opted_out:
+        logger.warning(
+            "frontend.type: trtllm_serve with return_perf_metrics: false on %s — those "
+            "trtllm-serve workers will NOT mount /prometheus/metrics (HTTP 404), so the "
+            "Tachometer backend_* endpoints and the per-request Prometheus histograms "
+            "will be empty for them. Remove the line to keep the default.",
+            ", ".join(opted_out),
+        )
+    return cfg
+
+
+def expand_trtllm_engine_defaults(cfg: dict) -> dict:
+    """Keep TensorRT-LLM's per-iteration statistics off unless a recipe asks for them.
+
+    Applies ``TRTLLM_ENGINE_DEFAULTS`` (``enable_iter_perf_stats: false``) to
+    every engine section a TRT-LLM recipe uses, under both the ``dynamo`` and the
+    ``trtllm_serve`` frontend and independent of ``observability.enabled``.
+
+    Why an explicit ``false`` when TensorRT-LLM's own default is already
+    ``false``: ``dynamo.trtllm`` builds the engine arguments with
+    ``enable_iter_perf_stats`` derived from ``--publish-metrics``
+    (``components/src/dynamo/trtllm/workers/llm_worker.py``), and
+    ``backend.publish_metrics`` passes that flag by default, so every Dynamo
+    worker would otherwise collect KV-cache statistics and CUDA-event step timing
+    on every executor loop. The engine YAML is merged over those derived
+    arguments and wins on conflicts (TensorRT-LLM
+    ``update_llm_args_with_extra_dict``), so the explicit key is what turns the
+    statistics off. The request-level ``trtllm_*`` Prometheus series (request
+    latency, TTFT, TPOT, queue / prefill / decode time, token counters) do not
+    depend on it: they come from the per-request perf metrics, which
+    ``--publish-metrics`` sets on the Dynamo path and ``return_perf_metrics: true``
+    sets for trtllm-serve. What the default drops is the iteration-level
+    ``trtllm_*`` gauges (``trtllm_kv_cache_*``, running / waiting requests,
+    iteration latency) and, on Dynamo, the ``dynamo_component_kvstats_*`` gauges,
+    the router worker-load sample and the Planner's forward-pass metrics. No
+    benchmark client reads them; the component dashboard's KV-utilisation
+    panels do, and show no data (or the gauge's seeded 0 %) on a default run.
+    Sections whose ``backend`` is the legacy ``tensorrt`` engine are skipped:
+    its ``LlmArgs`` rejects the key on containers before the backend's removal
+    and always collected the statistics anyway.
+
+    Every write is a ``setdefault``: an explicit ``enable_iter_perf_stats: true``
+    in the recipe wins, and so does :func:`expand_observability`, which runs
+    first and needs the iteration-level gauges for its capture. Sections for the
+    modes the layout uses are created when absent. Mutates ``cfg`` in place and
+    returns it.
+    """
+    from srtctl.core.schema import TRTLLM_ENGINE_DEFAULTS
+
+    backend = cfg.get("backend")
+    if not isinstance(backend, dict) or backend.get("type", "sglang") != "trtllm":
+        return cfg
+    _setdefault_trtllm_engine_keys(
+        cfg,
+        backend,
+        TRTLLM_ENGINE_DEFAULTS,
+        skip_section=lambda section: str(section.get("backend", "pytorch")).lower() in ("tensorrt", "trt"),
+    )
+    return cfg
+
+
+def expand_engine_config_defaults(resolved_config: dict) -> dict:
+    """Run the engine-config expansions that turn a resolved recipe into what the job runs.
+
+    Order matters: :func:`expand_observability` first, so its ``True`` for the
+    iteration statistics is in place before :func:`expand_trtllm_engine_defaults`
+    setdefaults ``False``. Kept out of :func:`resolve_config_with_defaults` so
+    tools that only inspect or migrate a recipe (validation, the MCP spec tools,
+    ``srtctl migrate --verify`` goldens) keep seeing the recipe's own keys; every
+    entry point that builds the ``SrtConfig`` a job runs under, or shows in
+    ``srtctl dry-run``, calls this so the two agree. Mutates and returns
+    ``resolved_config``.
+    """
+    expand_observability(resolved_config)
+    expand_trtllm_serve_defaults(resolved_config)
+    expand_trtllm_engine_defaults(resolved_config)
+    return resolved_config
 
 
 def load_config(path: Path | str) -> SrtConfig:
@@ -574,7 +977,7 @@ def load_config(path: Path | str) -> SrtConfig:
     if user_config is None:
         raise ValueError(f"Invalid config in {path}: YAML file is empty")
     if not isinstance(user_config, dict):
-        raise ValueError(f"Invalid config in {path}: top-level YAML must be a mapping")
+        raise TypeError(f"Invalid config in {path}: top-level YAML must be a mapping")
 
     # Strip lock: section if present (lockfiles are valid recipes)
     # Preserved for comparison after the new run completes
@@ -591,6 +994,13 @@ def load_config(path: Path | str) -> SrtConfig:
 
     # Resolve with defaults (applies aliases and default values)
     resolved_config = resolve_config_with_defaults(user_config, cluster_config)
+
+    # Expand the single `observability.enabled` knob into the individual
+    # launch flags and bake in the TRT-LLM engine-config defaults. Done on the
+    # raw dict (before schema.load) so every downstream consumer -- worker
+    # command builder, engine YAML writer, frontend env -- sees the expanded
+    # values with no extra plumbing.
+    expand_engine_config_defaults(resolved_config)
 
     # Parse with marshmallow schema to get typed SrtConfig
     try:

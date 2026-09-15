@@ -8,16 +8,45 @@ worker_rlimit_nofile 1048576;
 {% endif %}
 
 http {
+    # Raise the request-body cap (nginx default is 1 MiB) so the load balancer
+    # does not reject large client requests with 413 before they reach the
+    # frontend. Agentic replay traces (e.g. multi-turn cc-traces warmup bodies)
+    # exceed 1 MiB; this mirrors the dynamo frontend's own body limit so nginx
+    # is never the bottleneck and is never more permissive than the backend.
+    client_max_body_size 45m;
     access_log off;
+{% if nginx_session_affinity %}
+    # Keep a Dynamo session on one frontend. Anonymous requests use NGINX's
+    # generated request ID so an empty session header cannot pin all traffic.
+{% set _sess_key = "$http_" ~ (nginx_session_affinity_header | lower | replace("-", "_")) %}
+    map {{ _sess_key }} $frontend_hash_key {
+        default {{ _sess_key }};
+        "" $request_id;
+    }
+{% endif %}
+
+    # Agentic replay reproduces recorded think-time, so a session's connection can
+    # sit idle for minutes between turns. nginx's default keepalive_timeout of 75s
+    # closes it underneath a pooled client connection, and the client's next write
+    # on that socket surfaces as "broken pipe" / "server disconnected" with nothing
+    # logged server-side.
+    keepalive_timeout {{ nginx_keepalive_timeout }};
+
     upstream backend_servers {
+{% if nginx_session_affinity %}
+        hash $frontend_hash_key consistent;
+{% endif %}
         {% for frontend_host in frontend_hosts %}
-        server {{ frontend_host }}:{{ backend_port | default(8000) }};
+        server {{ frontend_host }}:{{ backend_port }};
         {% endfor %}
+        # Reuse upstream connections instead of a fresh TCP handshake per request.
+        keepalive 512;
+        keepalive_timeout {{ nginx_keepalive_timeout }};
     }
 
     # The main server block that listens for incoming traffic.
     server {
-        listen {{ listen_port | default(8000) }}; # Public-facing port for incoming HTTP requests.
+        listen {{ listen_port }}; # Public-facing port for incoming HTTP requests.
 
         location / {
             # Pass the request to the upstream group defined above.
@@ -26,6 +55,11 @@ http {
             proxy_buffering off;
             proxy_read_timeout 24h;
             proxy_send_timeout 24h;
+
+            # Required for the upstream keepalive pool above: without these nginx
+            # talks HTTP/1.0 to the backend and opens a new connection per request.
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
         }
     }
 }

@@ -127,12 +127,16 @@ class TestCollectSlurmContext:
         monkeypatch.setenv("SLURM_JOB_ACCOUNT", "myaccount")
         monkeypatch.setenv("SLURM_JOB_PARTITION", "gpu")
         monkeypatch.setenv("SLURM_JOB_NODELIST", "node-[001-004]")
+        monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "72(x4)")
+        monkeypatch.setenv("SLURM_CPUS_ON_NODE", "72")
 
         ctx = collect_slurm_context()
         assert ctx["job_id"] == "12345"
         assert ctx["account"] == "myaccount"
         assert ctx["partition"] == "gpu"
         assert ctx["nodelist"] == "node-[001-004]"
+        assert ctx["cpus_per_node"] == "72(x4)"
+        assert ctx["cpus_on_node"] == "72"
 
     def test_always_has_user_and_cwd(self):
         ctx = collect_slurm_context()
@@ -208,6 +212,17 @@ class TestBuildLockSection:
         lock = build_lock_section(config)
 
         assert lock["slurm"]["job_id"] == "99999"
+
+    def test_resource_snapshot_included(self, tmp_path):
+        config = _make_minimal_config()
+        (tmp_path / "resource_snapshot.json").write_text(
+            json.dumps({"cpus": {"allocated_total": 2}, "cpu_check": {"status": "warning"}})
+        )
+
+        lock = build_lock_section(config, resolved_log_dir=tmp_path)
+
+        assert lock["resource_snapshot"]["cpus"]["allocated_total"] == 2
+        assert lock["resource_snapshot"]["cpu_check"]["status"] == "warning"
 
 
 # ============================================================================

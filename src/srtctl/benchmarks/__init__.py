@@ -5,6 +5,7 @@
 
 # Import runners to trigger registration
 from srtctl.benchmarks import (
+    agentperf,
     custom,
     gpqa,
     gsm8k,
@@ -18,27 +19,34 @@ from srtctl.benchmarks import (
     trace_replay,
 )
 from srtctl.benchmarks.base import (
+    SHARED_BENCHMARK_FIELDS,
     BenchmarkRunner,
+    benchmark_config_fields,
     get_runner,
+    get_runner_class,
     list_benchmarks,
     register_benchmark,
 )
 
 __all__ = [
+    "SHARED_BENCHMARK_FIELDS",
     "BenchmarkRunner",
-    "get_runner",
-    "list_benchmarks",
-    "register_benchmark",
     # Runners
+    "agentperf",
+    "benchmark_config_fields",
     "custom",
-    "lm_eval",
-    "sa_bench",
-    "sglang_bench",
-    "mmlu",
+    "get_runner",
+    "get_runner_class",
     "gpqa",
     "gsm8k",
+    "list_benchmarks",
+    "lm_eval",
     "longbenchv2",
-    "router",
+    "mmlu",
     "mooncake_router",
+    "register_benchmark",
+    "router",
+    "sa_bench",
+    "sglang_bench",
     "trace_replay",
 ]

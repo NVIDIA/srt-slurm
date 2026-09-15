@@ -1,0 +1,331 @@
+name: Release
+
+# pull_request_target runs in the base repository context, which supplies the
+# write-capable token that creates the release. Build jobs check out only the
+# merged main-branch commit, after GitHub reports the pull request as merged.
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+  # Re-cut a release by hand from the current main (for example after a failed run).
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump relative to the latest release"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      build_binaries:
+        description: "Rebuild tachometer-scraper and cpu-power-exporter instead of carrying them forward"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+      # The merge commit for a PR; the current main for a manual re-cut.
+      target: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+      tachometer_changed: ${{ steps.changed.outputs.tachometer || github.event.inputs.build_binaries }}
+      cpu_power_exporter_changed: ${{ steps.changed.outputs.cpu_power_exporter || github.event.inputs.build_binaries }}
+    steps:
+      - name: Detect changed binaries
+        id: changed
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          files=$(gh api --paginate "repos/${GH_REPO}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[].filename')
+
+          if printf '%s\n' "$files" | grep -Eq '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/tachometer/|docker/Dockerfile\.tachometer-scraper$|\.dockerignore$|\.github/workflows/release\.yaml$)'; then
+            tachometer=true
+          else
+            tachometer=false
+          fi
+          echo "Tachometer changed: $tachometer"
+          echo "tachometer=$tachometer" >> "$GITHUB_OUTPUT"
+
+          if printf '%s\n' "$files" | grep -Eq '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/cpu-power-exporter/|docker/Dockerfile\.cpu-power-exporter$|\.dockerignore$|\.github/workflows/release\.yaml$)'; then
+            cpu_power_exporter=true
+          else
+            cpu_power_exporter=false
+          fi
+          echo "cpu-power-exporter changed: $cpu_power_exporter"
+          echo "cpu_power_exporter=$cpu_power_exporter" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Compute next version from the PR title
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BUMP: ${{ github.event.inputs.bump }}
+        run: |
+          set -euo pipefail
+          # Bump from the HIGHEST existing GitHub Release. The merged PR title is a
+          # conventional commit (enforced by pr-title.yaml): "<type>!:" or a
+          # "BREAKING CHANGE:" body bumps MAJOR, "feat:" bumps MINOR, anything
+          # else bumps PATCH. First run only (no release yet): seed v1.0.0.
+          latest=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
+          if [ -n "${BUMP:-}" ]; then
+            # Manual re-cut: the bump comes from the workflow_dispatch input.
+            case "$BUMP" in
+              major) title="chore!: manual release" ;;
+              minor) title="feat: manual release" ;;
+              *)     title="chore: manual release" ;;
+            esac
+            next=$(bash .github/scripts/next_version.sh "$latest" "$title" "")
+            echo "Latest release: ${latest:-none}  Manual bump: $BUMP  Next: $next"
+          else
+            next=$(bash .github/scripts/next_version.sh "$latest" "$PR_TITLE" "$PR_BODY")
+            echo "Latest release: ${latest:-none}  Title: $PR_TITLE  Next: $next"
+          fi
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "version=${next#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create the tag before anything is built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          TARGET: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # The tag exists before the wheel or the binaries are built, so
+          # hatch-vcs and SRTCTL_RELEASE_VERSION both see the same number.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists; the bump computed the wrong version"; exit 1
+          fi
+          if existing=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null); then
+            # A tag with no release is what a failed earlier run leaves behind; move it to this commit.
+            echo "Tag $TAG exists at $existing without a release; moving it to $TARGET"
+            gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/${TAG}" -f sha="$TARGET" -F force=true >/dev/null
+          else
+            gh api "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$TARGET" >/dev/null
+          fi
+          echo "Tagged $TARGET as $TAG"
+
+  build-tachometer-scraper:
+    needs: version
+    if: needs.version.outputs.tachometer_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            asset: tachometer-scraper-x86_64-unknown-linux-gnu
+          - platform: linux/arm64
+            asset: tachometer-scraper-aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build scraper binary
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --build-arg "SRTCTL_RELEASE_VERSION=${{ needs.version.outputs.version }}" \
+            --file docker/Dockerfile.tachometer-scraper \
+            --target artifact \
+            --output type=local,dest=build/tachometer \
+            .
+          mkdir -p dist
+          mv build/tachometer/tachometer-scraper "dist/${{ matrix.asset }}"
+          chmod +x "dist/${{ matrix.asset }}"
+          (cd dist && sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+          retention-days: 7
+
+  build-cpu-power-exporter:
+    needs: version
+    if: needs.version.outputs.cpu_power_exporter_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            asset: cpu-power-exporter-x86_64-unknown-linux-musl
+          - platform: linux/arm64
+            asset: cpu-power-exporter-aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build cpu-power-exporter binary
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --build-arg "SRTCTL_RELEASE_VERSION=${{ needs.version.outputs.version }}" \
+            --file docker/Dockerfile.cpu-power-exporter \
+            --target artifact \
+            --output type=local,dest=build/cpu-power-exporter \
+            .
+          mkdir -p dist
+          mv build/cpu-power-exporter/cpu-power-exporter "dist/${{ matrix.asset }}"
+          chmod +x "dist/${{ matrix.asset }}"
+          (cd dist && sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+          retention-days: 7
+
+  release:
+    needs: [version, build-tachometer-scraper, build-cpu-power-exporter]
+    if: >-
+      always() &&
+      needs.version.result == 'success' &&
+      (needs.build-tachometer-scraper.result == 'success' || needs.build-tachometer-scraper.result == 'skipped') &&
+      (needs.build-cpu-power-exporter.result == 'success' || needs.build-cpu-power-exporter.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          fetch-depth: 0  # hatch-vcs derives the version from the tag
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Render the release notes header
+        run: |
+          set -euo pipefail
+          uv python install 3.12
+          uv sync --no-dev --python 3.12
+          info=$(uv run --no-sync srtctl --version)
+          echo "Version check: $info"
+          # The tag, the wheel, and the binaries must agree; fail loudly if hatch-vcs disagrees with the tag.
+          case "$info" in
+            "srtctl ${{ needs.version.outputs.version }} "*|"srtctl ${{ needs.version.outputs.version }};"*) ;;
+            *) echo "::error::srtctl --version ($info) does not match tag ${{ needs.version.outputs.tag }}"; exit 1 ;;
+          esac
+          {
+            echo "\`$info\`"
+            echo
+            echo "Binaries in this release report \`${{ needs.version.outputs.version }}\` from \`--version\`."
+            echo
+          } > notes-header.md
+
+      - name: Generate the changelog from the merged PR titles
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # git-cliff from PyPI rather than orhun/git-cliff-action: this repository's Actions
+          # policy only allows GitHub-owned, verified-creator, and allowlisted actions.
+          # --latest renders previous tag..this tag; PR numbers and authors come from the GitHub API.
+          uvx git-cliff==2.13.1 --config cliff.toml --latest --strip all \
+            --github-repo "$GH_REPO" --output notes-body.md
+
+      - name: Assemble the release notes
+        run: |
+          set -euo pipefail
+          cat notes-header.md notes-body.md > notes.md
+          echo "----- release notes -----"; cat notes.md
+
+      - uses: actions/download-artifact@v4
+        if: needs.version.outputs.tachometer_changed == 'true'
+        with:
+          pattern: tachometer-scraper-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        if: needs.version.outputs.cpu_power_exporter_changed == 'true'
+        with:
+          pattern: cpu-power-exporter-*
+          path: dist
+          merge-multiple: true
+
+      - name: Carry forward unchanged binaries from the previous release
+        if: needs.version.outputs.tachometer_changed != 'true' || needs.version.outputs.cpu_power_exporter_changed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TACHOMETER_CHANGED: ${{ needs.version.outputs.tachometer_changed }}
+          CPU_POWER_EXPORTER_CHANGED: ${{ needs.version.outputs.cpu_power_exporter_changed }}
+        run: |
+          set -euo pipefail
+          previous=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
+          mkdir -p dist
+          # Every merge cuts a release, so an unchanged binary is re-uploaded
+          # from the previous one to keep each release self-contained. A gap is
+          # a warning, not a failure: the first-ever release has nothing to
+          # carry forward, and a binary added later is absent from older ones.
+          carry() {
+            if [ -z "$previous" ]; then
+              echo "::warning::No previous release to carry $1 forward from; this release omits it"
+              return 0
+            fi
+            if ! gh release download "$previous" --pattern "$1-*" --dir dist; then
+              echo "::warning::Previous release $previous has no $1 assets; this release omits them"
+            fi
+          }
+          [ "$TACHOMETER_CHANGED" = "true" ] || carry tachometer-scraper
+          [ "$CPU_POWER_EXPORTER_CHANGED" = "true" ] || carry cpu-power-exporter
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          TARGET: ${{ needs.version.outputs.target }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # An unexpanded dist/* glob would be passed through as a literal path.
+          assets=(dist/*)
+          echo "Publishing $TAG with ${#assets[@]} asset(s)"
+          # The tag already exists (created by the version job); --target is
+          # ignored for an existing tag but kept for clarity.
+          gh release create "$TAG" "${assets[@]}" \
+            --target "$TARGET" \
+            --title "$TAG" \
+            --notes-file notes.md

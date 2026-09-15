@@ -22,8 +22,10 @@ Design principles:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import platform
 import subprocess
 from dataclasses import dataclass, field
@@ -48,6 +50,62 @@ FRAMEWORK_PACKAGES: dict[str, str] = {
     "tensorrt_llm": "tensorrt-llm",
     "dynamo": "ai-dynamo",
 }
+
+_CPU_MODEL_KEYS = {"model name", "cpu model", "hardware"}
+_ARM_CPUINFO_KEYS = {
+    "cpu implementer",
+    "cpu architecture",
+    "cpu variant",
+    "cpu part",
+    "cpu revision",
+}
+
+
+def cpu_model_from_cpuinfo(cpuinfo: str) -> str | None:
+    """Extract a useful CPU model string from Linux ``/proc/cpuinfo`` text."""
+    arm_fields: dict[str, str] = {}
+    processor_label: str | None = None
+
+    for line in cpuinfo.splitlines():
+        key, separator, value = line.partition(":")
+        if not separator:
+            continue
+        normalized_key = key.strip().lower()
+        normalized_value = value.strip()
+        if not normalized_value:
+            continue
+
+        if normalized_key in _CPU_MODEL_KEYS:
+            return normalized_value
+
+        if normalized_key == "processor" and not normalized_value.isdecimal():
+            processor_label = processor_label or normalized_value
+        elif normalized_key in _ARM_CPUINFO_KEYS:
+            arm_fields.setdefault(normalized_key, normalized_value)
+
+    if processor_label:
+        return processor_label
+
+    implementer = arm_fields.get("cpu implementer")
+    part = arm_fields.get("cpu part")
+    if not implementer and not part:
+        return None
+
+    pieces = ["ARM CPU"]
+    if implementer:
+        pieces.append(f"implementer {implementer}")
+    if part:
+        pieces.append(f"part {part}")
+
+    details = [
+        ("architecture", arm_fields.get("cpu architecture")),
+        ("variant", arm_fields.get("cpu variant")),
+        ("revision", arm_fields.get("cpu revision")),
+    ]
+    detail_text = ", ".join(f"{label} {value}" for label, value in details if value)
+    if detail_text:
+        return f"{' '.join(pieces)} ({detail_text})"
+    return " ".join(pieces)
 
 
 # ============================================================================
@@ -122,6 +180,7 @@ _FIELD_ORDER = [
     # Hardware + OS
     "arch",
     "os",
+    "cpu",
     "gpu",
     # Core versions
     "python_version",
@@ -163,12 +222,13 @@ def _run_cmd(cmd: str, timeout: int = _CMD_TIMEOUT) -> str | None:
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
         return result.stdout.strip() if result.returncode == 0 else None
     except subprocess.TimeoutExpired:
         logger.debug("Command timed out (%ds): %s", timeout, cmd)
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Command failed: %s — %s", cmd, e)
         return None
 
@@ -179,7 +239,7 @@ def probe_hostname() -> ProbeResult:
         import socket
 
         return ProbeResult.success(socket.gethostname())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -188,7 +248,7 @@ def probe_timestamp() -> ProbeResult:
     try:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return ProbeResult.success(ts)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -196,7 +256,7 @@ def probe_arch() -> ProbeResult:
     """Get CPU architecture."""
     try:
         return ProbeResult.success(platform.machine())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -209,8 +269,60 @@ def probe_os() -> ProbeResult:
                 if line.startswith("PRETTY_NAME="):
                     return ProbeResult.success(line.split("=", 1)[1].strip('"'))
         return ProbeResult.success(platform.platform())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
+
+
+def probe_cpu() -> ProbeResult:
+    """Get CPU identity plus the CPUs visible to this process/cgroup."""
+    try:
+        model = UNAVAILABLE
+        cpuinfo = Path("/proc/cpuinfo")
+        if cpuinfo.exists():
+            model = cpu_model_from_cpuinfo(cpuinfo.read_text(errors="replace")) or UNAVAILABLE
+
+        affinity_ids: list[int] = []
+        with contextlib.suppress(AttributeError, OSError):
+            affinity_ids = sorted(os.sched_getaffinity(0))
+
+        slurm = {
+            key: os.environ[key]
+            for key in (
+                "SLURM_CPUS_ON_NODE",
+                "SLURM_CPUS_PER_GPU",
+                "SLURM_CPUS_PER_TASK",
+                "SLURM_JOB_CPUS_PER_NODE",
+            )
+            if key in os.environ
+        }
+        return ProbeResult.success(
+            {
+                "model": model or UNAVAILABLE,
+                "logical_cpus": os.cpu_count(),
+                "affinity_cpus": len(affinity_ids) if affinity_ids else None,
+                "affinity_list": _format_cpu_ids(affinity_ids) if affinity_ids else None,
+                "slurm": slurm,
+            }
+        )
+    except Exception as e:  # noqa: BLE001
+        return ProbeResult.failure(str(e))
+
+
+def _format_cpu_ids(cpu_ids: list[int]) -> str:
+    """Format sorted CPU IDs as a compact Linux cpuset string."""
+    if not cpu_ids:
+        return ""
+
+    ranges: list[str] = []
+    start = previous = cpu_ids[0]
+    for cpu_id in cpu_ids[1:]:
+        if cpu_id == previous + 1:
+            previous = cpu_id
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = cpu_id
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
 
 
 def probe_gpu() -> ProbeResult:
@@ -234,7 +346,7 @@ def probe_python_version() -> ProbeResult:
     """Get Python version."""
     try:
         return ProbeResult.success(platform.python_version())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -298,6 +410,7 @@ _PROBES: dict[str, Any] = {
     "timestamp": probe_timestamp,
     "arch": probe_arch,
     "os": probe_os,
+    "cpu": probe_cpu,
     "gpu": probe_gpu,
     "python_version": probe_python_version,
     "cuda_version": probe_cuda_version,
@@ -331,7 +444,7 @@ def capture_fingerprint(extra_probes: dict[str, Any] | None = None) -> dict[str,
             data[name] = result.value
             if not result.ok:
                 logger.debug("Probe %s failed: %s", name, result.error)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # Belt-and-suspenders: even if ProbeResult contract is violated
             data[name] = UNAVAILABLE
             logger.debug("Probe %s raised unexpectedly: %s", name, e)
@@ -349,7 +462,7 @@ def write_fingerprint(path: Path, extra_probes: dict[str, Any] | None = None) ->
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2) + "\n")
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Failed to write fingerprint to %s: %s", path, e)
         return False
 
@@ -358,7 +471,7 @@ def load_fingerprint(path: Path) -> dict[str, Any] | None:
     """Load a fingerprint from a JSON file. Returns None on failure."""
     try:
         return json.loads(path.read_text())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Failed to load fingerprint from %s: %s", path, e)
         return None
 
@@ -766,7 +879,7 @@ def generate_capture_script(output_path: str) -> str:
     # python3 -c with inline code. This avoids escaping nightmares when
     # the command passes through bash → srun → bash → python.
     script = f"""\
-import json, subprocess, platform, socket, sys
+import json, os, subprocess, platform, socket, sys
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -809,6 +922,72 @@ def gpu_info():
         if len(parts) >= 3:
             gpus.append({{'name': parts[0], 'driver': parts[1], 'memory': parts[2]}})
     return {{'available': True, 'driver': gpus[0]['driver'] if gpus else 'unknown', 'gpus': gpus}}
+
+def cpu_model_from_cpuinfo(cpuinfo_text):
+    arm_fields = {{}}
+    processor_label = None
+    for line in cpuinfo_text.splitlines():
+        key, separator, value = line.partition(':')
+        if not separator:
+            continue
+        key = key.strip().lower()
+        value = value.strip()
+        if not value:
+            continue
+        if key in ('model name', 'cpu model', 'hardware'):
+            return value
+        if key == 'processor' and not value.isdecimal():
+            processor_label = processor_label or value
+        elif key in ('cpu implementer', 'cpu architecture', 'cpu variant', 'cpu part', 'cpu revision'):
+            arm_fields.setdefault(key, value)
+    if processor_label:
+        return processor_label
+    implementer = arm_fields.get('cpu implementer')
+    part = arm_fields.get('cpu part')
+    if not implementer and not part:
+        return None
+    pieces = ['ARM CPU']
+    if implementer:
+        pieces.append(f'implementer {{implementer}}')
+    if part:
+        pieces.append(f'part {{part}}')
+    details = [
+        ('architecture', arm_fields.get('cpu architecture')),
+        ('variant', arm_fields.get('cpu variant')),
+        ('revision', arm_fields.get('cpu revision')),
+    ]
+    detail_text = ', '.join(f'{{label}} {{value}}' for label, value in details if value)
+    if detail_text:
+        return f"{{' '.join(pieces)}} ({{detail_text}})"
+    return ' '.join(pieces)
+
+def cpu_info():
+    model = 'unavailable'
+    cpuinfo = Path('/proc/cpuinfo')
+    if cpuinfo.exists():
+        model = cpu_model_from_cpuinfo(cpuinfo.read_text(errors='replace')) or 'unavailable'
+    try:
+        affinity_ids = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        affinity_ids = []
+    affinity_ranges = []
+    if affinity_ids:
+        start = previous = affinity_ids[0]
+        for cpu_id in affinity_ids[1:]:
+            if cpu_id == previous + 1:
+                previous = cpu_id
+                continue
+            affinity_ranges.append(str(start) if start == previous else f'{{start}}-{{previous}}')
+            start = previous = cpu_id
+        affinity_ranges.append(str(start) if start == previous else f'{{start}}-{{previous}}')
+    slurm_keys = ('SLURM_CPUS_ON_NODE', 'SLURM_CPUS_PER_GPU', 'SLURM_CPUS_PER_TASK', 'SLURM_JOB_CPUS_PER_NODE')
+    return {{
+        'model': model,
+        'logical_cpus': os.cpu_count(),
+        'affinity_cpus': len(affinity_ids) if affinity_ids else None,
+        'affinity_list': ','.join(affinity_ranges) if affinity_ranges else None,
+        'slurm': {{key: os.environ[key] for key in slurm_keys if key in os.environ}},
+    }}
 
 def framework_versions():
     # Use importlib.metadata for all packages — avoids loading native CUDA
@@ -885,6 +1064,7 @@ fp = {{
     'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'arch': platform.machine(),
     'os': next((l.split('=',1)[1].strip('"') for l in Path('/etc/os-release').read_text().splitlines() if l.startswith('PRETTY_NAME=')), platform.platform()) if Path('/etc/os-release').exists() else platform.platform(),
+    'cpu': cpu_info(),
     'gpu': gpu_info(),
     'python_version': platform.python_version(),
     'cuda_version': run('nvcc --version 2>/dev/null | grep release') or 'unavailable',

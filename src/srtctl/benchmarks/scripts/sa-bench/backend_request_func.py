@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import traceback
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -15,6 +16,16 @@ from tqdm.asyncio import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
 
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
+
+
+def create_dynamo_session() -> aiohttp.ClientSession:
+    """Create the benchmark-scoped Dynamo session in the current event loop."""
+    return aiohttp.ClientSession(
+        trust_env=True,
+        timeout=AIOHTTP_TIMEOUT,
+        # aiohttp defaults to 100; zero preserves SA-Bench's explicit concurrency.
+        connector=aiohttp.TCPConnector(limit=0),
+    )
 
 
 @dataclass
@@ -325,13 +336,24 @@ async def async_request_openai_completions(
 async def async_request_dynamo_completions(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
+    *,
+    session: aiohttp.ClientSession | None = None,
 ) -> RequestFuncOutput:
     api_url = request_func_input.api_url
     assert api_url.endswith(
         ("completions", "profile")
     ), "OpenAI Completions API URL must end with 'completions' or 'profile'."
 
-    async with aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT) as session:
+    # Preserve the historical per-request session lifecycle unless a shared
+    # benchmark-scoped session is explicitly injected. nullcontext borrows an
+    # injected session without entering or closing it.
+    session_context = (
+        aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT)
+        if session is None
+        else nullcontext(session)
+    )
+
+    async with session_context as request_session:
         payload = {
             "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
             "prompt": request_func_input.prompt,
@@ -358,7 +380,7 @@ async def async_request_dynamo_completions(
         output.start_time = st
         most_recent_timestamp = st
         try:
-            async with session.post(url=api_url, json=payload, headers=headers) as response:
+            async with request_session.post(url=api_url, json=payload, headers=headers) as response:
                 if response.status == 200:
                     first_chunk_received = False
                     async for chunk_bytes in response.content:

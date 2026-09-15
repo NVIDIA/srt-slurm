@@ -13,7 +13,7 @@ trace-replay takes a user-provided file and sweeps concurrency levels.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, AIPerfBenchmarkRunner, register_benchmark
 
@@ -37,6 +37,11 @@ class TraceReplayRunner(AIPerfBenchmarkRunner):
         - benchmark.ttft_threshold_ms: Goodput TTFT threshold (default: 2000)
         - benchmark.itl_threshold_ms: Goodput ITL threshold (default: 25)
     """
+
+    # BenchmarkConfig fields this runner reads (beyond the shared ones); see benchmark_config_fields().
+    config_fields: ClassVar[frozenset[str]] = frozenset(
+        {"concurrencies", "ttft_threshold_ms", "itl_threshold_ms", "trace_file"}
+    )
 
     @property
     def name(self) -> str:

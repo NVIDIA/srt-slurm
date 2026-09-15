@@ -27,10 +27,13 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.ports import DYN_SYSTEM_PORT_BASE
+
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Endpoint, Process
+    from srtctl.core.schema import ProfilingConfig
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
@@ -165,6 +168,7 @@ class MockerProtocol:
         gpus_per_agg: int,
         gpus_per_node: int,
         available_nodes: Sequence[str],
+        spread_workers: bool = False,
     ) -> list["Endpoint"]:
         """Allocate endpoints to nodes."""
         from srtctl.core.topology import allocate_endpoints
@@ -178,17 +182,21 @@ class MockerProtocol:
             gpus_per_agg=gpus_per_agg,
             gpus_per_node=gpus_per_node,
             available_nodes=available_nodes,
+            spread_workers=spread_workers,
         )
 
     def endpoints_to_processes(
         self,
         endpoints: list["Endpoint"],
-        base_sys_port: int = 8081,
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
+        port_allocator: "NodePortAllocator | None" = None,
+        frontend_type: str = "dynamo",
+        dynamo_sidecar: bool = False,
     ) -> list["Process"]:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes
 
-        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
+        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
     def build_worker_command(
         self,
@@ -198,6 +206,7 @@ class MockerProtocol:
         frontend_type: str = "dynamo",
         nsys_prefix: list[str] | None = None,
         dump_config_path: Path | None = None,
+        profiling: "ProfilingConfig | None" = None,
     ) -> list[str]:
         """Build the command to start a mocker worker process.
 
@@ -215,6 +224,12 @@ class MockerProtocol:
         # Determine model path: HF model ID or container mount path
         model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
+        # Register under the name the benchmark client requests (the model path
+        # basename, see SrtConfig.served_model_name). Left to its own devices the
+        # mocker derives the name from --model-path, which for the /model mount is
+        # "model" and makes every request 404 with "Model not found".
+        served_model_name = Path(str(runtime.model_path)).name
+
         # Start with nsys prefix if provided
         cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
 
@@ -225,6 +240,8 @@ class MockerProtocol:
                 "dynamo.mocker",
                 "--model-path",
                 model_arg,
+                "--model-name",
+                served_model_name,
             ]
         )
 

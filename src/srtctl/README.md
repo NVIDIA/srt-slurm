@@ -50,8 +50,8 @@ variables scattered throughout Jinja templates.
 
 ```python
 runtime = RuntimeContext.from_config(config, job_id)
-print(runtime.log_dir)       # Computed once
-print(runtime.model_path)    # Resolved from config
+print(runtime.log_dir)  # Computed once
+print(runtime.model_path)  # Resolved from config
 print(runtime.head_node_ip)  # From SLURM
 ```
 
@@ -67,9 +67,14 @@ Typed Python replaces bash array math:
 
 # New (Python):
 endpoints = allocate_endpoints(
-    num_prefill=2, num_decode=4, num_agg=0,
-    gpus_per_prefill=8, gpus_per_decode=4, gpus_per_agg=8,
-    gpus_per_node=8, available_nodes=nodes
+    num_prefill=2,
+    num_decode=4,
+    num_agg=0,
+    gpus_per_prefill=8,
+    gpus_per_decode=4,
+    gpus_per_agg=8,
+    gpus_per_node=8,
+    available_nodes=nodes,
 )
 for endpoint in endpoints:
     print(f"{endpoint.mode} worker {endpoint.index} on {endpoint.nodes}")
@@ -97,8 +102,10 @@ from srtctl.core.health import wait_for_model
 
 # Wait for all workers to register
 wait_for_model(
-    host=head_ip, port=8000,
-    n_prefill=2, n_decode=4,
+    host=head_ip,
+    port=8000,
+    n_prefill=2,
+    n_decode=4,
     frontend_type="sglang",  # or "dynamo"
     timeout=300,
 )

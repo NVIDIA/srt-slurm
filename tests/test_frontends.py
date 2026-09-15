@@ -1,14 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for frontend implementations (SGLang and Dynamo)."""
+"""Tests for frontend implementations."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srtctl.frontends import DynamoFrontend, SGLangFrontend, get_frontend
+from srtctl.core.schema import ObservabilityConfig
+from srtctl.frontends import DynamoFrontend, SGLangFrontend, SGLangRouterFrontend, VLLMFrontend, get_frontend
 
 # ============================================================================
 # get_frontend() Tests
@@ -25,10 +28,20 @@ class TestGetFrontend:
         assert frontend.type == "dynamo"
 
     def test_get_sglang_frontend(self):
-        """get_frontend('sglang') returns SGLangFrontend."""
+        """get_frontend('sglang') is the direct frontend; 'sglang-router' is the Model Gateway."""
         frontend = get_frontend("sglang")
         assert isinstance(frontend, SGLangFrontend)
         assert frontend.type == "sglang"
+        router = get_frontend("sglang-router")
+        assert isinstance(router, SGLangRouterFrontend)
+        assert router.type == "sglang-router"
+        assert frontend.type == "sglang"
+
+    def test_get_vllm_frontend(self):
+        """get_frontend('vllm') returns VLLMFrontend."""
+        frontend = get_frontend("vllm")
+        assert isinstance(frontend, VLLMFrontend)
+        assert frontend.type == "vllm"
 
     def test_get_unknown_frontend_raises(self):
         """get_frontend() with unknown type raises ValueError."""
@@ -36,7 +49,7 @@ class TestGetFrontend:
             get_frontend("unknown")
 
         with pytest.raises(ValueError, match="Unknown frontend type"):
-            get_frontend("vllm")
+            get_frontend("invalid")
 
 
 # ============================================================================
@@ -53,9 +66,14 @@ class TestFrontendProperties:
         assert frontend.type == "dynamo"
 
     def test_sglang_type(self):
-        """SGLangFrontend.type is 'sglang'."""
-        frontend = SGLangFrontend()
-        assert frontend.type == "sglang"
+        """SGLangRouterFrontend.type is 'sglang-router'."""
+        frontend = SGLangRouterFrontend()
+        assert frontend.type == "sglang-router"
+
+    def test_vllm_type(self):
+        """VLLMFrontend.type is 'vllm'."""
+        frontend = VLLMFrontend()
+        assert frontend.type == "vllm"
 
     def test_dynamo_health_endpoint(self):
         """DynamoFrontend uses /health endpoint."""
@@ -64,8 +82,13 @@ class TestFrontendProperties:
 
     def test_sglang_health_endpoint(self):
         """SGLangFrontend uses /workers endpoint."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         assert frontend.health_endpoint == "/workers"
+
+    def test_vllm_health_endpoint(self):
+        """VLLMFrontend uses /health endpoint."""
+        frontend = VLLMFrontend()
+        assert frontend.health_endpoint == "/health"
 
 
 # ============================================================================
@@ -78,56 +101,56 @@ class TestGetFrontendArgsList:
 
     def test_empty_args_returns_empty_list(self):
         """None or empty args returns empty list."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         assert frontend.get_frontend_args_list(None) == []
         assert frontend.get_frontend_args_list({}) == []
 
     def test_boolean_true_flag(self):
         """Boolean True generates flag without value."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"verbose": True})
         assert result == ["--verbose"]
 
     def test_boolean_false_flag_skipped(self):
         """Boolean False is skipped."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"verbose": False})
         assert result == []
 
     def test_none_value_skipped(self):
         """None values are skipped."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"some-arg": None})
         assert result == []
 
     def test_string_value(self):
         """String values become --key value pairs."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"policy": "cache_aware"})
         assert result == ["--policy", "cache_aware"]
 
     def test_numeric_value(self):
         """Numeric values are converted to strings."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"timeout": 120})
         assert result == ["--timeout", "120"]
 
     def test_float_value(self):
         """Float values are converted to strings."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"temperature": 0.5})
         assert result == ["--temperature", "0.5"]
 
     def test_mixed_args(self):
         """Mixed arg types are handled correctly."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list(
             {
@@ -234,7 +257,7 @@ class TestSGLangGrpcScheme:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
@@ -275,7 +298,7 @@ class TestSGLangGrpcScheme:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
@@ -314,7 +337,7 @@ class TestSGLangGrpcScheme:
         mock_get_ip.side_effect = lambda node: f"10.0.0.{node[-1]}"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
@@ -355,7 +378,7 @@ class TestSGLangGrpcScheme:
         mock_get_ip.side_effect = lambda node: f"10.0.0.{node[-1]}"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
@@ -401,7 +424,7 @@ class TestFrontendEnvHandling:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(env={"MY_VAR": "my_value", "ANOTHER": "123"}),
@@ -437,7 +460,7 @@ class TestFrontendEnvHandling:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(env=None),
@@ -472,7 +495,7 @@ class TestFrontendEnvHandling:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(args={"policy": "cache_aware", "verbose": True}),
@@ -500,3 +523,87 @@ class TestFrontendEnvHandling:
         assert "--policy" in cmd
         assert "cache_aware" in cmd
         assert "--verbose" in cmd
+
+
+# ============================================================================
+# Dynamo Frontend ENROOT_REMAP_ROOT injection Tests
+# ============================================================================
+
+
+def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
+    from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS
+
+    frontend = DynamoFrontend()
+    topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+    runtime = SimpleNamespace(
+        log_dir=Path("/logs"),
+        nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
+        container_image=Path("/container.sqsh"),
+        container_mounts={},
+        environment={},
+    )
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args=None, env=None),
+        observability=ObservabilityConfig(),
+        dynamo=SimpleNamespace(install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None),
+        setup_script=None,
+    )
+    with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
+        mock_srun.return_value = MagicMock()
+        (proc,) = frontend.start_frontends(topology, runtime, config, MagicMock(), [])
+    assert mock_srun.call_args.kwargs["step_name"] == "frontend_0"
+    assert proc.step_name == "frontend_0"
+    assert proc.terminate_timeout == FRONTEND_TERMINATE_TIMEOUT_SECONDS
+
+
+def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zmq"):
+    """Invoke DynamoFrontend.start_frontends with a minimal config; return the mock srun call."""
+    frontend = DynamoFrontend()
+    topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+    runtime = SimpleNamespace(
+        log_dir=Path("/logs"),
+        nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
+        container_image=Path("/container.sqsh"),
+        container_mounts={},
+        environment={},
+    )
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args=None, env=None),
+        observability=ObservabilityConfig(),
+        dynamo=SimpleNamespace(
+            install=dynamo_install,
+            get_install_commands=lambda: "echo install-dynamo",
+            request_plane="nats",
+            event_plane=event_plane,
+        ),
+        setup_script=None,
+    )
+    with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
+        mock_srun.return_value = MagicMock()
+        frontend.start_frontends(topology, runtime, config, MagicMock(), [])
+    return mock_srun
+
+
+class TestDynamoFrontendRemapRoot:
+    """Dynamo frontend injects ENROOT_REMAP_ROOT only when it installs dynamo."""
+
+    def test_injects_remap_root_when_install(self):
+        mock_srun = _dynamo_frontend_call(dynamo_install=True)
+        assert mock_srun.call_args.kwargs["srun_export_env"] == {"ENROOT_REMAP_ROOT": "yes"}
+
+    def test_no_remap_root_when_install_false(self):
+        mock_srun = _dynamo_frontend_call(dynamo_install=False)
+        assert mock_srun.call_args.kwargs["srun_export_env"] is None
+
+
+class TestDynamoFrontendEventPlane:
+    """DYN_EVENT_PLANE is injected only when dynamo.event_plane is set."""
+
+    def test_default_not_injected(self):
+        mock_srun = _dynamo_frontend_call(dynamo_install=False, event_plane=None)
+        assert "DYN_EVENT_PLANE" not in mock_srun.call_args.kwargs["env_to_set"]
+
+    @pytest.mark.parametrize("event_plane", ["zmq", "nats"])
+    def test_explicit_injected(self, event_plane):
+        mock_srun = _dynamo_frontend_call(dynamo_install=False, event_plane=event_plane)
+        assert mock_srun.call_args.kwargs["env_to_set"]["DYN_EVENT_PLANE"] == event_plane

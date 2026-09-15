@@ -9,6 +9,7 @@ Implements BackendProtocol for SGLang inference serving with prefill/decode disa
 
 import builtins
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import field
 from pathlib import Path
@@ -22,16 +23,25 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
+from srtctl.ports import (
+    DYN_SYSTEM_PORT_BASE,
+    MOONCAKE_HTTP_METADATA_PORT,
+    MOONCAKE_MASTER_PORT,
+    SGLANG_DIST_INIT_PORT_BASE,
+    SGLANG_NCCL_PORT_BASE,
+)
+
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Endpoint, Process
+    from srtctl.core.schema import DynamoConfig, ProfilingConfig
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
-
-MOONCAKE_MASTER_PORT = 50051
-MOONCAKE_HTTP_METADATA_PORT = 8080
 
 
 @dataclass(frozen=True)
@@ -42,8 +52,8 @@ class MooncakeKVStoreConfig:
     its embedded HTTP metadata server (so a separate metadata service is not
     required), and injects on every worker:
 
-        MOONCAKE_MASTER              = <infra_ip>:50051
-        MOONCAKE_TE_META_DATA_SERVER = http://<infra_ip>:8080/metadata
+        MOONCAKE_MASTER              = <infra_ip>:8700
+        MOONCAKE_TE_META_DATA_SERVER = http://<infra_ip>:8701/metadata
         MOONCAKE_LOCAL_HOSTNAME      = <worker_ip>
 
     The HTTP metadata server is also what Dynamo's KV router calls into for
@@ -64,6 +74,7 @@ class MooncakeKVStoreConfig:
 
     container: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    master_extra_args: list[str] = field(default_factory=list)
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -214,9 +225,12 @@ class SGLangProtocol:
         if not self.kv_events_config:
             return None
 
-        # Global bool: enable for prefill+decode with defaults
+        # Global bool: enable for every worker mode with defaults. Aggregated
+        # workers publish too; without this, `kv_events_config: true` on an agg
+        # topology silently dropped --kv-events-config and the router's cache
+        # overlap stayed at zero.
         if self.kv_events_config is True:
-            if mode in ("prefill", "decode"):
+            if mode in ("prefill", "decode", "agg"):
                 return {"publisher": "zmq", "topic": "kv-events"}
             return None
 
@@ -245,6 +259,7 @@ class SGLangProtocol:
         gpus_per_agg: int,
         gpus_per_node: int,
         available_nodes: Sequence[str],
+        spread_workers: bool = False,
     ) -> list["Endpoint"]:
         """Allocate endpoints to nodes."""
         from srtctl.core.topology import allocate_endpoints
@@ -258,17 +273,21 @@ class SGLangProtocol:
             gpus_per_agg=gpus_per_agg,
             gpus_per_node=gpus_per_node,
             available_nodes=available_nodes,
+            spread_workers=spread_workers,
         )
 
     def endpoints_to_processes(
         self,
         endpoints: list["Endpoint"],
-        base_sys_port: int = 8081,
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
+        port_allocator: "NodePortAllocator | None" = None,
+        frontend_type: str = "dynamo",
+        dynamo_sidecar: bool = False,
     ) -> list["Process"]:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes
 
-        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
+        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
     def build_worker_command(
         self,
@@ -278,6 +297,7 @@ class SGLangProtocol:
         frontend_type: str = "dynamo",
         nsys_prefix: list[str] | None = None,
         dump_config_path: Path | None = None,
+        profiling: "ProfilingConfig | None" = None,
     ) -> list[str]:
         """Build the command to start an SGLang worker process.
 
@@ -285,13 +305,27 @@ class SGLangProtocol:
             process: The process to start
             endpoint_processes: All processes for this endpoint (for multi-node)
             runtime: Runtime context with paths and settings
-            frontend_type: Frontend type - "sglang" uses sglang.launch_server, "dynamo" uses dynamo.sglang
+            frontend_type: Frontend type - "sglang" (direct) and "sglang-router" use
+                sglang.launch_server, "dynamo" uses dynamo.sglang
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
         """
         from srtctl.core.slurm import get_hostname_ip
 
         mode = process.endpoint_mode
+
+        sidecar_config = get_dynamo_sidecar_config(runtime)
+        if sidecar_config is not None:
+            if frontend_type != "dynamo":
+                raise ValueError("SGLang sidecar mode requires frontend.type: dynamo")
+            return self._build_sidecar_command(
+                process=process,
+                endpoint_processes=endpoint_processes,
+                runtime=runtime,
+                sidecar_config=sidecar_config,
+                nsys_prefix=nsys_prefix,
+            )
+
         config = self.get_config_for_mode(mode)
 
         # Pop keys that are handled explicitly to avoid duplicate flags from _config_to_cli_args
@@ -299,6 +333,12 @@ class SGLangProtocol:
         config.pop("model_path", None)
         config.pop("served-model-name", None)
         config.pop("served_model_name", None)
+        # SGLang's dynamic default probes a free TCP port. On a node that
+        # launches several workers concurrently, those probes can race. Use a
+        # unique port derived from the topology-assigned system-status port.
+        config.pop("nccl-port", None)
+        config.pop("nccl_port", None)
+        nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
@@ -306,10 +346,10 @@ class SGLangProtocol:
 
         # Get leader IP for distributed init
         leader_ip = get_hostname_ip(endpoint_nodes[0])
-        dist_init_port = 29500
+        dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
         # Choose Python module based on frontend type
-        use_sglang = frontend_type == "sglang"
+        use_sglang = frontend_type in ("sglang", "sglang-router")
         python_module = "sglang.launch_server" if use_sglang else "dynamo.sglang"
 
         # Get served model name from config
@@ -337,12 +377,29 @@ class SGLangProtocol:
             ]
         )
 
-        # Always pass --port when using sglang.launch_server or dynamo.sglang
-        cmd.extend(["--port", str(process.http_port)])
+        # Always pass --port when using sglang.launch_server or dynamo.sglang.
+        # Direct mode (frontend.type: sglang): the single aggregate worker is the
+        # public endpoint, so it binds the frontend port instead of its own.
+        api_port = runtime.frontend_port if frontend_type == "sglang" and mode == "agg" else process.http_port
+        cmd.extend(["--port", str(api_port)])
+        cmd.extend(["--nccl-port", str(nccl_port)])
+
+        if use_sglang:
+            # sglang.launch_server serves Prometheus /metrics on its HTTP port only
+            # with --enable-metrics; tachometer (on by default) scrapes it there.
+            # Dynamo workers expose metrics on their system port without this.
+            mode_config = self.get_config_for_mode(mode)
+            if not any(key in mode_config for key in ("enable-metrics", "enable_metrics")):
+                cmd.append("--enable-metrics")
 
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":
             cmd.extend(["--disaggregation-mode", mode])
+            if use_sglang:
+                # The native router and benchmark warmup exercise the real P/D
+                # path. SGLang's local synthetic warmup uses a placeholder peer
+                # and can block readiness until its long timeout.
+                cmd.append("--skip-server-warmup")
             # Always pass bootstrap port for prefill workers regardless of frontend type.
             # Dynamo does NOT handle this internally — SGLang's CommonKVBootstrapServer
             # still runs on every prefill node for KV transfer coordination, and workers
@@ -366,7 +423,7 @@ class SGLangProtocol:
             )
 
         # Add config dump path (not when using sglang frontend)
-        if dump_config_path and frontend_type != "sglang":
+        if dump_config_path and not use_sglang:
             cmd.extend(["--dump-config-to", str(dump_config_path)])
 
         # Add kv-events-config if enabled for this mode and we have an allocated port
@@ -376,10 +433,129 @@ class SGLangProtocol:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             cmd.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
+        # Add request plane (dynamo frontend only)
+        if not use_sglang:
+            cmd.extend(["--request-plane", runtime.request_plane])
+
         # Add all config flags
         cmd.extend(_config_to_cli_args(config))
 
         return cmd
+
+    def _build_sidecar_command(
+        self,
+        process: "Process",
+        endpoint_processes: list["Process"],
+        runtime: "RuntimeContext",
+        sidecar_config: "DynamoConfig",
+        nsys_prefix: list[str] | None = None,
+    ) -> list[str]:
+        """Build a lifecycle-coupled SGLang native-gRPC and sidecar launch."""
+        from srtctl.core.slurm import get_hostname_ip
+
+        mode = process.endpoint_mode
+        config = self.get_config_for_mode(mode)
+        for key in (
+            "model-path",
+            "model_path",
+            "served-model-name",
+            "served_model_name",
+            "grpc-port",
+            "grpc_port",
+            "nccl-port",
+            "nccl_port",
+            "disaggregation-mode",
+            "disaggregation_mode",
+            "disaggregation-bootstrap-port",
+            "disaggregation_bootstrap_port",
+        ):
+            config.pop(key, None)
+
+        endpoint_nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
+        node_rank = endpoint_nodes.index(process.node)
+        is_leader = node_rank == 0
+        leader_ip = get_hostname_ip(endpoint_nodes[0])
+        grpc_port = sidecar_grpc_port(sidecar_config.sidecar_port, process)
+        nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
+
+        served_model_name = self.get_served_model_name(runtime.model_path.name)
+        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        engine: list[str] = list(nsys_prefix or [])
+        engine.extend(
+            [
+                "python3",
+                "-m",
+                "sglang.launch_server",
+                "--model-path",
+                model_arg,
+                "--served-model-name",
+                served_model_name,
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(process.http_port),
+                "--nccl-port",
+                str(nccl_port),
+            ]
+        )
+
+        if mode != "agg":
+            engine.extend(["--disaggregation-mode", mode, "--skip-server-warmup"])
+            if mode == "prefill" and process.bootstrap_port is not None:
+                engine.extend(["--disaggregation-bootstrap-port", str(process.bootstrap_port)])
+        if len(endpoint_nodes) > 1:
+            engine.extend(
+                [
+                    "--dist-init-addr",
+                    f"{leader_ip}:{SGLANG_DIST_INIT_PORT_BASE}",
+                    "--nnodes",
+                    str(len(endpoint_nodes)),
+                    "--node-rank",
+                    str(node_rank),
+                ]
+            )
+        if is_leader:
+            engine.extend(["--grpc-port", str(grpc_port)])
+
+        # The SGLang sidecar discovers the publisher; SGLang still needs this
+        # flag to enable it and advertise the topology-assigned endpoint.
+        kv_cfg = self.get_kv_events_config_for_mode(mode)
+        if kv_cfg and process.kv_events_port is not None:
+            kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
+            engine.extend(["--kv-events-config", json.dumps(kv_cfg)])
+
+        if not any(key in config for key in ("incremental-streaming-output", "incremental_streaming_output")):
+            # The Dynamo sidecar treats every gRPC chunk as a delta. Without this flag this SGLang
+            # build streams the cumulative text per chunk, so clients receive repeated prefixes and
+            # token counts balloon. Force delta streaming unless the recipe set the flag itself.
+            engine.append("--incremental-streaming-output")
+            logger.info(
+                "sglang %s worker %d: adding --incremental-streaming-output (required by the Dynamo sidecar; "
+                "set the role's args.incremental-streaming-output explicitly to override)",
+                mode,
+                process.endpoint_index,
+            )
+        engine.extend(_config_to_cli_args(config))
+        if not is_leader:
+            return engine
+
+        sidecar = (
+            [sidecar_config.sidecar_binary]
+            if sidecar_config.sidecar_binary is not None
+            else ["python3", "-m", "dynamo.sglang.sidecar"]
+        )
+        sidecar.extend(["--grpc-endpoint", f"127.0.0.1:{grpc_port}"])
+        if mode == "prefill":
+            sidecar.extend(["--bootstrap-host", leader_ip])
+        sidecar.extend(sidecar_config.sidecar_args)
+
+        return build_sidecar_launch_command(
+            engine=engine,
+            sidecar=sidecar,
+            grpc_port=grpc_port,
+            engine_name="SGLang",
+            startup_timeout=sidecar_config.sidecar_startup_timeout,
+        )
 
 
 def _config_to_cli_args(config: dict[str, Any]) -> list[str]:

@@ -23,7 +23,7 @@ srtctl supports two profiling backends for performance analysis: **Torch Profile
 Add a `profiling` section to your job YAML:
 
 ```yaml
-# For disaggregated mode (prefill_nodes + decode_nodes)
+# For disaggregated mode (roles.prefill + roles.decode)
 profiling:
   type: "torch" # or "nsys"
   prefill:
@@ -32,7 +32,7 @@ profiling:
   decode:
     start_step: 0
     stop_step: 50
-# For aggregated mode (agg_nodes)
+# For aggregated mode (roles.agg)
 # profiling:
 #   type: "torch"
 #   aggregated:
@@ -126,6 +126,7 @@ You can pass extra arguments via `profiling.extra_nsys_args` (e.g. `["--stats=tr
 ### Torch Profiler (Recommended for Python analysis)
 
 ```yaml
+schema: 2
 name: "profiling-torch"
 
 model:
@@ -135,10 +136,6 @@ model:
 
 resources:
   gpu_type: "gb200"
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpus_per_node: 4
 
 profiling:
@@ -150,12 +147,18 @@ profiling:
     start_step: 0
     stop_step: 50
 
-backend:
-  sglang_config:
-    prefill:
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       kv-cache-dtype: "fp8_e4m3"
       tensor-parallel-size: 4
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       kv-cache-dtype: "fp8_e4m3"
       tensor-parallel-size: 4
 ```

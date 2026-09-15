@@ -165,7 +165,7 @@ class TestPostProcessStageMixin:
         mixin._copy_config_to_logs = MagicMock()
         mixin._generate_rollup = MagicMock()
         mixin._extract_benchmark_results = MagicMock(return_value=None)
-        mixin._run_postprocess_container = MagicMock(return_value=(None, None))
+        mixin._run_postprocess_container = MagicMock(return_value=None)
         mixin._get_ai_analysis_config = MagicMock(return_value=None)
         mixin._run_ai_analysis = MagicMock()
         return mixin
@@ -217,7 +217,7 @@ class TestPostProcessStageMixin:
         """When a reporter is passed and S3 sync produces a URL, push eagerly."""
         mixin = self._create_mixin_with_mocks()
         s3_url = "s3://bucket/prefix/12345/"
-        mixin._run_postprocess_container = MagicMock(return_value=(None, s3_url))
+        mixin._run_postprocess_container = MagicMock(return_value=s3_url)
         reporter = MagicMock()
 
         mixin.run_postprocess(0, reporter=reporter)
@@ -239,7 +239,7 @@ class TestPostProcessStageMixin:
         """Without a reporter, stash happens but no PUT is attempted."""
         mixin = self._create_mixin_with_mocks()
         s3_url = "s3://bucket/prefix/12345/"
-        mixin._run_postprocess_container = MagicMock(return_value=(None, s3_url))
+        mixin._run_postprocess_container = MagicMock(return_value=s3_url)
 
         # Should not raise even though no reporter is provided
         mixin.run_postprocess(0)
@@ -558,7 +558,7 @@ class TestRollupFaultTolerance:
         mixin = self._create_mixin_with_runtime(tmp_path, benchmark_type="sa-bench")
 
         # Mock all the other methods to isolate rollup behavior
-        mixin._run_postprocess_container = MagicMock(return_value=(None, None))
+        mixin._run_postprocess_container = MagicMock(return_value=None)
         mixin._get_ai_analysis_config = MagicMock(return_value=None)
 
         # Mock _generate_rollup to raise (simulating worst case)
@@ -608,7 +608,7 @@ class TestS3UploadFaultTolerance:
 
         result = mixin._run_postprocess_container()
 
-        assert result == (None, None)
+        assert result is None
 
     def test_srun_failure_does_not_raise(self, tmp_path):
         """Test _run_postprocess_container handles srun failure gracefully."""
@@ -623,7 +623,7 @@ class TestS3UploadFaultTolerance:
 
             result = mixin._run_postprocess_container()
 
-        assert result == (None, None)
+        assert result is None
 
     def test_srun_timeout_does_not_raise(self, tmp_path):
         """Test _run_postprocess_container handles timeout gracefully."""
@@ -644,7 +644,7 @@ class TestS3UploadFaultTolerance:
 
             result = mixin._run_postprocess_container()
 
-        assert result == (None, None)
+        assert result is None
         mock_proc.kill.assert_called_once()
 
     def test_srun_nonzero_exit_does_not_raise(self, tmp_path):
@@ -662,40 +662,19 @@ class TestS3UploadFaultTolerance:
         with patch("srtctl.cli.mixins.postprocess_stage.start_srun_process") as mock_srun:
             mock_srun.return_value = mock_proc
 
-            parquet_path, s3_url = mixin._run_postprocess_container()
+            s3_url = mixin._run_postprocess_container()
 
         # Should return None for s3_url on failure
         assert s3_url is None
 
-    def test_parse_failure_still_returns_s3_url(self, tmp_path):
-        """Raw logs should still report an S3 URL when parsing fails after upload."""
-        mixin = self._create_mixin_with_runtime(tmp_path)
-        mixin._get_s3_config = MagicMock(return_value=S3Config(bucket="test-bucket"))
-
-        mock_proc = MagicMock()
-        mock_proc.wait.return_value = None
-        mock_proc.returncode = 20
-
-        with patch("srtctl.cli.mixins.postprocess_stage.start_srun_process") as mock_srun:
-            mock_srun.return_value = mock_proc
-
-            parquet_path, s3_url = mixin._run_postprocess_container()
-
-        assert parquet_path is None
-        assert s3_url is not None
-        assert s3_url.startswith("s3://test-bucket/")
-
-    def test_postprocess_script_uploads_after_parse(self, tmp_path):
-        """The generated script should upload even when parsing fails."""
+    def test_postprocess_script_only_uploads(self, tmp_path):
+        """The upload container ships the log directory as is; no log parser runs in it."""
         mixin = self._create_mixin_with_runtime(tmp_path)
         script = mixin._build_postprocess_script("s3://test-bucket/run/", "")
 
-        parse_line = "srtlog parse . || PARSE_STATUS=$?"
-        upload_line = "aws s3 sync /logs s3://test-bucket/run/"
-
-        assert parse_line in script
-        assert upload_line in script
-        assert script.index(parse_line) < script.index(upload_line)
+        assert "aws s3 sync /logs s3://test-bucket/run/" in script
+        assert "srtlog" not in script
+        assert '"s3_url": "s3://test-bucket/run/"' in script
 
     def test_run_postprocess_completes_with_s3_failure(self, tmp_path):
         """Test run_postprocess completes even when S3 upload fails entirely."""
@@ -705,7 +684,7 @@ class TestS3UploadFaultTolerance:
         mixin._generate_rollup = MagicMock()
 
         # Mock _run_postprocess_container to simulate S3 failure
-        mixin._run_postprocess_container = MagicMock(return_value=(None, None))
+        mixin._run_postprocess_container = MagicMock(return_value=None)
 
         # Mock AI config
         mixin._get_ai_analysis_config = MagicMock(return_value=None)
@@ -748,6 +727,26 @@ class TestCopyConfigToLogs:
 
         assert (log_dir / "config.yaml").exists()
         assert (log_dir / "config.yaml").read_text() == "name: test-config\n"
+
+    def test_copies_resolved_override_config(self, tmp_path):
+        """Test resolved override/zip configs (config_{suffix}.yaml) are copied too.
+
+        Override/zip submissions write the unresolved source as config.yaml and the
+        actually-executed resolved variant as config_{suffix}.yaml. Both must reach
+        the log dir so the resolved config is uploaded to S3, not just the source.
+        """
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+
+        (tmp_path / "config.yaml").write_text("base:\n  name: test\n")
+        (tmp_path / "config_tp_0.yaml").write_text("name: test\ntensor_parallel_size: 4\n")
+        (tmp_path / "config_resolved.yaml").write_text("name: test\nresolved: true\n")
+
+        mixin._copy_config_to_logs()
+
+        assert (log_dir / "config.yaml").exists()
+        assert (log_dir / "config_tp_0.yaml").exists()
+        assert (log_dir / "config_tp_0.yaml").read_text() == "name: test\ntensor_parallel_size: 4\n"
+        assert (log_dir / "config_resolved.yaml").exists()
 
     def test_copies_sbatch_script(self, tmp_path):
         """Test sbatch_script.sh is also copied."""
@@ -806,3 +805,106 @@ class TestCopyConfigToLogs:
             mixin._copy_config_to_logs()  # Should not raise
         finally:
             log_dir.chmod(0o755)
+
+
+class TestBuildPowerEnergyReport:
+    """Tests for the best-effort power_energy_report.json step in run_postprocess."""
+
+    def _create_mixin(self, log_dir):
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        mixin = PostProcessStageMixin()
+        mixin.config = MagicMock()
+        mixin.runtime = MagicMock()
+        mixin.runtime.log_dir = log_dir
+        return mixin
+
+    def test_skips_quietly_when_no_power_telemetry_present(self, tmp_path):
+        """No benchmark.out / no samples.csv (telemetry disabled) must not raise or write anything."""
+        mixin = self._create_mixin(tmp_path)
+
+        mixin._build_power_energy_report()  # should not raise
+
+        assert not (tmp_path / "power_energy_report.json").exists()
+
+    def test_writes_report_json_for_a_valid_run(self, tmp_path):
+        import csv
+        import json
+
+        log_dir = tmp_path
+        (log_dir / "benchmark.out").write_text(
+            "17:59:31.680 NOTICE   Phase profiling (profiling) started (runner.py:593)\n"
+            "19:00:01.681 NOTICE   Phase profiling (profiling) complete (runner.py:1162)\n"
+        )
+        conc_dir = log_dir / "agentic" / "conc_4" / "aiperf_artifacts"
+        conc_dir.mkdir(parents=True)
+        with (conc_dir / "profile_export.jsonl").open("w") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "benchmark_phase": "profiling",
+                            "request_start_ns": 10_000_000_000,
+                            "request_end_ns": 20_000_000_000,
+                        }
+                    }
+                )
+                + "\n"
+            )
+        (conc_dir / "profile_export_aiperf.json").write_text(
+            json.dumps({"total_osl": {"avg": 5.0}, "total_isl": {"avg": 2.0}})
+        )
+
+        cpu_csv = log_dir / "power" / "cpu" / "samples.csv"
+        cpu_csv.parent.mkdir(parents=True)
+        with cpu_csv.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "schema_version",
+                    "timestamp_unix",
+                    "hostname",
+                    "source",
+                    "sensor",
+                    "socket_id",
+                    "power_w",
+                    "total_power_w",
+                ]
+            )
+            writer.writerow([2, 9.0, "node-a", "acpi", "CPU0:cpuPowerUsageW", 0, 40.0, 40.0])
+            writer.writerow([2, 15.0, "node-a", "acpi", "CPU0:cpuPowerUsageW", 0, 44.0, 44.0])
+            writer.writerow([2, 21.0, "node-a", "acpi", "CPU0:cpuPowerUsageW", 0, 42.0, 42.0])
+
+        mixin = self._create_mixin(log_dir)
+
+        mixin._build_power_energy_report()
+
+        output_path = log_dir / "power_energy_report.json"
+        assert output_path.exists()
+        payload = json.loads(output_path.read_text())
+        assert len(payload) == 1
+        assert payload[0]["concurrency"] == 4
+        assert payload[0]["cpu_total_joules"] > 0.0
+
+    def test_run_postprocess_calls_power_energy_report(self, tmp_path):
+        """Verify run_postprocess wires this step in, without depending on real telemetry data."""
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        mixin = PostProcessStageMixin()
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        mixin.runtime = MagicMock()
+        mixin.runtime.log_dir = log_dir
+        mixin.runtime.job_id = "12345"
+        mixin.config = MagicMock()
+
+        mixin._copy_config_to_logs = MagicMock()
+        mixin._generate_rollup = MagicMock()
+        mixin._extract_benchmark_results = MagicMock(return_value=None)
+        mixin._run_postprocess_container = MagicMock(return_value=(None, None))
+        mixin._get_ai_analysis_config = MagicMock(return_value=None)
+        mixin._build_power_energy_report = MagicMock()
+
+        mixin.run_postprocess(0)
+
+        mixin._build_power_energy_report.assert_called_once()

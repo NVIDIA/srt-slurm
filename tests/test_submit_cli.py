@@ -26,6 +26,11 @@ MINIMAL_DRY_RUN_CONFIG = {
         "agg_nodes": 1,
         "agg_workers": 1,
     },
+    "backend": {"type": "sglang"},
+    "frontend": {
+        "type": "sglang",
+        "enable_multiple_frontends": False,
+    },
     "benchmark": {"type": "custom", "command": "echo stdin-dry-run"},
 }
 
@@ -60,6 +65,18 @@ def test_dry_run_empty_stdin_fails_cleanly(monkeypatch, capsys) -> None:
     error = capsys.readouterr().out
     assert "No YAML received on stdin" in error
     assert "NoneType" not in error
+
+
+def test_apply_rejects_removed_bash_flag(monkeypatch, tmp_path: Path, capsys) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(MINIMAL_DRY_RUN_CONFIG))
+    monkeypatch.setattr(sys, "argv", ["srtctl", "apply", "-f", str(config_path), "--bash"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        submit_cli.main()
+
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments: --bash" in capsys.readouterr().err
 
 
 def test_load_config_rejects_empty_yaml(tmp_path: Path) -> None:

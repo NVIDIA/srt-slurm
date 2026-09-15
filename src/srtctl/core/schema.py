@@ -12,15 +12,18 @@ Backend configs are defined in srtctl.backends.configs/ for modularity.
 """
 
 import builtins
+import dataclasses
+import hashlib
 import itertools
 import logging
+import math
+import os
 import shlex
 from collections.abc import Iterator, Mapping
 from dataclasses import field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     ClassVar,
@@ -28,7 +31,7 @@ from typing import (
 )
 
 import yaml
-from marshmallow import Schema, ValidationError, fields
+from marshmallow import Schema, ValidationError, fields, validate
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
@@ -43,10 +46,40 @@ from srtctl.core.formatting import (
     FormattablePathField,
 )
 
-if TYPE_CHECKING:
-    pass
+# Leaf module (stdlib-only imports), so this cannot cycle back into schema.
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
+from srtctl.core.source import DynamoSourceConfig, is_commit_sha
+from srtctl.services.config import ServiceConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _dataclass_default(item: dataclasses.Field) -> Any:
+    """The default a dataclass field would take when unset (None when it has none)."""
+    if item.default is not dataclasses.MISSING:
+        return item.default
+    if item.default_factory is not dataclasses.MISSING:
+        return item.default_factory()
+    return None
+
+
+# Local copies of srtctl.core.power.contract values so that loading a config
+# never imports the power package; equality is pinned by tests.
+_BENCHMARK_TYPE_SA_BENCH = "sa-bench"
+_DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
+_CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
+_DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
+
+
+def _is_safe_relative_subpath(value: str) -> bool:
+    if not value or value.startswith(("/", "~")):
+        return False
+    parts = PurePosixPath(value).parts
+    return bool(parts) and not any(part in ("..", "") for part in parts)
+
+
+def _is_finite_positive(value: float) -> bool:
+    return math.isfinite(value) and value > 0
 
 
 # ============================================================================
@@ -176,6 +209,83 @@ class S3Config:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+@dataclass(frozen=True)
+class PostEvalConfig:
+    """How the post-benchmark (or eval-only) accuracy evaluation is dispatched.
+
+    The evaluation runs when the job environment sets ``RUN_EVAL=true`` (after
+    the benchmark) or ``EVAL_ONLY=true`` (instead of it). srtctl forwards a
+    built-in list of workflow variables into the eval process; downstream runners
+    used to patch that list in srtctl's source. This block makes it config.
+
+    Attributes:
+        passthrough_env: Extra environment variable names forwarded from the
+            orchestrator's environment into the eval process when set (on top
+            of the built-in list: RUN_EVAL, EVAL_ONLY, MODEL, ISL, OSL, ...).
+        command: Argv that replaces the built-in lm-eval runner command. May use
+            the placeholders ``{endpoint}`` (the frontend URL) and
+            ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not
+            shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell.
+    """
+
+    passthrough_env: list[str] = field(default_factory=list)
+    command: list[str] | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        for name in self.passthrough_env:
+            if not name.isidentifier():
+                raise ValidationError(
+                    f"post_eval.passthrough_env entries must be environment variable names, got {name!r}"
+                )
+        if self.command is not None and not self.command:
+            raise ValidationError("post_eval.command, if set, must be non-empty (omit it to use the lm-eval runner)")
+
+
+@dataclass(frozen=True)
+class HostSetupConfig:
+    """Commands run on the bare host of each allocated node, outside the container.
+
+    The orchestrator (which itself runs on the host, not in a container) fans these
+    out one srun per node before any worker starts, and runs ``teardown`` after the
+    workers are torn down. Use this for node state that cannot be set from inside a
+    container -- locking GPU clocks with ``nvidia-smi -lmc``, loading a kernel
+    module, dropping caches.
+
+    This is the counterpart to ``SrtConfig.setup_script``, which runs *inside* the
+    container from /configs.
+
+    Commands run as the submitting user. Anything needing root must go through
+    passwordless sudo (``sudo -n ...``); a sudo that prompts will hang until
+    ``timeout_seconds`` and fail the job.
+
+    Attributes:
+        commands: Shell commands run in order on each node, joined with ``&&``.
+        teardown: Shell commands run on each node after workers stop. Runs even
+            when the job fails, so state that outlives the allocation (locked
+            clocks persist for the next tenant) gets reset.
+        nodes: Which nodes to target. "all" covers head, infra, and workers;
+            "workers" covers only the nodes running backend workers.
+        ignore_failure: When True, a failing node logs a warning instead of
+            failing the job.
+        timeout_seconds: Per-node wall-clock budget for commands and for teardown.
+    """
+
+    commands: list[str] = field(default_factory=list)
+    teardown: list[str] = field(default_factory=list)
+    nodes: Literal["all", "workers"] = "all"
+    ignore_failure: bool = False
+    timeout_seconds: int = 300
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def enabled(self) -> bool:
+        """True when there is anything to run on the nodes."""
+        return bool(self.commands or self.teardown)
+
+
 @dataclass
 class ClusterConfig:
     """Cluster configuration from srtslurm.yaml."""
@@ -185,10 +295,21 @@ class ClusterConfig:
     default_partition: str | None = None
     default_time_limit: str | None = None
     gpus_per_node: int | None = None
+    # Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one
+    # recipe move between clusters of different GPU types without an edit.
+    default_gpu_type: str | None = None
     network_interface: str | None = None
     use_gpus_per_node_directive: bool = True
     use_segment_sbatch_directive: bool = True
     use_exclusive_sbatch_directive: bool = False
+    # Default for ``ResourceConfig.het_jobs`` when the recipe doesn't set it.
+    # When True (and recipe doesn't override), the prefill side and decode side
+    # are submitted as two SLURM heterogeneous-job components, each with its
+    # own ``--segment``. Lets asymmetric layouts (e.g. prefill 12 + decode 10
+    # nodes on GB200/GB300) preserve NVL72 affinity per side.
+    use_het_jobs: bool = False
+    default_sbatch_directives: dict[str, str] | None = None
+    default_health_check: dict[str, int] | None = None
     srtctl_root: str | None = None
     output_dir: str | None = None  # Custom output directory for job logs
     model_paths: dict[str, str] | None = None
@@ -202,11 +323,26 @@ class ClusterConfig:
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
     # sruns that bypass the bash wrapper (distroless containers).
     default_bash_preamble: str | None = None
+    # Commands run on every allocated node's bare host, outside the container,
+    # before workers start. Recipes override with their own `host_setup:` block.
+    default_host_setup: HostSetupConfig | None = None
     reporting: ReportingConfig | None = None
     telemetry: dict | None = None  # opaque dict, parsed by try_start_snapshotter
     # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
     # Clusters that disallow raising nofile for nginx containers should use false.
     nginx_raise_ulimit: bool | None = None
+    # Works around intermittent git smart-HTTP/HTTP2 failures cloning github.com
+    # (stalls, or truncated responses git misreports as "could not read
+    # Username" auth-prompt failures). See git_clone_command_prefix() in
+    # core/config.py -- applied to every git clone/fetch srtctl performs.
+    git_http_version: str | None = None
+    # Run the pre-submit model.path / model.container / telemetry filesystem
+    # checks on ``srtctl apply``. Set false on clusters whose model or image
+    # paths exist only on compute nodes (node-local NVMe such as /raid), where
+    # the login node cannot stat them; every apply then behaves as if
+    # --no-preflight had been passed. The framework still fails loudly at
+    # runtime if a path is genuinely missing on the compute node.
+    preflight: bool = True
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -229,27 +365,10 @@ class Precision(str, Enum):
     BF16 = "bf16"
 
 
-class BenchmarkType(str, Enum):
-    MANUAL = "manual"
-    CUSTOM = "custom"
-    SA_BENCH = "sa-bench"
-    ROUTER = "router"
-    MOONCAKE_ROUTER = "mooncake-router"
-    TRACE_REPLAY = "trace-replay"
-    MMLU = "mmlu"
-    GPQA = "gpqa"
-    GSM8K = "gsm8k"
-    LONGBENCHV2 = "longbenchv2"
-
-
 class ProfilingType(str, Enum):
     NSYS = "nsys"
     TORCH = "torch"
     NONE = "none"
-
-
-class TelemetryProvider(str, Enum):
-    SCRAPER = "scraper"
 
 
 # ============================================================================
@@ -400,6 +519,9 @@ class ModelConfig:
     path: str
     container: str
     precision: str
+    # Optional: stage the model from shared storage to this node-local dir
+    # before workers start (e.g. "/raid/scratch/models"). None = use path directly.
+    stage_dir: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -448,10 +570,34 @@ class IdentityConfig:
 
 
 @dataclass(frozen=True)
+class HetComponent:
+    """One component of a SLURM heterogeneous job.
+
+    A het job is submitted as multiple `#SBATCH` blocks separated by
+    `#SBATCH hetjob`. SLURM places each component within a single topology
+    segment, so we get per-side NVL72 affinity. At runtime each component
+    exposes its own `SLURM_JOB_NODELIST_HET_GROUP_<group>`, and worker srun
+    calls target a component with `--het-group=<group>`.
+    """
+
+    name: Literal["prefill", "decode"]
+    group: int
+    nodes: int
+    segment: int
+    gpus_per_node: int
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ResourceConfig:
     """Resource allocation configuration."""
 
-    gpu_type: str
+    # GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional:
+    # a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and
+    # `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth
+    # setting in a recipe so it is self-describing for result rollups.
+    gpu_type: str | None = None
     gpus_per_node: int = 4
 
     # Disaggregated mode
@@ -463,6 +609,18 @@ class ResourceConfig:
     # Aggregated mode
     agg_nodes: int | None = None
     agg_workers: int | None = None
+
+    # If True, place each partial-node worker on its own node instead of
+    # packing multiple onto the same node. Caller must reserve enough nodes
+    # (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).
+    spread_workers: bool = False
+
+    # SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster
+    # default `use_het_jobs` on ClusterConfig; True/False overrides per recipe.
+    # When effectively True (and we are in disaggregated mode), the prefill and
+    # decode sides are submitted as two het components each with their own
+    # `--segment`. See HetComponent above and docs/slurm-faq.md.
+    het_jobs: bool | None = None
 
     # Explicit GPUs per worker (override computed values)
     # Use data_key to map from YAML field names to internal attribute names
@@ -563,6 +721,46 @@ class ResourceConfig:
         """Total GPUs used by all decode workers."""
         return self.num_decode * self.gpus_per_decode
 
+    def het_components(
+        self,
+        *,
+        infra_dedicated: bool,
+        cluster_default: bool = False,
+    ) -> tuple[HetComponent, HetComponent] | None:
+        """Return the (prefill, decode) het components, or None when het is off.
+
+        Het is enabled when ``self.het_jobs`` is True, or when it is None and
+        ``cluster_default`` is True. Only valid in disaggregated mode. Group 0
+        is prefill (folds in the dedicated infra node when present); group 1 is
+        decode. Segment matches each component's node count, so each side lands
+        in its own topology segment (NVL72 domain on GB200/GB300).
+
+        Pass ``cluster_default=get_srtslurm_setting("use_het_jobs", False)``
+        from callers that have access to the cluster config; schema.py cannot
+        import from core.config without a cycle.
+        """
+        enabled = self.het_jobs if self.het_jobs is not None else cluster_default
+        if not enabled or not self.is_disaggregated:
+            return None
+        prefill_nodes = (self.prefill_nodes or 0) + (1 if infra_dedicated else 0)
+        decode_nodes = self.decode_nodes or 0
+        return (
+            HetComponent(
+                name="prefill",
+                group=0,
+                nodes=prefill_nodes,
+                segment=prefill_nodes,
+                gpus_per_node=self.gpus_per_node,
+            ),
+            HetComponent(
+                name="decode",
+                group=1,
+                nodes=decode_nodes,
+                segment=decode_nodes,
+                gpus_per_node=self.gpus_per_node,
+            ),
+        )
+
     Schema: ClassVar[type[Schema]] = Schema
 
 
@@ -586,7 +784,26 @@ class BenchmarkConfig:
     osl: int | None = None
     concurrencies: list[int] | str | None = None
     req_rate: str | int | None = "inf"
-    sweep: Annotated[SweepConfig, SweepConfigField()] | None = None
+    # Which node runs the benchmark client:
+    #   "head" (default) -> nodes.head (co-located with orchestrator by default)
+    #   "last_decode"    -> last decode/GEN worker-leader node (isolate the client
+    #                       off the CTX/orchestrator node). When the client lands on
+    #                       a different node than the orchestrator, use the injected
+    #                       $SRT_FRONTEND_HOST env in the benchmark command's URL.
+    client_placement: str = "head"
+    # If True, reserve a node exclusively for the benchmark client instead of
+    # running it on a worker node. Requires at least 2 nodes. Not supported
+    # together with resources.het_jobs: true.
+    # Default: False.
+    client_dedicated_node: bool = False
+    # Governs how dedicated placements combine when more than one of the
+    # benchmark client, the frontend, and the etcd/nats services asks for
+    # placement.node: dedicated. If True (default), every requested role
+    # shares a single reserved node. If False, each requested role gets its
+    # own reserved node (requires enough total nodes: worker count + number
+    # of dedicated roles).
+    colocate_with_frontend: bool = True
+    sweep: Annotated[SweepConfig, SweepConfigField(allow_none=True, load_default=None, dump_default=None)] | None = None
     # Accuracy benchmark fields
     num_examples: int | None = None
     max_tokens: int | None = None
@@ -612,10 +829,18 @@ class BenchmarkConfig:
     # Custom dataset fields (sa-bench)
     dataset_name: str | None = None  # "random" (default) or "custom"
     dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)
+    # AgentPerf benchmark fields (agentperf-client trajectory replay)
+    agentperf_client_dir: str | None = None  # Container path to an agentperf-client checkout (mount via extra_mount)
+    agentperf_config: str | None = (
+        None  # Container path to the client's workload YAML (endpoint/model/concurrency injected)
+    )
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
     use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
+    # SA-Bench Dynamo adapter: reuse a benchmark-scoped HTTP connection pool.
+    # Opt-in to preserve the historical per-request ClientSession behavior.
+    reuse_http_connections: bool = False
     # Custom benchmark hook.
     # ``command`` is passed to ``bash -lc`` verbatim; srtctl does NOT
     # substitute placeholders like ``{nginx_url}`` or ``{slurm_job_id}``.
@@ -629,8 +854,6 @@ class BenchmarkConfig:
     aiperf_package: str | None = None
     # Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200)
     aiperf_args: dict[str, Any] = field(default_factory=dict)
-    # Post-process: export analysis/srtlog per-node batch CSVs + gen_throughput.csv (see postprocess_stage)
-    export_node_metrics: bool = False
     # SA-Bench: optional SGLang /slow_down on decode workers (sglang frontend only; see benchmark_stage)
     slow_down_sleep_time: float | None = None  # forward_sleep_time (seconds); unset = feature off
     slow_down_wait_time: float | None = None  # seconds until POST clears slow_down; unset = feature off
@@ -651,6 +874,18 @@ class ProfilingPhaseConfig:
 
     start_step: int | None = None  # Step to start profiling
     stop_step: int | None = None  # Step to stop profiling
+
+    @property
+    def vllm_nsys_delay_iterations(self) -> int:
+        """vLLM --profiler-config delay_iterations: engine steps before capture starts."""
+        return self.start_step or 0
+
+    @property
+    def vllm_nsys_max_iterations(self) -> int:
+        """vLLM --profiler-config max_iterations: number of steps to capture (stop - start)."""
+        if self.start_step is None or self.stop_step is None:
+            return 0
+        return max(self.stop_step - self.start_step, 0)
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -750,6 +985,17 @@ class ProfilingConfig:
 
         return env
 
+    @property
+    def nsys_binary(self) -> str:
+        """nsys executable to invoke.
+
+        Defaults to ``nsys`` (resolved on PATH). Override via the
+        ``SRTCTL_NSYS_BIN`` environment variable when running inside a
+        container that doesn't ship nsys on PATH — e.g. mount the host's
+        Nsight Systems install and point this at the absolute path.
+        """
+        return os.environ.get("SRTCTL_NSYS_BIN", "nsys")
+
     def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
         """Get nsys command prefix for TRTLLM workers.
 
@@ -758,7 +1004,7 @@ class ProfilingConfig:
         """
         if self.is_nsys_time:
             cmd = [
-                "nsys",
+                self.nsys_binary,
                 "profile",
                 "-t",
                 "cuda,nvtx,ucx",
@@ -772,7 +1018,7 @@ class ProfilingConfig:
         else:
             # Iteration-based: TLLM_PROFILE_START_STOP env var triggers cudaProfilerStart/Stop
             cmd = [
-                "nsys",
+                self.nsys_binary,
                 "profile",
                 "-t",
                 "cuda,nvtx,ucx",
@@ -820,9 +1066,35 @@ class ProfilingConfig:
         if backend_type == "trtllm":
             return self._get_nsys_prefix_trtllm(output_file)
 
+        # Time-based capture for non-TRTLLM backends (vllm, sglang). Required
+        # for vllm+dynamo because dynamo's HTTP frontend doesn't proxy
+        # /start_profile to the vllm worker (returns 404), so cudaProfilerApi
+        # capture can't be triggered from the bench client — we drive capture
+        # purely by --delay/--duration instead.
+        if self.is_nsys_time:
+            cmd = [
+                self.nsys_binary,
+                "profile",
+                "-t",
+                "cuda,nvtx",
+                "--cuda-graph-trace=node",
+                "--force-overwrite",
+                "true",
+            ]
+            if self.delay_secs is not None:
+                cmd += ["--delay", str(self.delay_secs)]
+            if self.duration_secs is not None:
+                cmd += ["--duration", str(self.duration_secs)]
+            if self.extra_nsys_args:
+                cmd.extend(self.extra_nsys_args)
+            cmd.extend(["-o", output_file])
+            if frontend_type == "dynamo":
+                cmd.insert(-2, "--trace-fork-before-exec=true")
+            return cmd
+
         # SGLang / default path — keep existing behavior
         cmd = [
-            "nsys",
+            self.nsys_binary,
             "profile",
             "-t",
             "cuda,nvtx",
@@ -849,6 +1121,134 @@ class ProfilingConfig:
 
 
 @dataclass(frozen=True)
+class TelemetryExporterConfig:
+    """Configuration for a metrics exporter deployed on worker nodes.
+
+    Two launch modes. With ``binary`` unset the exporter runs as a pyxis
+    container from ``container_image``. With ``binary`` set it runs
+    **host-native** -- the executable is started by ``srun`` directly on the
+    node with no container; ``container_image`` is ignored (set it to ``""``).
+    Relative ``binary`` paths resolve against the srtctl checkout root, which is
+    where ``make setup`` installs the host binaries (``configs/nats-server``,
+    ``configs/etcd``, ``configs/process-exporter``). Host-native exists because
+    some enroot deployments cannot start shell-less ``FROM scratch`` images
+    (observed on hecate: ``enroot-switchroot: failed to change directory: /root``,
+    then ``/bin/sh: No such file or directory`` with the home mounted), and a
+    static Go exporter needs no container at all.
+    """
+
+    container_image: str
+    port: int
+    command: str | None = None
+    binary: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+# Built-in exporter defaults (sweep path only; the --bash lifecycle keys on the
+# raw recipe fields and never launches exporter containers). Pinned multi-arch
+# registry URIs, so pyxis pulls the node's architecture with zero setup; both
+# pins are production-verified on GB300 (all 19 DCGM families; 125 node
+# families incl. meminfo, no host /proc mount needed). Ports are deliberately
+# offset from the conventional 9400/9100 — managed clusters may already run
+# host-level exporters there. Air-gapped or version-pinning clusters override
+# the image through the srtslurm.yaml ``containers:`` alias map, which already
+# resolves these fields.
+DEFAULT_DCGM_EXPORTER = TelemetryExporterConfig(
+    container_image="nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04",
+    port=9401,
+    # No command: the tachometer launch derives --collect-interval from
+    # observability.tachometer.collect_interval_ms so the exporter samples
+    # exactly as often as it is scraped. An explicit command still wins.
+)
+DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
+    container_image="quay.io#prometheus/node-exporter:v1.8.2",
+    port=9101,
+)
+# Per-process and per-thread host telemetry from /proc: CPU seconds by mode,
+# thread count and thread CPU by thread name, context switches, RSS, open fds --
+# for the frontend, the worker handlers, the engine ranks and the client, grouped
+# by command line (see services.exporters.process_exporter_config_yaml). This is the
+# signal the Prometheus surface cannot carry: Dynamo publishes no process_* or
+# thread metrics, and node_exporter only sees the machine.
+#
+# Launched HOST-NATIVE from the static Go binary `make setup` installs at
+# configs/process-exporter (ncabatoff/process-exporter release tarball for the
+# compute arch), like nats-server and etcd. The upstream image is FROM scratch
+# (no shell, no /root) and pyxis/enroot on hecate refuses to start it; the binary
+# needs neither a container nor privileges and reads the host /proc directly. A
+# recipe may still point `process_exporter.container_image` at an image that has
+# a shell and leave `binary` unset to get the container launch.
+DEFAULT_PROCESS_EXPORTER = TelemetryExporterConfig(
+    container_image="",
+    port=9256,
+    binary="configs/process-exporter",
+)
+
+
+@dataclass(frozen=True)
+class TachometerConfig:
+    """Native Tachometer collection for an observability-enabled run.
+
+    ``enabled`` is tri-state: ``None`` (the default) means ON — every run
+    collects Tachometer data with no ``tachometer:`` block at all; an
+    explicit ``false`` opts out. Note that without ``observability.enabled``
+    the TRT-LLM worker endpoints may have no engine metrics to serve (the
+    observability expansion is what turns their content on); the frontend
+    and the exporters are always worth capturing.
+
+    DCGM, node and process exporters default ON via the ``resolved_*``
+    properties (sweep path only): an explicit ``dcgm_exporter`` /
+    ``node_exporter`` / ``process_exporter`` block always wins,
+    ``default_exporters: false`` disables the built-ins, and the raw fields
+    stay ``None`` unless the recipe set them — which is what the
+    power-telemetry sharing validation and the --bash gate key on.
+    """
+
+    enabled: bool | None = None
+    binary_path: str = "tachometer-scraper"
+    # Milliseconds between scrapes of every endpoint — the same unit and name
+    # as dcgm-exporter's --collect-interval. Replaces the retired Hz-based
+    # ``default_frequency`` (1000ms == the old 1.0 Hz default).
+    collect_interval_ms: int = 1000
+    sync_interval_secs: int = 120
+    # How long the scraper gets after SIGTERM to flush + compact final.parquet
+    # before the SIGKILL escalation. Compaction time scales with the arrow WAL
+    # accumulated since the last periodic sync.
+    shutdown_grace_secs: float = 120.0
+    compaction_threads: int = 4
+    storage_subdir: str = "tachometer"
+    extra_metadata: dict[str, str] = field(default_factory=dict)
+    default_exporters: bool = True
+    dcgm_exporter: TelemetryExporterConfig | None = None
+    node_exporter: TelemetryExporterConfig | None = None
+    process_exporter: TelemetryExporterConfig | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def resolved_dcgm_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured DCGM exporter, else the built-in default."""
+        if self.dcgm_exporter is not None:
+            return self.dcgm_exporter
+        return DEFAULT_DCGM_EXPORTER if self.default_exporters else None
+
+    @property
+    def resolved_node_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured node exporter, else the built-in default."""
+        if self.node_exporter is not None:
+            return self.node_exporter
+        return DEFAULT_NODE_EXPORTER if self.default_exporters else None
+
+    @property
+    def resolved_process_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured process exporter, else the built-in default."""
+        if self.process_exporter is not None:
+            return self.process_exporter
+        return DEFAULT_PROCESS_EXPORTER if self.default_exporters else None
+
+
+@dataclass(frozen=True)
 class ObservabilityConfig:
     """Observability configuration for OTEL tracing.
 
@@ -860,76 +1260,170 @@ class ObservabilityConfig:
     dynamo-decode, dynamo-frontend) and can be overridden per-component via
     prefill_environment, decode_environment, or frontend.env.
 
+    ``enabled`` is the single analytics knob. Turning it on makes the run emit
+    every signal the offline perf-analysis tooling consumes, without the user
+    having to remember six independent flags. It expands (at config-load time,
+    via :func:`srtctl.core.config.expand_observability`) into:
+
+    * ``backend.publish_events_and_metrics: true`` -- enable KV-cache events
+      and TRT-LLM engine metrics. Metrics-only publication already defaults on
+      independently via ``backend.publish_metrics``. An explicit
+      ``publish_events_and_metrics: false`` disables both publication flags.
+    * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
+      config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
+      histograms appear on that surface.
+    * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
+      prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
+
+    and, for the run's server-side capture:
+
+    * native Tachometer collection of every ``/metrics`` endpoint the benchmark
+      client does not already poll (see ``TelemetryStageMixin.start_tachometer``
+      and ``tachometer`` below).
+
+    Expansion preserves explicit recipe values; the tri-state combined
+    publishing setting treats null as unset. Explicit False is never replaced.
+
+    Scope is deliberately server-side. The knob configures what the workers and
+    frontend *emit*, and captures that surface by scraping the endpoints
+    directly. It never asks the benchmark client to re-export what the servers
+    already publish. (One indirect exception: on TRT-LLM the client's
+    ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
+    the effective publication flags give those endpoints engine metrics,
+    respecting the explicit combined-setting opt-out — see
+    ``BenchmarkStageMixin``.)
+
+    It does **not** decide whether the component perf dashboard is built. That
+    happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
+    only decides which capture legs exist and therefore which tabs the page
+    carries. Keeping the two separate is deliberate: a run that captured nothing
+    server-side still renders from the client export and the per-iteration log,
+    and that is the shape most runs have.
+
     Attributes:
+        enabled: Master analytics knob. Default: False.
         enable_otel: If True, inject OTEL environment variables into all workers
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
-    """
+        tachometer: Native Tachometer capture configuration. Follows ``enabled``
+            unless ``tachometer.enabled`` is set explicitly (see
+            :class:`TachometerConfig`).
 
-    enable_otel: bool = False
-    otel_endpoint: str | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
-class TelemetryExporterConfig:
-    """Configuration for telemetry exporters deployed on worker nodes."""
-
-    container_image: str
-    port: int
-    command: str | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
-class LiveMetricsConfig:
-    """In-flight batch-metrics snapshotter (a form of lightweight telemetry).
-
-    When enabled, the orchestrator spawns a daemon thread during the benchmark
-    stage that re-parses prefill/decode worker logs every ``interval_seconds``
-    and atomically overwrites ``<log_dir>/batch_metrics.png``, giving a
-    near-real-time view of the run without any external monitoring stack.
-
-    Lives entirely in :mod:`srtctl.analysis.live_metrics`; this dataclass
-    only defines the user-visible knobs.
+    The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
+    ``scrape_output`` knobs (the in-job RAW Prometheus scraper) are rejected
+    at load like any unknown key; the ingest still reads historical
+    ``raw_prometheus.jsonl`` artifacts (the ingest no longer reads them either).
     """
 
     enabled: bool = False
-    interval_seconds: int = 60
-    downsample: int = 1
+    enable_otel: bool = False
+    otel_endpoint: str | None = None
+
+    tachometer: TachometerConfig = field(default_factory=TachometerConfig)
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def tachometer_enabled(self) -> bool:
+        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``).
+
+        Tachometer is on by default for every run — server-side capture is
+        not an opt-in special occasion, and its cost is bounded (1 Hz,
+        best-effort, complement of the client's polling). ``enabled: false``
+        opts out; ``observability.enabled`` no longer gates it.
+        """
+        return True if self.tachometer.enabled is None else self.tachometer.enabled
+
+
+@dataclass(frozen=True)
+class CpuPowerConfig:
+    """Host-side CPU power collection on every worker node.
+
+    This is the in-job Python collector (``srtctl.core.cpu_power``): one
+    process per backend node reads Linux ACPI ``power_meter`` hwmon channels
+    (or DCGM CPU entity field 1130) directly on the bare host and writes its
+    own per-node CSV, which the head node aggregates at teardown into
+    ``<storage_subdir>/samples.csv`` plus a manifest.
+
+    It is independent of ``cpu_power_exporter`` (the head-node scraper over a
+    per-node ``/metrics`` exporter): a recipe may enable either, both, or
+    neither. The two legs share no ports and write to different directories.
+
+    Attributes:
+        enabled: Master switch for this leg. Default: False.
+        source: ``auto`` tries ACPI then DCGM and is best-effort; naming
+            ``acpi`` or ``dcgm`` explicitly makes that provider mandatory.
+        sample_interval_seconds: Read period on each node, in seconds.
+        startup_timeout_seconds: How long to wait for every node's collector
+            to publish its ready marker before giving up on readiness.
+        required: Fail the job when the leg does not become ready or does not
+            produce a valid publication.
+        storage_subdir: Directory below the run log directory that holds the
+            CPU samples and manifest. Must differ from ``telemetry.storage_subdir``.
+    """
+
+    enabled: bool = False
+    source: Literal["auto", "acpi", "dcgm"] = "auto"
+    sample_interval_seconds: float = 0.1
+    startup_timeout_seconds: float = 30.0
+    required: bool = False
+    storage_subdir: str = "cpu_power"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class CpuPowerExporterConfig:
+    """Best-effort CPU power collection via the cpu-power-exporter binary.
+
+    Presence of this block (not a separate enabled flag) is what turns CPU
+    power collection on. Unlike dcgm_exporter/node_exporter, this is not
+    containerized -- cpu-power-exporter is a bundled binary installed by
+    make setup, launched directly on the bare worker host, with a fallback
+    to the Python stdlib exporter when the binary is absent.
+    """
+
+    port: int = 9405
+    source: str = "auto"
+    """Power reading back-end passed through to the bundled Rust binary's own
+    ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries DCGM
+    first and falls back to ACPI when libdcgm.so is absent or reports no CPU
+    entities. Has no effect when the Python stdlib fallback exporter is used
+    instead of the binary -- that fallback is ACPI-only.
+    """
 
     Schema: ClassVar[type[Schema]] = Schema
 
 
 @dataclass(frozen=True)
 class TelemetryConfig:
-    """Telemetry configuration for benchmark jobs.
-
-    The default provider bundles a scraper with dcgm_exporter and node_exporter.
-    Other providers can reuse the same top-level contract later.
-
-    ``live_metrics`` is a lightweight complementary signal: it tails worker
-    logs in-process (no external stack required) and writes a per-run
-    ``batch_metrics.png`` during the benchmark.
-    """
+    """DCGM power telemetry for benchmark measurement windows."""
 
     enabled: bool = False
-    provider: TelemetryProvider = TelemetryProvider.SCRAPER
-    container_image: str | None = None
-    binary_path: str = "/usr/local/bin/telemetry-scraper"
-    default_frequency: float = 5.0
-    sync_interval_secs: int = 120
-    compaction_threads: int = 4
-    storage_subdir: str = "telemetry"
-    extra_metadata: dict[str, str] = field(default_factory=dict)
     dcgm_exporter: TelemetryExporterConfig | None = None
-    node_exporter: TelemetryExporterConfig | None = None
-    live_metrics: LiveMetricsConfig | None = None
+    # Milliseconds between collector cycles. Replaces the retired
+    # ``default_frequency``, which despite its name was a period in seconds
+    # (1000ms == the old 1.0 default).
+    collect_interval_ms: int = 1000
+    storage_subdir: str = "power"
+    required: bool = False
+    startup_timeout_seconds: float = 30.0
+    request_timeout_seconds: float = 2.0
+    # None derives a safe shutdown budget from request_timeout_seconds.
+    collector_join_timeout_seconds: float | None = None
+    cpu_power_exporter: CpuPowerExporterConfig | None = None
+    cpu_power: CpuPowerConfig = field(default_factory=CpuPowerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def resolved_collector_join_timeout_seconds(self) -> float:
+        """Return the explicit join timeout or a request-timeout-aware default."""
+        if self.collector_join_timeout_seconds is not None:
+            return self.collector_join_timeout_seconds
+        worst_case = 2 * (2 * self.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS)
+        return worst_case + 2.0
 
 
 def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[str, str]:
@@ -948,6 +1442,82 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
     }
 
 
+# Env that makes Dynamo emit one JSONL ``SPAN_CLOSED`` line per closed span on
+# the component's stdout. This is the *only* source for the per-request trace
+# leg of the offline perf tooling; without it those panels have no input.
+# DYN_LOG=debug is required because the span events are emitted at DEBUG level.
+ANALYTICS_SPAN_ENV: dict[str, str] = {
+    "DYN_LOGGING_SPAN_EVENTS": "true",
+    "DYN_LOGGING_JSONL": "true",
+    "DYN_LOG": "debug",
+}
+
+# Env that makes the Dynamo *frontend* write one ``dynamo.request.trace.v1``
+# ``request_end`` record per request to a JSONL file. This is a different signal
+# from the span leg above: spans decompose the router in detail but treat each
+# worker as one opaque ``handle_payload``, whereas these records carry the
+# frontend's own phase timings -- ``prefill_wait_time_ms`` (receive to dispatch),
+# ``prefill_time_ms`` (dispatch to first token) and, on disagg,
+# ``kv_transfer_estimated_latency_ms`` -- plus ``x_request_id``, so they join to
+# the client and span legs on the key those already use.
+#
+# Frontend-only: the timings come from the router's RequestTracker
+# (``lib/llm/src/protocols/common/timing.rs``) and are emitted from the
+# preprocessor. Workers have no tracker and would write empty files.
+#
+# Only two vars are needed:
+#   * DYN_REQUEST_TRACE enables the default request-end records, the file sink,
+#     and Dynamo's rotated jsonl_gz format.
+#   * DYN_REQUEST_TRACE_FILE_PATH must be overridden. The built-in default is
+#     /tmp/dynamo-request-trace, and container /tmp does not survive the job --
+#     the capture would be written and then thrown away with the node.
+ANALYTICS_REQUEST_TRACE_ENV: dict[str, str] = {
+    "DYN_REQUEST_TRACE": "1",
+    "DYN_REQUEST_TRACE_FILE_PATH": f"{CONTAINER_LOG_DIR}/dynamo-request-trace",
+}
+
+# Engine-config keys that surface per-request and per-iteration statistics on
+# the worker's /metrics endpoint. ``enable_iter_perf_stats`` is what produces
+# the ``trtllm_kv_cache_{used,free,max}_blocks`` gauges; ``return_perf_metrics``
+# adds the per-request latency / KV-transfer histograms.
+ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
+    "enable_iter_perf_stats": True,
+    "return_perf_metrics": True,
+}
+
+# Engine-config default baked in for every ``frontend.type: trtllm_serve`` run,
+# independent of ``observability.enabled``. trtllm-serve registers a worker's
+# Prometheus route (``/prometheus/metrics``) only when the engine runs with
+# ``return_perf_metrics: true`` (TensorRT-LLM ``serve/openai_server.py``,
+# ``register_routes``); TensorRT-LLM's own default is ``false``. Tachometer
+# scrapes that route on every run, so without this default every trtllm-serve
+# worker endpoint answers HTTP 404 and the capture silently has no worker data.
+TRTLLM_SERVE_ENGINE_DEFAULTS: dict[str, bool] = {
+    "return_perf_metrics": True,
+}
+
+# Engine-config default baked in for every TRT-LLM engine section a recipe
+# uses, under both the ``dynamo`` and the ``trtllm_serve`` frontend and
+# independent of ``observability.enabled``. ``dynamo.trtllm`` derives
+# ``enable_iter_perf_stats`` from ``--publish-metrics``, which
+# ``backend.publish_metrics`` passes by default, so without this every Dynamo
+# worker would run TensorRT-LLM's per-iteration statistics (KV-cache stats and
+# CUDA-event step timing on every executor loop) for gauges no benchmark client
+# reads. The request-level ``trtllm_*`` Prometheus series (request latency,
+# TTFT, TPOT, queue / prefill / decode time, token counters) only need the
+# per-request perf metrics, which ``--publish-metrics`` (Dynamo) and
+# ``return_perf_metrics: true`` (trtllm-serve) enable on their own. The engine
+# YAML is merged over the worker's derived arguments and wins on conflicts
+# (TensorRT-LLM ``update_llm_args_with_extra_dict``), so this explicit
+# ``false`` keeps that surface and drops the statistics. ``expand_observability``
+# runs first and setdefaults ``True`` for analytics runs, which keep their
+# iteration-level ``trtllm_kv_cache_*`` gauges; an explicit recipe value
+# always wins.
+TRTLLM_ENGINE_DEFAULTS: dict[str, bool] = {
+    "enable_iter_perf_stats": False,
+}
+
+
 # /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
 # source builds. The bench/frontend container always mounts srtslurm's
 # `configs/` dir at /configs (see RuntimeContext.container_mounts), so this
@@ -955,24 +1525,94 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
 _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
 
 
-def _hash_cached_source_install(dynamo_hash: str) -> str:
+def dynamo_source_cache_key(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
+    """Return the cache key shared by Slurm and direct source builds.
+
+    A ref that is not a commit (``refs/pull/14000/head`` when ``srtctl apply``
+    could not pin it) is sanitized into a directory name; such a key can go
+    stale as the ref moves, which is why apply pins refs to SHAs up front.
+    """
+    key = dynamo_hash.strip().replace("/", "-")
+    if not cargo_patches:
+        return key
+    # Version the build recipe so a patching change invalidates old artifacts
+    # even when the dependency declarations themselves do not change.
+    digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
+    return f"{key}-patch-{digest}"
+
+
+def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple[str, ...]:
+    """Return shell-safe Cargo.toml replacement commands for a source build."""
+    if not cargo_patches:
+        return ()
+    commands = []
+    for entry in cargo_patches:
+        crate = entry.split("=", 1)[0].strip()
+        if not crate:
+            continue
+        repl = entry.replace("&", r"\&")  # '&' is the sed replacement metachar
+        script = f"s|^{crate}[[:space:]]*=.*|{repl}|"
+        commands.append(f"find . -name Cargo.toml -exec sed -i -E {shlex.quote(script)} {{}} +")
+    return tuple(commands)
+
+
+def _git_clone_cmd() -> str:
+    """Shell-quoted ``git`` invocation for install-script bash strings; see
+    ``srtctl.core.config.git_clone_command_prefix`` for why this exists."""
+    from srtctl.core.config import git_clone_command_prefix
+
+    return shlex.join(git_clone_command_prefix())
+
+
+def _hash_cached_source_install(
+    dynamo_hash: str,
+    cargo_patches: list[str] | None = None,
+    repo_url: str = DynamoSourceConfig.DEFAULT_GIT,
+) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
 
-    Cache layout: ``{root}/<hash>/`` contains the maturin wheel
+    ``dynamo_hash`` is normally a commit SHA (``srtctl apply`` pins
+    ``dynamo.source.rev`` before submit). A bare ref such as
+    ``refs/pull/14000/head`` still works: it is fetched by name and checked out
+    as ``FETCH_HEAD``, since a plain clone does not carry PR refs.
+
+    Cache layout: ``{root}/<key>/`` contains the maturin wheel
     (``ai_dynamo_runtime-*.whl``), a tarball of the dynamo source tree
     (``dynamo-src.tar.gz``), and a ``.complete`` sentinel that's only touched
-    on a successful build. flock on the per-hash lock file serializes the
+    on a successful build. flock on the per-key lock file serializes the
     cold-cache build across multiple frontends starting in parallel.
+
+    ``cargo_patches`` (optional) are dependency-declaration overrides — each a full
+    ``<crate> = <spec>`` line that replaces that crate's declaration across every
+    ``Cargo.toml`` in the tree before ``maturin build`` (typically retargeting a crate
+    like ``dynamo-tokenizers`` at a git branch). When set, the cache key is suffixed with
+    a digest of the overrides so patched and unpatched builds of the same hash never collide.
+
+    Uses FD 201 (not 200) so it nests cleanly inside the node-local
+    ``flock -x 200`` from ``_serialize_node_install``.
     """
-    cache = f"{_DYNAMO_CACHE_ROOT}/{dynamo_hash}"
-    lock = f"{_DYNAMO_CACHE_ROOT}/.{dynamo_hash}.lock"
+    cache_key = dynamo_source_cache_key(dynamo_hash, cargo_patches)
+    # Replace each crate's dependency declaration tree-wide. Source replacement
+    # (rather than [patch.crates-io]) forces Cargo to resolve the requested source
+    # even when its version would not satisfy Dynamo's exact existing pin.
+    patch_commands = dynamo_cargo_patch_commands(cargo_patches)
+    override_cmd = " && ".join(patch_commands)
+    if override_cmd:
+        override_cmd += " && "
+    cache = f"{_DYNAMO_CACHE_ROOT}/{cache_key}"
+    lock = f"{_DYNAMO_CACHE_ROOT}/.{cache_key}.lock"
+    checkout_cmd = (
+        f"git checkout {dynamo_hash}"
+        if is_commit_sha(dynamo_hash)
+        else f"git fetch origin {shlex.quote(dynamo_hash)} && git checkout FETCH_HEAD"
+    )
     return (
         f"echo 'Installing dynamo from source ({dynamo_hash}, /configs cache)...' && "
         f"mkdir -p {_DYNAMO_CACHE_ROOT} && "
         # Subshell + flock-FD pattern: only the first frontend in a cold-cache
         # job builds; later frontends block on the lock then read .complete.
         f"( "
-        f"flock -x 200; "
+        f"flock -x 201; "
         f"if [ ! -f {cache}/.complete ]; then "
         # Build tools — install on cold cache only. apt + protoc + cargo + maturin.
         f"apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && "
@@ -985,12 +1625,13 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"pip install --break-system-packages --force-reinstall --quiet maturin && "
         # Clone + build the runtime wheel.
         f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
-        f"git clone https://github.com/ai-dynamo/dynamo.git && "
-        f"cd dynamo && git checkout {dynamo_hash} && "
+        f"{_git_clone_cmd()} clone {shlex.quote(repo_url)} dynamo && "
+        f"cd dynamo && {checkout_cmd} && "
+        f"{override_cmd}"
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
-        f"maturin build -o /tmp && "
+        f"maturin build --release -o /tmp && "
         # Populate cache atomically: copy artifacts first, touch .complete last.
         f"mkdir -p {cache} && "
         f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
@@ -1002,7 +1643,7 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"touch {cache}/.complete && "
         f"cd / && rm -rf $DYN_BUILD_DIR; "
         f"fi "
-        f") 200>{lock} && "
+        f") 201>{lock} && "
         # Install from the (now warm) cache. Both branches above land here.
         f"pip install --break-system-packages --force-reinstall {cache}/ai_dynamo_runtime-*.whl && "
         f"rm -rf /tmp/dynamo-src && mkdir -p /tmp/dynamo-src && "
@@ -1027,11 +1668,11 @@ def _live_source_install_for_top_of_tree() -> str:
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "cd /sgl-workspace/ && "
-        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-        "maturin build -o /tmp && "
+        "maturin build --release -o /tmp && "
         "pip install /tmp/ai_dynamo_runtime*.whl && "
         "cd /sgl-workspace/dynamo/ && "
         "pip install -e . && "
@@ -1043,16 +1684,16 @@ def _live_source_install_for_top_of_tree() -> str:
         "if ! command -v cargo &> /dev/null || ! command -v maturin &> /dev/null; then "
         "apt-get update -qq && apt-get install -y -qq git curl libclang-dev protobuf-compiler > /dev/null 2>&1 && "
         "if ! command -v cargo &> /dev/null; then "
-        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi && "
-        "if ! command -v maturin &> /dev/null; then "
-        "pip install --break-system-packages maturin; fi; fi && "
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi; fi && "
+        # Force-reinstall maturin: see _hash_cached_source_install.
+        "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
         "rm -f /tmp/ai_dynamo_runtime*.whl && "
-        "maturin build -o /tmp && "
+        "maturin build --release -o /tmp && "
         "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
         "cd /tmp/dynamo_build/dynamo/ && "
         "pip install --break-system-packages -e . && "
@@ -1063,6 +1704,44 @@ def _live_source_install_for_top_of_tree() -> str:
     return (
         "echo 'Installing dynamo from source (HEAD)...' && "
         f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
+    )
+
+
+def _serialize_node_install(install_cmd: str) -> str:
+    """Serialize a node-shared dynamo install across co-located srun tasks.
+
+    With ``--ntasks-per-node > 1`` (e.g. TRTLLM's MPI-style launch, one task
+    per GPU), every task on a node runs the worker preamble concurrently
+    against the same shared container root. Concurrent pip installs into the
+    same site-packages race and corrupt each other. An exclusive ``flock``
+    serializes them; a sentinel lets every task after the first short-circuit
+    the (idempotent) install entirely.
+
+    The lock/sentinel are anchored in the active Python environment
+    (``sys.prefix``) — the exact resource being protected. That location is
+    part of the container root filesystem, so it is:
+      * shared by every task sharing that site-packages (correct serialization),
+      * private to each container instance, so co-located containers with a
+        bind-mounted /tmp neither over-serialize nor wrongly skip each other's
+        install, and distinct across jobs (no cross-job/version staleness).
+
+    FD 200 (node-local) is kept distinct from the ``flock -x 201`` that the
+    hash-pinned source install nests on the /configs cache lock inside a
+    subshell. Distinct FDs keep the two node-local and cross-node locks
+    independent and refactor-proof even if that inner subshell is removed.
+    """
+    # Resolve the env dir at runtime; fall back to $HOME (also container-private)
+    # if python3 is somehow unavailable before the install runs.
+    resolve_dir = 'DYN_LOCK_DIR="$(python3 -c \'import sys; print(sys.prefix)\' 2>/dev/null || echo "${HOME:-/root}")"'
+    lock = '"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"'
+    sentinel = '"$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"'
+    return (
+        f"{resolve_dir} && "
+        f"( flock -x 200; "
+        f"if [ -f {sentinel} ]; then "
+        f"echo 'dynamo install already completed in this environment, skipping'; "
+        f"else {{ {install_cmd} ; }} && touch {sentinel}; fi "
+        f") 200>{lock}"
     )
 
 
@@ -1081,17 +1760,64 @@ class DynamoConfig:
         top_of_tree: Clone repo at HEAD (latest)
         wheel: ai-dynamo package version to install via staged wheels. The
                matching ai-dynamo-runtime wheel is installed automatically.
+        source: One block for all of the above: ``git`` + ``rev`` (commit, tag,
+               or ``refs/pull/<n>/head``; ``srtctl apply`` pins it to ``sha``),
+               ``pypi``, or ``wheel``. Cannot be combined with the legacy fields.
+        request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
+        event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
+                     the Dynamo image's own default). Valid values: "nats", "zmq"
+        sidecar: Replace legacy Python workers with native engines and Dynamo sidecars.
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
+
+    _VALID_REQUEST_PLANES: ClassVar[tuple[str, ...]] = ("nats", "tcp", "http")
+    _VALID_EVENT_PLANES: ClassVar[tuple[str, ...]] = ("nats", "zmq")
 
     install: bool = True
     version: str | None = "0.8.0"
     hash: str | None = None
     top_of_tree: bool = False
     wheel: str | None = None
+    # Which Dynamo to install: exactly one of git+rev, pypi, or wheel.
+    source: DynamoSourceConfig | None = None
+    request_plane: str = "tcp"
+    event_plane: str | None = None
+    sidecar: bool = False
+    sidecar_port: int = 50051
+    sidecar_binary: str | None = None
+    sidecar_startup_timeout: int = 3600
+    sidecar_context_length: int | None = None
+    sidecar_args: list[str] = field(default_factory=list)
+    # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
+    # source build (requires `hash`). Each entry is a full `<crate> = <spec>` TOML line, e.g.
+    #   'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }'
+    # The crate's existing declaration is replaced tree-wide, letting a source build pull a crate
+    # from an unmerged branch without waiting for a crates.io release.
+    cargo_patches: list[str] | None = None
 
     def __post_init__(self) -> None:
+        if self.source is not None:
+            legacy = [
+                name
+                for name, on in (
+                    ("hash", self.hash is not None),
+                    ("top_of_tree", self.top_of_tree),
+                    ("wheel", self.wheel is not None),
+                    ("cargo_patches", bool(self.cargo_patches)),
+                )
+                if on
+            ]
+            if legacy:
+                raise ValueError("dynamo.source cannot be combined with dynamo." + ", dynamo.".join(legacy))
+            if self.source.pypi is not None:
+                object.__setattr__(self, "version", self.source.pypi)
+            elif self.source.wheel is not None:
+                object.__setattr__(self, "wheel", self.source.wheel)
+            else:
+                object.__setattr__(self, "hash", self.source.checkout)
+                object.__setattr__(self, "cargo_patches", list(self.source.patches) if self.source.patches else None)
+
         install_sources = [
             ("hash", self.hash is not None),
             ("top_of_tree", self.top_of_tree),
@@ -1112,6 +1838,28 @@ class DynamoConfig:
                 raise ValueError("dynamo.wheel must be a non-empty package version")
             if Path(self.wheel).name.endswith(".whl") or "/" in self.wheel:
                 raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
+
+        if self.cargo_patches and self.hash is None:
+            raise ValueError("dynamo.cargo_patches requires a source build — set dynamo.hash to a commit")
+
+        if self.request_plane not in self._VALID_REQUEST_PLANES:
+            raise ValueError(
+                f"Invalid request_plane '{self.request_plane}', must be one of: {', '.join(self._VALID_REQUEST_PLANES)}"
+            )
+
+        if self.event_plane is not None and self.event_plane not in self._VALID_EVENT_PLANES:
+            raise ValueError(
+                f"Invalid event_plane '{self.event_plane}', must be one of: {', '.join(self._VALID_EVENT_PLANES)}"
+            )
+
+        if not 1 <= self.sidecar_port <= 65535:
+            raise ValueError(f"dynamo.sidecar_port must be between 1 and 65535, got {self.sidecar_port}")
+        if self.sidecar_startup_timeout < 1:
+            raise ValueError("dynamo.sidecar_startup_timeout must be at least 1")
+        if self.sidecar_binary is not None and not self.sidecar_binary.strip():
+            raise ValueError("dynamo.sidecar_binary must be a non-empty executable path")
+        if self.sidecar_context_length is not None and self.sidecar_context_length < 1:
+            raise ValueError("dynamo.sidecar_context_length must be at least 1")
 
     @property
     def needs_source_install(self) -> bool:
@@ -1142,7 +1890,17 @@ class DynamoConfig:
         return env
 
     def get_install_commands(self) -> str:
-        """Get the bash commands to install dynamo."""
+        """Get the bash commands to install dynamo.
+
+        The returned command is wrapped in a node-local flock + sentinel so
+        that co-located srun tasks (``--ntasks-per-node > 1``, e.g. TRTLLM)
+        install once per node instead of racing concurrent pip installs into
+        the shared container site-packages. See ``_serialize_node_install``.
+        """
+        return _serialize_node_install(self._build_install_commands())
+
+    def _build_install_commands(self) -> str:
+        """Build the raw (unserialized) dynamo install command."""
         if self.wheel is not None:
             wheel_name = self.wheel_name or Path(self.wheel).name
             version = self.wheel_version
@@ -1175,7 +1933,10 @@ class DynamoConfig:
         # to ~10 sec lustre access for repeat hashes. top_of_tree skips the
         # cache (no stable key) and always live-builds.
         if self.hash is not None:
-            return _hash_cached_source_install(self.hash)
+            repo_url = (
+                self.source.git if self.source is not None and self.source.git else DynamoSourceConfig.DEFAULT_GIT
+            )
+            return _hash_cached_source_install(self.hash, self.cargo_patches, repo_url=repo_url)
 
         return _live_source_install_for_top_of_tree()
 
@@ -1187,7 +1948,11 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default) or "sglang"
+        type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
+            Gateway) and "vllm-router" (static routers); "sglang", "vllm", and
+            "trtllm_serve" (direct: the single aggregate worker binds the public
+            port, no router process). In schema 1 recipes "sglang" still means
+            the router and loads as "sglang-router".
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1200,8 +1965,21 @@ class FrontendConfig:
         nginx_raise_ulimit: Raise nofile before nginx and set ``worker_rlimit_nofile``
             in generated nginx.conf. Off by default; enable on clusters that allow it.
             Override per job or set ``nginx_raise_ulimit`` in srtslurm.yaml for the cluster.
+        nginx_session_affinity: Consistently hash ``nginx_session_affinity_header`` to a
+            frontend. Requests without that header use a generated request ID and stay distributed.
+        nginx_keepalive_timeout: Idle timeout for client and upstream keepalive
+            connections in the generated nginx.conf (default "600s"). nginx's own
+            default is 75s, which closes a session's connection during the long
+            recorded think-time of an agentic replay; the client's next write on
+            that pooled socket then fails with "broken pipe" / "server
+            disconnected" and nothing is logged server-side.
+        nginx_session_affinity_header: Header hashed when affinity is on (default
+            ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
+            carry the session id in that header instead.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
+        container_image: Optional router-specific image. Static routers use the
+            model/backend image when omitted.
     """
 
     type: str = "dynamo"
@@ -1209,8 +1987,24 @@ class FrontendConfig:
     num_additional_frontends: int = 9
     nginx_container: str = "nginx:1.27.4"
     nginx_raise_ulimit: bool = False
+    nginx_session_affinity: bool = False
+    nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
+    nginx_keepalive_timeout: str = "600s"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    container_image: str | None = None
+    # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
+    ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
+    gen_router: dict[str, Any] | None = None  # generation_servers.router
+    server_config_extra: dict[str, Any] | None = None  # extra top-level ser.yaml keys
+    # trtllm_serve: which node runs the disaggregated orchestrator.
+    #   "head" (default) -> nodes.head (first prefill/CTX node)
+    #   "first_decode"   -> first decode/GEN worker-leader node
+    orchestrator_placement: str = "head"
+    # If True, reserve a node exclusively for the frontend/orchestrator instead
+    # of running it on a worker node. Requires at least 2 nodes. Not supported
+    # together with resources.het_jobs: true. Default: False.
+    dedicated_node: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -1259,6 +2053,12 @@ class InfraConfig:
 # Main Configuration Dataclass
 # ============================================================================
 
+# Recipe schema versions. A recipe without a top-level `schema:` key is version 1
+# (the pre-2.0 layout); version 2 is the 2.0 layout. The loader accepts every
+# supported version; `srtctl migrate` rewrites a recipe to the current one.
+CURRENT_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
+
 
 @dataclass(frozen=True)
 class SrtConfig:
@@ -1273,6 +2073,20 @@ class SrtConfig:
     name: str
     model: ModelConfig
     resources: ResourceConfig
+
+    # Recipe schema version (YAML key `schema`). Absent means 1, the pre-2.0
+    # layout. `schema: 2` selects the 2.0 layout; `srtctl migrate` upgrades a
+    # recipe in place. Both versions load on main.
+    schema_version: int = field(
+        default=1,
+        metadata={
+            "marshmallow_field": fields.Integer(
+                data_key="schema",
+                load_default=1,
+                validate=validate.OneOf(SUPPORTED_SCHEMA_VERSIONS),
+            )
+        },
+    )
 
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
     backend: Annotated[BackendConfig, BackendConfigField()] = field(default_factory=SGLangProtocol)
@@ -1300,6 +2114,21 @@ class SrtConfig:
     # e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh
     setup_script: str | None = None
 
+    # Commands run on each node's bare host, outside the container, before any
+    # worker starts. Cluster-wide default lives in srtslurm.yaml as
+    # default_host_setup; a recipe that sets this block replaces that default.
+    host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
+
+    # Long-running processes launched next to the job: generic sidecars (an
+    # experimental router built from a PR) and typed ones (a standalone Mooncake
+    # store per worker node). See docs/services.md.
+    services: list[ServiceConfig] = field(default_factory=list)
+
+    # Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the
+    # eval process and an optional command override. Replaces the downstream
+    # source patch that used to extend the passthrough list in do_sweep.py.
+    post_eval: PostEvalConfig = field(default_factory=PostEvalConfig)
+
     # Virtual identity — declares what *should* be running (verified against fingerprint)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
 
@@ -1311,43 +2140,458 @@ class SrtConfig:
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._validate_profiling()
+        self._validate_observability()
         self._validate_telemetry()
         self._validate_mooncake_kv_store()
+        self._validate_het_jobs()
+        self._validate_colocated_decode()
+        self._validate_dedicated_node_placement()
+        self._validate_trtllm_serve()
+        self._validate_vllm_frontend()
+        self._validate_sglang_direct_frontend()
+        self._validate_static_router_frontend()
+        self._validate_dynamo_sidecar()
+        self._validate_host_setup()
+        self._validate_benchmark_type()
+        self._validate_services()
+        self._warn_dp_launch_mode()
+
+    def _validate_services(self) -> None:
+        """Whole-list checks for ``services:``: unique names, then each kind's recipe-level rules.
+
+        Per-entry checks (empty command, moving-branch source rev, ...) live on
+        ``ServiceConfig.__post_init__``; a kind's ``validate`` sees the full
+        recipe (a ``mooncake-store`` needs ``backend.mooncake_kv_store``).
+        """
+        from srtctl.services.registry import get_service_kind
+
+        seen: set[str] = set()
+        for service in self.services:
+            if service.name in seen:
+                raise ValidationError(f"services[].name must be unique; duplicate: {service.name!r}")
+            seen.add(service.name)
+            get_service_kind(service.type).validate(service, self)
+
+    def _validate_benchmark_type(self) -> None:
+        """Reject a benchmark.type that no runner is registered for.
+
+        An unknown type (a typo like ``gsm8k-bench``, or a removed one) currently
+        loads fine and only fails deep in the benchmark stage after a full
+        allocation. Catch it at load time against the registry, plus the special
+        ``manual`` type (no runner; the server just comes up ready). Import is
+        lazy and guarded so a registry import hiccup never blocks a load.
+        """
+        btype = self.benchmark.type
+        try:
+            import srtctl.benchmarks  # noqa: F401 - importing the package registers every runner
+            from srtctl.benchmarks.base import benchmark_config_fields, list_benchmarks
+
+            allowed = set(list_benchmarks()) | {"manual"}
+        except Exception:  # noqa: BLE001 - never block a config load on the registry import
+            return
+        if btype not in allowed:
+            raise ValueError(f"Unknown benchmark.type {btype!r}. Available: {', '.join(sorted(allowed))}")
+
+        # Per-type field split: a field set for a type whose runner never reads it
+        # is a silent no-op today (isl on gsm8k, num_shots on sa-bench). Schema 2
+        # rejects it; schema 1 recipes get a warning so the corpus keeps loading.
+        accepted = benchmark_config_fields(btype)
+        stray = sorted(
+            item.name
+            for item in dataclasses.fields(BenchmarkConfig)
+            if item.name not in accepted and getattr(self.benchmark, item.name) != _dataclass_default(item)
+        )
+        if not stray:
+            return
+        message = (
+            f"benchmark.type {btype!r} does not use {', '.join(stray)}; fields it accepts: "
+            f"{', '.join(sorted(accepted))}"
+        )
+        if self.schema_version >= 2:
+            raise ValueError(message)
+        logger.warning("%s (a schema: 2 recipe would be rejected)", message)
+
+    def _validate_host_setup(self) -> None:
+        """Reject host_setup blocks that would fail or hang mid-job.
+
+        These commands run before any worker starts, so a bad entry costs a full
+        allocation to discover. Catch the cheap cases at load time (dry-run).
+        """
+        setup = self.host_setup
+        for attr in ("commands", "teardown"):
+            for i, command in enumerate(getattr(setup, attr)):
+                if not command.strip():
+                    raise ValidationError(f"host_setup.{attr}[{i}] is empty")
+        if setup.timeout_seconds < 1:
+            raise ValidationError(f"host_setup.timeout_seconds must be at least 1, got {setup.timeout_seconds}")
+        if setup.teardown and not setup.commands:
+            logger.warning(
+                "host_setup.teardown is set without host_setup.commands; "
+                "teardown will still run after the job, which is only what you want "
+                "if something outside this recipe set the node state"
+            )
+
+    def _validate_dynamo_sidecar(self) -> None:
+        """Validate native sidecar configuration before job submission."""
+        if not self.dynamo.sidecar:
+            return
+        if self.frontend.type != "dynamo":
+            raise ValidationError("dynamo.sidecar: true requires frontend.type: dynamo")
+        if not isinstance(self.backend, (SGLangProtocol, VLLMProtocol, TRTLLMProtocol)):
+            raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
+        if isinstance(self.backend, VLLMProtocol):
+            self.backend.validate_sidecar_dp_config()
+
+    def _warn_dp_launch_mode(self):
+        """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
+
+        Skipped for frontend.type: vllm, where the setting has no effect —
+        `vllm serve` owns the local DP ranks, so the layout is one process per
+        node whatever dp_launch_mode says.
+        """
+        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm" or self.dynamo.sidecar:
+            return
+        if self.backend.dp_launch_mode != "per_gpu":
+            return
+
+        dp_modes = self.backend.find_dp_modes()
+        if not dp_modes:
+            return
+
+        logger.warning(
+            "vLLM DP mode(s) %s use deprecated dp_launch_mode=per_gpu; "
+            "use backend.dp_launch_mode: per_node instead. per_gpu will be removed in a future release",
+            ", ".join(mode_name for mode_name, _ in dp_modes),
+        )
+
+    def _validate_trtllm_serve(self):
+        """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
+        failing mid-job at the frontend stage.
+
+        The trtllm_serve frontend supports either one direct aggregate worker or a
+        single ``trtllm-serve disaggregated`` orchestrator. Both use the
+        single-frontend path (no nginx/multi-frontend).
+        """
+        if self.frontend.type != "trtllm_serve":
+            return
+        if self.backend_type != "trtllm":
+            raise ValidationError(
+                f"frontend.type: trtllm_serve requires backend.type: trtllm; got {self.backend_type!r}"
+            )
+        if self.frontend.enable_multiple_frontends:
+            raise ValidationError(
+                "frontend.type: trtllm_serve uses one public endpoint; set frontend.enable_multiple_frontends: false"
+            )
+        if not self.resources.is_disaggregated and self.resources.num_agg != 1:
+            raise ValidationError(
+                "frontend.type: trtllm_serve aggregate mode requires exactly one "
+                "aggregate worker (set resources.agg_workers: 1)"
+            )
+
+    def _validate_vllm_frontend(self):
+        """Catch direct-vLLM frontend misconfigurations at load time.
+
+        Direct vLLM means the aggregate `vllm serve` worker owns the OpenAI port
+        itself. It is not a disaggregated router and does not support the nginx
+        multi-frontend path.
+        """
+        if self.frontend.type != "vllm":
+            return
+        if self.backend_type != "vllm":
+            raise ValidationError(f"frontend.type: vllm requires backend.type: vllm; got {self.backend_type!r}")
+        if self.frontend.enable_multiple_frontends:
+            raise ValidationError(
+                "frontend.type: vllm binds vllm serve directly; set frontend.enable_multiple_frontends: false"
+            )
+        if self.resources.is_disaggregated:
+            raise ValidationError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
+        if self.resources.num_agg != 1:
+            raise ValidationError(
+                f"frontend.type: vllm supports exactly one aggregate worker, got {self.resources.num_agg}. "
+                "vllm serve owns the public port directly and there is no router to load-balance "
+                "replicas, so extra workers would either idle or collide on the port. "
+                "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
+                "worker across nodes with resources.agg_nodes."
+            )
+
+    def _validate_sglang_direct_frontend(self):
+        """Catch direct-SGLang frontend misconfigurations at load time.
+
+        ``frontend.type: sglang`` means the one aggregate ``sglang.launch_server``
+        owns the public port itself. Several replicas or a prefill/decode layout
+        need ``sglang-router`` (or ``dynamo``); a schema 2 recipe that still says
+        ``sglang`` for those is an old router recipe and is rejected rather than
+        silently run unbalanced.
+        """
+        if self.frontend.type != "sglang":
+            return
+        if self.backend_type != "sglang":
+            raise ValidationError(f"frontend.type: sglang requires engine sglang; got {self.backend_type!r}")
+        if self.frontend.enable_multiple_frontends:
+            raise ValidationError(
+                "frontend.type: sglang binds sglang.launch_server directly; set frontend.enable_multiple_frontends: false"
+            )
+        if self.resources.is_disaggregated:
+            raise ValidationError(
+                "frontend.type: sglang supports one aggregate worker only, not a prefill/decode layout. "
+                "The SGLang router is frontend.type: sglang-router (renamed in 2.0; `srtctl migrate` rewrites "
+                "schema 1 recipes)."
+            )
+        if self.resources.num_agg != 1:
+            raise ValidationError(
+                f"frontend.type: sglang supports exactly one aggregate worker, got {self.resources.num_agg}. "
+                "sglang.launch_server owns the public port directly and there is no router to balance "
+                "replicas. Use frontend.type: sglang-router (the SGLang Model Gateway, renamed in 2.0) or dynamo."
+            )
+        if self.dynamo.sidecar:
+            raise ValidationError("frontend.type: sglang does not support dynamo.sidecar; use frontend.type: dynamo")
+
+    def _validate_static_router_frontend(self):
+        """Validate static-router/backend pairings and vLLM DP ownership."""
+        required_backend = {"sglang-router": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
+        if required_backend is None:
+            return
+        if self.backend_type != required_backend:
+            raise ValidationError(
+                f"frontend.type: {self.frontend.type} requires backend.type: {required_backend}; "
+                f"got {self.backend_type!r}"
+            )
+
+        if self.frontend.type != "vllm-router":
+            return
+        if not isinstance(self.backend, VLLMProtocol):
+            raise ValidationError(f"frontend.type: vllm-router requires backend.type: vllm; got {self.backend_type!r}")
+        backend = self.backend
+
+        endpoint_gpu_counts: dict[Literal["prefill", "decode", "agg"], int] = {
+            "prefill": self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
+            "decode": self.resources.gpus_per_decode if self.resources.num_decode else 0,
+            "agg": self.resources.gpus_per_agg if self.resources.num_agg else 0,
+        }
+        if backend.find_dp_modes() and backend.dp_launch_mode != "per_node":
+            raise ValidationError(
+                "frontend.type: vllm-router with data-parallel-size requires "
+                "backend.dp_launch_mode: per_node; deprecated per_gpu processes are "
+                "Dynamo registrations, not independently routable vLLM API servers"
+            )
+
+        expansion_by_mode: dict[str, int] = {}
+        for mode, gpu_count in endpoint_gpu_counts.items():
+            if gpu_count <= 0:
+                continue
+            if not backend._is_dp_mode(mode):
+                expansion_by_mode[mode] = 1
+                continue
+            try:
+                configured_dp_size = backend._get_dp_size(mode)
+                dp_size = int(configured_dp_size) if configured_dp_size is not None else 1
+                if dp_size < 1:
+                    raise ValueError(
+                        f"vLLM {mode} data-parallel-size must be a positive integer; got {configured_dp_size!r}"
+                    )
+                replica_size = backend._get_model_parallel_size(mode)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(str(exc)) from exc
+
+            required_gpus = dp_size * replica_size
+            if required_gpus != gpu_count:
+                raise ValidationError(
+                    f"vLLM Router {mode} parallelism requires DP*TP*PP*PCP="
+                    f"{dp_size}*{replica_size}={required_gpus} GPUs, "
+                    f"but resources allocate {gpu_count} GPUs per worker"
+                )
+
+            local_gpu_count = min(gpu_count, self.resources.gpus_per_node)
+            if replica_size > local_gpu_count:
+                expansion_by_mode[mode] = 1
+            else:
+                try:
+                    expansion_by_mode[mode] = backend._get_local_dp_size(mode, local_gpu_count)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+
+        expansions = set(expansion_by_mode.values())
+        if len(expansions) > 1:
+            detail = ", ".join(f"{mode}={size}" for mode, size in expansion_by_mode.items())
+            raise ValidationError(
+                "vLLM Router has one --intra-node-data-parallel-size for all worker pools, "
+                f"but the allocated topology derives different expansion factors: {detail}"
+            )
+
+        configured_expansion = (self.frontend.args or {}).get(
+            "intra-node-data-parallel-size",
+            (self.frontend.args or {}).get("intra_node_data_parallel_size"),
+        )
+        derived_expansion = next(iter(expansions), 1)
+        try:
+            configured_expansion_value = int(configured_expansion) if configured_expansion is not None else None
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"frontend.args.intra-node-data-parallel-size must be an integer; got {configured_expansion!r}"
+            ) from exc
+        if configured_expansion_value is not None and configured_expansion_value != derived_expansion:
+            raise ValidationError(
+                "frontend.args.intra-node-data-parallel-size conflicts with the allocated vLLM topology: "
+                f"configured {configured_expansion}, derived {derived_expansion}"
+            )
+
+    def _validate_het_jobs(self):
+        """When ``resources.het_jobs`` is set to True, enforce supported shape.
+
+        Validation runs only when the per-recipe override is explicitly True;
+        a cluster-level default still in effect (recipe None) is permissive at
+        load-time and resolved later by callers that pass the cluster default
+        into ``het_components()``. This keeps a single recipe that disables het
+        via ``het_jobs: false`` from tripping on a cluster default.
+        """
+        if self.resources.het_jobs is not True:
+            return
+        if not self.resources.is_disaggregated:
+            raise ValidationError(
+                "het_jobs=true requires a disaggregated layout (set resources.prefill_nodes and resources.decode_nodes)"
+            )
+        if (self.resources.prefill_nodes or 0) < 1 or (self.resources.decode_nodes or 0) < 1:
+            raise ValidationError("het_jobs=true requires prefill_nodes >= 1 and decode_nodes >= 1")
+        if self.backend_type != "sglang":
+            raise ValidationError(
+                f"het_jobs=true is only supported on the sglang backend; got backend.type={self.backend_type!r}"
+            )
+        if self.frontend.dedicated_node or self.benchmark.client_dedicated_node:
+            raise ValidationError(
+                "frontend.dedicated_node/benchmark.client_dedicated_node are not supported together with "
+                "het_jobs=true (a dedicated frontend/client node is not carved out of a het allocation)"
+            )
+
+    def _validate_colocated_decode(self) -> None:
+        """A colocated decode layout (``decode_nodes: 0``, ``roles.decode.nodes: colocate``)
+        reserves no nodes of its own, so every decode worker has to fit on the GPUs the
+        prefill workers leave free. Run the backend's real packer against a placeholder
+        node list of ``prefill_nodes`` entries and turn its failure into a load-time error
+        instead of a ``Not enough nodes`` crash inside the SLURM job.
+        """
+        res = self.resources
+        if not res.is_disaggregated or res.decode_nodes != 0 or not res.num_decode:
+            return
+        if (res.prefill_nodes or 0) < 1 or not res.num_prefill:
+            raise ValidationError(
+                "decode colocation (roles.decode.nodes: colocate / resources.decode_nodes: 0) needs at least "
+                "one prefill node and one prefill worker to share"
+            )
+        if self.total_nodes != res.total_nodes:
+            return  # the backend packs prefill and decode across extra nodes itself (vLLM)
+        capacity = res.prefill_nodes * res.gpus_per_node
+        demand = res.prefill_gpus + res.decode_gpus
+        layout = (
+            f"{res.num_prefill} prefill x {res.gpus_per_prefill} GPU(s) + "
+            f"{res.num_decode} decode x {res.gpus_per_decode} GPU(s) = {demand} GPU(s) on "
+            f"{res.prefill_nodes} node(s) x {res.gpus_per_node} GPU(s) = {capacity} GPU(s)"
+        )
+        if demand > capacity:
+            raise ValidationError(f"colocated decode workers do not fit on the prefill nodes: {layout}")
+        try:
+            self.backend.allocate_endpoints(
+                num_prefill=res.num_prefill,
+                num_decode=res.num_decode,
+                num_agg=0,
+                gpus_per_prefill=res.gpus_per_prefill,
+                gpus_per_decode=res.gpus_per_decode,
+                gpus_per_agg=res.gpus_per_agg,
+                gpus_per_node=res.gpus_per_node,
+                available_nodes=[f"node{i}" for i in range(res.prefill_nodes)],
+                spread_workers=res.spread_workers,
+            )
+        except (ValueError, IndexError) as exc:
+            # The packer raises ValueError when it runs out of nodes and IndexError when a
+            # partial-node worker overflows the last node; both mean "does not fit".
+            detail = str(exc) or "ran out of free GPUs on the prefill nodes"
+            raise ValidationError(
+                f"colocated decode workers cannot be packed onto the prefill nodes ({layout}): {detail}"
+            ) from exc
+
+    def _validate_dedicated_node_placement(self):
+        """A dedicated node is wasted if a placement override routes the
+        orchestrator/client somewhere else — the reserved node would then sit
+        idle while the intended workload runs on a worker node instead.
+        """
+        if self.frontend.dedicated_node and self.frontend.orchestrator_placement != "head":
+            raise ValidationError(
+                f"frontend.dedicated_node requires frontend.orchestrator_placement: head "
+                f"(got {self.frontend.orchestrator_placement!r}); otherwise the reserved node is never used"
+            )
+        if self.benchmark.client_dedicated_node and self.benchmark.client_placement != "head":
+            raise ValidationError(
+                f"benchmark.client_dedicated_node requires benchmark.client_placement: head "
+                f"(got {self.benchmark.client_placement!r}); otherwise the reserved node is never used"
+            )
 
     def _validate_mooncake_kv_store(self):
-        """Catch the common misconfiguration: mooncake_kv_store set without a
-        matching disaggregation-transfer-backend in sglang_config.
+        """Catch the common misconfiguration: mooncake_kv_store set but the
+        worker-side config doesn't actually wire mooncake into KV transfer.
 
-        Without --disaggregation-transfer-backend mooncake on the worker CLI,
-        the master we launch is unused and the workers fall back to default
-        transport — almost never what the user intends.
+        Without the per-mode flag (SGLang's ``disaggregation-transfer-backend:
+        mooncake`` or vLLM's ``kv-transfer-config`` pointing at
+        ``MooncakeConnector``), the master we launch is unused and workers fall
+        back to the default transport — almost never what the user intends.
         """
         mooncake_cfg = getattr(self.backend, "mooncake_kv_store", None)
         if mooncake_cfg is None:
             return
+        if not self.resources.is_disaggregated:
+            return
 
-        sglang_cfg = getattr(self.backend, "sglang_config", None)
+        backend_type = self.backend.type
+        if backend_type == "sglang":
+            sglang_cfg = getattr(self.backend, "sglang_config", None)
 
-        def _has_mooncake_transfer(mode_cfg: dict | None) -> bool:
-            if not mode_cfg:
+            def _sglang_has_mooncake(mode_cfg: dict | None) -> bool:
+                if not mode_cfg:
+                    return False
+                # SGLang accepts both "disaggregation-transfer-backend" and the
+                # underscore form; _config_to_cli_args normalizes them.
+                for key in ("disaggregation-transfer-backend", "disaggregation_transfer_backend"):
+                    if mode_cfg.get(key) == "mooncake":
+                        return True
                 return False
-            # SGLang accepts both "disaggregation-transfer-backend" and the
-            # underscore form; _config_to_cli_args normalizes them.
-            for key in ("disaggregation-transfer-backend", "disaggregation_transfer_backend"):
-                if mode_cfg.get(key) == "mooncake":
-                    return True
-            return False
 
-        prefill_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.prefill)
-        decode_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.decode)
+            prefill_ok = sglang_cfg is not None and _sglang_has_mooncake(sglang_cfg.prefill)
+            decode_ok = sglang_cfg is not None and _sglang_has_mooncake(sglang_cfg.decode)
 
-        if self.resources.is_disaggregated and not (prefill_ok or decode_ok):
-            raise ValidationError(
-                "mooncake_kv_store is set but neither sglang_config.prefill nor "
-                "sglang_config.decode has 'disaggregation-transfer-backend: mooncake'. "
-                "Add it to both modes (and 'disaggregation-ib-device') so workers "
-                "actually use the mooncake master srtslurm launches for you."
-            )
+            if not (prefill_ok or decode_ok):
+                raise ValidationError(
+                    "a mooncake-master service is configured but neither roles.prefill.args nor "
+                    "roles.decode.args has 'disaggregation-transfer-backend: mooncake'. "
+                    "Add it to both roles (and 'disaggregation-ib-device') so workers "
+                    "actually use the mooncake master srtslurm launches for you."
+                )
+        elif backend_type == "vllm":
+            vllm_cfg = getattr(self.backend, "vllm_config", None)
+
+            def _vllm_has_mooncake(mode_cfg: dict | None) -> bool:
+                if not mode_cfg:
+                    return False
+                # vLLM uses --kv-transfer-config (raw JSON). Mooncake shows up
+                # as either ``MooncakeStoreConnector`` / ``MooncakeConnector``
+                # at the top level, or nested inside a ``MultiConnector``'s
+                # ``kv_connector_extra_config.connectors`` list. A case-insensitive
+                # substring match covers all three forms without re-parsing JSON.
+                for key in ("kv-transfer-config", "kv_transfer_config"):
+                    val = mode_cfg.get(key)
+                    if isinstance(val, str) and "mooncake" in val.lower():
+                        return True
+                return False
+
+            prefill_ok = vllm_cfg is not None and _vllm_has_mooncake(vllm_cfg.prefill)
+            decode_ok = vllm_cfg is not None and _vllm_has_mooncake(vllm_cfg.decode)
+
+            if not (prefill_ok or decode_ok):
+                raise ValidationError(
+                    "a mooncake-master service is configured but neither roles.prefill.args nor "
+                    "roles.decode.args has a kv-transfer-config that references a "
+                    "Mooncake connector. Set kv-transfer-config to a JSON value whose "
+                    "kv_connector is MooncakeStoreConnector (or MultiConnector wrapping "
+                    "one) so workers actually use the mooncake master srtslurm launches "
+                    "for you."
+                )
 
     def _validate_profiling(self):
         """Validate profiling configuration matches serving mode."""
@@ -1361,9 +2605,11 @@ class SrtConfig:
         if prof.is_torch and backend_type == "trtllm":
             raise ValidationError("torch profiling is not supported for the trtllm backend; use nsys instead")
 
-        # nsys-time is TRTLLM-only (time-based capture via nsys --delay/--duration)
-        if prof.is_nsys_time and backend_type != "trtllm":
-            raise ValidationError("nsys-time profiling is only supported for the trtllm backend")
+        # nsys-time (time-based capture via nsys --delay/--duration) is supported
+        # for all backends. get_nsys_prefix() emits a time-based command for the
+        # non-TRTLLM (vllm/sglang) path too, which is the only option for
+        # vllm+dynamo where /start_profile returns 404 and cudaProfilerApi-triggered
+        # capture can't fire.
 
         # nsys-time uses top-level delay/duration — no per-phase step configs needed
         if prof.is_nsys_time:
@@ -1404,32 +2650,292 @@ class SrtConfig:
             if (r.agg_workers or 0) <= 0:
                 raise ValidationError("Aggregated mode requires agg_workers to be > 0.")
 
-    def _validate_telemetry(self):
-        """Validate telemetry configuration."""
-        telemetry = self.telemetry
-        if telemetry is None or not telemetry.enabled:
+        # Iteration-based nsys (type: nsys) drives the vLLM engine profiler via
+        # --profiler-config, derived from the profiling: block. Forbid duplicating
+        # it in vllm_config so the two can't diverge silently.
+        if prof.type == "nsys" and backend_type == "vllm":
+            self._validate_vllm_nsys_profiler_config_not_set()
+
+    def _validate_vllm_nsys_profiler_config_not_set(self):
+        """Reject profiler-config.* in vllm_config when nsys profiling is enabled.
+
+        srtctl injects --profiler-config from the profiling: block (single source
+        of truth), so a user-supplied profiler-config in vllm_config would either
+        be overwritten or conflict with a different step window. Fail fast at
+        recipe-read time instead.
+        """
+        vllm_cfg = getattr(self.backend, "vllm_config", None)
+        if not vllm_cfg:
             return
+        for mode_name, cfg in (
+            ("prefill", vllm_cfg.prefill),
+            ("decode", vllm_cfg.decode),
+            ("aggregated", vllm_cfg.aggregated),
+        ):
+            if not cfg:
+                continue
+            bad = [k for k in cfg if str(k).replace("_", "-").startswith("profiler-config")]
+            if bad:
+                raise ValidationError(
+                    f"vllm_config.{mode_name} sets {bad}, but profiler-config.* is derived automatically "
+                    f"from the profiling: block when nsys profiling is enabled. Remove these keys."
+                )
 
-        if telemetry.provider != TelemetryProvider.SCRAPER:
-            raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
+    def _validate_dcgm_power(self):
+        """Validate DCGM power telemetry.
 
-        if not telemetry.container_image:
-            raise ValidationError("telemetry.container_image is required when telemetry is enabled")
-        if telemetry.dcgm_exporter is None:
+        It runs its collector in the orchestrator process, so it needs neither
+        the scraper image nor node_exporter. Sample and window timestamps must
+        share one host clock, which is why the benchmark client stays on the
+        head node.
+        """
+        telemetry = self.telemetry
+        exporter = telemetry.dcgm_exporter
+        if exporter is None:
             raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
-        if telemetry.node_exporter is None:
-            raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
-        if telemetry.default_frequency <= 0:
-            raise ValidationError("telemetry.default_frequency must be positive")
-        if telemetry.sync_interval_secs < 0:
-            raise ValidationError("telemetry.sync_interval_secs must be >= 0")
-        if telemetry.compaction_threads < 0:
-            raise ValidationError("telemetry.compaction_threads must be >= 0")
+        if not exporter.container_image:
+            raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
+        if not 1 <= exporter.port <= 65535:
+            raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
+
+        for name in ("startup_timeout_seconds",):
+            if not _is_finite_positive(getattr(telemetry, name)):
+                raise ValidationError(f"telemetry.{name} must be finite and positive")
+        if telemetry.collect_interval_ms <= 0:
+            raise ValidationError("telemetry.collect_interval_ms must be positive")
+        if telemetry.collect_interval_ms > _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS * 1000:
+            raise ValidationError(
+                f"telemetry.collect_interval_ms={telemetry.collect_interval_ms} exceeds the "
+                f"{_DCGM_POWER_MAX_SAMPLE_GAP_SECONDS}s max sample gap the power validator accepts; "
+                "every window would fail sample_gap_exceeded. Set it to the intended collector "
+                "period (e.g. 1000)."
+            )
+
+        if not _is_safe_relative_subpath(telemetry.storage_subdir):
+            raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
+
+        supported_benchmarks = {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentx", "custom"}
+        if self.benchmark.type not in supported_benchmarks:
+            supported = ", ".join(sorted(supported_benchmarks))
+            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
+        if self.benchmark.client_placement != "head":
+            raise ValidationError("telemetry requires benchmark.client_placement: head")
+
+        # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
+        if self.infra.etcd_nats_dedicated_node:
+            raise ValidationError(
+                "telemetry requires infra.etcd_nats_dedicated_node: false, because a "
+                "dedicated infra node moves nodes.head off the batch host and power samples would no longer "
+                "share the benchmark's clock"
+            )
+
+        concurrencies = self.benchmark.get_concurrency_list()
+        if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
+            raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
+
+    def _dynamo_system_ports(self) -> set[int]:
+        """System-status ports that backend launches actually bind on worker nodes."""
+        if self.frontend.type != "dynamo":
+            return set()
+
+        resources = self.resources
+        nodes = [f"validation-worker-{index}" for index in range(self.total_nodes)]
+        endpoints = self.backend.allocate_endpoints(
+            num_prefill=resources.num_prefill,
+            num_decode=resources.num_decode,
+            num_agg=resources.num_agg,
+            gpus_per_prefill=resources.gpus_per_prefill,
+            gpus_per_decode=resources.gpus_per_decode,
+            gpus_per_agg=resources.gpus_per_agg,
+            gpus_per_node=resources.gpus_per_node,
+            available_nodes=nodes,
+            spread_workers=resources.spread_workers,
+        )
+        processes = self.backend.endpoints_to_processes(
+            endpoints,
+            frontend_type=self.frontend.type,
+            dynamo_sidecar=self.dynamo.sidecar,
+        )
+        if self.backend.get_srun_config().launch_per_endpoint:
+            processes = [process for process in processes if process.node_rank == 0]
+        return {process.sys_port for process in processes}
+
+    def _validate_collector_budget(self) -> None:
+        """Validate the scrape and join budget every enabled leg's collector uses.
+
+        Both the DCGM and CPU legs poll with ``request_timeout_seconds`` and are
+        joined with ``collector_join_timeout_seconds``, so a leg running alone
+        needs these checked just as much as the pair does.
+        """
+        telemetry = self.telemetry
+        if not _is_finite_positive(telemetry.request_timeout_seconds):
+            raise ValidationError("telemetry.request_timeout_seconds must be finite and positive")
+        worst_case_join_seconds = 2 * (
+            2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
+        )
+        collector_join_timeout_seconds = telemetry.resolved_collector_join_timeout_seconds
+        if (
+            not _is_finite_positive(collector_join_timeout_seconds)
+            or collector_join_timeout_seconds <= worst_case_join_seconds
+        ):
+            raise ValidationError(
+                "telemetry.collector_join_timeout_seconds must be finite, positive, "
+                "and greater than two full collector cycles "
+                "(2 * (2 * telemetry.request_timeout_seconds + 1 second))"
+            )
+
+    def _validate_cpu_power_exporter(self) -> None:
+        """Validate the independent, best-effort CPU power exporter, if configured."""
+        exporter = self.telemetry.cpu_power_exporter
+        if exporter is None:
+            return
+        if not 1 <= exporter.port <= 65535:
+            raise ValidationError("telemetry.cpu_power_exporter.port must be in 1..65535")
+        if exporter.source not in ("auto", "acpi", "dcgm"):
+            raise ValidationError('telemetry.cpu_power_exporter.source must be one of: "auto", "acpi", "dcgm"')
+
+        neighbours = [("telemetry.dcgm_exporter", self.telemetry.dcgm_exporter)]
+        if self.observability.tachometer_enabled:
+            tachometer = self.observability.tachometer
+            # Compare against the *resolved* exporters: with no explicit block the
+            # tachometer still launches its built-in DCGM/node exporters (#358).
+            neighbours += [
+                ("observability.tachometer.dcgm_exporter", tachometer.resolved_dcgm_exporter),
+                ("observability.tachometer.node_exporter", tachometer.resolved_node_exporter),
+            ]
+        for name, neighbour_exporter in neighbours:
+            if neighbour_exporter is not None and neighbour_exporter.port == exporter.port:
+                raise ValidationError(
+                    f"telemetry.cpu_power_exporter.port={exporter.port} collides with "
+                    f"{name}.port; both run on every worker node"
+                )
+
+        if exporter.port in self._dynamo_system_ports():
+            raise ValidationError(
+                f"telemetry.cpu_power_exporter.port={exporter.port} collides with a Dynamo system port "
+                "assigned to a backend process on a worker node"
+            )
+
+    def _validate_cpu_power(self) -> None:
+        """Validate the host-side CPU power collector leg (``telemetry.cpu_power``)."""
+        cpu_power = self.telemetry.cpu_power
+        for name in ("sample_interval_seconds", "startup_timeout_seconds"):
+            if not _is_finite_positive(getattr(cpu_power, name)):
+                raise ValidationError(f"telemetry.cpu_power.{name} must be finite and positive")
+        if cpu_power.sample_interval_seconds > _CPU_POWER_MAX_SAMPLE_GAP_SECONDS:
+            raise ValidationError(
+                f"telemetry.cpu_power.sample_interval_seconds={cpu_power.sample_interval_seconds} exceeds the "
+                f"{_CPU_POWER_MAX_SAMPLE_GAP_SECONDS}s max sample gap; every window would fail sample_gap_exceeded"
+            )
+
+        if not _is_safe_relative_subpath(cpu_power.storage_subdir):
+            raise ValidationError(
+                "telemetry.cpu_power.storage_subdir must be a safe relative path below the run log directory"
+            )
+        if cpu_power.storage_subdir == self.telemetry.storage_subdir:
+            raise ValidationError(
+                "telemetry.cpu_power.storage_subdir must differ from telemetry.storage_subdir; "
+                "the two legs write their own samples and manifest"
+            )
+
+    def _reject_inert_cpu_power_demand(self) -> None:
+        """Reject mandatory CPU power semantics that nothing will act on."""
+        cpu_power = self.telemetry.cpu_power
+        if cpu_power.required:
+            raise ValidationError("telemetry.cpu_power.required has no effect unless telemetry.cpu_power.enabled")
+        if cpu_power.source != "auto":
+            raise ValidationError(
+                f'telemetry.cpu_power.source: "{cpu_power.source}" has no effect unless telemetry.cpu_power.enabled; '
+                "it names a mandatory provider for a leg that will not run"
+            )
+
+    def _validate_observability(self):
+        """Validate Tachometer collection under observability."""
+        observability = self.observability
+        tachometer = observability.tachometer
+        if not observability.tachometer_enabled:
+            return
+        if self.telemetry.enabled and self.telemetry.dcgm_exporter is not None and tachometer.dcgm_exporter is not None:
+            raise ValidationError(
+                "configure the shared DCGM exporter under telemetry, not observability.tachometer, "
+                "when DCGM power telemetry is enabled"
+            )
+        if self.telemetry.enabled and tachometer.storage_subdir == self.telemetry.storage_subdir:
+            raise ValidationError(
+                "observability.tachometer.storage_subdir and telemetry.storage_subdir must be different"
+            )
+
+        for name in ("dcgm_exporter", "node_exporter", "process_exporter"):
+            exporter = getattr(tachometer, name)
+            if exporter is None:
+                continue
+            if not exporter.container_image and not exporter.binary:
+                raise ValidationError(
+                    f"observability.tachometer.{name}: set container_image (container launch) or binary (host-native)"
+                )
+            if not 1 <= exporter.port <= 65535:
+                raise ValidationError(f"observability.tachometer.{name}.port must be in 1..65535")
+        if not tachometer.binary_path:
+            raise ValidationError("observability.tachometer.binary_path must be non-empty")
+        if tachometer.collect_interval_ms <= 0:
+            raise ValidationError("observability.tachometer.collect_interval_ms must be positive")
+        if tachometer.sync_interval_secs < 0:
+            raise ValidationError("observability.tachometer.sync_interval_secs must be >= 0")
+        if tachometer.compaction_threads < 0:
+            raise ValidationError("observability.tachometer.compaction_threads must be >= 0")
+        if not _is_safe_relative_subpath(tachometer.storage_subdir):
+            raise ValidationError(
+                "observability.tachometer.storage_subdir must be a safe relative path below the run log directory"
+            )
+
+    def _validate_telemetry(self):
+        """Validate telemetry config.
+
+        ``cpu_power_exporter`` (head-node scraper) and ``cpu_power`` (host-side
+        collector) are independent legs: each is validated whenever telemetry
+        is enabled, regardless of which provider (dcgm-power today) is
+        configured. Either is also sufficient on its own -- a recipe may
+        enable telemetry for CPU power alone, with no ``dcgm_exporter`` at all.
+        """
+        telemetry = self.telemetry
+        if telemetry is None:
+            return
+        if not telemetry.enabled:
+            if telemetry.cpu_power.enabled:
+                raise ValidationError("telemetry.cpu_power.enabled requires telemetry.enabled")
+            self._reject_inert_cpu_power_demand()
+            return
+        if telemetry.cpu_power.enabled:
+            if not _is_safe_relative_subpath(telemetry.storage_subdir):
+                raise ValidationError(
+                    "telemetry.storage_subdir must be a safe relative path below the run log directory"
+                )
+            self._validate_cpu_power()
+        else:
+            self._reject_inert_cpu_power_demand()
+        if telemetry.dcgm_exporter is not None:
+            self._validate_dcgm_power()
+        elif telemetry.cpu_power_exporter is None and not telemetry.cpu_power.enabled:
+            raise ValidationError(
+                "telemetry.enabled requires telemetry.dcgm_exporter, telemetry.cpu_power_exporter, "
+                "or telemetry.cpu_power.enabled; otherwise there is nothing to collect"
+            )
+        self._validate_collector_budget()
+        self._validate_cpu_power_exporter()
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
+        from srtctl.core.config import expand_engine_config_defaults
+        from srtctl.core.placement import expand_placement
+        from srtctl.core.roles import expand_roles
+        from srtctl.services.normalize import expand_services
+
         with open(yaml_path) as f:
             data = yaml.safe_load(f)
+        expand_roles(data)
+        expand_placement(data)
+        expand_services(data)
+        expand_engine_config_defaults(data)
         schema = cls.Schema()
         return schema.load(data)
 
@@ -1440,6 +2946,36 @@ class SrtConfig:
         return self.backend.get_served_model_name(default)
 
     @property
+    def total_nodes(self) -> int:
+        """Worker node count, adjusted for backend-specific packing."""
+        if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
+            num_prefill=self.resources.num_prefill,
+            num_decode=self.resources.num_decode,
+            num_agg=self.resources.num_agg,
+            gpus_per_prefill=self.resources.gpus_per_prefill,
+            gpus_per_decode=self.resources.gpus_per_decode,
+            gpus_per_agg=self.resources.gpus_per_agg,
+            gpus_per_node=self.resources.gpus_per_node,
+        ):
+            total_worker_gpus = (
+                self.resources.prefill_gpus
+                + self.resources.decode_gpus
+                + self.resources.num_agg * self.resources.gpus_per_agg
+            )
+            return (total_worker_gpus + self.resources.gpus_per_node - 1) // self.resources.gpus_per_node
+        return self.resources.total_nodes
+
+    @property
     def backend_type(self) -> str:
         """Get the backend type string."""
         return self.backend.type
+
+
+def installs_dynamo(config: SrtConfig) -> bool:
+    """Whether this config installs dynamo into its containers (needs root inside).
+
+    Single source of truth for the ENROOT_REMAP_ROOT srun injection (workers +
+    dynamo frontend) and its dry-run display: dynamo is only installed when the
+    dynamo frontend is selected and install isn't disabled.
+    """
+    return config.frontend.type == "dynamo" and config.dynamo.install

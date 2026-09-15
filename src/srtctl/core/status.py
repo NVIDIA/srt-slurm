@@ -152,7 +152,12 @@ class StatusReporter:
 
         return self._put(payload.model_dump(exclude_none=True))
 
-    def report_started(self, config: "SrtConfig", runtime: "RuntimeContext") -> bool:
+    def report_started(
+        self,
+        config: "SrtConfig",
+        runtime: "RuntimeContext",
+        resource_snapshot: dict | None = None,
+    ) -> bool:
         """Report job started with initial metadata.
 
         Args:
@@ -165,6 +170,7 @@ class StatusReporter:
         if not self.enabled:
             return False
 
+        resource_snapshot = resource_snapshot or {}
         metadata = {
             "model": {
                 "path": str(config.model.path),
@@ -176,6 +182,8 @@ class StatusReporter:
                 "prefill_workers": config.resources.num_prefill,
                 "decode_workers": config.resources.num_decode,
                 "agg_workers": config.resources.num_agg,
+                "cpu_allocation": resource_snapshot.get("cpus"),
+                "cpu_check": resource_snapshot.get("cpu_check"),
             },
             "benchmark": {
                 "type": config.benchmark.type,

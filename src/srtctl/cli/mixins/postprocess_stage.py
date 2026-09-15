@@ -6,8 +6,7 @@ Post-process stage mixin for SweepOrchestrator.
 
 Handles:
 - Benchmark result extraction
-- Optional node metrics CSV export (``analysis.srtlog``)
-- srtlog parsing and S3 upload
+- S3 upload of the whole log directory
 - AI-powered failure analysis using Claude Code CLI
 
 AI analysis uses Claude Code in headless mode (-p flag) with OpenRouter for authentication.
@@ -26,11 +25,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
-from srtctl.core.config import get_srtslurm_setting, load_cluster_config
+from srtctl.core.config import load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
+from srtctl.ruter import normalize_run
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -39,9 +39,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-POSTPROCESS_PARSE_FAILED_EXIT = 20
 POSTPROCESS_UPLOAD_FAILED_EXIT = 11
-NODE_METRICS_EXPORT_TIMEOUT_SEC = 600
 
 
 class PostProcessStageMixin:
@@ -80,7 +78,7 @@ class PostProcessStageMixin:
         try:
             schema = AIAnalysisConfig.Schema()
             return schema.load(ai_config_dict)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Failed to parse reporting.ai_analysis config: %s", e)
             return None
 
@@ -105,7 +103,7 @@ class PostProcessStageMixin:
         try:
             schema = S3Config.Schema()
             return schema.load(s3_dict)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Failed to parse reporting.s3 config: %s", e)
             return None
 
@@ -129,9 +127,15 @@ class PostProcessStageMixin:
         At submit time, config.yaml, sbatch_script.sh, and {job_id}.json are saved
         to outputs/{job_id}/, but S3 syncs outputs/{job_id}/logs/. This copies them
         into logs/ so they get uploaded alongside benchmark results and worker logs.
+
+        Override/zip submissions also write a resolved runtime config next to the
+        source as config_{suffix}.yaml (or config_resolved.yaml). Glob all
+        config*.yaml files so the actually-executed resolved config is uploaded
+        too, not just the unresolved source config.yaml.
         """
         output_dir = self.runtime.log_dir.parent
-        files_to_copy = ["config.yaml", "sbatch_script.sh", f"{self.runtime.job_id}.json", GIT_STATE_FILENAME]
+        config_files = sorted(p.name for p in output_dir.glob("config*.yaml"))
+        files_to_copy = [*config_files, "sbatch_script.sh", f"{self.runtime.job_id}.json", GIT_STATE_FILENAME]
         for name in files_to_copy:
             src = output_dir / name
             if not src.exists():
@@ -140,7 +144,7 @@ class PostProcessStageMixin:
             try:
                 shutil.copy2(src, dst)
                 logger.info("Copied %s to log directory", name)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to copy %s to log directory: %s", name, e)
 
     def run_postprocess(self, exit_code: int, reporter: "StatusReporter | None" = None) -> None:
@@ -150,7 +154,7 @@ class PostProcessStageMixin:
         1. Copy config YAML into log directory (for S3 upload)
         2. Rollup generation (benchmark-specific normalization)
         3. Benchmark result extraction (reads rollup or falls back to raw)
-        4. srtlog parsing + S3 upload (if S3 configured)
+        4. S3 upload of the whole log directory (if S3 configured)
         5. Eager push of ``logs_url`` to the status API right after the S3 sync
            completes, so downstream consumers can fetch results from S3 even
            if later stages below fail or hang.
@@ -193,11 +197,22 @@ class PostProcessStageMixin:
         # Compare against previous lockfile if this was a lockfile re-run
         self._compare_against_previous_lock()
 
-        # Export per-node batch CSVs + gen_throughput summary (optional)
-        self._export_node_metrics_csv()
+        # Keep the prepared bundle inside logs/ so the existing S3 sync below
+        # transfers it with the raw benchmark artifacts.
+        self._normalize_ruter()
+        # Build the component perf dashboard. Deliberately ordered BEFORE the S3 sync
+        # below: the sync ships the whole log dir, so building here is what gets
+        # perf_dashboard.{html,json} and its bundle off the cluster. Building after
+        # would leave them behind on a node whose /lustre scratch is transient.
+        self._build_perf_dashboard()
 
-        # Run srtlog + S3 upload in single container (if S3 configured)
-        _parquet_path, s3_url = self._run_postprocess_container()
+        # Best-effort CPU/GPU energy-per-token report. Same ordering
+        # requirement as the perf dashboard above: must land before the S3
+        # sync so it ships with the rest of the log directory.
+        self._build_power_energy_report()
+
+        # Upload the log directory to S3 (if configured)
+        s3_url = self._run_postprocess_container()
 
         # Eager push of logs_url to the status API. Fires BEFORE AI analysis so
         # a hanging/crashing analyzer does not strand the artifact pointer.
@@ -214,6 +229,112 @@ class PostProcessStageMixin:
             if ai_config and ai_config.enabled:
                 logger.info("Running AI-powered failure analysis...")
                 self._run_ai_analysis(ai_config)
+
+    def _normalize_ruter(self) -> None:
+        """Best-effort Dynamo post-processing shared with the direct Bash lifecycle."""
+        if self.config.frontend.type != "dynamo" or not self.config.observability.enabled:
+            return
+        try:
+            report = normalize_run(
+                self.runtime.log_dir.parent,
+                output_dir=self.runtime.log_dir / ".ruter",
+            )
+            logger.info(
+                "ruter normalized router_events=%d worker_events=%d worker_logs=%d",
+                report.router_events,
+                report.worker_events,
+                report.worker_logs,
+            )
+            for warning in report.warnings:
+                logger.warning("ruter: %s", warning)
+        except Exception as error:  # noqa: BLE001
+            logger.warning("ruter normalization failed: %s", error)
+
+    def _build_perf_dashboard(self) -> None:
+        """Render the component perf dashboard from this run's own artifacts.
+
+        Turns whatever the run captured — the tachometer parquet or the client's own
+        metrics export, SPAN_CLOSED lines, the request trace, the per-iteration log —
+        into `<log_dir>/perf_dashboard.{html,json}` plus the intermediate bundle, so
+        one submission yields the page with no second hand-driven step from a
+        checkout.
+
+        Runs on every job; `observability.enabled` changes which tabs the page carries,
+        not whether it is built. Best-effort: `try_build` swallows its own failures,
+        and the extra guard here means even an import error cannot fail a benchmark
+        that has already produced results.
+        """
+        try:
+            from srtctl.analysis.perf_dashboard import try_build
+
+            try_build(self.config, self.runtime)
+        except Exception as e:  # noqa: BLE001 - visualisation is never fatal
+            logger.warning("Perf dashboard build skipped: %s", e)
+
+    def _build_power_energy_report(self) -> None:
+        """Best-effort CPU/GPU trapezoidal energy report, written next to the samples.
+
+        Quietly skipped (DEBUG only) whenever it does not apply: telemetry
+        disabled (no power CSVs), a benchmark type without sa-bench/aiperf
+        timing artifacts (e.g. lm-eval, gpqa), or a serve-only run with no
+        formal benchmark window. Runs after ``finalize_power_telemetry`` /
+        ``finalize_cpu_power_telemetry`` in ``do_sweep.py``'s cleanup block,
+        so the CPU/GPU ``samples.csv`` files are already durable by the time
+        this executes.
+        """
+        try:
+            from srtctl.analysis.power_energy_report import PowerReportError, build_reports, report_to_dict
+        except ImportError as e:
+            logger.warning("Power energy report unavailable (import failed): %s", e)
+            return
+
+        try:
+            reports = build_reports(self.runtime.log_dir)
+        except PowerReportError as e:
+            logger.debug("Power energy report skipped: %s", e)
+            return
+        except Exception as e:  # noqa: BLE001 - post-processing must never fail the benchmark
+            logger.warning("Power energy report failed: %s", e)
+            return
+
+        output_path = self.runtime.log_dir / "power_energy_report.json"
+        output_path.write_text(json.dumps([report_to_dict(report) for report in reports], indent=2) + "\n")
+        total_joules = sum(report.combined_total_joules for report in reports)
+        logger.info(
+            "Power energy report: %d concurrency point(s), %.1f J combined total -> %s",
+            len(reports),
+            total_joules,
+            output_path,
+        )
+
+    def start_incremental_power_report(self) -> None:
+        """Start per-case energy emission for the duration of the benchmark.
+
+        Strictly additive to ``_build_power_energy_report``: this writes each
+        case's result as soon as that case completes, so a job killed mid-sweep
+        keeps the results it already earned. Every failure is absorbed -- power
+        post-processing must never affect the sweep or its exit code.
+        """
+        try:
+            from srtctl.analysis.incremental_power import IncrementalPowerEmitter, IncrementalPowerWatcher
+
+            emitter = IncrementalPowerEmitter(self.runtime.log_dir)
+            watcher = IncrementalPowerWatcher(emitter)
+            watcher.start()
+            self._incremental_power_watcher = watcher
+            logger.info("Incremental power report started (index: %s)", emitter.index_path)
+        except Exception as e:  # noqa: BLE001 - never fatal
+            logger.warning("Incremental power report unavailable: %s", e)
+
+    def finalize_incremental_power_report(self) -> None:
+        """Stop the watcher and run a final pass against the now-closed sample files."""
+        watcher = getattr(self, "_incremental_power_watcher", None)
+        if watcher is None:
+            return
+        try:
+            watcher.stop_and_finalize()
+        except Exception as e:  # noqa: BLE001 - never fatal
+            logger.warning("Incremental power report finalization failed: %s", e)
 
     def _generate_rollup(self) -> None:
         """Run benchmark-specific rollup script to generate benchmark-rollup.json.
@@ -234,6 +355,7 @@ class PostProcessStageMixin:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                check=False,
             )
             if result.returncode != 0:
                 logger.warning("Rollup failed: %s", result.stderr)
@@ -241,7 +363,7 @@ class PostProcessStageMixin:
                 logger.info(result.stdout.strip())
         except subprocess.TimeoutExpired:
             logger.warning("Rollup script timed out")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Rollup error: %s", e)
 
     def _extract_benchmark_results(self) -> dict[str, Any] | None:
@@ -277,7 +399,7 @@ class PostProcessStageMixin:
                 return
 
             # TODO: pass benchmark results once rollup format is standardized
-            summary_lines, report_lines, issues = generate_reproduction_report(
+            summary_lines, report_lines, _issues = generate_reproduction_report(
                 lock_data,
                 new_fps,
             )
@@ -298,112 +420,21 @@ class PostProcessStageMixin:
                 report_path.write_text("\n".join(report_lines) + "\n")
                 logger.info(f"Reproduction report: {report_path}")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Lockfile comparison skipped: %s", e)
 
-    def _build_node_metrics_export_script(self, run_path: str, srtctl_root: Path) -> str:
-        """Bash script: ``mktemp`` venv, ``pip install -r analysis/requirements.txt``, then ``-m`` export.
+    def _run_postprocess_container(self) -> str | None:
+        """Upload the entire log directory to S3 from a small container on the head node.
 
-        Dependencies install only inside the ephemeral venv (no ``uv pip install --system``).
-        ``PYTHONPATH`` is set to ``srtctl_root`` so ``analysis`` resolves to ``<root>/analysis/``.
-        """
-        requirements = srtctl_root / "analysis" / "requirements.txt"
-        q_root = shlex.quote(str(srtctl_root))
-        q_req = shlex.quote(str(requirements))
-        q_run = shlex.quote(run_path)
-        return f"""
-set -euo pipefail
-
-VENV_DIR=$(mktemp -d)
-cleanup() {{ rm -rf "$VENV_DIR"; }}
-trap cleanup EXIT
-
-python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/pip" install -q -r {q_req}
-export PYTHONPATH={q_root}
-"$VENV_DIR/bin/python" -m analysis.srtlog.export_node_metrics {q_run}
-"""
-
-    def _export_node_metrics_csv(self) -> None:
-        """Export node batch metrics CSVs via ``analysis.srtlog.export_node_metrics``.
-
-        Controlled by ``benchmark.export_node_metrics``. Runs a **subprocess** whose bash
-        script creates a temporary venv, ``pip install -r <srtctl_root>/analysis/requirements.txt``,
-        then ``python -m analysis.srtlog.export_node_metrics <run_path>`` with ``PYTHONPATH``
-        set to ``srtctl_root`` from ``srtslurm.yaml``.
-
-        Writes under ``<job_output>/logs/node_metrics/`` (same layout as manual export).
-        """
-        if not self.config.benchmark.export_node_metrics:
-            return
-
-        srtctl_root = get_srtslurm_setting("srtctl_root")
-        if not srtctl_root:
-            logger.warning(
-                "benchmark.export_node_metrics is true but srtslurm.yaml has no srtctl_root; skipping CSV export"
-            )
-            return
-
-        root = Path(srtctl_root).resolve()
-        if not root.is_dir():
-            logger.warning("srtctl_root is not a directory (%s); skipping node metrics CSV export", root)
-            return
-
-        requirements = root / "analysis" / "requirements.txt"
-        if not requirements.is_file():
-            logger.warning("analysis/requirements.txt missing at %s; skipping node metrics CSV export", requirements)
-            return
-
-        run_path = self.runtime.log_dir.parent.resolve()
-        script = self._build_node_metrics_export_script(str(run_path), root)
-
-        try:
-            logger.info("Exporting node metrics CSVs in subprocess (run_path=%s)...", run_path)
-            result = subprocess.run(
-                ["bash", "-c", script],
-                capture_output=True,
-                text=True,
-                timeout=NODE_METRICS_EXPORT_TIMEOUT_SEC,
-            )
-            if result.stdout:
-                for line in result.stdout.rstrip().splitlines():
-                    logger.info("%s", line)
-            if result.stderr:
-                for line in result.stderr.rstrip().splitlines():
-                    logger.warning("%s", line)
-            if result.returncode != 0:
-                logger.warning(
-                    "Node metrics CSV export subprocess failed (exit %d, run_path=%s)",
-                    result.returncode,
-                    run_path,
-                )
-            else:
-                logger.info("Node metrics CSV export subprocess finished (run_path=%s)", run_path)
-        except subprocess.TimeoutExpired:
-            logger.warning(
-                "Node metrics CSV export subprocess timed out after %d s (run_path=%s)",
-                NODE_METRICS_EXPORT_TIMEOUT_SEC,
-                run_path,
-            )
-        except Exception as e:
-            logger.warning("Node metrics CSV export error: %s", e)
-
-    def _run_postprocess_container(self) -> tuple[Path | None, str | None]:
-        """Run srtlog and upload entire log directory to S3.
-
-        Uploads the complete log directory including:
-        - Worker logs (prefill_*.out, decode_*.out, etc.)
-        - Benchmark output (benchmark.out, artifacts/)
-        - Parquet files from srtlog (cached_assets/)
-        - Any other artifacts
-
-        Returns:
-            (parquet_path, s3_url) tuple - s3_url points to the log directory
+        Ships worker logs, benchmark output and artifacts, the tachometer parquet,
+        the perf dashboard and its bundle, and everything else under ``logs/``.
+        Returns the S3 URL of the log directory, or None when S3 is not
+        configured or the upload failed.
         """
         s3_config = self._get_s3_config()
         if not s3_config:
-            logger.debug("S3 not configured, skipping srtlog/upload")
-            return None, None
+            logger.debug("S3 not configured, skipping upload")
+            return None
 
         # S3 path: {prefix}/{YYYY-MM-DD}/{job_id}/
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -413,7 +444,6 @@ export PYTHONPATH={q_root}
         # Build endpoint flag if custom endpoint provided
         endpoint_flag = f"--endpoint-url {s3_config.endpoint_url}" if s3_config.endpoint_url else ""
 
-        # Build the post-processing script
         script = self._build_postprocess_script(s3_url, endpoint_flag)
 
         # Build env for AWS credentials
@@ -428,7 +458,7 @@ export PYTHONPATH={q_root}
             env["AWS_DEFAULT_REGION"] = s3_config.region
 
         try:
-            logger.info("Running post-processing container (srtlog + S3 sync)...")
+            logger.info("Uploading the log directory to %s...", s3_url)
             proc = start_srun_process(
                 command=["bash", "-c", script],
                 nodelist=[self.runtime.nodes.head],
@@ -436,67 +466,43 @@ export PYTHONPATH={q_root}
                 container_image="python:3.11",
                 container_mounts={self.runtime.log_dir: Path("/logs")},
                 env_to_set=env,
+                het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
             )
-            proc.wait(timeout=600)  # 10 min timeout for install + parse + full sync
-
-            parquet_path = self.runtime.log_dir / "cached_assets" / "node_metrics.parquet"
+            proc.wait(timeout=600)  # 10 min for the awscli install plus a full sync
 
             if proc.returncode == 0:
-                logger.info("Post-processing complete: %s", s3_url)
-                return parquet_path if parquet_path.exists() else None, s3_url
-            if proc.returncode == POSTPROCESS_PARSE_FAILED_EXIT:
-                logger.warning("srtlog parsing failed, but raw logs were still uploaded to %s", s3_url)
-                return parquet_path if parquet_path.exists() else None, s3_url
-            else:
-                logger.warning("Post-processing failed (exit code: %s)", proc.returncode)
-                return parquet_path if parquet_path.exists() else None, None
+                logger.info("Upload complete: %s", s3_url)
+                return s3_url
+            logger.warning("S3 upload failed (exit code: %s)", proc.returncode)
+            return None
 
         except subprocess.TimeoutExpired:
-            logger.warning("Post-processing container timed out")
+            logger.warning("S3 upload container timed out")
             proc.kill()
-            return None, None
-        except Exception as e:
-            logger.warning("Post-processing container failed: %s", e)
-            return None, None
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("S3 upload container failed: %s", e)
+            return None
 
     def _build_postprocess_script(self, s3_url: str, endpoint_flag: str) -> str:
-        """Build the post-processing shell script.
-
-        Upload is always attempted if awscli installs successfully. Parsing is
-        best-effort so raw logs survive parser/tooling failures.
-        """
+        """Bash for the upload container: install awscli, record the destination, sync ``/logs``."""
         return f"""
 set -u
 set -o pipefail
 
-PARSE_STATUS=0
-UPLOAD_STATUS=0
-
-echo "Installing uv and awscli..."
-if ! pip install uv awscli; then
-  echo "Failed to install uv/awscli"
+echo "Installing awscli..."
+if ! pip install awscli; then
+  echo "Failed to install awscli"
   exit {POSTPROCESS_UPLOAD_FAILED_EXIT}
 fi
 
-echo "Installing srtlog..."
-if cd /tmp && git clone --depth 1 https://github.com/ishandhanani/srtlog.git && uv pip install --system ./srtlog; then
-  echo "Running srtlog parse..."
-  cd /logs
-  srtlog parse . || PARSE_STATUS=$?
-else
-  echo "Failed to install srtlog; continuing with raw log upload"
-  PARSE_STATUS=1
-fi
-
 cat > /logs/postprocess-status.json <<EOF
-{{"parse_status": $PARSE_STATUS, "s3_url": "{s3_url}"}}
+{{"s3_url": "{s3_url}"}}
 EOF
 
 echo "Uploading entire log directory to S3..."
-aws s3 sync /logs {s3_url} {endpoint_flag} || UPLOAD_STATUS=$?
-
-if [ "$UPLOAD_STATUS" -ne 0 ]; then
-  echo "Upload failed with status $UPLOAD_STATUS"
+if ! aws s3 sync /logs {s3_url} {endpoint_flag}; then
+  echo "Upload failed"
   exit {POSTPROCESS_UPLOAD_FAILED_EXIT}
 fi
 
@@ -505,10 +511,6 @@ echo ""
 echo "Uploaded files:"
 find /logs -type f | wc -l
 echo "files total"
-
-if [ "$PARSE_STATUS" -ne 0 ]; then
-  exit {POSTPROCESS_PARSE_FAILED_EXIT}
-fi
 """
 
     def _run_ai_analysis(self, config: AIAnalysisConfig) -> None:
@@ -588,6 +590,7 @@ echo "AI analysis complete."
                 container_image="python:3.11",
                 container_mounts={self.runtime.log_dir: Path("/logs")},
                 env_to_set=env_to_set,
+                het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
             )
 
             # Wait for completion with timeout (15 minutes for install + analysis)
@@ -619,5 +622,5 @@ echo "AI analysis complete."
             else:
                 logger.warning("AI analysis did not produce ai_analysis.md")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("Failed to run AI analysis: %s", e)

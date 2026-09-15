@@ -13,6 +13,7 @@ Every test runs without network, GPU, or special packages — probes are mocked.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,13 +26,28 @@ from srtctl.core.fingerprint import (
     _parse_pip_packages,
     capture_fingerprint,
     check_against_fingerprint,
+    cpu_model_from_cpuinfo,
     diff_fingerprints,
     format_check_results,
     format_diff,
     generate_capture_script,
     load_fingerprint,
+    probe_cpu,
     write_fingerprint,
 )
+
+ARM_CPUINFO = """\
+processor       : 0
+BogoMIPS        : 2000.00
+Features        : fp asimd evtstrm
+CPU implementer : 0x41
+CPU architecture: 8
+CPU variant     : 0x1
+CPU part        : 0xd49
+CPU revision    : 1
+"""
+
+ARM_CPU_MODEL = "ARM CPU implementer 0x41 part 0xd49 (architecture 8, variant 0x1, revision 1)"
 
 # ============================================================================
 # Fixtures — reusable fingerprint data
@@ -80,6 +96,7 @@ class TestOrdering:
             "pip_packages": [],
             "arch": "x86_64",
             "hostname": "node-1",
+            "cpu": {},
             "python_version": "3.11",
             "timestamp": "2026-01-01T00:00:00Z",
             "gpu": {},
@@ -92,6 +109,7 @@ class TestOrdering:
         keys = list(ordered.keys())
 
         assert keys.index("hostname") < keys.index("arch")
+        assert keys.index("arch") < keys.index("cpu")
         assert keys.index("arch") < keys.index("python_version")
         assert keys.index("python_version") < keys.index("pip_packages")
         # pip_packages always last among known fields
@@ -146,6 +164,27 @@ class TestProbes:
         assert r.ok is False
         assert r.value == UNAVAILABLE
         assert r.error == "broken"
+
+    def test_cpu_model_prefers_x86_model_name(self):
+        assert cpu_model_from_cpuinfo("processor: 0\nmodel name: Intel(R) Xeon(R) Platinum\n") == (
+            "Intel(R) Xeon(R) Platinum"
+        )
+
+    def test_cpu_model_uses_arm_fields_when_model_name_is_missing(self):
+        assert cpu_model_from_cpuinfo(ARM_CPUINFO) == ARM_CPU_MODEL
+
+    def test_probe_cpu_captures_affinity_and_slurm_allocation(self, monkeypatch):
+        monkeypatch.setattr("srtctl.core.fingerprint.os.sched_getaffinity", lambda _pid: {0, 1, 4})
+        monkeypatch.setattr("srtctl.core.fingerprint.os.cpu_count", lambda: 256)
+        monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "2")
+
+        result = probe_cpu()
+
+        assert result.ok is True
+        assert result.value["logical_cpus"] == 256
+        assert result.value["affinity_cpus"] == 3
+        assert result.value["affinity_list"] == "0-1,4"
+        assert result.value["slurm"]["SLURM_JOB_CPUS_PER_NODE"] == "2"
 
     def test_capture_with_all_probes_mocked(self):
         """capture_fingerprint works when all probes return values."""
@@ -574,6 +613,12 @@ class TestBashGeneration:
         script = generate_capture_script("/logs/fp.json")
         assert "sorted" in script
 
+    def test_script_captures_cpu_visibility(self):
+        script = generate_capture_script("/logs/fp.json")
+        assert "def cpu_info():" in script
+        assert "'cpu': cpu_info()" in script
+        assert "SLURM_JOB_CPUS_PER_NODE" in script
+
     def test_embedded_python_is_syntactically_valid(self):
         """The Python code inside the script must parse without SyntaxError.
 
@@ -624,6 +669,39 @@ class TestBashGeneration:
                 timeout=15,
             )
         assert result.returncode == 0, f"Fingerprint script failed:\n{result.stderr}"
+
+    def test_embedded_python_uses_arm_cpuinfo_fallback(self, tmp_path):
+        """The worker-container script handles ARM cpuinfo without model name."""
+        import re
+        import subprocess
+
+        output_path = tmp_path / "fingerprint.json"
+        cpuinfo_path = tmp_path / "cpuinfo"
+        cpuinfo_path.write_text(ARM_CPUINFO)
+
+        script = generate_capture_script("/tmp/test_fingerprint_output.json")
+        match = re.search(
+            r"<<'__FINGERPRINT_EOF__'\n(.+?)__FINGERPRINT_EOF__",
+            script,
+            re.DOTALL,
+        )
+        assert match
+        python_source = match.group(1)
+        python_source = python_source.replace("/tmp/test_fingerprint_output.json", str(output_path))
+        python_source = python_source.replace("/proc/cpuinfo", str(cpuinfo_path))
+        script_path = tmp_path / "fingerprint.py"
+        script_path.write_text(python_source)
+
+        result = subprocess.run(
+            ["python3", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, f"Fingerprint script failed:\n{result.stderr}"
+
+        data = json.loads(output_path.read_text())
+        assert data["cpu"]["model"] == ARM_CPU_MODEL
 
 
 # ============================================================================

@@ -40,6 +40,7 @@ import warnings
 from collections.abc import AsyncGenerator, Collection
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from multiprocessing import Pool, cpu_count
 from typing import Any
 
@@ -50,6 +51,9 @@ from backend_request_func import (
     ASYNC_REQUEST_FUNCS,
     RequestFuncInput,
     RequestFuncOutput,
+    create_dynamo_session,
+)
+from backend_request_func import (
     get_tokenizer as get_sa_bench_tokenizer,
 )
 from datasets import load_dataset
@@ -68,6 +72,7 @@ except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 
 from benchmark_utils import convert_to_pytorch_benchmark_format
+from measurement_window import MeasurementWindow
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
 
@@ -723,11 +728,15 @@ async def benchmark(
     slow_down_servers: list[str] | None = None,
     slow_down_sleep_time: float = 1.0,
     slow_down_wait_time: float = 60.0,
+    request_session: aiohttp.ClientSession | None = None,
+    measurement_window: MeasurementWindow | None = None,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
     else:
         raise ValueError(f"Unknown backend: {backend}")
+    if backend == "dynamo" and request_session is not None:
+        request_func = partial(request_func, session=request_session)
 
     print("Starting initial single prompt test run...")
     test_prompt, test_prompt_len, test_output_len, test_mm_content = input_requests[0]
@@ -790,9 +799,9 @@ async def benchmark(
     slow_bases = [s.strip() for s in (slow_down_servers or []) if s.strip()]
     slow_down_task: asyncio.Task | None = None
     if slow_bases:
-        if os.environ.get("SRTCTL_FRONTEND_TYPE") != "sglang":
+        if os.environ.get("SRTCTL_FRONTEND_TYPE") != "sglang-router":
             print(
-                "Warning: --slow-down-server ignored (SRTCTL_FRONTEND_TYPE is not sglang; "
+                "Warning: --slow-down-server ignored (SRTCTL_FRONTEND_TYPE is not sglang-router; "
                 "slow_down applies to SGLang worker HTTP /slow_down only)."
             )
         else:
@@ -828,30 +837,46 @@ async def benchmark(
         async with semaphore:
             return await request_func(request_func_input=request_func_input, pbar=pbar)
 
+    # Publish ``running`` before any measured request can be scheduled. Capture
+    # the final start immediately afterward so distributed-filesystem latency
+    # from the atomic marker write is not charged to benchmark throughput.
+    if measurement_window is not None:
+        measurement_window.mark_running(time.time())
     benchmark_start_time = time.perf_counter()
+    benchmark_start_time_unix = time.time()
     tasks: list[asyncio.Task] = []
-    async for request in get_request(input_requests, request_rate, burstiness):
-        prompt, prompt_len, output_len, mm_content = request
-        req_model_id, req_model_name = model_id, model_name
-        if lora_modules:
-            req_lora_module = next(lora_modules)
-            req_model_id, req_model_name = req_lora_module, req_lora_module
+    try:
+        async for request in get_request(input_requests, request_rate, burstiness):
+            prompt, prompt_len, output_len, mm_content = request
+            req_model_id, req_model_name = model_id, model_name
+            if lora_modules:
+                req_lora_module = next(lora_modules)
+                req_model_id, req_model_name = req_lora_module, req_lora_module
 
-        request_func_input = RequestFuncInput(
-            model=req_model_id,
-            model_name=req_model_name,
-            prompt=prompt,
-            api_url=api_url,
-            prompt_len=prompt_len,
-            output_len=output_len,
-            logprobs=logprobs,
-            best_of=best_of,
-            multi_modal_content=mm_content,
-            ignore_eos=ignore_eos,
-        )
-        tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
-    outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
-    
+            request_func_input = RequestFuncInput(
+                model=req_model_id,
+                model_name=req_model_name,
+                prompt=prompt,
+                api_url=api_url,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                logprobs=logprobs,
+                best_of=best_of,
+                multi_modal_content=mm_content,
+                ignore_eos=ignore_eos,
+            )
+            tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
+        outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
+    except BaseException:
+        if backend == "dynamo" and request_session is not None:
+            # A shared pool must outlive every request using it. Preserve the
+            # historical task behavior when connection reuse is disabled.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
     if slow_down_task is not None and not slow_down_task.done():
         slow_down_task.cancel()
         try:
@@ -878,7 +903,19 @@ async def benchmark(
     if pbar is not None:
         pbar.close()
 
-    benchmark_duration = time.perf_counter() - benchmark_start_time
+    benchmark_end_time = time.perf_counter()
+    benchmark_end_time_unix = time.time()
+    benchmark_duration = benchmark_end_time - benchmark_start_time
+    if measurement_window is not None:
+        measurement_window.record_boundary(
+            start_unix=benchmark_start_time_unix,
+            end_unix=benchmark_end_time_unix,
+            duration=benchmark_duration,
+        )
+    if backend == "dynamo" and request_session is not None and not request_session.closed:
+        await request_session.close()
+        # Allow asyncio to finish closing pooled transports before CPU-heavy metrics.
+        await asyncio.sleep(0)
 
     metrics, actual_output_lens = calculate_metrics(
         input_requests=input_requests,
@@ -904,6 +941,8 @@ async def benchmark(
 
     result = {
         "duration": benchmark_duration,
+        "benchmark_start_time_unix": benchmark_start_time_unix,
+        "benchmark_end_time_unix": benchmark_end_time_unix,
         "completed": metrics.completed,
         "total_input_tokens": metrics.total_input,
         "total_output_tokens": metrics.total_output,
@@ -961,6 +1000,28 @@ async def benchmark(
     print("=" * 50)
 
     return result
+
+
+async def run_benchmark_with_cleanup(
+    *,
+    reuse_http_connections: bool = False,
+    **benchmark_kwargs: Any,
+) -> dict[str, Any]:
+    """Run a benchmark, optionally with a loop-local Dynamo connection pool."""
+    if not reuse_http_connections:
+        return await benchmark(**benchmark_kwargs)
+
+    if benchmark_kwargs.get("backend") != "dynamo":
+        raise ValueError("--reuse-http-connections is currently supported only by the Dynamo backend.")
+
+    session = create_dynamo_session()
+    try:
+        return await benchmark(**benchmark_kwargs, request_session=session)
+    finally:
+        # benchmark() closes the pool before CPU-heavy metrics on success;
+        # this is the failure/cancellation fallback.
+        if not session.closed:
+            await session.close()
 
 
 def check_goodput_args(args):
@@ -1198,74 +1259,97 @@ def main(args: argparse.Namespace):
     gc.collect()
     gc.freeze()
 
-    benchmark_result = asyncio.run(
-        benchmark(
-            backend=backend,
-            api_url=api_url,
-            base_url=base_url,
-            model_id=model_id,
-            model_name=model_name,
-            tokenizer=tokenizer,
-            input_requests=input_requests,
-            logprobs=args.logprobs,
-            best_of=args.best_of,
-            request_rate=args.request_rate,
-            burstiness=args.burstiness,
-            disable_tqdm=args.disable_tqdm,
-            profile=args.profile,
-            selected_percentile_metrics=args.percentile_metrics.split(","),
-            selected_percentiles=[float(p) for p in args.metric_percentiles.split(",")],
-            ignore_eos=args.ignore_eos,
-            goodput_config_dict=goodput_config_dict,
-            max_concurrency=args.max_concurrency,
-            lora_modules=args.lora_modules,
-            slow_down_servers=args.slow_down_servers,
-            slow_down_sleep_time=args.slow_down_sleep_time,
-            slow_down_wait_time=args.slow_down_wait_time,
-        )
+    measurement_window = MeasurementWindow.create(
+        save_result=args.save_result,
+        result_dir=args.result_dir,
+        result_filename=args.result_filename,
+        concurrency=args.max_concurrency,
     )
+    try:
+        benchmark_result = asyncio.run(
+            run_benchmark_with_cleanup(
+                reuse_http_connections=args.reuse_http_connections,
+                backend=backend,
+                api_url=api_url,
+                base_url=base_url,
+                model_id=model_id,
+                model_name=model_name,
+                tokenizer=tokenizer,
+                input_requests=input_requests,
+                logprobs=args.logprobs,
+                best_of=args.best_of,
+                request_rate=args.request_rate,
+                burstiness=args.burstiness,
+                disable_tqdm=args.disable_tqdm,
+                profile=args.profile,
+                selected_percentile_metrics=args.percentile_metrics.split(","),
+                selected_percentiles=[float(p) for p in args.metric_percentiles.split(",")],
+                ignore_eos=args.ignore_eos,
+                goodput_config_dict=goodput_config_dict,
+                max_concurrency=args.max_concurrency,
+                lora_modules=args.lora_modules,
+                slow_down_servers=args.slow_down_servers,
+                slow_down_sleep_time=args.slow_down_sleep_time,
+                slow_down_wait_time=args.slow_down_wait_time,
+                measurement_window=measurement_window,
+            )
+        )
 
-    # Save config and results to json
-    if args.save_result:
-        result_json: dict[str, Any] = {}
+        # Save config and results to json
+        if args.save_result:
+            result_json: dict[str, Any] = {}
 
-        # Setup
-        current_dt = datetime.now().strftime("%Y%m%d-%H%M%S")
-        result_json["date"] = current_dt
-        result_json["backend"] = backend
-        result_json["model_id"] = model_id
-        result_json["tokenizer_id"] = tokenizer_id
-        result_json["best_of"] = args.best_of
-        result_json["num_prompts"] = args.num_prompts
+            # Setup
+            current_dt = datetime.now().strftime("%Y%m%d-%H%M%S")
+            result_json["date"] = current_dt
+            result_json["backend"] = backend
+            result_json["model_id"] = model_id
+            result_json["tokenizer_id"] = tokenizer_id
+            result_json["best_of"] = args.best_of
+            result_json["num_prompts"] = args.num_prompts
 
-        # Metadata
-        if args.metadata:
-            for item in args.metadata:
-                if "=" in item:
-                    kvstring = item.split("=")
-                    result_json[kvstring[0].strip()] = kvstring[1].strip()
-                else:
-                    raise ValueError("Invalid metadata format. Please use KEY=VALUE format.")
+            # Metadata
+            if args.metadata:
+                for item in args.metadata:
+                    if "=" in item:
+                        kvstring = item.split("=")
+                        result_json[kvstring[0].strip()] = kvstring[1].strip()
+                    else:
+                        raise ValueError("Invalid metadata format. Please use KEY=VALUE format.")
 
-        # Traffic
-        result_json["request_rate"] = args.request_rate if args.request_rate < float("inf") else "inf"
-        result_json["burstiness"] = args.burstiness
-        result_json["max_concurrency"] = args.max_concurrency
+            # Traffic
+            result_json["request_rate"] = args.request_rate if args.request_rate < float("inf") else "inf"
+            result_json["burstiness"] = args.burstiness
+            result_json["max_concurrency"] = args.max_concurrency
 
-        # Merge with benchmark result
-        result_json = {**result_json, **benchmark_result}
+            # Merge with benchmark result
+            result_json = {**result_json, **benchmark_result}
+            # Record the effective transport mode after both free-form metadata and
+            # benchmark output so it cannot disagree with this run.
+            result_json["reuse_http_connections"] = args.reuse_http_connections
 
-        # Save to file
-        base_model_id = model_id.split("/")[-1]
-        max_concurrency_str = f"-concurrency{args.max_concurrency}" if args.max_concurrency is not None else ""
-        file_name = f"{backend}-{args.request_rate}qps{max_concurrency_str}-{base_model_id}-{current_dt}.json"  # noqa
-        if args.result_filename:
-            file_name = args.result_filename
-        if args.result_dir:
-            file_name = os.path.join(args.result_dir, file_name)
-        with open(file_name, "w", encoding="utf-8") as outfile:
-            json.dump(result_json, outfile)
-        save_to_pytorch_benchmark_format(args, result_json, file_name)
+            # Save to file
+            base_model_id = model_id.split("/")[-1]
+            max_concurrency_str = f"-concurrency{args.max_concurrency}" if args.max_concurrency is not None else ""
+            file_name = f"{backend}-{args.request_rate}qps{max_concurrency_str}-{base_model_id}-{current_dt}.json"  # noqa
+            if args.result_filename:
+                file_name = args.result_filename
+            if args.result_dir:
+                file_name = os.path.join(args.result_dir, file_name)
+            with open(file_name, "w", encoding="utf-8") as outfile:
+                json.dump(result_json, outfile)
+            save_to_pytorch_benchmark_format(args, result_json, file_name)
+
+            if measurement_window is not None:
+                measurement_window.mark_completed(
+                    start_unix=benchmark_result["benchmark_start_time_unix"],
+                    end_unix=benchmark_result["benchmark_end_time_unix"],
+                    duration=benchmark_result["duration"],
+                )
+    except BaseException as exc:
+        if measurement_window is not None:
+            measurement_window.fail_at_recorded_boundary(f"{type(exc).__name__}: {exc}")
+        raise
 
 
 if __name__ == "__main__":
@@ -1322,6 +1406,14 @@ if __name__ == "__main__":
         "to execute at a time. This means that when used in combination, the "
         "actual request rate may be lower than specified with --request-rate, "
         "if the server is not processing requests fast enough to keep up.",
+    )
+    parser.add_argument(
+        "--reuse-http-connections",
+        action="store_true",
+        help=(
+            "Reuse one benchmark-scoped HTTP connection pool. "
+            "Currently supported only by the Dynamo backend."
+        ),
     )
     parser.add_argument(
         "--slow-down-server",

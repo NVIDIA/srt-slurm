@@ -2,6 +2,45 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #SBATCH --job-name={{ job_name }}
+#SBATCH --output={{ output_base }}/%j/logs/sweep_%j.log
+{% if het_components %}
+{# SLURM applies each `#SBATCH ...` to the component immediately preceding it.
+   Per-component required scheduling directives (--account/--partition/--time
+   and per-side --nodes/--ntasks/--segment) repeat inside the loop; --output
+   above is job-wide and applies once. #}
+{% for c in het_components %}
+{% if not loop.first %}
+#SBATCH hetjob
+{% endif %}
+#SBATCH --nodes={{ c.nodes }}
+{% if backend_type == "trtllm" %}
+#SBATCH --ntasks={{ c.gpus_per_node * c.nodes }}
+#SBATCH --ntasks-per-node={{ c.gpus_per_node }}
+{% else %}
+#SBATCH --ntasks={{ c.nodes }}
+#SBATCH --ntasks-per-node=1
+{% endif %}
+{% if use_gpus_per_node_directive %}
+#SBATCH --gpus-per-node={{ c.gpus_per_node }}
+{% endif %}
+{% if use_segment_sbatch_directive %}
+#SBATCH --segment={{ c.segment }}
+{% endif %}
+{% if use_exclusive_sbatch_directive %}
+#SBATCH --exclusive
+{% endif %}
+#SBATCH --account={{ account }}
+#SBATCH --time={{ time_limit }}
+#SBATCH --partition={{ partition }}
+{% for key, value in sbatch_directives.items() %}
+{% if value %}
+#SBATCH --{{ key }}={{ value }}
+{% else %}
+#SBATCH --{{ key }}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% else %}
 #SBATCH --nodes={{ total_nodes }}
 {% if backend_type == "trtllm" %}
 #SBATCH --ntasks={{ gpus_per_node * total_nodes }}
@@ -21,7 +60,6 @@
 {% endif %}
 #SBATCH --account={{ account }}
 #SBATCH --time={{ time_limit }}
-#SBATCH --output={{ output_base }}/%j/logs/sweep_%j.log
 #SBATCH --partition={{ partition }}
 {% for key, value in sbatch_directives.items() %}
 {% if value %}
@@ -30,6 +68,7 @@
 #SBATCH --{{ key }}
 {% endif %}
 {% endfor %}
+{% endif %}
 
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
@@ -54,11 +93,14 @@ export SRTCTL_OUTPUT_DIR="${OUTPUT_DIR}"
 exec 2>&1
 
 echo "=========================================="
-echo "🚀 srtctl Sweep Orchestrator"
+echo "🚀 srtctl {% if serve_only %}Serve-Only{% else %}Sweep{% endif %} Orchestrator"
 echo "=========================================="
 echo "Job ID: ${SLURM_JOB_ID}"
 echo "Config: {{ config_path }}"
 echo "Nodes: ${SLURM_JOB_NUM_NODES}"
+echo "CPUs per node: ${SLURM_JOB_CPUS_PER_NODE:-unknown}"
+echo "CPUs on orchestrator node: ${SLURM_CPUS_ON_NODE:-unknown}"
+echo "GPUs per node: ${SLURM_GPUS_PER_NODE:-unknown}"
 echo "Container: {{ container_image }}"
 echo "Start: $(date)"
 echo "=========================================="
@@ -67,10 +109,6 @@ echo ""
 # submit.py always copies the original submission config to OUTPUT_DIR/config.yaml.
 # For override jobs it also writes the resolved runtime config below.
 echo "Runtime config: ${OUTPUT_DIR}/{{ runtime_config_filename }}"
-
-# Get head node
-HEAD_NODE=$(scontrol show hostnames ${SLURM_NODELIST} | head -n1)
-echo "Head node: ${HEAD_NODE}"
 
 # Set source directory for container mounts (/configs)
 export SRTCTL_SOURCE_DIR="${SRTCTL_SOURCE}"
@@ -128,16 +166,16 @@ cd "${SRTCTL_SOURCE}"
 # errors. The flock serializes only the venv init; the lock is released
 # before the actual sweep so jobs still run in parallel.
 flock -x "${SRTCTL_SOURCE}/.venv-compute.lock" uv sync --python 3.12 --no-dev
-uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"
+uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"{% if serve_only %} --serve-only{% endif %}
 EXIT_CODE=$?
 set -e  # Re-enable exit-on-error
 
 echo ""
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
-    echo "✓ Sweep completed successfully"
+    echo "✓ {% if serve_only %}Serve-only job ended successfully{% else %}Sweep completed successfully{% endif %}"
 else
-    echo "✗ Sweep failed (exit code: $EXIT_CODE)"
+    echo "✗ {% if serve_only %}Serve-only job failed{% else %}Sweep failed{% endif %} (exit code: $EXIT_CODE)"
 fi
 echo "End: $(date)"
 echo "=========================================="

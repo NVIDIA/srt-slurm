@@ -52,11 +52,14 @@ def get_slurm_nodelist() -> list[str]:
     Returns:
         List of node hostnames, or empty list if not in SLURM.
     """
-    nodelist_raw = os.environ.get("SLURM_NODELIST", "")
+    return _expand_nodelist(os.environ.get("SLURM_NODELIST", ""))
+
+
+def _expand_nodelist(nodelist_raw: str) -> list[str]:
+    """Expand a SLURM ranged nodelist via ``scontrol show hostnames``."""
     if not nodelist_raw:
         return []
 
-    # Use scontrol to expand the nodelist
     try:
         result = subprocess.run(
             ["scontrol", "show", "hostnames", nodelist_raw],
@@ -68,6 +71,30 @@ def get_slurm_nodelist() -> list[str]:
     except (subprocess.CalledProcessError, FileNotFoundError):
         # Fallback: try simple parsing for non-ranged formats
         return [nodelist_raw]
+
+
+def get_slurm_het_nodelists() -> list[list[str]] | None:
+    """Per-component nodelists for a SLURM heterogeneous job, else None.
+
+    Returns one expanded nodelist per het component when ``SLURM_HET_SIZE`` is
+    set to a value greater than 1. Returns None for non-het jobs so callers can
+    fall back to ``get_slurm_nodelist()``.
+    """
+    het_size_raw = os.environ.get("SLURM_HET_SIZE", "")
+    if not het_size_raw:
+        return None
+    try:
+        het_size = int(het_size_raw)
+    except ValueError:
+        return None
+    if het_size < 2:
+        return None
+
+    groups: list[list[str]] = []
+    for i in range(het_size):
+        nodelist_raw = os.environ.get(f"SLURM_JOB_NODELIST_HET_GROUP_{i}", "")
+        groups.append(_expand_nodelist(nodelist_raw))
+    return groups
 
 
 # ============================================================================
@@ -146,6 +173,13 @@ def get_node_ips(
 # Process Launching
 # ============================================================================
 
+# enroot env var that remaps the unprivileged user to root inside the container
+# at container-creation time. Injected (via srun --export) only on launches that
+# install dynamo, whose cold build needs apt-get/pip-to-system as root. Passing an
+# env var (not the pyxis --container-remap-root flag) degrades gracefully: srun
+# never parses it, so an unsupporting cluster no-ops instead of failing the step.
+CONTAINER_REMAP_ROOT_EXPORT = {"ENROOT_REMAP_ROOT": "yes"}
+
 
 def start_srun_process(
     command: list[str],
@@ -159,13 +193,17 @@ def start_srun_process(
     container_mounts: dict[Path, Path] | None = None,
     env_to_pass_through: list[str] | None = None,
     env_to_set: dict[str, str] | None = None,
+    env_to_unset: list[str] | None = None,
     bash_preamble: str | None = None,
     srun_options: dict[str, str] | None = None,
+    srun_export_env: dict[str, str] | None = None,
     overlap: bool = True,
     use_bash_wrapper: bool = True,
     mpi: str | None = None,
     oversubscribe: bool = False,
     cpu_bind: str | None = None,
+    het_group: int | None = None,
+    step_name: str | None = None,
 ) -> subprocess.Popen:
     """Start a process via srun with container support.
 
@@ -183,8 +221,16 @@ def start_srun_process(
         container_mounts: Dict of host_path -> container_path mounts
         env_to_pass_through: Environment variable names to pass through
         env_to_set: Environment variables to set (name -> value)
+        env_to_unset: Environment variable names to unset before the preamble and command
         bash_preamble: Bash commands to run before the main command
+        step_name: Name the Slurm step (``srun --job-name``) so it can be found in
+            ``squeue --steps`` and signalled with ``scancel --signal`` later. SIGTERM
+            to the srun process itself only aborts the step (the task is SIGKILLed).
         srun_options: Additional srun options as dict
+        srun_export_env: Env vars to set in the srun *task* environment (rendered as
+            ``--export=ALL,K=V,...``). Unlike env_to_set (which exports inside the
+            container after it starts), these reach the container runtime at creation
+            time — required for vars like ENROOT_REMAP_ROOT that enroot reads up front.
         overlap: Use --overlap flag (default: True)
         use_bash_wrapper: Wrap command in bash -c (default: True)
         mpi: MPI type (e.g., "pmix" for TRTLLM)
@@ -220,7 +266,7 @@ def start_srun_process(
     if oversubscribe:
         srun_cmd.append("--oversubscribe")
     if cpu_bind:
-        srun_cmd.extend(["--cpu-bind", cpu_bind])
+        srun_cmd.append(f"--cpu-bind={cpu_bind}")
 
     srun_cmd.extend(["--nodes", str(nodes)])
     srun_cmd.extend(["--ntasks", str(ntasks)])
@@ -230,6 +276,11 @@ def start_srun_process(
 
     if nodelist:
         srun_cmd.extend(["--nodelist", ",".join(nodelist)])
+
+    # Route this srun to a specific component of a SLURM heterogeneous job.
+    # Omitted (None) for non-het jobs; safe to always pass-through from callers.
+    if het_group is not None:
+        srun_cmd.append(f"--het-group={het_group}")
 
     if output:
         srun_cmd.extend(["--output", output])
@@ -244,13 +295,22 @@ def start_srun_process(
             mount_str = ",".join(f"{host}:{container}" for host, container in container_mounts.items())
             srun_cmd.extend(["--container-mounts", mount_str])
 
-    # Additional srun options
     if srun_options:
         for key, value in srun_options.items():
             if value:
-                srun_cmd.extend([f"--{key}", value])
+                srun_cmd.append(f"--{key}={value}")
             else:
                 srun_cmd.append(f"--{key}")
+
+    if step_name:
+        srun_cmd.append(f"--job-name={step_name}")
+
+    # Set env vars in the task environment so the container runtime (enroot/pyxis)
+    # sees them at container-creation time. Prefix ALL to preserve srun's normal
+    # full-environment propagation and only add these on top.
+    if srun_export_env:
+        exports = ",".join(f"{k}={v}" for k, v in srun_export_env.items())
+        srun_cmd.append(f"--export=ALL,{exports}")
 
     # Build the actual command to run
     if use_bash_wrapper:
@@ -268,13 +328,22 @@ def start_srun_process(
         if cluster_preamble:
             bash_parts.insert(0, cluster_preamble)
 
-        # Add per-call preamble if provided. It runs after exports so setup
-        # / fingerprint hooks observe the same environment as the main command.
+        # Explicitly clear inherited variables after setting worker-specific
+        # values so the preamble and main command see the intended environment.
+        if env_to_unset:
+            for name in env_to_unset:
+                bash_parts.append(f"unset -- {shlex.quote(name)}")
+
+        # Add per-call preamble if provided. It runs after exports/unsets so
+        # setup / fingerprint hooks observe the same environment as the main command.
         if bash_preamble:
             bash_parts.append(bash_preamble)
 
-        # Add the main command
-        bash_parts.append(shlex.join(command))
+        # exec the main command so it replaces bash as the step's task: srun forwards
+        # SIGTERM to the task, and a bash -c parent would hold the signal until its
+        # child exited, so the child was only ever SIGKILLed at the cleanup timeout
+        # (tachometer never compacted, workers never shut down cleanly).
+        bash_parts.append("exec " + shlex.join(command))
 
         # Join with && for sequential execution
         bash_command = " && ".join(bash_parts)
@@ -334,7 +403,7 @@ def run_command(
         )
         return proc
     else:
-        result = subprocess.run(command, shell=True)
+        result = subprocess.run(command, shell=True, check=False)
         return result.returncode
 
 

@@ -1,0 +1,49 @@
+name: Tachometer
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - src/tachometer/**
+      - docker/Dockerfile.tachometer-scraper
+      - .dockerignore
+  push:
+    branches: [main, master]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - src/tachometer/**
+      - docker/Dockerfile.tachometer-scraper
+      - .dockerignore
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tachometer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Build scraper binary
+        run: cargo build --release --locked --bin tachometer-scraper

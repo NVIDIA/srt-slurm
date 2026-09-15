@@ -32,7 +32,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from itertools import accumulate
 from pathlib import Path
 
@@ -58,7 +58,7 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 def _get_term_size() -> tuple[int, int]:
     """(cols, rows) — /dev/tty works over SSH where stdin/stdout may not be a real PTY."""
-    try:
+    with contextlib.suppress(Exception):
         import fcntl
         import struct
 
@@ -66,8 +66,6 @@ def _get_term_size() -> tuple[int, int]:
             rows, cols = struct.unpack("hh", fcntl.ioctl(tty, termios.TIOCGWINSZ, b"\x00\x00\x00\x00"))
         if 10 <= rows <= 500 and 20 <= cols <= 1000:
             return cols, rows
-    except Exception:
-        pass
     try:
         sz = os.get_terminal_size()
         return sz.columns, sz.lines
@@ -153,6 +151,7 @@ def _squeue_jobs() -> dict[str, dict]:
             capture_output=True,
             text=True,
             timeout=15,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {}
@@ -234,7 +233,7 @@ def _rollup_runs(log_dir: Path) -> list[dict] | None:
         data = json.loads(rollup.read_text())
         runs = [r for r in (data.get("runs") or []) if r]
         return runs or None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -347,10 +346,8 @@ def _partial_runs(log_dir: Path) -> list[dict] | None:
     result_files.sort(key=_concurrency_from_path)
     runs = []
     for f in result_files:
-        try:
+        with contextlib.suppress(Exception):
             runs.append(_read_result_fast(f))
-        except Exception:
-            continue
     return runs or None
 
 
@@ -400,11 +397,12 @@ def _gather_job_info(job_id: str, outputs_dir: Path, sq: dict | None) -> dict:
         "runs": None,
         "live_metrics": None,
         "gpu_info": "",
+        "cpu_info": "",
         "bench_config": "",
         "log_age": "",
     }
 
-    try:
+    with contextlib.suppress(Exception):
         meta = json.loads((job_dir / f"{job_id}.json").read_text())
         if meta.get("job_name"):
             info["name"] = meta["job_name"]
@@ -413,11 +411,22 @@ def _gather_job_info(job_id: str, outputs_dir: Path, sq: dict | None) -> dict:
         p, d, gpn = res.get("prefill_nodes", 0), res.get("decode_nodes", 0), res.get("gpus_per_node", 0)
         prec = meta.get("model", {}).get("precision", "")
         info["gpu_info"] = f"{gpu}  {p}P/{d}D×{gpn}  {prec}".strip()
+        cpu_allocation = res.get("cpu_allocation") or {}
+        cpu_check = res.get("cpu_check") or {}
+        allocated_cpus = cpu_allocation.get("allocated_total")
+        effective_cpus = cpu_allocation.get("effective_for_check")
+        displayed_cpus = effective_cpus if effective_cpus is not None else allocated_cpus
+        if displayed_cpus is not None:
+            allocation_suffix = ""
+            if allocated_cpus is not None and effective_cpus is not None and allocated_cpus != effective_cpus:
+                allocation_suffix = f" eff/{allocated_cpus} alloc"
+            cpu_suffix = ""
+            if cpu_check.get("status") == "warning":
+                cpu_suffix = f"  ⚠ min {cpu_check.get('minimum_cpu_count', '?')}"
+            info["cpu_info"] = f"CPU {displayed_cpus}{allocation_suffix}{cpu_suffix}"
         bench = meta.get("benchmark", {})
         isl, osl, btype = bench.get("isl"), bench.get("osl"), bench.get("type", "")
         info["bench_config"] = f"{btype}  {isl}→{osl}" if (isl and osl) else btype
-    except Exception:
-        pass
 
     if not job_dir.exists():
         info["stage_label"] = "No Output Dir"
@@ -719,7 +728,7 @@ def _build_table(jobs: list[dict], show_all: bool, selected_rel: int = -1, last_
         if j["stage_id"] in ("completed", "failed", "finalizing") and j["log_age"]:
             stage_txt.append(f"  ({j['log_age']})", style="dim")
 
-        cfg_parts = [p for p in (j["gpu_info"], j["bench_config"]) if p]
+        cfg_parts = [p for p in (j["gpu_info"], j["cpu_info"], j["bench_config"]) if p]
 
         job_id_cell = Text()
         if i == selected_rel:
@@ -753,7 +762,7 @@ _DETAIL_REFRESH_SEC = 1.0
 
 
 def _job_row_height(j: dict, show_all: bool) -> int:
-    cfg_lines = len([p for p in (j.get("gpu_info", ""), j.get("bench_config", "")) if p]) or 1
+    cfg_lines = len([p for p in (j.get("gpu_info", ""), j.get("cpu_info", ""), j.get("bench_config", "")) if p]) or 1
     runs = j.get("runs")
     benchmarking = j.get("stage_id") == "benchmarking"
     actual_count = len(runs) if runs else 0
@@ -842,7 +851,7 @@ def _render(
         )
         return layout, state.scroll_offset, state.selected_idx
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     n_below = 0
     start_idx = 0
     scroll_offset = state.scroll_offset
@@ -977,7 +986,7 @@ def _session_path() -> Path:
 
 
 def _save_session(session_file: Path, key: str, outputs_dir: Path, job_ids: set[str]) -> None:
-    try:
+    with contextlib.suppress(Exception):
         all_sessions: dict = {}
         if session_file.exists():
             with contextlib.suppress(Exception):
@@ -987,18 +996,14 @@ def _save_session(session_file: Path, key: str, outputs_dir: Path, job_ids: set[
             "job_ids": sorted(job_ids),
         }
         session_file.write_text(json.dumps(all_sessions))
-    except Exception:
-        pass
 
 
 def _load_session(session_file: Path, key: str) -> tuple[set[str], Path | None]:
-    try:
+    with contextlib.suppress(Exception):
         if session_file.exists():
             entry = json.loads(session_file.read_text()).get(key, {})
             if entry:
                 return set(entry.get("job_ids", [])), Path(entry["outputs_dir"])
-    except Exception:
-        pass
     return set(), None
 
 
@@ -1054,7 +1059,7 @@ def _execute(args: argparse.Namespace) -> None:
                 with _cache_lock:
                     _cached_jobs = jobs
                     _is_loading = False
-            except Exception:
+            except Exception:  # noqa: BLE001
                 with _cache_lock:
                     _is_loading = False  # preserve stale _cached_jobs on error
             _fetch_trigger.clear()
@@ -1080,7 +1085,7 @@ def _execute(args: argparse.Namespace) -> None:
                 live.stop()
                 if use_tty and old_term is not None:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
-                subprocess.run(["vim", str(path)])
+                subprocess.run(["vim", str(path)], check=False)
                 if use_tty:
                     tty.setcbreak(fd)
                 live.start()
@@ -1151,7 +1156,7 @@ def _execute(args: argparse.Namespace) -> None:
                             if raw[:1] in (b"y", b"Y"):
                                 jid = state.cancel_confirm_job_id
                                 with contextlib.suppress(Exception):
-                                    subprocess.run(["scancel", jid], timeout=10, capture_output=True)
+                                    subprocess.run(["scancel", jid], timeout=10, capture_output=True, check=False)
                                 state.cancel_confirm_job_id = None
                                 _fetch_trigger.set()
                             elif raw[:1] in (b"n", b"N") or raw[:1] == b"\x1b":
@@ -1256,7 +1261,7 @@ def _execute(args: argparse.Namespace) -> None:
                         state.scroll_offset = clamped_scroll
                         state.selected_idx = clamped_sel
                         live.update(renderable)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         live.update(Text(f"Error: {exc}", style="red"))
                     spin_idx += 1
                     last_render = now

@@ -1,0 +1,77 @@
+site_name: srt-slurm
+site_url: https://nvidia.github.io/srt-slurm/
+repo_url: https://github.com/NVIDIA/srt-slurm
+repo_name: NVIDIA/srt-slurm
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+
+nav:
+  - Getting Started:
+      - Introduction: README.md
+      - Installation: installation.md
+      - CLI Reference: cli.md
+  - Configuration:
+      - Configuration Reference: config-reference.md
+      - Schema Reference: schema-reference.md
+      - Config Overrides: overrides.md
+      - Parameter Sweeps: sweeps.md
+      - Legacy (v1) Recipe Layout: legacy-v1.md
+  - Architecture & Frontends:
+      - Architecture: architecture.md
+      - SGLang Router: sglang-router.md
+      - vLLM Router: vllm-router.md
+      - Mooncake KV Store: mooncake-kv-store.md
+      - Services: services.md
+  - Benchmarking:
+      - Accuracy Benchmarks: accuracy.md
+      - Profiling: profiling.md
+  - Telemetry:
+      - GPU Power Telemetry: power-telemetry.md
+      - CPU Power Telemetry: cpu-power-telemetry.md
+      - DCGM 4.7 Runtime Support: dcgm-4.7-runtime-support.md
+  - Operations:
+      - Monitoring: monitoring.md
+      - Component Performance Dashboard: component-dashboard.md
+      - Router Post-Processing (ruter): ruter.md
+      - SLURM FAQ: slurm-faq.md
+  - Reference:
+      - Status API Spec: status-api-spec.md

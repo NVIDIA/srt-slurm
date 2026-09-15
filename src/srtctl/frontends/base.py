@@ -10,6 +10,7 @@ Frontend types handle:
 - Building CLI arguments from config
 """
 
+import threading
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 # Supported frontend types - extensible by adding new literals
-FrontendType = Literal["dynamo", "sglang"]
+FrontendType = Literal["dynamo", "sglang", "sglang-router", "trtllm_serve", "vllm", "vllm-router"]
 
 
 class FrontendProtocol(Protocol):
@@ -50,6 +51,15 @@ class FrontendProtocol(Protocol):
         """Parse health check response and return worker status."""
         ...
 
+    def get_backend_health_urls(
+        self,
+        backend: Any,
+        backend_processes: list["Process"],
+        network_interface: str | None = None,
+    ) -> list[str]:
+        """Return backend URLs that must be directly healthy before traffic."""
+        ...
+
     def start_frontends(
         self,
         topology: Any,  # FrontendTopology
@@ -57,6 +67,7 @@ class FrontendProtocol(Protocol):
         config: Any,  # SrtConfig
         backend: Any,  # BackendProtocol
         backend_processes: list["Process"],
+        stop_event: "threading.Event | None" = None,
     ) -> list["ManagedProcess"]:
         """Start frontend processes on designated nodes.
 
@@ -66,6 +77,8 @@ class FrontendProtocol(Protocol):
             config: Full SrtConfig
             backend: Backend protocol for mode-specific info
             backend_processes: List of backend worker processes
+            stop_event: Optional event to abort any readiness waits a frontend
+                performs while starting (frontends that return immediately ignore it)
 
         Returns:
             List of ManagedProcess instances for started frontends
@@ -91,11 +104,25 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
     """
     # Import here to avoid circular imports
     from srtctl.frontends.dynamo import DynamoFrontend
-    from srtctl.frontends.sglang import SGLangFrontend
+    from srtctl.frontends.sglang import SGLangRouterFrontend
+    from srtctl.frontends.sglang_direct import SGLangFrontend
+    from srtctl.frontends.trtllm_serve import TRTLLMServeFrontend
+    from srtctl.frontends.vllm import VLLMFrontend
+    from srtctl.frontends.vllm_router import VLLMRouterFrontend
 
     if frontend_type == "dynamo":
         return DynamoFrontend()
     elif frontend_type == "sglang":
         return SGLangFrontend()
+    elif frontend_type == "sglang-router":
+        return SGLangRouterFrontend()
+    elif frontend_type == "trtllm_serve":
+        return TRTLLMServeFrontend()
+    elif frontend_type == "vllm":
+        return VLLMFrontend()
+    elif frontend_type == "vllm-router":
+        return VLLMRouterFrontend()
     else:
-        raise ValueError(f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang")
+        raise ValueError(
+            f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, sglang-router, trtllm_serve, vllm, vllm-router"
+        )

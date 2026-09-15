@@ -13,11 +13,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.ports import FRONTEND_PUBLIC_PORT
+
 from .config import get_srtslurm_setting
-from .slurm import get_hostname_ip, get_slurm_nodelist
+from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
 
 if TYPE_CHECKING:
-    from srtctl.core.schema import SrtConfig
+    from srtctl.core.schema import DynamoConfig, SrtConfig
 
 
 @dataclass(frozen=True)
@@ -30,52 +32,180 @@ class Nodes:
         infra: Infrastructure node hostname (runs NATS, etcd). Same as head unless
                etcd_nats_dedicated_node is enabled.
         worker: Tuple of all worker node hostnames (prefill + decode)
+        het: True when the job was submitted as a SLURM heterogeneous job. In
+             this mode worker srun calls need ``--het-group=<group>`` so SLURM
+             routes them to the right component.
+        prefill_group: Worker nodes that belong to het component 0 (prefill +
+             optionally the dedicated infra node). Empty tuple when het=False.
+        decode_group: Worker nodes that belong to het component 1 (decode).
+             Empty tuple when het=False.
     """
 
     head: str
     bench: str
     infra: str
     worker: tuple[str, ...]
+    het: bool = False
+    prefill_group: tuple[str, ...] = ()
+    decode_group: tuple[str, ...] = ()
+
+    def het_group_for(self, node: str) -> int | None:
+        """Return the het component (0 or 1) a node belongs to, or None.
+
+        Returns None for non-het jobs so callers can pass the result directly
+        to ``start_srun_process(het_group=...)`` as a no-op fallback.
+        """
+        if not self.het:
+            return None
+        if node in self.prefill_group:
+            return 0
+        if node in self.decode_group:
+            return 1
+        # Head and infra share group 0 under het (infra is folded into the
+        # prefill component, head sits on the prefill side).
+        if node == self.infra or node == self.head:
+            return 0
+        return None
 
     @classmethod
     def from_slurm(
         cls,
-        benchmark_on_separate_node: bool = False,
+        frontend_dedicated_node: bool = False,
+        client_dedicated_node: bool = False,
         etcd_nats_dedicated_node: bool = False,
+        colocate_dedicated_nodes: bool = True,
     ) -> "Nodes":
         """Create Nodes from SLURM environment.
 
         Args:
-            benchmark_on_separate_node: If True, first node is benchmark-only,
-                                        second is head, rest are workers.
-            etcd_nats_dedicated_node: If True, dedicate first node for etcd/nats,
-                                      second node is head, rest are workers.
+            frontend_dedicated_node: If True, reserve a node exclusively for the
+                                     frontend/orchestrator; it is excluded from
+                                     the worker pool.
+            client_dedicated_node: If True, reserve a node exclusively for the
+                                   benchmark client; it is excluded from the
+                                   worker pool. Reserved from the tail of the
+                                   nodelist (never the first node), since SLURM
+                                   runs the do_sweep batch script unsandboxed
+                                   on the first node and co-locating the
+                                   benchmark client there would undermine the
+                                   isolation this flag exists to provide.
+            etcd_nats_dedicated_node: If True, reserve a node exclusively for
+                                      etcd/nats.
+            colocate_dedicated_nodes: Governs how the dedicated-node flags above
+                                      combine when more than one is set. If True
+                                      (default), every requested role (infra,
+                                      frontend, client) shares a single reserved
+                                      node. If False, each requested role gets
+                                      its own reserved node. A role that is not
+                                      requested keeps its normal default
+                                      placement (frontend/client fall back to
+                                      colocating with whichever node ends up
+                                      being head; infra falls back to head).
         """
+        dedicated_roles = [
+            role
+            for role, wanted in (
+                ("infra", etcd_nats_dedicated_node),
+                ("frontend", frontend_dedicated_node),
+                ("client", client_dedicated_node),
+            )
+            if wanted
+        ]
+
+        het_lists = get_slurm_het_nodelists()
+        if het_lists is not None:
+            if frontend_dedicated_node or client_dedicated_node:
+                raise ValueError(
+                    "frontend_dedicated_node/client_dedicated_node are not supported for heterogeneous SLURM jobs"
+                )
+            return cls._from_het_slurm(het_lists, etcd_nats_dedicated_node)
+
         nodelist = get_slurm_nodelist()
         if not nodelist:
             raise RuntimeError("SLURM_NODELIST not set - are we running in SLURM?")
 
-        if etcd_nats_dedicated_node:
-            if len(nodelist) < 2:
-                raise ValueError("etcd_nats_dedicated_node requires at least 2 nodes")
-            infra = nodelist[0]
-            head = nodelist[1]
-            bench = head
-            worker = tuple(nodelist[1:])
-        elif benchmark_on_separate_node:
-            if len(nodelist) < 2:
-                raise ValueError("benchmark_on_separate_node requires at least 2 nodes")
-            bench = nodelist[0]
-            head = nodelist[1]
-            infra = head
-            worker = tuple(nodelist[1:])
+        if not dedicated_roles:
+            head = bench = infra = nodelist[0]
+            worker = tuple(nodelist)
+            return cls(head=head, bench=bench, infra=infra, worker=worker)
+
+        num_reserved = 1 if colocate_dedicated_nodes else len(dedicated_roles)
+        if len(nodelist) <= num_reserved:
+            raise ValueError(
+                f"dedicated node(s) for {'+'.join(dedicated_roles)} require at least {num_reserved + 1} nodes"
+            )
+
+        # SLURM runs the batch script (the do_sweep orchestrator) on the first
+        # node of the allocation, unsandboxed. A dedicated *client* node exists
+        # to isolate benchmark measurements from noisy neighbors, so it must
+        # never land on that first node — reserve it from the tail instead.
+        # Non-client roles (infra, frontend) keep the original front-of-list
+        # reservation for backward compatibility.
+        has_client = "client" in dedicated_roles
+        if colocate_dedicated_nodes:
+            if has_client:
+                shared = nodelist[-1]
+                worker = tuple(nodelist[:-1])
+            else:
+                shared = nodelist[0]
+                worker = tuple(nodelist[1:])
+            reserved = {role: shared for role in dedicated_roles}
         else:
-            head = nodelist[0]
-            bench = head
-            infra = head
-            worker = tuple(nodelist[:])
+            front_roles = [role for role in dedicated_roles if role != "client"]
+            reserved = dict(zip(front_roles, nodelist, strict=False))
+            if has_client:
+                reserved["client"] = nodelist[-1]
+                worker = tuple(nodelist[len(front_roles) : -1])
+            else:
+                worker = tuple(nodelist[len(front_roles) :])
+
+        head = reserved.get("frontend", worker[0])
+        bench = reserved.get("client", head)
+        infra = reserved.get("infra", head)
 
         return cls(head=head, bench=bench, infra=infra, worker=worker)
+
+    @classmethod
+    def _from_het_slurm(
+        cls,
+        het_lists: list[list[str]],
+        etcd_nats_dedicated_node: bool,
+    ) -> "Nodes":
+        """Carve a Nodes from a SLURM heterogeneous-job allocation.
+
+        Group 0 holds prefill (and the dedicated infra node when configured);
+        group 1 holds decode. Head/bench live on group 0.
+        """
+        if len(het_lists) != 2:
+            raise ValueError(
+                f"het_jobs expects exactly 2 components (prefill, decode); SLURM_HET_SIZE reported {len(het_lists)}"
+            )
+        group0, group1 = het_lists
+        if not group0 or not group1:
+            raise RuntimeError("Empty SLURM_JOB_NODELIST_HET_GROUP_* — are we inside a het job?")
+
+        if etcd_nats_dedicated_node:
+            if len(group0) < 2:
+                raise ValueError("etcd_nats_dedicated_node requires >= 2 nodes in het group 0")
+            infra = group0[0]
+            head = group0[1]
+            prefill_group = tuple(group0[1:])
+        else:
+            infra = group0[0]
+            head = group0[0]
+            prefill_group = tuple(group0)
+        bench = head
+        decode_group = tuple(group1)
+        worker = prefill_group + decode_group
+        return cls(
+            head=head,
+            bench=bench,
+            infra=infra,
+            worker=worker,
+            het=True,
+            prefill_group=prefill_group,
+            decode_group=decode_group,
+        )
 
 
 @dataclass(frozen=True)
@@ -107,6 +237,7 @@ class RuntimeContext:
     # Fields with defaults must come after required fields
     # HuggingFace model support - True if model.path was "hf:model/name"
     is_hf_model: bool = False
+    gpu_type: str | None = None
 
     # Container mounts: host_path -> container_path
     container_mounts: dict[Path, Path] = field(default_factory=dict)
@@ -118,7 +249,15 @@ class RuntimeContext:
     environment: dict[str, str] = field(default_factory=dict)
 
     # Frontend port (for benchmark endpoint)
-    frontend_port: int = 8000
+    frontend_port: int = FRONTEND_PUBLIC_PORT
+
+    # Optional lustre->node-local model staging (see model.stage_dir)
+    stage_dir: str | None = None
+    staged_model_path: Path | None = None
+    # Request plane for dynamo workers
+    request_plane: str = "tcp"
+    # Full Dynamo configuration for native sidecar launch settings.
+    dynamo: "DynamoConfig | None" = None
 
     @classmethod
     def from_config(
@@ -138,8 +277,10 @@ class RuntimeContext:
         """
         # Get nodes from SLURM
         nodes = Nodes.from_slurm(
-            benchmark_on_separate_node=False,
+            frontend_dedicated_node=config.frontend.dedicated_node,
+            client_dedicated_node=config.benchmark.client_dedicated_node,
             etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+            colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
         )
 
         # Compute run_name
@@ -186,7 +327,7 @@ class RuntimeContext:
 
         # If it looks like a file path (starts with / or ./), validate it exists
         # Image names are typically registry paths without leading / or ./
-        if container_image_str.startswith("/") or container_image_str.startswith("./"):
+        if container_image_str.startswith(("/", "./")):
             container_image = Path(container_image_str).resolve()
             if not container_image.exists():
                 raise FileNotFoundError(f"Container image path does not exist: {container_image}")
@@ -203,6 +344,17 @@ class RuntimeContext:
         # Only mount local model paths - HF models are downloaded at runtime
         if not is_hf_model:
             container_mounts[model_path] = Path("/model")
+
+        # Optional: stage the model to node-local storage before workers start.
+        # Mount the node-local ROOT (parent of stage_dir; it pre-exists on nodes)
+        # so the staged copy is visible in-container at its real path; workers read
+        # <stage_dir>/<model_name> instead of the /model mount. See _stage_model().
+        stage_dir: str | None = None
+        staged_model_path: Path | None = None
+        if not is_hf_model and config.model.stage_dir:
+            stage_dir = os.path.expandvars(config.model.stage_dir)
+            staged_model_path = Path(stage_dir) / model_path.name
+            container_mounts[Path(stage_dir).parent] = Path(stage_dir).parent
 
         # Add configs directory (NATS, etcd binaries) from source root
         # SRTCTL_SOURCE_DIR is set by the sbatch script
@@ -237,7 +389,8 @@ class RuntimeContext:
         if config.extra_mount:
             for mount_spec in config.extra_mount:
                 host_path, container_path = mount_spec.split(":", 1)
-                container_mounts[Path(host_path).resolve()] = Path(container_path)
+                expanded_host = os.path.expandvars(host_path)
+                container_mounts[Path(expanded_host).expanduser().resolve()] = Path(container_path)
 
         # Mount InferenceX workspace if available (for lm-eval support).
         # Skip exists() check: the orchestrator runs on the SLURM head node
@@ -263,11 +416,14 @@ class RuntimeContext:
             model_path=model_path,
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
+            gpu_type=config.resources.gpu_type,
             network_interface=get_srtslurm_setting("network_interface", "eth0"),
             container_mounts={},
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
+            request_plane=config.dynamo.request_plane,
+            dynamo=config.dynamo,
         )
 
         # Expand FormattablePath mounts
@@ -286,12 +442,27 @@ class RuntimeContext:
             model_path=model_path,
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
+            gpu_type=config.resources.gpu_type,
             network_interface=get_srtslurm_setting("network_interface", "eth0"),
             container_mounts=container_mounts,
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
+            stage_dir=stage_dir,
+            staged_model_path=staged_model_path,
+            request_plane=config.dynamo.request_plane,
+            dynamo=config.dynamo,
         )
+
+    @property
+    def worker_model_arg(self) -> str:
+        """Model path passed to the serving worker: the staged node-local path
+        when model staging is enabled, else the "/model" mount (or the HF id)."""
+        if self.is_hf_model:
+            return str(self.model_path)
+        if self.staged_model_path is not None:
+            return str(self.staged_model_path)
+        return "/model"
 
     def format_string(self, template: str, **extra_kwargs) -> str:
         """Format a template string with runtime values.

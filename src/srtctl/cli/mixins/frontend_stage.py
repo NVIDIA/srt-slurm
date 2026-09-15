@@ -8,6 +8,7 @@ Handles frontend/router and nginx startup.
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.processes import ManagedProcess
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends import get_frontend
+from srtctl.ports import FRONTEND_INTERNAL_PORT, FRONTEND_PUBLIC_PORT
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ProcessRegistry
@@ -83,13 +85,24 @@ class FrontendStageMixin:
         head = self.runtime.nodes.head
         fe_config = self.config.frontend
 
-        # Single node or multiple frontends disabled: single frontend, no nginx
+        # Single node or multiple frontends disabled: single frontend, no nginx.
+        # The orchestrator node honors frontend.orchestrator_placement (default
+        # "head" -> unchanged; "first_decode" -> first GEN worker-leader node).
         if len(nodes) == 1 or not fe_config.enable_multiple_frontends:
+            placement = getattr(fe_config, "orchestrator_placement", "head")
+            if placement == "head":
+                orchestrator_node = head
+            else:
+                from srtctl.core.topology import placed_node
+
+                orchestrator_node = placed_node(
+                    self.backend_processes, placement, head, kind="frontend.orchestrator_placement"
+                )
             return FrontendTopology(
                 nginx_node=None,
-                frontend_nodes=[head],
-                frontend_port=8000,
-                public_port=8000,
+                frontend_nodes=[orchestrator_node],
+                frontend_port=FRONTEND_PUBLIC_PORT,
+                public_port=FRONTEND_PUBLIC_PORT,
             )
 
         # Multiple nodes with multiple frontends enabled:
@@ -113,8 +126,8 @@ class FrontendStageMixin:
         return FrontendTopology(
             nginx_node=head,
             frontend_nodes=frontend_nodes,
-            frontend_port=8180,  # Internal port behind nginx
-            public_port=8000,  # Public port exposed by nginx
+            frontend_port=FRONTEND_INTERNAL_PORT,
+            public_port=FRONTEND_PUBLIC_PORT,
         )
 
     def _start_nginx(self, topology: FrontendTopology) -> ManagedProcess:
@@ -153,6 +166,8 @@ class FrontendStageMixin:
             srun_options={
                 "container-remap-root": "",
             },
+            het_group=self.runtime.nodes.het_group_for(topology.nginx_node),
+            step_name="nginx",
         )
 
         return ManagedProcess(
@@ -161,6 +176,7 @@ class FrontendStageMixin:
             log_file=nginx_log,
             node=topology.nginx_node,
             critical=True,
+            step_name="nginx",
         )
 
     def _generate_nginx_config(self, topology: FrontendTopology) -> str:
@@ -179,15 +195,31 @@ class FrontendStageMixin:
             backend_port=topology.frontend_port,
             listen_port=topology.public_port,
             nginx_raise_ulimit=self.config.frontend.nginx_raise_ulimit,
+            nginx_session_affinity=self.config.frontend.nginx_session_affinity,
+            nginx_session_affinity_header=self.config.frontend.nginx_session_affinity_header,
+            nginx_keepalive_timeout=self.config.frontend.nginx_keepalive_timeout,
         )
 
-    def start_frontend(self, registry: "ProcessRegistry") -> list[ManagedProcess]:
+    def start_frontend(
+        self, registry: "ProcessRegistry", stop_event: "threading.Event | None" = None
+    ) -> list[ManagedProcess]:
         """Start the frontend layer (nginx + frontends if applicable).
+
+        Args:
+            registry: Process registry.
+            stop_event: Optional event to abort readiness waits a frontend performs
+                while starting (e.g. trtllm_serve waiting for workers).
 
         Returns:
             List of ManagedProcess instances for all frontend processes.
         """
         logger.info("Starting frontend layer")
+        if self.config.frontend.type == "dynamo" and self.config.observability.enabled:
+            trace_path = (self.config.frontend.env or {}).get("DYN_REQUEST_TRACE_FILE_PATH")
+            logger.info(
+                "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: %s)",
+                trace_path or "configured trace path",
+            )
         topology = self._compute_frontend_topology()
         processes: list[ManagedProcess] = []
 
@@ -204,6 +236,7 @@ class FrontendStageMixin:
             config=self.config,
             backend=self.backend,
             backend_processes=self.backend_processes,
+            stop_event=stop_event,
         )
 
         processes.extend(frontend_procs)

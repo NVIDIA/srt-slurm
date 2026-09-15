@@ -1,0 +1,257 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""``type: dcgm-exporter``, ``type: node-exporter``, ``type: process-exporter``: what tachometer scrapes.
+
+All three are implied whenever tachometer runs with its default exporters
+(``observability.tachometer.default_exporters``, on by default); declaring one by
+name changes its container or binary (a ``srtslurm.yaml`` alias for air-gapped
+clusters), its command or port, or drops it with ``enabled: false``. Non-critical:
+a dead exporter costs its metrics, never the run.
+
+The DCGM and node exporters are distroless images and launch without the bash
+wrapper on every worker node. The process exporter is different: its upstream
+image is ``FROM scratch`` and some enroot deployments cannot start it (no
+``/root``, no ``/bin/sh``), so by default it runs **host-native** from the static
+Go binary ``make setup`` installs at ``configs/process-exporter``, with no
+container at all, on every allocated node (``placement.node: all``): the
+frontend's node is the one whose process telemetry matters most and it hosts no
+backend rank when the frontend is head-placed or dedicated. Declaring it with a
+``container`` switches back to the container launch.
+
+The power-telemetry path (``telemetry.enabled``) owns its own DCGM exporter and
+is untouched; the implicit ``dcgm-exporter`` service steps aside when it is on.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from srtctl.services.registry import ServiceKind, ServiceLaunchContext, register_service
+
+if TYPE_CHECKING:
+    from srtctl.core.runtime import RuntimeContext
+    from srtctl.services.config import ServiceConfig
+
+DCGM_EXPORTER_IMAGE = "nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04"
+NODE_EXPORTER_IMAGE = "quay.io#prometheus/node-exporter:v1.8.2"
+# Deliberately off the conventional 9400/9100: managed clusters may run host exporters there.
+DCGM_EXPORTER_PORT = 9401
+NODE_EXPORTER_PORT = 9101
+PROCESS_EXPORTER_PORT = 9256
+
+# Node-exporter collectors for host CPU, process state and scheduler pressure.
+#   stat         -> node_procs_running / node_procs_blocked / node_context_switches_total
+#   vmstat       -> node_vmstat_pgmajfault / node_vmstat_pgsteal_* (memory reclaim)
+#   pressure     -> node_pressure_{cpu,memory,io}_* (PSI stall time)
+#   meminfo_numa -> node_memory_numa_MemFree{node=N} (per-NUMA-node free memory)
+# These collectors read procfs/sysfs. Their workload overhead has not been
+# measured here. The tachometer NodeExporterFilter retains NUMA-node and
+# process-state labels so the raw series remain distinct. Explicit recipe
+# commands still win.
+NODE_EXPORTER_COLLECTORS = ("cpu", "infiniband", "meminfo", "processes", "stat", "vmstat", "pressure", "meminfo_numa")
+# node_exporter's vmstat collector defaults to ``^(oom_kill|pgpg|pswp|pg.*fault).*``,
+# which ships pgmajfault but NOT pgsteal_* (page reclaim). Widen the field filter
+# to add pgsteal; verified against node-exporter v1.8.2.
+NODE_EXPORTER_VMSTAT_FIELDS = "^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*"
+
+# process-exporter (ncabatoff) reads host /proc and publishes per-group CPU
+# seconds by mode, thread count, per-THREAD-NAME CPU/count, context switches,
+# RSS and open fds. Groups are defined by the YAML below, written into the run's
+# log dir at launch. ``-threads=true`` is what exposes
+# namedprocess_namegroup_thread_{count,cpu_seconds_total}{threadname}: a runaway
+# thread pool shows up as a step in thread_count and a CPU cluster on one
+# threadname, which no application-level metric can express.
+# ``-children=false``: a process is counted only by its own matcher, never
+# folded into its parent's group (engine ranks stay separate from the launcher).
+PROCESS_EXPORTER_CONFIG_NAME = "process-exporter.yml"
+PROCESS_EXPORTER_FLAGS = ("-threads=true", "-children=false", "-recheck=false")
+PROCESS_EXPORTER_CONTAINER_BINARY = "/bin/process-exporter"
+DEFAULT_PROCESS_EXPORTER_BINARY = "configs/process-exporter"
+
+
+def process_exporter_config_yaml() -> str:
+    """Process groups for process-exporter, first match wins.
+
+    ``cmdline`` regexps run against the full argv; ``comm`` is the 15-char kernel
+    task name. The Dynamo frontend (``python3 -m dynamo.frontend``) gets its own
+    group because it is the process every frontend CPU pathology lives in; the
+    worker handlers are grouped by their ``dynamo.<backend>`` module name.
+    TRT-LLM engine children use a separate ``trtllm_engine`` group; the MPI
+    launcher, the benchmark client and the infra daemons are named so their CPU
+    is attributable rather than silently dropped. Unmatched processes are not
+    exported (no catch-all): the per-thread breakdown of every process on a
+    352-CPU node would be high-cardinality noise.
+    """
+    return """# Generated by srtctl (services.exporters.process_exporter_config_yaml). First match wins.
+process_names:
+  - name: frontend
+    cmdline:
+      - 'dynamo\\.frontend'
+  - name: trtllm_llmapi_launch
+    cmdline:
+      - '(^|[ /])trtllm-llmapi-launch( |$)'
+  - name: trtllm_engine
+    cmdline:
+      - '(^| )tensorrt_llm\\.llmapi\\.mgmn_worker_node( |$)'
+  - name: dynamo_trtllm
+    cmdline:
+      - 'dynamo\\.trtllm'
+  - name: dynamo_sglang
+    cmdline:
+      - 'dynamo\\.sglang'
+  - name: dynamo_vllm
+    cmdline:
+      - 'dynamo\\.vllm'
+  - name: trtllm_serve
+    cmdline:
+      - 'trtllm-serve'
+  - name: aiperf
+    cmdline:
+      - 'aiperf'
+  - name: agentperf
+    cmdline:
+      - 'agentperf'
+  - name: etcd
+    comm:
+      - etcd
+  - name: nats
+    comm:
+      - nats-server
+  - name: tachometer
+    comm:
+      - tachometer-scra
+  - name: node_exporter
+    comm:
+      - node_exporter
+  - name: dcgm_exporter
+    comm:
+      - dcgm-exporter
+"""
+
+
+def resolve_host_binary(binary: str) -> Path | None:
+    """Resolve a host-native exporter ``binary`` to an executable path, or None.
+
+    Absolute paths are taken verbatim. Relative ones resolve against the srtctl
+    checkout root (``SRTCTL_SOURCE_DIR`` from the sbatch script, else this
+    file's repo root), where ``make setup`` installs host binaries. The path must
+    exist on the compute nodes too; the checkout lives on the shared filesystem
+    in every supported deployment, exactly like ``configs/nats-server``.
+    """
+    p = Path(binary)
+    candidates = [p] if p.is_absolute() else []
+    if not p.is_absolute():
+        source_dir = os.environ.get("SRTCTL_SOURCE_DIR")
+        if source_dir:
+            candidates.append(Path(source_dir) / p)
+        candidates.append(Path(__file__).resolve().parents[3] / p)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+class _ExporterKind(ServiceKind):
+    builds_command = True
+    default_start = "after_frontend"
+    default_critical = False
+    default_placement = "workers"
+    use_bash_wrapper = False
+    option_keys = ("port", "collect_interval_ms")
+
+
+@register_service("dcgm-exporter")
+class DcgmExporterService(_ExporterKind):
+    """NVIDIA DCGM exporter; samples NVML as often as tachometer scrapes (``options.collect_interval_ms``)."""
+
+    def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
+        if service.command is not None:
+            return list(service.effective_command)
+        port = int(service.options.get("port", DCGM_EXPORTER_PORT))
+        interval = int(service.options.get("collect_interval_ms", 1000))
+        return ["dcgm-exporter", f"--collect-interval={interval}", "--address", f":{port}", *service.args]
+
+    def container_fallback(self, config) -> str | None:
+        return DCGM_EXPORTER_IMAGE
+
+
+@register_service("node-exporter")
+class NodeExporterService(_ExporterKind):
+    """Prometheus node exporter with the CPU, InfiniBand, memory, process-state, and pressure collectors."""
+
+    def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
+        if service.command is not None:
+            return list(service.effective_command)
+        port = int(service.options.get("port", NODE_EXPORTER_PORT))
+        return [
+            "/bin/node_exporter",
+            f"--web.listen-address=:{port}",
+            "--collector.disable-defaults",
+            *(f"--collector.{name}" for name in NODE_EXPORTER_COLLECTORS),
+            f"--collector.vmstat.fields={NODE_EXPORTER_VMSTAT_FIELDS}",
+            *service.args,
+        ]
+
+    def container_fallback(self, config) -> str | None:
+        return NODE_EXPORTER_IMAGE
+
+
+@register_service("process-exporter")
+class ProcessExporterService(_ExporterKind):
+    """ncabatoff/process-exporter: per-process and per-thread CPU, threads, context switches, RSS, fds.
+
+    Host-native from ``options.binary`` (default ``configs/process-exporter``)
+    unless the service declares a ``container``, in which case the image's
+    ``/bin/process-exporter`` runs with the group file reached through ``/logs``.
+    """
+
+    default_placement = "all"
+    option_keys = ("port", "binary")
+
+    def host_native(self, service: ServiceConfig) -> bool:
+        return not service.container
+
+    def _binary(self, service: ServiceConfig) -> str:
+        return str(service.options.get("binary") or DEFAULT_PROCESS_EXPORTER_BINARY)
+
+    def prepare(self, service: ServiceConfig, runtime: RuntimeContext) -> None:
+        (runtime.log_dir / PROCESS_EXPORTER_CONFIG_NAME).write_text(process_exporter_config_yaml())
+
+    def skip_reason(self, service: ServiceConfig, runtime: RuntimeContext) -> str | None:
+        if service.command is not None or not self.host_native(service):
+            return None
+        binary = self._binary(service)
+        if resolve_host_binary(binary) is None:
+            return (
+                f"host binary {binary!r} not found under the srtctl root; run `make setup ARCH=<compute_arch>` "
+                "to install configs/process-exporter (per-process CPU/thread telemetry is skipped)"
+            )
+        return None
+
+    def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
+        if service.command is not None:
+            return list(service.effective_command)
+        port = int(service.options.get("port", PROCESS_EXPORTER_PORT))
+        if self.host_native(service):
+            configured = self._binary(service)
+            executable = str(resolve_host_binary(configured) or Path(configured))
+            log_dir = getattr(ctx.runtime, "log_dir", None)
+            config_path = (
+                str(Path(log_dir) / PROCESS_EXPORTER_CONFIG_NAME)
+                if log_dir
+                else f"<log_dir>/{PROCESS_EXPORTER_CONFIG_NAME}"
+            )
+        else:
+            executable = PROCESS_EXPORTER_CONTAINER_BINARY
+            config_path = f"/logs/{PROCESS_EXPORTER_CONFIG_NAME}"
+        return [
+            executable,
+            "-config.path",
+            config_path,
+            f"-web.listen-address=:{port}",
+            *PROCESS_EXPORTER_FLAGS,
+            *service.args,
+        ]

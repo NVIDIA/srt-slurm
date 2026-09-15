@@ -23,6 +23,7 @@ if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
     IFS=',' read -r -a server_metrics_urls <<< "${AIPERF_SERVER_METRICS_URLS}"
     if [ ${#server_metrics_urls[@]} -gt 0 ]; then
         SERVER_METRICS_ARGS+=(--server-metrics "${server_metrics_urls[@]}")
+        SERVER_METRICS_ARGS+=(--server-metrics-formats json jsonl)
     fi
 fi
 

@@ -12,22 +12,137 @@ import shlex
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
+from srtctl.core.ip_utils import url_host
 from srtctl.core.lockfile import collect_worker_fingerprints
+from srtctl.core.power.contract import (
+    CONTAINER_LOG_DIR,
+    MEASUREMENT_WINDOW_DIR_ENV,
+    WINDOWS_DIRNAME,
+)
+from srtctl.core.processes import terminate_and_reap
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
+from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
+
+_BENCHMARK_TERMINATE_TIMEOUT = 15.0
+_BENCHMARK_KILL_TIMEOUT = 10.0
 
 if TYPE_CHECKING:
     from srtctl.benchmarks.base import BenchmarkRunner
+    from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
     from srtctl.core.processes import ProcessRegistry
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
     from srtctl.core.topology import Endpoint, Process
 
 logger = logging.getLogger(__name__)
+
+
+def _vllm_data_parallel_size(config: "SrtConfig", mode: str) -> int:
+    """Return vLLM data parallel size for a mode, defaulting to one."""
+    backend = config.backend
+    if getattr(backend, "type", None) != "vllm":
+        return 1
+
+    vllm_config = getattr(backend, "vllm_config", None)
+    mode_config = getattr(vllm_config, mode, None) if vllm_config else None
+    if not mode_config:
+        # Special case: no vllm_config at all defaulting to 1 then
+        return 1
+
+    return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
+
+
+def _vllm_health_entries(
+    config: "SrtConfig",
+    mode: str,
+    logical_workers: int,
+    backend_processes: list["Process"] | None,
+) -> int:
+    """Return expected Dynamo generate registrations for a vLLM worker mode."""
+    dp_size = _vllm_data_parallel_size(config, mode)
+    dp_launch_mode = getattr(config.backend, "dp_launch_mode", "per_node")
+    if dp_size > 1 and dp_launch_mode == "per_node":
+        if backend_processes is None:
+            raise ValueError("backend_processes are required for per-node DP health expectations")
+        endpoint_mode = "agg" if mode == "aggregated" else mode
+        mode_processes = [process for process in backend_processes if process.endpoint_mode == endpoint_mode]
+        if not mode_processes:
+            return 0
+
+        vllm_config = getattr(config.backend, "vllm_config", None)
+        mode_config = getattr(vllm_config, mode, None) if vllm_config else None
+        mode_config = mode_config or {}
+        tp_size = int(mode_config.get("tensor-parallel-size") or mode_config.get("tensor_parallel_size") or 1)
+        pp_size = int(mode_config.get("pipeline-parallel-size") or mode_config.get("pipeline_parallel_size") or 1)
+        gpu_indices = getattr(mode_processes[0], "gpu_indices", None)
+        if gpu_indices is None:
+            # Compatibility for callers that provide only registration-count
+            # process stubs. Real launch processes always carry GPU indices.
+            return len(mode_processes)
+        local_gpu_count = len(gpu_indices)
+        spans_nodes = tp_size * pp_size > local_gpu_count
+        if spans_nodes:
+            return logical_workers
+        return len(mode_processes)
+
+    return logical_workers * dp_size
+
+
+def _get_health_expectations(
+    config: "SrtConfig", backend_processes: list["Process"] | None = None
+) -> tuple[int, int, str, int]:
+    """Compute expected health counts in the units reported by the frontend.
+
+    Dynamo's /health endpoint reports registered generate instances. For vLLM
+    DP workers, per-GPU launch registers one entry per DP rank, while per-node
+    launch registers one entry per node-local process. vLLM Router expands
+    each advertised base URL into its node-local DP ranks.
+    """
+    r = config.resources
+
+    if r.num_agg > 0:
+        logical_prefill = 0
+        logical_decode = r.num_agg
+        worker_desc = f"{r.num_agg} agg"
+    else:
+        logical_prefill = r.num_prefill
+        logical_decode = r.num_decode
+        worker_desc = f"{r.num_prefill}P + {r.num_decode}D"
+
+    if config.frontend.type == "dynamo" and getattr(config.backend, "type", None) == "vllm":
+        if r.num_agg > 0:
+            n_prefill = 0
+            n_decode = _vllm_health_entries(config, "aggregated", logical_decode, backend_processes)
+        else:
+            n_prefill = _vllm_health_entries(config, "prefill", logical_prefill, backend_processes)
+            n_decode = _vllm_health_entries(config, "decode", logical_decode, backend_processes)
+
+        count_desc = f"{n_prefill}P + {n_decode}D Dynamo generate instances; logical workers: {worker_desc}"
+        return n_prefill, n_decode, count_desc, n_prefill + n_decode
+
+    if config.frontend.type == "vllm-router" and backend_processes is not None:
+        from srtctl.frontends.vllm_router import routed_process_dp_size
+
+        n_prefill = sum(
+            routed_process_dp_size(config.backend, process)
+            for process in backend_processes
+            if process.endpoint_mode == "prefill" and process.http_port > 0
+        )
+        n_decode = sum(
+            routed_process_dp_size(config.backend, process)
+            for process in backend_processes
+            if process.endpoint_mode in {"decode", "agg"} and process.http_port > 0
+        )
+        count_desc = f"{n_prefill}P + {n_decode}D Router workers; logical workers: {worker_desc}"
+        return n_prefill, n_decode, count_desc, n_prefill + n_decode
+
+    count_desc = worker_desc
+    return logical_prefill, logical_decode, count_desc, logical_prefill + logical_decode
 
 
 class BenchmarkStageMixin:
@@ -43,6 +158,8 @@ class BenchmarkStageMixin:
     # Type hints for mixin dependencies
     config: "SrtConfig"
     runtime: "RuntimeContext"
+    benchmark_child_reaped: bool | None = None
+    benchmark_child_allows_window_mutation: bool | None = None
 
     @property
     def endpoints(self) -> list["Endpoint"]:
@@ -54,33 +171,81 @@ class BenchmarkStageMixin:
         """Backend worker processes."""
         raise NotImplementedError
 
-    def run_benchmark(
-        self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
-    ) -> int:
-        """Run the benchmark."""
-        logger.info("Waiting for workers to be ready...")
+    def _orchestrator_node(self) -> str:
+        """Node the frontend/orchestrator runs on (honors frontend.orchestrator_placement)."""
+        placement = getattr(self.config.frontend, "orchestrator_placement", "head")
+        if placement == "head":
+            return self.runtime.nodes.head
+        from srtctl.core.topology import placed_node
 
-        r = self.config.resources
-        num_workers = r.num_prefill + r.num_decode + r.num_agg
+        return placed_node(
+            self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.orchestrator_placement"
+        )
 
-        # Build descriptive worker count string
-        worker_desc = f"{r.num_agg} agg" if r.num_agg > 0 else f"{r.num_prefill}P + {r.num_decode}D"
+    def _public_api_node(self) -> str:
+        """Node hosting the public OpenAI HTTP endpoint clients should probe."""
+        if self.config.frontend.type in ("vllm", "sglang") and self.config.resources.num_agg > 0:
+            agg_leaders = sorted(
+                (p for p in self.backend_processes if p.endpoint_mode == "agg" and p.is_leader),
+                key=lambda p: p.endpoint_index,
+            )
+            if len(agg_leaders) == 1:
+                return agg_leaders[0].node
+        return self._orchestrator_node()
 
-        logger.info("Waiting for server health (expecting %d workers: %s)...", num_workers, worker_desc)
+    def _benchmark_node(self) -> str:
+        """Node the benchmark client runs on (honors benchmark.client_placement).
 
-        # For aggregated mode: expect 0 prefill, N decode (backend workers count as decode)
-        # For disaggregated mode: expect N prefill, M decode
-        if r.num_agg > 0:
-            n_prefill = 0
-            n_decode = r.num_agg
-        else:
-            n_prefill = r.num_prefill
-            n_decode = r.num_decode
+        ``nodes.bench`` equals ``nodes.head`` unless a dedicated client node was
+        carved out (benchmark.client_dedicated_node), in which case it points at
+        that reserved node instead.
+        """
+        placement = getattr(self.config.benchmark, "client_placement", "head")
+        if placement == "head":
+            return self.runtime.nodes.bench
+        from srtctl.core.topology import placed_node
+
+        return placed_node(
+            self.backend_processes, placement, self.runtime.nodes.head, kind="benchmark.client_placement"
+        )
+
+    def _logical_worker_endpoints(self) -> list[tuple[str, str, int]]:
+        """Return ``(mode, IP, port)`` for every routable worker endpoint.
+
+        Positive HTTP ports identify Router-facing node-local vLLM pools;
+        follower processes in a cross-node model-parallel replica retain zero.
+
+        Dynamo exposes worker metrics on each leader's system port. Direct
+        vLLM exposes aggregate metrics on the public frontend port, while
+        other frontends expose them on the worker HTTP port.
+        """
+        endpoints: list[tuple[str, str, int]] = []
+        for process in self.backend_processes:
+            if self.config.frontend.type != "vllm-router" and not process.is_leader:
+                continue
+            if self.config.frontend.type == "dynamo" and not self.config.dynamo.sidecar:
+                port = process.sys_port
+            elif self.config.frontend.type in ("vllm", "sglang"):
+                port = self.runtime.frontend_port
+            else:
+                port = process.http_port
+            if port <= 0:
+                continue
+            host = get_hostname_ip(process.node, self.runtime.network_interface)
+            endpoints.append((process.endpoint_mode, host, port))
+        return endpoints
+
+    def _wait_for_service_ready(self, stop_event: threading.Event) -> bool:
+        """Wait for frontend counts and any adapter-specific backend barrier."""
+        from srtctl.core import health as health_utils
+
+        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config, self.backend_processes)
+        logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
 
         hc = self.config.health_check
         if not wait_for_model(
-            host=self.runtime.nodes.head,
-            port=8000,
+            host=self._public_api_node(),
+            port=FRONTEND_PUBLIC_PORT,
             n_prefill=n_prefill,
             n_decode=n_decode,
             poll_interval=float(hc.interval_seconds),
@@ -89,12 +254,61 @@ class BenchmarkStageMixin:
             frontend_type=self.config.frontend.type,
             stop_event=stop_event,
         ):
+            return False
+
+        from srtctl.frontends import get_frontend
+
+        frontend = get_frontend(self.config.frontend.type)
+        backend_health_urls = frontend.get_backend_health_urls(
+            self.config.backend,
+            self.backend_processes,
+            self.runtime.network_interface,
+        )
+        if not backend_health_urls:
+            return True
+
+        logger.info(
+            "Frontend requires direct readiness from %d advertised backend URLs",
+            len(backend_health_urls),
+        )
+        return health_utils.wait_for_http_endpoints(
+            backend_health_urls,
+            poll_interval=float(hc.interval_seconds),
+            timeout=float(hc.max_attempts * hc.interval_seconds),
+            report_every=60.0,
+            stop_event=stop_event,
+        )
+
+    @staticmethod
+    def _get_worker_endpoint_env(endpoints: list[tuple[str, str, int]]) -> dict[str, str]:
+        """Build mode-specific benchmark environment from logical endpoints."""
+        env: dict[str, str] = {}
+        prefixes = {"prefill": "PREFILL", "decode": "DECODE", "agg": "AGG"}
+        for mode, prefix in prefixes.items():
+            mode_endpoints = [(host, port) for endpoint_mode, host, port in endpoints if endpoint_mode == mode]
+            if not mode_endpoints:
+                continue
+            # Keep one IP per logical endpoint, including repeated IPs for
+            # co-located workers, so IP and endpoint positions stay aligned.
+            env[f"SRT_{prefix}_IPS"] = ",".join(host for host, _ in mode_endpoints)
+            env[f"SRT_{prefix}_ENDPOINTS"] = ",".join(f"{host}:{port}" for host, port in mode_endpoints)
+        return env
+
+    def run_benchmark(
+        self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
+    ) -> int:
+        """Run the benchmark."""
+        serve_only = bool(getattr(self, "serve_only", False))
+        logger.info("Waiting for workers to be ready...")
+
+        if not self._wait_for_service_ready(stop_event):
             logger.error("Server did not become healthy")
             if reporter:
-                reporter.report(JobStatus.FAILED, JobStage.BENCHMARK, "Workers failed health check")
+                stage = JobStage.FRONTEND if serve_only else JobStage.BENCHMARK
+                reporter.report(JobStatus.FAILED, stage, "Workers failed health check")
             return 1
 
-        logger.info("Server is healthy - starting benchmark")
+        logger.info("Server is healthy")
 
         # Identity verification: compare recipe identity against runtime fingerprints
         # Store results on self so postprocess can include them in the lockfile
@@ -114,31 +328,37 @@ class BenchmarkStageMixin:
                 banner = format_identity_verification(self._identity_verification, self.config.identity)
                 for line in banner.splitlines():
                     logger.info(line)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Identity verification skipped: %s", e)
 
-        if reporter:
-            reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running benchmark")
-
         benchmark_type = self.config.benchmark.type
-        if self.config.profiling.enabled:
+        if self.config.profiling.enabled and not serve_only:
             logger.info(
                 "Profiling enabled (type=%s) with benchmark type '%s'",
                 self.config.profiling.type,
                 benchmark_type,
             )
 
-        if benchmark_type == "manual":
-            logger.info("Benchmark type is 'manual' - server is ready for testing")
-            logger.info("Frontend URL: http://%s:8000", self.runtime.nodes.head)
+        if serve_only or benchmark_type == "manual":
+            if reporter:
+                reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Inference endpoint ready")
+            if serve_only:
+                logger.info("Serve-only mode - no benchmark will be run")
+            else:
+                logger.info("Benchmark type is 'manual' - server is ready for testing")
+            logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
             logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
                 if registry.check_failures():
-                    logger.error("Worker failure detected during manual mode")
+                    logger.error("Worker failure detected while serving")
                     return 1
                 time.sleep(5)
             return 0
+
+        logger.info("Starting benchmark")
+        if reporter:
+            reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running benchmark")
 
         # Get the appropriate benchmark runner
         from srtctl.benchmarks import get_runner
@@ -158,9 +378,28 @@ class BenchmarkStageMixin:
 
         logger.info("Running %s benchmark", runner.name)
 
+        # Tachometer scrapes the load window only, the same window the
+        # benchmark client's own AIPERF polling covers. Starting it with the
+        # other telemetry (before the health gate) recorded minutes of
+        # dead-endpoint noise while workers loaded; stopping it with the
+        # registry's hard teardown SIGKILLed the scraper mid-write and
+        # stranded the whole capture in the arrow WAL (hecate job 487539).
+        # The finally attempts a flush when the benchmark script returns or
+        # raises. Signal/monitor cleanup can terminate registered processes
+        # earlier using its existing budget. Both hooks live on
+        # TelemetryStageMixin (same orchestrator object).
+        start_tachometer = getattr(self, "start_tachometer", None)
+        tachometer_procs = start_tachometer() if start_tachometer is not None else []
+        for proc in tachometer_procs:
+            registry.add_process(proc)
+
         # Run the benchmark script
         benchmark_log = self.runtime.log_dir / "benchmark.out"
-        exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
+        try:
+            exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
+        finally:
+            if tachometer_procs:
+                cast("TelemetryStageMixin", self).stop_tachometer(tachometer_procs)
 
         if exit_code != 0:
             logger.error("Benchmark failed with exit code %d", exit_code)
@@ -176,7 +415,6 @@ class BenchmarkStageMixin:
         stop_event: threading.Event,
     ) -> int:
         """Run the actual benchmark script."""
-        from srtctl.analysis.live_metrics import try_start_snapshotter
 
         cmd = runner.build_command(self.config, self.runtime)
         env_to_set = self._get_benchmark_env(runner)
@@ -188,32 +426,69 @@ class BenchmarkStageMixin:
         logger.info("Command: %s", shlex.join(cmd))
         logger.info("Log: %s", log_file)
 
-        # Optional in-flight batch-metrics snapshotter — no-op unless
-        # opted in via reporting.live_metrics in the cluster config.
-        snapshotter = try_start_snapshotter(self.runtime.log_dir, stop_event)
+        # Host/process telemetry for the benchmark window. The Prometheus
+        # families describe what Dynamo publishes; they say nothing about the
+        # machine underneath, where host CPU saturation, lock convoys and fd
+        # exhaustion live. Follows observability.enabled; best-effort contract.
+        #
+        # `is True` is deliberate, not a truthiness check: this mixin is
+        # routinely driven with a mocked config whose every attribute is
+        # truthy, and plain truthiness would silently switch it on there.
+        observability = getattr(self.config, "observability", None)
+        host_sampler = None
+        if getattr(observability, "enabled", False) is True:
+            from srtctl.analysis.host_sampler import try_start_host_sampler
 
+            host_sampler = try_start_host_sampler(self.runtime.log_dir, observability, stop_event)
+
+        bench_node = self._benchmark_node()
         proc = start_srun_process(
             command=cmd,
-            nodelist=[self.runtime.nodes.head],
+            nodelist=[bench_node],
             output=str(log_file),
             container_image=str(container_image),
             container_mounts=container_mounts,
             env_to_set=env_to_set,
+            srun_options=self.runtime.srun_options,
+            het_group=self.runtime.nodes.het_group_for(bench_node),
         )
 
+        # The signal handler raises SystemExit, so only finally can establish
+        # how the local srun client stopped before telemetry finalizes.
+        self.benchmark_child_reaped = False
+        self.benchmark_child_allows_window_mutation = False
         try:
             while proc.poll() is None:
                 if stop_event.is_set():
                     logger.info("Stop requested, terminating benchmark")
-                    proc.terminate()
                     return 1
                 time.sleep(1)
+            self.benchmark_child_reaped = True
+            self.benchmark_child_allows_window_mutation = True
             return proc.returncode or 0
         finally:
-            if snapshotter is not None:
-                snapshotter.stop()
+            if proc.poll() is None:
+                outcome = terminate_and_reap(
+                    proc,
+                    terminate_timeout=_BENCHMARK_TERMINATE_TIMEOUT,
+                    kill_timeout=_BENCHMARK_KILL_TIMEOUT,
+                )
+                self.benchmark_child_reaped = outcome.reaped
+                # Reaping a force-killed local srun client does not prove that
+                # its remote Slurm step can no longer write the window.
+                self.benchmark_child_allows_window_mutation = outcome.reaped and not outcome.force_killed
+            elif self.benchmark_child_reaped is False:
+                proc.wait()
+                self.benchmark_child_reaped = True
+                self.benchmark_child_allows_window_mutation = True
+            if host_sampler is not None:
+                host_sampler.stop()
 
-    def _get_benchmark_profiling_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
+    def _get_benchmark_profiling_env(
+        self,
+        runner: "BenchmarkRunner",
+        logical_endpoints: list[tuple[str, str, int]] | None = None,
+    ) -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         env: dict[str, str] = {}
 
@@ -257,20 +532,17 @@ class BenchmarkStageMixin:
         decode_endpoints = []
         agg_endpoints = []
 
-        use_sys_port = self.config.frontend.type == "dynamo"
-        for process in self.backend_processes:
-            if not process.is_leader:
-                continue
-            leader_ip = get_hostname_ip(process.node, self.runtime.network_interface)
-            port = process.sys_port if use_sys_port else process.http_port
+        if logical_endpoints is None:
+            logical_endpoints = self._logical_worker_endpoints()
+        for mode, leader_ip, port in logical_endpoints:
             leader_endpoint = f"{leader_ip}:{port}"
-            if process.endpoint_mode == "prefill":
+            if mode == "prefill":
                 prefill_ips.append(leader_ip)
                 prefill_endpoints.append(leader_endpoint)
-            elif process.endpoint_mode == "decode":
+            elif mode == "decode":
                 decode_ips.append(leader_ip)
                 decode_endpoints.append(leader_endpoint)
-            elif process.endpoint_mode == "agg":
+            elif mode == "agg":
                 agg_ips.append(leader_ip)
                 agg_endpoints.append(leader_endpoint)
 
@@ -293,6 +565,7 @@ class BenchmarkStageMixin:
             env["BENCH_MODEL_NAME"] = self.config.served_model_name
             env["HEAD_NODE"] = self.runtime.nodes.head
             env["HEAD_PORT"] = str(self.runtime.frontend_port)
+            env["PROFILE_WORKER_PORT"] = str(SGLANG_HTTP_PORT_BASE)
 
         # Let benchmark scripts know the backend type so they can select the right profiling lib
         if self.config.backend_type == "trtllm":
@@ -310,8 +583,8 @@ class BenchmarkStageMixin:
                 "benchmark slow_down: slow_down_sleep_time and slow_down_wait_time must be positive; skipping"
             )
             return {}
-        if self.config.frontend.type != "sglang":
-            logger.warning("benchmark.slow_down_* ignored: frontend.type is not sglang")
+        if self.config.frontend.type != "sglang-router":
+            logger.warning("benchmark.slow_down_* ignored: frontend.type is not sglang-router")
             return {}
 
         decode_urls: list[str] = []
@@ -333,18 +606,95 @@ class BenchmarkStageMixin:
             "SA_BENCH_SLOW_DOWN_WAIT_TIME": str(b.slow_down_wait_time),
         }
 
-    def _get_aiperf_server_metrics_env(self) -> dict[str, str]:
+    def _get_measurement_window_env(self) -> dict[str, str]:
+        """Point the benchmark child at the power artifact's windows directory.
+
+        ``runtime.log_dir`` is already mounted at ``/logs``, so the container
+        path and the host path the collector reads are the same directory.
+        """
+        telemetry = self.config.telemetry
+        if not telemetry.enabled:
+            return {}
+        return {MEASUREMENT_WINDOW_DIR_ENV: f"{CONTAINER_LOG_DIR}/{telemetry.storage_subdir}/{WINDOWS_DIRNAME}"}
+
+    def _get_aiperf_server_metrics_env(
+        self,
+        logical_endpoints: list[tuple[str, str, int]] | None = None,
+        *,
+        logical_workers_only: bool = False,
+    ) -> dict[str, str]:
         """Build server metrics URLs for AIPerf benchmarks.
 
-        Collects metrics endpoints from all backend processes that expose
-        a sys_port (vLLM workers with AIPerf metrics enabled), plus KVBM
-        metrics endpoints if DYN_KVBM_METRICS_PORT is configured.
+        Built-in AIPerf runners retain their existing physical-process metrics
+        behavior, which is required by vLLM data-parallel layouts. Custom
+        benchmarks use logical worker leaders so distributed SGLang follower
+        ranks are not advertised as separate engines.
         """
         urls: list[str] = []
-        for process in self.backend_processes:
-            if process.sys_port > 0:
-                host = get_hostname_ip(process.node, self.runtime.network_interface)
-                urls.append(f"http://{host}:{process.sys_port}/metrics")
+        dynamo_trtllm_metrics_disabled = (
+            self.config.frontend.type == "dynamo"
+            and self.config.backend_type == "trtllm"
+            and not (
+                (not self.config.dynamo.sidecar and getattr(self.config.backend, "dynamo_metrics_flags", ()))
+                or getattr(self.config.backend, "publish_events_and_metrics", False)
+            )
+        )
+        # trtllm-serve serves Prometheus at /prometheus/metrics on the worker
+        # OpenAI port (GET /metrics there is JSON iteration stats, not
+        # exposition text); every other frontend serves it at /metrics.
+        metrics_path = "/prometheus/metrics" if self.config.frontend.type == "trtllm_serve" else "/metrics"
+        if logical_workers_only:
+            if logical_endpoints is None:
+                logical_endpoints = self._logical_worker_endpoints()
+            # Sidecars use native worker commands, so publish_metrics does not
+            # control their existing logical-worker URL discovery.
+            if self.config.dynamo.sidecar or not dynamo_trtllm_metrics_disabled:
+                urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
+        else:
+            if self.config.frontend.type in {"vllm", "sglang", "vllm-router"}:
+                for process in self.backend_processes:
+                    if (
+                        self.config.frontend.type in {"vllm", "sglang"}
+                        and process.endpoint_mode == "agg"
+                        and process.is_leader
+                    ):
+                        host = get_hostname_ip(process.node, self.runtime.network_interface)
+                        urls.append(f"http://{host}:{FRONTEND_PUBLIC_PORT}/metrics")
+                    elif self.config.frontend.type == "vllm-router" and process.http_port > 0:
+                        host = get_hostname_ip(process.node, self.runtime.network_interface)
+                        urls.append(f"http://{host}:{process.http_port}/metrics")
+                if urls:
+                    return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
+
+            # trtllm-serve workers bind only their OpenAI http_port (leaders) —
+            # the DYN_SYSTEM_PORT sys-port endpoints are never created in this
+            # mode, so advertising them would point the client at dead ports.
+            # trtllm-serve mounts the Prometheus route only when the engine
+            # runs with return_perf_metrics (expand_trtllm_serve_defaults sets
+            # it on every trtllm_serve recipe; an explicit false opts out), so
+            # gate each worker on its own effective engine config --
+            # publish_events_and_metrics is a dynamo.trtllm flag that never
+            # reaches a trtllm-serve worker.
+            if self.config.frontend.type == "trtllm_serve":
+                for process in self.backend_processes:
+                    if process.endpoint_mode == "agg" or process.http_port <= 0:
+                        continue
+                    engine_config = self.config.backend.get_config_for_mode(process.endpoint_mode)
+                    if not engine_config.get("return_perf_metrics"):
+                        continue
+                    host = get_hostname_ip(process.node, self.runtime.network_interface)
+                    urls.append(f"http://{host}:{process.http_port}{metrics_path}")
+            # Dynamo TRT-LLM engine metrics require either the metrics-only
+            # flag (the default) or the legacy combined flag (also enabled by
+            # observability). Retain the existing sidecar gate because sidecars
+            # do not receive --publish-metrics. An explicit legacy False disables
+            # both flags. Runtime-only metrics may still exist with publication disabled,
+            # but must not be advertised as an engine-metrics capture.
+            elif not dynamo_trtllm_metrics_disabled:
+                for process in self.backend_processes:
+                    if process.sys_port > 0:
+                        host = get_hostname_ip(process.node, self.runtime.network_interface)
+                        urls.append(f"http://{host}:{process.sys_port}/metrics")
 
         # Add KVBM metrics endpoints for prefill processes with DYN_KVBM_METRICS_PORT
         prefill_env = getattr(self.config.backend, "prefill_environment", {})
@@ -358,14 +708,38 @@ class BenchmarkStageMixin:
 
         if not urls:
             return {}
-        return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
+        # Custom commands preserve logical topology order; built-in AIPerf
+        # runners retain their historical sorted physical-process list.
+        urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
+
+        # Add CPU power exporter endpoints (one per worker node) when configured.
+        cpu_power_exporter = getattr(self.config.telemetry, "cpu_power_exporter", None)
+        if self.config.telemetry.enabled and cpu_power_exporter is not None:
+            worker_nodes = sorted({process.node for process in self.backend_processes})
+            for node in worker_nodes:
+                host = get_hostname_ip(node, self.runtime.network_interface)
+                urls.append(f"http://{url_host(host)}:{cpu_power_exporter.port}/metrics")
+
+        return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         from srtctl.benchmarks.base import AIPerfBenchmarkRunner
 
-        env = self._get_benchmark_profiling_env(runner)
+        is_custom = self.config.benchmark.type == "custom"
+        logical_endpoints = self._logical_worker_endpoints() if self.config.profiling.enabled or is_custom else None
+        env = self._get_benchmark_profiling_env(runner, logical_endpoints)
+        if is_custom:
+            assert logical_endpoints is not None
+            env.update(self._get_worker_endpoint_env(logical_endpoints))
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
+
+        # Orchestrator endpoint for the benchmark command. When the client runs on
+        # a different node than the orchestrator (e.g. client_placement=last_decode
+        # with orchestrator_placement=first_decode), "localhost" is wrong — the
+        # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
+        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
+        env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
 
         # Propagate top-level recipe environment to the bench step. Workers
         # already get this via worker_stage; benches need it too for things
@@ -374,13 +748,26 @@ class BenchmarkStageMixin:
         for key, value in self.runtime.environment.items():
             env[key] = value
 
+        # The windows directory is benchmark-agnostic: whichever benchmark runs
+        # may adopt window stamping, so the env is not tied to one runner.
+        env.update(self._get_measurement_window_env())
+
         if runner.name == "SA-Bench":
             env.update(self._get_sa_bench_slow_down_env())
 
-        # Add AIPerf-specific env vars for AIPerf-driven benchmarks only
-        if isinstance(runner, AIPerfBenchmarkRunner):
-            env.update(self._get_aiperf_server_metrics_env())
-            if self.config.benchmark.aiperf_package:
-                env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
+        # Built-in AIPerf runners retain physical-process metrics for vLLM DP.
+        # Custom commands commonly wrap AIPerf but do not inherit from its base
+        # class, so give them the logical-worker view needed by SGLang TP.
+        # An explicit AIPERF_SERVER_METRICS_URLS in the recipe environment wins:
+        # the operator may be pointing the client at a curated endpoint list,
+        # and injection used to clobber it here silently.
+        if "AIPERF_SERVER_METRICS_URLS" not in env:
+            if isinstance(runner, AIPerfBenchmarkRunner):
+                env.update(self._get_aiperf_server_metrics_env())
+            elif is_custom:
+                assert logical_endpoints is not None
+                env.update(self._get_aiperf_server_metrics_env(logical_endpoints, logical_workers_only=True))
+        if isinstance(runner, AIPerfBenchmarkRunner) and self.config.benchmark.aiperf_package:
+            env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
 
         return env
