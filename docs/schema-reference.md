@@ -200,6 +200,9 @@ Profiling configuration.
 |---|---|---|---|
 | `type` | str | `'none'` | "none", "nsys", "nsys-time", or "torch" |
 | `extra_nsys_args` | list[str] \| None | `None` | Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix) |
+| `trace_domain` | str \| None | `None` | Optional nsys flag overrides. A value of None preserves the existing backend-specific command defaults. |
+| `cuda_graph_trace_mode` | str \| None | `None` | nsys --cuda-graph-trace value |
+| `sample_mode` | str \| None | `None` | nsys --sample value, e.g. "none" or "cpu" |
 | `prefill` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` | Phase-specific profiling step configs (not used for nsys-time) |
 | `decode` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` |  |
 | `aggregated` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` |  |
