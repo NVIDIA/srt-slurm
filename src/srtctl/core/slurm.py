@@ -13,119 +13,15 @@ This module consolidates all SLURM-related functionality:
 
 import logging
 import os
-import re
 import shlex
 import socket
 import subprocess
-import sys
-import time
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
 
 from .ip_utils import get_node_ip
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class SlurmJobResult:
-    job_id: str
-    state: str
-    exit_code: int
-    signal: int
-
-    @property
-    def returncode(self) -> int:
-        if self.state == "COMPLETED" and self.exit_code == 0 and self.signal == 0:
-            return 0
-        return self.exit_code or (128 + self.signal if self.signal else 1)
-
-
-def wait_for_job(
-    job_id: str,
-    *,
-    log_path: Path | None = None,
-    output: TextIO | None = None,
-    poll_interval: float = 5.0,
-) -> SlurmJobResult:
-    """Observe an allocation without cancelling or resubmitting it.
-
-    An empty queue is not success: accounting can lag behind squeue. Require
-    the allocation's terminal accounting record and exit status, continuing
-    through transient status-query failures and requeues.
-    """
-    if not re.fullmatch(r"[0-9]+", job_id) or int(job_id) < 1:
-        raise ValueError(f"Expected a single Slurm job ID, got {job_id!r}")
-    if poll_interval <= 0:
-        raise ValueError("poll_interval must be positive")
-    output = output if output is not None else sys.stdout
-    offset = 0
-    terminal_states = {
-        "BOOT_FAIL",
-        "CANCELLED",
-        "COMPLETED",
-        "DEADLINE",
-        "FAILED",
-        "NODE_FAIL",
-        "OUT_OF_MEMORY",
-        "PREEMPTED",
-        "REVOKED",
-        "TIMEOUT",
-    }
-
-    def stream_log() -> None:
-        nonlocal offset
-        if log_path is None:
-            return
-        try:
-            with log_path.open(encoding="utf-8", errors="replace") as stream:
-                if log_path.stat().st_size < offset:
-                    offset = 0
-                stream.seek(offset)
-                while chunk := stream.read(65536):
-                    output.write(chunk)
-                offset = stream.tell()
-                output.flush()
-        except FileNotFoundError:
-            pass  # Pending jobs do not have a log yet.
-
-    while True:
-        stream_log()
-        try:
-            queue = subprocess.run(
-                ["squeue", "--noheader", "--jobs", job_id, "--format=%i"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=15,
-            )
-            if queue.returncode == 0 and queue.stdout.strip():
-                time.sleep(poll_interval)
-                continue
-            accounting = subprocess.run(
-                ["sacct", "-X", "--noheader", "--parsable2", "--jobs", job_id, "--format=JobIDRaw,State%40,ExitCode"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=15,
-            )
-            if accounting.returncode == 0:
-                for line in accounting.stdout.splitlines():
-                    fields = [field.strip() for field in line.split("|")]
-                    if len(fields) < 3 or fields[0] != job_id or not fields[1]:
-                        continue
-                    state = fields[1].split()[0].rstrip("+")
-                    if state in terminal_states and re.fullmatch(r"[0-9]+:[0-9]+", fields[2]):
-                        exit_code, signal = map(int, fields[2].split(":"))
-                        stream_log()
-                        return SlurmJobResult(job_id, state, exit_code, signal)
-            else:
-                logger.warning("Waiting for accounting for job %s: %s", job_id, accounting.stderr.strip())
-        except subprocess.TimeoutExpired:
-            logger.warning("Slurm status query timed out for job %s; continuing to observe", job_id)
-        time.sleep(poll_interval)
 
 
 def _get_cluster_bash_preamble() -> str | None:

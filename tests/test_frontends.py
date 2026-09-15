@@ -451,41 +451,6 @@ class TestFrontendEnvHandling:
 
     @patch("srtctl.frontends.sglang.start_srun_process")
     @patch("srtctl.frontends.sglang.get_hostname_ip")
-    def test_sglang_runtime_srun_options_passed_to_process(self, mock_get_ip, mock_srun):
-        """Static routers inherit runtime-level Slurm launch options."""
-        mock_get_ip.return_value = "10.0.0.1"
-        mock_srun.return_value = MagicMock()
-
-        frontend = SGLangFrontend()
-        topology = MockTopology(frontend_nodes=["node0"])
-        config = MockConfig(
-            frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=1),
-        )
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
-        runtime = MagicMock()
-        runtime.log_dir = MagicMock()
-        runtime.log_dir.__truediv__ = lambda self, x: f"/logs/{x}"
-        runtime.container_image = "/container.sqsh"
-        runtime.container_mounts = {}
-        runtime.srun_options = {
-            "container-writable": "",
-            "container-remap-root": "",
-        }
-
-        frontend.start_frontends(
-            topology,
-            runtime,
-            config,
-            backend,
-            [MockProcess(node="node1", endpoint_mode="agg", http_port=30000)],
-        )
-
-        assert mock_srun.call_args.kwargs["srun_options"] == runtime.srun_options
-
-    @patch("srtctl.frontends.sglang.start_srun_process")
-    @patch("srtctl.frontends.sglang.get_hostname_ip")
     def test_sglang_no_env_when_empty(self, mock_get_ip, mock_srun):
         """SGLang frontend passes None for env when not configured."""
         mock_get_ip.return_value = "10.0.0.1"
@@ -569,7 +534,6 @@ def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
     runtime = SimpleNamespace(
         log_dir=Path("/logs"),
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
-        infra_node_ip="10.0.0.9",
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},
@@ -595,7 +559,6 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
     runtime = SimpleNamespace(
         log_dir=Path("/logs"),
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
-        infra_node_ip="10.0.0.9",
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},
@@ -635,12 +598,6 @@ class TestDynamoFrontendEventPlane:
     def test_default_not_injected(self):
         mock_srun = _dynamo_frontend_call(dynamo_install=False, event_plane=None)
         assert "DYN_EVENT_PLANE" not in mock_srun.call_args.kwargs["env_to_set"]
-
-    def test_control_plane_uses_routable_infra_ip(self):
-        env = _dynamo_frontend_call(dynamo_install=False).call_args.kwargs["env_to_set"]
-        assert env["NATS_SERVER"] == "nats://10.0.0.9:4222"
-        assert env["ETCD_ENDPOINTS"] == "http://10.0.0.9:2379"
-        assert "infra-node" not in env["NATS_SERVER"]
 
     @pytest.mark.parametrize("event_plane", ["zmq", "nats"])
     def test_explicit_injected(self, event_plane):

@@ -186,8 +186,8 @@ def _declared_external(config: SrtConfig, name: str) -> str | None:
 
 def discovery_env(config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
     """``ETCD_ENDPOINTS`` and ``NATS_SERVER`` for this job: the infra node, or an ``external`` endpoint."""
-    etcd_url = _declared_external(config, ETCD_SERVICE_NAME) or f"http://{runtime.infra_node_ip}:{ETCD_CLIENT_PORT}"
-    nats_url = _declared_external(config, NATS_SERVICE_NAME) or f"nats://{runtime.infra_node_ip}:{NATS_PORT}"
+    etcd_url = _declared_external(config, ETCD_SERVICE_NAME) or f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}"
+    nats_url = _declared_external(config, NATS_SERVICE_NAME) or f"nats://{runtime.nodes.infra}:{NATS_PORT}"
     return {"ETCD_ENDPOINTS": etcd_url, "NATS_SERVER": nats_url}
 
 

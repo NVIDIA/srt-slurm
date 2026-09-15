@@ -287,12 +287,9 @@ class RuntimeContext:
         # Compute run_name
         run_name = f"{config.name}_{job_id}"
 
-        # Resolve node IPs on the cluster-selected fabric. Some systems expose
-        # a public default route and a separate private control/data plane; the
-        # latter is what containers on peer Slurm nodes can reliably reach.
-        network_interface = get_srtslurm_setting("network_interface", "eth0")
-        head_node_ip = get_hostname_ip(nodes.head, network_interface)
-        infra_node_ip = get_hostname_ip(nodes.infra, network_interface)
+        # Resolve node IPs
+        head_node_ip = get_hostname_ip(nodes.head)
+        infra_node_ip = get_hostname_ip(nodes.infra)
 
         # Compute log directory using FormattablePath or default logic
         # Check for SRTCTL_OUTPUT_DIR from sbatch script first (ensures consistency)
@@ -421,7 +418,7 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=network_interface,
+            network_interface=get_srtslurm_setting("network_interface", "eth0"),
             accelerator_vendor=get_srtslurm_setting("accelerator_vendor", "nvidia"),
             container_mounts={},
             srun_options=dict(config.srun_options),
@@ -448,7 +445,7 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=network_interface,
+            network_interface=get_srtslurm_setting("network_interface", "eth0"),
             accelerator_vendor=get_srtslurm_setting("accelerator_vendor", "nvidia"),
             container_mounts=container_mounts,
             srun_options=dict(config.srun_options),

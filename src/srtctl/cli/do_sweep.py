@@ -198,21 +198,6 @@ class SweepOrchestrator(
                 return env["HF_HOME"]
         return None
 
-    def _get_hf_cache_dir(self) -> str | None:
-        """Resolve the exact Hugging Face Hub cache used by backend workers.
-
-        ``HF_HUB_CACHE`` takes precedence over the legacy
-        ``HUGGINGFACE_HUB_CACHE`` variable.  When neither is explicit,
-        Hugging Face defaults to ``$HF_HOME/hub``.
-        """
-        for mode in ("prefill", "decode", "agg"):
-            env = self.config.backend.get_environment_for_mode(mode)
-            for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
-                if key in env:
-                    return env[key]
-        hf_home = self._get_hf_home()
-        return str(Path(hf_home) / "hub") if hf_home else None
-
     def _get_hf_env(self) -> dict[str, str]:
         """Collect HF-related environment variables from backend config.
 
@@ -223,7 +208,7 @@ class SweepOrchestrator(
         hf_env: dict[str, str] = {}
         for mode in ("prefill", "decode", "agg"):
             for key, val in self.config.backend.get_environment_for_mode(mode).items():
-                if key.startswith(("HF_", "HUGGING_FACE_", "HUGGINGFACE_")):
+                if key.startswith(("HF_", "HUGGING_FACE_")):
                     hf_env[key] = val
         return hf_env
 
@@ -235,11 +220,11 @@ class SweepOrchestrator(
         "Lock acquisition failed". This removes locks older than 30 minutes
         (no legitimate download takes that long).
         """
-        hf_cache_dir = self._get_hf_cache_dir()
-        if not hf_cache_dir:
+        hf_home = self._get_hf_home()
+        if not hf_home:
             return
 
-        cache_dir = Path(hf_cache_dir)
+        cache_dir = Path(hf_home)
         if not cache_dir.is_dir():
             return
 
@@ -256,11 +241,7 @@ class SweepOrchestrator(
                 pass  # Permission denied or already deleted
 
         if removed > 0:
-            logger.info(
-                "Cleaned %d stale .lock files from HF cache: %s",
-                removed,
-                hf_cache_dir,
-            )
+            logger.info("Cleaned %d stale .lock files from HF cache: %s", removed, hf_home)
 
     def _host_setup_nodes(self) -> list[str]:
         """Nodes targeted by host_setup, deduped and stable in allocation order."""
@@ -407,13 +388,12 @@ class SweepOrchestrator(
             return
 
         hf_home = self._get_hf_home()
-        hf_cache_dir = self._get_hf_cache_dir()
-        if not hf_cache_dir:
+        if not hf_home:
             logger.warning(
-                "HF model '%s' specified but no Hugging Face cache is set in backend environment config. "
+                "HF model '%s' specified but HF_HOME is not set in backend environment config. "
                 "Workers will use the default HuggingFace cache (~/.cache/huggingface) which may not "
-                "be shared across nodes. Set HF_HUB_CACHE or HF_HOME in "
-                "prefill_environment/decode_environment to use a shared cache directory.",
+                "be shared across nodes. Set HF_HOME in prefill_environment/decode_environment to use "
+                "a shared cache directory (e.g., HF_HOME: /lustre/fsw/.../common/cache).",
                 self.runtime.model_path,
             )
             return
@@ -423,17 +403,13 @@ class SweepOrchestrator(
         # Check if model is already fully cached using huggingface_hub API.
         # snapshot_download with local_files_only=True succeeds only if every
         # file in the model repo is already present in the local cache.
-        # Use the exact resolved worker cache.  Explicit HF_HUB_CACHE may point
-        # somewhere other than $HF_HOME/hub.
+        # Note: HF_HOME stores models in $HF_HOME/hub/, so we pass cache_dir=$HF_HOME/hub
+        # to match the actual storage location used by workers.
         try:
             from huggingface_hub import snapshot_download  # type: ignore[import-untyped]
 
-            snapshot_download(model_id, cache_dir=hf_cache_dir, local_files_only=True)
-            logger.info(
-                "Model '%s' already cached at %s, skipping pre-download",
-                model_id,
-                hf_cache_dir,
-            )
+            snapshot_download(model_id, cache_dir=str(Path(hf_home) / "hub"), local_files_only=True)
+            logger.info("Model '%s' already cached at %s, skipping pre-download", model_id, hf_home)
             return
         except ImportError:
             logger.debug("huggingface_hub not installed on host, will use container to check/download")
@@ -442,12 +418,7 @@ class SweepOrchestrator(
 
         download_node = self.runtime.nodes.worker[0]
 
-        logger.info(
-            "Ensuring model '%s' is cached on %s (cache: %s)",
-            model_id,
-            download_node,
-            hf_cache_dir,
-        )
+        logger.info("Ensuring model '%s' is cached on %s (cache: %s)", model_id, download_node, hf_home)
 
         # The srun command uses HF_HOME (not --cache-dir) to match the exact
         # cache path workers use ($HF_HOME/hub/models--*/).
@@ -456,16 +427,14 @@ class SweepOrchestrator(
         # Uses 'hf download' (new CLI) with 'huggingface-cli download' as fallback.
         import shlex
 
-        q_hf_home = shlex.quote(hf_home) if hf_home else None
-        q_hf_cache_dir = shlex.quote(hf_cache_dir)
+        q_hf_home = shlex.quote(hf_home)
         q_model_id = shlex.quote(model_id)
-        hf_home_export = f"export HF_HOME={q_hf_home}; " if q_hf_home else ""
         download_cmd = [
             "bash",
             "-c",
             (
-                f"{hf_home_export}"
-                f"find {q_hf_cache_dir} -name '*.lock' -mmin +30 -delete 2>/dev/null; "
+                f"export HF_HOME={q_hf_home}; "
+                f"find {q_hf_home} -name '*.lock' -mmin +30 -delete 2>/dev/null; "
                 f"DL_CMD='hf download'; "
                 f"command -v hf >/dev/null 2>&1 || DL_CMD='huggingface-cli download'; "
                 f"if HF_HUB_OFFLINE=1 $DL_CMD {q_model_id} --quiet 2>/dev/null; then "
@@ -491,12 +460,7 @@ class SweepOrchestrator(
                 container_image=str(self.runtime.container_image),
                 container_mounts=self.runtime.container_mounts,
                 env_to_set=hf_env,
-                # The wrapper exports HF_HUB_CACHE, HF_TOKEN, and the other
-                # backend-provided HF variables before invoking this bash -c.
-                # Disabling it silently drops env_to_set and can populate a
-                # second cache under $HF_HOME/hub instead of reusing the
-                # configured shared cache.
-                use_bash_wrapper=True,
+                use_bash_wrapper=False,  # command is already bash -c
                 het_group=self.runtime.nodes.het_group_for(download_node),
             )
 

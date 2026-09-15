@@ -62,7 +62,14 @@ _resolve_ip() {
         fi
     fi
 
-    # Method 2: Use hostname -I (prefer RFC1918, avoid loopback/link-local)
+    # Method 2: Use ip route to find default source IP
+    ip=$(ip route get 8.8.8.8 2>/dev/null | awk -F'src ' 'NR==1{split($2,a," ");print a[1]}')
+    if [ -n "$ip" ] && ! _is_bad_ip "$ip"; then
+        echo "$ip"
+        return 0
+    fi
+
+    # Method 3: Use hostname -I (prefer RFC1918, avoid loopback/link-local)
     ips=$(hostname -I 2>/dev/null)
     if [ -n "$ips" ]; then
         ip=$(_select_best_ip $ips)
@@ -70,13 +77,6 @@ _resolve_ip() {
             echo "$ip"
             return 0
         fi
-    fi
-
-    # Method 3: Use ip route to find the default source IP
-    ip=$(ip route get 8.8.8.8 2>/dev/null | awk -F'src ' 'NR==1{split($2,a," ");print a[1]}')
-    if [ -n "$ip" ] && ! _is_bad_ip "$ip"; then
-        echo "$ip"
-        return 0
     fi
 
     return 1
@@ -156,7 +156,14 @@ get_node_ip() {
             fi
         fi
 
-        # Method 2: Use hostname -I (prefer RFC1918, avoid loopback/link-local)
+        # Method 2: Use ip route to find default source IP
+        ip=\$(ip route get 8.8.8.8 2>/dev/null | awk -F'src ' 'NR==1{split(\$2,a,\" \");print a[1]}')
+        if [ -n \"\$ip\" ] && ! _is_bad_ip \"\$ip\"; then
+            echo \"\$ip\"
+            exit 0
+        fi
+
+        # Method 3: Use hostname -I (prefer RFC1918, avoid loopback/link-local)
         ips=\$(hostname -I 2>/dev/null)
         if [ -n \"\$ips\" ]; then
             ip=\$(_select_best_ip \$ips)
@@ -164,13 +171,6 @@ get_node_ip() {
                 echo \"\$ip\"
                 exit 0
             fi
-        fi
-
-        # Method 3: Use ip route to find the default source IP
-        ip=\$(ip route get 8.8.8.8 2>/dev/null | awk -F'src ' 'NR==1{split(\$2,a,\" \");print a[1]}')
-        if [ -n \"\$ip\" ] && ! _is_bad_ip \"\$ip\"; then
-            echo \"\$ip\"
-            exit 0
         fi
 
         exit 1

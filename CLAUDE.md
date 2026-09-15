@@ -20,9 +20,6 @@ uv run pytest tests/test_e2e.py -v
 # Run single test
 uv run pytest tests/test_e2e.py::TestH100Cluster::test_endpoint_allocation -v
 
-# Observe an existing allocation, streaming its shared log and returning its exit status
-srtctl wait 12345 --log-file outputs/12345/logs/sweep_12345.log
-
 # Auto-fix lint issues
 uv run ruff check --fix src/srtctl/
 uv run ruff format src/srtctl/

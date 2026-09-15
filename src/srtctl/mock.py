@@ -143,8 +143,6 @@ class MockOptions:
     nodelist: tuple[str, ...] = ("mock-node-01",)
     # Fake IP returned for every hostname lookup.
     hostname_ip: str = "127.0.0.1"
-    # Deterministic per-node CPU allocation exposed through the mock Slurm env.
-    cpus_per_node: int = 64
 
 
 # ---------------------------------------------------------------------------
@@ -358,19 +356,18 @@ def _write_final_result(output_dir: Path, *, job_id: str, exit_code: int) -> Non
     (output_dir / "result.json").write_text(json.dumps(payload, indent=2) + "\n")
 
 
-def _set_slurm_env(job_id: str, nodelist: Iterable[str], cpus_per_node: int) -> dict[str, str | None]:
+def _set_slurm_env(job_id: str, nodelist: Iterable[str]) -> dict[str, str | None]:
     """Set SLURM_* env vars for the duration of the mock run.
 
     Returns a snapshot so callers can restore the prior values.
     """
-    keys = ["SLURM_JOB_ID", "SLURM_JOBID", "SLURM_NODELIST", "SLURM_NNODES", "SLURM_JOB_CPUS_PER_NODE"]
+    keys = ["SLURM_JOB_ID", "SLURM_JOBID", "SLURM_NODELIST", "SLURM_NNODES"]
     prior = {k: os.environ.get(k) for k in keys}
     os.environ["SLURM_JOB_ID"] = job_id
     os.environ["SLURM_JOBID"] = job_id
     nodes_csv = ",".join(nodelist)
     os.environ["SLURM_NODELIST"] = nodes_csv
     os.environ["SLURM_NNODES"] = str(len(nodes_csv.split(",")))
-    os.environ["SLURM_JOB_CPUS_PER_NODE"] = f"{cpus_per_node}(x{len(nodes_csv.split(','))})"
     return prior
 
 
@@ -420,7 +417,7 @@ def run_mock_sweep(
     # the real output_dir so artifacts land where the upstream harness expects.
     prior_output = os.environ.get("SRTCTL_OUTPUT_DIR")
     os.environ["SRTCTL_OUTPUT_DIR"] = str(output_dir)
-    prior_slurm = _set_slurm_env(job_id, opts.nodelist, opts.cpus_per_node)
+    prior_slurm = _set_slurm_env(job_id, opts.nodelist)
 
     try:
         with mock_infrastructure(options=opts, output_dir=output_dir) as sink:

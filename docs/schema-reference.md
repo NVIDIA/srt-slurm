@@ -609,8 +609,6 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `default_gpu_type` | str \| None | `None` | Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one recipe move between clusters of different GPU types without an edit. |
 | `network_interface` | str \| None | `None` |  |
 | `accelerator_vendor` | one of `'nvidia'`, `'amd'` | `'nvidia'` |  |
-| `gpu_sbatch_directive` | one of `'gpus-per-node'`, `'gres'`, `'none'` \| None | `None` |  |
-| `runtime_config_transport` | one of `'shared-filesystem'`, `'embedded'` | `'shared-filesystem'` |  |
 | `use_gpus_per_node_directive` | bool | `True` |  |
 | `use_segment_sbatch_directive` | bool | `True` |  |
 | `use_exclusive_sbatch_directive` | bool | `False` |  |

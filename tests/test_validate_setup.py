@@ -35,31 +35,6 @@ def _install(path: Path, image: bytes) -> None:
 class TestValidateSetup:
     """Tests for the validate_setup function."""
 
-    def test_native_router_setup_follows_effective_services(self, tmp_path: Path, capsys):
-        """No Dynamo binaries unless the recipe actually launches those services."""
-        from dataclasses import replace
-
-        from srtctl.core.schema import FrontendConfig, ObservabilityConfig, TachometerConfig
-        from srtctl.services import ServiceConfig
-
-        config = replace(
-            self._config(cpu_power_enabled=False),
-            frontend=FrontendConfig(type="sglang"),
-            observability=ObservabilityConfig(tachometer=TachometerConfig(enabled=False)),
-        )
-        (tmp_path / "bin").mkdir()
-        (tmp_path / "bin" / "uv").touch()
-        validate_setup(tmp_path, config)
-
-        with pytest.raises(SystemExit):
-            validate_setup(tmp_path, replace(config, services=[ServiceConfig(name="etcd", type="etcd")]))
-        assert "configs/etcd" in capsys.readouterr().out
-
-        (tmp_path / "bin" / "uv").unlink()
-        with pytest.raises(SystemExit):
-            validate_setup(tmp_path, config)
-        assert "make setup-compute ARCH=<compute_arch>" in capsys.readouterr().out
-
     def test_passes_when_all_binaries_exist(self, tmp_path: Path):
         """validate_setup succeeds when all required binaries are present."""
         (tmp_path / "configs").mkdir()
