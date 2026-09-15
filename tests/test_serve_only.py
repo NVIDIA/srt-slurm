@@ -105,6 +105,7 @@ class _ServeOnlyHarness(BenchmarkStageMixin):
 def test_serve_only_waits_for_health_but_never_loads_a_benchmark(tmp_path: Path) -> None:
     harness = _ServeOnlyHarness(tmp_path)
     registry = MagicMock()
+    registry.has_failures = False
     reporter = MagicMock()
     stop_event = threading.Event()
     stop_event.set()
@@ -124,6 +125,29 @@ def test_serve_only_waits_for_health_but_never_loads_a_benchmark(tmp_path: Path)
     wait_for_model.assert_called_once()
     get_runner.assert_not_called()
     reporter.report.assert_called_once_with(JobStatus.FRONTEND, JobStage.FRONTEND, "Inference endpoint ready")
+
+
+def test_serve_only_fails_when_the_process_monitor_stopped_it_after_a_critical_exit(tmp_path: Path) -> None:
+    """The monitor thread ticks faster than the serve loop and sets stop_event on a critical
+    failure; the loop must not mistake that stop for a clean shutdown (sa-b200 job 15405)."""
+    harness = _ServeOnlyHarness(tmp_path)
+    registry = MagicMock()
+    registry.has_failures = True  # the monitor already recorded the failure before stopping us
+    registry.check_failures.return_value = False  # a rescan after cleanup must not be what decides
+    stop_event = threading.Event()
+    stop_event.set()
+
+    with (
+        patch(
+            "srtctl.cli.mixins.benchmark_stage._get_health_expectations",
+            return_value=(0, 1, "one aggregate worker", 1),
+        ),
+        patch("srtctl.cli.mixins.benchmark_stage.wait_for_model", return_value=True),
+        patch("srtctl.cli.mixins.benchmark_stage.collect_worker_fingerprints", return_value=[]),
+    ):
+        exit_code = harness.run_benchmark(registry, stop_event, MagicMock())
+
+    assert exit_code == 1
 
 
 def test_serve_only_takes_precedence_over_eval_only(monkeypatch, tmp_path: Path) -> None:

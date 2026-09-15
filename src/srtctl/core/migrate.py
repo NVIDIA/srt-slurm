@@ -11,7 +11,7 @@ order, and quoting survive; keys that move between blocks carry their comments.
 
 v1 -> v2 rewrites (each is a pure re-spelling; the resolved config is identical):
 
-- ``resources.<role>_nodes/_workers``, ``gpus_per_<role>``, ``<role>_critical``,
+- ``resources.<role>_nodes/_workers``, ``gpus_per_<role>``, ``<role>_critical``, ``<role>_restart``,
   ``backend.<mode>_environment``, ``backend.<engine>_config.<mode>``, and
   ``backend.<mode>_extra_args`` fold into ``roles.<role>``.
 - ``frontend.orchestrator_placement`` / ``dedicated_node``,
@@ -195,6 +195,7 @@ def _fold_roles(variant: CommentedMap, engine_key: str, label: str) -> list[str]
                 (f"{role}_workers", "workers"),
                 (f"gpus_per_{role}", "gpus"),
                 (f"{role}_critical", "critical"),
+                (f"{role}_restart", "restart"),
             ):
                 if legacy in resources:
                     moves.append((resources, legacy, new))

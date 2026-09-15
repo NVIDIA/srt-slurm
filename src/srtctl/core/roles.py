@@ -43,7 +43,8 @@ The engine itself is a top-level ``engine:`` key in 2.0 (a string, or a mapping
 with ``type`` plus engine-wide knobs such as vLLM's ``connector``); it maps onto
 ``backend``. Per-role ``kv_events`` maps onto ``backend.kv_events_config.<mode>``
 and per-role ``sidecar`` onto ``dynamo.sidecar`` (every role must agree); per-role
-``critical`` maps onto ``resources.<role>_critical``. A v2
+``critical`` maps onto ``resources.<role>_critical`` and per-role ``restart`` (a
+policy name or a mapping) onto ``resources.<role>_restart``. A v2
 recipe therefore needs no ``backend:`` block at all; a v1 recipe still loads.
 """
 
@@ -70,8 +71,29 @@ COLOCATE = "colocate"
 
 # Per-role spec keys.
 _ROLE_SPEC_KEYS = frozenset(
-    {"nodes", "workers", "gpus", "env", "args", "extra_args", "engine", "kv_events", "sidecar", "critical"}
+    {"nodes", "workers", "gpus", "env", "args", "extra_args", "engine", "kv_events", "sidecar", "critical", "restart"}
 )
+
+# The ``resources.<role>_*`` fields a role block expands into (besides ``gpus_per_<role>``).
+_ROLE_RESOURCE_SUFFIXES: tuple[str, ...] = ("nodes", "workers", "critical", "restart")
+
+
+def _role_resource_keys(role_name: str) -> tuple[str, ...]:
+    return (*(f"{role_name}_{suffix}" for suffix in _ROLE_RESOURCE_SUFFIXES), f"gpus_per_{role_name}")
+
+
+def _expand_restart(role_name: str, value: Any) -> dict[str, Any]:
+    """Map ``roles.<role>.restart`` onto ``resources.<role>_restart``.
+
+    A bare string is the policy name (``restart: on-failure``); a mapping carries
+    the policy plus ``max_restarts`` / ``backoff_seconds`` / ``max_backoff_seconds``
+    and is passed through for the schema to validate.
+    """
+    if isinstance(value, str):
+        return {"policy": value}
+    if isinstance(value, dict):
+        return dict(value)
+    raise TypeError(f"roles.{role_name}.restart must be a policy name or a mapping; got {value!r}")
 
 
 def _engine_key(config: dict[str, Any]) -> str:
@@ -135,7 +157,7 @@ def _legacy_targets_present(config: dict[str, Any]) -> list[str]:
     resources = config.get("resources")
     if isinstance(resources, dict):
         for role in ROLE_NAMES:
-            for key in (f"{role}_nodes", f"{role}_workers", f"gpus_per_{role}", f"{role}_critical"):
+            for key in _role_resource_keys(role):
                 if key in resources:
                     present.append(f"resources.{key}")
     backend = config.get("backend")
@@ -223,6 +245,8 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(spec["critical"], bool):
                 raise TypeError(f"roles.{role_name}.critical must be a boolean")
             resources[f"{role_name}_critical"] = spec["critical"]
+        if "restart" in spec:
+            resources[f"{role_name}_restart"] = _expand_restart(role_name, spec["restart"])
         if "env" in spec:
             backend[f"{mode}_environment"] = spec["env"]
         if "args" in spec:
@@ -282,6 +306,8 @@ def roles_from_legacy(config: dict[str, Any]) -> dict[str, Any]:
             spec["gpus"] = resources[f"gpus_per_{role_name}"]
         if f"{role_name}_critical" in resources:
             spec["critical"] = resources[f"{role_name}_critical"]
+        if f"{role_name}_restart" in resources:
+            spec["restart"] = resources[f"{role_name}_restart"]
         if backend.get(f"{mode}_environment"):
             spec["env"] = backend[f"{mode}_environment"]
         if engine_cfg.get(mode):
@@ -318,7 +344,7 @@ def roles_from_legacy(config: dict[str, Any]) -> dict[str, Any]:
     # Strip the folded fields from resources/backend.
     for role_name in ROLE_NAMES:
         mode = ROLE_TO_MODE[role_name]
-        for key in (f"{role_name}_nodes", f"{role_name}_workers", f"gpus_per_{role_name}", f"{role_name}_critical"):
+        for key in _role_resource_keys(role_name):
             resources.pop(key, None)
         backend.pop(f"{mode}_environment", None)
         backend.pop(f"{mode}_extra_args", None)

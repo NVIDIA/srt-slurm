@@ -366,6 +366,7 @@ Role names are `prefill`, `decode`, and `agg`. A recipe is disaggregated (prefil
 | `kv_events` | bool or dict | Publish KV cache events for the Dynamo router; see below |
 | `sidecar` | bool | Run the native engine with a Dynamo sidecar; see [Native sidecar mode](#native-sidecar-mode) |
 | `critical` | bool | Whether a worker of this role exiting fails the run (default `true`); see [critical](#critical) |
+| `restart` | string or dict | Relaunch a worker of this role that exits mid-run (default `never`); see [restart](#restart) |
 | `engine` | string | Optional; must equal the top-level `engine` when both are given |
 
 `env` and `args` are ordinary YAML mappings. Nothing needs JSON or inline `{}` syntax. Boolean flags are `flag-name: true`.
@@ -433,7 +434,44 @@ roles:
 
 The flag is per role and defaults to `true`. It changes only how a worker exit is treated; the health gate before the benchmark still requires every worker to come up.
 
-The v1 spelling of this section (`resources.prefill_nodes`, `resources.prefill_workers`, `resources.gpus_per_prefill`, `resources.prefill_critical`, `resources.decode_nodes: 0`, `backend.prefill_environment`, `backend.sglang_config.prefill`, `backend.prefill_extra_args`, `backend.kv_events_config`, and the `decode` and `aggregated` counterparts) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
+### restart
+
+`restart` turns the process monitor into a supervisor for the role: when one of its workers exits, srtctl relaunches that worker in place (same nodes, GPUs and ports) after a backoff, the way a Kubernetes `restartPolicy` brings a container back. It is off by default.
+
+```yaml
+roles:
+  decode:
+    workers: 4
+    restart: on-failure          # relaunch a decode worker that exits non-zero
+  prefill:
+    workers: 2
+    restart:
+      policy: always             # relaunch after any exit, clean or not
+      max_restarts: 5            # per worker, over the whole job (default 3)
+      backoff_seconds: 10        # first delay; doubles on each relaunch (default 10)
+      max_backoff_seconds: 120   # cap on the doubled delay (default 300)
+```
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `policy` | `never` | `never` leaves a worker exit to [critical](#critical). `on-failure` relaunches after a non-zero exit. `always` relaunches after any exit. |
+| `max_restarts` | `3` | Relaunches allowed per worker over the life of the job. |
+| `backoff_seconds` | `10` | Delay before the first relaunch. Doubles on each further relaunch of the same worker. |
+| `max_backoff_seconds` | `300` | Cap on the doubled delay. |
+
+How a relaunch behaves:
+
+- The unit of restart is the logical worker. When one rank of a multi-node worker exits, the surviving ranks are stopped with SIGTERM and the whole worker comes back together. TRT-LLM endpoints already die as one step.
+- The relaunched step is named `<mode>_<index>_<node>_r<n>` and writes the canonical worker log; the previous life's log is kept beside it as `<node>_<mode>_w<index>.out.<n>`.
+- Under the Dynamo frontend, srtctl then polls the worker's `DYN_SYSTEM_PORT` `/health` (the engine's HTTP port under the other frontends) for as long as the initial health gate allows and records when the worker serves again. A worker that never answers is left running.
+- Once `max_restarts` is spent, or when `on-failure` sees a clean exit, the worker goes back to the ordinary monitor and the role's `critical` flag decides whether the run fails.
+- Every relaunch is recorded in `logs/worker_restarts.json` and copied into `recipe.lock.yaml` as `lock.worker_restarts`, so a result produced through restarts says so.
+
+A relaunched worker registers with the Dynamo frontend as a new instance once the old lease expires; a static router sees the same URL come back. Requests in flight on the dead worker fail and the benchmark client records them; that is the point of a fault-tolerance probe, and the lockfile entry marks the run. The supervisor does not move a worker to another node: the allocation has no spare, and Slurm ends the job when a node fails.
+
+`examples/features/worker-restart.yaml` is a runnable version: two workers serving with no benchmark, so you can SIGKILL a worker step with `scancel --signal=KILL <job>.<step>` and watch the relaunch in the sweep log. Its header walks through the timeline of a real run.
+
+The v1 spelling of this section (`resources.prefill_nodes`, `resources.prefill_workers`, `resources.gpus_per_prefill`, `resources.prefill_critical`, `resources.prefill_restart`, `resources.decode_nodes: 0`, `backend.prefill_environment`, `backend.sglang_config.prefill`, `backend.prefill_extra_args`, `backend.kv_events_config`, and the `decode` and `aggregated` counterparts) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
 ---
 

@@ -4,14 +4,17 @@
 """Tests for SLURM command construction."""
 
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srtctl.cli.mixins.worker_stage import WorkerStageMixin
-from srtctl.core.schema import ObservabilityConfig, ResourceConfig
+from srtctl.cli.mixins.worker_stage import WorkerStageMixin, worker_step_name
+from srtctl.core.processes import ManagedProcess, ProcessRegistry
+from srtctl.core.schema import ObservabilityConfig, ResourceConfig, RestartPolicy
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
 
 
@@ -297,6 +300,100 @@ def test_worker_stage_no_remap_root_for_sglang_frontend(tmp_path: Path) -> None:
         mixin.start_worker(process, [process])
 
     assert mock_srun.call_args.kwargs["srun_export_env"] is None
+
+
+def test_worker_step_name_suffixes_relaunches_only() -> None:
+    assert worker_step_name("decode", 1, "node-b") == "decode_1_node-b"
+    assert worker_step_name("decode", 1, "node-b", 0) == "decode_1_node-b"
+    assert worker_step_name("decode", 1, "node-b", 2) == "decode_1_node-b_r2"
+
+
+def test_worker_stage_relaunch_suffixes_the_step_and_reuses_the_log_path(tmp_path: Path) -> None:
+    """A supervisor relaunch is the same process spec under a new step name (the old log was rotated away)."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        managed = mixin.start_worker(process, [process], attempt=2)
+
+    assert mock_srun.call_args.kwargs["step_name"] == "prefill_0_node-a_r2"
+    assert mock_srun.call_args.kwargs["output"] == str(tmp_path / "node-a_prefill_w0.out")
+    assert managed.name == managed.step_name == "prefill_0_node-a_r2"
+    assert managed.log_file == tmp_path / "node-a_prefill_w0.out"
+
+
+def test_relaunch_endpoint_follows_the_backend_launch_strategy(tmp_path: Path) -> None:
+    mixin, leader = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
+    follower = SimpleNamespace(**{**vars(leader), "node": "node-b"})
+    mixin.runtime.nodes.worker.append("node-b")
+    patches = (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    )
+
+    # Per-process launching (SGLang): one step per rank of the endpoint.
+    mixin.backend.get_srun_config.return_value = SimpleNamespace(
+        launch_per_endpoint=False, mpi=None, oversubscribe=False, cpu_bind=None
+    )
+    with patches[0], patches[1] as mock_srun:
+        procs = mixin.relaunch_endpoint([leader, follower], attempt=1)
+    assert [p.name for p in procs] == ["prefill_0_node-a_r1", "prefill_0_node-b_r1"]
+    assert [call.kwargs["nodelist"] for call in mock_srun.call_args_list] == [["node-a"], ["node-b"]]
+
+    # Per-endpoint launching (TRT-LLM): one MPI step spanning every node.
+    mixin.backend.get_srun_config.return_value = SimpleNamespace(
+        launch_per_endpoint=True, mpi="pmix", oversubscribe=False, cpu_bind=None
+    )
+    with patches[0], patches[1] as mock_srun:
+        procs = mixin.relaunch_endpoint([leader, follower], attempt=3)
+    assert [p.name for p in procs] == ["prefill_0_node-a_r3"]
+    assert mock_srun.call_args.kwargs["nodelist"] == ["node-a", "node-b"]
+    assert mock_srun.call_args.kwargs["step_name"] == "prefill_0_node-a_r3"
+
+
+def test_worker_ready_probe_targets_the_port_the_frontend_health_checks(tmp_path: Path) -> None:
+    mixin, leader = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    leader.http_port = 8100
+    with patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.7"):
+        assert mixin.worker_ready_probe([leader]) == ("10.0.0.7", 5000)  # DYN_SYSTEM_PORT under dynamo
+        mixin.config.frontend.type = "sglang-router"
+        assert mixin.worker_ready_probe([leader]) == ("10.0.0.7", 8100)  # the engine's own HTTP port
+        leader.http_port = 0
+        assert mixin.worker_ready_probe([leader]) is None
+
+
+def test_track_workers_supervises_only_roles_with_a_restart_policy(tmp_path: Path) -> None:
+    base, prefill = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    decode = SimpleNamespace(**{**vars(prefill), "endpoint_mode": "decode"})
+
+    class Stage(WorkerStageMixin):
+        backend_processes: ClassVar[list] = [prefill, decode]  # shadows the abstract property
+
+    stage = Stage()
+    stage.config = base.config
+    stage.runtime = base.runtime
+    stage.config.resources = ResourceConfig(decode_restart=RestartPolicy(policy="on-failure"))
+    stage.config.health_check = SimpleNamespace(max_attempts=3, interval_seconds=10)
+
+    registry = ProcessRegistry(job_id="1")
+    supervisor = stage.build_worker_supervisor(registry, threading.Event())
+    assert supervisor.ready_timeout == 30.0  # the same budget as the initial health gate
+
+    worker_procs = {}
+    for name in ("prefill_0_node-a", "decode_0_node-a"):
+        popen = MagicMock(spec=subprocess.Popen)
+        popen.poll.return_value = None
+        popen.pid = 1
+        worker_procs[name] = ManagedProcess(name=name, popen=popen, step_name=name)
+    registry.add_processes(worker_procs)
+
+    stage.track_workers(supervisor, worker_procs)
+
+    assert worker_procs["decode_0_node-a"].supervised is True
+    assert worker_procs["prefill_0_node-a"].supervised is False
+    assert stage.worker_endpoint_groups() == {("prefill", 0): [prefill], ("decode", 0): [decode]}
 
 
 def test_sglang_workers_skip_the_post_sigterm_crash_diagnostics_by_default(tmp_path: Path) -> None:

@@ -9,15 +9,17 @@ Handles starting backend worker processes (prefill/decode/agg).
 
 import logging
 import shlex
+import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
-from srtctl.core.processes import ManagedProcess, NamedProcesses
+from srtctl.core.processes import ManagedProcess, NamedProcesses, ProcessRegistry
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
+from srtctl.core.supervisor import EndpointKey, WorkerSupervisor
 from srtctl.ports import KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE
 from srtctl.services.implicit import discovery_env
 
@@ -30,6 +32,18 @@ logger = logging.getLogger(__name__)
 
 # Engines shut down on SIGTERM (deregister, free GPUs, flush); give them longer than the default 10s.
 WORKER_TERMINATE_TIMEOUT_SECONDS = 30.0
+
+
+def worker_step_name(mode: str, index: int, node: str, attempt: int = 0) -> str:
+    """The Slurm step name (and registry name) of a worker step.
+
+    ``attempt`` is the supervisor's relaunch count; a relaunched step carries an
+    ``_r<n>`` suffix so ``squeue --steps`` can never confuse it with a lingering
+    step of the life it replaces.
+    """
+    name = f"{mode}_{index}_{node}"
+    return f"{name}_r{attempt}" if attempt else name
+
 
 # Dynamo runtime (Rust) log filter for worker containers; YAML prefill_environment /
 # decode_environment / aggregated_environment override via the merge below.
@@ -155,12 +169,22 @@ class WorkerStageMixin:
             environment.setdefault("SGLANG_PYSPY_DUMP_BEFORE_CRASH", "0")
         return environment
 
-    def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
-        """Start a single worker process (one srun per node, used by SGLang)."""
+    def start_worker(
+        self, process: "Process", endpoint_processes: list["Process"], *, attempt: int = 0
+    ) -> ManagedProcess:
+        """Start a single worker process (one srun per node, used by SGLang).
+
+        ``attempt`` > 0 is a supervisor relaunch of the same process spec: same
+        node, GPUs, ports and log path (the previous life's log has been rotated
+        away), only the step name differs.
+        """
         mode = process.endpoint_mode
         index = process.endpoint_index
 
-        logger.info("Starting %s worker %d on %s", mode, index, process.node)
+        if attempt:
+            logger.info("Relaunching %s worker %d on %s (restart %d)", mode, index, process.node, attempt)
+        else:
+            logger.info("Starting %s worker %d on %s", mode, index, process.node)
 
         # Log and config files
         worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}.out"
@@ -272,7 +296,7 @@ class WorkerStageMixin:
         endpoint_nodes = {endpoint_process.node for endpoint_process in endpoint_processes}
         env_to_unset = ["VLLM_PORT"] if self.backend.type == "vllm" and len(endpoint_nodes) > 1 else None
 
-        step_name = f"{mode}_{index}_{process.node}"
+        step_name = worker_step_name(mode, index, process.node, attempt)
         proc = start_srun_process(
             command=cmd,
             nodelist=[process.node],
@@ -302,11 +326,12 @@ class WorkerStageMixin:
             step_name=step_name,
         )
 
-    def start_endpoint_worker(self, endpoint_processes: list["Process"]) -> ManagedProcess:
+    def start_endpoint_worker(self, endpoint_processes: list["Process"], *, attempt: int = 0) -> ManagedProcess:
         """Start a worker using MPI-style launching (one srun per endpoint, used by TRTLLM).
 
         This launches a single srun command that spans all nodes in the endpoint,
-        with ntasks = total GPUs across all nodes.
+        with ntasks = total GPUs across all nodes. ``attempt`` is the supervisor's
+        relaunch count (see ``start_worker``).
         """
         # Use the leader process for metadata
         leader = endpoint_processes[0]
@@ -319,12 +344,14 @@ class WorkerStageMixin:
         total_gpus = num_nodes * len(leader.gpu_indices)
 
         logger.info(
-            "Starting %s worker %d on %d nodes (%s) with %d total GPUs (MPI mode)",
+            "%s %s worker %d on %d nodes (%s) with %d total GPUs (MPI mode)%s",
+            "Relaunching" if attempt else "Starting",
             mode,
             index,
             num_nodes,
             ",".join(endpoint_nodes),
             total_gpus,
+            f" (restart {attempt})" if attempt else "",
         )
 
         # Log and config files (use leader node in name)
@@ -433,7 +460,7 @@ class WorkerStageMixin:
             # terminate the full endpoint step instead of leaving rank zero up.
             srun_options["kill-on-bad-exit"] = "1"
 
-        step_name = f"{mode}_{index}_{leader.node}"
+        step_name = worker_step_name(mode, index, leader.node, attempt)
         proc = start_srun_process(
             command=cmd,
             nodes=num_nodes,
@@ -497,6 +524,50 @@ class WorkerStageMixin:
         ):
             raise RuntimeError(f"Sequential node start: worker on {leader.node}:{port} did not become healthy")
 
+    def worker_endpoint_groups(self) -> dict[EndpointKey, list["Process"]]:
+        """The physical processes of every logical worker, keyed by ``(mode, index)``, in launch order."""
+        grouped: dict[EndpointKey, list[Process]] = defaultdict(list)
+        for process in self.backend_processes:
+            grouped[(process.endpoint_mode, process.endpoint_index)].append(process)
+        return dict(grouped)
+
+    def relaunch_endpoint(self, endpoint_processes: list["Process"], *, attempt: int) -> list[ManagedProcess]:
+        """Launch one endpoint again the way ``start_all_workers`` launched it (WorkerLauncher protocol)."""
+        if self.backend.get_srun_config().launch_per_endpoint:
+            return [self.start_endpoint_worker(endpoint_processes, attempt=attempt)]
+        return [self.start_worker(process, endpoint_processes, attempt=attempt) for process in endpoint_processes]
+
+    def worker_ready_probe(self, endpoint_processes: list["Process"]) -> tuple[str, int] | None:
+        """Where a relaunched endpoint answers ``GET /health`` once it serves (WorkerLauncher protocol).
+
+        Under the Dynamo frontend that is the runtime's system status server on
+        ``DYN_SYSTEM_PORT`` (200 once the model is loaded and the endpoint is
+        registered); every other frontend talks to the engine's own HTTP port.
+        """
+        leader = endpoint_processes[0]
+        port = leader.sys_port if self.config.frontend.type == "dynamo" else leader.http_port
+        if port <= 0:
+            return None
+        return get_hostname_ip(leader.node, self.runtime.network_interface), port
+
+    def build_worker_supervisor(self, registry: ProcessRegistry, stop_event: threading.Event) -> WorkerSupervisor:
+        """The reconcile loop that relaunches workers per ``roles.<role>.restart``; a no-op until ``track_workers``."""
+        health = self.config.health_check
+        return WorkerSupervisor(
+            registry=registry,
+            stop_event=stop_event,
+            launcher=self,
+            log_dir=self.runtime.log_dir,
+            # A relaunched worker gets the same budget to come up as the initial health gate.
+            ready_timeout=float(health.max_attempts * health.interval_seconds),
+        )
+
+    def track_workers(self, supervisor: WorkerSupervisor, worker_procs: NamedProcesses) -> None:
+        """Hand the launched workers to the supervisor; roles with ``restart: never`` are skipped."""
+        if not worker_procs:
+            return  # nothing launched, nothing to supervise
+        supervisor.track(self.worker_endpoint_groups(), worker_procs.keys(), self.config.resources.worker_restart)
+
     def start_all_workers(self) -> NamedProcesses:
         """Start all backend workers."""
         logger.info("Starting backend workers")
@@ -505,10 +576,7 @@ class WorkerStageMixin:
         srun_config = self.backend.get_srun_config()
         launch_per_endpoint = srun_config.launch_per_endpoint
 
-        grouped: dict[tuple, list[Process]] = defaultdict(list)
-        for process in self.backend_processes:
-            key = (process.endpoint_mode, process.endpoint_index)
-            grouped[key].append(process)
+        grouped = self.worker_endpoint_groups()
 
         result: NamedProcesses = {}
 

@@ -197,6 +197,24 @@ class TestBuildLockSection:
         assert lock["verification"]["verified"] == 1
         assert lock["verification"]["failed"] == 1
 
+    def test_with_worker_restarts(self, tmp_path: Path):
+        """A run that relaunched workers carries the supervisor's record so the result is marked."""
+        config = _make_minimal_config()
+        record = {
+            "total_restarts": 1,
+            "endpoints": {"decode_1": {"policy": "on-failure", "restarts": 1, "max_restarts": 3, "exhausted": False}},
+            "events": [{"worker": "decode_1_node-b", "attempt": 1, "exit_code": 137, "outcome": "ready"}],
+        }
+        (tmp_path / "worker_restarts.json").write_text(json.dumps(record))
+
+        lock = build_lock_section(config, resolved_log_dir=tmp_path)
+
+        assert lock["worker_restarts"] == record
+
+    def test_without_worker_restarts(self, tmp_path: Path):
+        config = _make_minimal_config()
+        assert "worker_restarts" not in build_lock_section(config, resolved_log_dir=tmp_path)
+
     # TODO: test_with_results — once rollup format is standardized
 
     def test_resolved_log_dir(self, tmp_path):

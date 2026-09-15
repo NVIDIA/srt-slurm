@@ -401,3 +401,18 @@ def test_migrate_folds_worker_criticality_into_roles() -> None:
     assert "decode_critical" not in doc.get("resources", {})
     verified = verify_migration_text(legacy)
     assert verified.status == "ok", verified.detail
+
+
+def test_migrate_folds_worker_restart_policy_into_roles() -> None:
+    legacy = LEGACY.replace(
+        "  decode_workers: 1",
+        "  decode_workers: 1\n  decode_restart:\n    policy: on-failure  # bring a crashed decode back\n    max_restarts: 2",
+    )
+    result = migrate_recipe_text(legacy)
+    doc = yaml.safe_load(result.text)
+    assert doc["roles"]["decode"]["restart"] == {"policy": "on-failure", "max_restarts": 2}
+    assert "restart" not in doc["roles"]["prefill"]
+    assert "decode_restart" not in doc.get("resources", {})
+    assert "# bring a crashed decode back" in result.text
+    verified = verify_migration_text(legacy)
+    assert verified.status == "ok", verified.detail
