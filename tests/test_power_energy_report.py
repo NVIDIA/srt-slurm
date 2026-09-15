@@ -177,6 +177,54 @@ def test_load_cpu_samples_groups_per_socket_and_dedupes_node_total(tmp_path: Pat
     assert list(node_watts) == [90.0, 92.0]  # deduped, not summed across the two sensor rows
 
 
+def test_load_cpu_samples_uses_one_rail_per_socket_for_acpi_multi_rail_rows(tmp_path: Path) -> None:
+    """ACPI mode writes total + cpu_rail + soc + dram rows per socket per instant.
+
+    Only the socket envelope may feed the per-socket series; appending every
+    rail produced several "samples" at the same timestamp and a trapezoid
+    over a jumble of rails (regression: J came out ~half the true value).
+    """
+    path = tmp_path / "cpu" / "samples.csv"
+    rows = []
+    for t in (10.0, 11.0, 12.0):
+        rows += [
+            (3, t, "node-a", "acpi", "CPU0:cpuSidePowerUsageW", 0, 100.0, 100.0),
+            (3, t, "node-a", "acpi", "CPU0:cpuRailPowerUsageW", 0, 40.0, 100.0),
+            (3, t, "node-a", "acpi", "CPU0:socPowerUsageW", 0, 15.0, 100.0),
+            (3, t, "node-a", "acpi", "CPU0:dramPowerUsageW", 0, 10.0, 100.0),
+        ]
+    _write_cpu_csv(path, rows)
+
+    samples = load_cpu_samples(path)
+
+    times, watts = samples.per_socket[("node-a", 0)]
+    assert list(times) == [10.0, 11.0, 12.0]
+    assert list(watts) == [100.0, 100.0, 100.0]
+    breakdown = windowed_energy("cpu/node-a/socket0", times, watts, 10.0, 12.0)
+    assert breakdown.joules == pytest.approx(200.0)
+    assert breakdown.samples == 3
+
+
+def test_load_cpu_samples_falls_back_to_component_rails_without_a_total(tmp_path: Path) -> None:
+    """Scraper OEM labels, no total rail: prefer cpu_rail over soc/dram, never mix them."""
+    path = tmp_path / "cpu" / "samples.csv"
+    _write_cpu_csv(
+        path,
+        [
+            (1, 10.0, "node-a", "acpi", "CPU Power Socket 0", 0, 40.0, ""),
+            (1, 10.0, "node-a", "acpi", "SysIO Power Socket 0", 0, 15.0, ""),
+            (1, 11.0, "node-a", "acpi", "CPU Power Socket 0", 0, 42.0, ""),
+            (1, 11.0, "node-a", "acpi", "SysIO Power Socket 0", 0, 16.0, ""),
+        ],
+    )
+
+    samples = load_cpu_samples(path)
+
+    times, watts = samples.per_socket[("node-a", 0)]
+    assert list(times) == [10.0, 11.0]
+    assert list(watts) == [40.0, 42.0]
+
+
 def test_load_cpu_samples_skips_blank_total_without_a_grace_channel(tmp_path: Path) -> None:
     """ACPI-only scrapes have no `grace` channel, so total_power_w is legitimately blank."""
     path = tmp_path / "cpu" / "samples.csv"

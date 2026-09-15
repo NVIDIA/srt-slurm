@@ -40,6 +40,7 @@ import numpy as np
 
 from srtctl.core.cpu_power import UTILIZATION_COLUMNS as CPU_UTILIZATION_COLUMNS
 from srtctl.core.power.contract import MAX_SAMPLE_GAP_SECONDS, UTILIZATION_METRICS
+from srtctl.core.power.cpu_parser import _classify_acpi_domain
 
 GPU_UTILIZATION_COLUMNS = tuple(metric.column for metric in UTILIZATION_METRICS)
 
@@ -453,8 +454,60 @@ def load_cpu_samples(path: Path) -> CpuSamples:
         return load_cpu_samples_from(handle)
 
 
+# Rail kinds in preference order for the per-socket power series. In ACPI
+# mode a socket has one row per rail per timestamp (total envelope plus the
+# cpu_rail/soc/dram components); only ONE of them may feed the socket series
+# or the trapezoid sees several "samples" at the same instant and integrates
+# a jumble of rails instead of the socket's power. The socket envelope
+# ("total") is authoritative when present; DCGM emits a single already
+# aggregated value per socket.
+_CPU_RAIL_PREFERENCE = ("total", "dcgm", "cpu_rail", "soc", "dram", "other")
+
+# Host-collector sensor names are ``CPU<n>:<suffix>`` (see cpu_power.py's
+# AcpiPowerMeterReader._DOMAIN_PATTERNS / DcgmCpuPowerReader).
+_CPU_SENSOR_SUFFIX_KINDS = {
+    "cpuSidePowerUsageW": "total",
+    "cpuPowerUsageW": "dcgm",
+    "cpuRailPowerUsageW": "cpu_rail",
+    "socPowerUsageW": "soc",
+    "dramPowerUsageW": "dram",
+}
+
+
+def cpu_sensor_rail_kind(sensor: str) -> str:
+    """Classify a CPU samples.csv ``sensor`` cell into a rail kind.
+
+    Handles both writers: the host collector's ``CPU<n>:<suffix>`` names and
+    the head-node scraper's raw ACPI OEM labels (``Grace Power Socket 0``,
+    ``CPU Power Socket 0``, ...). Unrecognized sensors are ``other``.
+    """
+    _, _, suffix = sensor.partition(":")
+    if suffix in _CPU_SENSOR_SUFFIX_KINDS:
+        return _CPU_SENSOR_SUFFIX_KINDS[suffix]
+    classified = _classify_acpi_domain(sensor)
+    return classified[0] if classified is not None else "other"
+
+
+def _select_socket_series(
+    by_sensor: dict[tuple[str, int], dict[str, dict[float, float]]],
+) -> dict[tuple[str, int], list[tuple[float, float]]]:
+    """Pick one sensor per socket: the best-ranked rail kind present.
+
+    Ties within a kind (should not happen; would mean two sensors mapped to
+    the same rail) resolve by sensor name so the choice is deterministic.
+    """
+    selected: dict[tuple[str, int], list[tuple[float, float]]] = {}
+    for key, sensors in by_sensor.items():
+        best = min(sensors, key=lambda name: (_CPU_RAIL_PREFERENCE.index(cpu_sensor_rail_kind(name)), name))
+        selected[key] = list(sensors[best].items())
+    return selected
+
+
 def load_cpu_samples_from(handle: TextIO) -> CpuSamples:
-    per_socket: dict[tuple[str, int], list[tuple[float, float]]] = {}
+    # (host, socket) -> sensor -> timestamp -> watts. Keyed by timestamp so a
+    # repeated row for the same sensor/instant overwrites rather than
+    # double-counting.
+    by_sensor: dict[tuple[str, int], dict[str, dict[float, float]]] = {}
     node_totals: dict[str, dict[float, float]] = {}
     utilization: dict[tuple[str, int], dict[str, list[tuple[float, float]]]] = {}
     for row in csv.DictReader(handle):
@@ -463,7 +516,7 @@ def load_cpu_samples_from(handle: TextIO) -> CpuSamples:
         socket_raw = row["socket_id"]
         if socket_raw != "":
             key = (hostname, int(socket_raw))
-            per_socket.setdefault(key, []).append((timestamp, float(row["power_w"])))
+            by_sensor.setdefault(key, {}).setdefault(row["sensor"], {})[timestamp] = float(row["power_w"])
             _collect_utilization(row, CPU_UTILIZATION_COLUMNS, timestamp, utilization.setdefault(key, {}))
         # total_power_w is blank whenever an ACPI scrape has no `grace` channel
         # (see contract.CPU_SAMPLES_HEADER); skip rather than crash on float("").
@@ -472,7 +525,7 @@ def load_cpu_samples_from(handle: TextIO) -> CpuSamples:
 
     per_node_rows = {host: list(values.items()) for host, values in node_totals.items()}
     return CpuSamples(
-        per_socket=_sorted_series(per_socket),
+        per_socket=_sorted_series(_select_socket_series(by_sensor)),
         per_node=_sorted_series(per_node_rows),
         per_socket_utilization=_sorted_utilization(utilization),
     )
