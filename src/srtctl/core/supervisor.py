@@ -104,6 +104,7 @@ class _EndpointState:
     pending: RestartEvent | None = None
     ready_probe: tuple[str, int] | None = None
     ready_deadline: float | None = None
+    next_probe_at: float = 0.0
     launched_at: float | None = None
     settled: bool = False  # nothing more for the supervisor to do with this endpoint
 
@@ -129,6 +130,7 @@ class WorkerSupervisor:
         launcher: WorkerLauncher,
         log_dir: Path | None = None,
         ready_timeout: float = 1800.0,
+        probe_interval: float = 10.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.registry = registry
@@ -136,6 +138,9 @@ class WorkerSupervisor:
         self.launcher = launcher
         self.log_dir = log_dir
         self.ready_timeout = ready_timeout
+        # Every failed probe lands as a 503 error line in the worker's own log
+        # (Dynamo's system server logs it), so do not probe on every 2 s tick.
+        self.probe_interval = probe_interval
         self._clock = clock
         self._lock = threading.RLock()
         self._endpoints: dict[EndpointKey, _EndpointState] = {}
@@ -377,6 +382,7 @@ class WorkerSupervisor:
         state.launched_at = now
         state.ready_probe = self.launcher.worker_ready_probe(state.processes)
         state.ready_deadline = now + self.ready_timeout if state.ready_probe else None
+        state.next_probe_at = now + self.probe_interval  # give the step a moment before the first probe
         if state.pending is not None:
             state.pending.relaunched_at = _now_iso()
             state.pending.outcome = "relaunched"
@@ -391,8 +397,9 @@ class WorkerSupervisor:
         self._write()
 
     def _probe_ready(self, state: _EndpointState, now: float) -> None:
-        if state.ready_deadline is None or state.ready_probe is None:
+        if state.ready_deadline is None or state.ready_probe is None or now < state.next_probe_at:
             return
+        state.next_probe_at = now + self.probe_interval
         host, port = state.ready_probe
         if probe_http(host, port, "/health", 200, request_timeout=2.0):
             state.ready_deadline = None

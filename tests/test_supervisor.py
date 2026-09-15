@@ -103,6 +103,7 @@ class Harness:
         processes: list[Process] | None = None,
         launcher: FakeLauncher | None = None,
         ready_timeout: float = 100.0,
+        probe_interval: float = 0.0,
         critical: bool = True,
     ) -> None:
         self.now = 1000.0
@@ -116,6 +117,7 @@ class Harness:
             launcher=self.launcher,
             log_dir=tmp_path,
             ready_timeout=ready_timeout,
+            probe_interval=probe_interval,
             clock=lambda: self.now,
         )
         self.processes = processes or [_process()]
@@ -405,6 +407,31 @@ def test_readiness_probe_gives_up_after_the_timeout_but_leaves_the_worker_up(tmp
     with patch("srtctl.core.supervisor.probe_http") as probe:
         h.tick()
     probe.assert_not_called()
+
+
+def test_readiness_probe_is_rate_limited(tmp_path: Path) -> None:
+    """Each failed probe lands as a 503 line in the worker log (16 per relaunch on sa-b200 at a
+    2 s tick), so the supervisor probes at most once per probe_interval, and not right away."""
+    launcher = FakeLauncher(probe=("10.0.0.2", 9001))
+    h = Harness(tmp_path, ON_FAILURE, launcher=launcher, ready_timeout=100, probe_interval=10)
+    h.steps["decode_1_node-b"].exit(1)
+    h.tick()
+    h.advance(10)
+    h.tick()  # relaunched at t=1010
+
+    with patch("srtctl.core.supervisor.probe_http", return_value=False) as probe:
+        for _ in range(5):  # t=1012..1020: ticks every 2 s
+            h.advance(2)
+            h.tick()
+    assert probe.call_count == 1  # only the tick at t=1020 probed
+    with patch("srtctl.core.supervisor.probe_http", return_value=True) as probe:
+        h.advance(2)
+        h.tick()  # t=1022: inside the interval, no probe
+        h.advance(8)
+        h.tick()  # t=1030: probes and finds it ready
+    assert probe.call_count == 1
+    assert h.supervisor.events[-1].outcome == "ready"
+    assert h.supervisor.events[-1].ready_seconds == 20.0
 
 
 def test_no_health_port_means_no_probe(tmp_path: Path) -> None:
