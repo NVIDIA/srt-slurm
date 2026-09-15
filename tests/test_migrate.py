@@ -388,3 +388,16 @@ def test_custom_benchmark_with_power_telemetry_keeps_its_concurrencies() -> None
     assert "removed benchmark.use_chat_template (unused by type custom)" in result.notes
     verified = verify_migration_text(text)
     assert verified.status == "ok", verified.detail
+
+
+def test_migrate_folds_worker_criticality_into_roles() -> None:
+    legacy = LEGACY.replace(
+        "  decode_workers: 1", "  decode_workers: 1\n  decode_critical: false  # the probe kills decode workers"
+    )
+    result = migrate_recipe_text(legacy)
+    doc = yaml.safe_load(result.text)
+    assert doc["roles"]["decode"]["critical"] is False
+    assert "critical" not in doc["roles"]["prefill"]
+    assert "decode_critical" not in doc.get("resources", {})
+    verified = verify_migration_text(legacy)
+    assert verified.status == "ok", verified.detail

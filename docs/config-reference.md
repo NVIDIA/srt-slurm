@@ -365,6 +365,7 @@ Role names are `prefill`, `decode`, and `agg`. A recipe is disaggregated (prefil
 | `extra_args` | list[string] | TRT-LLM only: extra `trtllm-serve` CLI flags appended verbatim to the worker command (`frontend.type: trtllm_serve`). For the few options that configure the OpenAI server layer and have no engine YAML key, such as `--tool_parser` |
 | `kv_events` | bool or dict | Publish KV cache events for the Dynamo router; see below |
 | `sidecar` | bool | Run the native engine with a Dynamo sidecar; see [Native sidecar mode](#native-sidecar-mode) |
+| `critical` | bool | Whether a worker of this role exiting fails the run (default `true`); see [critical](#critical) |
 | `engine` | string | Optional; must equal the top-level `engine` when both are given |
 
 `env` and `args` are ordinary YAML mappings. Nothing needs JSON or inline `{}` syntax. Boolean flags are `flag-name: true`.
@@ -419,7 +420,20 @@ Each worker leader gets a globally unique port starting at 5550:
 | decode_0  | 5552 |
 | decode_1  | 5553 |
 
-The v1 spelling of this section (`resources.prefill_nodes`, `resources.prefill_workers`, `resources.gpus_per_prefill`, `resources.decode_nodes: 0`, `backend.prefill_environment`, `backend.sglang_config.prefill`, `backend.prefill_extra_args`, `backend.kv_events_config`, and the `decode` and `aggregated` counterparts) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
+### critical
+
+srtctl treats every worker as critical: when one exits, the process monitor fails the run and tears the job down. A workload that kills workers on purpose, such as a migration probe or a fault-tolerance test, needs the survivors to keep serving, so set `critical: false` on the role whose workers it kills:
+
+```yaml
+roles:
+  decode:
+    workers: 4
+    critical: false            # a decode worker exiting does not end the run
+```
+
+The flag is per role and defaults to `true`. It changes only how a worker exit is treated; the health gate before the benchmark still requires every worker to come up.
+
+The v1 spelling of this section (`resources.prefill_nodes`, `resources.prefill_workers`, `resources.gpus_per_prefill`, `resources.prefill_critical`, `resources.decode_nodes: 0`, `backend.prefill_environment`, `backend.sglang_config.prefill`, `backend.prefill_extra_args`, `backend.kv_events_config`, and the `decode` and `aggregated` counterparts) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
 ---
 

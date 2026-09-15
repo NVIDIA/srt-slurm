@@ -293,7 +293,9 @@ class WorkerStageMixin:
             popen=proc,
             log_file=worker_log,
             node=process.node,
-            critical=True,
+            # roles.<role>.critical: false keeps the run alive when this worker
+            # exits, for probes that kill workers on purpose.
+            critical=self.config.resources.worker_critical(mode),
             # SIGTERM reaches the engine through the step so it deregisters and
             # frees the GPUs cleanly; a signalled srun would SIGKILL it instead.
             terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
@@ -460,7 +462,7 @@ class WorkerStageMixin:
             popen=proc,
             log_file=worker_log,
             node=leader.node,
-            critical=True,
+            critical=self.config.resources.worker_critical(mode),
             # scancel --signal --full reaches every MPI rank of the step at once.
             terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
             step_name=step_name,

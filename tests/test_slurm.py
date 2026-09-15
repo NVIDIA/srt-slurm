@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
-from srtctl.core.schema import ObservabilityConfig
+from srtctl.core.schema import ObservabilityConfig, ResourceConfig
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
 
 
@@ -187,6 +187,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         dynamo=SimpleNamespace(install=False, request_plane="nats", event_plane="zmq"),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        resources=ResourceConfig(),
         backend=backend,
     )
     mixin.runtime = SimpleNamespace(
@@ -247,6 +248,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         ),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        resources=ResourceConfig(),
         backend=backend,
     )
     mixin.runtime = SimpleNamespace(
@@ -586,6 +588,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         dynamo=SimpleNamespace(install=False, request_plane="nats", event_plane=None),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        resources=ResourceConfig(),
         backend=backend,
     )
     mixin.runtime = SimpleNamespace(

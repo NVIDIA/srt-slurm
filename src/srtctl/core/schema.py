@@ -610,6 +610,14 @@ class ResourceConfig:
     agg_nodes: int | None = None
     agg_workers: int | None = None
 
+    # A worker exit normally fails the run (the process monitor tears the job
+    # down). A role's flag set to False keeps the run alive when one of its
+    # workers exits, for workloads that kill workers on purpose (migration or
+    # fault-tolerance probes). The per-role spelling is ``roles.<role>.critical``.
+    prefill_critical: bool = True  # A prefill worker exiting fails the run. False keeps the run alive.
+    decode_critical: bool = True  # A decode worker exiting fails the run. False keeps the run alive.
+    agg_critical: bool = True  # An aggregated worker exiting fails the run. False keeps the run alive.
+
     # If True, place each partial-node worker on its own node instead of
     # packing multiple onto the same node. Caller must reserve enough nodes
     # (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).
@@ -658,6 +666,10 @@ class ResourceConfig:
     @property
     def is_disaggregated(self) -> bool:
         return self.prefill_nodes is not None or self.decode_nodes is not None
+
+    def worker_critical(self, mode: str) -> bool:
+        """Whether a worker of ``mode`` (``prefill``, ``decode``, ``agg``) failing fails the run."""
+        return {"prefill": self.prefill_critical, "decode": self.decode_critical, "agg": self.agg_critical}[mode]
 
     @property
     def total_nodes(self) -> int:

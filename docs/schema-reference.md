@@ -61,6 +61,7 @@ Three vocabularies are specific to the 2.0 layout. They are normalized into the 
 | `engine` | str | top-level `engine` | Optional; must equal the top-level engine type. |
 | `kv_events` | bool \| mapping | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
 | `sidecar` | bool | `False` | Run the native engine with a Dynamo sidecar; every role must agree. |
+| `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
 
 ### placement
 
@@ -93,6 +94,9 @@ Resource allocation configuration.
 |---|---|---|---|
 | `gpu_type` | str \| None | `None` | GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional: a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth setting in a recipe so it is self-describing for result rollups. |
 | `gpus_per_node` | int | `4` |  |
+| `prefill_critical` | bool | `True` | A worker exit normally fails the run (the process monitor tears the job down). A role's flag set to False keeps the run alive when one of its workers exits, for workloads that kill workers on purpose (migration or fault-tolerance probes). The per-role spelling is ``roles.<role>.critical``. |
+| `decode_critical` | bool | `True` | A decode worker exiting fails the run. False keeps the run alive. |
+| `agg_critical` | bool | `True` | An aggregated worker exiting fails the run. False keeps the run alive. |
 | `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). |
 | `het_jobs` | bool \| None | `None` | SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster default `use_het_jobs` on ClusterConfig; True/False overrides per recipe. When effectively True (and we are in disaggregated mode), the prefill and decode sides are submitted as two het components each with their own `--segment`. See HetComponent above and docs/slurm-faq.md. |
 
