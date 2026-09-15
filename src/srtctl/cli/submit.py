@@ -369,6 +369,8 @@ def show_config_details(config: SrtConfig) -> None:
         het_table.add_column("Infra", style="dim")
         for c in het_components:
             infra_note = "first node" if c.name == "prefill" and config.infra.etcd_nats_dedicated_node else ""
+            if infra_note and config.telemetry.enabled:
+                infra_note = "last non-head node; head=batch"
             het_table.add_row(
                 str(c.group),
                 c.name,
@@ -578,6 +580,23 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("telemetry", "provider", "dcgm-power")
             details.add_row("telemetry", "required", str(config.telemetry.required))
             details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
+            details.add_row("telemetry", "clock", "collector and benchmark on SLURMD_NODENAME")
+            if config.infra.etcd_nats_dedicated_node:
+                shared = config.frontend.dedicated_node and config.benchmark.colocate_with_frontend
+                details.add_row(
+                    "telemetry", "infra", "batch host (shared frontend)" if shared else "last non-head node"
+                )
+            if config.benchmark.type == "custom":
+                details.add_row(
+                    "telemetry", "SRT_MEASUREMENT_WINDOW_DIR", f"/logs/{config.telemetry.storage_subdir}/windows"
+                )
+                details.add_row("telemetry", "SRT_MEASUREMENT_WINDOW_BENCHMARK_TYPE", "custom")
+                details.add_row(
+                    "telemetry",
+                    "SRT_MEASUREMENT_WINDOW_CONCURRENCIES",
+                    " ".join(str(value) for value in config.benchmark.get_concurrency_list()),
+                )
+                details.add_row("telemetry", "SRT_MEASUREMENT_WINDOW_RESULT_ROOT", "/logs")
             if exporter is not None:
                 details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
 

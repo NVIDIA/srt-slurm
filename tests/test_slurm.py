@@ -619,3 +619,27 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         mixin.start_worker(process, [process, peer_process])
 
     assert mock_srun.call_args.kwargs["env_to_unset"] == ["VLLM_PORT"]
+
+
+def test_explicit_task_placement_wins_over_free_form_options():
+    """Slurm uses the last option value: keep the benchmark on the collector's host."""
+    with patch("subprocess.Popen") as popen:
+        start_srun_process(
+            ["true"],
+            nodes=1,
+            ntasks=1,
+            nodelist=["batch"],
+            het_group=0,
+            srun_options={"nodes": "8", "ntasks": "64", "nodelist": "other", "het-group": "1"},
+        )
+    command = popen.call_args.args[0]
+    # Decode both --key=value and --key value forms as Slurm does.
+    effective = {}
+    args = iter(command[1:])
+    for arg in args:
+        if arg in {"--nodes", "--ntasks", "--nodelist"}:
+            effective[arg] = next(args)
+        elif arg.startswith(("--nodes=", "--ntasks=", "--nodelist=", "--het-group=")):
+            key, value = arg.split("=", 1)
+            effective[key] = value
+    assert effective == {"--nodes": "1", "--ntasks": "1", "--nodelist": "batch", "--het-group": "0"}

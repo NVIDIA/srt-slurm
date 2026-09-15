@@ -268,19 +268,8 @@ def start_srun_process(
     if cpu_bind:
         srun_cmd.append(f"--cpu-bind={cpu_bind}")
 
-    srun_cmd.extend(["--nodes", str(nodes)])
-    srun_cmd.extend(["--ntasks", str(ntasks)])
-
     if cpus_per_task:
         srun_cmd.extend(["--cpus-per-task", str(cpus_per_task)])
-
-    if nodelist:
-        srun_cmd.extend(["--nodelist", ",".join(nodelist)])
-
-    # Route this srun to a specific component of a SLURM heterogeneous job.
-    # Omitted (None) for non-het jobs; safe to always pass-through from callers.
-    if het_group is not None:
-        srun_cmd.append(f"--het-group={het_group}")
 
     if output:
         srun_cmd.extend(["--output", output])
@@ -301,6 +290,18 @@ def start_srun_process(
                 srun_cmd.append(f"--{key}={value}")
             else:
                 srun_cmd.append(f"--{key}")
+
+    # Explicit placement and task shape override free-form srun options.
+    srun_cmd.extend(["--nodes", str(nodes)])
+    srun_cmd.extend(["--ntasks", str(ntasks)])
+
+    if nodelist:
+        srun_cmd.extend(["--nodelist", ",".join(nodelist)])
+
+    # Route this srun to a specific component of a SLURM heterogeneous job.
+    # Omitted (None) for non-het jobs; safe to always pass-through from callers.
+    if het_group is not None:
+        srun_cmd.append(f"--het-group={het_group}")
 
     if step_name:
         srun_cmd.append(f"--job-name={step_name}")

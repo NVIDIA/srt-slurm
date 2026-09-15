@@ -14,31 +14,26 @@ window themselves.
 - A collector thread inside the orchestrator polls every exporter concurrently
   from the physical head node, so all sample timestamps and benchmark
   boundaries come from one clock.
-- Only `DCGM_FI_DEV_POWER_USAGE` is parsed. Device identity comes from the
+- GPU board watts come from `DCGM_FI_DEV_POWER_USAGE`; optional GPU utilization
+  and SM activity columns accompany each sample. Device identity comes from the
   `gpu` and `UUID` labels.
-- **No in-tree benchmark stamps measurement windows yet**, so every run is
-  currently unpublishable: it records `MEASUREMENT_WINDOW` reason codes, and
-  `required: true` exits non-zero. The adapter belongs with the benchmark
-  (for the current sa-bench path and its planned replacement alike): the
-  benchmark child writes one window file per measured concurrency using the
-  standalone `measurement_window.py` module and the windows directory passed
-  in via `MEASUREMENT_WINDOW_DIR_ENV`.
+- SA-Bench stamps its formal measurement windows. A `benchmark.type: custom`
+  command must publish its own windows through the contract below; launching a
+  successful command alone does not make power artifacts publishable.
 
 ## Configuration
 
 ```yaml
-# NOTE: unsupported end-to-end until a benchmark adapter stamps windows —
-# with this exact config every run is unpublishable and `required: true` fails.
 benchmark:
-  type: sa-bench          # future benchmark-side adapter must stamp the windows
-  client_placement: head  # keeps sample and window clocks on one host
+  type: sa-bench
+  placement:
+    node: head  # keeps sample and window clocks on one host
   isl: 8192
   osl: 1024
   concurrencies: [4]
 
 telemetry:
   enabled: true
-  provider: dcgm-power
   collect_interval_ms: 1000         # milliseconds between collector cycles; must be <= 3000
   storage_subdir: power             # relative to the run log directory
   required: true                    # exit non-zero when artifacts are unpublishable
@@ -50,16 +45,77 @@ telemetry:
     port: 9401
 ```
 
-`dcgm-power` needs **only** `dcgm_exporter`. Unlike `provider: scraper` it does
-not require the top-level `container_image` or a `node_exporter`, because the
-collector runs inside srtctl. Config loading validates the block and rejects
+GPU power collection needs **only** `dcgm_exporter`. It does not require a
+scraper image or `node_exporter`, because the collector runs inside srtctl.
+Config loading validates the block and rejects
 inconsistent values with actionable messages; in particular
 `collect_interval_ms` must not exceed the 3-second max sample gap the validator
 accepts, or every window would fail `sample_gap_exceeded`. Telemetry stays
-disabled by default and existing `provider: scraper` recipes are unchanged.
+disabled by default. Tachometer is configured separately under `observability`.
 The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.
+
+## Custom benchmark window contract
+
+For `benchmark.type: custom` with telemetry enabled, srtctl passes:
+
+| Environment variable | Value |
+| --- | --- |
+| `SRT_MEASUREMENT_WINDOW_DIR` | `/logs/<storage_subdir>/windows` |
+| `SRT_MEASUREMENT_WINDOW_BENCHMARK_TYPE` | `custom` |
+| `SRT_MEASUREMENT_WINDOW_CONCURRENCIES` | Space-separated measured concurrencies, e.g. `4 8` |
+| `SRT_MEASUREMENT_WINDOW_RESULT_ROOT` | `/logs` |
+
+The custom command owns benchmark execution and timing. Publish one JSON window
+per listed concurrency in the window directory, using atomic replacement. Its
+`result_path` must be relative to the result root, remain beneath that root, and
+have the same filename stem as the window. For example, `windows/load_4.json`
+may refer to `agentx/load_4.json` under `/logs`.
+
+A completed window looks like:
+
+```json
+{
+  "schema_version": 1,
+  "benchmark_type": "custom",
+  "concurrency": 4,
+  "result_path": "agentx/load_4.json",
+  "benchmark_start_time_unix": 1000.0,
+  "benchmark_end_time_unix": 1020.0,
+  "duration": 20.0,
+  "clock_source": "head_node_unix_clock",
+  "status": "completed",
+  "reason": null
+}
+```
+
+The referenced result must contain identical start, end, and duration fields.
+Write `status: running` at the formal window's start with null end/duration/reason,
+then replace it after the result is durable. The completed window must bracket
+only the measured workload, excluding warmup. Incomplete, missing, duplicate,
+out-of-root, or timing-mismatched windows fail publication validation. The
+benchmark's adapter remains responsible for workload-specific counts and metrics.
+
+## Clock and dedicated infrastructure placement
+
+With power telemetry enabled, `SLURMD_NODENAME` identifies the batch host that runs
+the collector. srtctl keeps head and benchmark on that host, including when its
+name is not first in Slurm's expanded nodelist. Missing or invalid batch-host
+metadata fails before the workload starts.
+
+In a schema 2 recipe, etcd/nats services with `placement.node: dedicated` reserve
+the last non-head node. In heterogeneous jobs this node belongs to group 0; decode
+nodes and the requested prefill/decode worker counts are preserved. This applies
+to SA-Bench and custom benchmarks alike. A dedicated frontend reserves the batch
+host; if frontend and infrastructure share a reservation, both use that host.
+Otherwise infrastructure retains its separate reservation.
+
+The benchmark client must use `placement.node: head` (the default); a dedicated
+client is rejected because it runs away from the collector's clock. Free-form
+`srun_options.nodelist`/`nodefile` overrides and recipe environment overrides of
+Slurm allocation metadata or the window contract are also rejected.
+`srtctl dry-run` displays the clock placement and custom window environment before submit.
 
 ## Artifacts
 
@@ -72,7 +128,7 @@ flight when shutdown starts plus the final bracketing scrape.
 ```
 
 `samples.csv` has the exact header
-`schema_version,timestamp_unix,scrape_seq,hostname,gpu_index,gpu_uuid,power_w`,
+`schema_version,timestamp_unix,scrape_seq,hostname,gpu_index,gpu_uuid,power_w,gpu_util_pct,sm_active`,
 one row per observation, `(scrape_seq, hostname, gpu_index)` unique. Rows are
 never interpolated, averaged, or role-attributed — role and heterogeneous
 group live once in the manifest topology.
@@ -88,7 +144,7 @@ The digest is required for offline publication validation, so packages created
 before `samples_sha256` was recorded cannot be certified by this validator.
 
 A window file records the formal benchmark boundaries on the head-node Unix
-clock plus a monotonic `duration`, and points at the SA-Bench result it
+clock plus a monotonic `duration`, and points at the benchmark result it
 brackets; result and window are boundary-identical.
 
 With `required: true`, all artifacts are written first and the job then exits

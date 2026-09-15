@@ -5,6 +5,7 @@
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
 from srtctl.core.processes import ProcessRegistry
+from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import (
     BenchmarkConfig,
     CpuPowerConfig,
@@ -460,31 +462,117 @@ class TestDcgmPowerConfig:
         assert schema_module._is_safe_relative_subpath(value) is expected
         assert contract.is_safe_relative_subpath(value) is expected
 
-    @pytest.mark.parametrize(
-        ("telemetry", "dedicated", "rejected"),
-        [
-            (_dcgm_power(), True, True),
-            (_dcgm_power(), False, False),
-        ],
-        ids=["dcgm-power-dedicated", "dcgm-power-shared"],
-    )
-    def test_a_dedicated_infra_node_is_rejected_for_dcgm_power(self, telemetry, dedicated, rejected):
-        def build():
-            return SrtConfig(
-                name="test",
-                model=ModelConfig(path="/model", container="/image", precision="fp4"),
-                resources=ResourceConfig(gpu_type="h100"),
-                benchmark=_sa_bench(),
-                telemetry=telemetry,
-                infra=InfraConfig(etcd_nats_dedicated_node=dedicated),
+    @pytest.mark.parametrize("benchmark_type", ["sa-bench", "custom"])
+    @pytest.mark.parametrize("heterogeneous", [False, True])
+    @pytest.mark.parametrize("dedicated", [False, True])
+    def test_power_keeps_client_on_actual_batch_host(
+        self, tmp_path, monkeypatch, benchmark_type, heterogeneous, dedicated
+    ):
+        """Preserve worker counts and het membership when infra moves off the batch host."""
+        monkeypatch.setenv("SLURMD_NODENAME", "node-b")
+        monkeypatch.delenv("SRTCTL_OUTPUT_DIR", raising=False)
+        config = SrtConfig(
+            name="power",
+            model=ModelConfig(path=str(tmp_path), container="test:latest", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type=benchmark_type, command="echo load" if benchmark_type == "custom" else None, concurrencies=[4]
+            ),
+            telemetry=_dcgm_power(),
+            infra=InfraConfig(etcd_nats_dedicated_node=dedicated),
+        )
+        # The authoritative batch node is deliberately not first in the list.
+        group0 = ["node-a", "node-b", "node-c"] if dedicated else ["node-a", "node-b"]
+        group1 = ["node-d", "node-e"]
+        with (
+            patch(
+                "srtctl.core.runtime.get_slurm_het_nodelists", return_value=[group0, group1] if heterogeneous else None
+            ),
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=group0 + group1),
+            patch("srtctl.core.runtime.get_hostname_ip", return_value="127.0.0.1"),
+        ):
+            runtime = RuntimeContext.from_config(config, "123", log_dir_base=tmp_path)
+        nodes = runtime.nodes
+        assert nodes.head == nodes.bench == "node-b"
+        assert len(nodes.worker) == 4
+        if dedicated:
+            assert nodes.infra == ("node-c" if heterogeneous else "node-e")
+            assert nodes.infra not in nodes.worker
+        else:
+            assert nodes.infra == "node-b"
+        if heterogeneous:
+            assert nodes.prefill_group == ("node-a", "node-b")
+            assert nodes.decode_group == ("node-d", "node-e")
+            assert nodes.het_group_for(nodes.infra) == 0
+
+    @pytest.mark.parametrize("colocate", [True, False])
+    def test_power_dedicated_frontend_preserves_reservations(self, colocate):
+        with (
+            patch("srtctl.core.runtime.get_slurm_het_nodelists", return_value=None),
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["a", "batch", "c", "d"]),
+        ):
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=True,
+                etcd_nats_dedicated_node=True,
+                colocate_dedicated_nodes=colocate,
+                batch_host="batch",
             )
+        assert nodes.head == nodes.bench == "batch"
+        assert nodes.infra == ("batch" if colocate else "d")
+        assert nodes.worker == (("a", "c", "d") if colocate else ("a", "c"))
 
-        if rejected:
-            with pytest.raises(ValidationError, match="etcd_nats_dedicated_node"):
-                build()
-            return
+    def test_power_rejects_batch_host_in_decode_het_group(self):
+        with (
+            patch("srtctl.core.runtime.get_slurm_het_nodelists", return_value=[["prefill"], ["decode"]]),
+            pytest.raises(ValueError, match="heterogeneous group 0"),
+        ):
+            Nodes.from_slurm(batch_host="decode")
 
-        assert build().infra.etcd_nats_dedicated_node is dedicated
+    @pytest.mark.parametrize("batch_host", [None, "outside"])
+    def test_power_rejects_unknown_batch_host(self, tmp_path, monkeypatch, batch_host):
+        monkeypatch.delenv("SLURMD_NODENAME", raising=False)
+        if batch_host:
+            monkeypatch.setenv("SLURMD_NODENAME", batch_host)
+        config = _make_config(telemetry=_dcgm_power(), benchmark=_sa_bench())
+        with (
+            patch("srtctl.core.runtime.get_slurm_het_nodelists", return_value=None),
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node-a", "node-b"]),
+            pytest.raises(ValueError, match="SLURMD_NODENAME|not in the SLURM allocation"),
+        ):
+            RuntimeContext.from_config(config, "123", log_dir_base=tmp_path)
+
+    @pytest.mark.parametrize("source", ["environment", "benchmark.env"])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "SLURMD_NODENAME",
+            "SLURM_JOB_NODELIST_HET_GROUP_0",
+            "SRT_MEASUREMENT_WINDOW_CONCURRENCIES",
+            "SRT_MEASUREMENT_WINDOW_DIR",
+        ],
+    )
+    def test_power_rejects_overridden_clock_and_window_contract(self, source, key):
+        config = _make_config(telemetry=_dcgm_power(), benchmark=_sa_bench())
+        with pytest.raises(ValidationError, match="telemetry reserves"):
+            if source == "environment":
+                replace(config, environment={key: "override"})
+            else:
+                replace(
+                    config,
+                    benchmark=BenchmarkConfig(
+                        type="custom", command="echo load", concurrencies=[4], env={key: "override"}
+                    ),
+                )
+
+    @pytest.mark.parametrize("option", ["nodelist", "nodefile"])
+    def test_power_rejects_redirected_benchmark_placement(self, option):
+        config = _make_config(telemetry=_dcgm_power(), benchmark=_sa_bench())
+        with pytest.raises(ValidationError, match="srun_options placement"):
+            replace(config, srun_options={option: "elsewhere"})
+
+    def test_power_rejects_dedicated_client_on_another_clock(self):
+        with pytest.raises(ValidationError, match="client_dedicated_node"):
+            _make_config(telemetry=_dcgm_power(), benchmark=_sa_bench(client_dedicated_node=True))
 
 
 class TestCpuPowerExporterConfig:

@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from rich.console import Console
 
 from srtctl.cli.submit import show_config_details
 from srtctl.core.schema import SrtConfig
@@ -977,3 +978,29 @@ class TestInfmaxWorkspaceMount:
             show_config_details(config)
         output = capsys.readouterr().out
         assert "MISSING" not in output
+
+
+@pytest.mark.parametrize("benchmark_type", ["sa-bench", "custom"])
+def test_power_dry_run_explains_clock_and_custom_window_contract(capsys, benchmark_type):
+    config = _make_config(
+        {
+            "benchmark": {
+                "type": benchmark_type,
+                "concurrencies": [4, 8],
+                **({"command": "echo load"} if benchmark_type == "custom" else {}),
+            },
+            "telemetry": {"enabled": True, "dcgm_exporter": {"container_image": "dcgm:latest", "port": 9401}},
+            "infra": {"etcd_nats_dedicated_node": True},
+        }
+    )
+    # Avoid Rich wrapping environment names across lines in a narrow test terminal.
+    with patch("srtctl.cli.submit.console", Console(width=180)):
+        show_config_details(config)
+    output = capsys.readouterr().out
+    assert "SLURMD_NODENAME" in output
+    assert "last non-head node" in output
+    if benchmark_type == "custom":
+        assert "SRT_MEASUREMENT_WINDOW_CONCURRENCIES" in output
+        assert "4 8" in output
+        assert "SRT_MEASUREMENT_WINDOW_RESULT_ROOT" in output
+        assert "/logs/power/windows" in output

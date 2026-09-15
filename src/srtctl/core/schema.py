@@ -69,6 +69,15 @@ _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
 _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
+_POWER_WINDOW_ENV = frozenset(
+    {
+        "SRT_MEASUREMENT_WINDOW_DIR",
+        "SRT_MEASUREMENT_WINDOW_BENCHMARK_TYPE",
+        "SRT_MEASUREMENT_WINDOW_CONCURRENCIES",
+        "SRT_MEASUREMENT_WINDOW_RESULT_ROOT",
+    }
+)
+_POWER_SLURM_ENV = frozenset({"SLURMD_NODENAME", "SLURM_HET_SIZE", "SLURM_NODELIST"})
 
 
 def _is_safe_relative_subpath(value: str) -> bool:
@@ -2721,13 +2730,27 @@ class SrtConfig:
         if self.benchmark.client_placement != "head":
             raise ValidationError("telemetry requires benchmark.client_placement: head")
 
-        # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
-        if self.infra.etcd_nats_dedicated_node:
+        if self.benchmark.client_dedicated_node:
             raise ValidationError(
-                "telemetry requires infra.etcd_nats_dedicated_node: false, because a "
-                "dedicated infra node moves nodes.head off the batch host and power samples would no longer "
-                "share the benchmark's clock"
+                "telemetry requires benchmark.client_dedicated_node: false so the benchmark shares the batch host clock"
             )
+        placement_options = sorted({"nodefile", "nodelist"}.intersection(self.srun_options))
+        if placement_options:
+            raise ValidationError(
+                "telemetry does not allow srun_options placement keys because the benchmark must run on "
+                "the collector's batch host: " + ", ".join(placement_options)
+            )
+        for source, environment in (("environment", self.environment), ("benchmark.env", self.benchmark.env)):
+            reserved = sorted(
+                key
+                for key in environment
+                if key in _POWER_SLURM_ENV | _POWER_WINDOW_ENV or key.startswith("SLURM_JOB_NODELIST_HET_GROUP_")
+            )
+            if reserved:
+                raise ValidationError(
+                    f"telemetry reserves {source} keys for the producer window contract and Slurm placement: "
+                    + ", ".join(reserved)
+                )
 
         concurrencies = self.benchmark.get_concurrency_list()
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):

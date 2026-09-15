@@ -20,7 +20,10 @@ from srtctl.core.ip_utils import url_host
 from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.power.contract import (
     CONTAINER_LOG_DIR,
+    MEASUREMENT_WINDOW_BENCHMARK_TYPE_ENV,
+    MEASUREMENT_WINDOW_CONCURRENCIES_ENV,
     MEASUREMENT_WINDOW_DIR_ENV,
+    MEASUREMENT_WINDOW_RESULT_ROOT_ENV,
     WINDOWS_DIRNAME,
 )
 from srtctl.core.processes import terminate_and_reap
@@ -615,7 +618,18 @@ class BenchmarkStageMixin:
         telemetry = self.config.telemetry
         if not telemetry.enabled:
             return {}
-        return {MEASUREMENT_WINDOW_DIR_ENV: f"{CONTAINER_LOG_DIR}/{telemetry.storage_subdir}/{WINDOWS_DIRNAME}"}
+        env = {MEASUREMENT_WINDOW_DIR_ENV: f"{CONTAINER_LOG_DIR}/{telemetry.storage_subdir}/{WINDOWS_DIRNAME}"}
+        if self.config.benchmark.type == "custom":
+            env.update(
+                {
+                    MEASUREMENT_WINDOW_BENCHMARK_TYPE_ENV: self.config.benchmark.type,
+                    MEASUREMENT_WINDOW_CONCURRENCIES_ENV: " ".join(
+                        str(value) for value in self.config.benchmark.get_concurrency_list()
+                    ),
+                    MEASUREMENT_WINDOW_RESULT_ROOT_ENV: CONTAINER_LOG_DIR,
+                }
+            )
+        return env
 
     def _get_aiperf_server_metrics_env(
         self,

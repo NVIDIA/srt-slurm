@@ -1312,6 +1312,14 @@ The scraper runs as a best-effort process: if it dies (or the binary is missing 
 
 `telemetry` is reserved for DCGM power measurement. It can run alongside `observability.tachometer`; it does not start Tachometer itself.
 
+Power-enabled benchmarks run on the actual Slurm batch host so collector samples
+and benchmark boundaries share a clock. Dedicated etcd/nats infrastructure remains
+supported; its reservation moves to the last non-head node (in group 0 for a
+heterogeneous job). Custom commands receive the `SRT_MEASUREMENT_WINDOW_*`
+environment contract and must write a formal window per measured concurrency.
+See [Power telemetry](power-telemetry.md#custom-benchmark-window-contract) for the
+window format and placement constraints.
+
 When both are enabled, `telemetry.dcgm_exporter` is shared with Tachometer. Do not also configure `observability.tachometer.dcgm_exporter`; Tachometer can still launch an optional node exporter from its own block.
 
 ```yaml

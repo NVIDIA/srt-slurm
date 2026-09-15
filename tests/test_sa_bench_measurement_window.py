@@ -6,13 +6,20 @@
 import importlib
 import importlib.util
 import json
+import os
+import shlex
+import subprocess
+import sys
+import threading
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from srtctl.benchmarks.custom import CustomBenchmarkRunner
 from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
 from srtctl.core.power.contract import (
     BENCHMARK_TYPE_SA_BENCH,
@@ -694,3 +701,56 @@ class TestArtifactErrors:
 
         assert rows[0].power_coverage_valid is False
         assert Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID in errors[0].reason_codes
+
+
+def test_custom_child_publishes_valid_windows_for_each_concurrency(logs):
+    """Run a custom child with the actual producer env, then audit its emitted artifacts."""
+    harness = _benchmark_harness(logs)
+    # /logs is normally a container mount; use the temporary mount root locally.
+    script = logs / "custom.py"
+    script.write_text("""
+import json, os
+from pathlib import Path
+root = Path(os.environ["SRT_MEASUREMENT_WINDOW_RESULT_ROOT"])
+windows = Path(os.environ["SRT_MEASUREMENT_WINDOW_DIR"])
+for concurrency in map(int, os.environ["SRT_MEASUREMENT_WINDOW_CONCURRENCIES"].split()):
+    name = f"custom_{concurrency}.json"
+    result = {"benchmark_start_time_unix": 1000.0, "benchmark_end_time_unix": 1020.0, "duration": 20.0}
+    (root / name).write_text(json.dumps(result))
+    window = dict(result, schema_version=1, benchmark_type=os.environ["SRT_MEASUREMENT_WINDOW_BENCHMARK_TYPE"],
+                  result_path=name, concurrency=concurrency, clock_source="head_node_unix_clock",
+                  status="completed", reason=None)
+    (windows / name).write_text(json.dumps(window))
+""")
+    harness.config = replace(
+        harness.config,
+        benchmark=BenchmarkConfig(
+            type="custom", command=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}", concurrencies=[4, 8]
+        ),
+    )
+    harness.runtime.environment = {}
+    harness.runtime.network_interface = ""
+    harness.runtime.frontend_port = 8000
+
+    def start_local_child(**kwargs):
+        child = subprocess.Popen(kwargs["command"], env={**os.environ, **kwargs["env_to_set"]})
+        child.wait(timeout=10)
+        return child
+
+    with (
+        patch("srtctl.cli.mixins.benchmark_stage.CONTAINER_LOG_DIR", str(logs)),
+        patch("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", return_value="127.0.0.1"),
+        patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", side_effect=start_local_child),
+        patch.object(BenchmarkStageMixin, "backend_processes", []),
+    ):
+        assert harness._run_benchmark_script(CustomBenchmarkRunner(), logs / "benchmark.out", threading.Event()) == 0
+    observed = _samples(1000.0, 1020.0)
+    rows = _validate(logs, observed, expected=(("custom", 4), ("custom", 8)))
+    assert len(rows) == 2
+    assert all(row.power_coverage_valid for row in rows)
+
+    # Success from the benchmark process alone cannot certify missing windows.
+    (logs / "power" / WINDOWS_DIRNAME / "custom_8.json").unlink()
+    rows = _validate(logs, observed, expected=(("custom", 4), ("custom", 8)))
+    assert rows[0].power_coverage_valid
+    assert Reason.MEASUREMENT_WINDOW_MISSING in rows[1].reason_codes
