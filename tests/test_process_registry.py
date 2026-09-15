@@ -185,6 +185,25 @@ class TestProcessRegistry:
         registry.add_process(mp)
         assert registry.check_failures()
 
+    def test_has_failures_reports_recorded_failures_without_rescanning(self):
+        registry = ProcessRegistry(job_id="test_job")
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = 1
+        mock_popen.pid = 12345
+        registry.add_process(ManagedProcess(name="worker_0", popen=mock_popen, critical=True))
+
+        assert registry.has_failures is False  # nothing scanned yet
+        assert registry.check_failures()
+        assert registry.has_failures is True
+
+        # A process that cleanup terminates afterwards is not counted until someone scans again.
+        etcd = MagicMock(spec=Popen)
+        etcd.poll.return_value = 143
+        etcd.pid = 1
+        registry.add_process(ManagedProcess(name="service_etcd", popen=etcd, critical=True))
+        assert registry.has_failures is True
+        registry.print_failure_details()  # only worker_0 is recorded
+
     def test_check_failures_skips_supervised_processes(self):
         """A step owned by the worker supervisor is its call to relaunch, until it hands the step back."""
         registry = ProcessRegistry(job_id="test_job")

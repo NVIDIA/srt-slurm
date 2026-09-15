@@ -358,7 +358,9 @@ class BenchmarkStageMixin:
             # itself when a critical process dies; a stop that follows such a
             # failure is a failed run, not a clean shutdown (sa-b200 job 15405
             # reported COMPLETED 0:0 after an exhausted worker restart policy).
-            if registry.check_failures():
+            # Read the recorded failures rather than scanning again: by now the
+            # monitor's cleanup has SIGTERMed everything else too.
+            if registry.has_failures:
                 logger.error("Worker failure detected while serving")
                 return 1
             return 0

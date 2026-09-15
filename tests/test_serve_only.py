@@ -105,7 +105,7 @@ class _ServeOnlyHarness(BenchmarkStageMixin):
 def test_serve_only_waits_for_health_but_never_loads_a_benchmark(tmp_path: Path) -> None:
     harness = _ServeOnlyHarness(tmp_path)
     registry = MagicMock()
-    registry.check_failures.return_value = False
+    registry.has_failures = False
     reporter = MagicMock()
     stop_event = threading.Event()
     stop_event.set()
@@ -132,7 +132,8 @@ def test_serve_only_fails_when_the_process_monitor_stopped_it_after_a_critical_e
     failure; the loop must not mistake that stop for a clean shutdown (sa-b200 job 15405)."""
     harness = _ServeOnlyHarness(tmp_path)
     registry = MagicMock()
-    registry.check_failures.return_value = True  # the monitor already recorded the failure
+    registry.has_failures = True  # the monitor already recorded the failure before stopping us
+    registry.check_failures.return_value = False  # a rescan after cleanup must not be what decides
     stop_event = threading.Event()
     stop_event.set()
 

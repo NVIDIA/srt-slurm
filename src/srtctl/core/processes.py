@@ -316,6 +316,16 @@ class ProcessRegistry:
 
             return len(self._failed_processes) > 0
 
+    @property
+    def has_failures(self) -> bool:
+        """Whether ``check_failures`` has recorded a critical failure, without scanning again.
+
+        Use this after a stop: a fresh scan would also count the processes that
+        cleanup itself just terminated.
+        """
+        with self._lock:
+            return len(self._failed_processes) > 0
+
     def cleanup(self) -> None:
         """Stop every registered process: SIGTERM to a whole tier at once, wait, escalate, next tier.
 
