@@ -469,6 +469,8 @@ How a relaunch behaves:
 
 A relaunched worker registers with the Dynamo frontend as a new instance once the old lease expires; a static router sees the same URL come back. Requests in flight on the dead worker fail and the benchmark client records them; that is the point of a fault-tolerance probe, and the lockfile entry marks the run. The supervisor does not move a worker to another node: the allocation has no spare, and Slurm ends the job when a node fails.
 
+`examples/features/worker-restart.yaml` is a runnable version: two workers serving with no benchmark, so you can SIGKILL a worker step with `scancel --signal=KILL <job>.<step>` and watch the relaunch in the sweep log. Its header walks through the timeline of a real run.
+
 The v1 spelling of this section (`resources.prefill_nodes`, `resources.prefill_workers`, `resources.gpus_per_prefill`, `resources.prefill_critical`, `resources.prefill_restart`, `resources.decode_nodes: 0`, `backend.prefill_environment`, `backend.sglang_config.prefill`, `backend.prefill_extra_args`, `backend.kv_events_config`, and the `decode` and `aggregated` counterparts) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
 ---

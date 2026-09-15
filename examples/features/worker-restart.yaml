@@ -1,0 +1,74 @@
+# `roles.<role>.restart`: relaunch a worker that exits mid-run.
+#
+# Two TP1 SGLang workers behind the Dynamo frontend, serving with no benchmark
+# (`benchmark.type: manual`) so you can kill a worker and watch it come back.
+# The agg role carries the policy here; prefill and decode take the same block.
+#
+# What happens when a worker dies (times from a real run, sa-b200 job 15405):
+#
+#   t+0    kill the step from the login node:
+#            squeue --steps -j <job> -h -o "%i %j"      # e.g. 15405.6 agg_0_<node>
+#            scancel --signal=KILL 15405.6              # SIGKILL the engine
+#   t+5    sweep log: "Worker agg_0_<node> exited with code 137; relaunching agg_0 in 10s (restart 1/2)"
+#   t+10   frontend /health drops from 2 generate instances to 1 (the dead worker's lease expires)
+#   t+15   "Relaunched agg_0 as agg_0_<node>_r1 (restart 1/2); waiting up to 1800s for /health"
+#            same node, same GPU, same ports; the old log moved to <node>_agg_w0.out.1
+#   t+90   "Relaunched agg_0 is serving again after 74s (<ip>:7500/health)"
+#            frontend /health is back to 2, with a new instance id
+#
+# Kill it again and the backoff doubles (20 s, then 40 s, capped by
+# max_backoff_seconds). After `max_restarts` relaunches the next exit is handed
+# back to the ordinary monitor: "max_restarts=2 reached, giving up", and because
+# `critical` is still true the run fails with exit code 1 and tears down.
+# `logs/worker_restarts.json` and `lock.worker_restarts` in recipe.lock.yaml
+# record every relaunch. See docs/config-reference.md, section "restart".
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-worker-restart"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    restart:
+      policy: on-failure        # never (default) | on-failure | always
+      max_restarts: 2           # per worker, over the whole job (default 3)
+      backoff_seconds: 10       # first delay; doubles on each relaunch (default 10)
+      max_backoff_seconds: 60   # cap on the doubled delay (default 300)
+    # critical: true (default) decides the run's fate once max_restarts is spent.
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+
+benchmark:
+  type: "manual"                # serve until Ctrl+C / scancel; nothing drives load
