@@ -2,7 +2,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dynamo benchmark dashboard -- component observability (overview / router / engine /
+"""LEGACY UI — scheduled for deprecation; see docs/tachometer-dashboard.md.
+
+Dynamo benchmark dashboard -- component observability (overview / router / engine /
 frontend) rendered from an ingest bundle: profile_export.jsonl + tempo_traces/ +
 server_metrics_export.jsonl, as produced by ``src/ingest/ingest.py``.
 

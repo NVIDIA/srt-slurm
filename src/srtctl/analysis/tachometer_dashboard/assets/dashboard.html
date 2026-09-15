@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Component metrics — Tachometer</title>
+  <style>/* UPLOT_CSS */</style>
+  <style>/* DASHBOARD_CSS */</style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to metrics</a>
+  <header class="masthead">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">▥</span><span>Tachometer</span><span class="breadcrumb">/</span><h1>Component metrics</h1></div>
+    <div class="header-actions"><span class="offline-badge">Offline capture</span><button id="explore-button" type="button">Explore metrics</button><button id="capture-button" type="button">Capture details</button></div>
+  </header>
+  <div class="capture-strip"><span id="capture-summary">Reading capture…</span><span id="time-summary"></span></div>
+  <div class="controls-shell">
+    <nav id="tabs" class="tabs" aria-label="Components"></nav>
+    <div class="toolbar">
+      <label class="search-box"><span>Find metrics</span><input id="metric-search" type="search" placeholder="Search title, metric, or subgroup" autocomplete="off"></label>
+      <label class="checkbox-label"><input id="featured-only" type="checkbox">Featured only</label>
+      <div class="time-controls" aria-label="Shared time range">
+        <label>From <input id="time-from" type="number" min="0" step="any" aria-label="Start elapsed seconds"></label>
+        <label>to <input id="time-to" type="number" min="0" step="any" aria-label="End elapsed seconds"></label><span>s</span>
+        <button id="apply-time" type="button">Apply</button><button id="reset-time" type="button">Full capture</button>
+      </div>
+    </div>
+    <div id="filters" class="filters" aria-label="Series label filters"></div>
+    <div class="custom-filter"><label>More labels <select id="custom-key" aria-label="Additional label name"></select></label><select id="custom-value" aria-label="Additional label value"></select><button id="add-filter" type="button">Add filter</button><div id="filter-chips" class="filter-chips"></div><button id="clear-filters" type="button">Clear filters</button></div>
+  </div>
+  <main id="content" tabindex="-1">
+    <div class="section-heading"><div><h2 id="component-title">Frontend</h2><p id="component-description"></p></div><div class="section-actions"><span id="panel-count"></span><button id="collapse-all" type="button">Collapse rows</button><button id="expand-all" type="button">Expand rows</button></div></div>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <div id="rows"></div>
+  </main>
+  <aside id="explorer" class="explorer" aria-label="Metric explorer" hidden>
+    <div class="drawer-heading"><h2>Metric explorer</h2><button id="close-explorer" type="button" aria-label="Close metric explorer">Close</button></div>
+    <p>Every captured family. Open a metric to inspect its labels and samples.</p>
+    <input id="explorer-search" type="search" aria-label="Search all captured metrics" placeholder="Search across all components" autocomplete="off">
+    <div id="explorer-results"></div>
+  </aside>
+  <dialog id="inspector" class="inspector"><div class="drawer-heading"><h2 id="inspector-title">Metric details</h2><button id="close-inspector" type="button">Close</button></div><div id="inspector-body"></div></dialog>
+  <footer>Source: raw Tachometer Parquet / Arrow. Drag across a chart to zoom every panel. Gaps remain gaps. <span>Charts: uPlot 1.6.32, MIT.</span></footer>
+  <noscript>This dashboard needs JavaScript to display and filter the embedded metrics.</noscript>
+  <!-- DASHBOARD_DATA -->
+  <script>/* UPLOT_JS */</script>
+  <script>/* DASHBOARD_JS */</script>
+</body>
+</html>

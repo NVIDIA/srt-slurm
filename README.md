@@ -41,7 +41,8 @@ uv run srtctl skill --target cursor    # .cursor/rules/srtctl.mdc
 - [Monitoring](docs/monitoring.md) - Job logs and debugging
 - [Parameter Sweeps](docs/sweeps.md) - Grid searches
 - [Profiling](docs/profiling.md) - Torch/nsys profiling
-- [Component Performance Dashboard](docs/component-dashboard.md) - the per-run HTML dashboard built from the tachometer parquet
+- [Raw Tachometer Dashboard](docs/tachometer-dashboard.md) - automatic component UI for Dynamo+TRT-LLM and native TRT-LLM Serve
+- [Legacy Component Dashboard](docs/component-dashboard.md) - scheduled for deprecation; retained for other backends and historical bundles
 - [ruter](docs/ruter.md) - Dynamo router post-processing
 
 ## Commands
