@@ -191,6 +191,10 @@ class StatusReporter:
             "backend_type": config.backend_type,
             "frontend_type": config.frontend.type,
             "head_node": runtime.nodes.head,
+            # Where the run writes its logs on the cluster filesystem. A collector
+            # on the same filesystem (srtctl status-server on a login node) can
+            # open them directly; logs_url only appears later if reporting.s3 is set.
+            "log_dir": str(runtime.log_dir),
         }
 
         payload = JobUpdatePayload(

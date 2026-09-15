@@ -10,18 +10,30 @@ It has zero internal imports — only depends on pydantic.
 Usage (reporter):
     from srtctl.contract import JobStatus, JobStage, JobCreatePayload, JobUpdatePayload
 
-Usage (server):
+Usage (server, e.g. srtctl.status_server):
     from srtctl.contract import JobStatus, JobStage, JobCreatePayload, JobUpdatePayload
     from srtctl.contract import JobResponse, JobSummary, JobDetail, JobListResponse
+    from srtctl.contract import JobEventRecord, JobEventListResponse, EventFeedResponse
 """
 
 from srtctl.contract.enums import JobStage, JobStatus
 from srtctl.contract.requests import JobCreatePayload, JobUpdatePayload
-from srtctl.contract.responses import JobDetail, JobListResponse, JobResponse, JobSummary
+from srtctl.contract.responses import (
+    EventFeedResponse,
+    JobDetail,
+    JobEventListResponse,
+    JobEventRecord,
+    JobListResponse,
+    JobResponse,
+    JobSummary,
+)
 
 __all__ = [
+    "EventFeedResponse",
     "JobCreatePayload",
     "JobDetail",
+    "JobEventListResponse",
+    "JobEventRecord",
     "JobListResponse",
     "JobResponse",
     "JobStage",

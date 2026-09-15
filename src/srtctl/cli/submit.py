@@ -62,6 +62,8 @@ from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
 from srtctl.runtime_scripts.dynamo_wheels import arch_from_binary, detect_target_arch
+from srtctl.status_server.server import add_arguments as add_status_server_arguments
+from srtctl.status_server.server import serve as serve_status_server
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -1686,6 +1688,7 @@ def main():
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl view /path/to/run-output                # Local ruter route-decision viewer
+  srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
   srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md + docs/legacy-v1.md
   srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
   srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
@@ -1810,6 +1813,12 @@ def main():
     )
     view_parser.add_argument("--port", type=int, default=8877, help="Loopback port (default: 8877)")
     view_parser.add_argument("--refresh", action="store_true", help="Reparse logs before loading the viewer")
+
+    status_server_parser = subparsers.add_parser(
+        "status-server",
+        help="Run the native status collector that reporting.status.endpoint can point at",
+    )
+    add_status_server_arguments(status_server_parser)
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
@@ -2107,6 +2116,10 @@ def main():
         if args.refresh:
             view_args.append("--refresh")
         _view_main(view_args)
+        return
+
+    if args.command == "status-server":
+        serve_status_server(host=args.host, port=args.port, db_path=args.db)
         return
 
     # Parse config arg: supports path:selector format for overrides

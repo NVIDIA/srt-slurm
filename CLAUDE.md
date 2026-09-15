@@ -91,15 +91,17 @@ For aggregated mode, pass `expected_prefill=0, expected_decode=num_agg`.
 
 ### Status Reporting
 
-Optional fire-and-forget HTTP status reporting to external APIs. Configure in `srtslurm.yaml`:
+Optional fire-and-forget HTTP status reporting to one or more collectors. Configure in `srtslurm.yaml`:
 
 ```yaml
 # Cluster-level config (srtslurm.yaml)
 cluster: "bruh"  # Cluster name for dashboard display
 reporting:
   status:
-    endpoint: "test-endpoint.com"
+    endpoint: "http://login-node:8080"
 ```
+
+**srtctl status-server** is the in-repo collector for that endpoint (`src/srtctl/status_server/`: `store.py` is the SQLite side, `server.py` the stdlib HTTP side validating with `srtctl.contract`). It appends an event whenever `(status, stage, message)` changes, creates a placeholder row for a PUT whose POST never arrived, and serves cursor-based feeds at `/api/events` and `/api/jobs/{id}/events`. `make_server(store, port=0)` gives tests a real server on an ephemeral port (`tests/test_status_server.py` drives it with the real `StatusReporter`). The wire contract is `docs/status-api-spec.md`; a payload field changes in `srtctl.contract`, the server, and the spec together.
 
 **StatusReporter** - Used in `do_sweep.py` to report job lifecycle:
 
@@ -107,15 +109,15 @@ reporting:
 from srtctl.core.status import StatusReporter, JobStatus, JobStage
 
 reporter = StatusReporter.from_config(config.reporting, job_id)
-reporter.report_started(runtime)  # Job started with metadata
-reporter.report(JobStatus.WORKERS_READY, JobStage.WORKERS, "All workers healthy")
-reporter.report_completed(exit_code)  # Final status
+reporter.report_started(config, runtime)  # Job started, with model/resources/head_node/log_dir metadata
+reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
+reporter.report_completed(exit_code, logs_url=s3_url)  # Final status
 ```
 
-**Status lifecycle:**
+**Status lifecycle** (status is the stage being entered, not readiness):
 ```
-submitted → starting → head_ready → workers_starting → workers_ready
-         → frontend_starting → frontend_ready → benchmark → completed | failed
+submitted → starting → workers → frontend → benchmark → completed | failed
+stages: starting, head_infrastructure, preflight, workers, frontend, benchmark, cleanup
 ```
 
 **create_job_record()** - Standalone function for job submission:
@@ -139,6 +141,7 @@ create_job_record(
 - Failures are logged at DEBUG and silently ignored
 - Job execution is never blocked by status reporting
 - Tags are passed via `metadata["tags"]` (not a separate field)
+- `metadata["log_dir"]` (from `report_started`) is the run's log directory on the cluster filesystem; `logs_url` is only set when `reporting.s3` uploads it
 
 ### Services (etcd, NATS, Mooncake master, exporters)
 

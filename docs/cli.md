@@ -20,6 +20,7 @@
   - [srtctl resolve-override](#srtctl-resolve-override)
   - [srtctl migrate](#srtctl-migrate)
   - [srtctl monitor](#srtctl-monitor)
+  - [srtctl status-server](#srtctl-status-server)
   - [srtctl skill](#srtctl-skill)
 - [Output](#output)
 - [Sweep Support](#sweep-support)
@@ -397,6 +398,20 @@ srtctl monitor --interval 10            # Refresh every 10s (default: 5)
 srtctl monitor --once                   # Snapshot and exit
 srtctl monitor --resume KEY             # Resume a previous session
 ```
+
+### `srtctl status-server`
+
+Run the native status collector. Point `reporting.status.endpoint` in `srtslurm.yaml` or a recipe at it and every `srtctl apply` shows up as a job row with an ordered event feed (`submitted`, `starting`, `workers`, `frontend`, `benchmark`, then `completed` or `failed`, each with its stage and message). Jobs and events persist in one SQLite file and the process prints one line per transition. The endpoints are in [Status API](status-api-spec.md).
+
+```bash
+srtctl status-server                              # 127.0.0.1:8080, ~/.local/state/srtctl/status.db
+srtctl status-server --host 0.0.0.0               # Reachable from compute nodes
+srtctl status-server --port 9000 --db /lustre/shared/status.db
+curl http://login-node:8080/api/jobs              # Newest jobs first
+curl "http://login-node:8080/api/events?after=0"  # Global event feed; pass next_cursor back as after
+```
+
+Run it where both the submitting host (the POST at apply time) and the allocation's head node (the PUTs during the run) can reach it, typically a login node.
 
 ### `srtctl skill`
 

@@ -155,7 +155,7 @@ class TestStatusReporterReport:
             backend_type="vllm",
             frontend=SimpleNamespace(type="dynamo"),
         )
-        runtime = SimpleNamespace(nodes=SimpleNamespace(head="b300-010"))
+        runtime = SimpleNamespace(nodes=SimpleNamespace(head="b300-010"), log_dir="/lustre/outputs/31315/logs/run")
         snapshot = {
             "cpus": {"allocated_total": 2, "allocated_per_node": [2]},
             "cpu_check": {"status": "warning", "minimum_cpu_count": 4},
