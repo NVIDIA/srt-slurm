@@ -299,6 +299,7 @@ class ClusterConfig:
     # recipe move between clusters of different GPU types without an edit.
     default_gpu_type: str | None = None
     network_interface: str | None = None
+    accelerator_vendor: Literal["nvidia", "amd"] = "nvidia"
     use_gpus_per_node_directive: bool = True
     use_segment_sbatch_directive: bool = True
     use_exclusive_sbatch_directive: bool = False
@@ -1228,9 +1229,13 @@ class TachometerConfig:
 
     @property
     def resolved_dcgm_exporter(self) -> TelemetryExporterConfig | None:
-        """User-configured DCGM exporter, else the built-in default."""
+        """User-configured exporter, else the NVIDIA-only built-in default."""
+        from srtctl.core.config import get_srtslurm_setting
+
         if self.dcgm_exporter is not None:
             return self.dcgm_exporter
+        if get_srtslurm_setting("accelerator_vendor", "nvidia") != "nvidia":
+            return None
         return DEFAULT_DCGM_EXPORTER if self.default_exporters else None
 
     @property

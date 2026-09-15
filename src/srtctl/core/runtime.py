@@ -11,7 +11,7 @@ replacing scattered bash variables and Jinja templating with typed Python.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
@@ -238,6 +238,7 @@ class RuntimeContext:
     # HuggingFace model support - True if model.path was "hf:model/name"
     is_hf_model: bool = False
     gpu_type: str | None = None
+    accelerator_vendor: Literal["nvidia", "amd"] = "nvidia"
 
     # Container mounts: host_path -> container_path
     container_mounts: dict[Path, Path] = field(default_factory=dict)
@@ -418,6 +419,7 @@ class RuntimeContext:
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
             network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            accelerator_vendor=get_srtslurm_setting("accelerator_vendor", "nvidia"),
             container_mounts={},
             srun_options=dict(config.srun_options),
             environment=environment,
@@ -444,6 +446,7 @@ class RuntimeContext:
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
             network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            accelerator_vendor=get_srtslurm_setting("accelerator_vendor", "nvidia"),
             container_mounts=container_mounts,
             srun_options=dict(config.srun_options),
             environment=environment,

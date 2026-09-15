@@ -337,4 +337,3 @@ tail -f outputs/<job_id>/logs/sweep_<job_id>.log | grep "srun command"
 ```
 
 Per-worker env vars and commands are also logged individually (search for `Env:` and `Command:` lines).
-

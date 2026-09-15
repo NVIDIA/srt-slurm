@@ -263,7 +263,11 @@ class VLLMProtocol:
     # vLLM server CLI config per mode
     vllm_config: VLLMServerConfig | None = None
 
-    # Legacy device binding for vLLM builds without --device-ids.
+    # Vendor-neutral device binding for vLLM builds without --device-ids.
+    # When unset, preserve the legacy CUDA-named option below.
+    set_visible_devices: bool | None = None
+
+    # Legacy compatibility alias. New recipes should use set_visible_devices.
     set_cuda_visible_devices: bool = False
 
     # Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config.
@@ -745,14 +749,20 @@ class VLLMProtocol:
             for offset in range(0, len(sorted_gpus), gpus_per_rank)
         ]
 
-    def should_set_cuda_visible_devices(self, process: Process) -> bool:
-        """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
+    def should_set_visible_devices(self, process: Process) -> bool:
+        """Whether worker_stage should set a vendor-native device mask.
 
         Newer vLLM builds should use ``--device-ids`` instead. Older builds
         before https://github.com/vllm-project/vllm/pull/45026 should set
-        CUDA_VISIBLE_DEVICES.
+        the platform's visible-device environment.
         """
+        if self.set_visible_devices is not None:
+            return self.set_visible_devices
         return self.set_cuda_visible_devices
+
+    def should_set_cuda_visible_devices(self, process: Process) -> bool:
+        """Deprecated compatibility wrapper for third-party callers."""
+        return self.should_set_visible_devices(process)
 
     def endpoints_to_processes(
         self,
@@ -1067,7 +1077,6 @@ class VLLMProtocol:
                 and self.dp_launch_mode == "per_node"
                 and not spans_nodes
             )
-
             if frontend_type == "vllm-router" and is_dp_mode and self.dp_launch_mode != "per_node":
                 raise ValueError(
                     "frontend.type: vllm-router with data-parallel-size requires backend.dp_launch_mode: per_node"
@@ -1146,7 +1155,7 @@ class VLLMProtocol:
                             process.node,
                         )
             _log_overridden_recipe_flags(overridden, srtslurm_owned, process.node)
-            if not self.set_cuda_visible_devices:
+            if not self.should_set_visible_devices(process):
                 device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
                 if device_ids:
                     cmd.extend(["--device-ids", device_ids])
@@ -1180,7 +1189,7 @@ class VLLMProtocol:
             kv_transfer_cfg = _connector_to_kv_transfer_config(connector)
             cmd.extend(["--kv-transfer-config", kv_transfer_cfg])
 
-        if not self.set_cuda_visible_devices:
+        if not self.should_set_visible_devices(process):
             device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
             if device_ids:
                 cmd.extend(["--device-ids", device_ids])

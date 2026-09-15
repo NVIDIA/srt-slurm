@@ -134,6 +134,7 @@ The `srtslurm.yaml` file can contain the following fields:
 | `gpus_per_node`                 | int    | Default GPUs per node (applied to recipes that omit `resources.gpus_per_node`) |
 | `default_gpu_type`              | string | Default `resources.gpu_type` for recipes that omit it |
 | `network_interface`             | string | Network interface for NCCL                            |
+| `accelerator_vendor`            | string | GPU runtime: `nvidia` (default) or `amd` |
 | `srtctl_root`                   | string | Root directory for srtctl                             |
 | `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
 | `model_paths`                   | dict   | Model path aliases                                    |
@@ -221,6 +222,18 @@ model:
 ---
 
 ## engine
+
+### GPU visibility on AMD
+
+Set `accelerator_vendor: amd` in the cluster profile for ROCm workers. GPU
+subsets use `ROCR_VISIBLE_DEVICES` instead of `CUDA_VISIBLE_DEVICES`, without
+applying a second mask to already-renumbered devices. The implicit NVIDIA DCGM
+exporter is omitted; other telemetry and explicit exporter settings are unchanged.
+
+For vLLM builds without `--device-ids`, set `engine.set_visible_devices: true`.
+The existing `set_cuda_visible_devices` alias remains supported; the neutral
+setting takes precedence when specified. This is an explicit recipe setting,
+not automatic vLLM version detection.
 
 `engine:` names the inference engine that builds every worker role's command. A bare string is the common form; a mapping carries the engine-wide knobs, the fields that are not per role:
 
