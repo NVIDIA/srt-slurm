@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -87,6 +88,10 @@ class ManagedProcess:
     # frontends (0) deregister from the Mooncake master (1) and etcd/NATS (2)
     # while those are still up, instead of hanging on a plane that is gone.
     shutdown_tier: int = 0
+    # Owned by a WorkerSupervisor with a restart policy: an exit is the
+    # supervisor's to handle (relaunch), so ``check_failures`` leaves it alone
+    # until the supervisor gives up and clears the flag.
+    supervised: bool = False
     _stopped_via_step: bool = field(default=False, init=False, repr=False)
     _stop_deadline: float | None = field(default=None, init=False, repr=False)
 
@@ -297,6 +302,8 @@ class ProcessRegistry:
         """
         with self._lock:
             for name, proc in self._processes.items():
+                if proc.supervised:
+                    continue  # a WorkerSupervisor decides whether this exit is a relaunch or a failure
                 if proc.critical and not proc.is_running:
                     exit_code = proc.exit_code
                     if exit_code != 0 and name not in self._failed_processes:
@@ -379,6 +386,11 @@ class ProcessRegistry:
         with self._lock:
             return self._processes.get(name)
 
+    def pop_process(self, name: str) -> ManagedProcess | None:
+        """Remove and return a process by name (None when absent). Does not stop it."""
+        with self._lock:
+            return self._processes.pop(name, None)
+
     def get_all_processes(self) -> dict[str, ManagedProcess]:
         """Get a copy of all registered processes."""
         with self._lock:
@@ -417,6 +429,7 @@ def start_process_monitor(
     stop_event: threading.Event,
     registry: ProcessRegistry,
     poll_interval: float = 2.0,
+    reconcile: Callable[[], None] | None = None,
 ) -> threading.Thread:
     """Start a background thread that monitors for process failures.
 
@@ -424,6 +437,10 @@ def start_process_monitor(
         stop_event: Event that signals the monitor to stop
         registry: ProcessRegistry to monitor
         poll_interval: Seconds between checks
+        reconcile: Called at the top of every tick, before the failure check, so
+            a supervisor can relaunch an exited worker (or hand it back to the
+            registry) before the check sees it. A raising reconcile is logged
+            and the monitor keeps going; it must never take the job down.
 
     Returns:
         The monitoring thread (already started)
@@ -431,6 +448,11 @@ def start_process_monitor(
 
     def monitor_loop():
         while not stop_event.is_set():
+            if reconcile is not None:
+                try:
+                    reconcile()
+                except Exception:
+                    logger.exception("Worker supervisor reconcile failed; continuing")
             if registry.check_failures():
                 logger.error("Critical process failure detected!")
                 stop_event.set()

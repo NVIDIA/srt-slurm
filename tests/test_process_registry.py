@@ -185,6 +185,33 @@ class TestProcessRegistry:
         registry.add_process(mp)
         assert registry.check_failures()
 
+    def test_check_failures_skips_supervised_processes(self):
+        """A step owned by the worker supervisor is its call to relaunch, until it hands the step back."""
+        registry = ProcessRegistry(job_id="test_job")
+
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = 1
+        mock_popen.pid = 12345
+        mp = ManagedProcess(name="decode_0_node0", popen=mock_popen, critical=True, supervised=True)
+        registry.add_process(mp)
+
+        assert not registry.check_failures()
+        mp.supervised = False
+        assert registry.check_failures()
+
+    def test_pop_process(self):
+        registry = ProcessRegistry(job_id="test_job")
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = None
+        mock_popen.pid = 12345
+        mp = ManagedProcess(name="worker_0", popen=mock_popen)
+        registry.add_process(mp)
+
+        assert registry.pop_process("worker_0") is mp
+        assert registry.pop_process("worker_0") is None
+        assert registry.process_count == 0
+        mock_popen.terminate.assert_not_called()
+
     def test_cleanup(self):
         """Test cleanup terminates all processes."""
         registry = ProcessRegistry(job_id="test_job")

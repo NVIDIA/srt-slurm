@@ -62,6 +62,7 @@ Three vocabularies are specific to the 2.0 layout. They are normalized into the 
 | `kv_events` | bool \| mapping | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
 | `sidecar` | bool | `False` | Run the native engine with a Dynamo sidecar; every role must agree. |
 | `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
+| `restart` | str \| [RestartPolicy](#restartpolicy) | `never` | Relaunch a worker of this role that exits mid-run: a policy name (`never`, `on-failure`, `always`) or a mapping with `policy`, `max_restarts`, `backoff_seconds`, `max_backoff_seconds`. |
 
 ### placement
 
@@ -97,6 +98,9 @@ Resource allocation configuration.
 | `prefill_critical` | bool | `True` | A worker exit normally fails the run (the process monitor tears the job down). A role's flag set to False keeps the run alive when one of its workers exits, for workloads that kill workers on purpose (migration or fault-tolerance probes). The per-role spelling is ``roles.<role>.critical``. |
 | `decode_critical` | bool | `True` | A decode worker exiting fails the run. False keeps the run alive. |
 | `agg_critical` | bool | `True` | An aggregated worker exiting fails the run. False keeps the run alive. |
+| `prefill_restart` | [RestartPolicy](#restartpolicy) | `RestartPolicy()` | Whether, and how, the worker supervisor relaunches a worker of the role that exits mid-run (see RestartPolicy). Off by default; a relaunch that is never attempted or that runs out of ``max_restarts`` falls through to the role's ``critical`` flag. The per-role spelling is ``roles.<role>.restart``. |
+| `decode_restart` | [RestartPolicy](#restartpolicy) | `RestartPolicy()` | Relaunch policy for decode workers. |
+| `agg_restart` | [RestartPolicy](#restartpolicy) | `RestartPolicy()` | Relaunch policy for aggregated workers. |
 | `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). |
 | `het_jobs` | bool \| None | `None` | SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster default `use_het_jobs` on ClusterConfig; True/False overrides per recipe. When effectively True (and we are in disaggregated mode), the prefill and decode sides are submitted as two het components each with their own `--segment`. See HetComponent above and docs/slurm-faq.md. |
 
@@ -332,6 +336,17 @@ Reporting configuration for status updates, AI analysis, and log exports.
 | `status` | [ReportingStatusConfig](#reportingstatusconfig) \| None | `None` |  |
 | `ai_analysis` | [AIAnalysisConfig](#aianalysisconfig) \| None | `None` |  |
 | `s3` | [S3Config](#s3config) \| None | `None` |  |
+
+### RestartPolicy
+
+How the worker supervisor treats a worker of one role that exits mid-run.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `policy` | one of `'never'`, `'on-failure'`, `'always'` | `'never'` | ``never`` leaves a worker exit to ``critical`` (the default, today's behavior). ``on-failure`` relaunches after a non-zero exit; ``always`` relaunches after any exit, including a clean one. |
+| `max_restarts` | int | `3` | Relaunches allowed per endpoint over the whole job. |
+| `backoff_seconds` | float | `10.0` | Delay before the first relaunch. Doubles on every further relaunch of the same endpoint (10 s, 20 s, 40 s, ...). |
+| `max_backoff_seconds` | float | `300.0` | Cap on the doubled delay. |
 
 ### DynamoSourceConfig
 

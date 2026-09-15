@@ -151,6 +151,15 @@ _ROLE_ROWS: tuple[tuple[str, str, str, str], ...] = (
         "`True`",
         "A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers.",
     ),
+    (
+        "restart",
+        "str \\| [RestartPolicy](#restartpolicy)",
+        "`never`",
+        (
+            "Relaunch a worker of this role that exits mid-run: a policy name (`never`, `on-failure`, `always`) "
+            "or a mapping with `policy`, `max_restarts`, `backoff_seconds`, `max_backoff_seconds`."
+        ),
+    ),
 )
 
 _PLACEMENT_ROWS: tuple[tuple[str, str, str], ...] = (

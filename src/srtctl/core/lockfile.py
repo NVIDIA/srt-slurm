@@ -35,6 +35,7 @@ import yaml
 
 from srtctl.core.fingerprint import load_fingerprint
 from srtctl.core.resource_snapshot import load_resource_snapshot
+from srtctl.core.supervisor import load_worker_restarts
 
 if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
@@ -206,6 +207,9 @@ def build_lock_section(
         lock["fingerprints"] = worker_fingerprints
     if resolved_log_dir and (resource_snapshot := load_resource_snapshot(resolved_log_dir)):
         lock["resource_snapshot"] = resource_snapshot
+    # A result produced through worker relaunches is a different result; say so.
+    if resolved_log_dir and (worker_restarts := load_worker_restarts(resolved_log_dir)):
+        lock["worker_restarts"] = worker_restarts
     if results:
         lock["results"] = results
 

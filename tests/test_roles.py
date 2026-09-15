@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 
 import pytest
+from marshmallow import ValidationError
 
 from srtctl.core.roles import expand_roles, roles_from_legacy
 from srtctl.core.schema import SrtConfig
@@ -321,6 +322,49 @@ def test_roles_from_legacy_folds_critical() -> None:
     }
     folded = roles_from_legacy(legacy)
     assert folded["roles"]["decode"] == {"workers": 1, "critical": False}
+    assert folded["roles"]["prefill"] == {"workers": 1}
+    assert "resources" not in folded
+    assert expand_roles(copy.deepcopy(folded))["resources"] == legacy["resources"]
+
+
+def test_per_role_restart_maps_onto_resources_and_the_policy() -> None:
+    config = expand_roles(
+        {
+            "engine": "sglang",
+            "roles": {
+                "prefill": {"workers": 1, "restart": "on-failure"},  # a bare policy name
+                "decode": {"workers": 1, "restart": {"policy": "always", "max_restarts": 5, "backoff_seconds": 2}},
+            },
+        }
+    )
+    assert config["resources"]["prefill_restart"] == {"policy": "on-failure"}
+    assert config["resources"]["decode_restart"] == {"policy": "always", "max_restarts": 5, "backoff_seconds": 2}
+
+    recipe = _roles_sglang_disagg()
+    recipe["roles"]["decode"]["restart"] = {"policy": "on-failure", "max_restarts": 2}
+    loaded = SrtConfig.Schema().load(expand_roles(recipe))
+    decode = loaded.resources.worker_restart("decode")
+    assert (decode.enabled, decode.policy, decode.max_restarts, decode.backoff_seconds) == (True, "on-failure", 2, 10.0)
+    assert loaded.resources.worker_restart("prefill").enabled is False
+    assert loaded.resources.worker_restart("agg").enabled is False
+
+    with pytest.raises(TypeError, match="restart must be a policy name or a mapping"):
+        expand_roles({"roles": {"decode": {"restart": 3}}})
+    with pytest.raises(ValueError, match="cannot be combined"):
+        expand_roles({"resources": {"decode_restart": {"policy": "always"}}, "roles": {"decode": {"workers": 1}}})
+    recipe = _roles_sglang_disagg()
+    recipe["roles"]["decode"]["restart"] = "sometimes"
+    with pytest.raises(ValidationError, match="Must be one of: never, on-failure, always"):
+        SrtConfig.Schema().load(expand_roles(recipe))
+
+
+def test_roles_from_legacy_folds_restart() -> None:
+    legacy = {
+        "backend": {"type": "sglang"},
+        "resources": {"prefill_workers": 1, "decode_workers": 1, "decode_restart": {"policy": "on-failure"}},
+    }
+    folded = roles_from_legacy(legacy)
+    assert folded["roles"]["decode"] == {"workers": 1, "restart": {"policy": "on-failure"}}
     assert folded["roles"]["prefill"] == {"workers": 1}
     assert "resources" not in folded
     assert expand_roles(copy.deepcopy(folded))["resources"] == legacy["resources"]

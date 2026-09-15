@@ -590,6 +590,60 @@ class HetComponent:
 
 
 @dataclass(frozen=True)
+class RestartPolicy:
+    """How the worker supervisor treats a worker of one role that exits mid-run.
+
+    Modelled on a Kubernetes ``restartPolicy``: the supervisor observes every
+    worker step, and when one exits it relaunches the whole endpoint (every
+    process of a multi-node worker) on the same nodes and GPUs with the same
+    ports, after an exponential backoff. Restarts are counted per endpoint for
+    the life of the job; once ``max_restarts`` is spent the role's ``critical``
+    flag decides whether the run fails or carries on without that worker.
+
+    Attributes:
+        policy: ``never`` leaves a worker exit to ``critical`` (the default,
+            today's behavior). ``on-failure`` relaunches after a non-zero exit;
+            ``always`` relaunches after any exit, including a clean one.
+        max_restarts: Relaunches allowed per endpoint over the whole job.
+        backoff_seconds: Delay before the first relaunch. Doubles on every
+            further relaunch of the same endpoint (10 s, 20 s, 40 s, ...).
+        max_backoff_seconds: Cap on the doubled delay.
+    """
+
+    policy: Literal["never", "on-failure", "always"] = "never"
+    max_restarts: int = 3
+    backoff_seconds: float = 10.0
+    max_backoff_seconds: float = 300.0
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.max_restarts < 0:
+            raise ValidationError("restart.max_restarts must be 0 or more")
+        if self.backoff_seconds < 0:
+            raise ValidationError("restart.backoff_seconds must be 0 or more")
+        if self.max_backoff_seconds < self.backoff_seconds:
+            raise ValidationError("restart.max_backoff_seconds must be at least restart.backoff_seconds")
+
+    @property
+    def enabled(self) -> bool:
+        """True when the supervisor should relaunch workers of this role."""
+        return self.policy != "never"
+
+    def restarts_on(self, exit_code: int | None) -> bool:
+        """Whether an exit with ``exit_code`` is one this policy relaunches after."""
+        if self.policy == "always":
+            return True
+        if self.policy == "on-failure":
+            return exit_code != 0
+        return False
+
+    def backoff(self, restarts: int) -> float:
+        """Delay before relaunch number ``restarts`` (1 for the first relaunch)."""
+        return min(self.backoff_seconds * (2 ** max(0, restarts - 1)), self.max_backoff_seconds)
+
+
+@dataclass(frozen=True)
 class ResourceConfig:
     """Resource allocation configuration."""
 
@@ -617,6 +671,14 @@ class ResourceConfig:
     prefill_critical: bool = True  # A prefill worker exiting fails the run. False keeps the run alive.
     decode_critical: bool = True  # A decode worker exiting fails the run. False keeps the run alive.
     agg_critical: bool = True  # An aggregated worker exiting fails the run. False keeps the run alive.
+
+    # Whether, and how, the worker supervisor relaunches a worker of the role
+    # that exits mid-run (see RestartPolicy). Off by default; a relaunch that
+    # is never attempted or that runs out of ``max_restarts`` falls through to
+    # the role's ``critical`` flag. The per-role spelling is ``roles.<role>.restart``.
+    prefill_restart: RestartPolicy = field(default_factory=RestartPolicy)  # Relaunch policy for prefill workers.
+    decode_restart: RestartPolicy = field(default_factory=RestartPolicy)  # Relaunch policy for decode workers.
+    agg_restart: RestartPolicy = field(default_factory=RestartPolicy)  # Relaunch policy for aggregated workers.
 
     # If True, place each partial-node worker on its own node instead of
     # packing multiple onto the same node. Caller must reserve enough nodes
@@ -670,6 +732,10 @@ class ResourceConfig:
     def worker_critical(self, mode: str) -> bool:
         """Whether a worker of ``mode`` (``prefill``, ``decode``, ``agg``) failing fails the run."""
         return {"prefill": self.prefill_critical, "decode": self.decode_critical, "agg": self.agg_critical}[mode]
+
+    def worker_restart(self, mode: str) -> RestartPolicy:
+        """The relaunch policy for a worker of ``mode`` (``prefill``, ``decode``, ``agg``)."""
+        return {"prefill": self.prefill_restart, "decode": self.decode_restart, "agg": self.agg_restart}[mode]
 
     @property
     def total_nodes(self) -> int:
