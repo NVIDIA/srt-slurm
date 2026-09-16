@@ -409,6 +409,7 @@ srtctl status-server --host 0.0.0.0 --allow-unauthenticated # Open on a trusted 
 SRTCTL_STATUS_TOKEN=... SRTCTL_STATUS_READ_TOKEN=... \
   srtctl status-server --host 0.0.0.0                       # Bearer tokens required (write token; optional read-only token)
 srtctl status-server --port 9000 --db /lustre/shared/status.db
+srtctl status-server --host 0.0.0.0 --cors-origin https://ui.example  # UI hosted elsewhere may call the API (read-only)
 curl http://login-node:8080/api/jobs                        # Newest jobs first
 curl "http://login-node:8080/api/events?after=0"            # Global event feed; pass next_cursor back as after
 ```

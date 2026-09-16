@@ -2126,6 +2126,7 @@ def main():
             token_env=args.token_env,
             read_token_env=args.read_token_env,
             allow_unauthenticated=args.allow_unauthenticated,
+            cors_origins=args.cors_origin,
         )
         return
 

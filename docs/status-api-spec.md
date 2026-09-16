@@ -44,6 +44,17 @@ Behaviors of the native collector on top of the contract:
 
 The page itself needs no token (it is static and reveals nothing). It sends the read token the viewer pastes once as `Authorization: Bearer` on every API call and keeps it in the browser's `localStorage`. Opening `/#token=<read token>` seeds it and strips the fragment from the URL; fragments are never sent to the server. `HEAD` is answered like `GET` without a body, for uptime checkers.
 
+### Hosting the page elsewhere
+
+The same `index.html` can be served by any static web server (a Caddy on a corporate network, `python -m http.server`) or opened from a file, and pointed at a collector on another host: set the API base in the header field or open the page with `#api=https://collector.example.com` (also remembered in `localStorage`). Browsers then need the collector's permission for that origin, which is off by default:
+
+```bash
+srtctl status-server --host 0.0.0.0 --cors-origin https://zhongshan.example      # repeatable
+srtctl status-server --host 0.0.0.0 --cors-origin '*'                            # any origin, including a page opened from a file
+```
+
+With a matching `Origin`, GET and HEAD responses (errors included, so the page can show a 401) carry `Access-Control-Allow-Origin`, and the `OPTIONS` preflight is answered before auth with `Access-Control-Allow-Headers: Authorization` and `Access-Control-Allow-Methods: GET, HEAD, OPTIONS`. Writes are never offered cross-origin. This is safe to enable because the API uses no cookies and a token stored by one origin's `localStorage` cannot be read by another; a page from an origin that is not listed simply cannot call the API from the browser, and every call still needs the token.
+
 ## Authentication
 
 Tokens are bearer tokens read from the environment on both sides. Nothing token-shaped ever goes into a recipe or `srtslurm.yaml`: the resolved config is written to the lockfile and copied into the log directory that `reporting.s3` uploads.

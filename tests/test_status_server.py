@@ -476,6 +476,10 @@ class TestCli:
                 "--read-token-env",
                 "MY_READ",
                 "--allow-unauthenticated",
+                "--cors-origin",
+                "https://ui.example",
+                "--cors-origin",
+                "*",
             ],
         )
         submit_cli.main()
@@ -486,6 +490,7 @@ class TestCli:
             "token_env": "MY_WRITE",
             "read_token_env": "MY_READ",
             "allow_unauthenticated": True,
+            "cors_origins": ["https://ui.example", "*"],
         }
 
     def test_status_server_defaults(self, monkeypatch):
@@ -500,6 +505,7 @@ class TestCli:
             "token_env": "SRTCTL_STATUS_TOKEN",
             "read_token_env": "SRTCTL_STATUS_READ_TOKEN",
             "allow_unauthenticated": False,
+            "cors_origins": [],
         }
 
 
