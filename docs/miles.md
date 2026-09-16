@@ -155,6 +155,19 @@ Whether a provider works from a SLURM cluster depends on which direction the tra
 
 Before calling a recipe ready, check that its connector's Python dependencies are in the image. Miles's Harbor connector imports `harbor`, which its own README installs separately, so it may not be in `radixark/miles:latest`; steps run read-only containers, so the fix is a derived squashfs with the connector installed, or a venv on the shared filesystem added to `PYTHONPATH` in the ray service `preamble`. Per-task sandboxes hosted on the SLURM cluster itself are a different matter: pyxis containers have no Docker daemon, so that needs a daemonless provider such as an enroot-based sandbox service or rootless podman, which nothing here provides yet.
 
+### OpenEnv without Docker
+
+An OpenEnv environment is an HTTP and WebSocket server with a Gym-shaped API; Docker is only how the upstream project packages one. The Terminal-Bench-2 environment (`envs/tbench2_env` in huggingface/OpenEnv) has a `TB2_MODE=local` that runs each task's shell commands in the server's own container through camel-ai's terminal toolkit, so it serves rollouts on a pool node with no Docker and no hosted sandbox. Two recipes in `examples/miles/` use it:
+
+- `openenv-tbench2-smoke.yaml`: the env server as a one-node generic service with a `GET /health` readiness probe; the benchmark step runs `benchmarks/rl/openenv/tbench2_smoke.py`, which does `reset(task_id)`, one `exec`, and `evaluate`. No GPUs are touched. Validated on sa-b200 (job 15558).
+- `qwen3-4b-openenv-tbench2.yaml`: the `ray` service owns the pool, the env server rides on it (`placement.pool: train`, one per node), and the launcher runs `benchmarks/rl/miles/recipes/openenv_tbench2_qwen3.py`, Miles's Terminal-Bench-2 adapter with a dense Qwen3-4B profile, pointed at `http://127.0.0.1:8003`.
+
+Three things the recipes had to get right:
+
+- **Two Python installs.** The env server gets a full venv on shared disk (`openenv`, `camel-ai`, `tbench2_env`), on the service's `PYTHONPATH`. The rollout workers get a client-only site directory holding just what the image lacks, handed to the recipe as `OPENENV_SITE` and appended to the ray job's `PYTHONPATH`, so sglang and Miles keep their own openai, pydantic, psutil and websockets. The image's `python3` is itself a venv, which is why a venv with `--system-site-packages` is not the same thing. `benchmarks/rl/openenv/README.md` has the build steps, including the one version pin (`mcp` 1.x for openenv's FastMCP client).
+- **No upstream cleanup.** Miles's `openenv_launch_common.cleanup()` runs `pgrep -f sglang | xargs kill`. Every process in the image runs under `/opt/sglang/bin/python3` and enroot shares the PID namespace, so it kills the `ray` service's head in the sibling container and `ray job submit` finds the dashboard refused. The recipe skips it; the allocation is fresh.
+- **Local mode shares a task's directory.** Episodes of the same task run in that task's source directory, so concurrent samples can see each other's files. That proves the plumbing end to end and is not a training signal to trust. Per-episode isolation on a SLURM cluster means per-episode enroot containers (nested inside the trainer's container, which works on sa-b200 only with the host's enroot tooling at its own paths) or a hosted sandbox provider.
+
 ## Gotchas
 
 - **Layout is Miles's to validate.** `--actor-num-nodes`, `--rollout-num-gpus` and friends live in `MILES_SCRIPT_EXTRA_ARGS`; srt-slurm does not check them against the allocation, Miles does when the job starts. Colocated: actor nodes equal the ray service's `nodes`. Most shipped recipes hardcode `--colocate`, and a store-true flag cannot be negated from `extra_args`.
