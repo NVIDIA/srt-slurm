@@ -219,6 +219,8 @@ services:
 
 Adding a kind: subclass `ServiceKind`, set `default_command` / `default_start` / `default_critical`, override `validate`, `container_fallback`, `default_environment`, `forced_environment` as needed, decorate, and import it from `src/srtctl/services/__init__.py`. `srtctl dry-run` prints every service; add a `tests/test_dry_run.py` case when a kind adds visible fields.
 
+**Metrics.** A service that serves Prometheus metrics declares `metrics: {port, path, nodes, name}` or a list of them (the scrape annotation; `nodes: first` for a cluster head, `name` required with several endpoints); `TelemetryStageMixin._service_metrics_targets` turns every endpoint into one tachometer target per node it runs on (`ServiceMetricsTarget`, endpoint `<name>_<node>`, name defaulting to the service). Kinds that always publish return their default from `ServiceKind.metrics()` and set `metrics_filter` / `metrics_endpoint_prefix` / `metrics_gpu_metadata`; the dcgm, node and process exporters are scraped this way (`core/telemetry.py` has no exporter special case left; only workers and the frontend keep their own target logic).
+
 ### Pools and services-only jobs
 
 A service that declares `nodes: N` owns a **pool** of N whole nodes, added to the allocation after the engine roles' nodes, in `services:` order (see `docs/pools.md`). Any number of services may own nodes, next to engine roles or without them. An owner runs one instance per node of its pool (`placement.node: workers` means its own pool); `placement.pool: <owner>` makes a **rider** that runs one instance per node of that pool. A job with only pools sets `frontend.type: none`: no frontend, no worker-count health gate, the services' readiness probes are the gate before the benchmark step.

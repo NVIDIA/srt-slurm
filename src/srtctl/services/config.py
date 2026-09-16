@@ -16,7 +16,7 @@ import logging
 from dataclasses import field
 from typing import Any, ClassVar
 
-from marshmallow import Schema, ValidationError
+from marshmallow import Schema, ValidationError, pre_load
 from marshmallow_dataclass import dataclass
 
 from srtctl.core.source import SourceConfig
@@ -113,6 +113,37 @@ class HttpProbe:
 
 
 @dataclass(frozen=True)
+class ServiceMetricsConfig:
+    """One Prometheus endpoint a service serves: ``port``, ``path`` (default ``/metrics``), ``nodes``, ``name``.
+
+    The scrape annotation. Tachometer builds its target list from these: one
+    target per node the service runs on, or only its first node when ``nodes``
+    is ``first`` (a cluster whose head serves the metrics: a trainer's
+    collector on the Ray head). ``name`` is the endpoint's name in the parquet,
+    ``<name>_<node>``; it defaults to the service name and is required when a
+    service declares more than one endpoint. Kinds that always publish metrics
+    (the exporters) supply theirs; a recipe writes the block for anything else.
+    """
+
+    port: int
+    path: str = "/metrics"
+    nodes: str = "all"
+    name: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.port <= 65535:
+            raise ValidationError("metrics.port must be between 1 and 65535")
+        if not self.path.startswith("/"):
+            raise ValidationError("metrics.path must start with '/'")
+        if self.nodes not in ("all", "first"):
+            raise ValidationError(f"metrics.nodes must be all or first; got {self.nodes!r}")
+        if self.name is not None and not self.name.strip():
+            raise ValidationError("metrics.name must not be empty")
+
+
+@dataclass(frozen=True)
 class LogProbe:
     """Ready when the service's log file contains a line matching the regular expression ``pattern``."""
 
@@ -195,7 +226,17 @@ class ServiceReadinessConfig:
         return f"{what}, timeout={self.timeout_seconds}s"
 
 
-@dataclass(frozen=True)
+class _ServiceSchema(Schema):
+    """``metrics: {port: ..}`` is sugar for a one-endpoint list; a service may serve several."""
+
+    @pre_load
+    def _metrics_as_list(self, data, **kwargs):
+        if isinstance(data, dict) and isinstance(data.get("metrics"), dict):
+            data = {**data, "metrics": [data["metrics"]]}
+        return data
+
+
+@dataclass(frozen=True, base_schema=_ServiceSchema)
 class ServiceConfig:
     """One entry of the top-level ``services:`` list.
 
@@ -254,6 +295,14 @@ class ServiceConfig:
         options: Kind-specific settings (``nats``: ``max_payload_mb``;
             ``mooncake-master``: ``store_config`` for vLLM). Unknown keys are
             rejected by the kind.
+        metrics: Prometheus endpoints this service serves: one mapping or a
+            list of ``{port, path, nodes, name}`` (``path`` defaults to
+            ``/metrics``, ``nodes`` to ``all``). Tachometer scrapes each on every
+            node the service runs on, or on its first node with ``nodes: first``,
+            as endpoint ``<name>_<node>`` where ``name`` defaults to the service
+            name. The exporter kinds declare theirs; write it for a generic
+            service that publishes metrics, or on a ``ray`` service whose head
+            serves a trainer's collector and router.
     """
 
     name: str
@@ -281,6 +330,7 @@ class ServiceConfig:
     enabled: bool = True
     external: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
+    metrics: list[ServiceMetricsConfig] = field(default_factory=list)
 
     # builtins.type: the ``type`` field above shadows the builtin inside the class body.
     Schema: ClassVar[builtins.type[Schema]] = Schema
@@ -339,6 +389,13 @@ class ServiceConfig:
                 raise ValidationError(
                     f"{label}.nodes owns a pool, so placement.node must be workers, meaning that pool "
                     f"(got {self.effective_placement!r})"
+                )
+        if len(self.metrics) > 1:
+            names = [endpoint.name for endpoint in self.metrics]
+            if any(name is None for name in names) or len(set(names)) != len(names):
+                raise ValidationError(
+                    f"{label}.metrics declares {len(self.metrics)} endpoints; give each a distinct name "
+                    "(it becomes the endpoint's name in the parquet)"
                 )
         unknown_options = set(self.options) - set(kind.option_keys)
         if unknown_options:

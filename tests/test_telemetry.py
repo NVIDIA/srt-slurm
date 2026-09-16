@@ -30,7 +30,7 @@ from srtctl.core.schema import (
     TelemetryConfig,
     TelemetryExporterConfig,
 )
-from srtctl.core.telemetry import generate_tachometer_config
+from srtctl.core.telemetry import ServiceMetricsTarget, generate_tachometer_config
 from srtctl.core.topology import Process
 
 
@@ -767,6 +767,11 @@ class TestTachometerConfigGeneration:
             frontend_topology=topology,
             runtime=runtime,
             tachometer=tachometer,
+            # The exporters are services; the stage resolves them to one target per node.
+            service_targets=[
+                ServiceMetricsTarget("dcgm-exporter", node, f"http://{node}:9401/metrics", "dcgm", "dcgm", True)
+                for node in ("node-a", "node-b")
+            ],
         )
 
         # The storage leaf must NOT be a directory srtctl has already created --
@@ -1024,10 +1029,10 @@ class TestTachometerConfigGeneration:
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_process_exporter_targets_frontend_node_even_without_backend(self, _mock_get_hostname_ip):
-        """A head-placed or dedicated frontend node hosts no backend process, so the
-        per-node exporters would skip it -- yet it is where frontend CPU lives.
-        The process exporter must target the union of backend and frontend nodes,
-        preserving groupname/threadname labels and host metadata."""
+        """A head-placed or dedicated frontend node hosts no backend process, yet it is
+        where frontend CPU lives. The process exporter service runs on `all`, so its
+        targets cover the frontend node too, preserving groupname/threadname labels
+        and host metadata."""
         tachometer = TachometerConfig(enabled=True, extra_metadata={"study": "process-monitoring"})
         runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
         runtime.log_dir = Path("/runs/12345/logs")
@@ -1054,6 +1059,14 @@ class TestTachometerConfigGeneration:
             frontend_topology=topology,
             runtime=runtime,
             tachometer=tachometer,
+            # The process exporter service is placed on `all`, so the stage hands the
+            # generator both the backend node and the frontend node.
+            service_targets=[
+                ServiceMetricsTarget(
+                    "process-exporter", node, f"http://{node}:9256/metrics", endpoint="process_exporter"
+                )
+                for node in ("node-a", "fe-node")
+            ],
         )
 
         assert 'name = "process_exporter_node-a"' in config_text
@@ -1169,6 +1182,10 @@ class TestTachometerStageMixin:
             def backend_processes(self):
                 return self._backend_processes
 
+            def service_nodes(self, service):
+                # The implied exporters run on the compute nodes; here that is the one backend node.
+                return ["node-a"]
+
             def _compute_frontend_topology(self):
                 return FrontendTopology(
                     nginx_node=None,
@@ -1266,6 +1283,10 @@ class TestTachometerStageMixin:
             def backend_processes(self):
                 return self._backend_processes
 
+            def service_nodes(self, service):
+                # The implied exporters run on the compute nodes; here that is the one backend node.
+                return ["node-a"]
+
             def _compute_frontend_topology(self):
                 return FrontendTopology(
                     nginx_node=None,
@@ -1340,6 +1361,10 @@ class TestTachometerStageMixin:
             def backend_processes(self):
                 return self._backend_processes
 
+            def service_nodes(self, service):
+                # The implied exporters run on the compute nodes; here that is the one backend node.
+                return ["node-a"]
+
             def _compute_frontend_topology(self):
                 return FrontendTopology(
                     nginx_node=None,
@@ -1395,6 +1420,10 @@ class TestTachometerStageMixin:
             @property
             def backend_processes(self):
                 return self._backend_processes
+
+            def service_nodes(self, service):
+                # The implied exporters run on the compute nodes; here that is the one backend node.
+                return ["node-a"]
 
             def _compute_frontend_topology(self):
                 return FrontendTopology(
