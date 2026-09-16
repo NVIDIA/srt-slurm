@@ -4,6 +4,7 @@
 """Tests for SLURM command construction."""
 
 import subprocess
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -12,7 +13,113 @@ import pytest
 
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.schema import ObservabilityConfig, ResourceConfig
-from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
+from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process, wait_for_job
+
+
+def test_wait_streams_late_logs_and_requires_allocation_accounting(monkeypatch, tmp_path: Path) -> None:
+    log = tmp_path / "sweep.log"
+    output = StringIO()
+    replies = iter(
+        [
+            ("squeue", 0, "42\n"),
+            ("squeue", 0, ""),
+            ("sacct", 0, ""),
+            ("squeue", 0, ""),
+            ("sacct", 1, ""),
+            ("squeue", 0, ""),
+            ("sacct", 0, "99|COMPLETED|0:0\n42.batch|COMPLETED|0:0\n42|RUNNING|0:0\n"),
+            ("squeue", 0, ""),
+            ("sacct", 0, "42|COMPLETED|7:0\n"),
+        ]
+    )
+
+    def query(command, **kwargs):
+        if command[0] == "scontrol":
+            return subprocess.CompletedProcess(command, 1, "", "job purged")
+        expected_command, code, stdout = next(replies)
+        assert command[0] == expected_command
+        assert command[command.index("--jobs") + 1] == "42"
+        if stdout == "42|COMPLETED|7:0\n":
+            with log.open("a") as stream:
+                stream.write("finished\n")
+        return subprocess.CompletedProcess(command, code, stdout, "accounting unavailable" if code else "")
+
+    def tick(_seconds):
+        if not log.exists():
+            log.write_text("started\n")
+
+    monkeypatch.setattr("srtctl.core.slurm.subprocess.run", query)
+    monkeypatch.setattr("srtctl.core.slurm.time.sleep", tick)
+    result = wait_for_job("42", log_path=log, output=output)
+
+    assert result.returncode == 7
+    assert output.getvalue() == "started\nfinished\n"
+
+
+@pytest.mark.parametrize(
+    ("state", "code", "expected"),
+    [
+        ("COMPLETED", "0:0", 0),
+        ("FAILED", "0:0", 1),
+        ("FAILED", "3:0", 3),
+        ("COMPLETED", "0:9", 137),
+        ("CANCELLED by 1000", "0:0", 1),
+        ("TIMEOUT", "0:0", 1),
+    ],
+)
+def test_wait_never_reports_unsuccessful_allocation_as_success(monkeypatch, state, code, expected) -> None:
+    def query(command, **kwargs):
+        stdout = f"42|{state}|{code}\n" if command[0] == "sacct" else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr("srtctl.core.slurm.subprocess.run", query)
+    assert wait_for_job("42").returncode == expected
+
+
+def test_wait_retries_observation_timeout_without_resubmission(monkeypatch) -> None:
+    replies = iter([subprocess.TimeoutExpired("squeue", 15), "", "42|COMPLETED|0:0\n"])
+
+    def query(command, **kwargs):
+        if command[0] == "scontrol":
+            return subprocess.CompletedProcess(command, 1, "", "job purged")
+        assert command[0] in {"squeue", "sacct"}
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return subprocess.CompletedProcess(command, 0, reply, "")
+
+    monkeypatch.setattr("srtctl.core.slurm.subprocess.run", query)
+    monkeypatch.setattr("srtctl.core.slurm.time.sleep", lambda _seconds: None)
+    assert wait_for_job("42").returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("record", "expected", "uses_accounting"),
+    [
+        ("JobId=42 JobState=COMPLETED ExitCode=0:0", 0, False),
+        ("JobId=42 JobState=FAILED ExitCode=7:0", 7, False),
+        ("JobId=42 JobState=CANCELLED ExitCode=0:15", 143, False),
+        ("JobId=42 JobState=FAILED ExitCode=0:0", 1, False),
+        ("JobId=142 JobState=COMPLETED ExitCode=0:0", 9, True),
+        ("JobId=42.batch JobState=COMPLETED ExitCode=0:0", 9, True),
+        ("JobId=42 JobState=COMPLETED ExitCode=unknown", 9, True),
+        ("JobId=42 JobState=RUNNING ExitCode=0:0", 9, True),
+        ("JobId=42 JobState=COMPLETING ExitCode=0:0", 9, True),
+        ("JobId=42 JobState=COMPLETED", 9, True),
+        ("", 9, True),
+    ],
+)
+def test_wait_uses_exact_terminal_controller_record(monkeypatch, record, expected, uses_accounting):
+    commands = []
+
+    def query(command, **kwargs):
+        commands.append(command[0])
+        replies = {"squeue": "", "scontrol": record, "sacct": "42|FAILED|9:0\n"}
+        return subprocess.CompletedProcess(command, 0, replies[command[0]], "")
+
+    monkeypatch.setattr("srtctl.core.slurm.subprocess.run", query)
+    assert wait_for_job("42").returncode == expected
+    assert ("sacct" in commands) is uses_accounting
 
 
 def _built_bash_command(mock_popen: MagicMock) -> str:
