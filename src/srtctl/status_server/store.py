@@ -138,20 +138,24 @@ class StatusStore:
         on. It does complete the row's identity, though: a placeholder name (the
         row was created by a PUT because the submit-time POST was lost) is
         replaced, a null ``cluster`` or ``recipe`` is filled, ``submitted_at`` is
-        corrected to the real submit time, and ``metadata`` is merged. Existing
-        non-null identity is never overwritten.
+        moved earlier to the real submit time (never later: a placeholder's value
+        is the start time, and a late POST stamped "now" must not reset a running
+        job's elapsed time), and ``metadata`` is merged. Existing non-null identity
+        is never overwritten.
         Returns ``{"job_id", "status", "created", "backfilled"}``.
         """
         now = now_iso()
         submitted = submitted_at or now
         with self._transaction() as conn:
             existing = conn.execute(
-                "SELECT status, job_name, cluster, recipe, metadata FROM jobs WHERE job_id = ?", (job_id,)
+                "SELECT status, job_name, cluster, recipe, metadata, submitted_at FROM jobs WHERE job_id = ?",
+                (job_id,),
             ).fetchone()
             if existing is not None:
                 fields: dict[str, Any] = {}
                 if existing["job_name"] == placeholder_name(job_id):
                     fields["job_name"] = job_name
+                if submitted < existing["submitted_at"]:  # ISO-8601 Z strings order lexically
                     fields["submitted_at"] = submitted
                 if existing["cluster"] is None and cluster:
                     fields["cluster"] = cluster

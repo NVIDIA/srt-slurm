@@ -33,7 +33,7 @@ Jobs and events live in one SQLite file (default `~/.local/state/srtctl/status.d
 Behaviors of the native collector on top of the contract:
 
 - A PUT for a job that was never POSTed creates a placeholder row, so a run whose submit-time POST was lost still lands every later update. The started report repeats the job's identity in `metadata` (`job_name`, `cluster`), and the placeholder takes its name and cluster from there; only if that is missing too does the row show as `job-<id>` with no cluster.
-- A repeated or late POST never rewinds status. It completes identity instead: a placeholder name is replaced, a null `cluster` or `recipe` is filled, `submitted_at` is corrected to the real submit time, `metadata` is merged. Existing non-null identity is never overwritten. This also makes re-posting a job the way to repair a row that came in without its POST.
+- A repeated or late POST never rewinds status. It completes identity instead: a placeholder name is replaced, a null `cluster` or `recipe` is filled, `submitted_at` is moved earlier to the real submit time (never later, so a repair POST stamped "now" cannot reset a running job's elapsed time), `metadata` is merged. Existing non-null identity is never overwritten. This also makes re-posting a job the way to repair a row that came in without its POST.
 - An event is appended whenever `(status, stage, message)` differs from the job's last event. Same-status transitions are kept (`frontend / Starting frontend`, then `frontend / Inference endpoint ready`); pure `artifacts` or `metadata` patches emit nothing.
 - `status` and `stage` are validated against `srtctl.contract.JobStatus` and `JobStage`; anything else is HTTP 422.
 - Bodies over 1 MiB are rejected with 413 before they are read.

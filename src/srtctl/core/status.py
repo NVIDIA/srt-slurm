@@ -133,6 +133,8 @@ class StatusReporter:
     timeout: float = 5.0
     # Environment variable holding the bearer token; see DEFAULT_TOKEN_ENV.
     token_env: str = DEFAULT_TOKEN_ENV
+    # Connection attempts per endpoint for each report; see _put.
+    attempts: int = 2
 
     @classmethod
     def from_config(cls, reporting: "ReportingConfig | None", job_id: str) -> "StatusReporter":
@@ -162,21 +164,37 @@ class StatusReporter:
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _put(self, payload: dict) -> bool:
-        """Send PUT to all endpoints. Returns True if any succeeded."""
+        """Send PUT to all endpoints, up to ``attempts`` tries each. Returns True if any succeeded.
+
+        A lost PUT is a lost event in the collector, and a flaky egress path can
+        eat one attempt's whole connect timeout on a dead address, so one retry
+        buys a lot. The final failure is a WARNING in the sweep log; the run itself
+        is never affected.
+        """
         any_success = False
         headers = _auth_headers(self.token_env)
         for endpoint in self.api_endpoints:
-            try:
-                url = f"{endpoint}/api/jobs/{self.job_id}"
-                # allow_redirects=False: a 3xx is a failure, never something to follow (see _log_rejection).
-                response = requests.put(url, json=payload, headers=headers, timeout=self.timeout, allow_redirects=False)
+            url = f"{endpoint}/api/jobs/{self.job_id}"
+            for attempt in range(1, self.attempts + 1):
+                try:
+                    # allow_redirects=False: a 3xx is a failure, never something to follow (see _log_rejection).
+                    response = requests.put(
+                        url, json=payload, headers=headers, timeout=self.timeout, allow_redirects=False
+                    )
+                except requests.exceptions.RequestException as e:
+                    if attempt < self.attempts:
+                        logger.debug(
+                            "Status report to %s failed (attempt %d/%d): %s", endpoint, attempt, self.attempts, e
+                        )
+                        continue
+                    logger.warning("Status report to %s lost after %d attempts: %s", endpoint, self.attempts, e)
+                    break
                 if response.status_code == 200:
                     logger.debug("Status reported to %s", endpoint)
                     any_success = True
                 else:
                     _log_rejection("Status report", endpoint, response.status_code, self.token_env)
-            except requests.exceptions.RequestException as e:
-                logger.debug("Status report to %s error (ignored): %s", endpoint, e)
+                break
         return any_success
 
     def report(
@@ -337,6 +355,7 @@ def create_job_record(
     recipe: str | None = None,
     metadata: dict | None = None,
     attempts: int = 2,
+    submitted_at: str | None = None,
 ) -> bool:
     """Create initial job record in status APIs (called at submission time).
 
@@ -356,6 +375,8 @@ def create_job_record(
         recipe: Path to recipe file (optional)
         metadata: Job metadata dict (may include "tags" list)
         attempts: Connection attempts per endpoint before giving up
+        submitted_at: ISO 8601 submit time; defaults to now. Pass the real time when
+            re-posting a job after the fact, the collector only ever moves it earlier.
 
     Returns:
         True if created on at least one endpoint, False otherwise
@@ -370,7 +391,7 @@ def create_job_record(
     payload = JobCreatePayload(
         job_id=job_id,
         job_name=job_name,
-        submitted_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        submitted_at=submitted_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         cluster=cluster,
         recipe=recipe,
         metadata=metadata,

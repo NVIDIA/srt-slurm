@@ -519,6 +519,21 @@ class TestStore:
         job = store.get_job("4")
         assert (job["job_name"], job["cluster"]) == ("posted", "sa-z")
 
+    def test_late_post_only_moves_submitted_at_earlier(self, store):
+        """A repair POST stamped 'now' must not reset a running job's elapsed time."""
+        store.update_job("5", {"status": "benchmark", "started_at": "2026-01-01T01:00:00Z"})
+        assert store.get_job("5")["submitted_at"] == "2026-01-01T01:00:00Z"  # placeholder: start time
+        # Later than the start: ignored.
+        store.create_job("5", "name", submitted_at="2026-01-01T05:00:00Z")
+        assert store.get_job("5")["submitted_at"] == "2026-01-01T01:00:00Z"
+        # The real, earlier submit time: taken.
+        store.create_job("5", "name", submitted_at="2026-01-01T00:40:00Z")
+        assert store.get_job("5")["submitted_at"] == "2026-01-01T00:40:00Z"
+        # And on a POST-created row a repeated POST with a later time changes nothing.
+        store.create_job("6", "a", submitted_at="2026-01-01T00:00:00Z")
+        store.create_job("6", "a", submitted_at="2026-01-01T09:00:00Z")
+        assert store.get_job("6")["submitted_at"] == "2026-01-01T00:00:00Z"
+
 
 # ============================================================================
 # CLI wiring
@@ -823,3 +838,33 @@ class TestCreateJobRecordRetry:
             post.return_value = MagicMock(status_code=401)
             assert create_job_record(reporting, job_id="1", job_name="a") is False
         assert post.call_count == 1
+
+    def test_explicit_submitted_at_is_sent(self):
+        from unittest.mock import MagicMock, patch
+
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint="https://collector.example"))
+        with patch("srtctl.core.status.requests.post") as post:
+            post.return_value = MagicMock(status_code=201)
+            assert create_job_record(reporting, job_id="1", job_name="a", submitted_at="2026-01-01T00:00:00Z")
+        assert post.call_args.kwargs["json"]["submitted_at"] == "2026-01-01T00:00:00Z"
+
+    def test_put_retries_once_and_warns_on_final_failure(self, caplog):
+        from unittest.mock import MagicMock, patch
+
+        reporter = StatusReporter(job_id="9", api_endpoints=("https://collector.example",))
+        with patch("srtctl.core.status.requests.put") as put:
+            put.side_effect = [requests.exceptions.ConnectionError("timed out"), MagicMock(status_code=200)]
+            with caplog.at_level(logging.DEBUG, logger="srtctl.core.status"):
+                assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go") is True
+        assert put.call_count == 2
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+        caplog.clear()
+        with patch("srtctl.core.status.requests.put") as put:
+            put.side_effect = requests.exceptions.ConnectionError("timed out")
+            with caplog.at_level(logging.DEBUG, logger="srtctl.core.status"):
+                assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go") is False
+        assert put.call_count == 2
+        assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+            "Status report to https://collector.example lost after 2 attempts: timed out"
+        ]
