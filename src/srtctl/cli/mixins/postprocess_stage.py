@@ -28,7 +28,7 @@ from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.config import load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
-from srtctl.core.schema import AIAnalysisConfig, S3Config
+from srtctl.core.schema import DEFAULT_S3_ARCHIVE, DEFAULT_S3_EXCLUDE, AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
 from srtctl.ruter import normalize_run
 
@@ -40,6 +40,43 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 POSTPROCESS_UPLOAD_FAILED_EXIT = 11
+
+# Runs inside the upload container (plain python:3.11, srtctl is not installed there), so it
+# is stdlib plus an optional ``zstandard``. argv: <root> <out_dir> <json list of glob patterns>.
+# Packs every matching file under root into one archive, arcnames relative to root, and prints
+# the archive path as the last stdout line (nothing when no file matched). zstd level 3 turned
+# a 253 MB log directory into 4 MB; xz is the fallback when the zstandard wheel is unavailable.
+ARCHIVE_SCRIPT = r"""
+import glob, json, os, sys, tarfile
+root, out_dir, patterns = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+files = sorted({p for pat in patterns for p in glob.glob(os.path.join(root, pat), recursive=True) if os.path.isfile(p)})
+if not files:
+    print("archive: no file matched " + ", ".join(patterns), file=sys.stderr)
+    sys.exit(0)
+try:
+    import zstandard
+    out = os.path.join(out_dir, "bundle.tar.zst")
+    with open(out, "wb") as fh, zstandard.ZstdCompressor(level=3, threads=-1).stream_writer(fh) as zst, tarfile.open(fileobj=zst, mode="w|") as tar:
+        for f in files:
+            tar.add(f, arcname=os.path.relpath(f, root))
+except ImportError:
+    out = os.path.join(out_dir, "bundle.tar.xz")
+    with tarfile.open(out, "w:xz") as tar:
+        for f in files:
+            tar.add(f, arcname=os.path.relpath(f, root))
+raw = sum(os.path.getsize(f) for f in files)
+print("archive: %d files, %.1f MB raw -> %.1f MB %s" % (len(files), raw / 1048576, os.path.getsize(out) / 1048576, os.path.basename(out)), file=sys.stderr)
+print(out)
+"""
+
+
+def s3_sync_exclude_pattern(archive_pattern: str) -> str:
+    """Translate a Python glob used for the archive into the AWS CLI exclude that covers it.
+
+    AWS ``--exclude`` has no ``**`` but its ``*`` already matches across directories, so
+    collapsing ``**`` to ``*`` yields a pattern at least as broad as the glob.
+    """
+    return archive_pattern.replace("**", "*")
 
 
 class PostProcessStageMixin:
@@ -424,12 +461,15 @@ class PostProcessStageMixin:
             logger.debug("Lockfile comparison skipped: %s", e)
 
     def _run_postprocess_container(self) -> str | None:
-        """Upload the entire log directory to S3 from a small container on the head node.
+        """Upload the log directory to S3 from a small container on the head node.
 
-        Ships worker logs, benchmark output and artifacts, the tachometer parquet,
-        the perf dashboard and its bundle, and everything else under ``logs/``.
-        Returns the S3 URL of the log directory, or None when S3 is not
-        configured or the upload failed.
+        Ships the run identity (config, lockfile, job JSON, sbatch script, git
+        state), every orchestrator, worker, frontend and service log, the
+        benchmark results, ``perf_dashboard.html`` and the tachometer parquet as
+        loose objects, plus one compressed archive of the patterns in
+        ``reporting.s3.archive``; the patterns in ``reporting.s3.exclude`` are
+        skipped (see ``DEFAULT_S3_EXCLUDE`` for why). Returns the S3 URL of the
+        log directory, or None when S3 is not configured or the upload failed.
         """
         s3_config = self._get_s3_config()
         if not s3_config:
@@ -444,7 +484,14 @@ class PostProcessStageMixin:
         # Build endpoint flag if custom endpoint provided
         endpoint_flag = f"--endpoint-url {s3_config.endpoint_url}" if s3_config.endpoint_url else ""
 
-        script = self._build_postprocess_script(s3_url, endpoint_flag)
+        exclude = list(DEFAULT_S3_EXCLUDE if s3_config.exclude is None else s3_config.exclude)
+        archive = list(DEFAULT_S3_ARCHIVE if s3_config.archive is None else s3_config.archive)
+        logger.info(
+            "S3 upload policy: %d exclude pattern(s), archive of %s",
+            len(exclude),
+            ", ".join(archive) if archive else "nothing",
+        )
+        script = self._build_postprocess_script(s3_url, endpoint_flag, exclude=exclude, archive=archive)
 
         # Build env for AWS credentials
         env: dict[str, str] = {}
@@ -484,8 +531,38 @@ class PostProcessStageMixin:
             logger.warning("S3 upload container failed: %s", e)
             return None
 
-    def _build_postprocess_script(self, s3_url: str, endpoint_flag: str) -> str:
-        """Bash for the upload container: install awscli, record the destination, sync ``/logs``."""
+    def _build_postprocess_script(
+        self,
+        s3_url: str,
+        endpoint_flag: str,
+        *,
+        exclude: list[str] | None = None,
+        archive: list[str] | None = None,
+    ) -> str:
+        """Bash for the upload container.
+
+        Installs awscli (and zstandard, best effort), records the destination and
+        policy in ``postprocess-status.json``, packs the ``archive`` patterns into
+        one ``bundle.tar.zst`` under ``/tmp`` (the log directory on the cluster is
+        left untouched), syncs ``/logs`` minus ``exclude`` and minus the archived
+        files, then uploads the archive next to them.
+        """
+        exclude = list(DEFAULT_S3_EXCLUDE if exclude is None else exclude)
+        archive = list(DEFAULT_S3_ARCHIVE if archive is None else archive)
+        sync_excludes = exclude + [s3_sync_exclude_pattern(p) for p in archive]
+        exclude_flags = " ".join(f"--exclude {shlex.quote(p)}" for p in sync_excludes)
+        status_json = json.dumps({"s3_url": s3_url, "exclude": exclude, "archive": archive})
+
+        archive_step = ""
+        if archive:
+            archive_step = f"""
+echo "Packing {len(archive)} archive pattern(s) into one compressed bundle..."
+archive_path=$(python3 - /logs /tmp {shlex.quote(json.dumps(archive))} <<'PY'
+{ARCHIVE_SCRIPT}
+PY
+)
+"""
+
         return f"""
 set -u
 set -o pipefail
@@ -495,22 +572,30 @@ if ! pip install awscli; then
   echo "Failed to install awscli"
   exit {POSTPROCESS_UPLOAD_FAILED_EXIT}
 fi
+pip install zstandard || echo "zstandard unavailable; the archive falls back to .tar.xz"
 
-cat > /logs/postprocess-status.json <<EOF
-{{"s3_url": "{s3_url}"}}
+cat > /logs/postprocess-status.json <<'EOF'
+{status_json}
 EOF
-
-echo "Uploading entire log directory to S3..."
-if ! aws s3 sync /logs {s3_url} {endpoint_flag}; then
+archive_path=""
+{archive_step}
+echo "Uploading the log directory to S3 ({len(sync_excludes)} exclude pattern(s))..."
+if ! aws s3 sync /logs {s3_url} {endpoint_flag} {exclude_flags}; then
   echo "Upload failed"
   exit {POSTPROCESS_UPLOAD_FAILED_EXIT}
+fi
+if [ -n "$archive_path" ] && [ -s "$archive_path" ]; then
+  if ! aws s3 cp "$archive_path" {s3_url}$(basename "$archive_path") {endpoint_flag}; then
+    echo "Archive upload failed"
+    exit {POSTPROCESS_UPLOAD_FAILED_EXIT}
+  fi
 fi
 
 echo "Upload complete: {s3_url}"
 echo ""
-echo "Uploaded files:"
-find /logs -type f | wc -l
-echo "files total"
+echo "Uploaded objects:"
+aws s3 ls --recursive {s3_url} {endpoint_flag} | wc -l
+echo "objects total"
 """
 
     def _run_ai_analysis(self, config: AIAnalysisConfig) -> None:

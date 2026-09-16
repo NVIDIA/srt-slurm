@@ -503,6 +503,8 @@ S3 upload configuration for log artifacts.
 | `endpoint_url` | str \| None | `None` | Custom S3-compatible endpoint URL (optional) |
 | `access_key_id` | str \| None | `None` | AWS access key ID (falls back to AWS_ACCESS_KEY_ID env var) |
 | `secret_access_key` | str \| None | `None` | AWS secret access key (falls back to AWS_SECRET_ACCESS_KEY env var) |
+| `exclude` | list[str] \| None | `None` | Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes (tachometer already stores that series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`, `inputs.json`. Set to `[]` to ship the whole directory. |
+| `archive` | list[str] \| None | `None` | Patterns (Python glob, `**` allowed) packed into one `bundle.tar.zst` uploaded next to the loose files and left out of the plain sync. Omit for the default, aiperf's per-request `profile_export.jsonl`; set to `[]` for no archive. |
 
 ### TcpProbe
 

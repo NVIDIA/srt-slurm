@@ -143,6 +143,25 @@ The `srtslurm.yaml` file can contain the following fields:
 | `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
 | `preflight`                     | bool   | `false` skips the pre-submit path checks on every `apply` (default `true`) |
+| `reporting`                     | object | Status collector (`status`), log upload (`s3`) and failure analysis (`ai_analysis`); see below and [status-api-spec.md](status-api-spec.md) |
+
+**reporting.s3**: After a run, a small container on the head node uploads the log directory to `s3://<bucket>/<prefix>/<YYYY-MM-DD>/<job_id>/` (`endpoint_url` for MinIO or another S3-compatible store; credentials only through `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the submit shell, since the literal fields would land in the lockfile). Not everything is worth shipping: a benchmark run's directory is 250 MB to 2 GB on lustre, over 95% of it aiperf's per-interval scrape of the worker and DCGM `/metrics` endpoints, the same series tachometer already stores as parquet, stored twice (raw per concurrency, and reshaped again in `perf_dashboard_bundle/`). The upload therefore follows a policy:
+
+| Shipped as-is | Packed into `bundle.tar.zst` (`archive`) | Skipped (`exclude`) |
+|---|---|---|
+| config, lockfile, job JSON, sbatch script, git state, fingerprints, resource snapshot; sweep, worker, frontend, service and benchmark logs; results JSON, rollup, `profile_export_aiperf.*`; `perf_dashboard.html`; `tachometer/` parquet | `artifacts/**/profile_export.jsonl`, `sa-bench_*/**/profile_export.jsonl` (aiperf's per-request records, 13 to 40 MB raw, under 1 MB compressed) | `*/server_metrics_export.jsonl`, `*/server_metrics_export.json`, `*/gpu_telemetry_export.jsonl`, `*/inputs.json`, `perf_dashboard_bundle/*`, `perf_dashboard.json` |
+
+`exclude` uses `aws s3 sync` pattern rules (relative to the log directory, `*` matches across directories); `archive` uses Python glob rules with `**`. Either list replaces its default when set; `exclude: []` ships the whole directory, `archive: []` makes no archive. The archive is built under `/tmp` in the container, so nothing is added to the log directory on the cluster. One caveat: with tachometer disabled, dropping the aiperf scrape leaves no engine-metrics record outside `perf_dashboard.html`; enable tachometer, or override `exclude`.
+
+```yaml
+reporting:
+  s3:
+    bucket: "srt-logs"
+    prefix: "sa-b200"
+    endpoint_url: "https://minio.example.com"   # omit for AWS
+    # exclude: []                                # ship everything
+    # archive: ["artifacts/**/profile_export.jsonl", "*.out"]   # also pack the worker logs
+```
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
