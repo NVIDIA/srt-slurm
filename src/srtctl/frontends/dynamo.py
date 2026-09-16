@@ -159,6 +159,7 @@ class DynamoFrontend:
                     log_file=frontend_log,
                     node=node,
                     critical=True,
+                    terminate_timeout=profiling.teardown_grace_secs if nsys_prefix else 10.0,
                 )
             )
 

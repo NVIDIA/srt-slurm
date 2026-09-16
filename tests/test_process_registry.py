@@ -204,3 +204,61 @@ class TestProcessRegistry:
         registry.cleanup()
 
         mock_popen.terminate.assert_called_once()
+
+
+class TestCleanupGrace:
+    """cleanup() signals every process first, then waits per-process up to terminate_timeout."""
+
+    @staticmethod
+    def _running(pid: int, exits_after_terminate: bool = True) -> MagicMock:
+        popen = MagicMock(spec=Popen)
+        popen.poll.return_value = None
+        popen.pid = pid
+        if exits_after_terminate:
+            popen.wait.return_value = 0
+        else:
+            popen.wait.side_effect = [TimeoutExpired("x", 1), 0]  # survives SIGTERM, dies on SIGKILL
+        return popen
+
+    def test_signals_all_before_waiting(self):
+        order: list[str] = []
+        registry = ProcessRegistry(job_id="j")
+        for i in range(3):
+            popen = self._running(100 + i)
+            popen.terminate.side_effect = lambda i=i: order.append(f"term{i}")
+            popen.wait.side_effect = lambda timeout=None, i=i: order.append(f"wait{i}") or 0
+            registry.add_process(ManagedProcess(name=f"p{i}", popen=popen))
+        registry.cleanup()
+        assert order[:3] == ["term0", "term1", "term2"]
+        assert sorted(order[3:]) == ["wait0", "wait1", "wait2"]
+
+    def test_waits_for_each_process_own_timeout(self):
+        registry = ProcessRegistry(job_id="j")
+        fast, slow = self._running(1), self._running(2)
+        registry.add_process(ManagedProcess(name="fast", popen=fast))
+        registry.add_process(ManagedProcess(name="slow", popen=slow, terminate_timeout=180.0))
+        registry.cleanup()
+        fast.wait.assert_called_once_with(timeout=10.0)
+        slow.wait.assert_called_once_with(timeout=180.0)
+        fast.kill.assert_not_called()
+        slow.kill.assert_not_called()
+
+    def test_kills_after_grace_expires(self):
+        registry = ProcessRegistry(job_id="j")
+        stubborn = self._running(3, exits_after_terminate=False)
+        registry.add_process(ManagedProcess(name="stubborn", popen=stubborn, terminate_timeout=0.01))
+        registry.cleanup()
+        stubborn.terminate.assert_called_once()
+        stubborn.kill.assert_called_once()
+        assert stubborn.wait.call_count == 2
+
+    def test_add_processes_keeps_terminate_timeout_when_renaming(self):
+        registry = ProcessRegistry(job_id="j")
+        popen = self._running(4)
+        registry.add_processes({"renamed": ManagedProcess(name="orig", popen=popen, terminate_timeout=42.0)})
+        assert registry._processes["renamed"].terminate_timeout == 42.0
+
+    def test_terminate_defaults_to_own_timeout(self):
+        popen = self._running(5)
+        ManagedProcess(name="p", popen=popen, terminate_timeout=33.0).terminate()
+        popen.wait.assert_called_once_with(timeout=33.0)

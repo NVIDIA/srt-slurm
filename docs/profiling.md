@@ -188,6 +188,16 @@ profiling:
 
 Requires `frontend.type: dynamo` and an nsys profiling type; other frontends are not wrapped.
 
+### Teardown grace for open capture ranges (`profiling.teardown_grace_secs`)
+
+nsys writes a report when its capture range closes. If the range is still open when the run ends —
+`stop_step` was never reached, or an `nsys-time` duration outlasts the benchmark — the report is written
+only after the engine exits, and the default 10-second SIGTERM→SIGKILL grace that srtctl gives every
+process loses it. When `profiling.type` is `nsys`/`nsys-time`, srtctl therefore waits
+`profiling.teardown_grace_secs` (default 180) after SIGTERM before SIGKILL for the nsys-wrapped worker
+sruns and the profiled frontend. The waits overlap (every process is signalled first, then each is
+reaped), so a run pays the grace once, not once per worker. Unprofiled processes keep the 10 s grace.
+
 ## Example Configurations
 
 ### Torch Profiler (Recommended for Python analysis)

@@ -267,6 +267,8 @@ class WorkerStageMixin:
             log_file=worker_log,
             node=process.node,
             critical=True,
+            # nsys writes a still-open capture range only after the engine exits; give it time.
+            terminate_timeout=profiling.teardown_grace_secs if nsys_prefix else 10.0,
         )
 
     def start_endpoint_worker(self, endpoint_processes: list["Process"]) -> ManagedProcess:
@@ -427,6 +429,8 @@ class WorkerStageMixin:
             log_file=worker_log,
             node=leader.node,
             critical=True,
+            # nsys writes a still-open capture range only after the engine exits; give it time.
+            terminate_timeout=profiling.teardown_grace_secs if nsys_prefix else 10.0,
         )
 
     def _wait_for_worker_ready(self, leader: "Process") -> None:

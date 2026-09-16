@@ -185,6 +185,12 @@ class TestFrontendProfiling:
         with pytest.raises(ValidationError, match="trace"):
             _disagg_config(frontend=ProfilingFrontendConfig(trace="  "))
 
+    def test_teardown_grace_default_and_validation(self):
+        assert _disagg_config().profiling.teardown_grace_secs == 180
+        assert _disagg_config(teardown_grace_secs=600).profiling.teardown_grace_secs == 600
+        with pytest.raises(ValidationError):
+            _disagg_config(teardown_grace_secs=0)
+
     def test_dynamo_frontend_is_wrapped(self, tmp_path):
         from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
@@ -217,6 +223,8 @@ class TestFrontendProfiling:
         assert kwargs["env_to_set"]["DYN_ENABLE_RUST_NVTX"] == "1"
         assert kwargs["env_to_set"]["NVTX_INJECTION64_PATH"] == "/opt/nsight/libToolsInjection64.so"
         assert (tmp_path / "profiles" / "frontend").is_dir()
+        # an open frontend capture is written only after the frontend exits: cleanup must wait for it
+        assert procs[0].terminate_timeout == 180.0
 
     def test_dynamo_frontend_untouched_without_block(self, tmp_path):
         from types import SimpleNamespace

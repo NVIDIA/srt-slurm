@@ -61,6 +61,9 @@ class ManagedProcess:
         log_file: Path to the process log file
         node: Node hostname where the process runs
         critical: If True, failure triggers full cleanup
+        terminate_timeout: Seconds ``cleanup()`` waits after SIGTERM before SIGKILL. Raise
+            it for processes that must flush state on exit (an nsys-wrapped worker whose
+            capture range is still open writes its report only after the engine exits).
     """
 
     name: str
@@ -68,6 +71,7 @@ class ManagedProcess:
     log_file: Path | None = None
     node: str | None = None
     critical: bool = True
+    terminate_timeout: float = 10.0
 
     @property
     def is_running(self) -> bool:
@@ -79,11 +83,16 @@ class ManagedProcess:
         """Get exit code if process has exited, None otherwise."""
         return self.popen.poll()
 
-    def terminate(self, timeout: float = 10.0) -> None:
-        """Terminate the process gracefully, then kill if needed."""
+    def terminate(self, timeout: float | None = None) -> None:
+        """Terminate the process gracefully, then kill if needed.
+
+        ``timeout`` defaults to ``self.terminate_timeout``.
+        """
         if not self.is_running:
             return
 
+        if timeout is None:
+            timeout = self.terminate_timeout
         outcome = terminate_and_reap(self.popen, terminate_timeout=timeout, kill_timeout=5)
         if not outcome.reaped:
             logger.error("Process %s was not reaped after SIGKILL", self.name)
@@ -148,6 +157,7 @@ class ProcessRegistry:
                     log_file=proc.log_file,
                     node=proc.node,
                     critical=proc.critical,
+                    terminate_timeout=proc.terminate_timeout,
                 )
             self.add_process(proc)
 
@@ -172,16 +182,41 @@ class ProcessRegistry:
             return len(self._failed_processes) > 0
 
     def cleanup(self) -> None:
-        """Terminate all registered processes."""
+        """Terminate all registered processes.
+
+        Two phases so the grace periods overlap instead of adding up: SIGTERM every running
+        process first, then wait for each one up to its own ``terminate_timeout`` before
+        escalating to SIGKILL. A profiled worker with a 3-minute grace therefore costs at
+        most 3 minutes in total, not 3 minutes per worker.
+        """
         with self._lock:
             logger.info("Cleaning up %d processes...", len(self._processes))
+            running: list[ManagedProcess] = []
             for name, proc in self._processes.items():
-                if proc.is_running:
-                    logger.debug("Terminating process: %s", name)
+                if not proc.is_running:
+                    continue
+                logger.debug("Terminating process: %s", name)
+                try:
+                    proc.popen.terminate()
+                    running.append(proc)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to terminate %s: %s", name, e)
+            for proc in running:
+                try:
+                    proc.popen.wait(timeout=proc.terminate_timeout)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "Process %s did not exit within %.0fs of SIGTERM, killing...",
+                        proc.name,
+                        proc.terminate_timeout,
+                    )
+                    proc.popen.kill()
                     try:
-                        proc.terminate()
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("Failed to terminate %s: %s", name, e)
+                        proc.popen.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        logger.error("Process %s was not reaped after SIGKILL", proc.name)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to reap %s: %s", proc.name, e)
 
     def print_failure_details(self, tail_lines: int = 50) -> None:
         """Print detailed failure information including log tails.

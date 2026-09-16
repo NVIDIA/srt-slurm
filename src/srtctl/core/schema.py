@@ -890,6 +890,12 @@ class ProfilingConfig:
     duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
     benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
 
+    # Seconds srtctl waits after SIGTERM before SIGKILL for every nsys-wrapped process (workers and
+    # the profiled frontend). A capture range that is still open when the run ends (stop_step never
+    # reached, or nsys-time whose duration outlasts the benchmark) is written only after the engine
+    # exits; the default 10 s process grace loses those reports. Ignored unless type is nsys/nsys-time.
+    teardown_grace_secs: int = 180
+
     # ---- TRT-LLM nsys capture recipe -------------------------------------------------
     # Defaults follow the Dynamo Benchmark Playbook §9.5.1.1 "Dynamo + TRTLLM", the set
     # that produced every usable multi-node capture on nsys 2026.3.x / VR200 disagg:
@@ -2393,6 +2399,8 @@ class SrtConfig:
                 raise ValidationError("profiling.frontend.delay_secs must be >= 0 and duration_secs > 0")
             if not prof.frontend.trace.strip():
                 raise ValidationError("profiling.frontend.trace must be a non-empty nsys -t list, e.g. 'nvtx'")
+        if prof.teardown_grace_secs <= 0:
+            raise ValidationError("profiling.teardown_grace_secs must be > 0 seconds")
 
         # nsys-time (time-based capture via nsys --delay/--duration) is supported
         # for all backends. get_nsys_prefix() emits a time-based command for the
