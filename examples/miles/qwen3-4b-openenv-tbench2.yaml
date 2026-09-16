@@ -10,10 +10,17 @@
 # from Miles's make_tbench2_data.py, and a client-only site dir holding
 # tbench2_env and openenv for the rollout workers (OPENENV_SITE).
 #
-# Local mode caveat: episodes of the same task share that task's source directory,
-# so with n_samples_per_prompt > 1 concurrent episodes can see each other's files.
-# This proves the plumbing end to end; per-episode isolation needs per-episode
-# containers (nested enroot) or a hosted sandbox provider.
+# Local mode isolation, and why the numbers below are small:
+# - The server stages every episode's verifier at the fixed paths /tests and
+#   /logs/verifier, per container, not per session, and runs the agent's commands
+#   in the task's source directory. Concurrent episodes therefore share one
+#   filesystem, and their verdicts are only valid when episodes do not overlap:
+#   MAX_CONCURRENT_ENVS=1 makes the server admit one session at a time and the
+#   Miles adapter queues the rest. Raise it only to test plumbing, not to train.
+# - TB2_WITHHOLD_TESTS=1 removes tests/ and solution/ from the checkout on disk
+#   (kept in server memory). Restore them between runs: git -C <checkout> checkout -- .
+# - TB2_OUTPUT_DIR sits under /logs, the job's log directory, so the per-episode
+#   terminal session logs become job artifacts instead of living in a shared /tmp.
 schema: 2
 name: "qwen3-4b-openenv-tbench2"
 
@@ -47,10 +54,10 @@ services:
       PYTHONPATH: /data/home/idhanani/openenv/venv/lib/python3.12/site-packages
       TB2_MODE: local
       TB2_TASKS_DIR: /data/home/idhanani/openenv/terminal-bench-2
-      TB2_OUTPUT_DIR: /tmp/tbench2_env_runs
+      TB2_OUTPUT_DIR: /logs/tbench2_runs
       TB2_WITHHOLD_TESTS: "1"
       TB2_COMMAND_TIMEOUT_S: "120"
-      MAX_CONCURRENT_ENVS: "64"
+      MAX_CONCURRENT_ENVS: "1"   # one episode at a time: the only setting with trustworthy verdicts in local mode
     readiness:
       http:
         port: 8003
@@ -70,9 +77,9 @@ benchmark:
     MILES_SCRIPT_HF_CHECKPOINT: /data/home/idhanani/models/Qwen3-4B
     MILES_SCRIPT_SAVE_DIR: /data/home/idhanani/miles-runs/qwen3-4b-openenv-tbench2/
     MILES_SCRIPT_NUM_ROLLOUT: "2"
-    MILES_SCRIPT_ROLLOUT_BATCH_SIZE: "8"
+    MILES_SCRIPT_ROLLOUT_BATCH_SIZE: "2"       # 2 prompts x 4 samples = 8 episodes per step, run one at a time
     MILES_SCRIPT_N_SAMPLES_PER_PROMPT: "4"
-    MILES_SCRIPT_GLOBAL_BATCH_SIZE: "32"
+    MILES_SCRIPT_GLOBAL_BATCH_SIZE: "8"
     MILES_SCRIPT_OPENENV_MAX_TURNS: "8"
     MILES_SCRIPT_OPENENV_MAX_ROLLOUT_TIME_SECONDS: "900"
     MILES_SCRIPT_EXTRA_ENV_VARS: '{"PYTHONNOUSERSITE": "1"}'
