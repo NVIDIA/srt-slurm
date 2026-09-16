@@ -2,6 +2,7 @@
 
 import os
 import shlex
+import signal
 import stat
 import subprocess
 import time
@@ -13,10 +14,10 @@ def test_wrapper_shape():
     cmd = keepalive_command(["nsys", "profile", "--delay", "5", "-o", "/logs/x y", "python3", "-m", "dynamo.frontend"])
     assert cmd[:2] == ["bash", "-c"]
     script = cmd[2]
-    assert script.startswith(
-        shlex.join(["nsys", "profile", "--delay", "5", "-o", "/logs/x y", "python3", "-m", "dynamo.frontend"]) + " &"
-    )
+    launch = shlex.join(["nsys", "profile", "--delay", "5", "-o", "/logs/x y", "python3", "-m", "dynamo.frontend"])
+    assert f"setsid {launch} &" in script and f"else {launch} &" in script
     assert "pgrep -P" in script and 'wait "$NSYS"' in script and 'kill -0 "$APP"' in script
+    assert "trap fwd TERM INT" in script and 'kill -TERM "$APP"' in script
     assert script.endswith('exit "$rc"')
 
 
@@ -53,3 +54,26 @@ def test_no_child_degrades_to_plain_wait(tmp_path):
     proc = subprocess.run(keepalive_command([str(path)]), capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0 and time.monotonic() - t0 < 5
     assert os.environ is not None  # keep os imported for readers extending the fake
+
+
+def test_sigterm_stops_app_and_lets_nsys_finish(tmp_path):
+    """Teardown path: SIGTERM to the wrapper must stop the app only; nsys (waiting on it) then exits normally."""
+    path = tmp_path / "nsys"
+    marker = tmp_path / "report_written"
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "sleep 300 &\n"  # the profiled app
+        "wait $!\n"  # nsys --wait all: block until the app is gone ...
+        f"touch {marker}\n"  # ... then write the report
+        "exit 0\n"
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    proc = subprocess.Popen(keepalive_command([str(path)]), stderr=subprocess.PIPE, text=True)
+    time.sleep(2.0)  # let the wrapper find the app pid
+    t0 = time.monotonic()
+    proc.send_signal(signal.SIGTERM)
+    _, err = proc.communicate(timeout=60)
+    assert proc.returncode == 0, err
+    assert time.monotonic() - t0 < 30, "wrapper should return as soon as the app dies and nsys finishes"
+    assert marker.exists(), "nsys must have survived the teardown long enough to write its report"
+    assert "SIGTERM: stopping profiled app" in err

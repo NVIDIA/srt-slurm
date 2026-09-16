@@ -190,6 +190,14 @@ Requires `frontend.type: dynamo` and an nsys profiling type; other frontends are
 
 ### Time-windowed sessions and the srun task (`nsys-time`, `profiling.frontend`)
 
+**Prefer "capture until exit".** Leave `duration_secs` unset (workers in `nsys-time` mode and `profiling.frontend`):
+nsys then captures from `--delay` until the process exits and writes the report at teardown. Two verified failure modes
+make fixed `--duration` windows fragile on this stack: nsys exits when the window closes (see below), and the profiled
+engine stalls within a second of the nsys process exiting even when the task is kept alive (hecate 596172: the decode
+engine stopped iterating, lost its etcd lease and was dropped by the router). At teardown the launcher wrapper forwards
+SIGTERM to the profiled app only, nsys (in its own session) finalises the report, and `profiling.teardown_grace_secs`
+gives it time; size the grace for the report volume (a 30-minute `nvtx,python-gil` prefill capture is ~1 GB per rank).
+
 `nsys profile --delay D --duration T --kill none <app>` writes its report when the window closes and then
 **exits**, leaving the application running as an orphan. Under Slurm the exiting nsys is the srun task, so the
 step ends and slurmstepd kills the orphan — on hecate job 595056 the frontend and the decode workers died three

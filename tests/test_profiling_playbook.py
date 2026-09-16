@@ -220,7 +220,7 @@ class TestFrontendProfiling:
         # wrapped by keepalive_command: bash -c '<nsys ... frontend> & ...wait for the orphaned frontend...'
         assert cmd[:2] == ["bash", "-c"]
         script = cmd[2]
-        assert script.startswith("nsys profile ")
+        assert "setsid nsys profile " in script  # keepalive wrapper: nsys in its own session
         assert "-o /logs/profiles/frontend/n1_frontend_0 python3 -m dynamo.frontend --http-port=8000" in script
         assert 'kill -0 "$APP"' in script
         assert kwargs["env_to_set"]["DYN_ENABLE_RUST_NVTX"] == "1"

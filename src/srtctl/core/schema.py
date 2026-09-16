@@ -850,14 +850,21 @@ class ProfilingFrontendConfig:
 
     The frontend has no CUDA work and never calls cudaProfilerStart, so it gets a time window
     instead of the workers' iteration window: ``--delay`` seconds after the frontend process
-    starts, capture for ``--duration`` seconds, then nsys writes the report and leaves the
-    frontend running (``--kill none``). What is worth tracing there is NVTX (Dynamo's Rust
-    ranges via DYN_ENABLE_RUST_NVTX + the NVTX injection library) and optionally OS runtime
-    calls; CUDA tracing is meaningless on this process and is not enabled.
+    starts, then capture until the frontend exits (``duration_secs: None``, the default) or for
+    ``--duration`` seconds. What is worth tracing there is NVTX (Dynamo's Rust ranges via
+    DYN_ENABLE_RUST_NVTX + the NVTX injection library) and optionally OS runtime calls; CUDA
+    tracing is meaningless on this process and is not enabled.
+
+    Why "until exit" is the default: when a ``--duration`` window closes, nsys writes the report
+    and exits, and the profiled process stalls the moment the nsys process is gone (hecate 596172:
+    the decode engine stopped iterating within one second of its nsys exiting, lost its etcd lease
+    and was dropped by the router; 595056 showed the same with the frontend). Keeping nsys alive
+    until the app exits avoids that; the report is then written at teardown, which
+    ``profiling.teardown_grace_secs`` protects.
     """
 
     delay_secs: int = 900  # from frontend start; the workers need ~10-15 min to load before traffic flows
-    duration_secs: int = 120
+    duration_secs: int | None = None  # None: capture from delay until the frontend exits
     trace: str = "nvtx"  # nsys -t for the frontend: "nvtx" or "nvtx,osrt"
     extra_nsys_args: list[str] | None = None
 
@@ -885,9 +892,11 @@ class ProfilingConfig:
     decode: ProfilingPhaseConfig | None = None
     aggregated: ProfilingPhaseConfig | None = None
 
-    # nsys-time fields: time-based capture window, same on all workers
+    # nsys-time fields: time-based capture, same on all workers. duration_secs None = capture from
+    # delay until the engine exits (preferred: the engine stalls when the nsys process exits early,
+    # see ProfilingFrontendConfig); a value gives a fixed --duration window instead.
     delay_secs: int | None = None  # nsys --delay: seconds from worker launch before capture starts
-    duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
+    duration_secs: int | None = None  # nsys --duration: seconds to capture after delay (None = until exit)
     benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
 
     # Seconds srtctl waits after SIGTERM before SIGKILL for every nsys-wrapped process (workers and
@@ -1045,8 +1054,9 @@ class ProfilingConfig:
     def get_frontend_nsys_prefix(self, output_file: str) -> list[str]:
         """``nsys profile ...`` prefix for the Dynamo frontend command (time window, NVTX-centric).
 
-        Empty unless ``profiling.frontend`` is set with an nsys type. ``--wait all`` keeps nsys
-        alive as long as the frontend runs; the report is written when the window closes.
+        Empty unless ``profiling.frontend`` is set with an nsys type. Without ``duration_secs``
+        nsys stays attached until the frontend exits and writes the report then; with it, the
+        report is written when the window closes (and the launcher keeps the task alive).
         """
         if not self.profiles_frontend:
             return []
@@ -1064,8 +1074,7 @@ class ProfilingConfig:
             f"--gpu-metrics-devices={self.nsys_gpu_metrics_devices}",
             "--delay",
             str(fe.delay_secs),
-            "--duration",
-            str(fe.duration_secs),
+            *(["--duration", str(fe.duration_secs)] if fe.duration_secs is not None else []),
             *(fe.extra_nsys_args or []),
             "--kill",
             "none",
@@ -2395,8 +2404,10 @@ class SrtConfig:
                 raise ValidationError(
                     f"profiling.frontend is implemented for frontend.type: dynamo only (got {self.frontend.type!r})"
                 )
-            if prof.frontend.delay_secs < 0 or prof.frontend.duration_secs <= 0:
-                raise ValidationError("profiling.frontend.delay_secs must be >= 0 and duration_secs > 0")
+            if prof.frontend.delay_secs < 0 or (
+                prof.frontend.duration_secs is not None and prof.frontend.duration_secs <= 0
+            ):
+                raise ValidationError("profiling.frontend.delay_secs must be >= 0 and duration_secs > 0 or unset")
             if not prof.frontend.trace.strip():
                 raise ValidationError("profiling.frontend.trace must be a non-empty nsys -t list, e.g. 'nvtx'")
         if prof.teardown_grace_secs <= 0:
@@ -2410,10 +2421,10 @@ class SrtConfig:
 
         # nsys-time uses top-level delay/duration — no per-phase step configs needed
         if prof.is_nsys_time:
-            if prof.delay_secs is None or prof.duration_secs is None:
-                raise ValidationError(
-                    "profiling.delay_secs and profiling.duration_secs are required for nsys-time mode"
-                )
+            if prof.delay_secs is None:
+                raise ValidationError("profiling.delay_secs is required for nsys-time mode")
+            if prof.duration_secs is not None and prof.duration_secs <= 0:
+                raise ValidationError("profiling.duration_secs must be > 0 (or unset to capture until the engine exits)")
             return
 
         r = self.resources
