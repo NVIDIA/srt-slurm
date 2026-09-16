@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>srtctl status</title>
+<style>
+:root { color-scheme: dark;
+  --bg: #0A0D13; --panel: #0F131B; --raised: #171D28; --border: #1F2632;
+  --text: #E6EAF2; --muted: #828C9C; --faint: #565F6E;
+  --accent: #5B9BFF; --good: #3FB950; --warn: #D6A017; --crit: #F85149;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 var(--sans); }
+header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 14px; height: 46px; padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+h1 { margin: 0; font: 600 15px/1 var(--sans); letter-spacing: -.01em; white-space: nowrap; }
+h1 span { margin-left: 8px; color: var(--muted); font: 12px var(--mono); }
+.spacer { flex: 1; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font: 11px var(--mono); white-space: nowrap; }
+.live i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.live.ok i { background: var(--good); } .live.err i { background: var(--crit); } .live.auth i { background: var(--warn); }
+input, select, button { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); color: var(--text); font: 12px var(--sans); }
+input:focus, select:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+button { cursor: pointer; } button:hover { border-color: var(--accent); }
+.token { display: flex; gap: 6px; } .token input { width: 260px; font-family: var(--mono); }
+.hint { padding: 9px 16px; border-bottom: 1px solid var(--border); background: #141b26; color: var(--muted); font-size: 12px; }
+.hint code { color: var(--text); font-family: var(--mono); }
+main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(380px, 1fr); height: calc(100% - 46px); }
+main.with-hint { height: calc(100% - 46px - 36px); }
+section { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border-right: 1px solid var(--border); }
+section:last-child { border-right: 0; overflow: auto; }
+@media (max-width: 1100px) { main { grid-template-columns: 1fr; height: auto; } section { border-right: 0; border-bottom: 1px solid var(--border); } }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.stat { color: var(--muted); font: 11px var(--mono); white-space: nowrap; } .stat b { color: var(--text); font-weight: 600; }
+.scroll { flex: 1; overflow: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead th { position: sticky; top: 0; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--panel); color: var(--muted); font: 500 10px/1.2 var(--mono); letter-spacing: .08em; text-align: left; text-transform: uppercase; white-space: nowrap; }
+tbody td { max-width: 340px; padding: 6px 10px; border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; vertical-align: top; white-space: nowrap; }
+tbody tr { cursor: pointer; } tbody tr:hover { background: var(--raised); }
+tbody tr.selected { background: #141c2b; box-shadow: inset 2px 0 0 var(--accent); }
+.mono, td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.status i { flex: none; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.status.active i { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.status.completed i { background: var(--good); } .status.failed i, .status.timeout i { background: var(--crit); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.muted { color: var(--muted); } .faint { color: var(--faint); }
+.empty { padding: 24px; color: var(--muted); text-align: center; }
+kbd { padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); font: 11px var(--mono); }
+.detail-head { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.detail-head h2 { margin: 0 0 5px; font: 600 14px var(--mono); } .detail-head h2 span { color: var(--muted); font-weight: 400; }
+.detail-head .sub { color: var(--muted); font-size: 12px; }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--border); border-bottom: 1px solid var(--border); }
+.fact { min-width: 0; padding: 8px 12px; background: var(--panel); }
+.fact span { display: block; color: var(--muted); font: 500 10px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.fact b { display: block; margin-top: 3px; font: 500 12px var(--mono); overflow-wrap: anywhere; }
+.fact a { color: var(--accent); text-decoration: none; } .fact a:hover { text-decoration: underline; }
+.timeline { padding: 6px 0; }
+.ev { display: grid; grid-template-columns: 68px 56px 1fr; gap: 10px; align-items: baseline; padding: 5px 14px; font-size: 12px; }
+.ev:hover { background: var(--raised); }
+.ev .t { color: var(--muted); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.ev .d { color: var(--faint); font-family: var(--mono); text-align: right; }
+.ev .m { min-width: 0; overflow-wrap: anywhere; } .ev .m .status { margin-right: 6px; }
+.ev .j { color: var(--accent); cursor: pointer; font-family: var(--mono); }
+details { border-top: 1px solid var(--border); } summary { padding: 8px 14px; color: var(--muted); font-size: 12px; cursor: pointer; }
+pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font: 11px/1.4 var(--mono); }
+.feed { display: flex; flex-direction: column; max-height: 38vh; border-top: 1px solid var(--border); }
+.feed .ev { grid-template-columns: 68px 90px 1fr; }
+</style>
+</head>
+<body>
+<header>
+  <h1>srtctl status <span id="origin"></span></h1>
+  <span class="live" id="live"><i></i><span id="live-text">connecting</span></span>
+  <div class="spacer"></div>
+  <label class="muted">poll
+    <select id="interval">
+      <option value="2000">2s</option><option value="5000" selected>5s</option><option value="15000">15s</option><option value="0">paused</option>
+    </select>
+  </label>
+  <form class="token" id="token-form">
+    <input id="token" type="password" placeholder="read token" autocomplete="off" aria-label="read token">
+    <button type="submit">use</button>
+  </form>
+</header>
+<div class="hint" id="hint" hidden></div>
+<main id="main">
+  <section>
+    <div class="toolbar">
+      <input id="q" placeholder="filter job id, name, cluster" style="width: 220px" aria-label="filter">
+      <select id="f-status" aria-label="status filter">
+        <option value="">all statuses</option>
+        <option>submitted</option><option>starting</option><option>workers</option><option>frontend</option>
+        <option>benchmark</option><option>completed</option><option>failed</option><option>timeout</option>
+      </select>
+      <select id="f-cluster" aria-label="cluster filter"><option value="">all clusters</option></select>
+      <div class="spacer"></div>
+      <span class="stat" title="every job the collector knows">jobs <b id="n-total">-</b></span>
+      <span class="stat" title="of the newest 100">active <b id="n-active">-</b></span>
+      <span class="stat" title="of the newest 100">completed <b id="n-done">-</b></span>
+      <span class="stat" title="of the newest 100">failed <b id="n-failed">-</b></span>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>job</th><th>name</th><th>cluster</th><th>status</th><th>stage</th><th>message</th><th>elapsed</th><th>updated</th></tr></thead>
+        <tbody id="jobs"></tbody>
+      </table>
+      <div class="empty" id="jobs-empty" hidden>no jobs yet</div>
+    </div>
+    <div class="feed">
+      <div class="toolbar">
+        <span class="stat">live events <b id="n-events">0</b></span>
+        <span class="stat muted">newest at the bottom; click a job id to open it</span>
+        <div class="spacer"></div>
+        <span class="stat" id="cursor"></span>
+      </div>
+      <div class="scroll timeline" id="feed"></div>
+    </div>
+  </section>
+  <section id="detail">
+    <div class="empty">select a job, or move with <kbd>&uarr;</kbd> <kbd>&darr;</kbd></div>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const ACTIVE = new Set(["submitted", "starting", "workers", "frontend", "benchmark"]);
+  const KEY = "srtctl_status_token";
+  const jobsEl = $("jobs"), feedEl = $("feed");
+
+  // The read token lives only in this browser. A "#token=..." fragment seeds it
+  // once (fragments never reach the server) and is removed from the URL.
+  let token = localStorage.getItem(KEY) || "";
+  const frag = new URLSearchParams(location.hash.slice(1));
+  if (frag.get("token")) {
+    token = frag.get("token");
+    localStorage.setItem(KEY, token);
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  $("token").value = token;
+  $("origin").textContent = location.host;
+
+  let jobs = [], total = 0, selected = null, cursor = 0, eventCount = 0, timer = null, inFlight = false, lastJobsLoad = 0;
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const parse = (iso) => (iso ? new Date(iso) : null);
+  const hms = (iso) => { const d = parse(iso); return d ? d.toLocaleTimeString([], { hour12: false }) : "-"; };
+  function dur(ms) {
+    if (ms == null || Number.isNaN(ms) || ms < 0) return "-";
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + "m " + String(s % 60).padStart(2, "0") + "s";
+    const h = Math.floor(m / 60);
+    if (h < 48) return h + "h " + String(m % 60).padStart(2, "0") + "m";
+    return Math.floor(h / 24) + "d " + (h % 24) + "h";
+  }
+  function elapsed(job) {
+    const start = parse(job.submitted_at);
+    if (!start) return "-";
+    const end = ACTIVE.has(job.status) ? new Date() : parse(job.completed_at) || parse(job.updated_at) || new Date();
+    return dur(end - start);
+  }
+  // Status is never color alone: the dot carries state, the label carries the word.
+  const statusHtml = (status) => `<span class="status ${ACTIVE.has(status) ? "active" : esc(status)}"><i></i>${esc(status)}</span>`;
+
+  function setLive(state, text) { $("live").className = "live " + state; $("live-text").textContent = text; }
+  function hint(html) { const h = $("hint"); h.hidden = !html; h.innerHTML = html || ""; $("main").classList.toggle("with-hint", !!html); }
+
+  async function api(path) {
+    const headers = token ? { Authorization: "Bearer " + token } : {};
+    let res;
+    try { res = await fetch(path, { headers, cache: "no-store" }); }
+    catch (err) { setLive("err", "collector unreachable"); throw err; }
+    if (res.status === 401 || res.status === 403) {
+      setLive("auth", token ? "token rejected" : "token required");
+      hint(token
+        ? `The collector rejected this token (HTTP ${res.status}). Paste the <code>read</code> token above.`
+        : "This collector requires a bearer token. Paste the <code>read</code> token above; it is kept only in this browser.");
+      throw new Error("auth");
+    }
+    if (!res.ok) { setLive("err", "HTTP " + res.status); throw new Error(String(res.status)); }
+    setLive("ok", "live " + new Date().toLocaleTimeString([], { hour12: false }));
+    hint("");
+    return res.json();
+  }
+
+  function visibleJobs() {
+    const q = $("q").value.trim().toLowerCase(), st = $("f-status").value, cl = $("f-cluster").value;
+    return jobs.filter((j) =>
+      (!st || j.status === st) &&
+      (!cl || (j.cluster || "") === cl) &&
+      (!q || [j.job_id, j.job_name, j.cluster].some((v) => (v || "").toLowerCase().includes(q))));
+  }
+  function populateClusters() {
+    const sel = $("f-cluster"), cur = sel.value;
+    const clusters = [...new Set(jobs.map((j) => j.cluster).filter(Boolean))].sort();
+    sel.innerHTML = '<option value="">all clusters</option>' + clusters.map((c) => `<option${c === cur ? " selected" : ""}>${esc(c)}</option>`).join("");
+  }
+  function renderJobs() {
+    const rows = visibleJobs();
+    jobsEl.innerHTML = rows.map((j) => `<tr data-id="${esc(j.job_id)}"${j.job_id === selected ? ' class="selected"' : ""}>
+      <td class="mono">${esc(j.job_id)}</td>
+      <td title="${esc(j.job_name)}">${esc(j.job_name)}</td>
+      <td>${esc(j.cluster || "")}</td>
+      <td>${statusHtml(j.status)}</td>
+      <td class="mono muted">${esc(j.stage || "")}</td>
+      <td class="muted" title="${esc(j.message || "")}">${esc(j.message || "")}</td>
+      <td class="num" data-elapsed="${esc(j.job_id)}">${elapsed(j)}</td>
+      <td class="num muted" title="${esc(j.updated_at)}">${hms(j.updated_at)}</td></tr>`).join("");
+    $("jobs-empty").hidden = rows.length > 0;
+    $("n-total").textContent = total;
+    $("n-active").textContent = jobs.filter((j) => ACTIVE.has(j.status)).length;
+    $("n-done").textContent = jobs.filter((j) => j.status === "completed").length;
+    $("n-failed").textContent = jobs.filter((j) => j.status === "failed" || j.status === "timeout").length;
+  }
+  async function loadJobs() {
+    const d = await api("/api/jobs?per_page=100");
+    jobs = d.jobs; total = d.total; lastJobsLoad = Date.now();
+    populateClusters();
+    renderJobs();
+  }
+
+  const fact = (label, value) => `<div class="fact"><span>${label}</span><b>${value}</b></div>`;
+  const link = (url) => (/^https?:\/\//.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noreferrer">${esc(url)}</a>` : esc(url));
+  function renderDetail(job) {
+    const m = job.metadata || {}, model = m.model || {}, res = m.resources || {};
+    const workers = ["prefill", "decode", "agg"].map((k) => (res[k + "_workers"] ? `${res[k + "_workers"]}${k[0].toUpperCase()}` : "")).filter(Boolean).join(" ");
+    const start = parse(job.started_at || job.submitted_at);
+    const end = parse(job.completed_at) || (ACTIVE.has(job.status) ? new Date() : parse(job.updated_at));
+    let prev = null;
+    const timeline = (job.events || []).map((e) => {
+      const t = parse(e.created_at), delta = prev ? "+" + dur(t - prev) : "";
+      prev = t;
+      return `<div class="ev"><span class="t" title="${esc(e.created_at)}">${hms(e.created_at)}</span><span class="d">${delta}</span>
+        <span class="m">${statusHtml(e.status)}<span class="muted mono">${esc(e.stage || "")}</span> ${esc(e.message || "")}</span></div>`;
+    }).join("");
+    $("detail").innerHTML = `
+      <div class="detail-head">
+        <h2>${esc(job.job_id)} <span>${esc(job.job_name)}</span></h2>
+        <div class="sub">${statusHtml(job.status)} <span class="mono">${esc(job.stage || "")}</span> ${esc(job.message || "")}</div>
+      </div>
+      <div class="facts">
+        ${fact("cluster", esc(job.cluster || "-"))}${fact("exit code", job.exit_code == null ? "-" : esc(job.exit_code))}
+        ${fact("submitted", esc(job.submitted_at || "-"))}${fact("duration", dur(start && end ? end - start : null))}
+        ${fact("model", esc(model.path || "-") + (model.precision ? ` <span class="muted">${esc(model.precision)}</span>` : ""))}
+        ${fact("resources", esc([res.gpu_type, workers].filter(Boolean).join(" / ") || "-"))}
+        ${fact("head node", esc(m.head_node || "-"))}${fact("recipe", esc(job.recipe || "-"))}
+        ${fact("log dir", esc(m.log_dir || "-"))}${fact("logs url", job.logs_url ? link(job.logs_url) : "-")}
+      </div>
+      <div class="timeline">${timeline || '<div class="empty">no events</div>'}</div>
+      <details><summary>metadata, artifacts, benchmark_results</summary>
+        <pre>${esc(JSON.stringify({ metadata: job.metadata, artifacts: job.artifacts, benchmark_results: job.benchmark_results }, null, 2))}</pre>
+      </details>`;
+  }
+  async function select(id) {
+    if (!id) return;
+    if (selected !== id) { selected = id; renderJobs(); }
+    renderDetail(await api(`/api/jobs/${encodeURIComponent(id)}`));
+  }
+
+  function appendEvents(events) {
+    if (!events.length) return;
+    const atBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 40;
+    feedEl.insertAdjacentHTML("beforeend", events.map((e) => `<div class="ev">
+      <span class="t" title="${esc(e.created_at)}">${hms(e.created_at)}</span>
+      <span class="j" data-id="${esc(e.job_id)}">${esc(e.job_id)}</span>
+      <span class="m">${statusHtml(e.status)}<span class="muted mono">${esc(e.stage || "")}</span> ${esc(e.message || "")}</span></div>`).join(""));
+    while (feedEl.children.length > 300) feedEl.firstElementChild.remove();
+    eventCount += events.length;
+    $("n-events").textContent = eventCount;
+    if (atBottom) feedEl.scrollTop = feedEl.scrollHeight;
+  }
+  // First load: walk the cursor to the tail, show only the newest 100 events.
+  async function drainToTail() {
+    let all = [];
+    for (let i = 0; i < 50; i++) {
+      const d = await api(`/api/events?after=${cursor}&limit=1000`);
+      all = all.concat(d.events);
+      if (d.next_cursor != null) cursor = d.next_cursor;
+      if (d.events.length < 1000) break;
+    }
+    appendEvents(all.slice(-100));
+    $("cursor").textContent = "cursor " + cursor;
+  }
+  async function poll() {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const d = await api(`/api/events?after=${cursor}&limit=500`);
+      if (d.next_cursor != null) cursor = d.next_cursor;
+      $("cursor").textContent = "cursor " + cursor;
+      if (d.events.length) {
+        appendEvents(d.events);
+        await loadJobs();
+        if (selected && d.events.some((e) => e.job_id === selected)) await select(selected);
+      } else if (Date.now() - lastJobsLoad > 30000) {
+        await loadJobs(); // metadata/artifact patches emit no event
+      }
+    } catch (err) { /* state already shown in the header */ }
+    finally { inFlight = false; schedule(); }
+  }
+  function schedule() {
+    clearTimeout(timer);
+    const ms = Number($("interval").value);
+    if (ms > 0) timer = setTimeout(poll, ms); else setLive("", "paused");
+  }
+  async function start() {
+    try {
+      await loadJobs();
+      await drainToTail();
+      if (!selected && jobs.length) await select(jobs[0].job_id);
+    } catch (err) { /* shown in the header */ }
+    schedule();
+  }
+
+  jobsEl.addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) select(tr.dataset.id); });
+  feedEl.addEventListener("click", (e) => {
+    const j = e.target.closest(".j[data-id]");
+    if (!j) return;
+    select(j.dataset.id).then(() => jobsEl.querySelector("tr.selected")?.scrollIntoView({ block: "nearest" }));
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.target.matches("input, select") || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+    const rows = visibleJobs();
+    if (!rows.length) return;
+    let i = rows.findIndex((j) => j.job_id === selected);
+    i = e.key === "ArrowDown" ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1);
+    e.preventDefault();
+    select(rows[i].job_id).then(() => jobsEl.querySelector("tr.selected")?.scrollIntoView({ block: "nearest" }));
+  });
+  ["q", "f-status", "f-cluster"].forEach((id) => $(id).addEventListener("input", renderJobs));
+  $("interval").addEventListener("change", schedule);
+  $("token-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    token = $("token").value.trim();
+    localStorage.setItem(KEY, token);
+    feedEl.innerHTML = ""; cursor = 0; eventCount = 0; selected = null;
+    start();
+  });
+  // Elapsed for active jobs ticks locally; no request needed.
+  setInterval(() => {
+    document.querySelectorAll("td[data-elapsed]").forEach((td) => {
+      const j = jobs.find((x) => x.job_id === td.dataset.elapsed);
+      if (j && ACTIVE.has(j.status)) td.textContent = elapsed(j);
+    });
+  }, 1000);
+  start();
+})();
+</script>
+</body>
+</html>

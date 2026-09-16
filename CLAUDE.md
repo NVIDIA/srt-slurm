@@ -101,7 +101,7 @@ reporting:
     endpoint: "http://login-node:8080"
 ```
 
-**srtctl status-server** is the in-repo collector for that endpoint (`src/srtctl/status_server/`: `store.py` is the SQLite side, `server.py` the stdlib HTTP side validating with `srtctl.contract`). It appends an event whenever `(status, stage, message)` changes, creates a placeholder row for a PUT whose POST never arrived, and serves cursor-based feeds at `/api/events` and `/api/jobs/{id}/events`. `make_server(store, port=0)` gives tests a real server on an ephemeral port (`tests/test_status_server.py` drives it with the real `StatusReporter`). The wire contract is `docs/status-api-spec.md`; a payload field changes in `srtctl.contract`, the server, and the spec together.
+**srtctl status-server** is the in-repo collector for that endpoint (`src/srtctl/status_server/`: `store.py` is the SQLite side, `server.py` the stdlib HTTP side validating with `srtctl.contract`, `ui/index.html` the dependency-free single-page UI served at `/`, which fetches the same `/api` routes with the read token from `localStorage`). It appends an event whenever `(status, stage, message)` changes, creates a placeholder row for a PUT whose POST never arrived, and serves cursor-based feeds at `/api/events` and `/api/jobs/{id}/events`. `make_server(store, port=0)` gives tests a real server on an ephemeral port (`tests/test_status_server.py` drives it with the real `StatusReporter`). The wire contract is `docs/status-api-spec.md`; a payload field changes in `srtctl.contract`, the server, and the spec together.
 
 **StatusReporter** - Used in `do_sweep.py` to report job lifecycle:
 

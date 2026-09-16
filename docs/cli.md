@@ -413,7 +413,7 @@ curl http://login-node:8080/api/jobs                        # Newest jobs first
 curl "http://login-node:8080/api/events?after=0"            # Global event feed; pass next_cursor back as after
 ```
 
-Run it where both the submitting host (the POST at apply time) and the allocation's head node (the PUTs during the run) can reach it, typically a login node. Listening beyond loopback without a token is refused unless `--allow-unauthenticated` is passed. With a token set on the server, export the same `SRTCTL_STATUS_TOKEN` in the shell that runs `srtctl apply`; the reporter sends it as a bearer token and never puts it in a recipe. See [Status API](status-api-spec.md#authentication).
+Open `http://<host>:8080/` in a browser for the built-in UI (jobs table, per-job event timeline, live event feed); paste the read token once and the page keeps it in `localStorage`. Run the server where both the submitting host (the POST at apply time) and the allocation's head node (the PUTs during the run) can reach it, typically a login node. Listening beyond loopback without a token is refused unless `--allow-unauthenticated` is passed. With a token set on the server, export the same `SRTCTL_STATUS_TOKEN` in the shell that runs `srtctl apply`; the reporter sends it as a bearer token and never puts it in a recipe. See [Status API](status-api-spec.md#authentication).
 
 ### `srtctl skill`
 
