@@ -1377,6 +1377,10 @@ The pressure collector reports PSI only when the host exposes the corresponding 
 
 Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself; srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans; the post-processing ingest converts the Parquet into the dashboard's `server_metrics_export.jsonl`.
 
+In vLLM/SGLang sidecar mode, runtime metrics and native engine metrics are separate sources. Tachometer keeps `metrics_source=sidecar` and `metrics_source=native` metadata alongside the worker identity and original metric labels. SGLang leaders expose both endpoints remotely; follower ranks run neither a sidecar nor an HTTP metrics listener. Native SGLang metrics are enabled by default unless the role explicitly sets `enable-metrics` / `enable_metrics`.
+
+Native vLLM's HTTP listener stays on loopback. srtctl starts one additional native Tachometer process per worker node to scrape its local engine pools, including nonzero DP ranks, without exposing the inference API. These captures go to `<storage_subdir>/native/<index>/raw/scrape/`, with separate `local/` buffers and `tachometer-native-<index>.out` logs. The head scraper continues collecting frontend, sidecar, GPU, and host metrics. Native scrapers receive the same shutdown/compaction grace as the head scraper. Dashboard ingestion includes every capture and chooses compacted output or remaining shards independently for each. This adds one metrics scraper per vLLM worker node; cluster overhead has not yet been measured.
+
 The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent.
 
 ---

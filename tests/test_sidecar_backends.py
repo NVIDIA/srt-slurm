@@ -66,6 +66,7 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     leader_script = leader_command[2]
     assert "python3 -m sglang.launch_server" in leader_script
     assert "--grpc-port 50051" in leader_script
+    assert "--enable-metrics" in leader_script
     assert "python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:50051" in leader_script
     assert 'wait -n "${ENGINE_PID}" "${SIDECAR_PID}"' in leader_script
     assert follower_command[:3] == ["python3", "-m", "sglang.launch_server"]

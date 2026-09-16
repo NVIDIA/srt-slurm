@@ -1129,12 +1129,46 @@ class TestTachometerConfigGeneration:
         assert "10.0.0.2:8000" not in config_text
 
 
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@patch("srtctl.core.telemetry.get_hostname_ip", side_effect=lambda node, _: node)
+def test_sidecar_tachometer_targets_actual_listeners(_resolve, backend):
+    import tomllib
+
+    processes = [
+        Process("node-a", frozenset({0}), 7500, 6100, "prefill", 0),
+        Process("node-b", frozenset({0}), 7501, 6100 if backend == "vllm" else 0, "prefill", 0, node_rank=1),
+    ]
+    runtime = MagicMock(log_dir=Path("/logs"), job_id="1", run_name="test", network_interface=None)
+    config = tomllib.loads(
+        generate_tachometer_config(
+            processes=processes,
+            frontend_topology=FrontendTopology(None, ["head"], 8000, 8000),
+            runtime=runtime,
+            tachometer=TachometerConfig(default_exporters=False),
+            sidecar_backend=backend,
+        )
+    )
+    endpoints = {e["name"]: e for e in config["endpoints"]}
+    assert endpoints["frontend0"]["url"] == "http://head:8000/metrics"
+    assert endpoints["backend_prefill0_rank0"]["url"] == "http://node-a:7500/metrics"
+    assert endpoints["backend_prefill0_rank0"]["node_metadata"]["metrics_source"] == "sidecar"
+    if backend == "sglang":
+        assert set(endpoints) == {"frontend0", "backend_prefill0_rank0", "native_prefill0_rank0"}
+        assert endpoints["native_prefill0_rank0"]["url"] == "http://node-a:6100/metrics"
+        assert endpoints["native_prefill0_rank0"]["node_metadata"]["metrics_source"] == "native"
+    else:
+        # Loopback engine URLs belong only to node-local scraper configs.
+        assert set(endpoints) == {"frontend0", "backend_prefill0_rank0", "backend_prefill0_rank1"}
+        assert endpoints["backend_prefill0_rank1"]["url"] == "http://node-b:7501/metrics"
+
+
 class TestTachometerStageMixin:
     """Tachometer stage startup."""
 
+    @pytest.mark.parametrize("vllm_sidecar", [False, True])
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch("srtctl.cli.mixins.telemetry_stage.generate_tachometer_config", return_value='storage = "/run/tachometer"\n')
-    def test_start_tachometer_starts_only_the_scraper(self, _mock_config, mock_srun, tmp_path):
+    def test_start_tachometer_starts_only_the_scraper(self, _mock_config, mock_srun, tmp_path, vllm_sidecar):
         class Harness(TelemetryStageMixin):
             def __init__(self):
                 self.config = _make_config(
@@ -1179,6 +1213,14 @@ class TestTachometerStageMixin:
 
         mock_srun.return_value = _running_exporter()
         harness = Harness()
+        if vllm_sidecar:
+            from dataclasses import replace
+            from srtctl.backends.vllm import VLLMProtocol
+            from srtctl.core.schema import DynamoConfig
+
+            harness.config = replace(harness.config, backend=VLLMProtocol(), dynamo=DynamoConfig(sidecar=True))
+            # A nonzero DP rank owns another node-local engine and sidecar.
+            harness._backend_processes.append(Process("node-b", frozenset({0}), 8082, 30000, "agg", 0, node_rank=1))
         # Pin the default-name PATH fallback so the assertion below does not
         # depend on whether the developer's checkout has bin/tachometer-scraper.
         harness._resolve_tachometer_binary = lambda binary_path: binary_path
@@ -1188,11 +1230,26 @@ class TestTachometerStageMixin:
 
         # The DCGM and node exporters are services now (see test_services.py);
         # this stage launches exactly one thing: the scraper.
-        assert len(procs) == 1
+        assert len(procs) == (3 if vllm_sidecar else 1)
         assert (tmp_path / "tachometer_config.toml").exists()
         assert (tmp_path / "tachometer" / "local").exists()
-        assert mock_srun.call_count == 1
-        scraper_call = mock_srun.call_args_list[-1]
+        assert mock_srun.call_count == len(procs)
+        if vllm_sidecar:
+            import tomllib
+
+            for index, node in enumerate(["node-a", "node-b"]):
+                call = mock_srun.call_args_list[index + 1]
+                assert call.kwargs["nodelist"] == [node]
+                assert call.kwargs["use_bash_wrapper"] is False
+                assert procs[index + 1].terminate_timeout == 120.0
+                config = tomllib.loads((tmp_path / f"tachometer-native-{index}.toml").read_text())
+                assert not Path(config["storage"]).exists()
+                assert len(config["endpoints"]) == 1
+                endpoint = config["endpoints"][0]
+                assert endpoint["url"] == "http://127.0.0.1:30000/metrics"
+                assert endpoint["node_metadata"]["hostname"] == node
+                assert endpoint["node_metadata"]["metrics_source"] == "native"
+        scraper_call = mock_srun.call_args_list[0]
         assert scraper_call.kwargs["command"] == [
             "tachometer-scraper",
             "--config",
@@ -1214,8 +1271,8 @@ class TestTachometerStageMixin:
         assert "env_to_set" not in scraper_call.kwargs
         # Telemetry is best-effort by contract: a dead scraper must never
         # tear down the benchmark via the critical-process check.
-        assert procs[-1].name == "tachometer"
-        assert procs[-1].critical is False
+        assert procs[0].name == "tachometer"
+        assert all(not process.critical for process in procs)
 
     def test_resolve_tachometer_binary(self, tmp_path, monkeypatch):
         """Explicit paths are respected verbatim; the default bare name
@@ -1430,12 +1487,13 @@ class TestStopTachometer:
 
         sidecar = ManagedProcess(name="tachometer_sidecar", popen=_running_exporter(), critical=False)
         scraper = ManagedProcess(name="tachometer", popen=_running_exporter(), critical=False, step_name="tachometer")
+        native = ManagedProcess(name="tachometer-native-0", popen=_running_exporter(), critical=False)
         with patch.object(ManagedProcess, "terminate") as terminate:
-            self._stage(grace=45.0).stop_tachometer([sidecar, scraper])
+            self._stage(grace=45.0).stop_tachometer([sidecar, scraper, native])
 
         # The scraper compacts final.parquet after SIGTERM and needs the
         # configured grace; anything else launched beside it is a plain daemon.
-        assert [call.kwargs["timeout"] for call in terminate.call_args_list] == [10.0, 45.0]
+        assert [call.kwargs["timeout"] for call in terminate.call_args_list] == [10.0, 45.0, 45.0]
 
     def test_already_exited_processes_are_skipped(self):
         from srtctl.core.processes import ManagedProcess

@@ -150,11 +150,18 @@ def find_parquets(path) -> list[str]:
     if os.path.isfile(p):
         return [p]
     if os.path.isdir(p):
-        for pat in _SEARCH_ORDER:
-            hits = sorted(glob.glob(os.path.join(p, pat)))
-            if hits:
-                return hits
-        return sorted(glob.glob(os.path.join(p, "*.parquet")))
+        # Select final output independently for every scraper. A completed
+        # head capture must not hide native-worker shards still awaiting compaction.
+        captures = [os.path.join(p, "tachometer")]
+        captures.extend(sorted(glob.glob(os.path.join(p, "tachometer", "native", "*"))))
+        files: list[str] = []
+        for capture in captures:
+            for pat in _SEARCH_ORDER:
+                hits = sorted(glob.glob(os.path.join(capture, pat.removeprefix("tachometer/"))))
+                if hits:
+                    files.extend(hits)
+                    break
+        return files or sorted(glob.glob(os.path.join(p, "*.parquet")))
     return []
 
 

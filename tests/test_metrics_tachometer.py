@@ -25,7 +25,7 @@ import pytest
 T0 = 1_786_194_627_000_000_000
 SECOND = 1_000_000_000
 
-_META_COLUMNS = ("frontend_index", "hostname", "job_id", "run_name", "worker_index", "worker_process", "worker_role")
+_META_COLUMNS = ("frontend_index", "hostname", "job_id", "run_name", "worker_index", "worker_process", "worker_role", "metrics_source")
 
 
 def _write_parquet(path: Path, rows: list[dict], *, with_timestamp: bool = True) -> Path:
@@ -302,6 +302,14 @@ class TestMetricsAutoSelection:
             + "\n"
         )
 
+        # A completed head capture must not hide an un-compacted native capture.
+        native = log_dir / "tachometer" / "native" / "0"
+        rows = [_backend("decode", "node2", name='vllm:requests_total{engine="1"}', value=12.0, ts=T0, metrics_source="native")]
+        _write_parquet(native / "raw" / "scrape" / "incomplete-0.parquet", rows)
+        # Lower-priority leftovers must not be double counted.
+        _write_parquet(native / "local" / "out-0.parquet", [
+            _backend("decode", "node2", name="stale_metric", value=99.0, ts=T0),
+        ])
         bundle = tmp_path / "bundle"
         bundle.mkdir()
         args = build_parser().parse_args(["--run-dir", str(log_dir)])
@@ -312,3 +320,9 @@ class TestMetricsAutoSelection:
         lines = [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
         # Tachometer content, not the decoy sources.
         assert "trtllm_kv_cache_used_blocks" in lines[0]["metrics"]
+
+        metrics = {name: entries for line in lines for name, entries in line["metrics"].items()}
+        assert "stale_metric" not in metrics
+        assert metrics["vllm:requests_total"][0]["value"] == 12.0
+        assert metrics["vllm:requests_total"][0]["labels"]["engine"] == "1"
+        assert metrics["vllm:requests_total"][0]["labels"]["metrics_source"] == "native"

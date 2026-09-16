@@ -524,6 +524,10 @@ class SGLangProtocol:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             engine.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
+        # The native HTTP listener supplies engine metrics separately from the sidecar.
+        if not any(key in config for key in ("enable-metrics", "enable_metrics")):
+            engine.append("--enable-metrics")
+
         if not any(key in config for key in ("incremental-streaming-output", "incremental_streaming_output")):
             # The Dynamo sidecar treats every gRPC chunk as a delta. Without this flag this SGLang
             # build streams the cumulative text per chunk, so clients receive repeated prefixes and
