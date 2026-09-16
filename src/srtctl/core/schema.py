@@ -2424,7 +2424,9 @@ class SrtConfig:
             if prof.delay_secs is None:
                 raise ValidationError("profiling.delay_secs is required for nsys-time mode")
             if prof.duration_secs is not None and prof.duration_secs <= 0:
-                raise ValidationError("profiling.duration_secs must be > 0 (or unset to capture until the engine exits)")
+                raise ValidationError(
+                    "profiling.duration_secs must be > 0 (or unset to capture until the engine exits)"
+                )
             return
 
         r = self.resources
