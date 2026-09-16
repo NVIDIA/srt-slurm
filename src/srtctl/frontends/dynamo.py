@@ -13,6 +13,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
+from srtctl.core.nsys_keepalive import keepalive_command
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
@@ -100,7 +101,9 @@ class DynamoFrontend:
             )
             if nsys_prefix:
                 (runtime.log_dir / "profiles" / "frontend").mkdir(parents=True, exist_ok=True)
-                cmd = [*nsys_prefix, *cmd]
+                # Time-windowed nsys exits once its report is written; keep the srun task (and the
+                # frontend) alive until the run ends. See srtctl.core.nsys_keepalive.
+                cmd = keepalive_command([*nsys_prefix, *cmd])
                 logger.info(
                     "Profiling: nsys on frontend %d (delay %ss, duration %ss)",
                     idx,

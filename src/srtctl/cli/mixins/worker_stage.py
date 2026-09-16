@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
+from srtctl.core.nsys_keepalive import keepalive_command
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
@@ -231,6 +232,9 @@ class WorkerStageMixin:
         logger.info("Log: %s", worker_log)
         if profiling.enabled:
             logger.info("Profiling: %s mode", profiling.type)
+        if nsys_prefix and profiling.is_nsys_time:
+            # nsys --duration exits after writing the report; keep the task alive for the engine.
+            cmd = keepalive_command(cmd)
 
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
@@ -384,6 +388,9 @@ class WorkerStageMixin:
         logger.info("Log: %s", worker_log)
         if profiling.enabled:
             logger.info("Profiling: %s mode", profiling.type)
+        if nsys_prefix and profiling.is_nsys_time:
+            # nsys --duration exits after writing the report; keep the task alive for the engine.
+            cmd = keepalive_command(cmd)
 
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()

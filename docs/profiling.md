@@ -188,6 +188,15 @@ profiling:
 
 Requires `frontend.type: dynamo` and an nsys profiling type; other frontends are not wrapped.
 
+### Time-windowed sessions and the srun task (`nsys-time`, `profiling.frontend`)
+
+`nsys profile --delay D --duration T --kill none <app>` writes its report when the window closes and then
+**exits**, leaving the application running as an orphan. Under Slurm the exiting nsys is the srun task, so the
+step ends and slurmstepd kills the orphan — on hecate job 595056 the frontend and the decode workers died three
+seconds after their reports were written. srtctl therefore wraps every time-windowed launch (the profiled
+frontend, and workers in `nsys-time` mode) so the task waits for the profiled process after nsys exits
+(`srtctl.core.nsys_keepalive`). Iteration-based captures need no wrapper: nsys stays attached until the engine exits.
+
 ### Teardown grace for open capture ranges (`profiling.teardown_grace_secs`)
 
 nsys writes a report when its capture range closes. If the range is still open when the run ends —

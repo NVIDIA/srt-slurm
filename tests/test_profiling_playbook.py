@@ -217,9 +217,12 @@ class TestFrontendProfiling:
         assert len(procs) == 1
         kwargs = srun.call_args.kwargs
         cmd = kwargs["command"]
-        assert cmd[:2] == ["nsys", "profile"]
-        assert cmd[cmd.index("-o") + 1] == "/logs/profiles/frontend/n1_frontend_0"
-        assert cmd[cmd.index("-o") + 2 :][:4] == ["python3", "-m", "dynamo.frontend", "--http-port=8000"]
+        # wrapped by keepalive_command: bash -c '<nsys ... frontend> & ...wait for the orphaned frontend...'
+        assert cmd[:2] == ["bash", "-c"]
+        script = cmd[2]
+        assert script.startswith("nsys profile ")
+        assert "-o /logs/profiles/frontend/n1_frontend_0 python3 -m dynamo.frontend --http-port=8000" in script
+        assert 'kill -0 "$APP"' in script
         assert kwargs["env_to_set"]["DYN_ENABLE_RUST_NVTX"] == "1"
         assert kwargs["env_to_set"]["NVTX_INJECTION64_PATH"] == "/opt/nsight/libToolsInjection64.so"
         assert (tmp_path / "profiles" / "frontend").is_dir()
