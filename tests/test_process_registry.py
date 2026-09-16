@@ -282,7 +282,9 @@ class TestGracefulStepSignal:
         registry = ProcessRegistry(job_id="4242")
         worker = self._running(1)
         plain = self._running(2)
-        registry.add_process(ManagedProcess(name="decode_0_n1", popen=worker, terminate_timeout=600.0, step_name="decode_0_n1"))
+        registry.add_process(
+            ManagedProcess(name="decode_0_n1", popen=worker, terminate_timeout=600.0, step_name="decode_0_n1")
+        )
         registry.add_process(ManagedProcess(name="etcd", popen=plain))
         calls = []
 
@@ -306,7 +308,9 @@ class TestGracefulStepSignal:
 
         registry = ProcessRegistry(job_id="4242")
         worker = self._running(1)
-        registry.add_process(ManagedProcess(name="decode_0_n1", popen=worker, terminate_timeout=600.0, step_name="decode_0_n1"))
+        registry.add_process(
+            ManagedProcess(name="decode_0_n1", popen=worker, terminate_timeout=600.0, step_name="decode_0_n1")
+        )
 
         def fake_run(cmd, **kwargs):
             res = MagicMock()
@@ -324,8 +328,14 @@ class TestGracefulStepSignal:
 
         registry = ProcessRegistry(job_id="4242")
         worker = self._running(1)
-        worker.wait.side_effect = [TimeoutExpired("x", 1), TimeoutExpired("x", 1), 0]  # grace, post-terminate, post-kill
-        registry.add_process(ManagedProcess(name="decode_0_n1", popen=worker, terminate_timeout=0.01, step_name="decode_0_n1"))
+        worker.wait.side_effect = [
+            TimeoutExpired("x", 1),
+            TimeoutExpired("x", 1),
+            0,
+        ]  # grace, post-terminate, post-kill
+        registry.add_process(
+            ManagedProcess(name="decode_0_n1", popen=worker, terminate_timeout=0.01, step_name="decode_0_n1")
+        )
 
         def fake_run(cmd, **kwargs):
             res = MagicMock()

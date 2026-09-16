@@ -222,7 +222,9 @@ class ProcessRegistry:
         for proc in procs:
             step_ids = steps.get(proc.step_name or "", [])
             if not step_ids:
-                logger.warning("No running step named %r for %s; signalling its srun instead", proc.step_name, proc.name)
+                logger.warning(
+                    "No running step named %r for %s; signalling its srun instead", proc.step_name, proc.name
+                )
                 continue
             ok = True
             for step_id in step_ids:
@@ -268,7 +270,7 @@ class ProcessRegistry:
                 for p in running
                 if isinstance(p.step_name, str)
                 and p.step_name
-                and isinstance(p.terminate_timeout, (int, float))
+                and isinstance(p.terminate_timeout, int | float)
                 and p.terminate_timeout > _DEFAULT_TERMINATE_TIMEOUT
             ]
             signalled = self._signal_steps(graceful)
