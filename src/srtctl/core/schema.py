@@ -904,6 +904,11 @@ class ProfilingConfig:
     # reached, or nsys-time whose duration outlasts the benchmark) is written only after the engine
     # exits; the default 10 s process grace loses those reports. Ignored unless type is nsys/nsys-time.
     teardown_grace_secs: int = 180
+    # After the teardown SIGTERM reaches a profiled worker/frontend, seconds its process tree may take to exit
+    # before the launcher wrapper TERMs/KILLs that tree (nsys is never signalled) so nsys can finalise the report.
+    # TRT-LLM MPI rank processes outlived the Dynamo worker's shutdown by >10 min on hecate 596583. Must be well
+    # below teardown_grace_secs to leave time for report conversion.
+    app_exit_grace_secs: int = 120
 
     # ---- TRT-LLM nsys capture recipe -------------------------------------------------
     # Defaults follow the Dynamo Benchmark Playbook §9.5.1.1 "Dynamo + TRTLLM", the set
@@ -2412,6 +2417,11 @@ class SrtConfig:
                 raise ValidationError("profiling.frontend.trace must be a non-empty nsys -t list, e.g. 'nvtx'")
         if prof.teardown_grace_secs <= 0:
             raise ValidationError("profiling.teardown_grace_secs must be > 0 seconds")
+        if prof.app_exit_grace_secs <= 0 or prof.app_exit_grace_secs >= prof.teardown_grace_secs:
+            raise ValidationError(
+                "profiling.app_exit_grace_secs must be > 0 and smaller than teardown_grace_secs "
+                "(report conversion needs the remainder)"
+            )
 
         # nsys-time (time-based capture via nsys --delay/--duration) is supported
         # for all backends. get_nsys_prefix() emits a time-based command for the

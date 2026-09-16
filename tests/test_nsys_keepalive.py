@@ -77,3 +77,31 @@ def test_sigterm_stops_app_and_lets_nsys_finish(tmp_path):
     assert time.monotonic() - t0 < 30, "wrapper should return as soon as the app dies and nsys finishes"
     assert marker.exists(), "nsys must have survived the teardown long enough to write its report"
     assert "SIGTERM: stopping profiled app" in err
+
+
+def test_stubborn_app_tree_is_killed_after_app_grace(tmp_path):
+    """The app ignores SIGTERM (like the TRT-LLM MPI ranks); after app_exit_grace_secs the wrapper kills the app tree,
+    nsys (waiting on it) then finalises and exits 0."""
+    path = tmp_path / "nsys"
+    marker = tmp_path / "report_written"
+    app = tmp_path / "app.sh"
+    app.write_text("#!/usr/bin/env bash\ntrap '' TERM\nsleep 300\n")  # ignores SIGTERM
+    app.chmod(app.stat().st_mode | stat.S_IXUSR)
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        f"{app} &\n"
+        "wait $!\n"
+        f"touch {marker}\n"
+        "exit 0\n"
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    proc = subprocess.Popen(keepalive_command([str(path)], app_exit_grace_secs=2), stderr=subprocess.PIPE, text=True)
+    time.sleep(2.0)
+    t0 = time.monotonic()
+    proc.send_signal(signal.SIGTERM)
+    _, err = proc.communicate(timeout=120)
+    elapsed = time.monotonic() - t0
+    assert proc.returncode == 0, err
+    assert marker.exists(), err
+    assert 2 <= elapsed < 60, (elapsed, err)  # grace 2 s + TERM (ignored) + 20 s + KILL
+    assert "app tree still alive 2s after SIGTERM" in err

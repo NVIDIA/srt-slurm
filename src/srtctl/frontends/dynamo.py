@@ -103,7 +103,7 @@ class DynamoFrontend:
                 (runtime.log_dir / "profiles" / "frontend").mkdir(parents=True, exist_ok=True)
                 # Time-windowed nsys exits once its report is written; keep the srun task (and the
                 # frontend) alive until the run ends. See srtctl.core.nsys_keepalive.
-                cmd = keepalive_command([*nsys_prefix, *cmd])
+                cmd = keepalive_command([*nsys_prefix, *cmd], app_exit_grace_secs=profiling.app_exit_grace_secs)
                 logger.info(
                     "Profiling: nsys on frontend %d (delay %ss, duration %ss)",
                     idx,

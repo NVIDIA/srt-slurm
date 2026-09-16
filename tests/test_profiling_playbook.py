@@ -190,6 +190,11 @@ class TestFrontendProfiling:
         assert _disagg_config(teardown_grace_secs=600).profiling.teardown_grace_secs == 600
         with pytest.raises(ValidationError):
             _disagg_config(teardown_grace_secs=0)
+        assert _disagg_config().profiling.app_exit_grace_secs == 120
+        with pytest.raises(ValidationError):
+            _disagg_config(app_exit_grace_secs=0)
+        with pytest.raises(ValidationError):
+            _disagg_config(teardown_grace_secs=100, app_exit_grace_secs=120)  # must leave time for conversion
 
     def test_dynamo_frontend_is_wrapped(self, tmp_path):
         from types import SimpleNamespace

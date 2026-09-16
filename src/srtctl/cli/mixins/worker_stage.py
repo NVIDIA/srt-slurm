@@ -234,7 +234,7 @@ class WorkerStageMixin:
             logger.info("Profiling: %s mode", profiling.type)
         if nsys_prefix and profiling.is_nsys_time:
             # nsys --duration exits after writing the report; keep the task alive for the engine.
-            cmd = keepalive_command(cmd)
+            cmd = keepalive_command(cmd, app_exit_grace_secs=profiling.app_exit_grace_secs)
 
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
@@ -392,7 +392,7 @@ class WorkerStageMixin:
             logger.info("Profiling: %s mode", profiling.type)
         if nsys_prefix and profiling.is_nsys_time:
             # nsys --duration exits after writing the report; keep the task alive for the engine.
-            cmd = keepalive_command(cmd)
+            cmd = keepalive_command(cmd, app_exit_grace_secs=profiling.app_exit_grace_secs)
 
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
