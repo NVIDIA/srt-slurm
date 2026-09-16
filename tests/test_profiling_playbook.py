@@ -144,3 +144,99 @@ class TestPlaybookValidation:
             config = _disagg_config(nsys_sample="process-tree")
         assert config.profiling.nsys_sample == "process-tree"
         assert any("perf_event_paranoid" in str(w.message) for w in caught)
+
+
+class TestFrontendProfiling:
+    """profiling.frontend: nsys on the Dynamo frontend with a time window."""
+
+    def test_prefix_env_and_defaults(self):
+        from srtctl.core.schema import ProfilingFrontendConfig
+
+        p = ProfilingConfig(
+            type="nsys",
+            frontend=ProfilingFrontendConfig(delay_secs=1500, duration_secs=120),
+            nvtx_injection_path="/opt/nsight/libToolsInjection64.so",
+        )
+        assert p.profiles_frontend
+        prefix = p.get_frontend_nsys_prefix("/logs/profiles/frontend/n1_frontend_0")
+        assert prefix[:3] == ["nsys", "profile", "--force-overwrite=true"]
+        assert prefix[prefix.index("-t") + 1] == "nvtx"  # NVTX-centric: no CUDA tracing on a CUDA-less process
+        assert "--delay" in prefix and prefix[prefix.index("--delay") + 1] == "1500"
+        assert "--duration" in prefix and prefix[prefix.index("--duration") + 1] == "120"
+        assert prefix[-6:] == ["--kill", "none", "--wait", "all", "-o", "/logs/profiles/frontend/n1_frontend_0"]
+        assert "-c" not in prefix and "--capture-range-end=stop" not in prefix
+        assert p.get_frontend_env_vars() == {
+            "DYN_ENABLE_RUST_NVTX": "1",
+            "NVTX_INJECTION64_PATH": "/opt/nsight/libToolsInjection64.so",
+        }
+        # Without the block nothing changes for the frontend.
+        assert ProfilingConfig(type="nsys").get_frontend_nsys_prefix("/o") == []
+        assert ProfilingConfig(type="nsys").get_frontend_env_vars() == {}
+
+    def test_validation(self):
+        from srtctl.core.schema import ProfilingFrontendConfig
+
+        cfg = _disagg_config(frontend=ProfilingFrontendConfig())
+        assert cfg.profiling.profiles_frontend
+        with pytest.raises(ValidationError, match="requires profiling.type nsys"):
+            _disagg_config(type="torch", frontend=ProfilingFrontendConfig())
+        with pytest.raises(ValidationError, match="duration_secs"):
+            _disagg_config(frontend=ProfilingFrontendConfig(duration_secs=0))
+        with pytest.raises(ValidationError, match="trace"):
+            _disagg_config(frontend=ProfilingFrontendConfig(trace="  "))
+
+    def test_dynamo_frontend_is_wrapped(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.schema import ProfilingFrontendConfig
+        from srtctl.frontends.base import get_frontend
+
+        cfg = _disagg_config(
+            frontend=ProfilingFrontendConfig(delay_secs=10, duration_secs=5),
+            nvtx_injection_path="/opt/nsight/libToolsInjection64.so",
+        )
+        topology = SimpleNamespace(frontend_nodes=["n1"], frontend_port=8000)
+        runtime = SimpleNamespace(
+            log_dir=tmp_path,
+            nodes=SimpleNamespace(infra="n0", het_group_for=lambda node: None),
+            container_image="/img.sqsh",
+            container_mounts={},
+            environment={},
+        )
+        with patch("srtctl.frontends.dynamo.start_srun_process", return_value=MagicMock()) as srun:
+            procs = get_frontend("dynamo").start_frontends(
+                topology=topology, runtime=runtime, config=cfg, backend=None, backend_processes=[]
+            )
+        assert len(procs) == 1
+        kwargs = srun.call_args.kwargs
+        cmd = kwargs["command"]
+        assert cmd[:2] == ["nsys", "profile"]
+        assert cmd[cmd.index("-o") + 1] == "/logs/profiles/frontend/n1_frontend_0"
+        assert cmd[cmd.index("-o") + 2 :][:4] == ["python3", "-m", "dynamo.frontend", "--http-port=8000"]
+        assert kwargs["env_to_set"]["DYN_ENABLE_RUST_NVTX"] == "1"
+        assert kwargs["env_to_set"]["NVTX_INJECTION64_PATH"] == "/opt/nsight/libToolsInjection64.so"
+        assert (tmp_path / "profiles" / "frontend").is_dir()
+
+    def test_dynamo_frontend_untouched_without_block(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.frontends.base import get_frontend
+
+        cfg = _disagg_config()
+        topology = SimpleNamespace(frontend_nodes=["n1"], frontend_port=8000)
+        runtime = SimpleNamespace(
+            log_dir=tmp_path,
+            nodes=SimpleNamespace(infra="n0", het_group_for=lambda node: None),
+            container_image="/img.sqsh",
+            container_mounts={},
+            environment={},
+        )
+        with patch("srtctl.frontends.dynamo.start_srun_process", return_value=MagicMock()) as srun:
+            get_frontend("dynamo").start_frontends(
+                topology=topology, runtime=runtime, config=cfg, backend=None, backend_processes=[]
+            )
+        cmd = srun.call_args.kwargs["command"]
+        assert cmd[:3] == ["python3", "-m", "dynamo.frontend"]
+        assert "DYN_ENABLE_RUST_NVTX" not in srun.call_args.kwargs["env_to_set"]

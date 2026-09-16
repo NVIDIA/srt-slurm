@@ -164,6 +164,30 @@ roughly 12 minutes into the benchmark.
 **SGLang / vLLM workers** keep the time-based or `--trace-fork-before-exec` prefixes described in the
 examples below; `extra_nsys_args` applies to them as well.
 
+### Profiling the Dynamo frontend too (`profiling.frontend`)
+
+The worker windows are iteration based (cudaProfilerApi). The Dynamo frontend does no CUDA
+work and never calls `cudaProfilerStart`, so it gets a time window instead: `profiling.frontend`
+wraps every `python3 -m dynamo.frontend` process in
+`nsys profile -t <trace> --delay <delay_secs> --duration <duration_secs> --kill none --wait all`
+and exports `DYN_ENABLE_RUST_NVTX=1` (plus `NVTX_INJECTION64_PATH` when `nvtx_injection_path` is
+set) so Dynamo's Rust NVTX ranges are recorded. Reports land in
+`/logs/profiles/frontend/<node>_frontend_<idx>.nsys-rep`; nsys stays attached for the whole run
+and the frontend keeps serving after the window closes.
+
+```yaml
+profiling:
+  type: nsys
+  frontend:
+    delay_secs: 1500     # seconds after the frontend starts (workers need ~10-15 min to load first)
+    duration_secs: 120
+    trace: nvtx          # or "nvtx,osrt"; CUDA tracing is pointless on this process
+  prefill: {start_step: 1200, stop_step: 1300}
+  decode:  {start_step: 6000, stop_step: 6600}
+```
+
+Requires `frontend.type: dynamo` and an nsys profiling type; other frontends are not wrapped.
+
 ## Example Configurations
 
 ### Torch Profiler (Recommended for Python analysis)

@@ -845,6 +845,26 @@ class ProfilingPhaseConfig:
 
 
 @dataclass(frozen=True)
+class ProfilingFrontendConfig:
+    """nsys on the Dynamo frontend process (Rust/tokio HTTP frontend + router).
+
+    The frontend has no CUDA work and never calls cudaProfilerStart, so it gets a time window
+    instead of the workers' iteration window: ``--delay`` seconds after the frontend process
+    starts, capture for ``--duration`` seconds, then nsys writes the report and leaves the
+    frontend running (``--kill none``). What is worth tracing there is NVTX (Dynamo's Rust
+    ranges via DYN_ENABLE_RUST_NVTX + the NVTX injection library) and optionally OS runtime
+    calls; CUDA tracing is meaningless on this process and is not enabled.
+    """
+
+    delay_secs: int = 900  # from frontend start; the workers need ~10-15 min to load before traffic flows
+    duration_secs: int = 120
+    trace: str = "nvtx"  # nsys -t for the frontend: "nvtx" or "nvtx,osrt"
+    extra_nsys_args: list[str] | None = None
+
+    Schema: ClassVar[builtins.type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ProfilingConfig:
     """Profiling configuration.
 
@@ -904,6 +924,8 @@ class ProfilingConfig:
     nvtx_injection_path: str | None = None
     # TLLM_PROFILE_LOG_RANKS: which engine ranks log the profiling start/stop iterations.
     log_ranks: str = "all"
+    # Also attach nsys to the Dynamo frontend process(es), with a time window (see ProfilingFrontendConfig).
+    frontend: ProfilingFrontendConfig | None = None
 
     @property
     def enabled(self) -> bool:
@@ -1008,6 +1030,53 @@ class ProfilingConfig:
             "--flush-on-cudaprofilerstop=false",
             "--cuda-flush-interval=0",
         ]
+
+    @property
+    def profiles_frontend(self) -> bool:
+        """Whether the Dynamo frontend process is wrapped in nsys too."""
+        return self.is_nsys and self.frontend is not None
+
+    def get_frontend_nsys_prefix(self, output_file: str) -> list[str]:
+        """``nsys profile ...`` prefix for the Dynamo frontend command (time window, NVTX-centric).
+
+        Empty unless ``profiling.frontend`` is set with an nsys type. ``--wait all`` keeps nsys
+        alive as long as the frontend runs; the report is written when the window closes.
+        """
+        if not self.profiles_frontend:
+            return []
+        assert self.frontend is not None
+        fe = self.frontend
+        return [
+            self.nsys_binary,
+            "profile",
+            "--force-overwrite=true",
+            "-t",
+            fe.trace,
+            f"--sample={self.nsys_sample}",
+            f"--cpuctxsw={self.nsys_cpuctxsw}",
+            "--python-sampling=false",
+            f"--gpu-metrics-devices={self.nsys_gpu_metrics_devices}",
+            "--delay",
+            str(fe.delay_secs),
+            "--duration",
+            str(fe.duration_secs),
+            *(fe.extra_nsys_args or []),
+            "--kill",
+            "none",
+            "--wait",
+            "all",
+            "-o",
+            output_file,
+        ]
+
+    def get_frontend_env_vars(self) -> dict[str, str]:
+        """Environment that makes the frontend's Rust NVTX ranges reach nsys."""
+        if not self.profiles_frontend:
+            return {}
+        env = {"DYN_ENABLE_RUST_NVTX": "1"}
+        if self.nvtx_injection_path:
+            env["NVTX_INJECTION64_PATH"] = self.nvtx_injection_path
+        return env
 
     def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
         """nsys command prefix for TRT-LLM workers (Dynamo Benchmark Playbook §9.5.1.1 recipe).
@@ -2312,6 +2381,18 @@ class SrtConfig:
                     "prefer nsys_cpuctxsw: process-tree alone.",
                     stacklevel=2,
                 )
+
+        if prof.frontend is not None:
+            if not prof.is_nsys:
+                raise ValidationError("profiling.frontend requires profiling.type nsys or nsys-time")
+            if self.frontend.type != "dynamo":
+                raise ValidationError(
+                    f"profiling.frontend is implemented for frontend.type: dynamo only (got {self.frontend.type!r})"
+                )
+            if prof.frontend.delay_secs < 0 or prof.frontend.duration_secs <= 0:
+                raise ValidationError("profiling.frontend.delay_secs must be >= 0 and duration_secs > 0")
+            if not prof.frontend.trace.strip():
+                raise ValidationError("profiling.frontend.trace must be a non-empty nsys -t list, e.g. 'nvtx'")
 
         # nsys-time (time-based capture via nsys --delay/--duration) is supported
         # for all backends. get_nsys_prefix() emits a time-based command for the
