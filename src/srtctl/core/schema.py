@@ -678,6 +678,11 @@ class ResourceConfig:
         return self.agg_nodes or 1
 
     @property
+    def has_engine_workers(self) -> bool:
+        """Whether any prefill, decode, or aggregated worker is requested."""
+        return (self.num_prefill + self.num_decode + self.num_agg) > 0
+
+    @property
     def num_prefill(self) -> int:
         return self.prefill_workers or 0
 
@@ -1963,8 +1968,10 @@ class FrontendConfig:
         type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
             Gateway) and "vllm-router" (static routers); "sglang", "vllm", and
             "trtllm_serve" (direct: the single aggregate worker binds the public
-            port, no router process). In schema 1 recipes "sglang" still means
-            the router and loads as "sglang-router".
+            port, no router process); "none" (services-only job: no router, no
+            OpenAI endpoint, no worker-count health gate; requires no engine
+            roles). In schema 1 recipes "sglang" still means the router and
+            loads as "sglang-router".
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -2165,8 +2172,45 @@ class SrtConfig:
         self._validate_dynamo_sidecar()
         self._validate_host_setup()
         self._validate_benchmark_type()
+        self._validate_services_only()
         self._validate_services()
         self._warn_dp_launch_mode()
+
+    def _validate_services_only(self) -> None:
+        """Rules for ``frontend.type: none`` and for services that own nodes (pools).
+
+        ``frontend.type: none`` means no OpenAI endpoint and no worker-count
+        health gate: readiness is the services' own probes, and the benchmark
+        step is the only thing that runs against them. With engine workers
+        present that gate is what keeps a run from benchmarking a half-loaded
+        fleet, so ``none`` is refused until per-worker readiness exists.
+
+        A service with ``nodes`` owns a pool that adds to the allocation next to
+        the engine roles' nodes. Pools are whole nodes, carved in declaration
+        order; a heterogeneous SLURM job cannot carry them.
+        """
+        owners = self.pool_services
+        if owners and self.resources.het_jobs is True:
+            raise ValidationError(
+                "services[].nodes (pools) are not supported together with resources.het_jobs: true; "
+                f"owners: {', '.join(svc.name for svc in owners)}"
+            )
+        owner_names = {svc.name for svc in owners}
+        for svc in self.services:
+            pool = svc.placement.pool if svc.placement is not None else None
+            if pool is not None and pool not in owner_names:
+                raise ValidationError(
+                    f"services[{svc.name}].placement.pool {pool!r} names no service that declares nodes "
+                    f"(pools: {', '.join(sorted(owner_names)) or 'none'})"
+                )
+        if self.frontend.type == "none":
+            if self.resources.has_engine_workers:
+                raise ValidationError(
+                    "frontend.type: none is only supported without engine roles (no prefill/decode/agg workers); "
+                    "pick a frontend for the workers or drop them"
+                )
+            if self.frontend.dedicated_node:
+                raise ValidationError("frontend.type: none has no frontend process; frontend.dedicated_node is invalid")
 
     def _validate_services(self) -> None:
         """Whole-list checks for ``services:``: unique names, then each kind's recipe-level rules.
@@ -2958,8 +3002,30 @@ class SrtConfig:
         return self.backend.get_served_model_name(default)
 
     @property
+    def pool_services(self) -> list[ServiceConfig]:
+        """Services that own nodes (``services[].nodes``), in declaration order: the job's pools."""
+        return [svc for svc in self.services if svc.nodes is not None and svc.enabled]
+
+    @property
+    def services_node_count(self) -> int | None:
+        """Nodes owned by services through ``services[].nodes``, summed; None when no service owns any."""
+        counts = [svc.nodes for svc in self.pool_services if svc.nodes is not None]
+        return sum(counts) if counts else None
+
+    @property
+    def engine_node_count(self) -> int:
+        """Nodes the engine roles own; zero when the recipe has no engine workers."""
+        if not self.resources.has_engine_workers:
+            return 0
+        return self._engine_total_nodes()
+
+    @property
     def total_nodes(self) -> int:
-        """Worker node count, adjusted for backend-specific packing."""
+        """Node count of the job: the engine roles' nodes plus every service pool, at least one."""
+        return (self.engine_node_count + (self.services_node_count or 0)) or 1
+
+    def _engine_total_nodes(self) -> int:
+        """Worker node count of the engine roles, adjusted for backend-specific packing."""
         if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
             num_prefill=self.resources.num_prefill,
             num_decode=self.resources.num_decode,

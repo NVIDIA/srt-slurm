@@ -95,6 +95,10 @@ class ServiceStageMixin:
 
     def service_nodes(self, service: ServiceConfig) -> list[str]:
         """Physical nodes a service's ``placement`` selects, in allocation order, deduplicated."""
+        pool = service.effective_pool
+        if pool is not None:
+            # A node owner runs on its own pool; a rider runs on the owner's pool.
+            return list(self.runtime.nodes.pools.get(pool, ()))
         where = service.effective_placement
         if where == "head":
             return [self.runtime.nodes.head]
@@ -103,9 +107,11 @@ class ServiceStageMixin:
             return [self.runtime.nodes.infra]
         if where == "workers":
             return list(self.runtime.nodes.worker)
+        if where == "compute":
+            return list(self.runtime.nodes.compute)
         if where == "all":
             nodes = self.runtime.nodes
-            return list(dict.fromkeys((nodes.head, nodes.infra, nodes.bench, *nodes.worker)))
+            return list(dict.fromkeys((nodes.head, nodes.infra, nodes.bench, *nodes.compute)))
         seen: dict[str, None] = {}
         for endpoint in self.endpoints:
             if endpoint.mode == where:
@@ -345,7 +351,7 @@ class ServiceStageMixin:
             return []
         self._check_port_collisions([entry.service for entry in effective])
 
-        worker_order = {node: i for i, node in enumerate(self.runtime.nodes.worker)}
+        worker_order = {node: i for i, node in enumerate(self.runtime.nodes.compute)}
         started: list[ManagedProcess] = []
         try:
             for entry in phase:

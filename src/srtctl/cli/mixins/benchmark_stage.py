@@ -8,6 +8,7 @@ Handles benchmark execution and profiling.
 """
 
 import logging
+import re
 import shlex
 import threading
 import time
@@ -239,6 +240,12 @@ class BenchmarkStageMixin:
         """Wait for frontend counts and any adapter-specific backend barrier."""
         from srtctl.core import health as health_utils
 
+        if self.config.frontend.type == "none":
+            # Services-only job: every service already passed its readiness probe in
+            # start_services, and there are no engine workers to count.
+            logger.info("frontend.type none: no worker-count health gate; services are ready")
+            return True
+
         n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config, self.backend_processes)
         logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
 
@@ -294,6 +301,37 @@ class BenchmarkStageMixin:
             env[f"SRT_{prefix}_ENDPOINTS"] = ",".join(f"{host}:{port}" for host, port in mode_endpoints)
         return env
 
+    def _get_service_env(self) -> dict[str, str]:
+        """Where every effective service runs, for custom benchmark commands.
+
+        ``SRT_SERVICE_<NAME>_NODES`` / ``_IPS`` (comma-separated, placement order) and
+        ``_NODE_COUNT`` for each launched service, ``<NAME>`` being the service name
+        upper-cased with non-alphanumerics as ``_``. This is how a script drives a
+        service the job brought up: a Ray launcher reads ``SRT_SERVICE_TRAIN_IPS`` for
+        the head address. External services (already running elsewhere) are skipped;
+        their address is injected by their kind.
+        """
+        from srtctl.services.implicit import effective_services
+
+        service_nodes = getattr(self, "service_nodes", None)
+        if service_nodes is None:
+            return {}
+        env: dict[str, str] = {}
+        for entry in effective_services(self.config):
+            service = entry.service
+            if service.external:
+                continue
+            nodes = service_nodes(service)
+            if not nodes:
+                continue
+            key = re.sub(r"[^A-Za-z0-9]", "_", service.name).upper()
+            env[f"SRT_SERVICE_{key}_NODES"] = ",".join(nodes)
+            env[f"SRT_SERVICE_{key}_IPS"] = ",".join(
+                get_hostname_ip(node, self.runtime.network_interface) for node in nodes
+            )
+            env[f"SRT_SERVICE_{key}_NODE_COUNT"] = str(len(nodes))
+        return env
+
     def run_benchmark(
         self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
     ) -> int:
@@ -346,7 +384,8 @@ class BenchmarkStageMixin:
                 logger.info("Serve-only mode - no benchmark will be run")
             else:
                 logger.info("Benchmark type is 'manual' - server is ready for testing")
-            logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
+            if self.config.frontend.type != "none":
+                logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
             logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
@@ -732,14 +771,24 @@ class BenchmarkStageMixin:
         if is_custom:
             assert logical_endpoints is not None
             env.update(self._get_worker_endpoint_env(logical_endpoints))
+            env.update(self._get_service_env())
+            # getattr: this mixin is also driven by SimpleNamespace runtimes in tests.
+            gpus_per_node = getattr(self.runtime, "gpus_per_node", None)
+            if gpus_per_node is not None:
+                env["SRT_GPUS_PER_NODE"] = str(gpus_per_node)
+            worker_nodes = getattr(getattr(self.runtime, "nodes", None), "worker", None)
+            if isinstance(worker_nodes, (list, tuple)):
+                env["SRT_WORKER_NODES"] = ",".join(worker_nodes)
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
 
         # Orchestrator endpoint for the benchmark command. When the client runs on
         # a different node than the orchestrator (e.g. client_placement=last_decode
         # with orchestrator_placement=first_decode), "localhost" is wrong — the
         # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
-        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
-        env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
+        # A services-only job (frontend.type none) has no endpoint to point at.
+        if self.config.frontend.type != "none":
+            env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
+            env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
 
         # Propagate top-level recipe environment to the bench step. Workers
         # already get this via worker_stage; benches need it too for things

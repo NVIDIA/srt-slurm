@@ -137,6 +137,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     ServiceConfig(
                         name=DCGM_EXPORTER_SERVICE_NAME,
                         type="dcgm-exporter",
+                        placement=ServicePlacementConfig(node="compute"),
                         container=dcgm.container_image,
                         command=dcgm.command.format(port=dcgm.port).split() if dcgm.command else None,
                         options={"port": dcgm.port, "collect_interval_ms": tachometer.collect_interval_ms},
@@ -152,6 +153,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     ServiceConfig(
                         name=NODE_EXPORTER_SERVICE_NAME,
                         type="node-exporter",
+                        placement=ServicePlacementConfig(node="compute"),
                         container=node.container_image,
                         command=node.command.format(port=node.port).split() if node.command else None,
                         options={"port": node.port},

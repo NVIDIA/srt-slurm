@@ -473,7 +473,8 @@ def show_config_details(config: SrtConfig) -> None:
             service = entry.service
             console.print(
                 f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement} "
-                f"start={service.effective_start} critical={str(service.effective_critical).lower()}[/]"
+                f"start={service.effective_start} critical={str(service.effective_critical).lower()}"
+                f"{f' nodes={service.nodes}' if service.nodes is not None else ''}[/]"
             )
             if entry.implicit:
                 console.print(
@@ -527,6 +528,14 @@ def show_config_details(config: SrtConfig) -> None:
             console.print(f"[dim]dynamo source:[/] PyPI ai-dynamo=={source.pypi}")
         elif source is not None and source.wheel:
             console.print(f"[dim]dynamo source:[/] staged wheel ai-dynamo=={source.wheel}")
+
+    # --- nodes: who owns what (engine roles, service pools) ---
+    if config.pool_services:
+        console.print("[bold cyan]Nodes:[/]")
+        console.print(f"  engine roles: {config.engine_node_count}")
+        for svc in config.pool_services:
+            console.print(f"  pool {svc.name} ({svc.type}): {svc.nodes}")
+        console.print(f"  total: {config.total_nodes}")
 
     show_extensions = (
         config.benchmark.type == "custom"

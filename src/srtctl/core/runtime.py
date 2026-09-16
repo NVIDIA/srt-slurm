@@ -9,6 +9,7 @@ replacing scattered bash variables and Jinja templating with typed Python.
 """
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,7 +32,10 @@ class Nodes:
         bench: Benchmark node hostname (runs the benchmark client)
         infra: Infrastructure node hostname (runs NATS, etcd). Same as head unless
                etcd_nats_dedicated_node is enabled.
-        worker: Tuple of all worker node hostnames (prefill + decode)
+        worker: Tuple of the engine worker node hostnames (prefill + decode + agg)
+        pools: Nodes owned by services (``services[].nodes``), by service name, in
+             declaration order. Carved after the engine worker nodes. Empty for
+             recipes without node-owning services.
         het: True when the job was submitted as a SLURM heterogeneous job. In
              this mode worker srun calls need ``--het-group=<group>`` so SLURM
              routes them to the right component.
@@ -48,6 +52,15 @@ class Nodes:
     het: bool = False
     prefill_group: tuple[str, ...] = ()
     decode_group: tuple[str, ...] = ()
+    pools: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @property
+    def compute(self) -> tuple[str, ...]:
+        """Every node that runs work: the engine worker nodes, then each pool, in allocation order."""
+        seen: dict[str, None] = dict.fromkeys(self.worker)
+        for nodes in self.pools.values():
+            seen.update(dict.fromkeys(nodes))
+        return tuple(seen)
 
     def het_group_for(self, node: str) -> int | None:
         """Return the het component (0 or 1) a node belongs to, or None.
@@ -74,6 +87,8 @@ class Nodes:
         client_dedicated_node: bool = False,
         etcd_nats_dedicated_node: bool = False,
         colocate_dedicated_nodes: bool = True,
+        engine_nodes: int | None = None,
+        pools: Sequence[tuple[str, int]] = (),
     ) -> "Nodes":
         """Create Nodes from SLURM environment.
 
@@ -101,6 +116,12 @@ class Nodes:
                                       placement (frontend/client fall back to
                                       colocating with whichever node ends up
                                       being head; infra falls back to head).
+            engine_nodes: How many of the non-reserved nodes the engine roles
+                          own. Required when ``pools`` is given; None keeps the
+                          legacy behavior where every non-reserved node is a
+                          worker node.
+            pools: ``(service name, node count)`` pairs for services that own
+                   nodes, carved after the engine worker nodes in this order.
         """
         dedicated_roles = [
             role
@@ -118,6 +139,8 @@ class Nodes:
                 raise ValueError(
                     "frontend_dedicated_node/client_dedicated_node are not supported for heterogeneous SLURM jobs"
                 )
+            if pools:
+                raise ValueError("services[].nodes (pools) are not supported for heterogeneous SLURM jobs")
             return cls._from_het_slurm(het_lists, etcd_nats_dedicated_node)
 
         nodelist = get_slurm_nodelist()
@@ -126,8 +149,8 @@ class Nodes:
 
         if not dedicated_roles:
             head = bench = infra = nodelist[0]
-            worker = tuple(nodelist)
-            return cls(head=head, bench=bench, infra=infra, worker=worker)
+            worker, carved = cls._carve_pools(tuple(nodelist), engine_nodes, pools)
+            return cls(head=head, bench=bench, infra=infra, worker=worker, pools=carved)
 
         num_reserved = 1 if colocate_dedicated_nodes else len(dedicated_roles)
         if len(nodelist) <= num_reserved:
@@ -159,11 +182,41 @@ class Nodes:
             else:
                 worker = tuple(nodelist[len(front_roles) :])
 
-        head = reserved.get("frontend", worker[0])
+        worker, carved = cls._carve_pools(tuple(worker), engine_nodes, pools)
+        first_compute = (worker or tuple(n for nodes in carved.values() for n in nodes))[0]
+        head = reserved.get("frontend", first_compute)
         bench = reserved.get("client", head)
         infra = reserved.get("infra", head)
 
-        return cls(head=head, bench=bench, infra=infra, worker=worker)
+        return cls(head=head, bench=bench, infra=infra, worker=worker, pools=carved)
+
+    @staticmethod
+    def _carve_pools(
+        remaining: tuple[str, ...], engine_nodes: int | None, pools: Sequence[tuple[str, int]]
+    ) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+        """Split the non-reserved nodes into the engine worker nodes and the service pools.
+
+        Legacy recipes (no pools) keep every node as a worker node. With pools,
+        the engine roles take the first ``engine_nodes`` nodes and each pool the
+        next ``count`` in declaration order; the allocation must be large enough.
+        """
+        if not pools:
+            return remaining, {}
+        if engine_nodes is None:
+            raise ValueError("engine_nodes is required when pools are declared")
+        needed = engine_nodes + sum(count for _, count in pools)
+        if len(remaining) < needed:
+            raise ValueError(
+                f"allocation has {len(remaining)} non-reserved node(s) but the recipe needs {needed}: "
+                f"{engine_nodes} for engine roles plus pools " + ", ".join(f"{n}={c}" for n, c in pools)
+            )
+        worker = remaining[:engine_nodes]
+        carved: dict[str, tuple[str, ...]] = {}
+        cursor = engine_nodes
+        for name, count in pools:
+            carved[name] = remaining[cursor : cursor + count]
+            cursor += count
+        return worker, carved
 
     @classmethod
     def _from_het_slurm(
@@ -276,11 +329,14 @@ class RuntimeContext:
             log_dir_base: Base directory for logs (default: ./outputs)
         """
         # Get nodes from SLURM
+        pools = [(svc.name, svc.nodes) for svc in config.pool_services if svc.nodes is not None]
         nodes = Nodes.from_slurm(
             frontend_dedicated_node=config.frontend.dedicated_node,
             client_dedicated_node=config.benchmark.client_dedicated_node,
             etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
+            engine_nodes=config.engine_node_count if pools else None,
+            pools=pools,
         )
 
         # Compute run_name

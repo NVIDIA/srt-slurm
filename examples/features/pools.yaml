@@ -1,0 +1,61 @@
+# Pools: services that own whole nodes next to the engine roles.
+#
+# One aggregated SGLang worker on one node, a two-node pool for a trainer, a
+# sleeper on a fourth node, and a helper that rides on the trainer's pool. Four
+# nodes total: engine roles first, then every services[].nodes in declaration
+# order.
+#
+#   srtctl dry-run -f examples/features/pools.yaml   # prints the node map
+schema: 2
+name: "pools-toy"
+
+model:
+  path: "hf:Qwen/Qwen3-0.6B"
+  container: "nvcr.io/nvidia/sglang:latest"
+  precision: "bf16"
+
+resources:
+  gpu_type: "b200"
+  gpus_per_node: 8
+
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 8
+
+backend:
+  type: sglang
+
+frontend:
+  type: sglang
+  enable_multiple_frontends: false
+
+services:
+  # Owns two nodes: the pool is named after the service. A service that declares
+  # nodes runs one instance per node of its pool.
+  - name: train
+    type: generic
+    command: ["sleep", "infinity"]
+    nodes: 2
+    container: "ubuntu:24.04"
+    critical: false
+  # Owns one node.
+  - name: napper
+    type: generic
+    command: ["sleep", "infinity"]
+    nodes: 1
+    container: "ubuntu:24.04"
+    critical: false
+  # Rides on the train pool: one instance per node of `train`.
+  - name: watcher
+    type: generic
+    command: ["sleep", "infinity"]
+    placement:
+      pool: train
+    critical: false
+
+# A custom command finds a pool through SRT_SERVICE_<NAME>_NODES / _IPS / _NODE_COUNT.
+benchmark:
+  type: custom
+  command: "echo train pool: $SRT_SERVICE_TRAIN_NODES"
