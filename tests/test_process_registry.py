@@ -42,8 +42,9 @@ class TestManagedProcess:
             log_file=Path("/tmp/test.log"),
         )
 
-        # exit_code comes from popen.returncode
-        assert mock_popen.returncode == 1
+        # exit_code comes from popen.poll()
+        assert mp.exit_code == 1
+        assert not mp.is_running
 
     def test_terminate_does_not_raise_when_kill_wait_times_out(self):
         """A child that survives SIGKILL must not raise out of terminate()."""
