@@ -19,8 +19,11 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
 
-# Supported frontend types - extensible by adding new literals
-FrontendType = Literal["dynamo", "sglang", "sglang-router", "trtllm_serve", "vllm", "vllm-router"]
+# Supported frontend types - extensible by adding new literals. ``none`` is a
+# services-only job: no router process, no OpenAI endpoint, no worker-count
+# health gate (see SrtConfig._validate_services_only); it has no implementation
+# and every stage short-circuits on it before calling get_frontend().
+FrontendType = Literal["dynamo", "sglang", "sglang-router", "trtllm_serve", "vllm", "vllm-router", "none"]
 
 
 class FrontendProtocol(Protocol):
@@ -122,7 +125,13 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
         return VLLMFrontend()
     elif frontend_type == "vllm-router":
         return VLLMRouterFrontend()
+    elif frontend_type == "none":
+        raise ValueError(
+            "frontend.type 'none' has no frontend implementation: services-only jobs skip the frontend layer "
+            "and the health gate, so nothing should ask for one"
+        )
     else:
         raise ValueError(
-            f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, sglang-router, trtllm_serve, vllm, vllm-router"
+            f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, sglang-router, trtllm_serve, "
+            "vllm, vllm-router, none"
         )

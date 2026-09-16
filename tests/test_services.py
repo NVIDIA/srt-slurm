@@ -95,6 +95,7 @@ def test_registered_kinds() -> None:
         "nats",
         "node-exporter",
         "process-exporter",
+        "ray",
     ]
 
 

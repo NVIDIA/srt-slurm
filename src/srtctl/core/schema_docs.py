@@ -145,6 +145,12 @@ _ROLE_ROWS: tuple[tuple[str, str, str, str], ...] = (
         "`true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`.",
     ),
     ("sidecar", "bool", "`False`", "Run the native engine with a Dynamo sidecar; every role must agree."),
+    (
+        "critical",
+        "bool",
+        "`True`",
+        "A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers.",
+    ),
 )
 
 _PLACEMENT_ROWS: tuple[tuple[str, str, str], ...] = (

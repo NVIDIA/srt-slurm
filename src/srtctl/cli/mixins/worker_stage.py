@@ -36,6 +36,23 @@ WORKER_TERMINATE_TIMEOUT_SECONDS = 30.0
 _DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
 
 
+def _nsys_library_path_preamble(paths: list[str] | None) -> str | None:
+    """Prepend Nsight paths after the container environment has been loaded."""
+    if not paths:
+        return None
+    prefix = ":".join(dict.fromkeys(path for path in paths if path))
+    if not prefix:
+        return None
+    return f'export LD_LIBRARY_PATH={shlex.quote(prefix)}"${{LD_LIBRARY_PATH:+:${{LD_LIBRARY_PATH}}}}"'
+
+
+def _append_preamble(preamble: str | None, command: str | None) -> str | None:
+    """Run ``command`` after an existing shell preamble."""
+    if not command:
+        return preamble
+    return f"{preamble} && {command}" if preamble else command
+
+
 class WorkerStageMixin:
     """Mixin for worker process startup stage.
 
@@ -155,6 +172,22 @@ class WorkerStageMixin:
             environment.setdefault("SGLANG_PYSPY_DUMP_BEFORE_CRASH", "0")
         return environment
 
+    def _profiling_selects_process(self, process: "Process") -> bool:
+        """Whether this physical process should be wrapped for profiling.
+
+        Wall-clock captures retain their existing all-process behavior. TRT-LLM
+        also remains endpoint-wide because one MPI launch owns all executor
+        ranks and uses ``TLLM_PROFILE_START_STOP`` instead of HTTP control.
+        """
+        profiling = self.config.profiling
+        if not profiling.is_nsys or profiling.is_nsys_time or self.backend.type == "trtllm":
+            return True
+        return profiling.selects_process(
+            process.endpoint_mode,
+            process.endpoint_index,
+            process.node_rank,
+        )
+
     def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
         """Start a single worker process (one srun per node, used by SGLang)."""
         mode = process.endpoint_mode
@@ -168,10 +201,11 @@ class WorkerStageMixin:
 
         # Profiling setup
         profiling = self.config.profiling
+        profiling_selects_process = self._profiling_selects_process(process)
         nsys_prefix = None
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
-        if profiling.is_nsys:
+        if profiling.is_nsys and profiling_selects_process:
             gpu_label = process.cuda_visible_devices.replace(",", "-")
             nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}"
             nsys_prefix = profiling.get_nsys_prefix(
@@ -186,7 +220,7 @@ class WorkerStageMixin:
             frontend_type=self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,
-            profiling=profiling,
+            profiling=profiling if profiling_selects_process else None,
         )
 
         # Environment variables
@@ -224,11 +258,6 @@ class WorkerStageMixin:
             formatted_value = value.format_map(SafeDict(template_vars))
             env_to_set[key] = formatted_value
 
-        # Add profiling environment variables
-        if profiling.enabled:
-            profile_dir = str(self.runtime.log_dir / "profiles")
-            env_to_set.update(profiling.get_env_vars(mode, profile_dir))
-
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
         force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
         if (force_cvd or should_set_cvd(process)) and len(process.gpu_indices) < self.runtime.gpus_per_node:
@@ -247,6 +276,11 @@ class WorkerStageMixin:
             )
             env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
 
+        # Add profiling environment variables last.
+        if profiling.enabled and profiling_selects_process:
+            profile_dir = str(self.runtime.log_dir / "profiles")
+            env_to_set.update(profiling.get_env_vars(mode, profile_dir))
+
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 
         # Log env vars in the format: VAR=value VAR2=value2
@@ -259,6 +293,11 @@ class WorkerStageMixin:
 
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
+        if profiling_selects_process and profiling.is_nsys:
+            bash_preamble = _append_preamble(
+                bash_preamble,
+                _nsys_library_path_preamble(profiling.nsys_library_paths),
+            )
         fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
@@ -293,7 +332,9 @@ class WorkerStageMixin:
             popen=proc,
             log_file=worker_log,
             node=process.node,
-            critical=True,
+            # roles.<role>.critical: false keeps the run alive when this worker
+            # exits, for probes that kill workers on purpose.
+            critical=self.config.resources.worker_critical(mode),
             # SIGTERM reaches the engine through the step so it deregisters and
             # frees the GPUs cleanly; a signalled srun would SIGKILL it instead.
             terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
@@ -331,10 +372,11 @@ class WorkerStageMixin:
 
         # Profiling setup
         profiling = self.config.profiling
+        profiling_selects_process = self._profiling_selects_process(leader)
         nsys_prefix = None
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
-        if profiling.is_nsys:
+        if profiling.is_nsys and profiling_selects_process:
             nsys_output = f"/logs/profiles/{mode}/{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}"
             nsys_prefix = profiling.get_nsys_prefix(
                 nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
@@ -348,7 +390,7 @@ class WorkerStageMixin:
             frontend_type=self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,
-            profiling=profiling,
+            profiling=profiling if profiling_selects_process else None,
         )
 
         # Environment variables
@@ -385,11 +427,6 @@ class WorkerStageMixin:
         ):
             env_to_set.setdefault("DYN_TRTLLM_KV_EVENT_HOSTS", ",".join(endpoint_nodes))
 
-        # Add profiling environment variables
-        if profiling.enabled:
-            profile_dir = str(self.runtime.log_dir / "profiles")
-            env_to_set.update(profiling.get_env_vars(mode, profile_dir))
-
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
         force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
         if (force_cvd or should_set_cvd(leader)) and len(leader.gpu_indices) < self.runtime.gpus_per_node:
@@ -405,6 +442,11 @@ class WorkerStageMixin:
             )
             env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
 
+        # Add profiling environment variables after the worker environment.
+        if profiling.enabled and profiling_selects_process:
+            profile_dir = str(self.runtime.log_dir / "profiles")
+            env_to_set.update(profiling.get_env_vars(mode, profile_dir))
+
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 
         # Log env vars in the format: VAR=value VAR2=value2
@@ -417,6 +459,11 @@ class WorkerStageMixin:
 
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
+        if profiling_selects_process and profiling.is_nsys:
+            bash_preamble = _append_preamble(
+                bash_preamble,
+                _nsys_library_path_preamble(profiling.nsys_library_paths),
+            )
         fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
@@ -460,7 +507,7 @@ class WorkerStageMixin:
             popen=proc,
             log_file=worker_log,
             node=leader.node,
-            critical=True,
+            critical=self.config.resources.worker_critical(mode),
             # scancel --signal --full reaches every MPI rank of the step at once.
             terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
             step_name=step_name,

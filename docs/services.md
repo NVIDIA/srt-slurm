@@ -63,7 +63,9 @@ services:
     options:                     # kind-specific knobs (nats: max_payload_mb; exporters: port, collect_interval_ms)
       max_payload_mb: 24
     placement:
-      node: head                 # head | infra | dedicated | prefill | decode | agg | workers
+      node: head                 # head | infra | dedicated | prefill | decode | agg | workers | compute | all
+      pool: train                # or: ride on the nodes another service owns (replaces node)
+    nodes: 2                     # own whole nodes: a pool added to the allocation next to the roles' nodes
     start: after_frontend        # infra | before_workers | after_frontend
     readiness:                   # optional probe, checked on every service node; typed kinds have default ports
       port: 9000                 # or tcp: {port} / http: {port, path, status} / log: {pattern}
@@ -98,11 +100,14 @@ services:
 | `args` | `[]` | Appended to `command`. Handy with typed services that supply the command. |
 | `container` | type fallback, then job container | Aliases resolve through `srtslurm.yaml` like every other container key. |
 | `env` | `{}` | Merged over the type's defaults; see [Environment](#environment). |
-| `placement.node` | type default | `generic`: `head`. See [Placement](#placement). |
+| `placement.node` | type default | `generic`: `head`. See [Placement](#placement). `compute` is every engine worker node plus every pool; `all` adds the head, infra and client nodes. |
+| `placement.pool` | none | Run on the nodes another service owns, one instance per node of that pool. Replaces `node`. See [pools.md](pools.md). |
+| `nodes` | none | Whole nodes this service owns: its pool, added to the allocation after the engine roles' nodes, in declaration order. Any number of services may own nodes, next to engine roles or without them. An owner is placed on its own pool (`placement.node: workers`). Not supported with `resources.het_jobs`. See [pools.md](pools.md). |
 | `start` | type default | `etcd`, `nats`: `infra`. `mooncake-master`, `mooncake-store`: `before_workers`. `generic` and the exporters: `after_frontend`. |
 | `readiness` | type default | One probe per node: `port` / `tcp`, `http`, or `log`, plus `timeout_seconds` and `interval_seconds`. The typed kinds gate on their well-known ports when no probe is written. See [Start Order and Readiness](#start-order-and-readiness). Timing out terminates what this stage started and fails the job. |
 | `inherit_discovery_env` | `true` | Inject the same `ETCD_ENDPOINTS` / `NATS_SERVER` the Dynamo frontend gets. |
 | `critical` | type default | `generic`: `false`. `mooncake-store`: `true`. |
+| `terminal` | `false` | This service is the job's run: the job ends when every instance of every terminal service has exited, with the worst exit code as the job's. The recipe has no benchmark step (`benchmark.type` stays `manual`); combining the two is refused. See [pools.md](pools.md#ending-the-job-with-a-pool). |
 | `preamble` | none | Shell run after the environment is exported and before `command`. |
 | `cpus_per_task`, `cpu_bind`, `srun_options` | none | Pass-through srun knobs for this service's launches. |
 | `source`, `build_command` | none | See [Building From Source](#building-from-source). |
@@ -111,8 +116,11 @@ services:
 `command`, `args`, `env` values, and `preamble` may use these placeholders: `{node}`, `{node_ip}`,
 `{node_id}` (position in the worker list), `{index}` (instance index within the service), `{role}`
 (the `placement.node` value), `{head_node}`, `{head_ip}`, `{infra_node}`, `{infra_ip}`,
-`{master_port}`, `{metadata_port}`. Only those names are substituted; other braces (JSON in an env
-value) are left alone.
+`{master_port}`, `{metadata_port}`, `{gpus_per_node}`, and the service's own node set: `{pool_node}` /
+`{pool_ip}` (its first node), `{pool_nodes}` / `{pool_ips}` (every node, comma-separated, in order),
+`{pool_node_count}`. Only those names are substituted; other braces (JSON in an env value) are left alone.
+
+`{pool_ip}` is the rendezvous for a service that forms its own cluster on the nodes it owns; `{head_ip}` is the job head, an engine node when the service runs on a pool next to engine roles. A torchrun owner reads `--nnodes={pool_node_count} --nproc-per-node={gpus_per_node} --node-rank={index} --master-addr={pool_ip}`; see [pools.md](pools.md#forming-a-cluster-on-a-pool), including why such a service should not carry a `readiness` probe that needs every rank.
 
 ## Implicit Services
 
@@ -272,6 +280,35 @@ environment its process needs; the launch path is shared by every kind. Register
 | `node-exporter` | `/bin/node_exporter` with the cpu, infiniband, and meminfo collectors on 9101 in `quay.io/prometheus/node-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less. `options`: `port`. |
 | `process-exporter` | `configs/process-exporter -config.path <log_dir>/process-exporter.yml -web.listen-address=:9256 -threads=true ...` on the bare node | `after_frontend` | `false` | Implied on every allocated node (`placement.node: all`) while tachometer runs. Host-native from the static binary `make setup` installs; skipped with a warning when it is missing. A declared `container` switches to the image's `/bin/process-exporter` with the group file under `/logs`. `options`: `port`, `binary`. |
 | `mooncake-store` | `python -m mooncake.mooncake_store_service` | `before_workers` | `true` | Requires a `mooncake-master` entry. Container falls back to the master's. Injects the master's address. |
+| `ray` | `ray start --head ...` on the first instance, `ray start --address=<head>:6379 ...` on the rest, both `--block` | `before_workers` | `true` | One Ray cluster across the service's nodes; see [Ray cluster](#ray-cluster). Placement `workers` (default), `head`, or `all`. `options`: `port` (GCS, 6379), `dashboard_port` (8265), `num_gpus` (the node's count). `args` are appended to every `ray start`. |
+
+### Ray cluster
+
+`type: ray` turns the service's nodes into one Ray cluster: the first instance runs the head (GCS on
+`options.port`, dashboard and job-submission API on `options.dashboard_port`, bound to the node's
+fabric IP), every other instance joins it. Readiness is per role, then per fleet: the head is ready when
+its dashboard answers `/api/version`, a worker when its log says `Ray runtime started`, and the service
+is ready when the head's node summary lists every member `ALIVE`. The job waits for all three before
+anything that submits work starts.
+
+What Ray spawns later (actors, the driver of a `ray job submit`) runs inside these steps' containers,
+so the service carries the job's container, mounts, and environment. The client that submits work,
+typically the benchmark step, only needs to reach the dashboard port. `CUDA_VISIBLE_DEVICES` is
+exported to match `--num-gpus`, and `RAY_memory_monitor_refresh_ms=0` disables Ray's host-memory
+killer, which a trainer offloading to host RAM trips on purpose; both are defaults the recipe's `env`
+overrides.
+
+```yaml
+frontend:
+  type: none
+services:
+  - name: train
+    type: ray
+    nodes: 2                  # the job's two nodes belong to this cluster
+    options:
+      port: 6379
+      dashboard_port: 8265
+```
 
 The bespoke launch paths these replace (`start_head_infrastructure` with its own readiness loop, a
 Mooncake-master stage, exporter launches inside the tachometer stage) are gone; every one of these is

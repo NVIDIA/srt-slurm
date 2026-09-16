@@ -536,6 +536,26 @@ class TelemetryStageMixin:
             return router_metrics_port(self.config.frontend.args)
         return None
 
+    def _exporter_service_nodes(self) -> list[str]:
+        """Nodes hosting the dcgm and node exporter services, in allocation order.
+
+        The scrape targets used to follow backend ranks only. A services-only job
+        (a Ray cluster driving a trainer) has none, but its exporters still run
+        wherever ``services[].placement`` put them (job 15414 scraped nothing).
+        ``service_nodes`` comes from ServiceStageMixin on the orchestrator.
+        """
+        from srtctl.services.implicit import effective_services
+
+        service_nodes = getattr(self, "service_nodes", None)
+        if service_nodes is None:
+            return []
+        seen: dict[str, None] = {}
+        for entry in effective_services(self.config):
+            if entry.service.type in ("dcgm-exporter", "node-exporter") and entry.service.enabled:
+                for node in service_nodes(entry.service):
+                    seen.setdefault(node, None)
+        return list(seen)
+
     def start_tachometer(self) -> list[ManagedProcess]:
         """Start Tachometer collection unless explicitly disabled."""
         observability = self.config.observability
@@ -560,6 +580,7 @@ class TelemetryStageMixin:
                 dcgm_exporter=dcgm_exporter,
                 frontend_type=self.config.frontend.type,
                 frontend_metrics_port=self._frontend_metrics_port(),
+                exporter_nodes=self._exporter_service_nodes(),
             )
         )
 

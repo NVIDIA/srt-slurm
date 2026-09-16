@@ -365,6 +365,7 @@ Role names are `prefill`, `decode`, and `agg`. A recipe is disaggregated (prefil
 | `extra_args` | list[string] | TRT-LLM only: extra `trtllm-serve` CLI flags appended verbatim to the worker command (`frontend.type: trtllm_serve`). For the few options that configure the OpenAI server layer and have no engine YAML key, such as `--tool_parser` |
 | `kv_events` | bool or dict | Publish KV cache events for the Dynamo router; see below |
 | `sidecar` | bool | Run the native engine with a Dynamo sidecar; see [Native sidecar mode](#native-sidecar-mode) |
+| `critical` | bool | Whether a worker of this role exiting fails the run (default `true`); see [critical](#critical) |
 | `engine` | string | Optional; must equal the top-level `engine` when both are given |
 
 `env` and `args` are ordinary YAML mappings. Nothing needs JSON or inline `{}` syntax. Boolean flags are `flag-name: true`.
@@ -419,7 +420,20 @@ Each worker leader gets a globally unique port starting at 5550:
 | decode_0  | 5552 |
 | decode_1  | 5553 |
 
-The v1 spelling of this section (`resources.prefill_nodes`, `resources.prefill_workers`, `resources.gpus_per_prefill`, `resources.decode_nodes: 0`, `backend.prefill_environment`, `backend.sglang_config.prefill`, `backend.prefill_extra_args`, `backend.kv_events_config`, and the `decode` and `aggregated` counterparts) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
+### critical
+
+srtctl treats every worker as critical: when one exits, the process monitor fails the run and tears the job down. A workload that kills workers on purpose, such as a migration probe or a fault-tolerance test, needs the survivors to keep serving, so set `critical: false` on the role whose workers it kills:
+
+```yaml
+roles:
+  decode:
+    workers: 4
+    critical: false            # a decode worker exiting does not end the run
+```
+
+The flag is per role and defaults to `true`. It changes only how a worker exit is treated; the health gate before the benchmark still requires every worker to come up.
+
+The v1 spelling of this section (`resources.prefill_nodes`, `resources.prefill_workers`, `resources.gpus_per_prefill`, `resources.prefill_critical`, `resources.decode_nodes: 0`, `backend.prefill_environment`, `backend.sglang_config.prefill`, `backend.prefill_extra_args`, `backend.kv_events_config`, and the `decode` and `aggregated` counterparts) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
 ---
 
@@ -463,7 +477,9 @@ resources:
 | `spread_workers`  | bool   | false              | Place each partial-node worker on its own node instead of packing several onto one node. The recipe must reserve enough nodes (e.g. `roles.decode.nodes` equal to `roles.decode.workers` when `gpus` is below `gpus_per_node`) |
 | `het_jobs`        | bool or null | null         | Submit prefill and decode as two SLURM heterogeneous-job components, each with its own `--segment`. `null` defers to the cluster's `use_het_jobs`; see [slurm-faq.md](slurm-faq.md) |
 
-The total node count is the sum of every role's `nodes` plus one for each `placement.node: dedicated` (frontend, benchmark client, the discovery plane through its services). `srtctl dry-run` prints the resulting sbatch request.
+The total node count is the sum of every role's `nodes`, every service's `nodes` (a pool of whole nodes the service owns, see [pools.md](pools.md)), plus one for each `placement.node: dedicated` (frontend, benchmark client, the discovery plane through its services). Pools are carved after the engine roles' nodes, in declaration order. `srtctl dry-run` prints the resulting sbatch request and the node map.
+
+A services-only job has no engine roles at all: the services that own nodes declare `nodes` (see [pools.md](pools.md)), `frontend.type: none` skips the frontend layer and the worker-count health gate, and the `services:` readiness probes are the only gate before the benchmark step runs. This is the shape of a Ray cluster driving an RL trainer, or a client run against an endpoint the job does not own.
 
 The v1 spelling of the worker topology (`resources.prefill_nodes`, `prefill_workers`, `gpus_per_prefill`, `decode_nodes`, `decode_workers`, `gpus_per_decode`, `agg_nodes`, `agg_workers`, `gpus_per_agg`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it into `roles:`.
 
@@ -516,7 +532,9 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang-router", "vllm-router", or direct "sglang", "vllm", "trtllm_serve"
+  # Frontend type: "dynamo" (default), "sglang-router", "vllm-router", direct "sglang", "vllm", "trtllm_serve",
+  # or "none" for a services-only job (no router, no OpenAI endpoint, no worker-count health gate; only
+  # valid without engine roles, see services[].nodes)
   type: dynamo
 
   # Where it runs; see placement
@@ -754,6 +772,11 @@ Every custom benchmark command receives frontend metadata plus mode-specific met
 | `SRT_AGG_IPS`                   | comma-separated IPs            | Aggregated worker leader IPs |
 | `SRT_AGG_ENDPOINTS`             | comma-separated `IP:port`      | Aggregated worker endpoints |
 | `AIPERF_SERVER_METRICS_URLS`    | comma-separated HTTP URLs      | AIPerf-compatible `/metrics` URLs for all logical workers |
+| `SRT_SERVICE_<NAME>_NODES`      | comma-separated hostnames      | Nodes each launched service runs on, in placement order; `<NAME>` is the service name upper-cased with non-alphanumerics as `_` |
+| `SRT_SERVICE_<NAME>_IPS`        | comma-separated IPs            | The same nodes' fabric IPs (the first is the head of a `ray` service) |
+| `SRT_SERVICE_<NAME>_NODE_COUNT` | int                            | How many nodes the service spans |
+| `SRT_GPUS_PER_NODE`             | int                            | `resources.gpus_per_node` |
+| `SRT_WORKER_NODES`              | comma-separated hostnames      | Every engine worker node (empty when the job has no engine roles) |
 
 Only variables for roles present in the recipe are emitted. Entries follow logical topology order (prefill index, decode index, or aggregated index). Multi-node follower ranks are excluded because they do not own separate engines; co-located logical workers retain repeated IPs and distinct ports so list positions remain aligned. With a Dynamo frontend, endpoint and metrics URLs use each leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured, their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
 
@@ -763,6 +786,8 @@ Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 - **An explicit `AIPERF_SERVER_METRICS_URLS` in the recipe `environment:` wins.** Injection is skipped when the variable is already set, so a curated endpoint list is never clobbered.
 
 Values in `benchmark.env` are applied last and can explicitly override any automatically injected variable.
+
+The service variables are how a custom command drives something the job brought up rather than an inference endpoint: a job with no engine roles (`frontend.type: none`, a service that owns the nodes through `services[].nodes`) still runs its benchmark step, and the command finds the service through `SRT_SERVICE_*`. Launchers and clients that are not core live in the repo-root `benchmarks/` folder, mounted in every job container at `/benchmarks` (like `configs/` at `/configs`); `benchmarks/rl/miles/launch.sh` starts a [Miles](miles.md) RL run against a `ray` service.
 
 ### sa-bench (Serving Accuracy)
 
@@ -1102,13 +1127,20 @@ Profiling configuration for nsys or torch profiler.
 profiling:
   type: "nsys"                       # "none", "nsys", or "torch"
 
-  # Extra arguments for nsys profile (when type is nsys or nsys-time)
-  extra_nsys_args: ["--stats=true"]       # Optional: list of strings
+  # Nsight command settings (when type is nsys or nsys-time)
+  nsys_trace: "cuda,nvtx"
+  trace_fork_before_exec: true        # Optional; unset keeps the Dynamo default
+  capture_range_end: "stop"
+  nsys_library_paths: ["/usr/local/cuda/compat"]
+  extra_nsys_args: ["--stats=true"]
 
   # Phase-specific profiling step configs
   prefill:
     start_step: 10                   # Step to start profiling
     stop_step: 20                    # Step to stop profiling
+    capture_scope: "selected"        # Opt in to targeting; "all" is the default
+    worker_index: 0                  # Logical worker to profile
+    worker_rank: 0                   # Physical process rank within the worker
   decode:
     start_step: 10
     stop_step: 20
@@ -1118,27 +1150,47 @@ profiling:
     stop_step: 20
 ```
 
-| Field         | Type   | Required | Default | Description                              |
-| ------------- | ------ | -------- | ------- | ---------------------------------------- |
-| `type`        | string | No       | "none"  | Profiling type: "none", "nsys", "torch"  |
-| `extra_nsys_args` | list[string] | No | null | Extra args for nsys profile (when type is `nsys` or `nsys-time`) |
-| `prefill`     | object | Disaggregated | null | Prefill phase config                   |
-| `decode`      | object | Disaggregated | null | Decode phase config                    |
-| `aggregated`  | object | Aggregated | null | Aggregated phase config (the `agg` role)  |
+| Field | Type | Required | Default | Description |
+| ----- | ---- | -------- | ------- | ----------- |
+| `type` | string | No | "none" | Profiling type: "none", "nsys", "nsys-time", or "torch" |
+| `nsys_trace` | string | No | "cuda,nvtx" | Nsight activity domains for non-TRT-LLM workers |
+| `trace_fork_before_exec` | bool | No | null | Override non-TRT-LLM child-process tracing; null enables it for Dynamo only |
+| `capture_range_end` | string | No | "stop" | Non-TRT-LLM Nsight behavior when a CUDA profiler range ends |
+| `nsys_library_paths` | list[string] | No | null | Paths prepended to the worker `LD_LIBRARY_PATH` |
+| `extra_nsys_args` | list[string] | No | null | Extra args for `nsys profile` |
+| `prefill` | object | Disaggregated | null | Prefill phase config |
+| `decode` | object | Disaggregated | null | Decode phase config |
+| `aggregated` | object | Aggregated | null | Aggregated phase config (the `agg` role) |
 
 ### ProfilingPhaseConfig
 
 Each phase config has:
 
-| Field        | Type | Required | Default | Description                    |
-| ------------ | ---- | -------- | ------- | ------------------------------ |
-| `start_step` | int  | No       | null    | Step to start profiling        |
-| `stop_step`  | int  | No       | null    | Step to stop profiling         |
+| Field | Type | Required | Default | Description |
+| ----- | ---- | -------- | ------- | ----------- |
+| `start_step` | int | No | null | Step to start profiling |
+| `stop_step` | int | No | null | Step to stop profiling |
+| `capture_scope` | string | No | "all" | Capture all physical processes or opt in to "selected" |
+| `worker_index` | int | No | 0 | Logical worker selected for iteration-based Nsight |
+| `worker_rank` | int | No | 0 | Physical process rank selected within the worker |
 
 ### Profiling Modes
 
-- **nsys**: NVIDIA Nsight Systems profiling. Wraps worker command with `nsys profile`.
+- **nsys**: NVIDIA Nsight Systems profiling. For vLLM and SGLang, each phase
+  captures all physical processes by default and sends every usable control
+  endpoint to the benchmark. Set `capture_scope: selected` to opt in to one
+  worker/rank. A Dynamo control endpoint uses the worker's `DYN_SYSTEM_PORT`.
+  Native Dynamo sidecars and direct vLLM expose control only on the endpoint
+  leader: all-process capture sends one control request to rank 0, while
+  selected capture must explicitly target rank 0.
 - **torch**: PyTorch profiler. Sets `SGLANG_TORCH_PROFILER_DIR` environment variable.
+
+TRT-LLM does not use the HTTP profiling helper. Its executor uses
+`TLLM_PROFILE_START_STOP` to trigger the CUDA profiler, so its Nsight wrapper
+continues to cover the complete MPI endpoint. With vLLM `dp_launch_mode:
+per_node`, a physical process can own multiple local DP ranks; use `per_gpu`
+when each DP rank needs a separate report. `worker_index` and `worker_rank`
+are ignored when `capture_scope: all`.
 
 ### Validation Rules
 
@@ -1184,10 +1236,12 @@ roles:
 
 profiling:
   type: "nsys"
-  extra_nsys_args: ["--stats=true", "--trace=osrt"]
+  nsys_trace: "cuda,nvtx,osrt"
+  extra_nsys_args: ["--stats=true"]
   aggregated:
     start_step: 10
     stop_step: 25
+    capture_scope: all
 ```
 
 ---

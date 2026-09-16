@@ -187,7 +187,7 @@ def collect_resource_snapshot(
     from srtctl.version import package_version, source_commit
 
     tool = {"srtctl_version": package_version(), "srtctl_commit": source_commit()}
-    node_names = tuple(dict.fromkeys((runtime.nodes.infra, *runtime.nodes.worker)))
+    node_names = tuple(dict.fromkeys((runtime.nodes.infra, *runtime.nodes.compute)))
     node_count = len(node_names)
     configured_gpu_count = node_count * config.resources.gpus_per_node
     worker_gpu_count = _worker_gpu_count(config)

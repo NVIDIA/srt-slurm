@@ -32,14 +32,14 @@ def mock_api():
     """
     client = mock_status_server.create_test_client()
 
-    def route_post(url, json=None, timeout=None):
+    def route_post(url, json=None, timeout=None, **kwargs):
         """Route POST requests through TestClient."""
         # Extract path from URL (e.g., "http://mock:8080/api/jobs" -> "/api/jobs")
         path = "/" + url.split("/", 3)[-1]
         response = client.post(path, json=json)
         return _MockResponse(response.status_code, response.json())
 
-    def route_put(url, json=None, timeout=None):
+    def route_put(url, json=None, timeout=None, **kwargs):
         """Route PUT requests through TestClient."""
         path = "/" + url.split("/", 3)[-1]
         response = client.put(path, json=json)

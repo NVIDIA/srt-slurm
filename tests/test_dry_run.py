@@ -374,6 +374,30 @@ class TestDryRunSrunOptions:
 class TestDryRunExecutionExtensions:
     """Test custom benchmark and telemetry details display."""
 
+    def test_nsys_profiling_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "profiling": {
+                    "type": "nsys",
+                    "nsys_trace": "cuda-sw,nvtx",
+                    "trace_fork_before_exec": True,
+                    "capture_range_end": "repeat:1:async",
+                    "nsys_library_paths": ["/host/lib64", "/host/lib"],
+                    "prefill": {"start_step": 1, "stop_step": 3, "worker_index": 0, "worker_rank": 0},
+                    "decode": {"start_step": 2, "stop_step": 4, "capture_scope": "all"},
+                }
+            }
+        )
+
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "cuda-sw,nvtx" in output
+        assert "repeat:1:async" in output
+        assert "/host/lib64:/host/lib" in output
+        assert "all physical processes" in output
+        assert "Execution Extensions" in output
+        assert "profiling" in output
+
     def test_custom_benchmark_details_shown(self, capsys):
         config = _make_config(
             {
@@ -389,6 +413,7 @@ class TestDryRunExecutionExtensions:
         assert "Execution Extensions" in output
         assert "container_image" in output
         assert "nvcr.io/nvidia/python:3.11" in output
+        assert "profiling" not in output
 
     def test_observability_tachometer_details_shown(self, capsys):
         config = _make_config(

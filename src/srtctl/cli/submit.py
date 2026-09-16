@@ -62,6 +62,8 @@ from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
 from srtctl.runtime_scripts.dynamo_wheels import arch_from_binary, detect_target_arch
+from srtctl.status_server.server import add_arguments as add_status_server_arguments
+from srtctl.status_server.server import serve as serve_status_server
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -473,7 +475,9 @@ def show_config_details(config: SrtConfig) -> None:
             service = entry.service
             console.print(
                 f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement} "
-                f"start={service.effective_start} critical={str(service.effective_critical).lower()}[/]"
+                f"start={service.effective_start} critical={str(service.effective_critical).lower()}"
+                f"{f' nodes={service.nodes}' if service.nodes is not None else ''}"
+                f"{' terminal' if service.terminal else ''}[/]"
             )
             if entry.implicit:
                 console.print(
@@ -528,6 +532,14 @@ def show_config_details(config: SrtConfig) -> None:
         elif source is not None and source.wheel:
             console.print(f"[dim]dynamo source:[/] staged wheel ai-dynamo=={source.wheel}")
 
+    # --- nodes: who owns what (engine roles, service pools) ---
+    if config.pool_services:
+        console.print("[bold cyan]Nodes:[/]")
+        console.print(f"  engine roles: {config.engine_node_count}")
+        for svc in config.pool_services:
+            console.print(f"  pool {svc.name} ({svc.type}): {svc.nodes}")
+        console.print(f"  total: {config.total_nodes}")
+
     show_extensions = (
         config.benchmark.type == "custom"
         or config.benchmark.container_image
@@ -535,6 +547,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.observability.tachometer.enabled
         or config.telemetry.enabled
         or mooncake_cfg is not None
+        or config.profiling.enabled
     )
     if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
@@ -553,6 +566,42 @@ def show_config_details(config: SrtConfig) -> None:
         # resolved to the expected sqsh / URI.
         if config.benchmark.container_image:
             details.add_row("benchmark", "container_image", config.benchmark.container_image)
+
+        profiling = config.profiling
+        # Other extensions can enable this section without enabling profiling.
+        if profiling.enabled:
+            details.add_row("profiling", "type", profiling.type)
+            if profiling.is_nsys:
+                details.add_row("profiling", "nsys_trace", profiling.nsys_trace)
+                details.add_row("profiling", "capture_range_end", profiling.capture_range_end)
+                fork_setting = (
+                    "dynamo default"
+                    if profiling.trace_fork_before_exec is None
+                    else str(profiling.trace_fork_before_exec).lower()
+                )
+                details.add_row("profiling", "trace_fork_before_exec", fork_setting)
+                if profiling.nsys_library_paths:
+                    details.add_row(
+                        "profiling",
+                        "nsys_library_paths",
+                        ":".join(profiling.nsys_library_paths),
+                    )
+                for mode, phase in (
+                    ("prefill", profiling.prefill),
+                    ("decode", profiling.decode),
+                    ("aggregated", profiling.aggregated),
+                ):
+                    if phase is not None and not profiling.is_nsys_time:
+                        target = (
+                            "all physical processes"
+                            if phase.capture_scope == "all"
+                            else f"worker {phase.worker_index}, rank {phase.worker_rank}"
+                        )
+                        details.add_row(
+                            "profiling",
+                            f"{mode} target",
+                            target,
+                        )
 
         tachometer = config.observability.tachometer
         if config.observability.tachometer_enabled:
@@ -1686,6 +1735,7 @@ def main():
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl view /path/to/run-output                # Local ruter route-decision viewer
+  srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
   srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md + docs/legacy-v1.md
   srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
   srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
@@ -1810,6 +1860,12 @@ def main():
     )
     view_parser.add_argument("--port", type=int, default=8877, help="Loopback port (default: 8877)")
     view_parser.add_argument("--refresh", action="store_true", help="Reparse logs before loading the viewer")
+
+    status_server_parser = subparsers.add_parser(
+        "status-server",
+        help="Run the native status collector that reporting.status.endpoint can point at",
+    )
+    add_status_server_arguments(status_server_parser)
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
@@ -2107,6 +2163,18 @@ def main():
         if args.refresh:
             view_args.append("--refresh")
         _view_main(view_args)
+        return
+
+    if args.command == "status-server":
+        serve_status_server(
+            host=args.host,
+            port=args.port,
+            db_path=args.db,
+            token_env=args.token_env,
+            read_token_env=args.read_token_env,
+            allow_unauthenticated=args.allow_unauthenticated,
+            cors_origins=args.cors_origin,
+        )
         return
 
     # Parse config arg: supports path:selector format for overrides

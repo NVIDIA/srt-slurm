@@ -289,3 +289,38 @@ def test_roles_from_legacy_folds_kv_events_and_sidecar() -> None:
     assert folded["roles"]["agg"] == {"workers": 0, "sidecar": True}  # vLLM's bare `true` never covered agg
     assert folded["dynamo"] == {"sidecar_port": 50051}
     assert "backend" not in folded
+
+
+def test_per_role_critical_maps_onto_resources_and_the_worker_flag() -> None:
+    config = expand_roles(
+        {
+            "engine": "sglang",
+            "roles": {"prefill": {"workers": 1, "critical": False}, "decode": {"workers": 1}},
+        }
+    )
+    assert config["resources"]["prefill_critical"] is False
+    assert "decode_critical" not in config["resources"]  # default stays implicit
+
+    recipe = _roles_sglang_disagg()
+    recipe["roles"]["prefill"]["critical"] = False
+    loaded = SrtConfig.Schema().load(expand_roles(recipe))
+    assert loaded.resources.worker_critical("prefill") is False
+    assert loaded.resources.worker_critical("decode") is True
+    assert loaded.resources.worker_critical("agg") is True
+
+    with pytest.raises(TypeError, match="critical must be a boolean"):
+        expand_roles({"roles": {"decode": {"critical": "no"}}})
+    with pytest.raises(ValueError, match="cannot be combined"):
+        expand_roles({"resources": {"decode_critical": False}, "roles": {"decode": {"workers": 1}}})
+
+
+def test_roles_from_legacy_folds_critical() -> None:
+    legacy = {
+        "backend": {"type": "sglang"},
+        "resources": {"prefill_workers": 1, "decode_workers": 1, "decode_critical": False},
+    }
+    folded = roles_from_legacy(legacy)
+    assert folded["roles"]["decode"] == {"workers": 1, "critical": False}
+    assert folded["roles"]["prefill"] == {"workers": 1}
+    assert "resources" not in folded
+    assert expand_roles(copy.deepcopy(folded))["resources"] == legacy["resources"]

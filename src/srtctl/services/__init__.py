@@ -4,7 +4,7 @@
 """The top-level ``services:`` block: user-declared long-running processes launched next to the job."""
 
 # Import kinds to trigger registration.
-from srtctl.services import exporters, generic, infra, mooncake_master, mooncake_store
+from srtctl.services import exporters, generic, infra, mooncake_master, mooncake_store, ray
 from srtctl.services.config import (
     SERVICE_PLACEMENTS,
     SERVICE_STARTS,
@@ -43,5 +43,6 @@ __all__ = [
     "list_service_types",
     "mooncake_master",
     "mooncake_store",
+    "ray",
     "register_service",
 ]

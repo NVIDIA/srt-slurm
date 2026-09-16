@@ -25,7 +25,17 @@ logger = logging.getLogger(__name__)
 
 # Where a service runs. head / infra are one node; prefill / decode / agg are the
 # distinct physical nodes the role's workers land on; workers is every worker node.
-SERVICE_PLACEMENTS: tuple[str, ...] = ("head", "infra", "dedicated", "prefill", "decode", "agg", "workers", "all")
+SERVICE_PLACEMENTS: tuple[str, ...] = (
+    "head",
+    "infra",
+    "dedicated",
+    "prefill",
+    "decode",
+    "agg",
+    "workers",
+    "compute",
+    "all",
+)
 SINGLE_NODE_PLACEMENTS: frozenset[str] = frozenset({"head", "infra", "dedicated"})
 
 # When a service starts relative to the rest of the job. ``infra`` is the discovery
@@ -45,10 +55,16 @@ class ServicePlacementConfig:
         node: ``head`` or ``infra`` (one instance), ``dedicated`` (reserve the
             infra node exclusively; infra-class kinds only), ``prefill`` /
             ``decode`` / ``agg`` (one instance per distinct physical node that
-            role's workers use), or ``workers`` (one instance per worker node).
+            role's workers use), ``workers`` (one instance per engine worker
+            node; on a service that owns nodes, its own pool), ``compute``
+            (engine worker nodes plus every pool), or ``all`` (every node of
+            the allocation).
+        pool: Run on the nodes another service owns (``services[].nodes``), one
+            instance per node of that pool. Replaces ``node``.
     """
 
     node: str = "head"
+    pool: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -57,6 +73,11 @@ class ServicePlacementConfig:
             raise ValidationError(
                 f"services[].placement.node must be one of {', '.join(SERVICE_PLACEMENTS)}; got {self.node!r}"
             )
+        if self.pool is not None:
+            if not str(self.pool).strip():
+                raise ValidationError("services[].placement.pool must name a service that declares nodes")
+            if self.node != "head":
+                raise ValidationError("services[].placement: give either node or pool, not both")
 
 
 @dataclass(frozen=True)
@@ -194,6 +215,12 @@ class ServiceConfig:
             ``command`` run. Single-node placements only.
         build_command: Argv run once inside the service container, from the
             clone, before ``command`` starts. Only meaningful with ``source``.
+        nodes: Whole nodes this service owns: its pool. Pools add to the
+            allocation next to the engine roles' nodes and are carved after them
+            in declaration order, so a Ray cluster, a sandbox fleet and an engine
+            role can each have their own nodes in one recipe. An owner is placed
+            on its own pool (``placement.node: workers``); other services join it
+            with ``placement.pool: <name>``.
         placement: Where the service runs. Defaults to the kind's placement
             (``head`` for generic services, ``infra`` for etcd/nats/mooncake-master,
             ``workers`` for the exporters).
@@ -207,6 +234,11 @@ class ServiceConfig:
             false for ``generic`` (a dead sidecar costs its own log, not the
             run) and true for ``mooncake-store``. Set true for anything in
             the live request path.
+        terminal: This service is the job's run: the job ends when every
+            instance of every terminal service has exited, and the worst exit
+            code becomes the job's. A recipe with a terminal service has no
+            benchmark step (``benchmark.type`` stays ``manual``); a torchrun
+            pool that trains to completion is the shape.
         preamble: Shell run inside the container before ``command``
             (``ulimit`` and friends).
         cpus_per_task: Optional ``srun --cpus-per-task``.
@@ -233,10 +265,12 @@ class ServiceConfig:
     source: ServiceSourceConfig | None = None
     build_command: list[str] | None = None
     placement: ServicePlacementConfig | None = None
+    nodes: int | None = None
     start: str | None = None
     readiness: ServiceReadinessConfig | None = None
     inherit_discovery_env: bool = True
     critical: bool | None = None
+    terminal: bool = False
     preamble: str | None = None
     cpus_per_task: int | None = None
     cpu_bind: str | None = None
@@ -296,6 +330,16 @@ class ServiceConfig:
                 f"{label}.placement.node: dedicated is only supported for infra-class kinds (etcd, nats, "
                 f"mooncake-master); use head, infra, or workers for type {self.type!r}"
             )
+        if self.nodes is not None:
+            if self.nodes < 1:
+                raise ValidationError(f"{label}.nodes must be at least 1; got {self.nodes}")
+            if self.placement is not None and self.placement.pool is not None:
+                raise ValidationError(f"{label}.nodes makes the service its own pool; drop placement.pool")
+            if self.effective_placement != "workers":
+                raise ValidationError(
+                    f"{label}.nodes owns a pool, so placement.node must be workers, meaning that pool "
+                    f"(got {self.effective_placement!r})"
+                )
         unknown_options = set(self.options) - set(kind.option_keys)
         if unknown_options:
             raise ValidationError(
@@ -326,12 +370,24 @@ class ServiceConfig:
 
     @property
     def effective_placement(self) -> str:
-        """``placement.node`` as written, else the kind's default (``head`` for generic services)."""
+        """``placement.node`` as written, else the kind's default (``head`` for generic services).
+
+        A service that owns nodes, or rides on a pool, is placed on ``workers``: that pool.
+        """
         from srtctl.services.registry import get_service_kind
 
         if self.placement is not None:
-            return self.placement.node
+            return "workers" if self.placement.pool is not None else self.placement.node
+        if self.nodes is not None:
+            return "workers"
         return get_service_kind(self.type).default_placement
+
+    @property
+    def effective_pool(self) -> str | None:
+        """The pool this service rides on: its own when it owns nodes, else ``placement.pool``."""
+        if self.nodes is not None:
+            return self.name
+        return self.placement.pool if self.placement is not None else None
 
     @property
     def effective_critical(self) -> bool:
