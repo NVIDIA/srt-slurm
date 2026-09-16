@@ -350,6 +350,19 @@ class TestS3Config:
         assert config.exclude == []
         assert config.archive == ["*.out"]
 
+    def test_default_excludes_are_scoped_to_the_aiperf_artifact_roots(self):
+        """A same-named file from another benchmark type (a custom runner's inputs.json) must not be dropped."""
+        from srtctl.core.schema import DEFAULT_S3_EXCLUDE
+
+        aiperf_patterns = [p for p in DEFAULT_S3_EXCLUDE if not p.startswith("perf_dashboard")]
+        assert aiperf_patterns, DEFAULT_S3_EXCLUDE
+        for pattern in aiperf_patterns:
+            assert pattern.startswith(("artifacts/*/", "sa-bench_*/*/")), pattern
+        for name in ("server_metrics_export.jsonl", "gpu_telemetry_export.jsonl", "inputs.json"):
+            assert f"artifacts/*/{name}" in DEFAULT_S3_EXCLUDE
+            assert f"sa-bench_*/*/{name}" in DEFAULT_S3_EXCLUDE
+        assert "perf_dashboard_bundle/*" in DEFAULT_S3_EXCLUDE and "perf_dashboard.json" in DEFAULT_S3_EXCLUDE
+
     def test_full_config(self):
         """Test S3Config with all fields."""
         config = S3Config(
