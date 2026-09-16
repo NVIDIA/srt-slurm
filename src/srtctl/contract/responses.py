@@ -20,9 +20,12 @@ class JobSummary(BaseModel):
     job_name: str
     status: str
     stage: str | None = None
+    message: str | None = None
     cluster: str | None = None
     submitted_at: str
+    completed_at: str | None = None
     updated_at: str
+    exit_code: int | None = None
 
 
 class JobDetail(BaseModel):

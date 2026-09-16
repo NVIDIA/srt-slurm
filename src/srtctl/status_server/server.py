@@ -23,6 +23,10 @@ guards every write and also grants reads; the optional ``$SRTCTL_STATUS_READ_TOK
 grants reads only. ``/api/health`` is always open. Binding to anything but
 loopback without a token is refused unless ``--allow-unauthenticated`` says the
 network is trusted (a cluster's internal network, for example).
+
+``GET /`` serves ``ui/index.html``, a dependency-free single page (jobs table,
+per-job facts and event timeline, live global event feed) that talks to the
+same ``/api`` routes with the read token the viewer pastes once.
 """
 
 from __future__ import annotations
@@ -69,6 +73,10 @@ DEFAULT_READ_TOKEN_ENV = "SRTCTL_STATUS_READ_TOKEN"
 # used to fill the disk.
 MAX_BODY_BYTES = 1 << 20
 HEALTH_PATH = "/api/health"
+# The single-page UI. It is static and reveals nothing, so it is served without
+# a token; every API call the page makes carries the token the viewer pasted.
+UI_DIR = Path(__file__).with_name("ui")
+UI_PATHS = frozenset({"/", "/index.html"})
 
 _JOB_ROUTE = re.compile(r"^/api/jobs/(?P<job_id>[^/]+)$")
 _JOB_EVENTS_ROUTE = re.compile(r"^/api/jobs/(?P<job_id>[^/]+)/events$")
@@ -338,18 +346,29 @@ def _handler_class(store: StatusStore, auth: AuthPolicy) -> type[BaseHTTPRequest
         def do_DELETE(self) -> None:
             self._handle("DELETE")
 
+        def do_HEAD(self) -> None:
+            # Uptime checkers and proxies probe with HEAD; answer like GET without a body.
+            self._handle("HEAD")
+
         def _handle(self, method: str) -> None:
-            """Order matters: size cap, then auth, then JSON parsing, then routing.
+            """Order matters: size cap, then the static UI, then auth, then JSON parsing, then routing.
 
             An unauthenticated caller therefore learns nothing from the response,
             not even whether the body parsed or the job exists.
             """
+            head_only = method == "HEAD"
+            effective = "GET" if head_only else method
             headers: dict[str, str] = {}
             try:
                 raw = self._read_body()
                 path = urlparse(self.path).path.rstrip("/") or "/"
-                auth.check(method, path, self.headers.get("Authorization"))
-                status, body = route(store, method, self.path, _parse_json(raw))
+                if effective == "GET" and path in UI_PATHS:
+                    self._send(
+                        HTTPStatus.OK, (UI_DIR / "index.html").read_bytes(), "text/html; charset=utf-8", {}, head_only
+                    )
+                    return
+                auth.check(effective, path, self.headers.get("Authorization"))
+                status, body = route(store, effective, self.path, _parse_json(raw))
             except ApiError as exc:
                 if exc.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
                     logger.info("%s %s %s from %s", exc.status.value, method, self.path, self.address_string())
@@ -359,7 +378,7 @@ def _handler_class(store: StatusStore, auth: AuthPolicy) -> type[BaseHTTPRequest
             except Exception:
                 logger.exception("Unhandled error serving %s %s", method, self.path)
                 status, body = HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": "Internal server error"}
-            self._send_json(status, body, headers)
+            self._send(status, json.dumps(body).encode(), "application/json", headers, head_only)
 
         def _read_body(self) -> bytes | None:
             header = self.headers.get("Content-Length")
@@ -376,18 +395,22 @@ def _handler_class(store: StatusStore, auth: AuthPolicy) -> type[BaseHTTPRequest
                 return None
             return self.rfile.read(length)
 
-        def _send_json(self, status: HTTPStatus, body: dict[str, Any], headers: dict[str, str]) -> None:
-            data = json.dumps(body).encode()
+        def _send(
+            self, status: HTTPStatus, data: bytes, content_type: str, headers: dict[str, str], head_only: bool
+        ) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             for name, value in headers.items():
                 self.send_header(name, value)
             if self.close_connection:
                 # Tell keep-alive clients not to reuse a connection whose body was never drained.
                 self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(data)
+            if not head_only:
+                self.wfile.write(data)
 
     return Handler
 
@@ -427,6 +450,7 @@ def serve(
     server = make_server(store, host=host, port=port, auth=auth)
     bound_host, bound_port = server.server_address[0], server.server_address[1]
     print(f"srtctl status-server listening on http://{bound_host}:{bound_port} (db: {store.db_path})")
+    print(f"UI: http://{bound_host}:{bound_port}/  (paste the read token once; the browser keeps it in localStorage)")
     if auth.enabled:
         read = f", read token from ${read_token_env}" if auth.read_token else ""
         print(f"auth: bearer token required on every route except {HEALTH_PATH} (write token from ${token_env}{read})")
