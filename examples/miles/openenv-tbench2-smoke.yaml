@@ -1,0 +1,67 @@
+# OpenEnv without Docker: the Terminal-Bench-2 env server as a pool service.
+#
+# tbench2_env (huggingface/OpenEnv) in TB2_MODE=local runs each task's shell
+# commands directly in its own container, so it needs neither Docker nor a hosted
+# sandbox. The `env` service owns one node and serves it on port 8003; the
+# benchmark step runs a client smoke: /health, reset(task_id), one exec, evaluate.
+#
+# One-time cluster prep (paths below), done inside the Miles image:
+#   git clone --depth 1 https://github.com/huggingface/OpenEnv        /data/home/idhanani/openenv/OpenEnv
+#   git clone --depth 1 https://github.com/laude-institute/terminal-bench-2 /data/home/idhanani/openenv/terminal-bench-2
+#   python3 -m venv --system-site-packages /data/home/idhanani/openenv/venv
+#   /data/home/idhanani/openenv/venv/bin/pip install /data/home/idhanani/openenv/OpenEnv/envs/tbench2_env
+#
+# The venv only adds what the image lacks (openenv, camel-ai, tbench2_env); its
+# site-packages goes on PYTHONPATH in every container that talks to the env.
+schema: 2
+name: "openenv-tbench2-smoke"
+
+slurm:
+  time_limit: "00:20:00"
+
+model:
+  path: "qwen3-4b"                 # unused by the smoke; the schema requires a model
+  container: "miles"               # radixark/miles image: Python 3.12, fastapi, uvicorn, no GPUs needed here
+  precision: "bf16"
+
+resources:
+  gpu_type: "b200"
+  gpus_per_node: 8
+
+frontend:
+  type: none
+
+services:
+  - name: env
+    type: generic
+    nodes: 1
+    command: ["python3", "-m", "tbench2_env.server.app", "--port", "8003"]
+    preamble: "ulimit -n 1048576"  # the WebSocket server holds one fd per live session
+    env:
+      PYTHONPATH: /data/home/idhanani/openenv/venv/lib/python3.12/site-packages
+      TB2_MODE: local              # no Docker: commands run in this container's shell
+      TB2_TASKS_DIR: /data/home/idhanani/openenv/terminal-bench-2
+      TB2_OUTPUT_DIR: /tmp/tbench2_env_runs
+      TB2_WITHHOLD_TESTS: "1"      # RL hygiene: tests/ and solution/ moved out of the agent's reach
+      TB2_COMMAND_TIMEOUT_S: "120"
+      MAX_CONCURRENT_ENVS: "32"
+    readiness:
+      http:
+        port: 8003
+        path: /health
+      timeout_seconds: 300
+    critical: true
+
+benchmark:
+  type: custom
+  command: python3 /benchmarks/rl/openenv/tbench2_smoke.py
+  env:
+    PYTHONPATH: /data/home/idhanani/openenv/venv/lib/python3.12/site-packages
+    OPENENV_TASK_ID: headless-terminal
+
+extra_mount:
+  - "/data/home/idhanani/openenv:/data/home/idhanani/openenv"
+
+observability:
+  tachometer:
+    enabled: false
