@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -268,7 +268,9 @@ def start_srun_process(
     if cpu_bind:
         srun_cmd.append(f"--cpu-bind={cpu_bind}")
 
-    srun_cmd.extend(["--nodes", str(nodes)])
+    # Arbitrary layouts derive their node count from the repeated host list.
+    if not srun_options or srun_options.get("distribution") != "arbitrary":
+        srun_cmd.extend(["--nodes", str(nodes)])
     srun_cmd.extend(["--ntasks", str(ntasks)])
 
     if cpus_per_task:

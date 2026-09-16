@@ -343,6 +343,30 @@ Saved and locked recipes carry the resolved key, so a later `observability.enabl
 
 These options do not change native `trtllm_serve` or sidecar worker commands. `srtctl dry-run` shows the publication flag selected for Dynamo TRT-LLM workers and, for every TRT-LLM backend, the per-role `enable_iter_perf_stats` / `return_perf_metrics` values the engine YAML will carry.
 
+TRT-LLM workers can span partially occupied nodes. For example, on four-GPU nodes,
+two DEP6 prefill workers need three nodes:
+
+```yaml
+roles:
+  prefill:
+    nodes: 3
+    workers: 2
+    gpus: 6
+    args:
+      tensor_parallel_size: 6
+      moe_expert_parallel_size: 6
+      pipeline_parallel_size: 1
+      enable_attention_dp: true
+```
+
+The workers use `A[0,1,2,3] + B[0,1]` and `C[0,1,2,3] + B[2,3]`.
+Each endpoint launches exactly six MPI ranks and gets its own per-node
+`CUDA_VISIBLE_DEVICES`. Full nodes lead the rank order to keep TRT-LLM's local
+device mapping consistent. Layouts incompatible with that mapping (for example,
+seven ranks split 4+3) are rejected before launch. Backend-specific communication
+requirements still apply; this does not enable arbitrary uneven layouts in every
+TRT-LLM communication backend.
+
 **Other TRT-LLM launch facts**: TRT-LLM supports prefill, decode, and aggregated roles, uses MPI-style launching (one srun per endpoint with all of its nodes) through `trtllm-llmapi-launch`, and sets `TRTLLM_EPLB_SHM_NAME` to a unique UUID per endpoint.
 
 ---

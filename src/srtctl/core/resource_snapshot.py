@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Capture the CPU and GPU allocation visible to a running SLURM job."""
@@ -130,6 +130,7 @@ def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[st
                 gpus_per_decode=resources.gpus_per_decode,
                 decode_nodes=runtime.nodes.decode_group,
                 gpus_per_node=resources.gpus_per_node,
+                pack_multinode_workers=config.backend.type == "trtllm",
             )
         else:
             endpoints = config.backend.allocate_endpoints(
@@ -149,8 +150,8 @@ def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[st
 
     gpu_counts: dict[str, int] = {}
     for endpoint in endpoints:
-        for node in endpoint.nodes:
-            gpu_counts[node] = gpu_counts.get(node, 0) + len(endpoint.gpu_indices)
+        for node_rank, node in enumerate(endpoint.nodes):
+            gpu_counts[node] = gpu_counts.get(node, 0) + len(endpoint.gpus_on_node(node_rank))
     return gpu_counts
 
 

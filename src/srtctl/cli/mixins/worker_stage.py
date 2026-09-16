@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -355,7 +355,19 @@ class WorkerStageMixin:
         # Collect all unique nodes for this endpoint
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
         num_nodes = len(endpoint_nodes)
-        total_gpus = num_nodes * len(leader.gpu_indices)
+        total_gpus = sum(len(p.gpu_indices) for p in endpoint_processes)
+        # TRT-LLM derives local devices from global rank modulo visible GPUs.
+        if self.backend.type == "trtllm":
+            rank_offset = 0
+            for process in endpoint_processes:
+                local_size = len(process.gpu_indices)
+                if any(
+                    (rank_offset + local_rank) % local_size != local_rank
+                    or (rank_offset + local_rank) % len(leader.gpu_indices) != local_rank
+                    for local_rank in range(local_size)
+                ):
+                    raise ValueError("MPI GPU layout is incompatible with TRT-LLM local-rank mapping")
+                rank_offset += local_size
 
         logger.info(
             "Starting %s worker %d on %d nodes (%s) with %d total GPUs (MPI mode)",
@@ -429,8 +441,16 @@ class WorkerStageMixin:
 
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
         force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
-        if (force_cvd or should_set_cvd(leader)) and len(leader.gpu_indices) < self.runtime.gpus_per_node:
-            env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
+        node_gpu_setup = ""
+        if force_cvd or should_set_cvd(leader):
+            if any(p.gpu_indices != leader.gpu_indices for p in endpoint_processes):
+                branches = " ".join(
+                    f"{shlex.quote(p.node)}) export CUDA_VISIBLE_DEVICES={shlex.quote(p.cuda_visible_devices)} ;;"
+                    for p in endpoint_processes
+                )
+                node_gpu_setup = f'case "$SLURMD_NODENAME" in {branches} *) exit 1 ;; esac'
+            elif len(leader.gpu_indices) < self.runtime.gpus_per_node:
+                env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
         # Add mooncake worker env vars if configured (SGLang only). For MPI-style
         # endpoint launching we use the leader node's IP — mooncake's per-worker
@@ -470,9 +490,20 @@ class WorkerStageMixin:
         fp_cmd = f"( {fp_cmd} )"
         bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
+        if node_gpu_setup:
+            bash_preamble = f"{node_gpu_setup} && {bash_preamble}" if bash_preamble else node_gpu_setup
+
+        # Repeated hosts preserve each node's exact rank count and ordering.
+        task_nodes = [p.node for p in endpoint_processes for _ in p.gpu_indices]
+        task_counts = [len(p.gpu_indices) for p in endpoint_processes]
+        srun_options = dict(self.runtime.srun_options)
+        srun_options["ntasks-per-node"] = str(max(task_counts))
+        if len(set(task_counts)) > 1:
+            srun_options["distribution"] = "arbitrary"
+            endpoint_nodes = task_nodes
+
         # Get srun config from backend
         srun_config = self.backend.get_srun_config()
-        srun_options = dict(self.runtime.srun_options)
         if self.backend.type == "trtllm" and getattr(self.config.dynamo, "sidecar", False) is True:
             # The sidecar runs only on rank zero. Make any follower-rank exit
             # terminate the full endpoint step instead of leaving rank zero up.

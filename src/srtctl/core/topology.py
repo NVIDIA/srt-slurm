@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -173,6 +173,12 @@ class Endpoint:
     # as "omit --het-group".
     het_group: int | None = None
 
+    # Optional per-node allocation for workers spanning partially occupied nodes.
+    node_gpu_indices: tuple[frozenset[int], ...] = ()
+
+    def gpus_on_node(self, node_rank: int) -> frozenset[int]:
+        return self.node_gpu_indices[node_rank] if self.node_gpu_indices else self.gpu_indices
+
     @property
     def leader_node(self) -> str:
         """The first node in the endpoint (used for distributed init)."""
@@ -186,7 +192,7 @@ class Endpoint:
     @property
     def total_gpus(self) -> int:
         """Total GPUs used by this endpoint across all nodes."""
-        return self.num_nodes * len(self.gpu_indices)
+        return sum(len(self.gpus_on_node(i)) for i in range(self.num_nodes))
 
     @property
     def is_multi_node(self) -> bool:
@@ -287,6 +293,7 @@ def allocate_endpoints(
     available_nodes: Sequence[str],
     spread_workers: bool = False,
     allow_prefill_decode_colocation: bool = False,
+    pack_multinode_workers: bool = False,
 ) -> list[Endpoint]:
     """Allocate endpoints to nodes based on GPU requirements.
 
@@ -304,6 +311,8 @@ def allocate_endpoints(
         spread_workers: If True, place each partial-node worker on its own
             node instead of packing multiple onto the same node. Requires the
             caller to reserve enough nodes (one per worker per mode).
+        pack_multinode_workers: Preserve exact per-node GPU allocations for MPI
+            workers, allowing adjacent workers to share a partially filled node.
         allow_prefill_decode_colocation: If True, decode workers may use
             remaining GPUs on a node already used by prefill workers.
 
@@ -406,7 +415,43 @@ def allocate_endpoints(
         nodes_per_worker = (gpus_per_worker + gpus_per_node - 1) // gpus_per_node
 
         for i in range(count):
-            if nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
+            if pack_multinode_workers:
+                if gpus_per_worker <= 0:
+                    raise ValueError("GPUs per worker must be positive")
+                if gpus_per_worker <= gpus_per_node and gpu_offset + gpus_per_worker > gpus_per_node:
+                    node_idx += 1
+                    gpu_offset = 0
+                worker_nodes = []
+                node_gpus = []
+                remaining = gpus_per_worker
+                while remaining:
+                    if node_idx >= len(available_nodes):
+                        raise ValueError("Not enough nodes for GPU allocation")
+                    take = min(remaining, gpus_per_node - gpu_offset)
+                    worker_nodes.append(available_nodes[node_idx])
+                    node_gpus.append(frozenset(range(gpu_offset, gpu_offset + take)))
+                    remaining -= take
+                    gpu_offset += take
+                    if gpu_offset == gpus_per_node:
+                        node_idx += 1
+                        gpu_offset = 0
+                # MPI model mappings expect full nodes before a partial tail.
+                allocations = sorted(zip(worker_nodes, node_gpus, strict=True), key=lambda item: -len(item[1]))
+                worker_nodes, node_gpus = zip(*allocations, strict=True)
+                result.append(
+                    Endpoint(
+                        mode=mode,
+                        index=i,
+                        nodes=tuple(worker_nodes),
+                        gpu_indices=node_gpus[0],
+                        node_gpu_indices=tuple(node_gpus),
+                        gpus_per_node=gpus_per_node,
+                    )
+                )
+                if spread_workers and gpu_offset:
+                    node_idx += 1
+                    gpu_offset = 0
+            elif nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
                 # Multi-node or full-node worker
                 worker_nodes = tuple(available_nodes[node_idx + j] for j in range(nodes_per_worker))
                 node_idx += nodes_per_worker
@@ -476,6 +521,7 @@ def allocate_endpoints_het(
     gpus_per_decode: int,
     decode_nodes: Sequence[str],
     gpus_per_node: int,
+    pack_multinode_workers: bool = False,
 ) -> list[Endpoint]:
     """Allocate endpoints for a SLURM heterogeneous job.
 
@@ -498,6 +544,7 @@ def allocate_endpoints_het(
         gpus_per_agg=0,
         gpus_per_node=gpus_per_node,
         available_nodes=prefill_nodes,
+        pack_multinode_workers=pack_multinode_workers,
     )
     decode_eps = allocate_endpoints(
         num_prefill=0,
@@ -508,6 +555,7 @@ def allocate_endpoints_het(
         gpus_per_agg=0,
         gpus_per_node=gpus_per_node,
         available_nodes=decode_nodes,
+        pack_multinode_workers=pack_multinode_workers,
     )
     # Endpoint is frozen; re-emit with het_group set.
     tagged: list[Endpoint] = []
@@ -518,6 +566,7 @@ def allocate_endpoints_het(
                 index=ep.index,
                 nodes=ep.nodes,
                 gpu_indices=ep.gpu_indices,
+                node_gpu_indices=ep.node_gpu_indices,
                 gpus_per_node=ep.gpus_per_node,
                 het_group=0,
             )
@@ -529,6 +578,7 @@ def allocate_endpoints_het(
                 index=ep.index,
                 nodes=ep.nodes,
                 gpu_indices=ep.gpu_indices,
+                node_gpu_indices=ep.node_gpu_indices,
                 gpus_per_node=ep.gpus_per_node,
                 het_group=1,
             )
@@ -586,7 +636,7 @@ def endpoints_to_processes(
             processes.append(
                 Process(
                     node=node,
-                    gpu_indices=endpoint.gpu_indices,
+                    gpu_indices=endpoint.gpus_on_node(node_rank),
                     sys_port=current_sys_port,
                     http_port=http_port,
                     endpoint_mode=endpoint.mode,

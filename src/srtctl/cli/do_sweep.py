@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -102,6 +102,7 @@ class SweepOrchestrator(
                 gpus_per_decode=r.gpus_per_decode,
                 decode_nodes=self.runtime.nodes.decode_group,
                 gpus_per_node=r.gpus_per_node,
+                pack_multinode_workers=self.backend.type == "trtllm",
             )
         return self.backend.allocate_endpoints(
             num_prefill=r.num_prefill,
