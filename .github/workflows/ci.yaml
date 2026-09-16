@@ -123,6 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/smoke.yaml <<'EOF'
+          schema: 2
           name: ci-smoke
           model:
             path: hf:fake/mock-model
@@ -131,8 +132,11 @@ jobs:
           resources:
             gpu_type: h100
             gpus_per_node: 8
-            agg_nodes: 1
-            agg_workers: 1
+          engine: sglang
+          roles:
+            agg:
+              nodes: 1
+              workers: 1
           benchmark:
             type: custom
             command: echo ci-smoke
