@@ -33,13 +33,16 @@ def sidecar_grpc_port(base_port: int, process: "Process") -> int:
 def build_sidecar_launch_command(
     *,
     engine: list[str],
-    sidecar: list[str],
+    sidecar: list[str] | None,
     grpc_port: int,
     engine_name: str,
     startup_timeout: int,
     rank_zero_only: bool = False,
 ) -> list[str]:
-    """Run an engine and its sidecar together, stopping both when either exits."""
+    """Supervise an engine and optional sidecar; spontaneous exits are failures.
+
+    Headless followers pass sidecar=None and skip the local gRPC wait.
+    """
     if startup_timeout < 1:
         raise ValueError(f"sidecar_startup_timeout must be at least 1, got {startup_timeout}")
 
@@ -53,6 +56,42 @@ def build_sidecar_launch_command(
     if [[ "${status}" == 0 ]]; then status=1; fi
     exit "${status}"
 fi
+"""
+
+    if sidecar is None:
+        supervision = """set +e
+wait "${ENGINE_PID}"
+status=$?
+set -e
+if [[ "${status}" == 0 ]]; then status=1; fi
+exit "${status}"
+"""
+    else:
+        supervision = f"""{rank_guard}port_ready=0
+for _ in $(seq 1 {startup_timeout}); do
+    if ! kill -0 "${{ENGINE_PID}}" 2>/dev/null; then
+        echo "{engine_name} exited before native gRPC became ready" >&2
+        exit 1
+    fi
+    if (exec 3<>/dev/tcp/127.0.0.1/{grpc_port}) 2>/dev/null; then
+        exec 3>&-
+        port_ready=1
+        break
+    fi
+    sleep 1
+done
+if [[ "${{port_ready}}" != 1 ]]; then
+    echo "Timed out waiting for {engine_name} native gRPC on port {grpc_port}" >&2
+    exit 1
+fi
+{shlex.join(sidecar)} &
+SIDECAR_PID=$!
+set +e
+wait -n "${{ENGINE_PID}}" "${{SIDECAR_PID}}"
+status=$?
+set -e
+if [[ "${{status}}" == 0 ]]; then status=1; fi
+exit "${{status}}"
 """
 
     compound = f"""set -euo pipefail
@@ -88,30 +127,6 @@ cleanup() {{
 trap cleanup EXIT INT TERM
 {shlex.join(engine)} &
 ENGINE_PID=$!
-{rank_guard}port_ready=0
-for _ in $(seq 1 {startup_timeout}); do
-    if ! kill -0 "${{ENGINE_PID}}" 2>/dev/null; then
-        echo "{engine_name} exited before native gRPC became ready" >&2
-        exit 1
-    fi
-    if (exec 3<>/dev/tcp/127.0.0.1/{grpc_port}) 2>/dev/null; then
-        exec 3>&-
-        port_ready=1
-        break
-    fi
-    sleep 1
-done
-if [[ "${{port_ready}}" != 1 ]]; then
-    echo "Timed out waiting for {engine_name} native gRPC on port {grpc_port}" >&2
-    exit 1
-fi
-{shlex.join(sidecar)} &
-SIDECAR_PID=$!
-set +e
-wait -n "${{ENGINE_PID}}" "${{SIDECAR_PID}}"
-status=$?
-set -e
-if [[ "${{status}}" == 0 ]]; then status=1; fi
-exit "${{status}}"
+{supervision}
 """
     return ["bash", "-lc", compound]

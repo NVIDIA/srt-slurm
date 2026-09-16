@@ -1131,10 +1131,9 @@ class VLLMProtocol:
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
         is_multi_node = len(endpoint_nodes) > 1
 
-        # Direct vLLM rendezvous must use the configured interface. Keep the
-        # existing Dynamo resolution path unchanged to avoid affecting jobs
-        # outside the scope of the direct-vLLM frontend.
-        if frontend_type in {"vllm", "vllm-router"}:
+        # Native vLLM rendezvous must use the configured interface, including
+        # native engines behind a Dynamo sidecar.
+        if frontend_type in {"vllm", "vllm-router"} or get_dynamo_sidecar_config(runtime) is not None:
             leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
         else:
             leader_ip = get_hostname_ip(endpoint_nodes[0])
@@ -1466,25 +1465,48 @@ class VLLMProtocol:
         nsys_prefix: list[str] | None,
         sidecar_config: DynamoConfig,
     ) -> list[str]:
-        """Build a native gRPC frontend and lifecycle-coupled sidecar per node."""
+        """Expose local DP frontends or one frontend for a cross-node replica."""
         mode = process.endpoint_mode
         is_dp_mode = self._is_dp_mode(mode)
-        is_multi_node = len({candidate.node for candidate in endpoint_processes}) > 1
-        if is_multi_node and (not is_dp_mode or self._get_model_parallel_size(mode) > len(process.gpu_indices)):
+        endpoint_nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
+        is_multi_node = len(endpoint_nodes) > 1
+        multi_node_replica = is_multi_node and (
+            not is_dp_mode or self._get_model_parallel_size(mode) > len(process.gpu_indices)
+        )
+        if multi_node_replica and is_dp_mode:
             raise ValueError(
-                "vLLM sidecar mode does not support multi-node tensor-parallel endpoints; use node-local DP replicas"
+                "vLLM sidecar mode supports one cross-node TP/PP replica per endpoint; "
+                "use data-parallel-size: 1 and separate endpoints for additional replicas"
             )
-        hybrid_lb = is_dp_mode and is_multi_node
-        if hybrid_lb:
-            # Each node must expose exactly one local Rust frontend. These
-            # options would select another frontend or bypass the local API.
+        if multi_node_replica:
+            gpu_counts = {len(candidate.gpu_indices) for candidate in endpoint_processes}
+            total_gpus = sum(len(candidate.gpu_indices) for candidate in endpoint_processes)
+            if len(gpu_counts) != 1 or total_gpus != self._get_model_parallel_size(mode):
+                raise ValueError("vLLM sidecar TP*PP*PCP must match the evenly distributed endpoint GPU allocation")
+        node_rank = endpoint_nodes.index(process.node)
+        headless = multi_node_replica and node_rank > 0
+        hybrid_lb = is_dp_mode and is_multi_node and not multi_node_replica
+        if hybrid_lb or multi_node_replica:
             normalized = {key.replace("_", "-"): value for key, value in config.items()}
-            if normalized.get("grpc") or normalized.get("data-parallel-external-lb"):
+            layout = "hybrid" if hybrid_lb else "multi-node"
+            if any(
+                normalized.get(flag)
+                for flag in ("grpc", "data-parallel-external-lb", "data-parallel-multi-port-external-lb")
+            ):
                 raise ValueError(
-                    "vLLM sidecar hybrid mode requires the Rust frontend with hybrid load balancing; remove grpc and data-parallel-external-lb"
+                    f"vLLM sidecar {layout} mode requires the Rust frontend; "
+                    "remove grpc and external load-balancing flags"
                 )
-            if normalized.get("api-server-count") not in (None, 1, "1"):
-                raise ValueError("vLLM sidecar hybrid mode requires api-server-count: 1 per node")
+            if not headless and normalized.get("api-server-count") not in (None, 1, "1"):
+                raise ValueError(f"vLLM sidecar {layout} mode requires api-server-count: 1 on frontend nodes")
+        if multi_node_replica:
+            executor = _pop_flags(config, frozenset({"distributed-executor-backend"}))
+            if executor.get("distributed-executor-backend", "mp") != "mp":
+                raise ValueError("vLLM multi-node sidecar requires distributed-executor-backend: mp")
+            pop_vllm_orchestration_flags(config)
+            _pop_flags(config, frozenset({"master-port", "grpc"}))
+            if headless:
+                pop_vllm_api_server_flags(config)
         grpc_port = sidecar_grpc_port(sidecar_config.sidecar_port, process)
 
         for key in (
@@ -1508,29 +1530,51 @@ class VLLMProtocol:
             config.pop(key, None)
 
         command: list[str] = list(nsys_prefix or [])
-        if hybrid_lb:
-            # Python owns the shared DP rendezvous and passes only this node's
-            # engine sockets to its Rust frontend. The current `vllm-rs serve`
-            # launcher owns a complete group and does not implement hybrid
+        if hybrid_lb or multi_node_replica:
+            # Python coordinates distributed workers and starts Rust only on
+            # frontend nodes. Headless followers take its native executor path.
+            # The current `vllm-rs serve` launcher does not implement hybrid
             # startup; requests still use the Rust frontend in this path.
             # VLLM_RUST_FRONTEND_PATH, when configured, is inherited unchanged.
             command.extend(["env", "VLLM_USE_RUST_FRONTEND=1", "python3", "-m", "vllm.entrypoints.cli.main"])
         else:
             command.append("vllm-rs")
-        command.extend(
-            [
-                "serve",
-                model_arg,
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(process.http_port or grpc_port + 1),
-                "--grpc-port",
-                str(grpc_port),
-                "--served-model-name",
-                served_model_name,
-            ]
-        )
+        command.extend(["serve", model_arg, "--served-model-name", served_model_name])
+        if not headless:
+            command.extend(
+                [
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(process.http_port or grpc_port + 1),
+                    "--grpc-port",
+                    str(grpc_port),
+                ]
+            )
+        if multi_node_replica:
+            leader = next(candidate for candidate in endpoint_processes if candidate.node == endpoint_nodes[0])
+            # Use the leader's reserved vLLM port range for this endpoint.
+            # worker_stage unsets VLLM_PORT for multi-node groups, leaving this
+            # port free for rendezvous, including colocated P/D endpoints.
+            master_port = VLLM_PORT_BASE + (leader.sys_port - DYN_SYSTEM_PORT_BASE) * VLLM_PORT_STRIDE
+            if not 1 <= master_port <= 65535:
+                raise ValueError(f"vLLM rendezvous port out of range: {master_port}")
+            command.extend(
+                [
+                    "--distributed-executor-backend",
+                    "mp",
+                    "--nnodes",
+                    str(len(endpoint_nodes)),
+                    "--node-rank",
+                    str(node_rank),
+                    "--master-addr",
+                    leader_ip,
+                    "--master-port",
+                    str(master_port),
+                ]
+            )
+            if headless:
+                command.append("--headless")
 
         max_model_len = config.pop("max-model-len", None)
         if max_model_len is None:
@@ -1575,6 +1619,14 @@ class VLLMProtocol:
             command.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
         command.extend(_config_to_cli_args(config))
+        if headless:
+            return build_sidecar_launch_command(
+                engine=command,
+                sidecar=None,
+                grpc_port=grpc_port,
+                engine_name="vLLM headless follower",
+                startup_timeout=sidecar_config.sidecar_startup_timeout,
+            )
         sidecar = (
             [sidecar_config.sidecar_binary]
             if sidecar_config.sidecar_binary is not None

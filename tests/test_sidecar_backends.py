@@ -5,7 +5,11 @@
 
 import json
 import shlex
+import subprocess
+import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -183,16 +187,143 @@ def test_vllm_sidecar_rejects_frontend_options_that_bypass_hybrid_lb(override: d
         backend.build_worker_command(processes[0], processes, _runtime())
 
 
-def test_vllm_sidecar_rejects_unimplemented_multi_node_tp() -> None:
-    leader = _process(node="node0")
-    follower = _process(node="node1", node_rank=1, sys_port=7501)
-    backend = VLLMProtocol(connector=None)
+@pytest.mark.parametrize(
+    "parallelism",
+    [
+        {"tensor-parallel-size": 8},
+        {"tensor_parallel_size": 8, "enable-expert-parallel": True, "data-parallel-size": 1},
+        {"tensor-parallel-size": 4, "pipeline-parallel-size": 2},
+        {"tensor-parallel-size": 16, "enable-expert-parallel": True},
+    ],
+)
+def test_vllm_sidecar_multi_node_replica_has_one_frontend(parallelism: dict) -> None:
+    # Regression: exposing a sidecar on a TP follower either hangs startup or
+    # registers an engine incapable of serving independent requests.
+    backend = VLLMProtocol(
+        connector=None,
+        vllm_config=VLLMServerConfig(
+            aggregated={
+                **parallelism,
+                "api-server-count": 1,
+                "master_addr": "stale-host",
+                "node_rank": 7,
+                "nnodes": 9,
+                "master_port": 1234,
+            }
+        ),
+    )
+    tp = parallelism.get("tensor-parallel-size", parallelism.get("tensor_parallel_size", 1))
+    node_count = tp * parallelism.get("pipeline-parallel-size", 1) // 4
+    endpoint = Endpoint(
+        mode="agg",
+        index=0,
+        nodes=tuple(f"node{i}" for i in range(node_count)),
+        gpu_indices=frozenset(range(4)),
+        gpus_per_node=4,
+    )
+    processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
+    runtime = _runtime()
+    runtime.network_interface = "ib0"
 
-    with (
-        patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
-        pytest.raises(ValueError, match="does not support multi-node tensor-parallel"),
-    ):
-        backend.build_worker_command(leader, [leader, follower], _runtime())
+    def node_ip(node, interface=None):
+        assert interface == "ib0"
+        return f"10.0.0.{endpoint.nodes.index(node) + 1}"
+
+    with patch("srtctl.core.slurm.get_hostname_ip", side_effect=node_ip):
+        commands = [backend.build_worker_command(p, processes, runtime) for p in processes]
+
+    engines = []
+    for rank, command in enumerate(commands):
+        subprocess.run(["bash", "-n", "-c", command[2]], check=True)
+        engine = shlex.split(
+            next(line for line in command[2].splitlines() if "vllm.entrypoints.cli.main serve" in line)
+        )
+        engines.append(engine)
+        assert "VLLM_USE_RUST_FRONTEND=1" in engine
+        for flag, value in {
+            "--nnodes": str(node_count),
+            "--node-rank": str(rank),
+            "--master-addr": "10.0.0.1",
+            "--distributed-executor-backend": "mp",
+        }.items():
+            assert engine.count(flag) == 1
+            assert engine[engine.index(flag) + 1] == value
+        assert ("--enable-expert-parallel" in engine) == bool(parallelism.get("enable-expert-parallel"))
+    master_ports = [engine[engine.index("--master-port") + 1] for engine in engines]
+    assert len(set(master_ports)) == 1 and master_ports[0] != "1234"
+    assert master_ports[0] != engines[0][engines[0].index("--port") + 1]
+    assert "dynamo.vllm.sidecar" in commands[0][2]
+    assert "--grpc-port" in engines[0]
+    assert "--headless" not in engines[0]
+    for engine, command in zip(engines[1:], commands[1:], strict=True):
+        assert "--headless" in engine
+        assert not {"--grpc", "--grpc-port", "--port", "--api-server-count"}.intersection(engine)
+        assert "dynamo.vllm.sidecar" not in command[2]
+        assert "/dev/tcp" not in command[2]
+
+    from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
+
+    config = SimpleNamespace(
+        backend=backend,
+        dynamo=runtime.dynamo,
+        frontend=SimpleNamespace(type="dynamo"),
+        resources=SimpleNamespace(num_agg=1, num_prefill=0, num_decode=0),
+    )
+    prefill, decode, _, total = _get_health_expectations(config, processes)
+    assert (prefill, decode, total) == (0, 1, 1)
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_headless_follower_exit_is_reported_as_failure(exit_code: int) -> None:
+    # A clean but unexpected follower exit must trigger ProcessRegistry's
+    # nonzero-exit detection and therefore stop the rest of the job.
+    from srtctl.backends.sidecar import build_sidecar_launch_command
+
+    command = build_sidecar_launch_command(
+        engine=["bash", "-c", f"exit {exit_code}"],
+        sidecar=None,
+        grpc_port=50051,
+        engine_name="vLLM follower",
+        startup_timeout=60,
+    )
+    # Exercise the wrapper without sourcing workstation login-shell hooks.
+    command[1] = "-c"
+    result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == (exit_code or 1)
+
+
+def test_headless_follower_termination_reaps_engine(tmp_path: Path) -> None:
+    # Job-wide cleanup signals the wrapper; its engine must not survive it.
+    from srtctl.backends.sidecar import build_sidecar_launch_command
+
+    ready = tmp_path / "ready"
+    stopped = tmp_path / "stopped"
+    engine = (
+        "import signal,time; from pathlib import Path; "
+        f"signal.signal(signal.SIGTERM, lambda *_: (Path({str(stopped)!r}).touch(), exit(0))); "
+        f"Path({str(ready)!r}).touch(); time.sleep(60)"
+    )
+    command = build_sidecar_launch_command(
+        engine=[sys.executable, "-c", engine],
+        sidecar=None,
+        grpc_port=50051,
+        engine_name="vLLM follower",
+        startup_timeout=60,
+    )
+    command[1] = "-c"
+    child = subprocess.Popen(command)
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        child.terminate()
+        child.wait(timeout=15)
+        assert stopped.exists()
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            child.wait(timeout=15)
 
 
 def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path) -> None:
