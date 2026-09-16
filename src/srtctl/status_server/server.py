@@ -271,6 +271,8 @@ def _create_job(store: StatusStore, body: dict[str, Any] | None) -> Response:
         submitted_at=payload.submitted_at,
         metadata=payload.metadata,
     )
+    if result.get("backfilled"):
+        logger.info("%s identified late by its submit record: %s", payload.job_id, payload.job_name)
     if result["created"]:
         where = f" on {payload.cluster}" if payload.cluster else ""
         logger.info("%s submitted: %s%s", payload.job_id, payload.job_name, where)

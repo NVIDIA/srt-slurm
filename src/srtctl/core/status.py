@@ -84,6 +84,17 @@ def _log_rejection(action: str, endpoint: str, status_code: int, token_env: str)
         logger.debug("%s to %s failed: HTTP %d", action, endpoint, status_code)
 
 
+def _cluster_setting() -> str | None:
+    """The cluster name from srtslurm.yaml, or None; never raises (reporting must not break a run)."""
+    try:
+        from srtctl.core.config import get_srtslurm_setting  # lazy: core.config is heavier than this module
+
+        value = get_srtslurm_setting("cluster")
+    except Exception:  # noqa: BLE001 - any config problem just means "unknown cluster"
+        return None
+    return str(value) if value else None
+
+
 def _resolve_endpoints(status: "ReportingStatusConfig | None") -> tuple[str, ...]:
     """Merge endpoint + endpoints into a deduplicated tuple with trailing slashes stripped.
 
@@ -239,6 +250,11 @@ class StatusReporter:
             # on the same filesystem (srtctl status-server on a login node) can
             # open them directly; logs_url only appears later if reporting.s3 is set.
             "log_dir": str(runtime.log_dir),
+            # Identity, repeated from the submit-time POST. That POST is one attempt
+            # from the login node; when it is lost (a flaky egress path), the
+            # collector's placeholder row takes its name and cluster from here.
+            "job_name": getattr(config, "name", None),
+            "cluster": _cluster_setting(),
         }
 
         payload = JobUpdatePayload(
@@ -320,11 +336,17 @@ def create_job_record(
     cluster: str | None = None,
     recipe: str | None = None,
     metadata: dict | None = None,
+    attempts: int = 2,
 ) -> bool:
     """Create initial job record in status APIs (called at submission time).
 
     This is a standalone function used by submit.py before the job starts.
-    Sends to all configured endpoints.
+    Sends to all configured endpoints. Each endpoint gets up to ``attempts``
+    tries: the login node's path to a collector can be flaky (a dead address
+    behind a round-robin name eats the whole connect timeout), and this POST is
+    the only message carrying the job name, cluster and recipe. A final failure
+    is a WARNING because the person running ``srtctl apply`` is right there;
+    the run still shows up once it starts, named from ``report_started``.
 
     Args:
         reporting: ReportingConfig from srtslurm.yaml or recipe
@@ -333,6 +355,7 @@ def create_job_record(
         cluster: Cluster name (optional)
         recipe: Path to recipe file (optional)
         metadata: Job metadata dict (may include "tags" list)
+        attempts: Connection attempts per endpoint before giving up
 
     Returns:
         True if created on at least one endpoint, False otherwise
@@ -356,17 +379,27 @@ def create_job_record(
 
     any_success = False
     for endpoint in endpoints:
-        try:
-            url = f"{endpoint}/api/jobs"
-            response = requests.post(url, json=payload_dict, headers=headers, timeout=5.0, allow_redirects=False)
-
+        url = f"{endpoint}/api/jobs"
+        for attempt in range(1, attempts + 1):
+            try:
+                response = requests.post(url, json=payload_dict, headers=headers, timeout=5.0, allow_redirects=False)
+            except requests.exceptions.RequestException as e:
+                if attempt < attempts:
+                    logger.debug("Job record creation on %s failed (attempt %d/%d): %s", endpoint, attempt, attempts, e)
+                    continue
+                logger.warning(
+                    "Job record creation on %s failed after %d attempts: %s. The run still appears in the collector "
+                    "once it starts; its name and cluster come from the started report.",
+                    endpoint,
+                    attempts,
+                    e,
+                )
+                break
             if response.status_code == 201:
                 logger.debug("Job record created on %s: %s", endpoint, job_id)
                 any_success = True
             else:
                 _log_rejection("Job record creation", endpoint, response.status_code, token_env)
-
-        except requests.exceptions.RequestException as e:
-            logger.debug("Job record creation on %s error (ignored): %s", endpoint, e)
+            break
 
     return any_success
