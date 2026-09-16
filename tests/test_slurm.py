@@ -199,7 +199,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         gpus_per_node=8,
         environment={},
         container_image=Path("/container.sqsh"),
-        container_mounts={},
+        container_mounts={tmp_path: Path("/logs")},
         srun_options=[],
     )
     process = SimpleNamespace(
@@ -260,7 +260,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         gpus_per_node=8,
         environment={},
         container_image=Path("/container.sqsh"),
-        container_mounts={},
+        container_mounts={tmp_path: Path("/logs")},
         srun_options=[],
     )
     process = SimpleNamespace(
@@ -273,6 +273,22 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         het_group=None,
     )
     return mixin, process
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_worker_config_dump_uses_container_log_mount(tmp_path: Path, launch_method: str) -> None:
+    """Backend config dumps must use a path visible inside the worker container."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    ):
+        if launch_method == "start_worker":
+            mixin.start_worker(process, [process])
+        else:
+            mixin.start_endpoint_worker([process])
+
+    assert mixin.backend.build_worker_command.call_args.kwargs["dump_config_path"] == Path("/logs/node-a_config.json")
 
 
 def test_worker_stage_injects_remap_root_for_dynamo_install(tmp_path: Path) -> None:
@@ -500,6 +516,15 @@ def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
     assert mock_srun.call_args.kwargs["env_to_set"]["VLLM_PLUGINS"] == ""
 
 
+def test_worker_control_plane_uses_routable_infra_ip(tmp_path: Path) -> None:
+    for env in (
+        _start_worker_env(tmp_path, event_plane=None),
+        _start_endpoint_worker_env(tmp_path, event_plane=None),
+    ):
+        assert "NATS_SERVER" not in env
+        assert env["ETCD_ENDPOINTS"] == "http://10.0.0.1:2379"
+
+
 @pytest.mark.parametrize("event_plane", ["zmq", "nats"])
 def test_start_endpoint_worker_event_plane_injected(tmp_path: Path, event_plane: str) -> None:
     env = _start_endpoint_worker_env(tmp_path, event_plane=event_plane)
@@ -601,7 +626,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         gpus_per_node=8,
         environment={},
         container_image=Path("/container.sqsh"),
-        container_mounts={},
+        container_mounts={tmp_path: Path("/logs")},
         srun_options=[],
     )
     process = SimpleNamespace(

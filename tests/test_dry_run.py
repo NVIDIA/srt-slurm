@@ -49,6 +49,15 @@ def _make_config(overrides: dict | None = None) -> SrtConfig:
     return SrtConfig.from_yaml(tmp_path)
 
 
+@pytest.mark.parametrize("mask", ["CUDA_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"])
+def test_cluster_gpu_visibility_is_visible(tmp_path, monkeypatch, capsys, mask):
+    cluster_config = tmp_path / "srtslurm.yaml"
+    cluster_config.write_text(yaml.safe_dump({"visible_devices_env": mask}))
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(cluster_config))
+    show_config_details(_make_config())
+    assert f"GPU subset visibility variable: {mask}" in capsys.readouterr().out
+
+
 class TestDryRunDynamoMetrics:
     @pytest.mark.parametrize(
         ("settings", "expected", "excluded"),
