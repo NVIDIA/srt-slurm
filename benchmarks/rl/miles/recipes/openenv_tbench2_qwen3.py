@@ -177,7 +177,11 @@ def execute(args: ScriptArgs) -> None:
 
 @U.dataclass_cli
 def main(args: ScriptArgs) -> None:
-    C.cleanup()
+    # No C.cleanup() here. The upstream helper does `pgrep -f sglang | xargs kill`, and
+    # under srt-slurm every process in the image runs under /opt/sglang/bin/python3,
+    # so it kills the Ray head that the `ray` service owns (job 15583 on sa-b200: the
+    # dashboard refused connections right after cleanup). The allocation is fresh and
+    # Ray belongs to the service; there is nothing stale to clean.
     if not args.skip_prepare:
         prepare(args)
     execute(args)
