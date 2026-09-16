@@ -253,6 +253,7 @@ def test_pool_placeholders_point_at_the_pool_not_the_job_head(tmp_path: Path) ->
         "command": [
             "torchrun",
             "--nnodes={pool_node_count}",
+            "--nproc-per-node={gpus_per_node}",
             "--node-rank={index}",
             "--master-addr={pool_ip}",
             "--peers={pool_ips}",
@@ -260,6 +261,7 @@ def test_pool_placeholders_point_at_the_pool_not_the_job_head(tmp_path: Path) ->
             "--all={pool_nodes}",
             "--job-head={head_ip}",
         ],
+        "env": {"NCCL_SOCKET_IFNAME": "bond0", "RANK_HINT": "{index}/{pool_node_count}"},
         "placement": {"pool": "train"},
         "start": "before_workers",
         "critical": False,
@@ -274,12 +276,16 @@ def test_pool_placeholders_point_at_the_pool_not_the_job_head(tmp_path: Path) ->
     ):
         orchestrator.start_services("before_workers")
 
-    rendered = {call.kwargs["nodelist"][0]: " ".join(call.kwargs["command"]) for call in srun.call_args_list}
-    assert sorted(rendered) == ["n2", "n3"], "one instance per node of the train pool"
+    calls = {call.kwargs["nodelist"][0]: call.kwargs for call in srun.call_args_list}
+    assert sorted(calls) == ["n2", "n3"], "one instance per node of the train pool"
     for rank, node in enumerate(("n2", "n3")):
-        assert f"--nnodes=2 --node-rank={rank} --master-addr=10.0.0.2 --peers=10.0.0.2,10.0.0.3" in rendered[node]
-        assert "--first=n2 --all=n2,n3" in rendered[node]
-        assert "--job-head=10.0.0.1" in rendered[node], "the job head is the engine node, not the pool"
+        rendered = " ".join(calls[node]["command"])
+        assert f"--nnodes=2 --nproc-per-node=8 --node-rank={rank} --master-addr=10.0.0.2" in rendered
+        assert "--peers=10.0.0.2,10.0.0.3 --first=n2 --all=n2,n3" in rendered
+        assert "--job-head=10.0.0.1" in rendered, "the job head is the engine node, not the pool"
+        env = calls[node]["env_to_set"]
+        assert env["RANK_HINT"] == f"{rank}/2", "env values render the same placeholders"
+        assert env["NCCL_SOCKET_IFNAME"] == "bond0"
 
 
 def test_single_instance_services_see_themselves_as_the_pool(tmp_path: Path) -> None:

@@ -115,11 +115,11 @@ services:
 `command`, `args`, `env` values, and `preamble` may use these placeholders: `{node}`, `{node_ip}`,
 `{node_id}` (position in the worker list), `{index}` (instance index within the service), `{role}`
 (the `placement.node` value), `{head_node}`, `{head_ip}`, `{infra_node}`, `{infra_ip}`,
-`{master_port}`, `{metadata_port}`, and the service's own node set: `{pool_node}` / `{pool_ip}` (its
-first node), `{pool_nodes}` / `{pool_ips}` (every node, comma-separated, in order), `{pool_node_count}`.
-Only those names are substituted; other braces (JSON in an env value) are left alone.
+`{master_port}`, `{metadata_port}`, `{gpus_per_node}`, and the service's own node set: `{pool_node}` /
+`{pool_ip}` (its first node), `{pool_nodes}` / `{pool_ips}` (every node, comma-separated, in order),
+`{pool_node_count}`. Only those names are substituted; other braces (JSON in an env value) are left alone.
 
-`{pool_ip}` is the rendezvous for a service that forms its own cluster on the nodes it owns; `{head_ip}` is the job head, an engine node when the service runs on a pool next to engine roles. A torchrun owner reads `--nnodes={pool_node_count} --node-rank={index} --master-addr={pool_ip}`; see [pools.md](pools.md#forming-a-cluster-on-a-pool).
+`{pool_ip}` is the rendezvous for a service that forms its own cluster on the nodes it owns; `{head_ip}` is the job head, an engine node when the service runs on a pool next to engine roles. A torchrun owner reads `--nnodes={pool_node_count} --nproc-per-node={gpus_per_node} --node-rank={index} --master-addr={pool_ip}`; see [pools.md](pools.md#forming-a-cluster-on-a-pool), including why such a service should not carry a `readiness` probe that needs every rank.
 
 ## Implicit Services
 

@@ -221,8 +221,11 @@ A service that declares `nodes: N` owns a **pool** of N whole nodes, added to th
 services:
   - name: train
     type: generic
-    command: ["torchrun", "--nnodes={pool_node_count}", "--node-rank={index}", "--master-addr={pool_ip}", "train.py"]
-    nodes: 2                   # pool "train": 2 nodes; instance 0 is the rendezvous
+    command: ["torchrun", "--nnodes={pool_node_count}", "--nproc-per-node={gpus_per_node}",
+              "--node-rank={index}", "--master-addr={pool_ip}", "train.py"]
+    nodes: 2                   # pool "train": 2 nodes; instance 0 is the rendezvous; no readiness probe
+                               # (instances launch one after another, gated on readiness, and a static
+                               # torchrun rendezvous only completes once every node has joined)
   - name: watcher
     type: generic
     command: ["sleep", "infinity"]
@@ -235,7 +238,7 @@ Where things live:
 - Carving: `Nodes.from_slurm(engine_nodes=..., pools=[(name, count), ...])` in `src/srtctl/core/runtime.py`; `Nodes.worker` is the engine nodes, `Nodes.pools` the carve, `Nodes.compute` both. Recipes without pools carve exactly as before.
 - Counts: `SrtConfig.engine_node_count`, `services_node_count`, `total_nodes`, `pool_services` in `src/srtctl/core/schema.py`; rules in `_validate_services_only` and `ServiceConfig.__post_init__` (`src/srtctl/services/config.py`).
 - Placement: `ServiceStageMixin.service_nodes` resolves `effective_pool`, then `placement.node` (`compute` = engine worker nodes plus every pool; `all` adds head, infra, client). The implied dcgm/node exporters run on `compute`.
-- Placeholders per instance (`ServiceLaunchContext.template_vars`): `{index}`, `{node_ip}`, `{pool_node}`, `{pool_ip}`, `{pool_nodes}`, `{pool_ips}`, `{pool_node_count}`. `{head_ip}` is the job head, an engine node when a pool sits next to roles, so a cluster rendezvous uses `{pool_ip}`.
+- Placeholders per instance (`ServiceLaunchContext.template_vars`): `{index}`, `{node_ip}`, `{pool_node}`, `{pool_ip}`, `{pool_nodes}`, `{pool_ips}`, `{pool_node_count}`, `{gpus_per_node}`. `{head_ip}` is the job head, an engine node when a pool sits next to roles, so a cluster rendezvous uses `{pool_ip}`. Services do not inherit the recipe's top-level `environment:` (workers and the benchmark do); fabric env such as `NCCL_SOCKET_IFNAME` goes in the service's `env:`.
 - Custom benchmark env (`BenchmarkStageMixin._get_service_env`): `SRT_SERVICE_<NAME>_NODES` / `_IPS` / `_NODE_COUNT` per launched service, `SRT_GPUS_PER_NODE`, `SRT_WORKER_NODES`. This is how a launcher script drives a pool.
 - Readers of "every node doing work" use `runtime.nodes.compute`, not `.worker`: host setup, resource snapshot, download node, exporters. New code that means all work nodes should do the same.
 - Limits: whole nodes only, fixed sizes, refused with `resources.het_jobs`. `srtctl dry-run` prints the `Nodes:` map; `tests/test_pools.py` is the acceptance suite (toy recipe through the mock orchestrator on four nodes).

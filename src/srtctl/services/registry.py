@@ -72,6 +72,7 @@ class ServiceLaunchContext:
             "pool_nodes": ",".join(pool_nodes),
             "pool_ips": ",".join(pool_ips),
             "pool_node_count": str(len(pool_nodes)),
+            "gpus_per_node": str(self.runtime.gpus_per_node),
             "master_port": str(MOONCAKE_MASTER_PORT),
             "metadata_port": str(MOONCAKE_HTTP_METADATA_PORT),
         }

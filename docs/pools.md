@@ -88,8 +88,11 @@ Every instance of a service gets the placeholders listed in [services.md](servic
 | `{pool_node}`, `{pool_ip}` | The first node of the pool and its IP. |
 | `{pool_nodes}`, `{pool_ips}` | Every node of the pool, comma-separated, in order. |
 | `{pool_node_count}` | The pool size. |
+| `{gpus_per_node}` | `resources.gpus_per_node`. |
 
 `{head_ip}` is the job head, the node the orchestrator runs on. When a pool sits next to engine roles that is an engine node, so a cluster that rendezvouses on it would point at the wrong machine. Use `{pool_ip}`.
+
+A service's environment is its kind's defaults, the discovery variables, and its own `env:`. The recipe's top-level `environment:` goes to the engine workers and the benchmark step, not to services, so fabric settings such as `NCCL_SOCKET_IFNAME` belong in the service's `env:`.
 
 ## Forming a cluster on a pool
 
@@ -104,16 +107,19 @@ services:
     command:
       - torchrun
       - --nnodes={pool_node_count}
+      - --nproc-per-node={gpus_per_node}
       - --node-rank={index}
       - --master-addr={pool_ip}
       - --master-port=29500
-      - train.py
-    readiness:
-      log:
-        pattern: "rendezvous complete"
+      - /workspace/train.py
+    env:
+      NCCL_SOCKET_IFNAME: bond0
+      GLOO_SOCKET_IFNAME: bond0
 ```
 
-Instances launch in pool order and each waits for its own readiness probe before the next starts, so a probe that only passes once the whole cluster is up must hold on instance 0 while the rest join. Use a log line the rank-0 process prints early (rendezvous joined, listening) rather than one that needs every rank. A typed kind can do the cluster shape for you, rendering the head and member commands and gating on the fleet as a whole; the kinds table in [services.md](services.md#service-types) lists what exists.
+Instances launch in pool order, and when a service has a `readiness` probe each instance must pass it before the next one starts. A torchrun rendezvous with `--master-addr` is static: rank 0 waits for every node to join, so a probe on rank 0 that fires only once the rendezvous completes deadlocks against instances that have not been launched yet. Leave `readiness` off for a self-forming cluster, or probe for something rank 0 prints before the others join. Log probes are case-sensitive regular expressions; check the exact line the program prints. A typed kind can do the cluster shape for you, rendering the head and member commands and gating on the fleet as a whole after every instance is up; the kinds table in [services.md](services.md#service-types) lists what exists.
+
+A service is a long-running process from the job's point of view: nothing waits for it to finish, and the job ends when the benchmark step ends. A service that finishes is not a problem in itself: a clean exit is never a failure, and a non-zero exit fails the job only when the service is `critical`. A run that should be the job's terminal task, with its exit code as the job's and its output in `benchmark.out`, belongs in the benchmark step.
 
 ## Driving a pool from the benchmark step
 
