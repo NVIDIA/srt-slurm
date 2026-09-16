@@ -81,6 +81,10 @@ def test_collector_writes_rows_from_a_reachable_node(_mock_ip, tmp_path):
     assert len(rows) >= 2
     assert {row.socket_id for row in rows} == {0, 1}
     assert all(row.hostname == "node-a" for row in rows)
+    # One row per socket per scrape: power_w is the socket, total is the node sum.
+    assert {row.power_w for row in rows} == {43.878, 52.35}
+    assert all(row.total_power_w == 43.878 + 52.35 for row in rows)
+    assert all(row.rails == {} for row in rows)  # DCGM: no component rails
 
     manifest = json.loads((tmp_path / "cpu" / "cpu_manifest.json").read_text())
     assert manifest["nodes"]["node-a"]["resolved_mode"] == "dcgm"

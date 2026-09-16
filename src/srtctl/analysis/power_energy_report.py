@@ -31,6 +31,7 @@ import csv
 import json
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +41,8 @@ import numpy as np
 
 from srtctl.core.cpu_power import UTILIZATION_COLUMNS as CPU_UTILIZATION_COLUMNS
 from srtctl.core.power.contract import MAX_SAMPLE_GAP_SECONDS, UTILIZATION_METRICS
-from srtctl.core.power.cpu_parser import _classify_acpi_domain
+from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES as CPU_RAIL_COLUMN_NAMES
+from srtctl.core.power.cpu_rails import legacy_rail_rank
 
 GPU_UTILIZATION_COLUMNS = tuple(metric.column for metric in UTILIZATION_METRICS)
 
@@ -454,78 +456,67 @@ def load_cpu_samples(path: Path) -> CpuSamples:
         return load_cpu_samples_from(handle)
 
 
-# Rail kinds in preference order for the per-socket power series. In ACPI
-# mode a socket has one row per rail per timestamp (total envelope plus the
-# cpu_rail/soc/dram components); only ONE of them may feed the socket series
-# or the trapezoid sees several "samples" at the same instant and integrates
-# a jumble of rails instead of the socket's power. The socket envelope
-# ("total") is authoritative when present; DCGM emits a single already
-# aggregated value per socket.
-_CPU_RAIL_PREFERENCE = ("total", "dcgm", "cpu_rail", "soc", "dram", "other")
-
-# Host-collector sensor names are ``CPU<n>:<suffix>`` (see cpu_power.py's
-# AcpiPowerMeterReader._DOMAIN_PATTERNS / DcgmCpuPowerReader).
-_CPU_SENSOR_SUFFIX_KINDS = {
-    "cpuSidePowerUsageW": "total",
-    "cpuPowerUsageW": "dcgm",
-    "cpuRailPowerUsageW": "cpu_rail",
-    "socPowerUsageW": "soc",
-    "dramPowerUsageW": "dram",
-}
+def _is_wide_cpu_csv(fieldnames: Sequence[str] | None) -> bool:
+    """Wide layout (one row per socket, rails as columns) vs. legacy long layout (one row per rail)."""
+    return fieldnames is not None and all(column in fieldnames for column in CPU_RAIL_COLUMN_NAMES)
 
 
-def cpu_sensor_rail_kind(sensor: str) -> str:
-    """Classify a CPU samples.csv ``sensor`` cell into a rail kind.
-
-    Handles both writers: the host collector's ``CPU<n>:<suffix>`` names and
-    the head-node scraper's raw ACPI OEM labels (``Grace Power Socket 0``,
-    ``CPU Power Socket 0``, ...). Unrecognized sensors are ``other``.
-    """
-    _, _, suffix = sensor.partition(":")
-    if suffix in _CPU_SENSOR_SUFFIX_KINDS:
-        return _CPU_SENSOR_SUFFIX_KINDS[suffix]
-    classified = _classify_acpi_domain(sensor)
-    return classified[0] if classified is not None else "other"
-
-
-def _select_socket_series(
+def _select_legacy_socket_series(
     by_sensor: dict[tuple[str, int], dict[str, dict[float, float]]],
 ) -> dict[tuple[str, int], list[tuple[float, float]]]:
-    """Pick one sensor per socket: the best-ranked rail kind present.
+    """Legacy long-format CSVs: pick ONE sensor per socket to be its power series.
 
-    Ties within a kind (should not happen; would mean two sensors mapped to
-    the same rail) resolve by sensor name so the choice is deterministic.
+    Those files hold one row per rail per instant (total envelope plus the
+    cpu_rail/soc/dram components) all under the same socket_id. Feeding them
+    all to the trapezoid produced several "samples" at the same instant and
+    integrated a jumble of rails instead of the socket's power. The socket
+    envelope is authoritative when present; the ranking and sensor-name
+    classification come from ``cpu_rails`` so this never drifts from what
+    the writers emit. Ties within a kind resolve by sensor name.
     """
     selected: dict[tuple[str, int], list[tuple[float, float]]] = {}
     for key, sensors in by_sensor.items():
-        best = min(sensors, key=lambda name: (_CPU_RAIL_PREFERENCE.index(cpu_sensor_rail_kind(name)), name))
+        best = min(sensors, key=lambda name: (legacy_rail_rank(name), name))
         selected[key] = list(sensors[best].items())
     return selected
 
 
 def load_cpu_samples_from(handle: TextIO) -> CpuSamples:
+    """Load either CPU CSV layout into per-socket / per-node power series.
+
+    Wide layout (current writers): ``power_w`` *is* the socket's power, so the
+    row feeds the socket series directly. Long layout (legacy): rows are
+    grouped by sensor and one rail per socket is selected afterwards.
+    """
+    reader = csv.DictReader(handle)
+    wide = _is_wide_cpu_csv(reader.fieldnames)
     # (host, socket) -> sensor -> timestamp -> watts. Keyed by timestamp so a
     # repeated row for the same sensor/instant overwrites rather than
-    # double-counting.
+    # double-counting. In the wide layout each socket has exactly one sensor.
     by_sensor: dict[tuple[str, int], dict[str, dict[float, float]]] = {}
     node_totals: dict[str, dict[float, float]] = {}
     utilization: dict[tuple[str, int], dict[str, list[tuple[float, float]]]] = {}
-    for row in csv.DictReader(handle):
+    for row in reader:
         timestamp = float(row["timestamp_unix"])
         hostname = row["hostname"]
         socket_raw = row["socket_id"]
         if socket_raw != "":
             key = (hostname, int(socket_raw))
-            by_sensor.setdefault(key, {}).setdefault(row["sensor"], {})[timestamp] = float(row["power_w"])
+            sensor = "power_w" if wide else row["sensor"]
+            by_sensor.setdefault(key, {}).setdefault(sensor, {})[timestamp] = float(row["power_w"])
             _collect_utilization(row, CPU_UTILIZATION_COLUMNS, timestamp, utilization.setdefault(key, {}))
         # total_power_w is blank whenever an ACPI scrape has no `grace` channel
         # (see contract.CPU_SAMPLES_HEADER); skip rather than crash on float("").
         if row["total_power_w"] != "":
             node_totals.setdefault(hostname, {})[timestamp] = float(row["total_power_w"])
 
+    if wide:
+        per_socket_rows = {key: list(next(iter(sensors.values())).items()) for key, sensors in by_sensor.items()}
+    else:
+        per_socket_rows = _select_legacy_socket_series(by_sensor)
     per_node_rows = {host: list(values.items()) for host, values in node_totals.items()}
     return CpuSamples(
-        per_socket=_sorted_series(_select_socket_series(by_sensor)),
+        per_socket=_sorted_series(per_socket_rows),
         per_node=_sorted_series(per_node_rows),
         per_socket_utilization=_sorted_utilization(utilization),
     )
