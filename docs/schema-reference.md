@@ -484,6 +484,7 @@ Status reporting configuration.
 | `endpoint` | str \| None | `None` |  |
 | `endpoints` | list[str] \| None | `None` |  |
 | `token_env` | str \| None | `None` | Name of the environment variable holding the bearer token the reporter sends as ``Authorization: Bearer`` on every request (default SRTCTL_STATUS_TOKEN). Only the variable name belongs in a recipe: the resolved config is written to the lockfile and the log directory, so a literal token there would leak. |
+| `token_file` | str \| None | `None` | Path of a file holding the bearer token (first line, whitespace stripped; ``~`` expands), read when the variable is unset. Lets a cluster's srtslurm.yaml point every submitter at one token without shell setup. Only the path is in the config. |
 
 ### AIAnalysisConfig
 

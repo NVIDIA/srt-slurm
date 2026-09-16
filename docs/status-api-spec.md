@@ -16,6 +16,8 @@ reporting:
       - "https://status.example.com"
     # Optional: which environment variable holds the bearer token (default SRTCTL_STATUS_TOKEN)
     token_env: SRTCTL_STATUS_TOKEN
+    # Optional: file read for the token when the variable is unset (first line; ~ expands)
+    token_file: ~/.config/srtctl/status.token
 ```
 
 If not configured, status reporting is disabled and jobs run normally.
@@ -82,6 +84,7 @@ Tokens are bearer tokens read from the environment on both sides. Nothing token-
 | Server | `SRTCTL_STATUS_TOKEN` (`--token-env`) | Write token. Required for POST, PUT and DELETE; also grants GET |
 | Server | `SRTCTL_STATUS_READ_TOKEN` (`--read-token-env`) | Optional read-only token for GET routes (dashboards, humans) |
 | Reporter | `SRTCTL_STATUS_TOKEN` (`reporting.status.token_env` renames it) | Sent as `Authorization: Bearer` on every POST and PUT |
+| Reporter | `reporting.status.token_file` | Path of a file whose first line is the token, read when the variable is unset. Only the path is in the config |
 
 Rules:
 
@@ -91,7 +94,7 @@ Rules:
 - With no write token the server is open. That is only allowed on loopback, or with `--allow-unauthenticated` for a network that is trusted end to end (a cluster login node reachable only from its compute nodes). A read token without a write token is a startup error.
 - The reporter never follows redirects (`allow_redirects=False`). A 3xx means the endpoint is behind a login page or proxy and is logged at WARNING as a failure; so are 401 and 403. Network errors stay at DEBUG because reporting is fire-and-forget.
 
-The reporter reads the token from the shell that runs `srtctl apply`; SLURM's default `--export=ALL` carries it to the orchestrator on the head node, which runs outside the container.
+The reporter reads the token from the shell that runs `srtctl apply`; SLURM's default `--export=ALL` carries it to the orchestrator on the head node, which runs outside the container. With `token_file`, the reporter reads the file itself on the submitting host and again on the head node (the path must exist on both, a home or shared filesystem does), so a cluster `srtslurm.yaml` carrying `endpoint` and `token_file` needs no shell setup from anyone who submits from that checkout. The variable wins when both are set; an unreadable file is a WARNING once and the report goes out without a token.
 
 ```bash
 # collector host
