@@ -153,6 +153,7 @@ class DynamoFrontend:
                 # why this is needed in later versions of Dynamo, but it is.
                 mpi="pmix",
                 het_group=runtime.nodes.het_group_for(node),
+                step_name=f"frontend_{idx}",
             )
 
             processes.append(
@@ -163,6 +164,7 @@ class DynamoFrontend:
                     node=node,
                     critical=True,
                     terminate_timeout=profiling.teardown_grace_secs if nsys_prefix else 10.0,
+                    step_name=f"frontend_{idx}",
                 )
             )
 

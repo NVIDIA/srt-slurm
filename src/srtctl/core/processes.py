@@ -30,6 +30,9 @@ class TerminationOutcome:
     force_killed: bool
 
 
+_DEFAULT_TERMINATE_TIMEOUT = 10.0
+
+
 def terminate_and_reap(
     popen: subprocess.Popen, *, terminate_timeout: float = 10.0, kill_timeout: float = 5.0
 ) -> TerminationOutcome:
@@ -64,6 +67,13 @@ class ManagedProcess:
         terminate_timeout: Seconds ``cleanup()`` waits after SIGTERM before SIGKILL. Raise
             it for processes that must flush state on exit (an nsys-wrapped worker whose
             capture range is still open writes its report only after the engine exits).
+        step_name: Name of the SLURM job step (``srun --job-name``). When set together with
+            a raised ``terminate_timeout``, ``cleanup()`` delivers SIGTERM to the step's
+            processes (``scancel --signal=TERM <jobid>.<stepid>``) instead of to the srun
+            client: srun reacts to SIGTERM with "forcing job termination", after which
+            slurmstepd SIGKILLs the tasks within seconds, so nsys never gets to write its
+            report (hecate 596299). Signalled directly, nsys stops, writes the report and
+            exits, and srun then ends normally.
     """
 
     name: str
@@ -72,6 +82,7 @@ class ManagedProcess:
     node: str | None = None
     critical: bool = True
     terminate_timeout: float = 10.0
+    step_name: str | None = None
 
     @property
     def is_running(self) -> bool:
@@ -158,6 +169,7 @@ class ProcessRegistry:
                     node=proc.node,
                     critical=proc.critical,
                     terminate_timeout=proc.terminate_timeout,
+                    step_name=proc.step_name,
                 )
             self.add_process(proc)
 
@@ -181,42 +193,124 @@ class ProcessRegistry:
 
             return len(self._failed_processes) > 0
 
+    def _step_ids_by_name(self) -> dict[str, list[str]]:
+        """Map step names to step ids for this job (``squeue -s``); empty on any failure."""
+        try:
+            out = subprocess.run(
+                ["squeue", "-s", "-j", str(self.job_id), "-h", "-o", "%i %j"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            ).stdout
+        except (OSError, subprocess.SubprocessError) as e:  # noqa: PERF203
+            logger.warning("squeue -s failed; falling back to signalling srun clients: %s", e)
+            return {}
+        steps: dict[str, list[str]] = {}
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                steps.setdefault(parts[1], []).append(parts[0])
+        return steps
+
+    def _signal_steps(self, procs: list[ManagedProcess]) -> set[str]:
+        """SIGTERM the processes of each named step; return the names that were signalled."""
+        if not procs:
+            return set()
+        steps = self._step_ids_by_name()
+        signalled: set[str] = set()
+        for proc in procs:
+            step_ids = steps.get(proc.step_name or "", [])
+            if not step_ids:
+                logger.warning("No running step named %r for %s; signalling its srun instead", proc.step_name, proc.name)
+                continue
+            ok = True
+            for step_id in step_ids:
+                try:
+                    res = subprocess.run(
+                        ["scancel", "--signal=TERM", step_id], capture_output=True, text=True, timeout=30, check=False
+                    )
+                    if res.returncode != 0:
+                        ok = False
+                        logger.warning("scancel --signal=TERM %s failed: %s", step_id, res.stderr.strip())
+                except (OSError, subprocess.SubprocessError) as e:  # noqa: PERF203
+                    ok = False
+                    logger.warning("scancel --signal=TERM %s failed: %s", step_id, e)
+            if ok:
+                logger.info(
+                    "Sent SIGTERM to step %s (%s); waiting up to %.0fs for it to finish (nsys report flush)",
+                    ",".join(step_ids),
+                    proc.name,
+                    proc.terminate_timeout,
+                )
+                signalled.add(proc.name)
+        return signalled
+
     def cleanup(self) -> None:
         """Terminate all registered processes.
 
-        Two phases so the grace periods overlap instead of adding up: SIGTERM every running
-        process first, then wait for each one up to its own ``terminate_timeout`` before
-        escalating to SIGKILL. A profiled worker with a 3-minute grace therefore costs at
-        most 3 minutes in total, not 3 minutes per worker.
+        Three phases so the grace periods overlap instead of adding up:
+
+        1. Processes with a ``step_name`` and a raised ``terminate_timeout`` (nsys-wrapped
+           workers / frontend) get SIGTERM delivered to their step's processes via
+           ``scancel --signal=TERM``. Signalling the srun client instead would make srun
+           "force job termination" and slurmstepd would SIGKILL the tasks within seconds,
+           before nsys can write its report.
+        2. Everything else (and any step that could not be signalled) gets ``popen.terminate()``.
+        3. Wait for each process up to its own ``terminate_timeout``; on expiry escalate:
+           SIGTERM to the srun client if it only had the step signal so far, then SIGKILL.
         """
         with self._lock:
             logger.info("Cleaning up %d processes...", len(self._processes))
-            running: list[ManagedProcess] = []
-            for name, proc in self._processes.items():
-                if not proc.is_running:
+            running: list[ManagedProcess] = [p for p in self._processes.values() if p.is_running]
+            graceful = [
+                p
+                for p in running
+                if isinstance(p.step_name, str)
+                and p.step_name
+                and isinstance(p.terminate_timeout, (int, float))
+                and p.terminate_timeout > _DEFAULT_TERMINATE_TIMEOUT
+            ]
+            signalled = self._signal_steps(graceful)
+            for proc in running:
+                if proc.name in signalled:
                     continue
-                logger.debug("Terminating process: %s", name)
+                logger.debug("Terminating process: %s", proc.name)
                 try:
                     proc.popen.terminate()
-                    running.append(proc)
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("Failed to terminate %s: %s", name, e)
+                    logger.warning("Failed to terminate %s: %s", proc.name, e)
             for proc in running:
                 try:
                     proc.popen.wait(timeout=proc.terminate_timeout)
+                    continue
                 except subprocess.TimeoutExpired:
+                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to reap %s: %s", proc.name, e)
+                    continue
+                if proc.name in signalled:
                     logger.warning(
-                        "Process %s did not exit within %.0fs of SIGTERM, killing...",
+                        "Step of %s did not finish within %.0fs of SIGTERM, terminating its srun...",
                         proc.name,
                         proc.terminate_timeout,
                     )
-                    proc.popen.kill()
                     try:
-                        proc.popen.wait(timeout=5)
+                        proc.popen.terminate()
+                        proc.popen.wait(timeout=_DEFAULT_TERMINATE_TIMEOUT)
+                        continue
                     except subprocess.TimeoutExpired:
-                        logger.error("Process %s was not reaped after SIGKILL", proc.name)
+                        pass
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("Failed to terminate %s: %s", proc.name, e)
+                logger.warning("Process %s did not exit, killing...", proc.name)
+                try:
+                    proc.popen.kill()
+                    proc.popen.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("Process %s was not reaped after SIGKILL", proc.name)
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("Failed to reap %s: %s", proc.name, e)
+                    logger.warning("Failed to kill %s: %s", proc.name, e)
 
     def print_failure_details(self, tail_lines: int = 50) -> None:
         """Print detailed failure information including log tails.

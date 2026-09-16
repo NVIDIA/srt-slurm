@@ -263,3 +263,91 @@ class TestCleanupGrace:
         popen = self._running(5)
         ManagedProcess(name="p", popen=popen, terminate_timeout=33.0).terminate()
         popen.wait.assert_called_once_with(timeout=33.0)
+
+
+class TestGracefulStepSignal:
+    """nsys-wrapped steps get SIGTERM via scancel --signal, not via their srun client."""
+
+    @staticmethod
+    def _running(pid: int) -> MagicMock:
+        popen = MagicMock(spec=Popen)
+        popen.poll.return_value = None
+        popen.pid = pid
+        popen.wait.return_value = 0
+        return popen
+
+    def test_named_long_grace_step_is_signalled_not_terminated(self):
+        from unittest.mock import patch
+
+        registry = ProcessRegistry(job_id="4242")
+        worker = self._running(1)
+        plain = self._running(2)
+        registry.add_process(ManagedProcess(name="decode_0_n1", popen=worker, terminate_timeout=600.0, step_name="decode_0_n1"))
+        registry.add_process(ManagedProcess(name="etcd", popen=plain))
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            res = MagicMock()
+            res.returncode = 0
+            res.stderr = ""
+            res.stdout = "4242.3 decode_0_n1\n4242.2 bash\n" if cmd[0] == "squeue" else ""
+            return res
+
+        with patch("srtctl.core.processes.subprocess.run", side_effect=fake_run):
+            registry.cleanup()
+        assert ["scancel", "--signal=TERM", "4242.3"] in calls
+        worker.terminate.assert_not_called()  # step finished on its own within the grace
+        worker.wait.assert_called_once_with(timeout=600.0)
+        plain.terminate.assert_called_once()
+
+    def test_falls_back_to_srun_terminate_when_step_missing(self):
+        from unittest.mock import patch
+
+        registry = ProcessRegistry(job_id="4242")
+        worker = self._running(1)
+        registry.add_process(ManagedProcess(name="decode_0_n1", popen=worker, terminate_timeout=600.0, step_name="decode_0_n1"))
+
+        def fake_run(cmd, **kwargs):
+            res = MagicMock()
+            res.returncode = 0
+            res.stderr = ""
+            res.stdout = "4242.2 bash\n"  # no step with our name
+            return res
+
+        with patch("srtctl.core.processes.subprocess.run", side_effect=fake_run):
+            registry.cleanup()
+        worker.terminate.assert_called_once()
+
+    def test_escalates_when_signalled_step_outlives_grace(self):
+        from unittest.mock import patch
+
+        registry = ProcessRegistry(job_id="4242")
+        worker = self._running(1)
+        worker.wait.side_effect = [TimeoutExpired("x", 1), TimeoutExpired("x", 1), 0]  # grace, post-terminate, post-kill
+        registry.add_process(ManagedProcess(name="decode_0_n1", popen=worker, terminate_timeout=0.01, step_name="decode_0_n1"))
+
+        def fake_run(cmd, **kwargs):
+            res = MagicMock()
+            res.returncode = 0
+            res.stderr = ""
+            res.stdout = "4242.3 decode_0_n1\n"
+            return res
+
+        # terminate_timeout 0.01 is not "raised", so this one goes the plain route; raise it to exercise the step path
+        registry._processes["decode_0_n1"].terminate_timeout = 11.0
+        with patch("srtctl.core.processes.subprocess.run", side_effect=fake_run):
+            registry.cleanup()
+        worker.terminate.assert_called_once()
+        worker.kill.assert_called_once()
+
+    def test_default_grace_processes_never_touch_slurm(self):
+        from unittest.mock import patch
+
+        registry = ProcessRegistry(job_id="4242")
+        popen = self._running(1)
+        registry.add_process(ManagedProcess(name="w", popen=popen, step_name="w"))  # default 10 s grace
+        with patch("srtctl.core.processes.subprocess.run") as run:
+            registry.cleanup()
+        run.assert_not_called()
+        popen.terminate.assert_called_once()

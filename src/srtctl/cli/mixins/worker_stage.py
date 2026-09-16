@@ -263,6 +263,7 @@ class WorkerStageMixin:
             srun_options=self.runtime.srun_options,
             srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
             het_group=process.het_group,
+            step_name=f"{mode}_{index}_{process.node}",
         )
 
         return ManagedProcess(
@@ -273,6 +274,7 @@ class WorkerStageMixin:
             critical=True,
             # nsys writes a still-open capture range only after the engine exits; give it time.
             terminate_timeout=profiling.teardown_grace_secs if nsys_prefix else 10.0,
+            step_name=f"{mode}_{index}_{process.node}",
         )
 
     def start_endpoint_worker(self, endpoint_processes: list["Process"]) -> ManagedProcess:
@@ -428,6 +430,7 @@ class WorkerStageMixin:
             # per-rank CPU/NUMA binding, which srun_config.cpu_bind cannot.
             srun_options=srun_options,
             het_group=leader.het_group,
+            step_name=f"{mode}_{index}_{leader.node}",
         )
 
         return ManagedProcess(
@@ -438,6 +441,7 @@ class WorkerStageMixin:
             critical=True,
             # nsys writes a still-open capture range only after the engine exits; give it time.
             terminate_timeout=profiling.teardown_grace_secs if nsys_prefix else 10.0,
+            step_name=f"{mode}_{index}_{leader.node}",
         )
 
     def _wait_for_worker_ready(self, leader: "Process") -> None:

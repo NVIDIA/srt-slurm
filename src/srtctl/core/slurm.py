@@ -203,6 +203,7 @@ def start_srun_process(
     oversubscribe: bool = False,
     cpu_bind: str | None = None,
     het_group: int | None = None,
+    step_name: str | None = None,
 ) -> subprocess.Popen:
     """Start a process via srun with container support.
 
@@ -255,6 +256,11 @@ def start_srun_process(
     # Basic options
     if overlap:
         srun_cmd.append("--overlap")
+
+    # Name the job step (squeue -s shows it) so cleanup can signal the step's processes
+    # directly instead of the srun client (see ProcessRegistry.cleanup).
+    if step_name:
+        srun_cmd.extend(["--job-name", step_name])
 
     # MPI options (for TRTLLM)
     if mpi:

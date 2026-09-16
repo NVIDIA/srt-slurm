@@ -228,6 +228,8 @@ class TestFrontendProfiling:
         assert (tmp_path / "profiles" / "frontend").is_dir()
         # an open frontend capture is written only after the frontend exits: cleanup must wait for it
         assert procs[0].terminate_timeout == 180.0
+        # ... and signal the step, not the srun client, so the step must be named
+        assert kwargs["step_name"] == "frontend_0" and procs[0].step_name == "frontend_0"
 
     def test_dynamo_frontend_untouched_without_block(self, tmp_path):
         from types import SimpleNamespace
