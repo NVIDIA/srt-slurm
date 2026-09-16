@@ -191,6 +191,39 @@ class AIAnalysisConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+# What ``aws s3 sync`` skips by default. Patterns follow the AWS CLI rules (relative to the
+# log directory, ``*`` matches across directories). The aiperf per-interval scrapes of the
+# worker and DCGM ``/metrics`` endpoints are the same time series tachometer stores as
+# parquet, at 50 to 100 times the bytes; ``perf_dashboard_bundle/`` is the re-renderable
+# intermediate and holds a reshaped copy of that scrape; ``perf_dashboard.json`` duplicates
+# the self-contained ``perf_dashboard.html``. A 2.2 GB run becomes about 60 MB.
+#
+# The aiperf patterns are scoped to the two directories the aiperf-driven runners write
+# to (trace-replay, agentperf and mooncake-router under ``artifacts/<run>/``, sa-bench under
+# ``sa-bench_*/conc_*/aiperf_artifacts/``) so a same-named file from another benchmark type
+# (a custom runner's own ``inputs.json``, say) is never dropped by accident.
+_AIPERF_ARTIFACT_ROOTS = ("artifacts/*", "sa-bench_*/*")
+_AIPERF_METRIC_SCRAPES = (
+    "server_metrics_export.jsonl",
+    "server_metrics_export.json",
+    "gpu_telemetry_export.jsonl",
+    "inputs.json",
+)
+DEFAULT_S3_EXCLUDE: tuple[str, ...] = (
+    *(f"{root}/{name}" for root in _AIPERF_ARTIFACT_ROOTS for name in _AIPERF_METRIC_SCRAPES),
+    "perf_dashboard_bundle/*",
+    "perf_dashboard.json",
+)
+# What goes into the compressed archive uploaded next to the loose files: aiperf's
+# per-request records, the raw truth behind every latency number (13 to 40 MB raw, under
+# 1 MB compressed). Python ``glob`` rules with ``**``; the same files are excluded from the
+# plain sync.
+DEFAULT_S3_ARCHIVE: tuple[str, ...] = (
+    "artifacts/**/profile_export.jsonl",
+    "sa-bench_*/**/profile_export.jsonl",
+)
+
+
 @dataclass(frozen=True)
 class S3Config:
     """S3 upload configuration for log artifacts.
@@ -210,6 +243,16 @@ class S3Config:
     endpoint_url: str | None = None
     access_key_id: str | None = None
     secret_access_key: str | None = None
+    # Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across
+    # directories). Omit for the defaults: aiperf's per-interval metrics scrapes and
+    # `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that
+    # series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`. Set to `[]` to ship
+    # the whole directory.
+    exclude: list[str] | None = None
+    # Patterns (Python glob, `**` allowed) packed into one `bundle.tar.zst` uploaded next to the
+    # loose files and left out of the plain sync. Omit for the default, aiperf's per-request
+    # `profile_export.jsonl`; set to `[]` for no archive.
+    archive: list[str] | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
