@@ -55,6 +55,24 @@ srtctl status-server --host 0.0.0.0 --cors-origin '*'                           
 
 With a matching `Origin`, GET and HEAD responses (errors included, so the page can show a 401) carry `Access-Control-Allow-Origin`, and the `OPTIONS` preflight is answered before auth with `Access-Control-Allow-Headers: Authorization` and `Access-Control-Allow-Methods: GET, HEAD, OPTIONS`. Writes are never offered cross-origin. This is safe to enable because the API uses no cookies and a token stored by one origin's `localStorage` cannot be read by another; a page from an origin that is not listed simply cannot call the API from the browser, and every call still needs the token.
 
+**Zero-setup variant: proxy the API next to the page.** With no API base stored, the page assumes the API lives beside it: `/api/...` when the collector serves the page from `/`, `/status/api/...` when a web server hosts it under `/status/`. So a web server that proxies `<prefix>/api/*` to the collector and injects the read token on the way needs no CORS on the collector and no token in the browser at all. Caddy, with the token in a `0600` snippet:
+
+```caddyfile
+handle_path /status/api/* {
+    rewrite * /api{uri}
+    reverse_proxy https://collector.example.com {
+        header_up Host {upstream_hostport}
+        import /home/me/.config/caddy/secrets/status-read-token.caddy   # header_up Authorization "Bearer ..."
+    }
+}
+handle_path /status/* {
+    root * /srv/srtctl-status-ui
+    file_server
+}
+```
+
+The proxy replaces any client `Authorization` header, so writes through it are refused (the read token gets 403). The trade-off is explicit: whoever can reach the web server can read the collector, so this belongs on a network you already trust for read access, such as a corporate LAN.
+
 ## Authentication
 
 Tokens are bearer tokens read from the environment on both sides. Nothing token-shaped ever goes into a recipe or `srtslurm.yaml`: the resolved config is written to the lockfile and copied into the log directory that `reporting.s3` uploads.

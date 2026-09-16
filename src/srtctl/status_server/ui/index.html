@@ -81,7 +81,7 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
     </select>
   </label>
   <form class="token" id="token-form">
-    <input id="api" placeholder="API base, blank = this origin" autocomplete="off" aria-label="API base URL" style="width: 250px">
+    <input id="api" placeholder="API base, blank = next to this page" autocomplete="off" aria-label="API base URL" style="width: 250px">
     <input id="token" type="password" placeholder="read token" autocomplete="off" aria-label="read token">
     <button type="submit">use</button>
   </form>
@@ -133,19 +133,23 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
 
   // The read token and the API base live only in this browser. "#token=..." and
   // "#api=https://collector" fragments seed them once (fragments never reach the
-  // server) and are removed from the URL. An empty API base means this origin,
-  // which is the case when the collector itself serves this page.
+  // server) and are removed from the URL. With nothing set, the API is assumed to
+  // live next to the page: "/api/..." when the collector serves the page from "/",
+  // "/status/api/..." when a web server hosts it under /status/ and proxies that
+  // prefix to a collector (injecting the read token there means no token here at all).
   const API_KEY = "srtctl_status_api";
   const trimSlash = (s) => (s || "").trim().replace(/\/+$/, "");
+  const pageDir = trimSlash(location.pathname.replace(/\/[^/]*$/, ""));
   let token = localStorage.getItem(KEY) || "";
-  let apiBase = trimSlash(localStorage.getItem(API_KEY));
+  let apiBase = trimSlash(localStorage.getItem(API_KEY)) || pageDir;
   const frag = new URLSearchParams(location.hash.slice(1));
   if (frag.get("token")) { token = frag.get("token"); localStorage.setItem(KEY, token); }
   if (frag.has("api")) { apiBase = trimSlash(frag.get("api")); localStorage.setItem(API_KEY, apiBase); }
   if (frag.has("token") || frag.has("api")) history.replaceState(null, "", location.pathname + location.search);
   $("token").value = token;
   $("api").value = apiBase;
-  const apiHost = () => { try { return apiBase ? new URL(apiBase).host : location.host; } catch (err) { return apiBase; } };
+  const isRemote = () => /^https?:\/\//.test(apiBase);
+  const apiHost = () => { try { return isRemote() ? new URL(apiBase).host : location.host + apiBase; } catch (err) { return apiBase; } };
   $("origin").textContent = apiHost();
   // The flag the collector needs so this page's origin may call it cross-origin.
   const corsFlag = () => `--cors-origin ${location.origin === "null" ? "'*'" : location.origin}`;
@@ -183,8 +187,13 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
     try { res = await fetch(apiBase + path, { headers, cache: "no-store" }); }
     catch (err) {
       // A cross-origin call the collector did not allow fails here, before any status code.
-      setLive("err", apiBase ? "unreachable or blocked by CORS" : "collector unreachable");
-      if (apiBase) hint(`Could not reach <code>${esc(apiBase)}</code>. If it is up, it must be started with <code>${esc(corsFlag())}</code> so this page may call it.`);
+      if (isRemote()) {
+        setLive("err", "unreachable or blocked by CORS");
+        hint(`Could not reach <code>${esc(apiBase)}</code>. If it is up, it must be started with <code>${esc(corsFlag())}</code> so this page may call it.`);
+      } else {
+        setLive("err", "collector unreachable");
+        hint(`Could not reach <code>${esc(apiBase || "")}/api</code> on this host. Is the collector, or the proxy in front of it, running?`);
+      }
       throw err;
     }
     if (res.status === 401 || res.status === 403) {

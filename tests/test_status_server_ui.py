@@ -220,3 +220,7 @@ def test_ui_supports_a_remote_api_base():
     assert "srtctl_status_api" in html
     assert "fetch(apiBase + path" in html
     assert "--cors-origin" in html  # the hint tells the viewer the exact flag the collector needs
+    # With nothing stored, the API base is the page's own directory ("" at /, "/status" under /status/),
+    # so a web server that proxies <prefix>/api/* to a collector needs no configuration in the browser.
+    assert 'const pageDir = trimSlash(location.pathname.replace(/\\/[^/]*$/, ""));' in html
+    assert "localStorage.getItem(API_KEY)) || pageDir" in html
