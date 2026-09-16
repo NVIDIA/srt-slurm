@@ -54,6 +54,7 @@ from srtctl.backends import (
 )
 from srtctl.backends.sglang import MooncakeKVStoreConfig
 from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
+from srtctl.core.config import SCHEMA1_FRONTEND_RENAMES
 from srtctl.core.placement import _BENCHMARK as _BENCHMARK_PLACEMENT_FIELDS
 from srtctl.core.placement import _FRONTEND as _FRONTEND_PLACEMENT_FIELDS
 from srtctl.core.roles import COLOCATE, ENGINE_CONFIG_KEY, ROLE_NAMES, ROLE_TO_MODE
@@ -144,6 +145,12 @@ _ROLE_ROWS: tuple[tuple[str, str, str, str], ...] = (
         "`true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`.",
     ),
     ("sidecar", "bool", "`False`", "Run the native engine with a Dynamo sidecar; every role must agree."),
+    (
+        "critical",
+        "bool",
+        "`True`",
+        "A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers.",
+    ),
 )
 
 _PLACEMENT_ROWS: tuple[tuple[str, str, str], ...] = (
@@ -647,6 +654,26 @@ def render_legacy_reference() -> str:
             backend_rows.setdefault(key, replacement)
     for key, replacement in backend_rows.items():
         lines.append(f"| `backend.{key}` | {_cell(replacement)} |")
+    lines.append("")
+
+    lines.extend(
+        [
+            "## v1 values that changed meaning",
+            "",
+            (
+                "These keys exist in both layouts, but the value means something else in 2.0. A schema 1 recipe "
+                "keeps its historical meaning at load; `srtctl migrate` writes the 2.0 spelling."
+            ),
+            "",
+            "| Key | schema 1 value | 2.0 spelling | 2.0 meaning of the old value |",
+            "|---|---|---|---|",
+        ]
+    )
+    for old_value, new_value in SCHEMA1_FRONTEND_RENAMES.items():
+        lines.append(
+            f"| `frontend.type` | `{old_value}` (the SGLang Model Gateway router) | `{new_value}` | "
+            f"`{old_value}` is the router-free single `sglang.launch_server` worker |"
+        )
     lines.append("")
 
     lines.extend(["## Legacy fields in retained sections", ""])

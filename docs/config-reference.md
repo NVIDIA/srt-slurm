@@ -142,6 +142,7 @@ The `srtslurm.yaml` file can contain the following fields:
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
 | `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
+| `preflight`                     | bool   | `false` skips the pre-submit path checks on every `apply` (default `true`) |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
@@ -150,6 +151,8 @@ The `srtslurm.yaml` file can contain the following fields:
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl: workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
 
 **default_host_setup**: A [`host_setup`](#host_setup) block applied to every job on the cluster, for node state that has to be set outside the container, such as locking GPU clocks. A recipe that sets its own `host_setup:` block replaces it entirely; `host_setup: {commands: []}` opts a single run out.
+
+**preflight**: `srtctl apply` normally stats `model.path`, `model.container` and the telemetry images on the submitting node before calling sbatch. On clusters where those live only on compute nodes (node-local NVMe such as `/raid/models`), that check can never pass from the login node; set `preflight: false` and every `apply` behaves as if `--no-preflight` had been passed, with an INFO line saying so. Paths are still resolved at runtime and the framework fails loudly on the compute node if one is genuinely missing.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container's open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
@@ -248,7 +251,7 @@ Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. Everything that is per
 
 | Engine | Engine-wide knobs |
 | --- | --- |
-| `sglang` | none beyond `type` |
+| `sglang-router` | none beyond `type` |
 | `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_cuda_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes` |
 | `trtllm` | `served_model_name`, `publish_metrics`, `publish_events_and_metrics`, `sequential_node_start`, `numa_memory_bind`, `numa_cpu_bind` |
 | `mocker` | the simulation parameters: `engine_type`, `speedup_ratio`, `decode_speedup_ratio`, `num_gpu_blocks_override`, `max_num_seqs`, `max_num_batched_tokens`, `block_size`, `data_parallel_size`, ... |
@@ -306,9 +309,20 @@ engine:
 | `false` | either | none |
 | `true` | either | `--publish-metrics --publish-events-and-metrics` |
 
-**Compatibility:** the metrics-only flag requires a Dynamo build containing [ai-dynamo/dynamo#12162](https://github.com/ai-dynamo/dynamo/pull/12162) or equivalent support. Older builds (including Dynamo v1.4.2) reject the flag. Set `engine.publish_metrics: false` to omit only the new flag, including when observability is enabled; this does not disable a combined flag enabled by observability or the recipe. Set `engine.publish_events_and_metrics: false` to omit **both** flags. srt-slurm does not substitute the combined flag as an automatic compatibility fallback, because that would enable KV events. Omitting the flag does not override metrics-related environment variables supplied by the user. Metrics collection adds engine telemetry work; metrics-only does not mean zero overhead.
+**Compatibility:** the metrics-only flag requires a Dynamo build containing [ai-dynamo/dynamo#12162](https://github.com/ai-dynamo/dynamo/pull/12162) or equivalent support. Older builds (including Dynamo v1.4.2) reject the flag. Set `engine.publish_metrics: false` to omit only the new flag, including when observability is enabled; this does not disable a combined flag enabled by observability or the recipe. Set `engine.publish_events_and_metrics: false` to omit **both** flags. srt-slurm does not substitute the combined flag as an automatic compatibility fallback, because that would enable KV events. Omitting the flag does not override metrics-related environment variables supplied by the user. Metrics collection adds engine telemetry work; metrics-only does not mean zero overhead, but with the iteration-statistics default below the remaining cost is the per-request perf metrics.
 
-These options do not change native `trtllm_serve` or sidecar worker commands. `srtctl dry-run` shows the publication flag selected for Dynamo TRT-LLM workers.
+**Iteration statistics default.** srtctl bakes `enable_iter_perf_stats: false` into every TRT-LLM engine section a recipe uses (prefill and decode, or aggregated), under both `frontend.type: dynamo` and `trtllm_serve`, creating the section when the recipe has none. This is a setdefault: an explicit `enable_iter_perf_stats: true` in the recipe wins, and `observability.enabled: true` keeps its own `true` because its expansion runs first. The default exists because `dynamo.trtllm` turns `--publish-metrics` into `enable_iter_perf_stats: true` in the engine arguments, and the engine YAML is merged over those arguments and wins on conflicts; without the explicit key every Dynamo worker collects TensorRT-LLM's per-iteration statistics (KV-cache stats and CUDA-event step timing on every executor loop). The request-level `trtllm_*` series (request latency, TTFT, TPOT, queue/prefill/decode time, token counters) do not need the key: they come from the per-request perf metrics, which `--publish-metrics` sets on the Dynamo path and `return_perf_metrics: true` sets for trtllm-serve. What the default drops is the iteration-level `trtllm_*` gauges (`trtllm_kv_cache_*`, running/waiting requests, iteration latency) and, on Dynamo, the `dynamo_component_kvstats_*` gauges, the router worker-load sample and the Planner's forward-pass metrics; set the key to `true` or enable `observability` to get them back. One visible effect to expect on a default run: the component dashboard's engine-tab KV-cache utilisation and hit-rate panels have no data, and the Dynamo bench dashboard's KV-utilisation series sits at the gauge's seeded 0 %, because both read gauges that only iteration statistics update. Engine sections whose `backend` is the legacy `tensorrt` engine are left alone: its `LlmArgs` rejects the key on containers older than TensorRT-LLM v1.3.0rc21, and that backend always collected the statistics anyway.
+
+```yaml
+roles:
+  decode:
+    args:
+      enable_iter_perf_stats: true   # opt back in for one role
+```
+
+Saved and locked recipes carry the resolved key, so a later `observability.enabled: true` on such a file meets an explicit `false` rather than an omission; srtctl warns at load time and `srtctl dry-run` shows the value, and removing the line restores the default.
+
+These options do not change native `trtllm_serve` or sidecar worker commands. `srtctl dry-run` shows the publication flag selected for Dynamo TRT-LLM workers and, for every TRT-LLM backend, the per-role `enable_iter_perf_stats` / `return_perf_metrics` values the engine YAML will carry.
 
 **Other TRT-LLM launch facts**: TRT-LLM supports prefill, decode, and aggregated roles, uses MPI-style launching (one srun per endpoint with all of its nodes) through `trtllm-llmapi-launch`, and sets `TRTLLM_EPLB_SHM_NAME` to a unique UUID per endpoint.
 
@@ -351,6 +365,7 @@ Role names are `prefill`, `decode`, and `agg`. A recipe is disaggregated (prefil
 | `extra_args` | list[string] | TRT-LLM only: extra `trtllm-serve` CLI flags appended verbatim to the worker command (`frontend.type: trtllm_serve`). For the few options that configure the OpenAI server layer and have no engine YAML key, such as `--tool_parser` |
 | `kv_events` | bool or dict | Publish KV cache events for the Dynamo router; see below |
 | `sidecar` | bool | Run the native engine with a Dynamo sidecar; see [Native sidecar mode](#native-sidecar-mode) |
+| `critical` | bool | Whether a worker of this role exiting fails the run (default `true`); see [critical](#critical) |
 | `engine` | string | Optional; must equal the top-level `engine` when both are given |
 
 `env` and `args` are ordinary YAML mappings. Nothing needs JSON or inline `{}` syntax. Boolean flags are `flag-name: true`.
@@ -405,7 +420,20 @@ Each worker leader gets a globally unique port starting at 5550:
 | decode_0  | 5552 |
 | decode_1  | 5553 |
 
-The v1 spelling of this section (`resources.prefill_nodes`, `resources.prefill_workers`, `resources.gpus_per_prefill`, `resources.decode_nodes: 0`, `backend.prefill_environment`, `backend.sglang_config.prefill`, `backend.prefill_extra_args`, `backend.kv_events_config`, and the `decode` and `aggregated` counterparts) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
+### critical
+
+srtctl treats every worker as critical: when one exits, the process monitor fails the run and tears the job down. A workload that kills workers on purpose, such as a migration probe or a fault-tolerance test, needs the survivors to keep serving, so set `critical: false` on the role whose workers it kills:
+
+```yaml
+roles:
+  decode:
+    workers: 4
+    critical: false            # a decode worker exiting does not end the run
+```
+
+The flag is per role and defaults to `true`. It changes only how a worker exit is treated; the health gate before the benchmark still requires every worker to come up.
+
+The v1 spelling of this section (`resources.prefill_nodes`, `resources.prefill_workers`, `resources.gpus_per_prefill`, `resources.prefill_critical`, `resources.decode_nodes: 0`, `backend.prefill_environment`, `backend.sglang_config.prefill`, `backend.prefill_extra_args`, `backend.kv_events_config`, and the `decode` and `aggregated` counterparts) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
 ---
 
@@ -424,7 +452,7 @@ benchmark:
 
 `node: dedicated` reserves a node for that component: the job asks Slurm for one more node and nothing else runs there. Any other value names an existing node: `head` is the first allocated node (where the orchestrator runs), `first_decode` and `last_decode` are the first and last node of the decode role. The default for both blocks is `head`. `telemetry` requires the benchmark client on `head`.
 
-The discovery plane (etcd, NATS) is placed through its services: an `etcd` or `nats` entry under [`services`](#services) with `placement.node: dedicated`. See [Implicit Services](services.md#implicit-services).
+The discovery plane (etcd, and NATS when a plane uses it) is placed through its services: an `etcd` or `nats` entry under [`services`](#services) with `placement.node: dedicated`. See [Implicit Services](services.md#implicit-services).
 
 The v1 spelling of this (`frontend.orchestrator_placement`, `frontend.dedicated_node`, `benchmark.client_placement`, `benchmark.client_dedicated_node`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
@@ -449,7 +477,9 @@ resources:
 | `spread_workers`  | bool   | false              | Place each partial-node worker on its own node instead of packing several onto one node. The recipe must reserve enough nodes (e.g. `roles.decode.nodes` equal to `roles.decode.workers` when `gpus` is below `gpus_per_node`) |
 | `het_jobs`        | bool or null | null         | Submit prefill and decode as two SLURM heterogeneous-job components, each with its own `--segment`. `null` defers to the cluster's `use_het_jobs`; see [slurm-faq.md](slurm-faq.md) |
 
-The total node count is the sum of every role's `nodes` plus one for each `placement.node: dedicated` (frontend, benchmark client, the discovery plane through its services). `srtctl dry-run` prints the resulting sbatch request.
+The total node count is the sum of every role's `nodes`, every service's `nodes` (a pool of whole nodes the service owns, see [pools.md](pools.md)), plus one for each `placement.node: dedicated` (frontend, benchmark client, the discovery plane through its services). Pools are carved after the engine roles' nodes, in declaration order. `srtctl dry-run` prints the resulting sbatch request and the node map.
+
+A services-only job has no engine roles at all: the services that own nodes declare `nodes` (see [pools.md](pools.md)), `frontend.type: none` skips the frontend layer and the worker-count health gate, and the `services:` readiness probes are the only gate before the benchmark step runs. This is the shape of a Ray cluster driving an RL trainer, or a client run against an endpoint the job does not own.
 
 The v1 spelling of the worker topology (`resources.prefill_nodes`, `prefill_workers`, `gpus_per_prefill`, `decode_nodes`, `decode_workers`, `gpus_per_decode`, `agg_nodes`, `agg_workers`, `gpus_per_agg`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it into `roles:`.
 
@@ -502,7 +532,9 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang", "vllm-router", "trtllm_serve", or "vllm"
+  # Frontend type: "dynamo" (default), "sglang-router", "vllm-router", direct "sglang", "vllm", "trtllm_serve",
+  # or "none" for a services-only job (no router, no OpenAI endpoint, no worker-count health gate; only
+  # valid without engine roles, see services[].nodes)
   type: dynamo
 
   # Where it runs; see placement
@@ -520,7 +552,7 @@ frontend:
   # CLI args passed to the frontend/router
   args:
     router-mode: "kv"                 # dynamo: router-mode
-    policy: "cache_aware"             # sglang: policy
+    policy: "cache_aware"             # sglang-router: policy
     no-kv-events: true                # boolean flags
 
   # Environment variables for frontend processes
@@ -533,7 +565,7 @@ frontend:
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "vllm-router", "trtllm_serve", or "vllm" |
+| `type`                      | str  | dynamo        | `dynamo`; static routers `sglang-router`, `vllm-router`; direct (one aggregate worker binds the public port, no router process) `sglang`, `vllm`, `trtllm_serve` |
 | `placement.node`            | str  | head          | `head`, `first_decode`, or `dedicated`; see [placement](#placement) |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
@@ -551,7 +583,7 @@ See [SGLang Router](sglang-router.md) for detailed architecture.
 
 Because the orchestrator is a single process, set `enable_multiple_frontends: false` (the nginx + multi-router path is not supported). A configuration can be switched between the two TRT-LLM serving stacks by changing only `frontend.type` between `dynamo` and `trtllm_serve`; start from the `examples/trtllm/dynamo-disagg.yaml` and `examples/trtllm/trtllm-serve-disagg.yaml` examples.
 
-**Worker metrics default.** srtctl sets `return_perf_metrics: true` in the `args` of every role a `trtllm_serve` recipe uses (prefill and decode, or agg), creating the mapping when the recipe has none. This is a setdefault: an explicit `return_perf_metrics: false` in the recipe wins and is warned about. trtllm-serve mounts a worker's `/prometheus/metrics` route only when the engine runs with that flag, and TensorRT-LLM's own default is `false`, so without it Tachometer's `backend_*` endpoints answer HTTP 404 and the capture has no worker-level data. The route carries the per-request series (request latency, TTFT, TPOT, queue/prefill/decode time, token counters); it applies independently of `observability.enabled`, which keeps its own expansion.
+**Worker metrics default.** srtctl sets `return_perf_metrics: true` in the `args` of every role a `trtllm_serve` recipe uses (prefill and decode, or agg), creating the mapping when the recipe has none. This is a setdefault: an explicit `return_perf_metrics: false` in the recipe wins and is warned about. trtllm-serve mounts a worker's `/prometheus/metrics` route only when the engine runs with that flag, and TensorRT-LLM's own default is `false`, so without it Tachometer's `backend_*` endpoints answer HTTP 404 and the capture has no worker-level data. The route carries the per-request series (request latency, TTFT, TPOT, queue/prefill/decode time, token counters); it applies independently of `observability.enabled`, which keeps its own expansion. The same load step also sets `enable_iter_perf_stats: false` unless the recipe or observability says otherwise (see [Iteration statistics default](#trt-llm-metrics-publication)), so the route carries the per-request series only and the workers skip TensorRT-LLM's per-iteration statistics.
 
 ### vllm frontend
 
@@ -650,7 +682,7 @@ roles:
 
 The default remains `vllm`, so existing recipes continue to use the Python frontend. This setting only changes direct `frontend.type: vllm` jobs; Dynamo, sidecar, and `vllm-router` launch paths are unchanged.
 
-Compare with `frontend.type: dynamo` + `engine: vllm`, which keeps Dynamo as the request router and uses `python3 -m dynamo.vllm` workers with NATS/etcd.
+Compare with `frontend.type: dynamo` + `engine: vllm`, which keeps Dynamo as the request router and uses `python3 -m dynamo.vllm` workers discovered through etcd.
 
 ### vllm-router frontend
 
@@ -740,6 +772,11 @@ Every custom benchmark command receives frontend metadata plus mode-specific met
 | `SRT_AGG_IPS`                   | comma-separated IPs            | Aggregated worker leader IPs |
 | `SRT_AGG_ENDPOINTS`             | comma-separated `IP:port`      | Aggregated worker endpoints |
 | `AIPERF_SERVER_METRICS_URLS`    | comma-separated HTTP URLs      | AIPerf-compatible `/metrics` URLs for all logical workers |
+| `SRT_SERVICE_<NAME>_NODES`      | comma-separated hostnames      | Nodes each launched service runs on, in placement order; `<NAME>` is the service name upper-cased with non-alphanumerics as `_` |
+| `SRT_SERVICE_<NAME>_IPS`        | comma-separated IPs            | The same nodes' fabric IPs (the first is the head of a `ray` service) |
+| `SRT_SERVICE_<NAME>_NODE_COUNT` | int                            | How many nodes the service spans |
+| `SRT_GPUS_PER_NODE`             | int                            | `resources.gpus_per_node` |
+| `SRT_WORKER_NODES`              | comma-separated hostnames      | Every engine worker node (empty when the job has no engine roles) |
 
 Only variables for roles present in the recipe are emitted. Entries follow logical topology order (prefill index, decode index, or aggregated index). Multi-node follower ranks are excluded because they do not own separate engines; co-located logical workers retain repeated IPs and distinct ports so list positions remain aligned. With a Dynamo frontend, endpoint and metrics URLs use each leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured, their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
 
@@ -749,6 +786,8 @@ Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 - **An explicit `AIPERF_SERVER_METRICS_URLS` in the recipe `environment:` wins.** Injection is skipped when the variable is already set, so a curated endpoint list is never clobbered.
 
 Values in `benchmark.env` are applied last and can explicitly override any automatically injected variable.
+
+The service variables are how a custom command drives something the job brought up rather than an inference endpoint: a job with no engine roles (`frontend.type: none`, a service that owns the nodes through `services[].nodes`) still runs its benchmark step, and the command finds the service through `SRT_SERVICE_*`. Launchers and clients that are not core live in the repo-root `benchmarks/` folder, mounted in every job container at `/benchmarks` (like `configs/` at `/configs`); `benchmarks/rl/miles/launch.sh` starts a [Miles](miles.md) RL run against a `ray` service.
 
 ### sa-bench (Serving Accuracy)
 
@@ -864,7 +903,7 @@ benchmark:
 
 ### router
 
-Router performance benchmark with prefix caching. **Requires `frontend.type: sglang`**.
+Router performance benchmark with prefix caching. **Requires `frontend.type: sglang-router`**.
 
 ```yaml
 benchmark:
@@ -1019,7 +1058,7 @@ dynamo:
 | `sidecar_port`           | int          | 50051   | Base loopback gRPC port; co-located workers receive deterministic offsets |
 | `sidecar_binary`         | string/null  | null    | Optional standalone executable; null uses `python3 -m dynamo.<framework>.sidecar` |
 | `sidecar_args`           | list[string] | []      | Extra arguments passed to the sidecar launcher         |
-| `sidecar_startup_timeout` | int         | 1200    | Seconds to wait for the native gRPC endpoint            |
+| `sidecar_startup_timeout` | int         | 3600    | Seconds to wait for the native gRPC endpoint (1 hour)   |
 | `sidecar_context_length` | int/null     | null    | TRT-LLM context length override                         |
 
 | `source` key | Meaning |
@@ -1043,6 +1082,8 @@ The v1 spelling of this (`dynamo.version`, `dynamo.hash`, `dynamo.top_of_tree`, 
 ### Native sidecar mode
 
 Set `sidecar: true` on every role to run the framework's native engine process beside a CPU-only Dynamo sidecar instead of launching `python3 -m dynamo.<framework>`. The mode is job-wide, so every role must agree; the sidecar knobs (`sidecar_port`, `sidecar_args`, ...) stay under `dynamo`. `dynamo.sidecar: true` is the equivalent job-wide spelling. The engine and sidecar share one Slurm step and have a coupled lifecycle: if either exits, srtctl terminates the other and marks the worker failed.
+
+For SGLang, srtctl also adds `--incremental-streaming-output` to the engine (the sidecar consumes deltas) and sets `SGLANG_RUST_BUILD_MODE=never` in the worker environment so the native gRPC extension is loaded from the image instead of being rebuilt with cargo, which images that run SGLang from a source checkout cannot do. Set either one in the role's `args` or `env` to override.
 
 By default, srtctl launches `python3 -m dynamo.<framework>.sidecar`. The `ai-dynamo` package supplies this module and pins the matching `ai-dynamo-runtime` wheel, which embeds the native Rust sidecar. The configured Dynamo source or preinstalled container runtime must include the selected framework's launcher. No separate Cargo build is performed at job startup.
 
@@ -1072,7 +1113,7 @@ dynamo:
 
 The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
 
-SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. vLLM automatically uses one managed process per node for data-parallel endpoints and exposes the complete DP group through the leader's sidecar. Multi-node tensor-parallel vLLM endpoints remain rejected until their `vllm-rs` launch path is validated. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from `roles.agg.args.max_seq_len`.
+SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. srtctl also adds `--incremental-streaming-output` to every SGLang sidecar engine (and logs that it did): the sidecar treats each gRPC chunk as a delta, and without the flag current SGLang builds stream the cumulative text per chunk, which shows up as repeated prefixes in responses and inflated token counts. Set `incremental-streaming-output` in the role's `args` yourself to override. vLLM automatically uses one managed process per node for data-parallel endpoints and exposes the complete DP group through the leader's sidecar. Multi-node tensor-parallel vLLM endpoints remain rejected until their `vllm-rs` launch path is validated. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from `roles.agg.args.max_seq_len`.
 
 vLLM sidecar mode sets `VLLM_PLUGINS` to an empty value by default. This prevents image-installed plugins from replacing native engine output types that must match the fixed `vllm-rs` MessagePack contract. A recipe can explicitly set `VLLM_PLUGINS` in a role's `env` when every selected plugin is compatible with the sidecar protocol.
 
@@ -1988,7 +2029,7 @@ slurm:
   time_limit: "02:00:00"
 
 frontend:
-  type: sglang
+  type: sglang-router
   enable_multiple_frontends: false
   args:
     policy: "cache_aware"

@@ -15,7 +15,7 @@ import fnmatch
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +144,23 @@ def resolve_container_aliases(config: dict[str, Any], containers: Mapping[str, s
     return notes
 
 
+# Renamed frontend types: {schema-1 value: schema-2 value}. In schema 1 recipes
+# ``frontend.type: sglang`` was the SGLang Model Gateway; in 2.0 that router is
+# ``sglang-router`` and ``sglang`` is the router-free single worker.
+SCHEMA1_FRONTEND_RENAMES: dict[str, str] = {"sglang": "sglang-router"}
+
+
+def apply_schema1_frontend_rename(config: dict[str, Any]) -> dict[str, Any]:
+    """Give a schema 1 recipe its historical frontend meaning, in place."""
+    version = config.get("schema", 1)
+    frontend = config.get("frontend")
+    if isinstance(version, int) and not isinstance(version, bool) and version < 2 and isinstance(frontend, dict):
+        renamed = SCHEMA1_FRONTEND_RENAMES.get(frontend.get("type"))
+        if renamed:
+            frontend["type"] = renamed
+    return config
+
+
 def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: dict[str, Any] | None) -> dict[str, Any]:
     """
     Resolve user config by applying cluster defaults and aliases.
@@ -174,6 +191,7 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     expand_roles(config)
     expand_placement(config)
     expand_services(config)
+    apply_schema1_frontend_rename(config)
 
     if cluster_config is None:
         return config
@@ -681,6 +699,61 @@ def _setdefault_nested(parent: dict, key: str, values: dict) -> None:
         child.setdefault(k, v)
 
 
+def _trtllm_modes_in_use(cfg: dict) -> tuple[str, ...]:
+    """Engine modes the layout uses: mirror ``ResourceConfig.is_disaggregated``.
+
+    A ``prefill_nodes`` / ``decode_nodes`` pair means prefill + decode, otherwise
+    the single aggregated role.
+    """
+    resources = cfg.get("resources")
+    if not isinstance(resources, dict):
+        resources = {}
+    disaggregated = resources.get("prefill_nodes") is not None or resources.get("decode_nodes") is not None
+    return ("prefill", "decode") if disaggregated else ("aggregated",)
+
+
+def _setdefault_trtllm_engine_keys(
+    cfg: dict,
+    backend: dict,
+    defaults: dict,
+    skip_section: Callable[[dict], bool] | None = None,
+) -> dict[str, dict]:
+    """``setdefault`` ``defaults`` into every ``trtllm_config.<mode>`` section.
+
+    Sections for the modes the layout uses are created when absent or null, so a
+    recipe with no ``trtllm_config`` gets the defaults too; a section for an
+    unused mode is only touched when the recipe already carries it. A value that
+    is neither a mapping nor null is left alone so schema validation reports it.
+    ``skip_section`` lets a caller leave a section untouched based on its
+    contents. Explicit recipe values are never clobbered. Returns the sections
+    touched, keyed by mode, so callers can report explicit opt-outs.
+    """
+    trtllm_config = backend.get("trtllm_config")
+    if trtllm_config is None:
+        trtllm_config = {}
+        backend["trtllm_config"] = trtllm_config
+    elif not isinstance(trtllm_config, dict):
+        return {}
+
+    modes_in_use = _trtllm_modes_in_use(cfg)
+    touched: dict[str, dict] = {}
+    for mode in ("prefill", "decode", "aggregated"):
+        section = trtllm_config.get(mode)
+        if section is None:
+            if mode not in modes_in_use:
+                continue
+            section = {}
+            trtllm_config[mode] = section
+        elif not isinstance(section, dict):
+            continue
+        if skip_section is not None and skip_section(section):
+            continue
+        for key, value in defaults.items():
+            section.setdefault(key, value)
+        touched[mode] = section
+    return touched
+
+
 def expand_observability(cfg: dict) -> dict:
     """Expand ``observability.enabled`` into the individual launch flags.
 
@@ -741,13 +814,27 @@ def expand_observability(cfg: dict) -> dict:
                 "This opt-out takes precedence over backend.publish_metrics."
             )
 
-        trtllm_config = backend.get("trtllm_config")
-        if not isinstance(trtllm_config, dict):
-            trtllm_config = {}
-            backend["trtllm_config"] = trtllm_config
-        for mode in ("prefill", "decode", "aggregated"):
-            if isinstance(trtllm_config.get(mode), dict):
-                _setdefault_nested(trtllm_config, mode, ANALYTICS_ENGINE_CONFIG)
+        # Sections for the modes the layout uses are created when the recipe has
+        # none, so a recipe without trtllm_config still gets the iteration-level
+        # gauges the capture reads. expand_trtllm_engine_defaults runs after
+        # this and must find True already in place.
+        sections = _setdefault_trtllm_engine_keys(cfg, backend, ANALYTICS_ENGINE_CONFIG)
+        opted_out = [
+            f"{mode}.{key}"
+            for mode, section in sections.items()
+            for key in ANALYTICS_ENGINE_CONFIG
+            if section.get(key) is False
+        ]
+        if opted_out:
+            # Also reached by a saved or locked recipe: the load step bakes the
+            # resolved engine keys in, so a later observability.enabled: true
+            # meets an explicit false rather than an omission.
+            logger.warning(
+                "observability.enabled but trtllm_config sets %s: false — the iteration-level "
+                "trtllm_kv_cache_* gauges (enable_iter_perf_stats) and per-request histograms "
+                "(return_perf_metrics) need true; remove the explicit false to get them back.",
+                ", ".join(opted_out),
+            )
 
     logger.info(
         "observability.enabled: expanded span-event env (prefill/decode/frontend), "
@@ -782,30 +869,9 @@ def expand_trtllm_serve_defaults(cfg: dict) -> dict:
     backend = cfg.get("backend")
     if not isinstance(backend, dict) or backend.get("type", "sglang") != "trtllm":
         return cfg
-    trtllm_config = backend.get("trtllm_config")
-    if not isinstance(trtllm_config, dict):
-        trtllm_config = {}
-        backend["trtllm_config"] = trtllm_config
 
-    # Modes the layout uses: mirror ResourceConfig.is_disaggregated -- a
-    # prefill_nodes/decode_nodes pair means prefill + decode, otherwise agg.
-    resources = cfg.get("resources") if isinstance(cfg.get("resources"), dict) else {}
-    disaggregated = resources.get("prefill_nodes") is not None or resources.get("decode_nodes") is not None
-    modes_in_use = ("prefill", "decode") if disaggregated else ("aggregated",)
-
-    opted_out: list[str] = []
-    for mode in ("prefill", "decode", "aggregated"):
-        section = trtllm_config.get(mode)
-        if not isinstance(section, dict):
-            if mode not in modes_in_use:
-                continue
-            section = {}
-            trtllm_config[mode] = section
-        if section.get("return_perf_metrics") is False:
-            opted_out.append(mode)
-        for key, value in TRTLLM_SERVE_ENGINE_DEFAULTS.items():
-            section.setdefault(key, value)
-
+    sections = _setdefault_trtllm_engine_keys(cfg, backend, TRTLLM_SERVE_ENGINE_DEFAULTS)
+    opted_out = [mode for mode, section in sections.items() if section.get("return_perf_metrics") is False]
     if opted_out:
         logger.warning(
             "frontend.type: trtllm_serve with return_perf_metrics: false on %s — those "
@@ -815,6 +881,74 @@ def expand_trtllm_serve_defaults(cfg: dict) -> dict:
             ", ".join(opted_out),
         )
     return cfg
+
+
+def expand_trtllm_engine_defaults(cfg: dict) -> dict:
+    """Keep TensorRT-LLM's per-iteration statistics off unless a recipe asks for them.
+
+    Applies ``TRTLLM_ENGINE_DEFAULTS`` (``enable_iter_perf_stats: false``) to
+    every engine section a TRT-LLM recipe uses, under both the ``dynamo`` and the
+    ``trtllm_serve`` frontend and independent of ``observability.enabled``.
+
+    Why an explicit ``false`` when TensorRT-LLM's own default is already
+    ``false``: ``dynamo.trtllm`` builds the engine arguments with
+    ``enable_iter_perf_stats`` derived from ``--publish-metrics``
+    (``components/src/dynamo/trtllm/workers/llm_worker.py``), and
+    ``backend.publish_metrics`` passes that flag by default, so every Dynamo
+    worker would otherwise collect KV-cache statistics and CUDA-event step timing
+    on every executor loop. The engine YAML is merged over those derived
+    arguments and wins on conflicts (TensorRT-LLM
+    ``update_llm_args_with_extra_dict``), so the explicit key is what turns the
+    statistics off. The request-level ``trtllm_*`` Prometheus series (request
+    latency, TTFT, TPOT, queue / prefill / decode time, token counters) do not
+    depend on it: they come from the per-request perf metrics, which
+    ``--publish-metrics`` sets on the Dynamo path and ``return_perf_metrics: true``
+    sets for trtllm-serve. What the default drops is the iteration-level
+    ``trtllm_*`` gauges (``trtllm_kv_cache_*``, running / waiting requests,
+    iteration latency) and, on Dynamo, the ``dynamo_component_kvstats_*`` gauges,
+    the router worker-load sample and the Planner's forward-pass metrics. No
+    benchmark client reads them; the component dashboard's KV-utilisation
+    panels do, and show no data (or the gauge's seeded 0 %) on a default run.
+    Sections whose ``backend`` is the legacy ``tensorrt`` engine are skipped:
+    its ``LlmArgs`` rejects the key on containers before the backend's removal
+    and always collected the statistics anyway.
+
+    Every write is a ``setdefault``: an explicit ``enable_iter_perf_stats: true``
+    in the recipe wins, and so does :func:`expand_observability`, which runs
+    first and needs the iteration-level gauges for its capture. Sections for the
+    modes the layout uses are created when absent. Mutates ``cfg`` in place and
+    returns it.
+    """
+    from srtctl.core.schema import TRTLLM_ENGINE_DEFAULTS
+
+    backend = cfg.get("backend")
+    if not isinstance(backend, dict) or backend.get("type", "sglang") != "trtllm":
+        return cfg
+    _setdefault_trtllm_engine_keys(
+        cfg,
+        backend,
+        TRTLLM_ENGINE_DEFAULTS,
+        skip_section=lambda section: str(section.get("backend", "pytorch")).lower() in ("tensorrt", "trt"),
+    )
+    return cfg
+
+
+def expand_engine_config_defaults(resolved_config: dict) -> dict:
+    """Run the engine-config expansions that turn a resolved recipe into what the job runs.
+
+    Order matters: :func:`expand_observability` first, so its ``True`` for the
+    iteration statistics is in place before :func:`expand_trtllm_engine_defaults`
+    setdefaults ``False``. Kept out of :func:`resolve_config_with_defaults` so
+    tools that only inspect or migrate a recipe (validation, the MCP spec tools,
+    ``srtctl migrate --verify`` goldens) keep seeing the recipe's own keys; every
+    entry point that builds the ``SrtConfig`` a job runs under, or shows in
+    ``srtctl dry-run``, calls this so the two agree. Mutates and returns
+    ``resolved_config``.
+    """
+    expand_observability(resolved_config)
+    expand_trtllm_serve_defaults(resolved_config)
+    expand_trtllm_engine_defaults(resolved_config)
+    return resolved_config
 
 
 def load_config(path: Path | str) -> SrtConfig:
@@ -862,13 +996,11 @@ def load_config(path: Path | str) -> SrtConfig:
     resolved_config = resolve_config_with_defaults(user_config, cluster_config)
 
     # Expand the single `observability.enabled` knob into the individual
-    # launch flags. Done on the raw dict (before schema.load) so every
-    # downstream consumer -- worker command builder, engine YAML writer,
-    # frontend env -- sees the expanded values with no extra plumbing.
-    expand_observability(resolved_config)
-    # trtllm-serve needs return_perf_metrics for its Prometheus route to exist
-    # at all; bake that default in for every trtllm_serve recipe (setdefault).
-    expand_trtllm_serve_defaults(resolved_config)
+    # launch flags and bake in the TRT-LLM engine-config defaults. Done on the
+    # raw dict (before schema.load) so every downstream consumer -- worker
+    # command builder, engine YAML writer, frontend env -- sees the expanded
+    # values with no extra plumbing.
+    expand_engine_config_defaults(resolved_config)
 
     # Parse with marshmallow schema to get typed SrtConfig
     try:

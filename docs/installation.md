@@ -8,7 +8,7 @@
 - [Run Setup](#run-setup)
 - [Configure srtslurm.yaml](#configure-srtslurmyaml)
   - [Adding Model Paths](#adding-model-paths)
-  - [Adding Containers](#adding-containers)
+  - [Containers](#containers)
   - [Complete srtslurm.yaml Reference](#complete-srtslurmyaml-reference)
 - [Create a Job Config](#create-a-job-config)
 - [Submit the Job](#submit-the-job)
@@ -76,7 +76,7 @@ Add `tachometer: {enabled: true}` under `observability` when parsed Parquet outp
 
 ## Configure srtslurm.yaml
 
-After setup, edit `srtslurm.yaml` to add model paths, containers, and cluster-specific settings:
+After setup, edit `srtslurm.yaml` to add model paths, containers, and cluster-specific settings. The file is schema-validated as a whole: one unknown key (for example the old `default_container`) rejects it with a single WARNING and srtctl continues on built-in defaults, so a dry-run that renders `--partition=default` means the file was not loaded. `touch srtslurm.yaml` before `make setup` skips the interactive prompt if you would rather write the file yourself. The full key list is in [Cluster Config Fields](config-reference.md#cluster-config-fields).
 
 ### Adding Model Paths
 
@@ -90,20 +90,28 @@ model_paths:
 
 Models must be accessible from all compute nodes (typically on a shared filesystem like Lustre or GPFS).
 
-### Adding Containers
+### Containers
 
-The `containers` section maps version aliases to `.sqsh` container images:
+`model.container` in a recipe is either a registry reference, which pyxis pulls on the compute node at job start, or a path to an enroot `.sqsh` file:
+
+```yaml
+model:
+  container: "lmsysorg/sglang:v0.5.5"          # Docker Hub
+  # container: "nvcr.io#nvidia/tritonserver:25.01-py3"   # NGC: registry, then '#'
+  # container: "/mnt/containers/lmsysorg+sglang+v0.5.5.sqsh"
+```
+
+Naming the image in the recipe keeps a shared recipe self-describing. A pulled image is re-imported on every job (enroot caches layers); to pin a build and skip the pull, import once to shared storage and point `container:` at the file:
+
+```bash
+enroot import -o /mnt/containers/lmsysorg+sglang+v0.5.5.sqsh docker://lmsysorg/sglang:v0.5.5
+```
+
+The optional `containers` section of `srtslurm.yaml` maps aliases to either form and is resolved for every image key in a recipe:
 
 ```yaml
 containers:
-  container1: "/mnt/containers/lmsysorg+sglang+v0.5.5.sqsh"
-  container2: "/mnt/containers/lmsysorg+sglang+v0.5.4.sqsh"
-```
-
-To create a container image from Docker:
-
-```bash
-enroot import docker://lmsysorg/sglang:v0.5.5
+  sglang-stable: "/mnt/containers/lmsysorg+sglang+v0.5.5.sqsh"
 ```
 
 ### Complete srtslurm.yaml Reference
@@ -123,6 +131,10 @@ gpus_per_node: 4
 use_gpus_per_node_directive: true # Set false if cluster doesn't support --gpus-per-node
 use_segment_sbatch_directive: true # Set false if cluster doesn't support --segment
 use_exclusive_sbatch_directive: false # Set true if cluster requires --exclusive
+
+# Pre-submit path checks. Set false when model/container paths exist only on
+# compute nodes (node-local NVMe), where the login node cannot stat them.
+preflight: true
 
 # Path to srtctl repo root (auto-set by make setup)
 srtctl_root: "/path/to/srtctl"

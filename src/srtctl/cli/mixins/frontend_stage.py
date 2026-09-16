@@ -213,6 +213,9 @@ class FrontendStageMixin:
         Returns:
             List of ManagedProcess instances for all frontend processes.
         """
+        if self.config.frontend.type == "none":
+            logger.info("frontend.type none: no frontend layer (services-only job)")
+            return []
         logger.info("Starting frontend layer")
         if self.config.frontend.type == "dynamo" and self.config.observability.enabled:
             trace_path = (self.config.frontend.env or {}).get("DYN_REQUEST_TRACE_FILE_PATH")

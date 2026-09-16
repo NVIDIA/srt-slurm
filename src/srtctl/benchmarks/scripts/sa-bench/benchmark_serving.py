@@ -799,9 +799,9 @@ async def benchmark(
     slow_bases = [s.strip() for s in (slow_down_servers or []) if s.strip()]
     slow_down_task: asyncio.Task | None = None
     if slow_bases:
-        if os.environ.get("SRTCTL_FRONTEND_TYPE") != "sglang":
+        if os.environ.get("SRTCTL_FRONTEND_TYPE") != "sglang-router":
             print(
-                "Warning: --slow-down-server ignored (SRTCTL_FRONTEND_TYPE is not sglang; "
+                "Warning: --slow-down-server ignored (SRTCTL_FRONTEND_TYPE is not sglang-router; "
                 "slow_down applies to SGLang worker HTTP /slow_down only)."
             )
         else:

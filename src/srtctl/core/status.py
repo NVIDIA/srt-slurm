@@ -30,6 +30,7 @@ Configuration (in srtslurm.yaml or recipe YAML):
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -43,6 +44,44 @@ if TYPE_CHECKING:
     from srtctl.core.schema import ReportingConfig, ReportingStatusConfig, SrtConfig
 
 logger = logging.getLogger(__name__)
+
+# Environment variable the reporter reads its bearer token from unless
+# ``reporting.status.token_env`` names another one. The token itself never
+# appears in a recipe or srtslurm.yaml: the resolved config is written to the
+# lockfile and copied into the log directory that reporting.s3 uploads.
+DEFAULT_TOKEN_ENV = "SRTCTL_STATUS_TOKEN"
+
+
+def _token_env(status: "ReportingStatusConfig | None") -> str:
+    return (status.token_env if status and status.token_env else None) or DEFAULT_TOKEN_ENV
+
+
+def _auth_headers(token_env: str) -> dict[str, str]:
+    """``Authorization: Bearer`` header when the token variable is set, else nothing."""
+    token = os.environ.get(token_env)
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _log_rejection(action: str, endpoint: str, status_code: int, token_env: str) -> None:
+    """Auth failures and redirects are configuration errors, so they warn; anything else stays at DEBUG.
+
+    Redirects matter because a collector behind a login page (an SSO proxy, for
+    example) answers every request with a 302 to the sign-in page. Following it
+    would land on an HTML page with HTTP 200 and look like success.
+    """
+    if 300 <= status_code < 400:
+        logger.warning(
+            "%s to %s was redirected (HTTP %d); the endpoint is behind a login page or proxy, nothing was recorded",
+            action,
+            endpoint,
+            status_code,
+        )
+    elif status_code in (401, 403):
+        logger.warning(
+            "%s to %s rejected (HTTP %d); check the bearer token in $%s", action, endpoint, status_code, token_env
+        )
+    else:
+        logger.debug("%s to %s failed: HTTP %d", action, endpoint, status_code)
 
 
 def _resolve_endpoints(status: "ReportingStatusConfig | None") -> tuple[str, ...]:
@@ -75,12 +114,14 @@ class StatusReporter:
 
     Usage:
         reporter = StatusReporter.from_config(config.reporting, job_id="12345")
-        reporter.report(JobStatus.WORKERS_READY, stage=JobStage.WORKERS)
+        reporter.report(JobStatus.WORKERS, stage=JobStage.WORKERS)
     """
 
     job_id: str
     api_endpoints: tuple[str, ...] = ()
     timeout: float = 5.0
+    # Environment variable holding the bearer token; see DEFAULT_TOKEN_ENV.
+    token_env: str = DEFAULT_TOKEN_ENV
 
     @classmethod
     def from_config(cls, reporting: "ReportingConfig | None", job_id: str) -> "StatusReporter":
@@ -93,11 +134,12 @@ class StatusReporter:
         Returns:
             StatusReporter instance (disabled if no endpoints configured)
         """
-        endpoints = _resolve_endpoints(reporting.status if reporting else None)
+        status = reporting.status if reporting else None
+        endpoints = _resolve_endpoints(status)
         if endpoints:
             logger.info("Status reporting enabled: %s", ", ".join(endpoints))
 
-        return cls(job_id=job_id, api_endpoints=endpoints)
+        return cls(job_id=job_id, api_endpoints=endpoints, token_env=_token_env(status))
 
     @property
     def enabled(self) -> bool:
@@ -111,15 +153,17 @@ class StatusReporter:
     def _put(self, payload: dict) -> bool:
         """Send PUT to all endpoints. Returns True if any succeeded."""
         any_success = False
+        headers = _auth_headers(self.token_env)
         for endpoint in self.api_endpoints:
             try:
                 url = f"{endpoint}/api/jobs/{self.job_id}"
-                response = requests.put(url, json=payload, timeout=self.timeout)
+                # allow_redirects=False: a 3xx is a failure, never something to follow (see _log_rejection).
+                response = requests.put(url, json=payload, headers=headers, timeout=self.timeout, allow_redirects=False)
                 if response.status_code == 200:
                     logger.debug("Status reported to %s", endpoint)
                     any_success = True
                 else:
-                    logger.debug("Status report to %s failed: HTTP %d", endpoint, response.status_code)
+                    _log_rejection("Status report", endpoint, response.status_code, self.token_env)
             except requests.exceptions.RequestException as e:
                 logger.debug("Status report to %s error (ignored): %s", endpoint, e)
         return any_success
@@ -191,6 +235,10 @@ class StatusReporter:
             "backend_type": config.backend_type,
             "frontend_type": config.frontend.type,
             "head_node": runtime.nodes.head,
+            # Where the run writes its logs on the cluster filesystem. A collector
+            # on the same filesystem (srtctl status-server on a login node) can
+            # open them directly; logs_url only appears later if reporting.s3 is set.
+            "log_dir": str(runtime.log_dir),
         }
 
         payload = JobUpdatePayload(
@@ -289,9 +337,12 @@ def create_job_record(
     Returns:
         True if created on at least one endpoint, False otherwise
     """
-    endpoints = _resolve_endpoints(reporting.status if reporting else None)
+    status = reporting.status if reporting else None
+    endpoints = _resolve_endpoints(status)
     if not endpoints:
         return False
+    token_env = _token_env(status)
+    headers = _auth_headers(token_env)
 
     payload = JobCreatePayload(
         job_id=job_id,
@@ -307,13 +358,13 @@ def create_job_record(
     for endpoint in endpoints:
         try:
             url = f"{endpoint}/api/jobs"
-            response = requests.post(url, json=payload_dict, timeout=5.0)
+            response = requests.post(url, json=payload_dict, headers=headers, timeout=5.0, allow_redirects=False)
 
             if response.status_code == 201:
                 logger.debug("Job record created on %s: %s", endpoint, job_id)
                 any_success = True
             else:
-                logger.debug("Job record creation on %s failed: HTTP %d", endpoint, response.status_code)
+                _log_rejection("Job record creation", endpoint, response.status_code, token_env)
 
         except requests.exceptions.RequestException as e:
             logger.debug("Job record creation on %s error (ignored): %s", endpoint, e)

@@ -14,6 +14,8 @@ from srtctl.core.slurm import get_hostname_ip
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from srtctl.cli.mixins.frontend_stage import FrontendTopology
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import TachometerConfig, TelemetryExporterConfig
@@ -48,8 +50,15 @@ def generate_tachometer_config(
     dcgm_exporter: TelemetryExporterConfig | None = None,
     frontend_type: str = "dynamo",
     frontend_metrics_port: int | None = None,
+    exporter_nodes: Sequence[str] = (),
 ) -> str:
     """Generate Tachometer TOML from backend and frontend topology.
+
+    ``exporter_nodes`` are the nodes the dcgm and node exporter services were
+    placed on. Backend ranks used to be the only way a node got its exporters
+    scraped; a services-only job (``frontend.type: none``, a Ray cluster driving
+    a trainer) has no backend rank and no frontend, yet its exporters run on
+    every node and are the whole point of scraping it.
 
     Every endpoint is scraped even when the benchmark client polls the same
     URL (``AIPERF_SERVER_METRICS_URLS``): double-polling has been validated
@@ -82,6 +91,8 @@ def generate_tachometer_config(
     physical_nodes: dict[str, list[Process]] = {}
     for process in processes:
         physical_nodes.setdefault(process.node, []).append(process)
+    for node in exporter_nodes:
+        physical_nodes.setdefault(node, [])
 
     for node in sorted(physical_nodes):
         node_processes = physical_nodes[node]
@@ -123,7 +134,7 @@ def generate_tachometer_config(
         # Every rank is a target (vLLM agg followers excepted below): follower
         # metadata columns keep rows distinguishable, and rank coverage is
         # exactly what the physical-process client list provides for vLLM DP.
-        if frontend_type == "vllm" and process.endpoint_mode == "agg" and not process.is_leader:
+        if frontend_type in ("vllm", "sglang") and process.endpoint_mode == "agg" and not process.is_leader:
             continue
         if frontend_type == "vllm-router" and process.http_port <= 0:
             continue
@@ -133,14 +144,15 @@ def generate_tachometer_config(
             # (the one agg worker binds the public frontend port instead of
             # process.http_port).
             continue
-        if frontend_type == "sglang" and (not process.is_leader or process.http_port <= 0):
+        if frontend_type == "sglang-router" and (not process.is_leader or process.http_port <= 0):
             # Native sglang.launch_server: only the leader rank of a worker binds
             # the HTTP server that carries /metrics.
             continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        if frontend_type == "vllm" and process.endpoint_mode == "agg":
+        if frontend_type in ("vllm", "sglang") and process.endpoint_mode == "agg":
+            # Direct modes: the aggregate leader binds the public port itself.
             port = FRONTEND_PUBLIC_PORT
-        elif frontend_type in ("vllm-router", "trtllm_serve", "sglang"):
+        elif frontend_type in ("vllm-router", "trtllm_serve", "sglang-router"):
             port = process.http_port
         else:
             port = process.sys_port
@@ -162,9 +174,10 @@ def generate_tachometer_config(
             )
         )
 
-    frontend_nodes = frontend_topology.frontend_nodes
-    if frontend_type == "vllm":
-        # Direct vLLM has no separate frontend process. Its public endpoint is
+    # A services-only job has no frontend process, so nothing listens on the frontend port.
+    frontend_nodes = [] if frontend_type == "none" else list(frontend_topology.frontend_nodes)
+    if frontend_type in ("vllm", "sglang"):
+        # Direct vLLM / SGLang have no separate frontend process. The public endpoint is
         # the aggregate leader, which may differ from the Slurm/orchestrator
         # head recorded in FrontendTopology.
         agg_leader_nodes = [

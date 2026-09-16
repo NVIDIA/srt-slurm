@@ -1,10 +1,11 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "srtctl"
-version = "0.3.0"
+# The version is the git tag (vX.Y.Z); see CONTRIBUTING.md "Versioning".
+dynamic = ["version"]
 description = "Benchmark submission framework for distributed serving workloads"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +41,25 @@ ruter = "srtctl.ruter.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/srtctl"]
+
+# =============================================================================
+# Versioning: one source of truth, the git tag
+# =============================================================================
+# `vX.Y.Z` tags are created by .github/workflows/release.yaml on every merge to
+# main (bump size from the conventional-commit PR title). hatch-vcs derives the
+# package version from the nearest tag, so `srtctl --version`, the wheel, the
+# lockfile stamp, and the GitHub release always agree. Between tags a checkout
+# reports e.g. 2.0.0.post3+g49715b7; without git metadata it falls back below.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+# 2.0.0 at the tag, 2.0.0.post3+g<sha> three commits later (not a guessed 2.0.1.dev3).
+version_scheme = "post-release"
+fallback_version = "0.0.0+unknown"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/srtctl/_version.py"
 
 # =============================================================================
 # Development dependencies

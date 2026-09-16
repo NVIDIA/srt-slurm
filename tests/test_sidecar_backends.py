@@ -71,6 +71,28 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     assert follower_command[:3] == ["python3", "-m", "sglang.launch_server"]
     assert "--grpc-port" not in follower_command
     assert "dynamo.sglang.sidecar" not in follower_command
+    # The sidecar consumes deltas; the engine must stream disjoint segments on every rank.
+    assert "--incremental-streaming-output" in leader_script
+    assert "--incremental-streaming-output" in follower_command
+
+
+def test_sglang_sidecar_respects_an_explicit_incremental_streaming_setting() -> None:
+    process = _process(mode="agg")
+    backend = SGLangProtocol(
+        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 4, "incremental-streaming-output": False})
+    )
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        command = backend.build_worker_command(process, [process], _runtime())
+    leader_script = command[2]
+    # An explicit false is honored: a false bool renders as no flag at all, and srtctl must not
+    # add its own copy on top. An explicit true renders exactly once.
+    assert "incremental-streaming-output" not in leader_script
+    backend_true = SGLangProtocol(
+        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 4, "incremental-streaming-output": True})
+    )
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        command_true = backend_true.build_worker_command(process, [process], _runtime())
+    assert command_true[2].count("--incremental-streaming-output") == 1
 
 
 def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:

@@ -6,14 +6,14 @@ Small, runnable starting points, one per frontend and topology. Every example se
 
 | Backend | Dynamo frontend | Native router | Router-free direct |
 | --- | --- | --- | --- |
-| SGLang | `sglang/dynamo-agg.yaml`, `sglang/dynamo-disagg.yaml` | `sglang/sglang-router-agg.yaml`, `sglang/sglang-router-disagg.yaml` | |
+| SGLang | `sglang/dynamo-agg.yaml`, `sglang/dynamo-disagg.yaml` | `sglang/sglang-router-agg.yaml`, `sglang/sglang-router-disagg.yaml` | `sglang/sglang-direct-agg.yaml` |
 | vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml` | `vllm/vllm-direct-agg.yaml` |
 | TRT-LLM | `trtllm/dynamo-agg.yaml`, `trtllm/dynamo-disagg.yaml` | `trtllm/trtllm-serve-disagg.yaml` | `trtllm/trtllm-serve-agg.yaml` |
 | Mocker | `mocker/dynamo-agg.yaml` | | |
 
-- **Dynamo frontend**: workers register with etcd/NATS and the Dynamo frontend routes (KV-aware here). Dynamo is installed at job start via `dynamo.source` (`pypi:` here) unless the container ships it (`dynamo.install: false`, as the TRT-LLM examples do).
-- **Native router**: the engine's own router in front of plain engine workers. No Dynamo, NATS, or etcd. SGLang uses the Model Gateway (`sglang_router`), vLLM the official vLLM Router (`vllm-router`), TRT-LLM `trtllm-serve disaggregated` with a generated `ser.yaml`.
-- **Router-free direct**: one worker owns the public port. `frontend.type: vllm` and `frontend.type: trtllm_serve` in aggregate mode launch no router process.
+- **Dynamo frontend**: workers register with etcd and the Dynamo frontend routes (KV-aware here); the request plane is tcp and NATS is not started unless a plane asks for it. Dynamo is installed at job start via `dynamo.source` (`pypi:` here) unless the container ships it (`dynamo.install: false`, as the TRT-LLM examples do).
+- **Native router**: the engine's own router in front of plain engine workers. No Dynamo, NATS, or etcd. SGLang uses the Model Gateway (`frontend.type: sglang-router`), vLLM the official vLLM Router (`vllm-router`), TRT-LLM `trtllm-serve disaggregated` with a generated `ser.yaml`.
+- **Router-free direct**: one worker owns the public port. `frontend.type: sglang`, `frontend.type: vllm`, and `frontend.type: trtllm_serve` in aggregate mode launch no router process.
 - **Mocker**: `dynamo.mocker` stands in for an engine, so the whole orchestration path runs without loading weights. The fastest way to validate a cluster config.
 
 Aggregated examples run two TP1 workers; disaggregated examples run one TP1 prefill and one TP1 decode worker on the same node (`decode.nodes: colocate` places decode on the prefill node's spare GPUs).

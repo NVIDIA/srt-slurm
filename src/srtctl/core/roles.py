@@ -42,7 +42,8 @@ colocated layout whose workers do not fit on the prefill nodes.
 The engine itself is a top-level ``engine:`` key in 2.0 (a string, or a mapping
 with ``type`` plus engine-wide knobs such as vLLM's ``connector``); it maps onto
 ``backend``. Per-role ``kv_events`` maps onto ``backend.kv_events_config.<mode>``
-and per-role ``sidecar`` onto ``dynamo.sidecar`` (every role must agree). A v2
+and per-role ``sidecar`` onto ``dynamo.sidecar`` (every role must agree); per-role
+``critical`` maps onto ``resources.<role>_critical``. A v2
 recipe therefore needs no ``backend:`` block at all; a v1 recipe still loads.
 """
 
@@ -68,7 +69,9 @@ ROLE_NAMES: tuple[str, ...] = ("prefill", "decode", "agg")
 COLOCATE = "colocate"
 
 # Per-role spec keys.
-_ROLE_SPEC_KEYS = frozenset({"nodes", "workers", "gpus", "env", "args", "extra_args", "engine", "kv_events", "sidecar"})
+_ROLE_SPEC_KEYS = frozenset(
+    {"nodes", "workers", "gpus", "env", "args", "extra_args", "engine", "kv_events", "sidecar", "critical"}
+)
 
 
 def _engine_key(config: dict[str, Any]) -> str:
@@ -132,7 +135,7 @@ def _legacy_targets_present(config: dict[str, Any]) -> list[str]:
     resources = config.get("resources")
     if isinstance(resources, dict):
         for role in ROLE_NAMES:
-            for key in (f"{role}_nodes", f"{role}_workers", f"gpus_per_{role}"):
+            for key in (f"{role}_nodes", f"{role}_workers", f"gpus_per_{role}", f"{role}_critical"):
                 if key in resources:
                     present.append(f"resources.{key}")
     backend = config.get("backend")
@@ -216,6 +219,10 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
             resources[f"{role_name}_workers"] = spec["workers"]
         if "gpus" in spec:
             resources[f"gpus_per_{role_name}"] = spec["gpus"]
+        if "critical" in spec:
+            if not isinstance(spec["critical"], bool):
+                raise TypeError(f"roles.{role_name}.critical must be a boolean")
+            resources[f"{role_name}_critical"] = spec["critical"]
         if "env" in spec:
             backend[f"{mode}_environment"] = spec["env"]
         if "args" in spec:
@@ -273,6 +280,8 @@ def roles_from_legacy(config: dict[str, Any]) -> dict[str, Any]:
             spec["workers"] = resources[f"{role_name}_workers"]
         if f"gpus_per_{role_name}" in resources:
             spec["gpus"] = resources[f"gpus_per_{role_name}"]
+        if f"{role_name}_critical" in resources:
+            spec["critical"] = resources[f"{role_name}_critical"]
         if backend.get(f"{mode}_environment"):
             spec["env"] = backend[f"{mode}_environment"]
         if engine_cfg.get(mode):
@@ -309,7 +318,7 @@ def roles_from_legacy(config: dict[str, Any]) -> dict[str, Any]:
     # Strip the folded fields from resources/backend.
     for role_name in ROLE_NAMES:
         mode = ROLE_TO_MODE[role_name]
-        for key in (f"{role_name}_nodes", f"{role_name}_workers", f"gpus_per_{role_name}"):
+        for key in (f"{role_name}_nodes", f"{role_name}_workers", f"gpus_per_{role_name}", f"{role_name}_critical"):
             resources.pop(key, None)
         backend.pop(f"{mode}_environment", None)
         backend.pop(f"{mode}_extra_args", None)

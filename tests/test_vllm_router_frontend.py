@@ -33,7 +33,7 @@ def test_get_frontend_exposes_official_vllm_router() -> None:
     assert isinstance(get_frontend("vllm-router"), VLLMRouterFrontend)
 
 
-@pytest.mark.parametrize("frontend_type", ["sglang", "vllm-router"])
+@pytest.mark.parametrize("frontend_type", ["sglang-router", "vllm-router"])
 def test_static_router_aggregate_command_advertises_all_bases(frontend_type: str) -> None:
     frontend = get_frontend(frontend_type)
     command = frontend.build_router_command(
@@ -187,7 +187,7 @@ def test_vllm_router_setup_preamble_is_adapter_specific() -> None:
     assert frontend.build_bash_preamble(SimpleNamespace(setup_script="router deps.sh")).startswith(
         "setup_script='router deps.sh'"
     )
-    assert get_frontend("sglang").build_bash_preamble(SimpleNamespace(setup_script="router-deps.sh")) is None
+    assert get_frontend("sglang-router").build_bash_preamble(SimpleNamespace(setup_script="router-deps.sh")) is None
 
 
 def test_schema_rejects_backend_mismatch_and_deprecated_per_gpu_dp() -> None:

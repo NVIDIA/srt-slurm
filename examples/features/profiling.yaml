@@ -28,7 +28,7 @@ profiling:
     stop_step: 20
 
 frontend:
-  type: sglang
+  type: sglang-router
   enable_multiple_frontends: false
 
 engine: sglang

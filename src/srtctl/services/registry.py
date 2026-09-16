@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
+    from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
-    from srtctl.services.config import ServiceConfig
+    from srtctl.services.config import ServiceConfig, ServiceReadinessConfig
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,11 @@ class ServiceLaunchContext:
     node_id: int  # position of ``node`` in runtime.nodes.worker, or the instance index for head/infra
     index: int  # instance index within this service (0..n-1)
     role: str  # the service's placement.node value
+    # Every node this service runs on, in placement order (its pool when it owns or rides one), and
+    # their IPs. Instance 0 is the rendezvous for a service that forms its own cluster. Empty means
+    # "just this node" (previews, single-instance construction in tests).
+    nodes: tuple[str, ...] = ()
+    node_ips: tuple[str, ...] = ()
 
     @classmethod
     def preview(cls, node: str = "<node>") -> ServiceLaunchContext:
@@ -47,6 +53,8 @@ class ServiceLaunchContext:
         """Placeholders substituted into command, args, env values, and preamble."""
         from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 
+        pool_nodes = self.nodes or (self.node,)
+        pool_ips = self.node_ips or (self.node_ip,)
         return {
             "node": self.node,
             "node_ip": self.node_ip,
@@ -57,6 +65,15 @@ class ServiceLaunchContext:
             "head_ip": self.runtime.head_node_ip,
             "infra_node": self.runtime.nodes.infra,
             "infra_ip": self.runtime.infra_node_ip,
+            # The service's own node set: instance 0 is the rendezvous of a self-forming cluster
+            # (torchrun --master-addr, a Ray head), which the job head is not when the service
+            # runs on a pool next to engine roles.
+            "pool_node": pool_nodes[0],
+            "pool_ip": pool_ips[0],
+            "pool_nodes": ",".join(pool_nodes),
+            "pool_ips": ",".join(pool_ips),
+            "pool_node_count": str(len(pool_nodes)),
+            "gpus_per_node": str(self.runtime.gpus_per_node),
             "master_port": str(MOONCAKE_MASTER_PORT),
             "metadata_port": str(MOONCAKE_HTTP_METADATA_PORT),
         }
@@ -122,6 +139,23 @@ class ServiceKind:
     def skip_reason(self, service: ServiceConfig, runtime: RuntimeContext) -> str | None:
         """A reason not to launch this service in this job (a missing host binary); None to launch."""
         return None
+
+    def readiness(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> ServiceReadinessConfig | None:
+        """A per-instance readiness probe when the recipe writes none.
+
+        Kinds whose instances differ (a Ray head answers on its dashboard port, a
+        Ray worker only logs that it joined) return the probe for ``ctx``; None
+        falls back to ``default_readiness_ports``.
+        """
+        return None
+
+    def wait_fleet_ready(self, service: ServiceConfig, runtime: RuntimeContext, procs: list[ManagedProcess]) -> None:
+        """Block until every instance is visible to the service as a whole; raise to fail the job.
+
+        Called once per service after each instance passed its own readiness
+        probe. Per-instance probes see one node; a cluster-shaped kind (Ray)
+        also needs the head to report every member before the client starts.
+        """
 
 
 _SERVICE_KINDS: dict[str, ServiceKind] = {}

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
-from srtctl.core.schema import ObservabilityConfig
+from srtctl.core.schema import ObservabilityConfig, ResourceConfig
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
 
 
@@ -187,6 +187,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         dynamo=SimpleNamespace(install=False, request_plane="nats", event_plane="zmq"),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        resources=ResourceConfig(),
         backend=backend,
     )
     mixin.runtime = SimpleNamespace(
@@ -247,6 +248,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         ),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        resources=ResourceConfig(),
         backend=backend,
     )
     mixin.runtime = SimpleNamespace(
@@ -286,7 +288,7 @@ def test_worker_stage_injects_remap_root_for_dynamo_install(tmp_path: Path) -> N
 
 
 def test_worker_stage_no_remap_root_for_sglang_frontend(tmp_path: Path) -> None:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
         patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
@@ -299,7 +301,7 @@ def test_worker_stage_no_remap_root_for_sglang_frontend(tmp_path: Path) -> None:
 
 def test_sglang_workers_skip_the_post_sigterm_crash_diagnostics_by_default(tmp_path: Path) -> None:
     """SGLang waits 60s for CUDA coredumps after a SIGTERM drain; nothing is collected without opting in."""
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
         patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
@@ -312,7 +314,7 @@ def test_sglang_workers_skip_the_post_sigterm_crash_diagnostics_by_default(tmp_p
 
 
 def test_sglang_workers_keep_the_coredump_wait_when_the_recipe_opts_in(tmp_path: Path) -> None:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
     mixin.runtime.environment = {"SGLANG_CUDA_COREDUMP": "1"}
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -342,7 +344,7 @@ def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) ->
 
 
 def _start_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, str]:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
     mixin.config.dynamo.event_plane = event_plane
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -354,7 +356,7 @@ def _start_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, s
 
 
 def _start_endpoint_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, str]:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
     mixin.config.dynamo.event_plane = event_plane
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -438,6 +440,48 @@ def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> N
         "exclusive": "",
         "kill-on-bad-exit": "1",
     }
+
+
+def test_sglang_sidecar_trusts_the_bundled_rust_extension(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "sglang"
+    mixin.config.dynamo.sidecar = True
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["SGLANG_RUST_BUILD_MODE"] == "never"
+
+
+def test_sglang_sidecar_rust_build_mode_respects_the_recipe(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "sglang"
+    mixin.config.dynamo.sidecar = True
+    mixin.runtime.environment = {"SGLANG_RUST_BUILD_MODE": "auto"}
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["SGLANG_RUST_BUILD_MODE"] == "auto"
+
+    mixin_off, process_off = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin_off.config.backend.type = "sglang"
+    mixin_off.config.dynamo.sidecar = False
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin_off.start_worker(process_off, [process_off])
+    assert "SGLANG_RUST_BUILD_MODE" not in mock_srun.call_args.kwargs["env_to_set"]
 
 
 def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
@@ -544,6 +588,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         dynamo=SimpleNamespace(install=False, request_plane="nats", event_plane=None),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        resources=ResourceConfig(),
         backend=backend,
     )
     mixin.runtime = SimpleNamespace(

@@ -26,7 +26,7 @@ resources:
   gpus_per_node: 8
 
 frontend:
-  type: sglang
+  type: sglang-router
   enable_multiple_frontends: false
   args:
     policy: "cache_aware"

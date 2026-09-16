@@ -45,6 +45,38 @@ def _infra_placement(config: SrtConfig) -> ServicePlacementConfig:
     return ServicePlacementConfig(node="dedicated" if config.infra.etcd_nats_dedicated_node else "infra")
 
 
+def nats_implied_reasons(config: SrtConfig) -> list[str]:
+    """Why a Dynamo job needs NATS, or empty when nothing rides on it.
+
+    The request plane defaults to ``tcp`` and KV events default to direct ZMQ, so
+    NATS is implied only by ``dynamo.request_plane: nats``, ``dynamo.event_plane: nats``,
+    or a v1 ``infra.nats_max_payload_mb`` (a knob that only means anything with NATS).
+    """
+    if getattr(config.frontend, "type", None) != "dynamo":
+        return []
+    dynamo = getattr(config, "dynamo", None)
+    infra = getattr(config, "infra", None)
+    reasons = [
+        f"dynamo.{field} nats"
+        for field, value in (
+            ("request_plane", getattr(dynamo, "request_plane", None)),
+            ("event_plane", getattr(dynamo, "event_plane", None)),
+        )
+        if value == "nats"
+    ]
+    if getattr(infra, "nats_max_payload_mb", None) is not None:
+        reasons.append("infra.nats_max_payload_mb")
+    return reasons
+
+
+def runs_nats(config: SrtConfig) -> bool:
+    """Whether a NATS service is effective: declared (and enabled) or implied."""
+    for entry in getattr(config, "services", None) or []:
+        if getattr(entry, "type", None) == "nats":
+            return bool(getattr(entry, "enabled", True))
+    return bool(nats_implied_reasons(config))
+
+
 def implied_services(config: SrtConfig) -> list[EffectiveService]:
     """Services the rest of the recipe asks for without naming them."""
     implied: list[EffectiveService] = []
@@ -58,16 +90,21 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                 reason="frontend.type dynamo",
             )
         )
-        nats_options = {}
-        if config.infra.nats_max_payload_mb is not None:
-            nats_options["max_payload_mb"] = config.infra.nats_max_payload_mb
-        implied.append(
-            EffectiveService(
-                ServiceConfig(name=NATS_SERVICE_NAME, type="nats", placement=placement, options=nats_options),
-                implicit=True,
-                reason="frontend.type dynamo",
+        # NATS is only a dependency when a plane actually rides on it. The default
+        # request plane is tcp and KV events go over direct ZMQ, so a plain Dynamo
+        # job runs etcd alone; declare a `nats` service to force one anyway.
+        nats_reasons = nats_implied_reasons(config)
+        if nats_reasons:
+            nats_options = {}
+            if config.infra.nats_max_payload_mb is not None:
+                nats_options["max_payload_mb"] = config.infra.nats_max_payload_mb
+            implied.append(
+                EffectiveService(
+                    ServiceConfig(name=NATS_SERVICE_NAME, type="nats", placement=placement, options=nats_options),
+                    implicit=True,
+                    reason=", ".join(nats_reasons),
+                )
             )
-        )
 
     mooncake_cfg = getattr(config.backend, "mooncake_kv_store", None)
     if mooncake_cfg is not None:
@@ -100,6 +137,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     ServiceConfig(
                         name=DCGM_EXPORTER_SERVICE_NAME,
                         type="dcgm-exporter",
+                        placement=ServicePlacementConfig(node="compute"),
                         container=dcgm.container_image,
                         command=dcgm.command.format(port=dcgm.port).split() if dcgm.command else None,
                         options={"port": dcgm.port, "collect_interval_ms": tachometer.collect_interval_ms},
@@ -115,6 +153,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     ServiceConfig(
                         name=NODE_EXPORTER_SERVICE_NAME,
                         type="node-exporter",
+                        placement=ServicePlacementConfig(node="compute"),
                         container=node.container_image,
                         command=node.command.format(port=node.port).split() if node.command else None,
                         options={"port": node.port},
@@ -185,10 +224,21 @@ def _declared_external(config: SrtConfig, name: str) -> str | None:
 
 
 def discovery_env(config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
-    """``ETCD_ENDPOINTS`` and ``NATS_SERVER`` for this job: the infra node, or an ``external`` endpoint."""
-    etcd_url = _declared_external(config, ETCD_SERVICE_NAME) or f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}"
-    nats_url = _declared_external(config, NATS_SERVICE_NAME) or f"nats://{runtime.nodes.infra}:{NATS_PORT}"
-    return {"ETCD_ENDPOINTS": etcd_url, "NATS_SERVER": nats_url}
+    """``ETCD_ENDPOINTS`` (and ``NATS_SERVER`` when a NATS service runs) for this job.
+
+    Each points at the infra node, or at the ``external`` address of a declared service.
+    ``NATS_SERVER`` is omitted when no NATS service is effective, so nothing is handed an
+    address that no process listens on.
+    """
+    env = {
+        "ETCD_ENDPOINTS": _declared_external(config, ETCD_SERVICE_NAME)
+        or f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}"
+    }
+    if runs_nats(config):
+        env["NATS_SERVER"] = (
+            _declared_external(config, NATS_SERVICE_NAME) or f"nats://{runtime.nodes.infra}:{NATS_PORT}"
+        )
+    return env
 
 
 def uses_discovery_plane(config: SrtConfig) -> bool:

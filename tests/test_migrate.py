@@ -81,7 +81,6 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
     assert "infra" not in doc
     assert doc["services"] == [
         {"name": "etcd", "type": "etcd", "placement": {"node": "dedicated"}},
-        {"name": "nats", "type": "nats", "placement": {"node": "dedicated"}},
     ]
     assert doc["dynamo"] == {"install": True, "source": {"rev": "abc1234", "patches": ["x = 1"]}}
     assert doc["benchmark"] == {"type": "gsm8k", "num_examples": 100, "placement": {"node": "last_decode"}}
@@ -230,10 +229,9 @@ override_deleted:
   infra: null
 """
     doc = yaml.safe_load(migrate_recipe_text(text).text)
-    assert doc["base"]["services"][0]["placement"] == {"node": "dedicated"}
+    assert doc["base"]["services"] == [{"name": "etcd", "type": "etcd", "placement": {"node": "dedicated"}}]
     assert doc["override_shared"]["services"] == [
         {"name": "etcd", "type": "etcd", "placement": {"node": "infra"}},
-        {"name": "nats", "type": "nats", "placement": {"node": "infra"}},
     ]
     assert doc["override_deleted"]["services"] == doc["override_shared"]["services"]
     assert "infra" not in doc["override_deleted"]
@@ -389,4 +387,17 @@ def test_custom_benchmark_with_power_telemetry_keeps_its_concurrencies() -> None
     assert doc["benchmark"] == {"type": "custom", "command": "bash run.sh", "concurrencies": "4"}
     assert "removed benchmark.use_chat_template (unused by type custom)" in result.notes
     verified = verify_migration_text(text)
+    assert verified.status == "ok", verified.detail
+
+
+def test_migrate_folds_worker_criticality_into_roles() -> None:
+    legacy = LEGACY.replace(
+        "  decode_workers: 1", "  decode_workers: 1\n  decode_critical: false  # the probe kills decode workers"
+    )
+    result = migrate_recipe_text(legacy)
+    doc = yaml.safe_load(result.text)
+    assert doc["roles"]["decode"]["critical"] is False
+    assert "critical" not in doc["roles"]["prefill"]
+    assert "decode_critical" not in doc.get("resources", {})
+    verified = verify_migration_text(legacy)
     assert verified.status == "ok", verified.detail

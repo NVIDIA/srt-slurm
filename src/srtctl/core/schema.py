@@ -93,6 +93,11 @@ class ReportingStatusConfig:
 
     endpoint: str | None = None
     endpoints: list[str] | None = None
+    # Name of the environment variable holding the bearer token the reporter sends as
+    # ``Authorization: Bearer`` on every request (default SRTCTL_STATUS_TOKEN). Only the
+    # variable name belongs in a recipe: the resolved config is written to the lockfile
+    # and the log directory, so a literal token there would leak.
+    token_env: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -336,6 +341,13 @@ class ClusterConfig:
     # Username" auth-prompt failures). See git_clone_command_prefix() in
     # core/config.py -- applied to every git clone/fetch srtctl performs.
     git_http_version: str | None = None
+    # Run the pre-submit model.path / model.container / telemetry filesystem
+    # checks on ``srtctl apply``. Set false on clusters whose model or image
+    # paths exist only on compute nodes (node-local NVMe such as /raid), where
+    # the login node cannot stat them; every apply then behaves as if
+    # --no-preflight had been passed. The framework still fails loudly at
+    # runtime if a path is genuinely missing on the compute node.
+    preflight: bool = True
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -603,6 +615,14 @@ class ResourceConfig:
     agg_nodes: int | None = None
     agg_workers: int | None = None
 
+    # A worker exit normally fails the run (the process monitor tears the job
+    # down). A role's flag set to False keeps the run alive when one of its
+    # workers exits, for workloads that kill workers on purpose (migration or
+    # fault-tolerance probes). The per-role spelling is ``roles.<role>.critical``.
+    prefill_critical: bool = True  # A prefill worker exiting fails the run. False keeps the run alive.
+    decode_critical: bool = True  # A decode worker exiting fails the run. False keeps the run alive.
+    agg_critical: bool = True  # An aggregated worker exiting fails the run. False keeps the run alive.
+
     # If True, place each partial-node worker on its own node instead of
     # packing multiple onto the same node. Caller must reserve enough nodes
     # (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).
@@ -652,11 +672,20 @@ class ResourceConfig:
     def is_disaggregated(self) -> bool:
         return self.prefill_nodes is not None or self.decode_nodes is not None
 
+    def worker_critical(self, mode: str) -> bool:
+        """Whether a worker of ``mode`` (``prefill``, ``decode``, ``agg``) failing fails the run."""
+        return {"prefill": self.prefill_critical, "decode": self.decode_critical, "agg": self.agg_critical}[mode]
+
     @property
     def total_nodes(self) -> int:
         if self.is_disaggregated:
             return (self.prefill_nodes or 0) + (self.decode_nodes or 0)
         return self.agg_nodes or 1
+
+    @property
+    def has_engine_workers(self) -> bool:
+        """Whether any prefill, decode, or aggregated worker is requested."""
+        return (self.num_prefill + self.num_decode + self.num_agg) > 0
 
     @property
     def num_prefill(self) -> int:
@@ -1523,6 +1552,27 @@ TRTLLM_SERVE_ENGINE_DEFAULTS: dict[str, bool] = {
     "return_perf_metrics": True,
 }
 
+# Engine-config default baked in for every TRT-LLM engine section a recipe
+# uses, under both the ``dynamo`` and the ``trtllm_serve`` frontend and
+# independent of ``observability.enabled``. ``dynamo.trtllm`` derives
+# ``enable_iter_perf_stats`` from ``--publish-metrics``, which
+# ``backend.publish_metrics`` passes by default, so without this every Dynamo
+# worker would run TensorRT-LLM's per-iteration statistics (KV-cache stats and
+# CUDA-event step timing on every executor loop) for gauges no benchmark client
+# reads. The request-level ``trtllm_*`` Prometheus series (request latency,
+# TTFT, TPOT, queue / prefill / decode time, token counters) only need the
+# per-request perf metrics, which ``--publish-metrics`` (Dynamo) and
+# ``return_perf_metrics: true`` (trtllm-serve) enable on their own. The engine
+# YAML is merged over the worker's derived arguments and wins on conflicts
+# (TensorRT-LLM ``update_llm_args_with_extra_dict``), so this explicit
+# ``false`` keeps that surface and drops the statistics. ``expand_observability``
+# runs first and setdefaults ``True`` for analytics runs, which keep their
+# iteration-level ``trtllm_kv_cache_*`` gauges; an explicit recipe value
+# always wins.
+TRTLLM_ENGINE_DEFAULTS: dict[str, bool] = {
+    "enable_iter_perf_stats": False,
+}
+
 
 # /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
 # source builds. The bench/frontend container always mounts srtslurm's
@@ -1792,7 +1842,7 @@ class DynamoConfig:
     sidecar: bool = False
     sidecar_port: int = 50051
     sidecar_binary: str | None = None
-    sidecar_startup_timeout: int = 1200
+    sidecar_startup_timeout: int = 3600
     sidecar_context_length: int | None = None
     sidecar_args: list[str] = field(default_factory=list)
     # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
@@ -1954,8 +2004,13 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default), "sglang", "vllm-router",
-            "trtllm_serve", or direct "vllm"
+        type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
+            Gateway) and "vllm-router" (static routers); "sglang", "vllm", and
+            "trtllm_serve" (direct: the single aggregate worker binds the public
+            port, no router process); "none" (services-only job: no router, no
+            OpenAI endpoint, no worker-count health gate; requires no engine
+            roles). In schema 1 recipes "sglang" still means the router and
+            loads as "sglang-router".
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -2151,12 +2206,50 @@ class SrtConfig:
         self._validate_dedicated_node_placement()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._validate_sglang_direct_frontend()
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
         self._validate_host_setup()
         self._validate_benchmark_type()
+        self._validate_services_only()
         self._validate_services()
         self._warn_dp_launch_mode()
+
+    def _validate_services_only(self) -> None:
+        """Rules for ``frontend.type: none`` and for services that own nodes (pools).
+
+        ``frontend.type: none`` means no OpenAI endpoint and no worker-count
+        health gate: readiness is the services' own probes, and the benchmark
+        step is the only thing that runs against them. With engine workers
+        present that gate is what keeps a run from benchmarking a half-loaded
+        fleet, so ``none`` is refused until per-worker readiness exists.
+
+        A service with ``nodes`` owns a pool that adds to the allocation next to
+        the engine roles' nodes. Pools are whole nodes, carved in declaration
+        order; a heterogeneous SLURM job cannot carry them.
+        """
+        owners = self.pool_services
+        if owners and self.resources.het_jobs is True:
+            raise ValidationError(
+                "services[].nodes (pools) are not supported together with resources.het_jobs: true; "
+                f"owners: {', '.join(svc.name for svc in owners)}"
+            )
+        owner_names = {svc.name for svc in owners}
+        for svc in self.services:
+            pool = svc.placement.pool if svc.placement is not None else None
+            if pool is not None and pool not in owner_names:
+                raise ValidationError(
+                    f"services[{svc.name}].placement.pool {pool!r} names no service that declares nodes "
+                    f"(pools: {', '.join(sorted(owner_names)) or 'none'})"
+                )
+        if self.frontend.type == "none":
+            if self.resources.has_engine_workers:
+                raise ValidationError(
+                    "frontend.type: none is only supported without engine roles (no prefill/decode/agg workers); "
+                    "pick a frontend for the workers or drop them"
+                )
+            if self.frontend.dedicated_node:
+                raise ValidationError("frontend.type: none has no frontend process; frontend.dedicated_node is invalid")
 
     def _validate_services(self) -> None:
         """Whole-list checks for ``services:``: unique names, then each kind's recipe-level rules.
@@ -2173,6 +2266,21 @@ class SrtConfig:
                 raise ValidationError(f"services[].name must be unique; duplicate: {service.name!r}")
             seen.add(service.name)
             get_service_kind(service.type).validate(service, self)
+
+        # A terminal service is the job's run: the job ends when it exits. It cannot share
+        # that role with a benchmark step, and an external service never runs here.
+        terminal = self.terminal_services
+        if terminal and self.benchmark.type != "manual":
+            names = ", ".join(svc.name for svc in terminal)
+            raise ValidationError(
+                f"services[{names}].terminal ends the job when the service exits, so the job cannot also run "
+                f"benchmark.type: {self.benchmark.type}; drop the benchmark block (manual) or the terminal flag"
+            )
+        for svc in terminal:
+            if svc.external:
+                raise ValidationError(
+                    f"services[{svc.name}].terminal needs a process to wait for; an external service launches nothing"
+                )
 
     def _validate_benchmark_type(self) -> None:
         """Reject a benchmark.type that no runner is registered for.
@@ -2316,9 +2424,41 @@ class SrtConfig:
                 "worker across nodes with resources.agg_nodes."
             )
 
+    def _validate_sglang_direct_frontend(self):
+        """Catch direct-SGLang frontend misconfigurations at load time.
+
+        ``frontend.type: sglang`` means the one aggregate ``sglang.launch_server``
+        owns the public port itself. Several replicas or a prefill/decode layout
+        need ``sglang-router`` (or ``dynamo``); a schema 2 recipe that still says
+        ``sglang`` for those is an old router recipe and is rejected rather than
+        silently run unbalanced.
+        """
+        if self.frontend.type != "sglang":
+            return
+        if self.backend_type != "sglang":
+            raise ValidationError(f"frontend.type: sglang requires engine sglang; got {self.backend_type!r}")
+        if self.frontend.enable_multiple_frontends:
+            raise ValidationError(
+                "frontend.type: sglang binds sglang.launch_server directly; set frontend.enable_multiple_frontends: false"
+            )
+        if self.resources.is_disaggregated:
+            raise ValidationError(
+                "frontend.type: sglang supports one aggregate worker only, not a prefill/decode layout. "
+                "The SGLang router is frontend.type: sglang-router (renamed in 2.0; `srtctl migrate` rewrites "
+                "schema 1 recipes)."
+            )
+        if self.resources.num_agg != 1:
+            raise ValidationError(
+                f"frontend.type: sglang supports exactly one aggregate worker, got {self.resources.num_agg}. "
+                "sglang.launch_server owns the public port directly and there is no router to balance "
+                "replicas. Use frontend.type: sglang-router (the SGLang Model Gateway, renamed in 2.0) or dynamo."
+            )
+        if self.dynamo.sidecar:
+            raise ValidationError("frontend.type: sglang does not support dynamo.sidecar; use frontend.type: dynamo")
+
     def _validate_static_router_frontend(self):
         """Validate static-router/backend pairings and vLLM DP ownership."""
-        required_backend = {"sglang": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
+        required_backend = {"sglang-router": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
         if required_backend is None:
             return
         if self.backend_type != required_backend:
@@ -2983,7 +3123,7 @@ class SrtConfig:
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
-        from srtctl.core.config import expand_observability, expand_trtllm_serve_defaults
+        from srtctl.core.config import expand_engine_config_defaults
         from srtctl.core.placement import expand_placement
         from srtctl.core.roles import expand_roles
         from srtctl.services.normalize import expand_services
@@ -2993,8 +3133,7 @@ class SrtConfig:
         expand_roles(data)
         expand_placement(data)
         expand_services(data)
-        expand_observability(data)
-        expand_trtllm_serve_defaults(data)
+        expand_engine_config_defaults(data)
         schema = cls.Schema()
         return schema.load(data)
 
@@ -3005,8 +3144,35 @@ class SrtConfig:
         return self.backend.get_served_model_name(default)
 
     @property
+    def pool_services(self) -> list[ServiceConfig]:
+        """Services that own nodes (``services[].nodes``), in declaration order: the job's pools."""
+        return [svc for svc in self.services if svc.nodes is not None and svc.enabled]
+
+    @property
+    def terminal_services(self) -> list[ServiceConfig]:
+        """Services marked ``terminal``: the job ends when every one of them has exited."""
+        return [svc for svc in self.services if svc.terminal and svc.enabled]
+
+    @property
+    def services_node_count(self) -> int | None:
+        """Nodes owned by services through ``services[].nodes``, summed; None when no service owns any."""
+        counts = [svc.nodes for svc in self.pool_services if svc.nodes is not None]
+        return sum(counts) if counts else None
+
+    @property
+    def engine_node_count(self) -> int:
+        """Nodes the engine roles own; zero when the recipe has no engine workers."""
+        if not self.resources.has_engine_workers:
+            return 0
+        return self._engine_total_nodes()
+
+    @property
     def total_nodes(self) -> int:
-        """Worker node count, adjusted for backend-specific packing."""
+        """Node count of the job: the engine roles' nodes plus every service pool, at least one."""
+        return (self.engine_node_count + (self.services_node_count or 0)) or 1
+
+    def _engine_total_nodes(self) -> int:
+        """Worker node count of the engine roles, adjusted for backend-specific packing."""
         if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
             num_prefill=self.resources.num_prefill,
             num_decode=self.resources.num_decode,

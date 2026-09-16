@@ -7,6 +7,18 @@ on:
   pull_request_target:
     types: [closed]
     branches: [main]
+  # Re-cut a release by hand from the current main (for example after a failed run).
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump relative to the latest release"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      build_binaries:
+        description: "Rebuild tachometer-scraper and cpu-power-exporter instead of carrying them forward"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -18,16 +30,22 @@ concurrency:
 
 jobs:
   version:
-    if: github.event.pull_request.merged == true
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
     outputs:
       tag: ${{ steps.ver.outputs.tag }}
-      target: ${{ github.event.pull_request.merge_commit_sha }}
-      tachometer_changed: ${{ steps.changed.outputs.tachometer }}
-      cpu_power_exporter_changed: ${{ steps.changed.outputs.cpu_power_exporter }}
+      version: ${{ steps.ver.outputs.version }}
+      # The merge commit for a PR; the current main for a manual re-cut.
+      target: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+      tachometer_changed: ${{ steps.changed.outputs.tachometer || github.event.inputs.build_binaries }}
+      cpu_power_exporter_changed: ${{ steps.changed.outputs.cpu_power_exporter || github.event.inputs.build_binaries }}
     steps:
       - name: Detect changed binaries
         id: changed
+        if: github.event_name != 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -52,35 +70,62 @@ jobs:
           echo "cpu-power-exporter changed: $cpu_power_exporter"
           echo "cpu_power_exporter=$cpu_power_exporter" >> "$GITHUB_OUTPUT"
 
-      - name: Compute next version
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Compute next version from the PR title
         id: ver
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          # "true" when the merged PR carries the new-feature label -> minor bump.
-          IS_FEATURE: ${{ contains(github.event.pull_request.labels.*.name, 'new-feature') }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BUMP: ${{ github.event.inputs.bump }}
         run: |
           set -euo pipefail
-          # Bump from the HIGHEST existing GitHub Release (independent of the
-          # in-code version). A PR labeled "new-feature" bumps the MINOR and
-          # resets patch (v1.0.5 -> v1.1.0); otherwise the PATCH bumps
-          # (v1.0.5 -> v1.0.6). MAJOR is never bumped automatically -- publish a
-          # higher major by hand and the next merge continues from there.
-          # First run only (no release yet): seed v1.0.0.
+          # Bump from the HIGHEST existing GitHub Release. The merged PR title is a
+          # conventional commit (enforced by pr-title.yaml): "<type>!:" or a
+          # "BREAKING CHANGE:" body bumps MAJOR, "feat:" bumps MINOR, anything
+          # else bumps PATCH. First run only (no release yet): seed v1.0.0.
           latest=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
-          if [ -z "$latest" ]; then
-            next="v1.0.0"
+          if [ -n "${BUMP:-}" ]; then
+            # Manual re-cut: the bump comes from the workflow_dispatch input.
+            case "$BUMP" in
+              major) title="chore!: manual release" ;;
+              minor) title="feat: manual release" ;;
+              *)     title="chore: manual release" ;;
+            esac
+            next=$(bash .github/scripts/next_version.sh "$latest" "$title" "")
+            echo "Latest release: ${latest:-none}  Manual bump: $BUMP  Next: $next"
           else
-            core=${latest#v}; core=${core%%.post*}; core=${core%%-*}
-            IFS='.' read -r major minor patch <<< "$core"
-            if [ "$IS_FEATURE" = "true" ]; then
-              next="v${major}.$((minor + 1)).0"
-            else
-              next="v${major}.${minor}.$((patch + 1))"
-            fi
+            next=$(bash .github/scripts/next_version.sh "$latest" "$PR_TITLE" "$PR_BODY")
+            echo "Latest release: ${latest:-none}  Title: $PR_TITLE  Next: $next"
           fi
-          echo "Latest release: ${latest:-none}  new-feature: $IS_FEATURE  Next: $next"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "version=${next#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create the tag before anything is built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          TARGET: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # The tag exists before the wheel or the binaries are built, so
+          # hatch-vcs and SRTCTL_RELEASE_VERSION both see the same number.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists; the bump computed the wrong version"; exit 1
+          fi
+          if existing=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null); then
+            # A tag with no release is what a failed earlier run leaves behind; move it to this commit.
+            echo "Tag $TAG exists at $existing without a release; moving it to $TARGET"
+            gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/${TAG}" -f sha="$TARGET" -F force=true >/dev/null
+          else
+            gh api "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$TARGET" >/dev/null
+          fi
+          echo "Tagged $TARGET as $TAG"
 
   build-tachometer-scraper:
     needs: version
@@ -98,7 +143,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.target }}
+          ref: ${{ needs.version.outputs.tag }}
 
       - uses: docker/setup-qemu-action@v3
 
@@ -109,6 +154,7 @@ jobs:
           set -euo pipefail
           docker buildx build \
             --platform "${{ matrix.platform }}" \
+            --build-arg "SRTCTL_RELEASE_VERSION=${{ needs.version.outputs.version }}" \
             --file docker/Dockerfile.tachometer-scraper \
             --target artifact \
             --output type=local,dest=build/tachometer \
@@ -140,7 +186,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.target }}
+          ref: ${{ needs.version.outputs.tag }}
 
       - uses: docker/setup-qemu-action@v3
 
@@ -151,6 +197,7 @@ jobs:
           set -euo pipefail
           docker buildx build \
             --platform "${{ matrix.platform }}" \
+            --build-arg "SRTCTL_RELEASE_VERSION=${{ needs.version.outputs.version }}" \
             --file docker/Dockerfile.cpu-power-exporter \
             --target artifact \
             --output type=local,dest=build/cpu-power-exporter \
@@ -177,6 +224,52 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          fetch-depth: 0  # hatch-vcs derives the version from the tag
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Render the release notes header
+        run: |
+          set -euo pipefail
+          uv python install 3.12
+          uv sync --no-dev --python 3.12
+          info=$(uv run --no-sync srtctl --version)
+          echo "Version check: $info"
+          # The tag, the wheel, and the binaries must agree; fail loudly if hatch-vcs disagrees with the tag.
+          case "$info" in
+            "srtctl ${{ needs.version.outputs.version }} "*|"srtctl ${{ needs.version.outputs.version }};"*) ;;
+            *) echo "::error::srtctl --version ($info) does not match tag ${{ needs.version.outputs.tag }}"; exit 1 ;;
+          esac
+          {
+            echo "\`$info\`"
+            echo
+            echo "Binaries in this release report \`${{ needs.version.outputs.version }}\` from \`--version\`."
+            echo
+          } > notes-header.md
+
+      - name: Generate the changelog from the merged PR titles
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # git-cliff from PyPI rather than orhun/git-cliff-action: this repository's Actions
+          # policy only allows GitHub-owned, verified-creator, and allowlisted actions.
+          # --latest renders previous tag..this tag; PR numbers and authors come from the GitHub API.
+          uvx git-cliff==2.13.1 --config cliff.toml --latest --strip all \
+            --github-repo "$GH_REPO" --output notes-body.md
+
+      - name: Assemble the release notes
+        run: |
+          set -euo pipefail
+          cat notes-header.md notes-body.md > notes.md
+          echo "----- release notes -----"; cat notes.md
+
       - uses: actions/download-artifact@v4
         if: needs.version.outputs.tachometer_changed == 'true'
         with:
@@ -230,7 +323,9 @@ jobs:
           # An unexpanded dist/* glob would be passed through as a literal path.
           assets=(dist/*)
           echo "Publishing $TAG with ${#assets[@]} asset(s)"
+          # The tag already exists (created by the version job); --target is
+          # ignored for an existing tag but kept for clarity.
           gh release create "$TAG" "${assets[@]}" \
             --target "$TARGET" \
             --title "$TAG" \
-            --generate-notes
+            --notes-file notes.md

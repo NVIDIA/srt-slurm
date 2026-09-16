@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Lockfile format version — bump when the structure changes
 _LOCKFILE_VERSION = 2
+LOCKFILE_VERSION = _LOCKFILE_VERSION  # public alias for srtctl.version
 
 # Comment inserted above the lock section
 _LOCK_COMMENT = """\
@@ -96,6 +97,11 @@ def collect_slurm_context() -> dict[str, Any]:
     srtctl_root = os.environ.get("SRTCTL_ROOT")
     if srtctl_root:
         ctx["srtctl_root"] = srtctl_root
+
+    with contextlib.suppress(Exception):
+        from srtctl.version import package_version
+
+        ctx["srtctl_version"] = package_version()
 
     with contextlib.suppress(Exception):
         import subprocess

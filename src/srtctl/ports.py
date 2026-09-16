@@ -46,3 +46,8 @@ VLLM_PORT_STRIDE = 50
 # Dynamo runtime and connector ports.
 DYN_SYSTEM_PORT_BASE = 7500
 KVBM_ZMQ_PORT_BASE = 5600
+
+# Ray cluster (services[].type: ray): GCS on the head, dashboard (also the job
+# submission API) on the head. Ray's own defaults; options.port / dashboard_port move them.
+RAY_GCS_PORT = 6379
+RAY_DASHBOARD_PORT = 8265

@@ -37,6 +37,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from srtctl.core.config import (
+    expand_engine_config_defaults,
     generate_override_configs,
     get_srtslurm_setting,
     load_cluster_config,
@@ -61,6 +62,8 @@ from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
 from srtctl.runtime_scripts.dynamo_wheels import arch_from_binary, detect_target_arch
+from srtctl.status_server.server import add_arguments as add_status_server_arguments
+from srtctl.status_server.server import serve as serve_status_server
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -219,6 +222,11 @@ def _host_setup_source(config: SrtConfig) -> str:
     return "recipe"
 
 
+def _engine_bool(value: object) -> str:
+    """Render an engine-yaml boolean the way the YAML file will spell it."""
+    return "unset" if value is None else str(value).lower()
+
+
 def show_config_details(config: SrtConfig) -> None:
     """Display container mounts and environment variables for dry-run verification.
 
@@ -247,6 +255,28 @@ def show_config_details(config: SrtConfig) -> None:
                     border_style="cyan",
                 )
             )
+
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    if isinstance(config.backend, TRTLLMProtocol):
+        # Engine-yaml statistics keys srtctl defaults at config load
+        # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
+        # expand_observability). Shown for both frontends so a run that expects
+        # the iteration-level trtllm_* gauges can see before submitting that
+        # enable_iter_perf_stats is off.
+        modes = ("prefill", "decode") if config.resources.is_disaggregated else ("agg",)
+        rows = []
+        for mode in modes:
+            section = config.backend.get_config_for_mode(mode)
+            rows.append(
+                f"{mode}: enable_iter_perf_stats={_engine_bool(section.get('enable_iter_perf_stats'))}, "
+                f"return_perf_metrics={_engine_bool(section.get('return_perf_metrics'))}"
+            )
+        rows.append(
+            "(engine yaml; the iteration-level trtllm_* gauges and the dashboard's KV-utilisation panels "
+            "need enable_iter_perf_stats: true)"
+        )
+        console.print(Panel("\n".join(rows), title="TRT-LLM Engine Statistics", border_style="cyan"))
 
     if config.frontend.type == "vllm":
         from srtctl.backends.vllm import VLLMProtocol, find_vllm_orchestration_recipe_flags
@@ -445,7 +475,9 @@ def show_config_details(config: SrtConfig) -> None:
             service = entry.service
             console.print(
                 f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement} "
-                f"start={service.effective_start} critical={str(service.effective_critical).lower()}[/]"
+                f"start={service.effective_start} critical={str(service.effective_critical).lower()}"
+                f"{f' nodes={service.nodes}' if service.nodes is not None else ''}"
+                f"{' terminal' if service.terminal else ''}[/]"
             )
             if entry.implicit:
                 console.print(
@@ -499,6 +531,14 @@ def show_config_details(config: SrtConfig) -> None:
             console.print(f"[dim]dynamo source:[/] PyPI ai-dynamo=={source.pypi}")
         elif source is not None and source.wheel:
             console.print(f"[dim]dynamo source:[/] staged wheel ai-dynamo=={source.wheel}")
+
+    # --- nodes: who owns what (engine roles, service pools) ---
+    if config.pool_services:
+        console.print("[bold cyan]Nodes:[/]")
+        console.print(f"  engine roles: {config.engine_node_count}")
+        for svc in config.pool_services:
+            console.print(f"  pool {svc.name} ({svc.type}): {svc.nodes}")
+        console.print(f"  total: {config.total_nodes}")
 
     show_extensions = (
         config.benchmark.type == "custom"
@@ -1589,6 +1629,9 @@ def submit_override(
         logger.info(f"Override variant: {variant_label} -> {job_name}")
 
         resolved_config = resolve_config_with_defaults(yaml.safe_load(runtime_config_text), load_cluster_config())
+        # Same expansions load_config applies, so the dry-run details and the
+        # sbatch-time config match what the in-job loader will run with.
+        expand_engine_config_defaults(resolved_config)
         config = SrtConfig.Schema().load(resolved_config)
 
         if "sweep" in config_cm:
@@ -1692,13 +1735,20 @@ def main():
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl view /path/to/run-output                # Local ruter route-decision viewer
+  srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
   srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md + docs/legacy-v1.md
   srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
   srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
   srtctl skill --target claude                   # Install the srtctl agent skill into this project
+  srtctl --version                               # Version (from the git tag), commit, schema and lockfile versions
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+
+    # `srtctl --version`: package version (from the git tag), commit, and the protocol versions.
+    from srtctl.version import version_info
+
+    parser.add_argument("--version", action="version", version=str(version_info()))
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1810,6 +1860,12 @@ def main():
     )
     view_parser.add_argument("--port", type=int, default=8877, help="Loopback port (default: 8877)")
     view_parser.add_argument("--refresh", action="store_true", help="Reparse logs before loading the viewer")
+
+    status_server_parser = subparsers.add_parser(
+        "status-server",
+        help="Run the native status collector that reporting.status.endpoint can point at",
+    )
+    add_status_server_arguments(status_server_parser)
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
@@ -2109,6 +2165,18 @@ def main():
         _view_main(view_args)
         return
 
+    if args.command == "status-server":
+        serve_status_server(
+            host=args.host,
+            port=args.port,
+            db_path=args.db,
+            token_env=args.token_env,
+            read_token_env=args.read_token_env,
+            allow_unauthenticated=args.allow_unauthenticated,
+            cors_origins=args.cors_origin,
+        )
+        return
+
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)
 
@@ -2169,7 +2237,12 @@ def main():
             # to False on those subcommands; dry-run already implies no
             # enforcement via the is_dry_run branch below.
             no_preflight = getattr(args, "no_preflight", False)
-            enforce_preflight = not (mock_mode or is_dry_run or no_preflight)
+            # srtslurm.yaml `preflight: false` turns the check off cluster-wide
+            # (paths that exist only on compute nodes); same effect as the flag.
+            cluster_preflight = get_srtslurm_setting("preflight", True)
+            if cluster_preflight is False and not (mock_mode or is_dry_run or no_preflight):
+                logger.info("preflight skipped: srtslurm.yaml sets preflight: false")
+            enforce_preflight = not (mock_mode or is_dry_run or no_preflight or cluster_preflight is False)
 
             # Handle directory input
             if effective_config_path.is_dir():

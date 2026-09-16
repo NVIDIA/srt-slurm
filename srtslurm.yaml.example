@@ -49,8 +49,8 @@ use_gpus_per_node_directive: true  # Default: true
 use_segment_sbatch_directive: true  # Default: true
 # Set to true if your cluster requires --exclusive to be set.
 use_exclusive_sbatch_directive: false # Default: false
-# Container registry
-default_container: "/shared/containers/sglang-latest.sqsh"
+
+# Container aliases (optional; a recipe may also name the image directly in model.container)
 containers:
   sglang-latest: "/shared/containers/sglang-v0.4.sqsh"
   sglang-dev: "/shared/containers/sglang-dev.sqsh"

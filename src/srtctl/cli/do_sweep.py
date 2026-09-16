@@ -165,7 +165,8 @@ class SweepOrchestrator(
         logger.info("=" * 60)
         logger.info("Connection Commands")
         logger.info("=" * 60)
-        logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
+        if self.config.frontend.type != "none":
+            logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
         logger.info("")
         logger.info("To connect to head node (%s):", self.runtime.nodes.head)
         logger.info(
@@ -176,7 +177,7 @@ class SweepOrchestrator(
         )
 
         # Print worker node connection commands
-        for node in self.runtime.nodes.worker:
+        for node in self.runtime.nodes.compute:
             if node != self.runtime.nodes.head:
                 logger.info("")
                 logger.info("To connect to worker node (%s):", node)
@@ -245,7 +246,7 @@ class SweepOrchestrator(
 
     def _host_setup_nodes(self) -> list[str]:
         """Nodes targeted by host_setup, deduped and stable in allocation order."""
-        nodes = list(self.runtime.nodes.worker)
+        nodes = list(self.runtime.nodes.compute)
         if self.config.host_setup.nodes == "all":
             nodes = [self.runtime.nodes.head, self.runtime.nodes.infra, *nodes]
         return list(dict.fromkeys(nodes))
@@ -416,7 +417,7 @@ class SweepOrchestrator(
         except Exception:  # noqa: BLE001
             logger.debug("Model '%s' not fully cached, will pre-download", model_id)
 
-        download_node = self.runtime.nodes.worker[0]
+        download_node = (self.runtime.nodes.compute or (self.runtime.nodes.head,))[0]
 
         logger.info("Ensuring model '%s' is cached on %s (cache: %s)", model_id, download_node, hf_home)
 
@@ -606,7 +607,9 @@ class SweepOrchestrator(
         logger.info("Config: %s", self.config.name)
         logger.info("Infra node: %s", self.runtime.nodes.infra)
         logger.info("Head node: %s", self.runtime.nodes.head)
-        logger.info("Worker nodes: %s", ", ".join(self.runtime.nodes.worker))
+        logger.info("Worker nodes: %s", ", ".join(self.runtime.nodes.worker) or "(none: no engine roles)")
+        for pool, nodes in self.runtime.nodes.pools.items():
+            logger.info("Pool %s: %s", pool, ", ".join(nodes))
         if self.config.profiling.enabled:
             logger.info("Profiling: %s", self.config.profiling.type)
 

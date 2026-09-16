@@ -18,6 +18,10 @@
   - [srtctl apply](#srtctl-apply)
   - [srtctl dry-run](#srtctl-dry-run)
   - [srtctl resolve-override](#srtctl-resolve-override)
+  - [srtctl migrate](#srtctl-migrate)
+  - [srtctl monitor](#srtctl-monitor)
+  - [srtctl status-server](#srtctl-status-server)
+  - [srtctl skill](#srtctl-skill)
 - [Output](#output)
 - [Sweep Support](#sweep-support)
 - [Config Override Support](#config-override-support)
@@ -257,6 +261,7 @@ srtctl apply -f <config.yaml> [options]
 | `--set KEY=VALUE` | Override one recipe value by dotted path before validation (repeatable). Also on `dry-run`, `preflight`, `resolve-override` |
 | `--unset KEY` | Remove one recipe key by dotted path before validation (repeatable) |
 | `-y, --yes` | Skip confirmation prompts |
+| `--no-preflight` | Skip the pre-submit `model.path` / `model.container` / telemetry filesystem checks for this run. `preflight: false` in `srtslurm.yaml` does the same for every run on a cluster whose paths exist only on compute nodes |
 
 `--set` and `--unset` are the supported way to tweak a recipe from a script instead of editing the YAML. Paths are dotted, `[N]` indexes a list, and quotes protect a segment that contains dots (`container_mounts."/a/b.c"`). Values parse as YAML: `720` is an int, `"720"` a string, `[4, 8]` a list; a mapping such as `{"rope_type": "yarn"}` stays a literal string because that is how engine flags take JSON. Overrides are applied to the raw document before cluster defaults, sweep expansion, and validation, so an explicit `--set` always wins and `{placeholder}` values still expand. On an override file the value is written into `base` and every `override_*` / `zip_override_*` variant, so no variant can shadow it. The applied overrides are listed in each `--json` record as `applied_overrides`, and the `config.yaml` copied into the job directory reflects them. The source file is never modified.
 
@@ -369,6 +374,19 @@ The resolved YAML preserves the field order and comments from the source file. B
 
 See [Config Overrides — Resolving Without Submitting](overrides.md#resolving-overrides-without-submitting) for details.
 
+### `srtctl migrate`
+
+Rewrites a v1 recipe (no `schema: 2`; `backend:`, `backend.<mode>_environment`, `infra:`, `resources.<role>_nodes` / `_workers` / `gpus_per_<role>`, `dynamo.version` / `hash` / `wheel`) into the 2.0 layout. The rewrite is deterministic and keeps comments and key order; do not translate by hand.
+
+```bash
+srtctl migrate -f old.yaml                 # print the schema-2 document, file untouched
+srtctl migrate -f old.yaml --in-place      # rewrite it; a directory is walked recursively
+srtctl migrate -f old.yaml --output new.yaml
+srtctl migrate -f old.yaml --verify        # migrate in memory and prove v1 and v2 resolve identically
+```
+
+The key-by-key mapping is in [legacy-v1.md](legacy-v1.md). Notable rewrites: `decode_nodes: 0` becomes `roles.decode.nodes: colocate` with an explicit `gpus` on both roles; v1 `frontend.type: sglang` (the router) becomes `sglang-router`; `infra` becomes `services:` entries; benchmark fields the recipe's type never reads are removed because schema 2 rejects them. The migrator prints a note for each change and for what it deliberately leaves to you: `dynamo.top_of_tree` (pin a commit in `source.rev`), a dedicated etcd node under a frontend that runs no etcd, and a v1 recipe that never named a Dynamo to install (v1 pip-installed PyPI 0.8.0 implicitly; choose `dynamo.source` or `dynamo.install: false`). Finish with `--verify` and a `dry-run`.
+
 ### `srtctl monitor`
 
 Live terminal dashboard for all your jobs. See [Monitoring](monitoring.md) for full documentation.
@@ -380,6 +398,23 @@ srtctl monitor --interval 10            # Refresh every 10s (default: 5)
 srtctl monitor --once                   # Snapshot and exit
 srtctl monitor --resume KEY             # Resume a previous session
 ```
+
+### `srtctl status-server`
+
+Run the native status collector. Point `reporting.status.endpoint` in `srtslurm.yaml` or a recipe at it and every `srtctl apply` shows up as a job row with an ordered event feed (`submitted`, `starting`, `workers`, `frontend`, `benchmark`, then `completed` or `failed`, each with its stage and message). Jobs and events persist in one SQLite file and the process prints one line per transition. The endpoints are in [Status API](status-api-spec.md).
+
+```bash
+srtctl status-server                                        # 127.0.0.1:8080, ~/.local/state/srtctl/status.db, no token needed on loopback
+srtctl status-server --host 0.0.0.0 --allow-unauthenticated # Open on a trusted network such as a login node
+SRTCTL_STATUS_TOKEN=... SRTCTL_STATUS_READ_TOKEN=... \
+  srtctl status-server --host 0.0.0.0                       # Bearer tokens required (write token; optional read-only token)
+srtctl status-server --port 9000 --db /lustre/shared/status.db
+srtctl status-server --host 0.0.0.0 --cors-origin https://ui.example  # UI hosted elsewhere may call the API (read-only)
+curl http://login-node:8080/api/jobs                        # Newest jobs first
+curl "http://login-node:8080/api/events?after=0"            # Global event feed; pass next_cursor back as after
+```
+
+Open `http://<host>:8080/` in a browser for the built-in UI (jobs table, per-job event timeline, live event feed); paste the read token once and the page keeps it in `localStorage`. Run the server where both the submitting host (the POST at apply time) and the allocation's head node (the PUTs during the run) can reach it, typically a login node. Listening beyond loopback without a token is refused unless `--allow-unauthenticated` is passed. With a token set on the server, export the same `SRTCTL_STATUS_TOKEN` in the shell that runs `srtctl apply`; the reporter sends it as a bearer token and never puts it in a recipe. See [Status API](status-api-spec.md#authentication).
 
 ### `srtctl skill`
 

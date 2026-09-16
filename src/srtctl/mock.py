@@ -285,6 +285,9 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.cli.mixins.benchmark_stage.wait_for_model", _fake_wait_for_model),
         # Service readiness probes (etcd, NATS, exporters, declared services).
         ("srtctl.cli.mixins.service_stage.wait_until_ready", _fake_wait_for_port),
+        # The ray kind resolves the head IP itself and gates on the dashboard's node summary.
+        ("srtctl.services.ray.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.services.ray.RayService.wait_fleet_ready", lambda *_args, **_kwargs: None),
         # Status POST/PUT — redirect to the on-disk sink so external watchers
         # have a concrete artifact to poll.
         ("srtctl.core.status.requests.put", _fake_put),
