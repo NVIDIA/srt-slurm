@@ -42,15 +42,16 @@ services:
     # No readiness probe: instances launch back to back, and a static torchrun
     # rendezvous only completes once every node has joined.
 
-# Waits for pool_node_count * gpus_per_node "hello" lines in the service logs
+# Waits for pool_node_count * gpus_per_node "hello" messages in the service logs
 # (mounted at /logs), prints them in rank order, and exits non-zero on a timeout.
+# Counts occurrences, not lines: ranks share a node's stdout.
 benchmark:
   type: custom
   command: >-
     bash -c 'want=$((SRT_SERVICE_TRAIN_NODE_COUNT * SRT_GPUS_PER_NODE)); n=0;
-    for i in $(seq 1 120); do n=$(cat /logs/service_train_*.out 2>/dev/null | grep -c "better kubernetes");
+    for i in $(seq 1 120); do n=$(cat /logs/service_train_*.out 2>/dev/null | grep -o "better kubernetes" | wc -l);
     [ "$n" -ge "$want" ] && break; sleep 5; done;
-    grep -h "better kubernetes" /logs/service_train_*.out | sort -t" " -k3 -n;
+    grep -oh "from worker [0-9]* srt-slurm is just better kubernetes ([^)]*)" /logs/service_train_*.out | sort -t" " -k3 -n;
     echo "$n/$want workers reported"; [ "$n" -ge "$want" ]'
 
 extra_mount:

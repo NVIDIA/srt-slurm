@@ -10,6 +10,7 @@ MASTER_ADDR and MASTER_PORT; init_process_group reads them from the environment.
 
 import os
 import socket
+import sys
 
 import torch
 import torch.distributed as dist
@@ -25,11 +26,14 @@ def main() -> None:
     joined = torch.ones(1, device="cuda")
     dist.all_reduce(joined)
 
-    print(
+    # One write per rank: eight ranks share this node's stdout, and separate writes
+    # for the text and the newline interleave into merged lines.
+    line = (
         f"from worker {rank} srt-slurm is just better kubernetes "
-        f"({int(joined.item())}/{world} joined, {socket.gethostname()} gpu {local_rank})",
-        flush=True,
+        f"({int(joined.item())}/{world} joined, {socket.gethostname()} gpu {local_rank})\n"
     )
+    sys.stdout.write(line)
+    sys.stdout.flush()
     dist.barrier()
     dist.destroy_process_group()
 
