@@ -34,7 +34,7 @@ def keepalive_command(command: list[str]) -> list[str]:
     script = (
         f"{launch} & NSYS=$!; APP=''; "
         f"for _ in $(seq 1 {_CHILD_LOOKUP_SECS}); do "
-        "APP=$(pgrep -P \"$NSYS\" 2>/dev/null | head -n1); "
+        'APP=$(pgrep -P "$NSYS" 2>/dev/null | head -n1); '
         '[ -n "$APP" ] && break; kill -0 "$NSYS" 2>/dev/null || break; sleep 1; done; '
         'wait "$NSYS"; rc=$?; '
         'if [ -n "$APP" ]; then '

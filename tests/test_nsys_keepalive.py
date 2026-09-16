@@ -13,7 +13,9 @@ def test_wrapper_shape():
     cmd = keepalive_command(["nsys", "profile", "--delay", "5", "-o", "/logs/x y", "python3", "-m", "dynamo.frontend"])
     assert cmd[:2] == ["bash", "-c"]
     script = cmd[2]
-    assert script.startswith(shlex.join(["nsys", "profile", "--delay", "5", "-o", "/logs/x y", "python3", "-m", "dynamo.frontend"]) + " &")
+    assert script.startswith(
+        shlex.join(["nsys", "profile", "--delay", "5", "-o", "/logs/x y", "python3", "-m", "dynamo.frontend"]) + " &"
+    )
     assert "pgrep -P" in script and 'wait "$NSYS"' in script and 'kill -0 "$APP"' in script
     assert script.endswith('exit "$rc"')
 
@@ -21,12 +23,7 @@ def test_wrapper_shape():
 def _fake_nsys(tmp_path, *, exit_code: int, child_secs: float):
     """A stand-in for nsys: fork a child that lives child_secs, exit after 0.5 s with exit_code."""
     path = tmp_path / "nsys"
-    path.write_text(
-        "#!/usr/bin/env bash\n"
-        f"sleep {child_secs} &\n"
-        "sleep 0.5\n"
-        f"exit {exit_code}\n"
-    )
+    path.write_text("#!/usr/bin/env bash\n" f"sleep {child_secs} &\n" "sleep 0.5\n" f"exit {exit_code}\n")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return str(path)
 
