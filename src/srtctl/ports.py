@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Centralized default ports used by srt-slurm runtime components."""
@@ -28,6 +28,9 @@ SGLANG_NCCL_PORT_BASE = 17500
 # SGLang Model Gateway (sglang_router) Prometheus listener; the router's own default.
 # Only started when --prometheus-port is passed, which srtctl does so tachometer can scrape it.
 SGLANG_ROUTER_METRICS_PORT = 29000
+
+# TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
+TRTLLM_DIST_INIT_PORT_BASE = 29500
 
 # Mooncake transfer-engine ports (shared by SGLang and vLLM backends).
 MOONCAKE_MASTER_PORT = 8700

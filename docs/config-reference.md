@@ -367,6 +367,10 @@ seven ranks split 4+3) are rejected before launch. Backend-specific communicatio
 requirements still apply; this does not enable arbitrary uneven layouts in every
 TRT-LLM communication backend.
 
+TRT-LLM endpoints also set `MASTER_ADDR` to the rank-zero node and use a distinct
+`MASTER_PORT` per endpoint. This overrides container hooks that infer rank zero
+from Slurm's sorted node list. Explicit recipe environment values take precedence.
+
 **Other TRT-LLM launch facts**: TRT-LLM supports prefill, decode, and aggregated roles, uses MPI-style launching (one srun per endpoint with all of its nodes) through `trtllm-llmapi-launch`, and sets `TRTLLM_EPLB_SHM_NAME` to a unique UUID per endpoint.
 
 ---

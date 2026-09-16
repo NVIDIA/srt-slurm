@@ -18,7 +18,7 @@ from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
-from srtctl.ports import KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE
+from srtctl.ports import DYN_SYSTEM_PORT_BASE, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, TRTLLM_DIST_INIT_PORT_BASE
 from srtctl.services.implicit import discovery_env
 
 if TYPE_CHECKING:
@@ -426,6 +426,14 @@ class WorkerStageMixin:
 
         # Add config environment variables
         env_to_set.update(self.runtime.environment)
+
+        if self.backend.type == "trtllm":
+            # Enroot may infer rank 0 from the sorted step nodelist, which
+            # differs from our rank order for workers sharing a partial node.
+            env_to_set.setdefault("MASTER_ADDR", get_hostname_ip(leader.node, self.runtime.network_interface))
+            env_to_set.setdefault(
+                "MASTER_PORT", str(TRTLLM_DIST_INIT_PORT_BASE + leader.sys_port - DYN_SYSTEM_PORT_BASE)
+            )
 
         # Native TRT-LLM KV-event subscribers need routable publisher hosts for
         # multi-node endpoints.  Dynamo can otherwise fall back to
