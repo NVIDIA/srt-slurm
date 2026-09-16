@@ -101,8 +101,8 @@ services:
 | `container` | type fallback, then job container | Aliases resolve through `srtslurm.yaml` like every other container key. |
 | `env` | `{}` | Merged over the type's defaults; see [Environment](#environment). |
 | `placement.node` | type default | `generic`: `head`. See [Placement](#placement). `compute` is every engine worker node plus every pool; `all` adds the head, infra and client nodes. |
-| `placement.pool` | none | Run on the nodes another service owns, one instance per node of that pool. Replaces `node`. |
-| `nodes` | none | Whole nodes this service owns: its pool, added to the allocation after the engine roles' nodes, in declaration order. Any number of services may own nodes, next to engine roles or without them. An owner is placed on its own pool (`placement.node: workers`). Not supported with `resources.het_jobs`. |
+| `placement.pool` | none | Run on the nodes another service owns, one instance per node of that pool. Replaces `node`. See [pools.md](pools.md). |
+| `nodes` | none | Whole nodes this service owns: its pool, added to the allocation after the engine roles' nodes, in declaration order. Any number of services may own nodes, next to engine roles or without them. An owner is placed on its own pool (`placement.node: workers`). Not supported with `resources.het_jobs`. See [pools.md](pools.md). |
 | `start` | type default | `etcd`, `nats`: `infra`. `mooncake-master`, `mooncake-store`: `before_workers`. `generic` and the exporters: `after_frontend`. |
 | `readiness` | type default | One probe per node: `port` / `tcp`, `http`, or `log`, plus `timeout_seconds` and `interval_seconds`. The typed kinds gate on their well-known ports when no probe is written. See [Start Order and Readiness](#start-order-and-readiness). Timing out terminates what this stage started and fails the job. |
 | `inherit_discovery_env` | `true` | Inject the same `ETCD_ENDPOINTS` / `NATS_SERVER` the Dynamo frontend gets. |
@@ -115,8 +115,11 @@ services:
 `command`, `args`, `env` values, and `preamble` may use these placeholders: `{node}`, `{node_ip}`,
 `{node_id}` (position in the worker list), `{index}` (instance index within the service), `{role}`
 (the `placement.node` value), `{head_node}`, `{head_ip}`, `{infra_node}`, `{infra_ip}`,
-`{master_port}`, `{metadata_port}`. Only those names are substituted; other braces (JSON in an env
-value) are left alone.
+`{master_port}`, `{metadata_port}`, and the service's own node set: `{pool_node}` / `{pool_ip}` (its
+first node), `{pool_nodes}` / `{pool_ips}` (every node, comma-separated, in order), `{pool_node_count}`.
+Only those names are substituted; other braces (JSON in an env value) are left alone.
+
+`{pool_ip}` is the rendezvous for a service that forms its own cluster on the nodes it owns; `{head_ip}` is the job head, an engine node when the service runs on a pool next to engine roles. A torchrun owner reads `--nnodes={pool_node_count} --node-rank={index} --master-addr={pool_ip}`; see [pools.md](pools.md#forming-a-cluster-on-a-pool).
 
 ## Implicit Services
 

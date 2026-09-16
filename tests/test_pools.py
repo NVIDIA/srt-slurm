@@ -11,7 +11,7 @@ recipe. Every reader of the node list has to agree on who owns what.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -239,6 +239,58 @@ def test_service_nodes_follow_pools(tmp_path: Path) -> None:
         "n3",
         "n4",
     ]
+
+
+def test_pool_placeholders_point_at_the_pool_not_the_job_head(tmp_path: Path) -> None:
+    """A service forms its own cluster from placeholders: instance 0 of its pool is the rendezvous.
+
+    ``{head_ip}`` is the job head, which is the engine node when the pool sits next
+    to engine roles, so a torchrun-shaped service has to use ``{pool_ip}``.
+    """
+    sft = {
+        "name": "sft",
+        "type": "generic",
+        "command": [
+            "torchrun",
+            "--nnodes={pool_node_count}",
+            "--node-rank={index}",
+            "--master-addr={pool_ip}",
+            "--peers={pool_ips}",
+            "--first={pool_node}",
+            "--all={pool_nodes}",
+            "--job-head={head_ip}",
+        ],
+        "placement": {"pool": "train"},
+        "start": "before_workers",
+        "critical": False,
+    }
+    orchestrator = SweepOrchestrator(config=_load(services=[*TOY["services"][:2], sft]), runtime=_runtime(tmp_path))
+    popen = MagicMock()
+    popen.poll.return_value = None
+    with (
+        patch("srtctl.cli.mixins.service_stage.start_srun_process", return_value=popen) as srun,
+        patch("srtctl.cli.mixins.service_stage.wait_until_ready", return_value=True),
+        patch("srtctl.cli.mixins.service_stage.get_hostname_ip", side_effect=lambda host, iface=None: IPS[host]),
+    ):
+        orchestrator.start_services("before_workers")
+
+    rendered = {call.kwargs["nodelist"][0]: " ".join(call.kwargs["command"]) for call in srun.call_args_list}
+    assert sorted(rendered) == ["n2", "n3"], "one instance per node of the train pool"
+    for rank, node in enumerate(("n2", "n3")):
+        assert f"--nnodes=2 --node-rank={rank} --master-addr=10.0.0.2 --peers=10.0.0.2,10.0.0.3" in rendered[node]
+        assert "--first=n2 --all=n2,n3" in rendered[node]
+        assert "--job-head=10.0.0.1" in rendered[node], "the job head is the engine node, not the pool"
+
+
+def test_single_instance_services_see_themselves_as_the_pool(tmp_path: Path) -> None:
+    from srtctl.services.registry import ServiceLaunchContext
+
+    ctx = ServiceLaunchContext(
+        runtime=_runtime(tmp_path), node="n1", node_ip=IPS["n1"], node_id=0, index=0, role="head"
+    )
+    vars_ = ctx.template_vars()
+    assert vars_["pool_ip"] == vars_["node_ip"] == IPS["n1"]
+    assert vars_["pool_nodes"] == "n1" and vars_["pool_node_count"] == "1"
 
 
 def test_dry_run_prints_the_node_map(capsys) -> None:

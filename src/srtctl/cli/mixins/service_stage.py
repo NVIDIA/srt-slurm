@@ -376,14 +376,17 @@ class ServiceStageMixin:
                 if work_dir is not None:
                     self._build_service_source(service, nodes[0], work_dir, registry)
 
+                node_ips = tuple(get_hostname_ip(node, self.runtime.network_interface) for node in nodes)
                 for index, node in enumerate(nodes):
                     ctx = ServiceLaunchContext(
                         runtime=self.runtime,
                         node=node,
-                        node_ip=get_hostname_ip(node, self.runtime.network_interface),
+                        node_ip=node_ips[index],
                         node_id=worker_order.get(node, index),
                         index=index,
                         role=service.effective_placement,
+                        nodes=tuple(nodes),
+                        node_ips=node_ips,
                     )
                     proc = self._launch_service_instance(service, ctx, work_dir, len(nodes))
                     started.append(proc)

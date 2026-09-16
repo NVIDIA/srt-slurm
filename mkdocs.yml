@@ -61,6 +61,7 @@ nav:
       - vLLM Router: vllm-router.md
       - Mooncake KV Store: mooncake-kv-store.md
       - Services: services.md
+      - Pools: pools.md
   - Benchmarking:
       - Accuracy Benchmarks: accuracy.md
       - Profiling: profiling.md

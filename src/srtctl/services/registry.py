@@ -30,6 +30,11 @@ class ServiceLaunchContext:
     node_id: int  # position of ``node`` in runtime.nodes.worker, or the instance index for head/infra
     index: int  # instance index within this service (0..n-1)
     role: str  # the service's placement.node value
+    # Every node this service runs on, in placement order (its pool when it owns or rides one), and
+    # their IPs. Instance 0 is the rendezvous for a service that forms its own cluster. Empty means
+    # "just this node" (previews, single-instance construction in tests).
+    nodes: tuple[str, ...] = ()
+    node_ips: tuple[str, ...] = ()
 
     @classmethod
     def preview(cls, node: str = "<node>") -> ServiceLaunchContext:
@@ -47,6 +52,8 @@ class ServiceLaunchContext:
         """Placeholders substituted into command, args, env values, and preamble."""
         from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 
+        pool_nodes = self.nodes or (self.node,)
+        pool_ips = self.node_ips or (self.node_ip,)
         return {
             "node": self.node,
             "node_ip": self.node_ip,
@@ -57,6 +64,14 @@ class ServiceLaunchContext:
             "head_ip": self.runtime.head_node_ip,
             "infra_node": self.runtime.nodes.infra,
             "infra_ip": self.runtime.infra_node_ip,
+            # The service's own node set: instance 0 is the rendezvous of a self-forming cluster
+            # (torchrun --master-addr, a Ray head), which the job head is not when the service
+            # runs on a pool next to engine roles.
+            "pool_node": pool_nodes[0],
+            "pool_ip": pool_ips[0],
+            "pool_nodes": ",".join(pool_nodes),
+            "pool_ips": ",".join(pool_ips),
+            "pool_node_count": str(len(pool_nodes)),
             "master_port": str(MOONCAKE_MASTER_PORT),
             "metadata_port": str(MOONCAKE_HTTP_METADATA_PORT),
         }
