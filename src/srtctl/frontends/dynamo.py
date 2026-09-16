@@ -92,15 +92,20 @@ class DynamoFrontend:
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
             # profiling.frontend: run the frontend under nsys with a time window (see ProfilingFrontendConfig).
             # The report goes next to the workers' reports: /logs/profiles/frontend/<node>_frontend_<idx>.nsys-rep
-            nsys_prefix = config.profiling.get_frontend_nsys_prefix(f"/logs/profiles/frontend/{node}_frontend_{idx}")
+            profiling = getattr(config, "profiling", None)  # tests pass reduced configs without a profiling block
+            nsys_prefix = (
+                profiling.get_frontend_nsys_prefix(f"/logs/profiles/frontend/{node}_frontend_{idx}")
+                if profiling
+                else []
+            )
             if nsys_prefix:
                 (runtime.log_dir / "profiles" / "frontend").mkdir(parents=True, exist_ok=True)
                 cmd = [*nsys_prefix, *cmd]
                 logger.info(
                     "Profiling: nsys on frontend %d (delay %ss, duration %ss)",
                     idx,
-                    config.profiling.frontend.delay_secs,
-                    config.profiling.frontend.duration_secs,
+                    profiling.frontend.delay_secs,
+                    profiling.frontend.duration_secs,
                 )
 
             env_to_set = {
@@ -120,7 +125,8 @@ class DynamoFrontend:
             env_to_set.update(runtime.environment)
 
             # NVTX plumbing for the profiled frontend (no-op unless profiling.frontend is set)
-            env_to_set.update(config.profiling.get_frontend_env_vars())
+            if profiling:
+                env_to_set.update(profiling.get_frontend_env_vars())
 
             # Add frontend env from config
             if config.frontend.env:
