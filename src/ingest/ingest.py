@@ -475,9 +475,10 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
         # export, because the frontend's /metrics surface exists regardless and the
         # benchmark scrapes it. Choosing here rather than at every call site is
         # what lets one ingest command work on all of them.
-        tach: list[str] = []
-        for pat in ([args.tachometer_parquet] if args.tachometer_parquet else TACHOMETER_PATTERNS):
-            tach.extend(resolve_inputs(pat, run_dir))
+        from src.ingest.metrics_tachometer import find_parquets
+
+        tach = (resolve_inputs(args.tachometer_parquet, run_dir) if args.tachometer_parquet
+                else find_parquets(run_dir))
         if tach:
             mode = "tachometer"
         else:
@@ -498,15 +499,14 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
 
     if mode == "tachometer":
         # The in-job Tachometer scraper's parquet: the whole-window per-replica
-        # capture of every /metrics endpoint. First pattern with a hit wins, so
-        # final.parquet is preferred over shards/leftovers.
+        # capture of every /metrics endpoint. Prefer final.parquet independently
+        # for the head scraper and each native-worker scraper.
         patterns = ([args.tachometer_parquet] if args.tachometer_parquet
                     else list(TACHOMETER_PATTERNS))
-        srcs: list[str] = []
-        for pat in patterns:
-            srcs = resolve_inputs(pat, run_dir)
-            if srcs:
-                break
+        from src.ingest.metrics_tachometer import find_parquets
+
+        srcs = (resolve_inputs(args.tachometer_parquet, run_dir) if args.tachometer_parquet
+                else find_parquets(run_dir))
         if not srcs:
             _log("L2 metrics", f"WARN no tachometer parquet matched {patterns} under {run_dir}; skipping")
             return False

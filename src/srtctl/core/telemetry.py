@@ -51,6 +51,7 @@ def generate_tachometer_config(
     frontend_type: str = "dynamo",
     frontend_metrics_port: int | None = None,
     exporter_nodes: Sequence[str] = (),
+    sidecar_backend: str | None = None,
 ) -> str:
     """Generate Tachometer TOML from backend and frontend topology.
 
@@ -148,6 +149,10 @@ def generate_tachometer_config(
             # Native sglang.launch_server: only the leader rank of a worker binds
             # the HTTP server that carries /metrics.
             continue
+        if sidecar_backend == "sglang" and not process.is_leader:
+            continue
+        if sidecar_backend == "vllm" and process.http_port <= 0:
+            continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
         if frontend_type in ("vllm", "sglang") and process.endpoint_mode == "agg":
             # Direct modes: the aggregate leader binds the public port itself.
@@ -164,6 +169,8 @@ def generate_tachometer_config(
             "worker_role": process.endpoint_mode,
         }
         node_metadata.update(tachometer.extra_metadata)
+        if sidecar_backend in {"vllm", "sglang"}:
+            node_metadata["metrics_source"] = "sidecar"
         endpoints.append(
             TelemetryEndpoint(
                 name=f"backend_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
@@ -173,6 +180,17 @@ def generate_tachometer_config(
                 node_metadata=node_metadata,
             )
         )
+
+        if sidecar_backend == "sglang" and process.http_port > 0:
+            endpoints.append(
+                TelemetryEndpoint(
+                    name=f"native_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
+                    url=f"http://{url_host(node_ip)}:{process.http_port}/metrics",
+                    collect_interval_ms=tachometer.collect_interval_ms,
+                    filter="backend",
+                    node_metadata={**node_metadata, "metrics_source": "native"},
+                )
+            )
 
     # A services-only job has no frontend process, so nothing listens on the frontend port.
     frontend_nodes = [] if frontend_type == "none" else list(frontend_topology.frontend_nodes)
@@ -230,6 +248,35 @@ def generate_tachometer_config(
         endpoints=endpoints,
         storage=str(runtime.log_dir / tachometer.storage_subdir / TACHOMETER_STORAGE_PARENT / TACHOMETER_STORAGE_LEAF),
     )
+
+
+def generate_native_vllm_tachometer_config(
+    *, processes: list[Process], tachometer: TachometerConfig, storage: str
+) -> str:
+    """Scrape node-local vllm-rs HTTP listeners without exposing inference remotely.
+
+    The caller runs one scraper on the node hosting these processes. Each
+    process corresponds to a node-local DP pool and exports engine-labeled ranks.
+    """
+    endpoints = [
+        TelemetryEndpoint(
+            name=f"native_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
+            url=f"http://127.0.0.1:{process.http_port}/metrics",
+            collect_interval_ms=tachometer.collect_interval_ms,
+            filter="backend",
+            node_metadata={
+                **tachometer.extra_metadata,
+                "hostname": process.node,
+                "worker_index": str(process.endpoint_index),
+                "worker_process": str(process.node_rank),
+                "worker_role": process.endpoint_mode,
+                "metrics_source": "native",
+            },
+        )
+        for process in processes
+        if process.http_port > 0
+    ]
+    return _dump_toml(endpoints=endpoints, storage=storage)
 
 
 def _dump_toml(*, endpoints: list[TelemetryEndpoint], storage: str) -> str:

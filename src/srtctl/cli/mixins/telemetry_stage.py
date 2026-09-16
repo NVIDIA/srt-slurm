@@ -24,7 +24,11 @@ from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
-from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, generate_tachometer_config
+from srtctl.core.telemetry import (
+    TACHOMETER_STORAGE_PARENT,
+    generate_native_vllm_tachometer_config,
+    generate_tachometer_config,
+)
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -581,6 +585,7 @@ class TelemetryStageMixin:
                 frontend_type=self.config.frontend.type,
                 frontend_metrics_port=self._frontend_metrics_port(),
                 exporter_nodes=self._exporter_service_nodes(),
+                sidecar_backend=self.config.backend_type if self.config.dynamo.sidecar else None,
             )
         )
 
@@ -609,52 +614,56 @@ class TelemetryStageMixin:
                 DCGM_PROVEN_SAFE_INTERVAL_MS,
             )
 
-        cmd = [
-            self._resolve_tachometer_binary(tachometer.binary_path),
-            "--config",
-            str(config_path),
-            "--local-dir",
-            str(local_dir),
-        ]
-        if tachometer.sync_interval_secs > 0:
-            cmd.extend(["--sync-interval", str(tachometer.sync_interval_secs)])
+        captures = [(TACHOMETER_STEP_NAME, self.runtime.nodes.head, config_path, local_dir)]
+        if self.config.dynamo.sidecar and self.config.backend_type == "vllm":
+            native_nodes = sorted({p.node for p in self.backend_processes if p.http_port > 0})
+            for index, node in enumerate(native_nodes):
+                name = f"tachometer-native-{index}"
+                capture_dir = tachometer_dir / "native" / str(index)
+                (capture_dir / "raw").mkdir(parents=True, exist_ok=True)
+                native_local = capture_dir / "local"
+                native_local.mkdir(parents=True, exist_ok=True)
+                native_config = self.runtime.log_dir / f"{name}.toml"
+                native_config.write_text(
+                    generate_native_vllm_tachometer_config(
+                        processes=[p for p in self.backend_processes if p.node == node],
+                        tachometer=tachometer,
+                        storage=str(capture_dir / "raw" / "scrape"),
+                    )
+                )
+                captures.append((name, node, native_config, native_local))
 
-        srun_export_env: dict[str, str] = {}
-        if tachometer.compaction_threads > 0:
-            srun_export_env["POLARS_MAX_THREADS"] = str(tachometer.compaction_threads)
-
-        processes.append(
-            ManagedProcess(
-                name="tachometer",
-                popen=start_srun_process(
-                    command=cmd,
-                    nodelist=[self.runtime.nodes.head],
-                    output=str(self.runtime.log_dir / "tachometer.out"),
-                    # Shell-less on purpose: the scraper compacts final.parquet
-                    # on SIGTERM, and srun forwards signals to the task it
-                    # launched. Under the bash wrapper the task is bash, which
-                    # exits without signaling its child — the scraper then dies
-                    # by step SIGKILL with the capture stranded in the arrow
-                    # WAL (hecate job 487539). Env goes via --export instead.
-                    use_bash_wrapper=False,
-                    srun_export_env=srun_export_env,
-                    srun_options=self.runtime.srun_options,
-                    het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
-                    step_name=TACHOMETER_STEP_NAME,
-                ),
-                log_file=self.runtime.log_dir / "tachometer.out",
-                node=self.runtime.nodes.head,
-                # Best-effort by contract: telemetry must never kill a
-                # benchmark. A dead scraper costs the capture, not the run;
-                # the loss is visible in tachometer.out and the sweep log.
-                critical=False,
-                # SIGTERM is what makes tachometer compact its arrow buffer into
-                # parquet. It has to reach the task through Slurm (step_name ->
-                # scancel --signal) and gets tachometer.shutdown_grace_secs to finish.
-                terminate_timeout=tachometer.shutdown_grace_secs,
-                step_name=TACHOMETER_STEP_NAME,
+        binary = self._resolve_tachometer_binary(tachometer.binary_path)
+        for name, node, capture_config, capture_local in captures:
+            cmd = [binary, "--config", str(capture_config), "--local-dir", str(capture_local)]
+            if tachometer.sync_interval_secs > 0:
+                cmd.extend(["--sync-interval", str(tachometer.sync_interval_secs)])
+            srun_export_env: dict[str, str] = {}
+            if tachometer.compaction_threads > 0:
+                srun_export_env["POLARS_MAX_THREADS"] = str(tachometer.compaction_threads)
+            log_file = self.runtime.log_dir / f"{name}.out"
+            processes.append(
+                ManagedProcess(
+                    name=name,
+                    popen=start_srun_process(
+                        command=cmd,
+                        nodelist=[node],
+                        output=str(log_file),
+                        # SIGTERM must reach the scraper so it flushes and compacts.
+                        use_bash_wrapper=False,
+                        srun_export_env=srun_export_env,
+                        srun_options=self.runtime.srun_options,
+                        het_group=self.runtime.nodes.het_group_for(node),
+                        step_name=name,
+                    ),
+                    log_file=log_file,
+                    node=node,
+                    # Collection is best-effort and must never kill a benchmark.
+                    critical=False,
+                    terminate_timeout=tachometer.shutdown_grace_secs,
+                    step_name=name,
+                )
             )
-        )
         logger.info("Tachometer started with artifacts under %s", tachometer_dir)
         return processes
 
@@ -674,7 +683,9 @@ class TelemetryStageMixin:
         for process in processes:
             if not process.is_running:
                 continue
-            timeout = grace if process.name == TACHOMETER_STEP_NAME else 10.0
+            timeout = (
+                grace if process.name == TACHOMETER_STEP_NAME or process.name.startswith("tachometer-native-") else 10.0
+            )
             process.terminate(timeout=timeout)
             if process.exit_code in (None, -9):
                 logger.warning(
