@@ -87,13 +87,7 @@ def test_stubborn_app_tree_is_killed_after_app_grace(tmp_path):
     app = tmp_path / "app.sh"
     app.write_text("#!/usr/bin/env bash\ntrap '' TERM\nsleep 300\n")  # ignores SIGTERM
     app.chmod(app.stat().st_mode | stat.S_IXUSR)
-    path.write_text(
-        "#!/usr/bin/env bash\n"
-        f"{app} &\n"
-        "wait $!\n"
-        f"touch {marker}\n"
-        "exit 0\n"
-    )
+    path.write_text("#!/usr/bin/env bash\n" f"{app} &\n" "wait $!\n" f"touch {marker}\n" "exit 0\n")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     proc = subprocess.Popen(keepalive_command([str(path)], app_exit_grace_secs=2), stderr=subprocess.PIPE, text=True)
     time.sleep(2.0)
