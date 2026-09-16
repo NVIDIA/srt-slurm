@@ -10,6 +10,7 @@ recipe. Every reader of the node list has to agree on who owns what.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -333,3 +334,93 @@ def test_mock_sweep_runs_the_toy_recipe_on_four_nodes(tmp_path: Path) -> None:
         "service_watcher_n3.out",
     ], "the rider landed on the train pool"
     assert (logs / "benchmark.out").is_file()
+
+
+# --- terminal services ----------------------------------------------------------------
+
+
+def _terminal_data() -> dict:
+    """A services-only job whose run is a two-node pool: no benchmark block, `terminal: true`."""
+    data = _data(frontend={"type": "none"})
+    data["resources"] = {"gpu_type": "b200", "gpus_per_node": 8}
+    data.pop("backend")
+    data.pop("benchmark")
+    data["services"] = [
+        {
+            "name": "train",
+            "type": "generic",
+            "command": ["sleep", "1"],
+            "nodes": 2,
+            "container": "ubuntu:24.04",
+            "terminal": True,
+        }
+    ]
+    return data
+
+
+def test_terminal_rules() -> None:
+    config = SrtConfig.Schema().load(_terminal_data())
+    assert [svc.name for svc in config.terminal_services] == ["train"]
+    assert config.benchmark.type == "manual", "no benchmark block means manual mode"
+
+    data = _terminal_data()
+    data["benchmark"] = {"type": "custom", "command": "echo"}
+    with pytest.raises(ValidationError, match="cannot also run benchmark.type: custom"):
+        SrtConfig.Schema().load(data)
+
+    data = _terminal_data()
+    data["services"].append({"name": "etcd", "type": "etcd", "external": "http://etcd.example:2379", "terminal": True})
+    with pytest.raises(ValidationError, match="external service launches nothing"):
+        SrtConfig.Schema().load(data)
+
+
+def test_manual_mode_ends_when_the_terminal_services_exit(tmp_path: Path) -> None:
+    """The job waits for every instance, then takes the worst exit code as its own."""
+    from srtctl.core.processes import ProcessRegistry
+
+    orchestrator = SweepOrchestrator(config=SrtConfig.Schema().load(_terminal_data()), runtime=_runtime(tmp_path))
+    first, second = MagicMock(), MagicMock()
+    first.name, first.is_running, first.exit_code = "service_train_n2", False, 0
+    second.name, second.is_running, second.exit_code = "service_train_n3", True, None
+    orchestrator.terminal_processes["train"] = [first, second]
+    polls: list[float] = []
+
+    def finish_second(seconds: float) -> None:
+        polls.append(seconds)
+        second.is_running, second.exit_code = False, 3
+
+    with patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=finish_second):
+        code = orchestrator.run_benchmark(ProcessRegistry(job_id="1"), threading.Event())
+
+    assert code == 3, "the worst instance exit code is the job's"
+    assert len(polls) == 1, "one poll while the second instance was still running"
+
+
+def test_dry_run_marks_terminal_services(capsys) -> None:
+    show_config_details(SrtConfig.Schema().load(_terminal_data()))
+    out = capsys.readouterr().out
+    assert "nodes=2 terminal" in out
+
+
+def test_mock_sweep_ends_when_the_terminal_pool_finishes(tmp_path: Path, caplog) -> None:
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(yaml.dump(_terminal_data()))
+    output_dir = tmp_path / "outputs" / "79002"
+
+    with (
+        patch("srtctl.cli.mixins.benchmark_stage.MANUAL_POLL_SECONDS", 0.05),
+        caplog.at_level("INFO", logger="srtctl.cli.mixins.benchmark_stage"),
+    ):
+        exit_code = run_mock_sweep(
+            config_path=cfg,
+            output_dir=output_dir,
+            job_id="79002",
+            options=MockOptions(child_duration_s=0.2, phase_pause_s=0.05, nodelist=NODES[:2]),
+        )
+
+    assert exit_code == 0
+    logs = output_dir / "logs"
+    assert sorted(p.name for p in logs.glob("service_train_*.out")) == ["service_train_n1.out", "service_train_n2.out"]
+    assert not (logs / "benchmark.out").exists(), "no benchmark step ran"
+    assert "Waiting for terminal service(s) to finish: train" in caplog.text
+    assert "Terminal service(s) finished" in caplog.text

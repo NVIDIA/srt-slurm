@@ -296,6 +296,7 @@ One entry of the top-level ``services:`` list.
 | `readiness` | [ServiceReadinessConfig](#servicereadinessconfig) \| None | `None` | Optional TCP port gate; the job waits for it on every service node before continuing. |
 | `inherit_discovery_env` | bool | `True` | Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so the service can register with the job's Dynamo discovery plane. |
 | `critical` | bool \| None | `None` | When true a crash fails the run, like a worker dying. Default false for ``generic`` (a dead sidecar costs its own log, not the run) and true for ``mooncake-store``. Set true for anything in the live request path. |
+| `terminal` | bool | `False` | This service is the job's run: the job ends when every instance of every terminal service has exited, and the worst exit code becomes the job's. A recipe with a terminal service has no benchmark step (``benchmark.type`` stays ``manual``); a torchrun pool that trains to completion is the shape. |
 | `preamble` | str \| None | `None` | Shell run inside the container before ``command`` (``ulimit`` and friends). |
 | `cpus_per_task` | int \| None | `None` | Optional ``srun --cpus-per-task``. |
 | `cpu_bind` | str \| None | `None` | Optional ``srun --cpu-bind``. |

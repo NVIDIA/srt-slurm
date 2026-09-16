@@ -2228,6 +2228,21 @@ class SrtConfig:
             seen.add(service.name)
             get_service_kind(service.type).validate(service, self)
 
+        # A terminal service is the job's run: the job ends when it exits. It cannot share
+        # that role with a benchmark step, and an external service never runs here.
+        terminal = self.terminal_services
+        if terminal and self.benchmark.type != "manual":
+            names = ", ".join(svc.name for svc in terminal)
+            raise ValidationError(
+                f"services[{names}].terminal ends the job when the service exits, so the job cannot also run "
+                f"benchmark.type: {self.benchmark.type}; drop the benchmark block (manual) or the terminal flag"
+            )
+        for svc in terminal:
+            if svc.external:
+                raise ValidationError(
+                    f"services[{svc.name}].terminal needs a process to wait for; an external service launches nothing"
+                )
+
     def _validate_benchmark_type(self) -> None:
         """Reject a benchmark.type that no runner is registered for.
 
@@ -3005,6 +3020,11 @@ class SrtConfig:
     def pool_services(self) -> list[ServiceConfig]:
         """Services that own nodes (``services[].nodes``), in declaration order: the job's pools."""
         return [svc for svc in self.services if svc.nodes is not None and svc.enabled]
+
+    @property
+    def terminal_services(self) -> list[ServiceConfig]:
+        """Services marked ``terminal``: the job ends when every one of them has exited."""
+        return [svc for svc in self.services if svc.terminal and svc.enabled]
 
     @property
     def services_node_count(self) -> int | None:

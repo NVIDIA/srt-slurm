@@ -31,11 +31,13 @@ from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
 
 _BENCHMARK_TERMINATE_TIMEOUT = 15.0
 _BENCHMARK_KILL_TIMEOUT = 10.0
+# How often manual mode checks for failures and for terminal services finishing.
+MANUAL_POLL_SECONDS = 5.0
 
 if TYPE_CHECKING:
     from srtctl.benchmarks.base import BenchmarkRunner
     from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
-    from srtctl.core.processes import ProcessRegistry
+    from srtctl.core.processes import ManagedProcess, ProcessRegistry
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
     from srtctl.core.topology import Endpoint, Process
@@ -378,21 +380,38 @@ class BenchmarkStageMixin:
             )
 
         if serve_only or benchmark_type == "manual":
+            # Terminal services (services[].terminal) are the job's run: the job ends when
+            # every instance has exited, with the worst exit code. ServiceStageMixin records
+            # their processes; getattr because SimpleNamespace runtimes in tests lack the mixin.
+            by_service: dict[str, list[ManagedProcess]] = dict(getattr(self, "terminal_processes", {}))
+            terminal = [proc for procs in by_service.values() for proc in procs]
             if reporter:
                 reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Inference endpoint ready")
             if serve_only:
                 logger.info("Serve-only mode - no benchmark will be run")
+            elif terminal:
+                logger.info("Waiting for terminal service(s) to finish: %s", ", ".join(sorted(by_service)))
             else:
                 logger.info("Benchmark type is 'manual' - server is ready for testing")
             if self.config.frontend.type != "none":
                 logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
-            logger.info("Press Ctrl+C to stop the job")
+            if not terminal:
+                logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
+                if terminal and all(not proc.is_running for proc in terminal):
+                    exit_code = max((proc.exit_code or 0) for proc in terminal)
+                    for proc in terminal:
+                        logger.info("Terminal service step %s exited with code %s", proc.name, proc.exit_code)
+                    if exit_code:
+                        logger.error("Terminal service(s) failed; job exit code %d", exit_code)
+                    else:
+                        logger.info("Terminal service(s) finished")
+                    return exit_code
                 if registry.check_failures():
                     logger.error("Worker failure detected while serving")
                     return 1
-                time.sleep(5)
+                time.sleep(MANUAL_POLL_SECONDS)
             return 0
 
         logger.info("Starting benchmark")

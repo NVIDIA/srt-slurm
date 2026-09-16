@@ -103,6 +103,7 @@ services:
   - name: sft
     type: generic
     nodes: 4
+    terminal: true              # the job ends when the run does, with its exit code
     container: "nvcr.io/nvidia/pytorch:25.06-py3"
     command:
       - torchrun
@@ -119,7 +120,13 @@ services:
 
 Instances launch in pool order, and when a service has a `readiness` probe each instance must pass it before the next one starts. A torchrun rendezvous with `--master-addr` is static: rank 0 waits for every node to join, so a probe on rank 0 that fires only once the rendezvous completes deadlocks against instances that have not been launched yet. Leave `readiness` off for a self-forming cluster, or probe for something rank 0 prints before the others join. Log probes are case-sensitive regular expressions; check the exact line the program prints. A typed kind can do the cluster shape for you, rendering the head and member commands and gating on the fleet as a whole after every instance is up; the kinds table in [services.md](services.md#service-types) lists what exists.
 
-A service is a long-running process from the job's point of view: nothing waits for it to finish, and the job ends when the benchmark step ends. A service that finishes is not a problem in itself: a clean exit is never a failure, and a non-zero exit fails the job only when the service is `critical`. A run that should be the job's terminal task, with its exit code as the job's and its output in `benchmark.out`, belongs in the benchmark step.
+## Ending the job with a pool
+
+By default a service is a long-running process from the job's point of view: nothing waits for it to finish, and the job ends when the benchmark step ends, or in manual mode (no `benchmark:` block) when the job is stopped or hits its time limit. A service that finishes on its own is not a problem in itself: a clean exit is never a failure, and a non-zero exit fails the job only when the service is `critical`.
+
+A pool that *is* the run, a training job or a test that runs to completion, sets `terminal: true`. The job then ends when every instance of every terminal service has exited, and the worst instance exit code becomes the job's exit code. Teardown follows as usual, so a sandbox fleet or an exporter riding next to the run is stopped when the run is done. Two terminal services compose: the job waits for both.
+
+A terminal recipe has no benchmark step: `benchmark.type` stays at its default `manual`, and a recipe that combines `terminal` with a benchmark type is refused, since the job would have two ends. Use the benchmark step instead when something has to *drive* the pool from outside, a launcher that submits work to a cluster the pool runs, which is the next section.
 
 ## Driving a pool from the benchmark step
 
@@ -149,5 +156,5 @@ The implied dcgm and node exporters run on `compute`, so tachometer scrapes pool
 1. Decide who owns nodes. Every service that needs its own machines gets `nodes:`; helpers that ride along get `placement.pool`.
 2. Run `srtctl dry-run -f <recipe>` and read the `Nodes:` map. The total is what `sbatch --nodes` requests.
 3. Give the owner a `readiness` probe that instance 0 passes on its own.
-4. If the benchmark step drives the pool, read `SRT_SERVICE_<NAME>_IPS` in the command; never hardcode a hostname.
+4. Decide how the job ends: `terminal: true` on the pool that is the run (no benchmark block), or a benchmark step that drives the pool and reads `SRT_SERVICE_<NAME>_IPS`; never hardcode a hostname.
 5. Watch `outputs/<job>/logs/service_<name>_<node>.out` for each instance (`service_<name>.out` for a one-node pool) and `sweep_<job>.log`, which logs each pool's nodes at start.

@@ -226,6 +226,7 @@ services:
     nodes: 2                   # pool "train": 2 nodes; instance 0 is the rendezvous; no readiness probe
                                # (instances launch one after another, gated on readiness, and a static
                                # torchrun rendezvous only completes once every node has joined)
+    terminal: true             # the job ends when every instance has exited, worst exit code; no benchmark block
   - name: watcher
     type: generic
     command: ["sleep", "infinity"]
@@ -240,6 +241,7 @@ Where things live:
 - Placement: `ServiceStageMixin.service_nodes` resolves `effective_pool`, then `placement.node` (`compute` = engine worker nodes plus every pool; `all` adds head, infra, client). The implied dcgm/node exporters run on `compute`.
 - Placeholders per instance (`ServiceLaunchContext.template_vars`): `{index}`, `{node_ip}`, `{pool_node}`, `{pool_ip}`, `{pool_nodes}`, `{pool_ips}`, `{pool_node_count}`, `{gpus_per_node}`. `{head_ip}` is the job head, an engine node when a pool sits next to roles, so a cluster rendezvous uses `{pool_ip}`. Services do not inherit the recipe's top-level `environment:` (workers and the benchmark do); fabric env such as `NCCL_SOCKET_IFNAME` goes in the service's `env:`.
 - Custom benchmark env (`BenchmarkStageMixin._get_service_env`): `SRT_SERVICE_<NAME>_NODES` / `_IPS` / `_NODE_COUNT` per launched service, `SRT_GPUS_PER_NODE`, `SRT_WORKER_NODES`. This is how a launcher script drives a pool.
+- Terminal services (`services[].terminal: true`): the job's run. `ServiceStageMixin.terminal_processes` collects their `ManagedProcess`es; the manual loop in `BenchmarkStageMixin.run_benchmark` returns once every one has exited, with the worst exit code, instead of holding until Ctrl+C. Refused together with a non-`manual` benchmark type or on an `external` service. Without a terminal service, manual mode holds the allocation as before.
 - Readers of "every node doing work" use `runtime.nodes.compute`, not `.worker`: host setup, resource snapshot, download node, exporters. New code that means all work nodes should do the same.
 - Limits: whole nodes only, fixed sizes, refused with `resources.het_jobs`. `srtctl dry-run` prints the `Nodes:` map; `tests/test_pools.py` is the acceptance suite (toy recipe through the mock orchestrator on four nodes).
 

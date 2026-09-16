@@ -93,6 +93,19 @@ class ServiceStageMixin:
 
     # -- node resolution ---------------------------------------------------------
 
+    @property
+    def terminal_processes(self) -> dict[str, list[ManagedProcess]]:
+        """Instances of ``services[].terminal`` services by service name.
+
+        The manual loop in BenchmarkStageMixin ends the job when every one of them
+        has exited, with the worst exit code. Lazily created: mixins have no __init__.
+        """
+        procs = getattr(self, "_terminal_processes", None)
+        if procs is None:
+            procs = {}
+            self._terminal_processes = procs
+        return procs
+
     def service_nodes(self, service: ServiceConfig) -> list[str]:
         """Physical nodes a service's ``placement`` selects, in allocation order, deduplicated."""
         pool = service.effective_pool
@@ -393,6 +406,9 @@ class ServiceStageMixin:
                     if registry is not None:
                         registry.add_process(proc)
                     self._wait_service_ready(proc, service)
+                    if service.terminal:
+                        # The manual loop in BenchmarkStageMixin ends the job when these exit.
+                        self.terminal_processes.setdefault(service.name, []).append(proc)
                 logger.info("Service %s ready on %d node(s)", service.name, len(nodes))
         except BaseException:
             # Belt and braces: the registry already tracks these, but terminate

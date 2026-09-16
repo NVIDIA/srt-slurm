@@ -1,9 +1,12 @@
-# torchrun across a pool: a two-node service forms its own cluster from placeholders.
+# torchrun across a pool: a two-node service forms its own cluster from placeholders
+# and is the job's run.
 #
 # The `train` service owns two nodes. Each instance runs one torchrun with one
 # process per GPU; instance 0 of the pool is the rendezvous ({pool_ip}), and every
-# rank runs examples/features/torchrun-pool/train.py, mounted at /demo. The
-# benchmark step waits until every rank has reported in and prints the result.
+# rank runs examples/features/torchrun-pool/train.py, mounted at /demo. The service
+# is `terminal`: the job ends when every instance has exited, with the worst exit
+# code, so there is no benchmark block. Each rank's line lands in
+# outputs/<job>/logs/service_train_<node>.out.
 #
 #   srtctl dry-run -f examples/features/torchrun-pool.yaml
 schema: 2
@@ -28,6 +31,7 @@ services:
   - name: train
     type: generic
     nodes: 2
+    terminal: true
     command:
       - torchrun
       - --nnodes={pool_node_count}
@@ -41,18 +45,6 @@ services:
       GLOO_SOCKET_IFNAME: bond0
     # No readiness probe: instances launch back to back, and a static torchrun
     # rendezvous only completes once every node has joined.
-
-# Waits for pool_node_count * gpus_per_node "hello" messages in the service logs
-# (mounted at /logs), prints them in rank order, and exits non-zero on a timeout.
-# Counts occurrences, not lines: ranks share a node's stdout.
-benchmark:
-  type: custom
-  command: >-
-    bash -c 'want=$((SRT_SERVICE_TRAIN_NODE_COUNT * SRT_GPUS_PER_NODE)); n=0;
-    for i in $(seq 1 120); do n=$(cat /logs/service_train_*.out 2>/dev/null | grep -o "better kubernetes" | wc -l);
-    [ "$n" -ge "$want" ] && break; sleep 5; done;
-    grep -oh "from worker [0-9]* srt-slurm is just better kubernetes ([^)]*)" /logs/service_train_*.out | sort -t" " -k3 -n;
-    echo "$n/$want workers reported"; [ "$n" -ge "$want" ]'
 
 extra_mount:
   - "$SRTCTL_SOURCE_DIR/examples/features/torchrun-pool:/demo"

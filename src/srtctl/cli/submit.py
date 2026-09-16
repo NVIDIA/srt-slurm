@@ -474,7 +474,8 @@ def show_config_details(config: SrtConfig) -> None:
             console.print(
                 f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement} "
                 f"start={service.effective_start} critical={str(service.effective_critical).lower()}"
-                f"{f' nodes={service.nodes}' if service.nodes is not None else ''}[/]"
+                f"{f' nodes={service.nodes}' if service.nodes is not None else ''}"
+                f"{' terminal' if service.terminal else ''}[/]"
             )
             if entry.implicit:
                 console.print(

@@ -107,6 +107,7 @@ services:
 | `readiness` | type default | One probe per node: `port` / `tcp`, `http`, or `log`, plus `timeout_seconds` and `interval_seconds`. The typed kinds gate on their well-known ports when no probe is written. See [Start Order and Readiness](#start-order-and-readiness). Timing out terminates what this stage started and fails the job. |
 | `inherit_discovery_env` | `true` | Inject the same `ETCD_ENDPOINTS` / `NATS_SERVER` the Dynamo frontend gets. |
 | `critical` | type default | `generic`: `false`. `mooncake-store`: `true`. |
+| `terminal` | `false` | This service is the job's run: the job ends when every instance of every terminal service has exited, with the worst exit code as the job's. The recipe has no benchmark step (`benchmark.type` stays `manual`); combining the two is refused. See [pools.md](pools.md#ending-the-job-with-a-pool). |
 | `preamble` | none | Shell run after the environment is exported and before `command`. |
 | `cpus_per_task`, `cpu_bind`, `srun_options` | none | Pass-through srun knobs for this service's launches. |
 | `source`, `build_command` | none | See [Building From Source](#building-from-source). |

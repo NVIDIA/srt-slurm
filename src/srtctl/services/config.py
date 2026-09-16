@@ -234,6 +234,11 @@ class ServiceConfig:
             false for ``generic`` (a dead sidecar costs its own log, not the
             run) and true for ``mooncake-store``. Set true for anything in
             the live request path.
+        terminal: This service is the job's run: the job ends when every
+            instance of every terminal service has exited, and the worst exit
+            code becomes the job's. A recipe with a terminal service has no
+            benchmark step (``benchmark.type`` stays ``manual``); a torchrun
+            pool that trains to completion is the shape.
         preamble: Shell run inside the container before ``command``
             (``ulimit`` and friends).
         cpus_per_task: Optional ``srun --cpus-per-task``.
@@ -265,6 +270,7 @@ class ServiceConfig:
     readiness: ServiceReadinessConfig | None = None
     inherit_discovery_env: bool = True
     critical: bool | None = None
+    terminal: bool = False
     preamble: str | None = None
     cpus_per_task: int | None = None
     cpu_bind: str | None = None
