@@ -286,7 +286,7 @@ One entry of the top-level ``services:`` list.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `name` | str | required | Unique label; names the log file (``service_<name>.out``) and the tracked process. |
+| `name` | str | required | Unique label; names the log file (``services/logs/service_<name>.out``) and the tracked process. |
 | `type` | str | `'generic'` | Service kind. ``generic`` (default) launches exactly what you wrote; ``mooncake-store`` runs a standalone Mooncake Store wired to the managed master. See ``docs/services.md`` for the kinds. |
 | `command` | list[str] \| None | `None` | Argv to launch (not shell-interpreted). Required for ``generic``; typed kinds supply a default. |
 | `args` | list[str] | `[]` | Extra argv appended to ``command``. |
@@ -454,7 +454,7 @@ Readiness gate: the launch blocks until the probe passes on every service node.
 | `port` | int \| None | `None` | Shorthand for ``tcp: {port: <port>}``. |
 | `tcp` | [TcpProbe](#tcpprobe) \| None | `None` | TCP connect probe. |
 | `http` | [HttpProbe](#httpprobe) \| None | `None` | HTTP GET probe. |
-| `log` | [LogProbe](#logprobe) \| None | `None` | Log-pattern probe against ``service_<name>.out``. |
+| `log` | [LogProbe](#logprobe) \| None | `None` | Log-pattern probe against ``services/logs/service_<name>.out``. |
 | `timeout_seconds` | int | `120` | How long to wait per node before failing the job. |
 | `interval_seconds` | int | `2` | Seconds between probe attempts. |
 

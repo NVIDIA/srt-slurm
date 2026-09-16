@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.core.health import WorkerHealthResult, check_static_router_health
+from srtctl.core.log_layout import workers_dir
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 
 if TYPE_CHECKING:
@@ -194,7 +195,7 @@ class StaticRouterFrontend:
         workers = self.collect_workers(backend, backend_processes, runtime.network_interface)
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):
-            router_log = runtime.log_dir / f"{node}_{self.log_label or self.type}_{idx}.out"
+            router_log = workers_dir(runtime.log_dir) / f"{node}_{self.log_label or self.type}_{idx}.out"
             cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port)
             cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))

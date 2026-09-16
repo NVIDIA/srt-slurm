@@ -326,10 +326,15 @@ def test_mock_sweep_runs_the_toy_recipe_on_four_nodes(tmp_path: Path) -> None:
 
     assert exit_code == 0
     logs = output_dir / "logs"
-    assert any(logs.glob("*_agg_w0.out")), "the model's worker ran on the engine node"
-    assert sorted(p.name for p in logs.glob("service_train_*.out")) == ["service_train_n2.out", "service_train_n3.out"]
-    assert [p.name for p in logs.glob("service_napper*.out")] == ["service_napper.out"], "one instance, unsuffixed"
-    assert sorted(p.name for p in logs.glob("service_watcher_*.out")) == [
+    assert any((logs / "workers").glob("*_agg_w0.out")), "the model's worker ran on the engine node"
+    service_logs = logs / "services" / "logs"
+    assert sorted(p.name for p in service_logs.glob("service_train_*.out")) == [
+        "service_train_n2.out",
+        "service_train_n3.out",
+    ]
+    napper = [p.name for p in service_logs.glob("service_napper*.out")]
+    assert napper == ["service_napper.out"], "one instance, unsuffixed"
+    assert sorted(p.name for p in service_logs.glob("service_watcher_*.out")) == [
         "service_watcher_n2.out",
         "service_watcher_n3.out",
     ], "the rider landed on the train pool"
@@ -420,7 +425,11 @@ def test_mock_sweep_ends_when_the_terminal_pool_finishes(tmp_path: Path, caplog)
 
     assert exit_code == 0
     logs = output_dir / "logs"
-    assert sorted(p.name for p in logs.glob("service_train_*.out")) == ["service_train_n1.out", "service_train_n2.out"]
+    service_logs = logs / "services" / "logs"
+    assert sorted(p.name for p in service_logs.glob("service_train_*.out")) == [
+        "service_train_n1.out",
+        "service_train_n2.out",
+    ]
     assert not (logs / "benchmark.out").exists(), "no benchmark step ran"
     assert "Waiting for terminal service(s) to finish: train" in caplog.text
     assert "Terminal service(s) finished" in caplog.text

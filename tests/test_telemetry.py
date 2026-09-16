@@ -139,7 +139,7 @@ class TestTachometerConfig:
         # The container launch (a declared container) reaches the group file through /logs.
         service = ServiceConfig(name="process-exporter", type="process-exporter", container="pe:latest")
         cmd = ProcessExporterService().build_command(service, ServiceLaunchContext.preview())
-        assert cmd[:3] == ["/bin/process-exporter", "-config.path", "/logs/process-exporter.yml"]
+        assert cmd[:3] == ["/bin/process-exporter", "-config.path", "/logs/telemetry/process-exporter.yml"]
         assert "-threads=true" in cmd
         assert "-children=false" in cmd
         assert "-web.listen-address=:9256" in cmd
@@ -188,7 +188,11 @@ class TestTachometerConfig:
         )
         with patch("srtctl.services.exporters.resolve_host_binary", return_value=Path("/srt/configs/process-exporter")):
             cmd = ProcessExporterService().build_command(service, ctx)
-        assert cmd[:3] == ["/srt/configs/process-exporter", "-config.path", "/lustre/out/logs/process-exporter.yml"]
+        assert cmd[:3] == [
+            "/srt/configs/process-exporter",
+            "-config.path",
+            "/lustre/out/logs/telemetry/process-exporter.yml",
+        ]
         assert "-web.listen-address=:9256" in cmd
         assert "-threads=true" in cmd
         del SimpleNamespace
@@ -1189,14 +1193,14 @@ class TestTachometerStageMixin:
         # The DCGM and node exporters are services now (see test_services.py);
         # this stage launches exactly one thing: the scraper.
         assert len(procs) == 1
-        assert (tmp_path / "tachometer_config.toml").exists()
+        assert (tmp_path / "telemetry" / "tachometer_config.toml").exists()
         assert (tmp_path / "tachometer" / "local").exists()
         assert mock_srun.call_count == 1
         scraper_call = mock_srun.call_args_list[-1]
         assert scraper_call.kwargs["command"] == [
             "tachometer-scraper",
             "--config",
-            str(tmp_path / "tachometer_config.toml"),
+            str(tmp_path / "telemetry" / "tachometer_config.toml"),
             "--local-dir",
             str(tmp_path / "tachometer" / "local"),
             "--sync-interval",
@@ -1284,7 +1288,7 @@ class TestTachometerStageMixin:
         # stage, which also writes the process-exporter group file); this stage
         # starts the scraper alone and scrapes all three.
         assert [proc.name for proc in procs] == ["tachometer"]
-        config_text = (tmp_path / "tachometer_config.toml").read_text()
+        config_text = (tmp_path / "telemetry" / "tachometer_config.toml").read_text()
         assert 'name = "dcgm_node-a"' in config_text
         assert 'name = "process_exporter_node-a"' in config_text
 
@@ -1356,7 +1360,7 @@ class TestTachometerStageMixin:
         # The power path owns the DCGM exporter; tachometer only scrapes it.
         assert [process.name for process in processes] == ["tachometer"]
         assert mock_srun.call_count == 1
-        assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
+        assert 'name = "dcgm_node-a"' in (tmp_path / "telemetry" / "tachometer_config.toml").read_text()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_cpu_only_telemetry_leaves_tachometers_dcgm_exporter_running(self, mock_srun, tmp_path):
@@ -1413,7 +1417,7 @@ class TestTachometerStageMixin:
         # The exporters are services; this stage still launches only the scraper,
         # and the explicit DCGM exporter is a scrape target in its config.
         assert [process.name for process in processes] == ["tachometer"]
-        assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
+        assert 'name = "dcgm_node-a"' in (tmp_path / "telemetry" / "tachometer_config.toml").read_text()
 
 
 class TestStopTachometer:

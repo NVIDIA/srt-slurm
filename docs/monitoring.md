@@ -104,30 +104,29 @@ The directory name follows the pattern: `{job_id}_{prefill}P_{decode}D_{timestam
 ## Log Structure
 
 ```
-logs/4459_4P_1D_20251122_041341/
+outputs/<job_id>/logs/
 │
+├── sweep_<job_id>.log                       # Main orchestration log
+├── benchmark.out                            # Benchmark client output
 ├── config.yaml                              # Resolved job configuration
-├── {node}_config.json                       # Engine args dumped by each worker leader
 ├── sbatch_script.sh                         # Generated SLURM script
-├── nginx.conf                               # Load balancer configuration
-├── 4459.json                                # Job metadata
+├── <job_id>.json                            # Job metadata
+├── nginx.conf                               # Load balancer configuration (when nginx is used)
+├── resource_snapshot.json                   # Allocation snapshot
 │
-├── log.out                                  # Main orchestration stdout
-├── log.err                                  # Main orchestration stderr
-├── benchmark.out                            # Benchmark results
-├── benchmark.err                            # Benchmark errors
+├── workers/                                 # Per-node engine and frontend stdout
+│   ├── {node}_prefill_w{n}.out
+│   ├── {node}_decode_w{n}.out
+│   ├── {node}_frontend_{n}.out
+│   ├── {node}_nginx.out
+│   └── {node}_config.json                   # Engine args dumped by each worker leader
+├── services/
+│   ├── logs/                                # service_<name>[_<node>].out for etcd, nats, exporters, declared services
+│   └── <name>/src/                          # Checkouts of source-built services
+├── telemetry/                               # telemetry_*.out, tachometer.out, tachometer_config.toml, process-exporter.yml
+├── fingerprints/                            # fingerprint_<mode>_w<n>.json per worker
+├── power/, cpu_power/, tachometer/          # Telemetry data (`*.storage_subdir`)
 │
-├── {node}_prefill_w{n}.out                  # Prefill worker stdout
-├── {node}_prefill_w{n}.err                  # Prefill worker stderr (SGLang logs)
-├── {node}_decode_w{n}.out                   # Decode worker stdout
-├── {node}_decode_w{n}.err                   # Decode worker stderr (SGLang logs)
-├── {node}_frontend_{n}.out                  # Frontend stdout
-├── {node}_frontend_{n}.err                  # Frontend stderr
-├── {node}_nginx.out                         # Nginx stdout
-├── {node}_nginx.err                         # Nginx stderr
-├── {node}_config.json                       # Per-node SGLang config dump
-│
-├── cached_assets/                           # Cached model assets
 └── sa-bench_isl_1024_osl_1024/              # Benchmark results
     ├── isl_1024_osl_1024_concurrency_128_req_rate_inf.json
     ├── isl_1024_osl_1024_concurrency_512_req_rate_inf.json

@@ -175,9 +175,9 @@ def test_router_launch_uses_router_image_env_setup_and_captured_log() -> None:
     kwargs = start.call_args.kwargs
     assert kwargs["container_image"] == "docker://router:test"
     assert kwargs["env_to_set"] == {"GLOBAL": "value", "ROUTER_LOG": "debug"}
-    assert kwargs["output"] == "/logs/router0_vllm-router_0.out"
+    assert kwargs["output"] == "/logs/workers/router0_vllm-router_0.out"
     assert "/configs/${setup_script}" in kwargs["bash_preamble"]
-    assert managed[0].log_file == Path("/logs/router0_vllm-router_0.out")
+    assert managed[0].log_file == Path("/logs/workers/router0_vllm-router_0.out")
 
 
 def test_vllm_router_setup_preamble_is_adapter_specific() -> None:

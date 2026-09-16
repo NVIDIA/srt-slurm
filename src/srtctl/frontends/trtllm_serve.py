@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from srtctl.core.health import WorkerHealthResult, check_trtllm_serve_health, wait_for_health
+from srtctl.core.log_layout import workers_dir
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 
 if TYPE_CHECKING:
@@ -190,7 +191,7 @@ class TRTLLMServeFrontend:
         # Keep the Dynamo frontend's log naming pattern ({node}_frontend_{i}.out)
         # so downstream tooling that globs *_frontend_*.out (perf dashboard,
         # log collection) treats both frontends identically.
-        orch_log = runtime.log_dir / f"{frontend_node}_frontend_0.out"
+        orch_log = workers_dir(runtime.log_dir) / f"{frontend_node}_frontend_0.out"
         step_name = "trtllm_serve_orchestrator"
         proc = start_srun_process(
             command=cmd,

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 from .config import get_srtslurm_setting
+from .log_layout import ensure_log_layout
 from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
 
 if TYPE_CHECKING:
@@ -356,7 +357,7 @@ class RuntimeContext:
             log_dir = log_dir_base / job_id / "logs"
         else:
             log_dir = log_dir_base / job_id / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
+        ensure_log_layout(log_dir)
 
         # Resolve model path (expand env vars)
         # Support HuggingFace model IDs with "hf:" prefix (e.g., "hf:facebook/opt-125m")

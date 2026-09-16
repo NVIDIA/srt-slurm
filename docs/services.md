@@ -40,7 +40,7 @@ services:
 
 `name` and `command` are the only required fields for the default `generic` type. The service runs in
 the job container on the head node, starts once workers and the frontend are healthy, and the job
-waits until port 9000 answers before moving on. Its log is `service_my-sidecar.out` in the job's log
+waits until port 9000 answers before moving on. Its log is `services/logs/service_my-sidecar.out` in the job's log
 directory. `examples/features/services.yaml` is a runnable version of this.
 
 ## Configuration Reference
@@ -91,7 +91,7 @@ services:
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `name` | required | Unique. Names `service_<name>.out` and the tracked process. |
+| `name` | required | Unique. Names `services/logs/service_<name>.out` and the tracked process. |
 | `type` | `generic` | Selects a [service type](#service-types) that supplies defaults, and for the typed kinds the command. |
 | `enabled` | `true` | `false` drops the service. Declaring an implied name with `enabled: false` switches it off. |
 | `external` | none | `etcd`, `nats`, `mooncake-master` only: an address of an already-running instance. Nothing launches; the address is injected where the job's own would have been. |
@@ -223,7 +223,7 @@ readiness:
 ```yaml
 readiness:
   log:
-    pattern: 'Uvicorn running on .*:\d+'   # a regex matched against service_<name>.out
+    pattern: 'Uvicorn running on .*:\d+'   # a regex matched against services/logs/service_<name>.out
 ```
 
 The probe is re-run every `interval_seconds` until it passes. Between attempts the stage checks that

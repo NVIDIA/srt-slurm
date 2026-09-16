@@ -67,7 +67,7 @@ container):
 
 ```bash
 srun --nodes=<N> --ntasks=<N> --nodelist=<nodes> \
-     --output=<log_dir>/telemetry_cpu_power_exporter.%N.out \
+     --output=<log_dir>/telemetry/telemetry_cpu_power_exporter.%N.out \
      [--het-group=<id>] \
      <cpu-power-exporter binary> --port 9405 --source auto
 ```

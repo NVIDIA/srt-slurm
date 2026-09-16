@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from srtctl.core.log_layout import workers_dir
 from srtctl.core.processes import ManagedProcess
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends import get_frontend
@@ -135,7 +136,7 @@ class FrontendStageMixin:
         assert topology.nginx_node is not None
         logger.info("Starting nginx on %s", topology.nginx_node)
 
-        nginx_log = self.runtime.log_dir / f"{topology.nginx_node}_nginx.out"
+        nginx_log = workers_dir(self.runtime.log_dir) / f"{topology.nginx_node}_nginx.out"
 
         # Generate nginx config from template
         nginx_config = self._generate_nginx_config(topology)

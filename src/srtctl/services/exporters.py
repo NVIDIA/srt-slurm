@@ -29,6 +29,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.core.log_layout import TELEMETRY_DIRNAME, container_path, telemetry_dir
 from srtctl.services.registry import ServiceKind, ServiceLaunchContext, register_service
 
 if TYPE_CHECKING:
@@ -218,7 +219,9 @@ class ProcessExporterService(_ExporterKind):
         return str(service.options.get("binary") or DEFAULT_PROCESS_EXPORTER_BINARY)
 
     def prepare(self, service: ServiceConfig, runtime: RuntimeContext) -> None:
-        (runtime.log_dir / PROCESS_EXPORTER_CONFIG_NAME).write_text(process_exporter_config_yaml())
+        config_path = telemetry_dir(runtime.log_dir) / PROCESS_EXPORTER_CONFIG_NAME
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(process_exporter_config_yaml())
 
     def skip_reason(self, service: ServiceConfig, runtime: RuntimeContext) -> str | None:
         if service.command is not None or not self.host_native(service):
@@ -240,13 +243,13 @@ class ProcessExporterService(_ExporterKind):
             executable = str(resolve_host_binary(configured) or Path(configured))
             log_dir = getattr(ctx.runtime, "log_dir", None)
             config_path = (
-                str(Path(log_dir) / PROCESS_EXPORTER_CONFIG_NAME)
+                str(telemetry_dir(Path(log_dir)) / PROCESS_EXPORTER_CONFIG_NAME)
                 if log_dir
-                else f"<log_dir>/{PROCESS_EXPORTER_CONFIG_NAME}"
+                else f"<log_dir>/{TELEMETRY_DIRNAME}/{PROCESS_EXPORTER_CONFIG_NAME}"
             )
         else:
             executable = PROCESS_EXPORTER_CONTAINER_BINARY
-            config_path = f"/logs/{PROCESS_EXPORTER_CONFIG_NAME}"
+            config_path = container_path(TELEMETRY_DIRNAME, PROCESS_EXPORTER_CONFIG_NAME)
         return [
             executable,
             "-config.path",

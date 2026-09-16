@@ -113,14 +113,18 @@ def test_job_status_without_slurm_tools_still_reads_the_output_dir(tmp_path: Pat
 
 def test_job_logs_lists_files_and_tails_one_inside_the_log_dir(tmp_path: Path) -> None:
     job = _job_dir(tmp_path)
-    (job / "logs" / "service_etcd.out").write_text("\n".join(f"line {i}" for i in range(10)) + "\n")
+    service_logs = job / "logs" / "services" / "logs"
+    service_logs.mkdir(parents=True)
+    (service_logs / "service_etcd.out").write_text("\n".join(f"line {i}" for i in range(10)) + "\n")
     (job / "logs" / "sweep_12807.log").write_text("x\n")
     outputs = str(tmp_path / "outputs")
 
     listing = job_tools.job_logs("12807", output_dir=outputs)
-    assert [f["name"] for f in listing["files"]] == ["service_etcd.out", "sweep_12807.log"]
+    assert [f["name"] for f in listing["files"]] == ["services/logs/service_etcd.out", "sweep_12807.log"]
 
-    tail = job_tools.job_logs("12807", name="service_etcd.out", tail=3, output_dir=outputs)
+    # Tailing accepts the same relative name the listing reports.
+    tail = job_tools.job_logs("12807", name="services/logs/service_etcd.out", tail=3, output_dir=outputs)
+    assert tail["ok"] is True
     assert tail["tail"] == ["line 7", "line 8", "line 9"]
 
     escape = job_tools.job_logs("12807", name="../12807.json", output_dir=outputs)

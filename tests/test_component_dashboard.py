@@ -152,10 +152,12 @@ def _write_engine_configs(run_dir: Path) -> None:
 def _write_frontend_log(run_dir: Path) -> Path:
     """A Dynamo frontend log in the raw-container-stdout flavour srtctl produces.
 
-    Named the way ``DynamoFrontend.start_frontends`` names it, so the docs' glob
-    (``*_frontend_*.out``) is exercised rather than an invented filename.
+    Named and placed the way ``DynamoFrontend.start_frontends`` does it
+    (``workers/<node>_frontend_<i>.out``), so the docs' glob is exercised rather than
+    an invented filename.
     """
-    path = run_dir / "node0_frontend_0.out"
+    path = run_dir / "workers" / "node0_frontend_0.out"
+    path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for i, xid in enumerate(XIDS):
         rid = f"req-{i}"
@@ -399,13 +401,13 @@ class TestRenderComponentDashboard:
         _run_ingest(run_dir, bundle)
         out = tmp_path / "dash.html"
 
-        proc = _render(bundle, out, "--d3-cdn", "--frontend-log", str(run_dir / "node0_frontend_0.out"))
+        proc = _render(bundle, out, "--d3-cdn", "--frontend-log", str(run_dir / "workers" / "node0_frontend_0.out"))
         assert proc.returncode == 0, proc.stderr
         assert _tabs(out.read_text())["loganalysis"] is True
 
     def test_log_only_build_needs_no_bundle(self, run_dir: Path, tmp_path: Path):
         out = tmp_path / "dash.html"
-        proc = _render(None, out, "--d3-cdn", "--frontend-log", str(run_dir / "node0_frontend_0.out"))
+        proc = _render(None, out, "--d3-cdn", "--frontend-log", str(run_dir / "workers" / "node0_frontend_0.out"))
         assert proc.returncode == 0, proc.stderr
 
         tabs = _tabs(out.read_text())
@@ -1408,7 +1410,7 @@ class TestRouterCoverageCaveat:
     @staticmethod
     def _with_selector(run_dir: Path, n_pinned: int, n_fresh: int) -> None:
         """Append selector decisions in the JSONL flavour the frontend emits."""
-        log = run_dir / "node0_frontend_0.out"
+        log = run_dir / "workers" / "node0_frontend_0.out"
         out = [log.read_text()]
         for i in range(n_pinned + n_fresh):
             pinned = "pinned " if i < n_pinned else ""
@@ -1441,7 +1443,7 @@ class TestRouterCoverageCaveat:
             "--dump-json",
             str(payload),
             "--frontend-log",
-            str(run_dir / "node0_frontend_0.out"),
+            str(run_dir / "workers" / "node0_frontend_0.out"),
         )
         assert proc.returncode == 0, proc.stderr
         cov = json.loads(payload.read_text())["ro"]["coverage"]
@@ -1699,7 +1701,8 @@ class TestKpiProvenance:
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         out = tmp_path / "dash.html"
-        assert _render(bundle, out, "--d3-cdn", "--frontend-log", str(run_dir / "node0_frontend_0.out")).returncode == 0
+        frontend_log = str(run_dir / "workers" / "node0_frontend_0.out")
+        assert _render(bundle, out, "--d3-cdn", "--frontend-log", frontend_log).returncode == 0
 
         html = out.read_text()
         assert "'routing decisions seen'" in html or "routing decisions seen" in html
@@ -1712,7 +1715,7 @@ class TestKpiProvenance:
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         out = tmp_path / "dash.html"
-        _render(bundle, out, "--d3-cdn", "--frontend-log", str(run_dir / "node0_frontend_0.out"))
+        _render(bundle, out, "--d3-cdn", "--frontend-log", str(run_dir / "workers" / "node0_frontend_0.out"))
 
         html = out.read_text()
         assert "not available in this run, so TTFT is a single opaque block" not in html
@@ -1854,7 +1857,8 @@ class TestProvenanceLeg:
 
     @staticmethod
     def _fingerprint(run_dir: Path, worker: str, trtllm: str = "1.3.0rc21") -> None:
-        (run_dir / f"fingerprint_{worker}.json").write_text(
+        (run_dir / "fingerprints").mkdir(exist_ok=True)
+        (run_dir / "fingerprints" / f"fingerprint_{worker}.json").write_text(
             json.dumps(
                 {
                     "frameworks": {"tensorrt_llm": trtllm, "dynamo": "1.3.0.dev2026071601"},
@@ -1909,7 +1913,10 @@ class TestConfigProvenance:
 
     @staticmethod
     def _setup(run_dir: Path, tok_cache: str) -> None:
-        (run_dir / "fingerprint_prefill_w0.json").write_text(json.dumps({"frameworks": {"tensorrt_llm": "1.3.0rc21"}}))
+        (run_dir / "fingerprints").mkdir(exist_ok=True)
+        (run_dir / "fingerprints" / "fingerprint_prefill_w0.json").write_text(
+            json.dumps({"frameworks": {"tensorrt_llm": "1.3.0rc21"}})
+        )
         (run_dir / "config.yaml").write_text(
             "name: arm-x\n"
             "frontend:\n  env:\n"

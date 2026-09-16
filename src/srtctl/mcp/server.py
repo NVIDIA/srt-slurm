@@ -149,7 +149,7 @@ def job_status(job_id: str, output_dir: str | None = None, tail: int = 20) -> di
 
 @mcp.tool()
 def job_logs(job_id: str, name: str | None = None, tail: int = 200, output_dir: str | None = None) -> dict[str, Any]:
-    """List a job's log files, or the tail of one (sweep_<id>.log, <node>_<mode>_w<i>.out, service_<name>.out)."""
+    """List a job's log files, or the tail of one (sweep_<id>.log, workers/<node>_<mode>_w<i>.out, services/logs/service_<name>.out)."""
     return job_tools.job_logs(job_id, name=name, tail=tail, output_dir=output_dir)
 
 

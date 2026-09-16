@@ -39,6 +39,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.core.log_layout import SERVICES_DIRNAME, service_logs_dir
 from srtctl.core.processes import ManagedProcess, ProcessRegistry, terminate_and_reap
 from srtctl.core.readiness import ProcessDied, wait_until_ready
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
@@ -190,8 +191,8 @@ class ServiceStageMixin:
         source = service.source
         if source is None:
             return None
-        checkout_root = self.runtime.log_dir / "services" / service.name / "src"
-        clone_log = self.runtime.log_dir / f"service_{service.name}.clone.out"
+        checkout_root = self.runtime.log_dir / SERVICES_DIRNAME / service.name / "src"
+        clone_log = service_logs_dir(self.runtime.log_dir) / f"service_{service.name}.clone.out"
         # HTTP/1.1 and no terminal prompt guard against the intermittent smart-HTTP stalls
         # seen cloning github.com from compute nodes; 600s covers slow checkouts onto /logs.
         git = "GIT_TERMINAL_PROMPT=0 timeout 600s git -c http.version=HTTP/1.1"
@@ -229,7 +230,7 @@ class ServiceStageMixin:
     ) -> None:
         if not service.build_command:
             return
-        build_log = self.runtime.log_dir / f"service_{service.name}.build.out"
+        build_log = service_logs_dir(self.runtime.log_dir) / f"service_{service.name}.build.out"
         logger.info("Building service %s: %s", service.name, shlex.join(service.build_command))
         popen = start_srun_process(
             command=list(service.build_command),
@@ -280,7 +281,7 @@ class ServiceStageMixin:
         if service.preamble:
             preamble_parts.append(render_placeholders(service.preamble, template).rstrip())
         step_name = service_step_name(service, ctx.node, instances)
-        log_file = self.runtime.log_dir / f"{step_name}.out"
+        log_file = service_logs_dir(self.runtime.log_dir) / f"{step_name}.out"
 
         env = self._service_environment(service, ctx)
         # Host-native kinds (a static Go exporter) run on the bare node: no image, no mounts.

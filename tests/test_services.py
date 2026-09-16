@@ -228,7 +228,7 @@ services:
     assert proc.name == "service_router"
     assert proc.node == "node0"
     assert proc.critical is False
-    assert proc.log_file == tmp_path / "service_router.out"
+    assert proc.log_file == tmp_path / "services/logs/service_router.out"
 
 
 def test_container_alias_and_no_discovery_env(tmp_path: Path) -> None:
@@ -267,7 +267,7 @@ def test_readiness_gate_blocks_and_failure_terminates_started(tmp_path: Path) ->
     wait.assert_called_once()
     assert wait.call_args.kwargs["host"] == "node0"
     assert wait.call_args.kwargs["timeout"] == 5
-    assert wait.call_args.kwargs["log_file"] == tmp_path / "service_a.out"
+    assert wait.call_args.kwargs["log_file"] == tmp_path / "services/logs/service_a.out"
     assert wait.call_args.args[0].port == 9000
 
     popen = _proc()
@@ -783,12 +783,12 @@ def test_process_exporter_runs_host_native_on_every_allocated_node(tmp_path: Pat
     assert launch["command"][:3] == [
         "/srt/configs/process-exporter",
         "-config.path",
-        str(tmp_path / "process-exporter.yml"),
+        str(tmp_path / "telemetry/process-exporter.yml"),
     ]
     assert "-web.listen-address=:9256" in launch["command"]
     assert "-threads=true" in launch["command"]
     # The group file is written once, before the first launch.
-    assert "dynamo\\.frontend" in (tmp_path / "process-exporter.yml").read_text()
+    assert "dynamo\\.frontend" in (tmp_path / "telemetry/process-exporter.yml").read_text()
 
 
 def test_process_exporter_with_a_declared_container_launches_in_it(tmp_path: Path) -> None:
@@ -807,7 +807,7 @@ def test_process_exporter_with_a_declared_container_launches_in_it(tmp_path: Pat
     launch = [call.kwargs for call in srun.call_args_list if "process-exporter" in call.kwargs["command"][0]][0]
     assert launch["container_image"] == "pe-with-shell:latest"
     assert launch["container_mounts"] == {}
-    assert launch["command"][:3] == ["/bin/process-exporter", "-config.path", "/logs/process-exporter.yml"]
+    assert launch["command"][:3] == ["/bin/process-exporter", "-config.path", "/logs/telemetry/process-exporter.yml"]
     assert "service_process-exporter" in [p.name for p in procs]
 
 

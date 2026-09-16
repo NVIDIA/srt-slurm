@@ -165,11 +165,13 @@ def test_mock_sweep_runs_services_only_job_end_to_end(tmp_path: Path) -> None:
     assert exit_code == 0
     logs = output_dir / "logs"
     assert (logs / "benchmark.out").is_file(), "the benchmark step ran"
-    service_logs = sorted(p.name for p in logs.glob("service_files*.out"))
+    service_logs = sorted(p.name for p in (logs / "services" / "logs").glob("service_files*.out"))
     assert len(service_logs) == 2, f"one service instance per node, got {service_logs}"
-    assert not list(logs.glob("*_frontend_*.out")), "frontend.type none launches no frontend"
-    assert not (logs / "service_etcd.out").exists(), "no discovery plane without a Dynamo frontend"
-    assert not list(logs.glob("*_agg_w*.out")), "no engine workers"
+    assert not list((logs / "workers").glob("*_frontend_*.out")), "frontend.type none launches no frontend"
+    assert not (logs / "services" / "logs" / "service_etcd.out").exists(), (
+        "no discovery plane without a Dynamo frontend"
+    )
+    assert not list((logs / "workers").glob("*_agg_w*.out")), "no engine workers"
 
 
 # --- telemetry -------------------------------------------------------------------

@@ -149,7 +149,7 @@ The role `env:` maps are injected on the vLLM workers (not on the standalone `mo
 
 | Concern                                         | Owner     | Notes                                                                                                |
 | ----------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
-| Launching `mooncake_master`                     | srtslurm  | The `mooncake-master` service: runs on the infra node (same node as etcd/nats; `placement.node: dedicated` shares their reserved node) before workers, gated on RPC `8700`, HTTP metadata `8701`, and admin HTTP `8702`. Its log is `service_mooncake-master.out`. |
+| Launching `mooncake_master`                     | srtslurm  | The `mooncake-master` service: runs on the infra node (same node as etcd/nats; `placement.node: dedicated` shares their reserved node) before workers, gated on RPC `8700`, HTTP metadata `8701`, and admin HTTP `8702`. Its log is `services/logs/service_mooncake-master.out`. |
 | `MOONCAKE_MASTER` env var on workers            | srtslurm  | Always computed as `<infra_node_ip>:8700`. User values in role `env` are overridden.                  |
 | `MOONCAKE_TE_META_DATA_SERVER` env var          | srtslurm  | Always computed as `http://<infra_node_ip>:8701/metadata`.                                            |
 | `MOONCAKE_LOCAL_HOSTNAME` env var               | srtslurm  | Auto-resolved per-worker via `runtime.network_interface`. User can override in role `env` for custom NICs. |
@@ -382,7 +382,7 @@ The workers continue to use the job's main container; only the master process us
 
 srtslurm waits up to 120 seconds for `mooncake_master` to bind on port 8700. If it times out, check:
 
-- `service_mooncake-master.out` in the run's log directory, which usually shows a binary-not-found or RDMA setup error
+- `services/logs/service_mooncake-master.out` in the run's log directory, which usually shows a binary-not-found or RDMA setup error
 - Whether `mooncake_master` is on `$PATH` inside the master container. If you're using a custom container, verify it has the mooncake binaries installed.
 - Whether port 8700 is already in use on the infra node from a previous failed run (rare, but can happen if cleanup was interrupted)
 

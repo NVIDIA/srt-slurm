@@ -52,6 +52,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.core.log_layout import workers_dir
+
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
@@ -215,11 +217,11 @@ def build(config: SrtConfig, runtime: RuntimeContext) -> Path | None:
     # (it stays in the log dir -- it is the raw multi-GB artifact, not an intermediate
     # schema). Pass the first one found; correspondence with the bundle is enforced by
     # the renderer on the x_request_id pivot, so a wrong file fails loudly.
-    frontend_logs = sorted(log_dir.glob("*_frontend_*.out"))
+    frontend_logs = sorted(workers_dir(log_dir).glob("*_frontend_*.out"))
     if frontend_logs:
         render_argv += ["--frontend-log", str(frontend_logs[0])]
     else:
-        logger.info("perf dashboard: no *_frontend_*.out in %s; Log-analysis tab omitted", log_dir)
+        logger.info("perf dashboard: no *_frontend_*.out in %s; Log-analysis tab omitted", workers_dir(log_dir))
 
     if not _run(render_argv, root, RENDER_TIMEOUT_SEC, "render"):
         return None

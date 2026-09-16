@@ -141,7 +141,7 @@ class ServiceReadinessConfig:
         port: Shorthand for ``tcp: {port: <port>}``.
         tcp: TCP connect probe.
         http: HTTP GET probe.
-        log: Log-pattern probe against ``service_<name>.out``.
+        log: Log-pattern probe against ``services/logs/service_<name>.out``.
         timeout_seconds: How long to wait per node before failing the job.
         interval_seconds: Seconds between probe attempts.
     """
@@ -200,7 +200,7 @@ class ServiceConfig:
     """One entry of the top-level ``services:`` list.
 
     Attributes:
-        name: Unique label; names the log file (``service_<name>.out``) and the
+        name: Unique label; names the log file (``services/logs/service_<name>.out``) and the
             tracked process.
         type: Service kind. ``generic`` (default) launches exactly what you
             wrote; ``mooncake-store`` runs a standalone Mooncake Store wired to

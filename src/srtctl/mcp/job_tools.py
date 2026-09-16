@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from srtctl.core.config import get_srtslurm_setting
+from srtctl.core.log_layout import LOG_SUBDIRS
 
 SLURM_TIMEOUT_SECONDS = 30
 SUBMIT_TIMEOUT_SECONDS = 600
@@ -212,21 +213,23 @@ def job_status(job_id: str, *, output_dir: str | None = None, tail: int = 20) ->
 def job_logs(job_id: str, *, name: str | None = None, tail: int = 200, output_dir: str | None = None) -> dict[str, Any]:
     """List a job's log files, or return the tail of one of them.
 
-    Names are relative to ``<output_dir>/<job_id>/logs``: ``sweep_<id>.log`` (the
-    orchestrator), ``<node>_<mode>_w<i>.out`` (workers), ``<node>_frontend_<i>.out``,
-    ``service_<name>.out`` (etcd, nats, exporters, declared services),
-    ``tachometer.out``, ``benchmark.out``.
+    Names are relative to ``<output_dir>/<job_id>/logs`` and may include a subdirectory:
+    ``sweep_<id>.log`` (the orchestrator), ``benchmark.out``, ``workers/<node>_<mode>_w<i>.out``,
+    ``workers/<node>_frontend_<i>.out``, ``services/logs/service_<name>[_<node>].out`` (etcd,
+    nats, exporters, declared services), ``telemetry/telemetry_*.out``, ``telemetry/tachometer.out``,
+    ``fingerprints/fingerprint_<mode>_w<i>.json``.
     """
     job_id = str(job_id)
     logs_dir = _job_dir(job_id, output_dir) / "logs"
     if not logs_dir.is_dir():
         return {"ok": False, "error": f"no log directory at {logs_dir}"}
     if name is None:
-        files = sorted(p for p in logs_dir.iterdir() if p.is_file())
+        dirs = [logs_dir, *(logs_dir / sub for sub in LOG_SUBDIRS)]
+        files = sorted(p for d in dirs if d.is_dir() for p in d.iterdir() if p.is_file())
         return {
             "ok": True,
             "logs_dir": str(logs_dir),
-            "files": [{"name": p.name, "bytes": p.stat().st_size} for p in files],
+            "files": [{"name": p.relative_to(logs_dir).as_posix(), "bytes": p.stat().st_size} for p in files],
         }
     target = (logs_dir / name).resolve()
     if logs_dir.resolve() not in target.parents:

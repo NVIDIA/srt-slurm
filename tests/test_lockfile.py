@@ -29,6 +29,7 @@ def _write_fingerprint(path: Path, **overrides) -> None:
         "pip_packages": ["numpy==1.26.4", "torch==2.6.0"],
     }
     fp.update(overrides)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(fp, indent=2))
 
 
@@ -59,7 +60,7 @@ def _write_recipe(tmp_path: Path, content: str | None = None) -> None:
 
 class TestCollectWorkerFingerprints:
     def test_single_file(self, tmp_path):
-        _write_fingerprint(tmp_path / "fingerprint_prefill_w0.json")
+        _write_fingerprint(tmp_path / "fingerprints" / "fingerprint_prefill_w0.json")
         result = collect_worker_fingerprints(tmp_path)
 
         assert result is not None
@@ -69,12 +70,12 @@ class TestCollectWorkerFingerprints:
     def test_multiple_workers_kept_separate(self, tmp_path):
         """Each worker's fingerprint is stored independently."""
         _write_fingerprint(
-            tmp_path / "fingerprint_prefill_w0.json",
+            tmp_path / "fingerprints" / "fingerprint_prefill_w0.json",
             hostname="prefill-node",
             pip_packages=["numpy==1.26.4", "torch==2.6.0"],
         )
         _write_fingerprint(
-            tmp_path / "fingerprint_decode_w0.json",
+            tmp_path / "fingerprints" / "fingerprint_decode_w0.json",
             hostname="decode-node",
             pip_packages=["sglang==0.4.6", "torch==2.6.0"],
         )
@@ -89,9 +90,9 @@ class TestCollectWorkerFingerprints:
 
     def test_keys_sorted_by_filename(self, tmp_path):
         """Worker keys appear in sorted order."""
-        _write_fingerprint(tmp_path / "fingerprint_decode_w1.json")
-        _write_fingerprint(tmp_path / "fingerprint_decode_w0.json")
-        _write_fingerprint(tmp_path / "fingerprint_prefill_w0.json")
+        _write_fingerprint(tmp_path / "fingerprints" / "fingerprint_decode_w1.json")
+        _write_fingerprint(tmp_path / "fingerprints" / "fingerprint_decode_w0.json")
+        _write_fingerprint(tmp_path / "fingerprints" / "fingerprint_prefill_w0.json")
 
         result = collect_worker_fingerprints(tmp_path)
 
@@ -102,16 +103,18 @@ class TestCollectWorkerFingerprints:
 
     def test_corrupted_files_skipped(self, tmp_path):
         """Bad JSON files are skipped, good ones still collected."""
-        (tmp_path / "fingerprint_bad.json").write_text("not json")
-        _write_fingerprint(tmp_path / "fingerprint_good.json")
+        (tmp_path / "fingerprints").mkdir()
+        (tmp_path / "fingerprints" / "fingerprint_bad.json").write_text("not json")
+        _write_fingerprint(tmp_path / "fingerprints" / "fingerprint_good.json")
 
         result = collect_worker_fingerprints(tmp_path)
         assert result is not None
         assert "good" in result
 
     def test_all_corrupted_returns_none(self, tmp_path):
-        (tmp_path / "fingerprint_bad1.json").write_text("nope")
-        (tmp_path / "fingerprint_bad2.json").write_text("{invalid")
+        (tmp_path / "fingerprints").mkdir()
+        (tmp_path / "fingerprints" / "fingerprint_bad1.json").write_text("nope")
+        (tmp_path / "fingerprints" / "fingerprint_bad2.json").write_text("{invalid")
 
         assert collect_worker_fingerprints(tmp_path) is None
 
@@ -283,7 +286,7 @@ class TestWriteLockfile:
         config = _make_minimal_config()
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        _write_fingerprint(log_dir / "fingerprint_prefill_w0.json", hostname="p-node")
+        _write_fingerprint(log_dir / "fingerprints" / "fingerprint_prefill_w0.json", hostname="p-node")
 
         write_lockfile(tmp_path, config)
         write_lockfile(tmp_path, config, log_dir)
@@ -450,7 +453,7 @@ class TestLoadLockfileFingerprints:
     def test_from_dir_with_raw_fingerprints(self, tmp_path):
         logs = tmp_path / "logs"
         logs.mkdir()
-        _write_fingerprint(logs / "fingerprint_w0.json", hostname="raw-node")
+        _write_fingerprint(logs / "fingerprints" / "fingerprint_w0.json", hostname="raw-node")
 
         fps = load_lockfile_fingerprints(tmp_path)
         assert fps["w0"]["hostname"] == "raw-node"

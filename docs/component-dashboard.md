@@ -119,7 +119,7 @@ cd /path/to/srt-slurm
 python3 -m src.ingest.ingest --run-dir outputs/<job_id>/logs --out /tmp/<job_id>-bundle
 python3 -m src.visualization.build_dynamo_bench_dash \
     /tmp/<job_id>-bundle /tmp/<job_id>.html \
-    --frontend-log outputs/<job_id>/logs/<node>_frontend_0.out
+    --frontend-log outputs/<job_id>/logs/workers/<node>_frontend_0.out
 ```
 
 Verified on job 2753007 (TIMEOUT at 20:12): the tachometer parquet, `host_samples.jsonl`,
@@ -145,7 +145,7 @@ python3 -m src.ingest.ingest \
 
 python3 -m src.visualization.build_dynamo_bench_dash \
     /tmp/<job_id>-bundle  /tmp/<job_id>.html \
-    --frontend-log outputs/<job_id>/logs/<node>_frontend_0.out
+    --frontend-log outputs/<job_id>/logs/workers/<node>_frontend_0.out
 ```
 
 Open the `.html` in a browser. D3 is inlined by default, so the page works with no
@@ -172,11 +172,11 @@ and loses Overview.
 | --- | ------------------ | -------- | ------------- | ----- |
 | **Metrics** | `observability.enabled` (Tachometer), else the client's own export | `<log_dir>/tachometer/raw/scrape/*.parquet`, else `<log_dir>/agentic/*/…/server_metrics_export.json(l)` | `server_metrics_export.jsonl` | every time-series panel |
 | **Request trace** | `observability.enabled` | `<log_dir>/dynamo-request-trace` | `request_trace.jsonl` | per-request card, per-session view, the waterfall's KV-transfer band |
-| **Per-iteration** | `print_iter_log: true` in the engine config | `SPAN`-free lines in `<log_dir>/*_w*.out` | `iter_bins.json` | batch composition, host/device step time |
-| **Traces** | `observability.enabled` **and** an AIPerf benchmark | `SPAN_CLOSED` lines in `<log_dir>/*.out` | `tempo_traces/<xid>.json` | Overview, routing outcome on the card |
+| **Per-iteration** | `print_iter_log: true` in the engine config | `SPAN`-free lines in `<log_dir>/workers/*_w*.out` | `iter_bins.json` | batch composition, host/device step time |
+| **Traces** | `observability.enabled` **and** an AIPerf benchmark | `SPAN_CLOSED` lines in `<log_dir>/workers/*.out` | `tempo_traces/<xid>.json` | Overview, routing outcome on the card |
 | **Client** | an AIPerf benchmark at export level `records` (default) | `<log_dir>/agentic/*/aiperf_artifacts/` or `artifacts/*/` | `profile_export.jsonl` | Overview, warmup filtering |
 | **Engine config** | TRT-LLM backend | `<log_dir>/trtllm_config_*.yaml` | copied verbatim | in-flight-batch ceilings |
-| **Frontend log** | *nothing* — always written | `<log_dir>/<node>_frontend_<i>.out` | *(read directly)* | Log analysis |
+| **Frontend log** | *nothing* — always written | `<log_dir>/workers/<node>_frontend_<i>.out` | *(read directly)* | Log analysis |
 | **Host telemetry** | `observability.enabled` | `<log_dir>/host_samples.jsonl` | `host_series.json` | host/process CPU, ctx switches, fd headroom |
 
 ### Host telemetry — what the metrics stream cannot say
@@ -268,12 +268,12 @@ Produces:
 | `--client` | `aiperf` | `none` to skip. The AIPerf export is already schema 1, so this is a passthrough |
 | `--client-input` | `agentic/*/aiperf_artifacts/…` then `artifacts/*/…` | both harness layouts are tried; AgentX nests one level deeper and shards by concurrency |
 | `--traces` | `spanlog` | `none` to skip |
-| `--span-logs` | `*.out` | srt-slurm's worker/frontend log naming |
+| `--span-logs` | `workers/*.out` | srt-slurm's worker/frontend log naming |
 | `--request-trace` | `dynamo` | parses `dynamo-request-trace`; the only source of KV-transfer cost and `session_id` |
 | `--iter-log` | `trtllm` | parses `print_iter_log` lines from the worker logs; local->UTC offset is derived per run, not hardcoded |
 | *(automatic)* | — | `trtllm_config_*.yaml` are copied from the run dir into the bundle, giving the Engine tab its real in-flight-batch ceilings instead of the `--max-batch-*` defaults |
 | *(automatic)* | — | `profile_export_aiperf.json` — AIPerf's run summary. Carries `theoretical_prefix_cache_hit` (the ceiling the *workload* offered), `error_summary` / `was_cancelled` / `branch_stats` (run validity), and `effective_concurrency`. Its **absence** is a signal too: AIPerf writes it when a concurrency finishes, so a run killed by its wall clock has none |
-| *(automatic)* | — | `config.yaml`, `fingerprint_*.json`, `resource_snapshot.json` — run provenance. Without these, two bundles can be compared for what *moved* but never for what *changed* |
+| *(automatic)* | — | `config.yaml`, `fingerprints/fingerprint_*.json`, `resource_snapshot.json` — run provenance. Without these, two bundles can be compared for what *moved* but never for what *changed* |
 | *(automatic)* | — | `benchmark_status.json` — why an empty dashboard is empty: exit code, error lines, and AIPerf's per-phase completed/cancelled census. A run can exit non-zero with no error-marker line at all, and the census is then the only account of what happened |
 | *(automatic)* | — | `log_signals.json` — signals whose only evidence is a log line and which have no metric behind them: worker crash, Dynamo recompile storm, OOM, KV-index desync, KV-transfer timeout, NCCL error, engine stall, etcd disconnect, client cancel. Counts + timestamps + 2 sample lines each, bounded regardless of log size. **Zero counts are kept** — "no crashes" is a statement; absence is not |
 | *(automatic)* | — | `run_lifecycle.json` — time-to-ready, the readiness gap (frontend accepting before the router can place), and the run's terminal cause. On run 2752632 that was **650 s of 28 held GPUs serving nothing**, invisible on an x-axis starting at the first request |
@@ -309,7 +309,7 @@ Log-analysis-only page for a run that had no observability at all:
 
 ```bash
 python3 -m src.visualization.build_dynamo_bench_dash /tmp/out.html \
-    --frontend-log outputs/<job_id>/logs/<node>_frontend_0.out
+    --frontend-log outputs/<job_id>/logs/workers/<node>_frontend_0.out
 ```
 
 ### Same-run enforcement
@@ -421,7 +421,7 @@ deliberately left behind.
 Deltas applied on top of upstream, all of them layout/wiring:
 
 1. `ingest.py` moved under `src/ingest/`, the renderer under `src/visualization/`.
-2. Client default glob `artifacts/*/profile_export.jsonl`; span-log default `*.out`.
+2. Client default glob `artifacts/*/profile_export.jsonl`; span-log default `workers/*.out`.
 3. D3 inlined from the vendored sibling by default (`--d3-cdn` opts out).
 4. `agentperf` / `tempo` registry entries dropped, with `get_processor` naming the
    valid options when one is requested.
