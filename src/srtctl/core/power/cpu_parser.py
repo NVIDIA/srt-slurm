@@ -21,15 +21,8 @@ from dataclasses import dataclass
 
 from prometheus_client.parser import text_string_to_metric_families
 
-from srtctl.core.power.cpu_rails import (
-    ACPI_RAIL_KINDS,
-    COMPONENT_RAIL_KINDS,
-    DCGM_KIND,
-    TOTAL_KIND,
-    classify_acpi_label,
-    normalize_kind,
-    sensor_name,
-)
+from srtctl.core.power.cpu_rails import ACPI_RAIL_KINDS, DCGM_KIND, classify_acpi_label, normalize_kind, sensor_name
+from srtctl.core.power.cpu_sample import CpuSample, RailReading, node_total_watts, pivot_socket_samples
 
 DCGM_METRIC = "cpu_power_dcgm_watts"
 ACPI_METRIC = "cpu_power_acpi_watts"
@@ -47,28 +40,26 @@ class CpuReading:
 
 
 @dataclass(frozen=True)
-class SocketPower:
-    """One socket's readings for one scrape, pivoted for the wide CSV row.
-
-    ``power_w`` is the authoritative per-socket figure (ACPI ``total``
-    envelope, or the DCGM value). ``rails`` holds the ACPI component rails
-    by kind; it is empty for DCGM.
-    """
-
-    socket_id: int
-    sensor: str
-    power_w: float
-    rails: dict[str, float]
-
-
-@dataclass(frozen=True)
 class ParsedCpuScrape:
-    """Readings from one node's single scrape, plus the derived per-host total."""
+    """Readings from one node's single scrape, pivoted per socket, plus the derived per-host total.
+
+    ``readings`` is every classified sensor value as scraped; ``sockets`` is
+    the same data pivoted through ``cpu_sample.pivot_socket_samples`` (one
+    :class:`CpuSample` per socket that has its primary rail); and
+    ``total_power_w`` is ``node_total_watts`` over those sockets.
+    """
 
     mode: str = "unknown"  # "dcgm" | "acpi" | "unknown"
     readings: tuple[CpuReading, ...] = ()
-    sockets: tuple[SocketPower, ...] = ()
+    sockets: tuple[CpuSample, ...] = ()
     total_power_w: float | None = None
+
+
+def _scrape(mode: str, readings: list[CpuReading]) -> ParsedCpuScrape:
+    sockets = pivot_socket_samples(mode, (RailReading(r.socket_id, r.kind, r.sensor, r.power_w) for r in readings))
+    return ParsedCpuScrape(
+        mode=mode, readings=tuple(readings), sockets=sockets, total_power_w=node_total_watts(sockets)
+    )
 
 
 def parse_cpu_scrape(text: str) -> ParsedCpuScrape:
@@ -80,38 +71,13 @@ def parse_cpu_scrape(text: str) -> ParsedCpuScrape:
 
     acpi_readings = _parse_acpi(families)
     if acpi_readings:
-        sockets = _pivot_sockets(acpi_readings, TOTAL_KIND)
-        total = sum(s.power_w for s in sockets) if sockets else None
-        return ParsedCpuScrape(mode="acpi", readings=tuple(acpi_readings), sockets=sockets, total_power_w=total)
+        return _scrape("acpi", acpi_readings)
 
     dcgm_readings = _parse_dcgm(families)
     if dcgm_readings:
-        sockets = _pivot_sockets(dcgm_readings, DCGM_KIND)
-        total = sum(s.power_w for s in sockets) if sockets else None
-        return ParsedCpuScrape(mode="dcgm", readings=tuple(dcgm_readings), sockets=sockets, total_power_w=total)
+        return _scrape("dcgm", dcgm_readings)
 
     return ParsedCpuScrape()
-
-
-def _pivot_sockets(readings: list[CpuReading], primary_kind: str) -> tuple[SocketPower, ...]:
-    """One :class:`SocketPower` per socket that has a ``primary_kind`` reading.
-
-    A socket whose primary rail is missing from the scrape is dropped rather
-    than published with a component rail masquerading as its power: that is
-    exactly the number-mixing this layout exists to prevent.
-    """
-    by_socket: dict[int, dict[str, CpuReading]] = {}
-    for reading in readings:
-        by_socket.setdefault(reading.socket_id, {}).setdefault(reading.kind, reading)
-    sockets: list[SocketPower] = []
-    for socket_id in sorted(by_socket):
-        kinds = by_socket[socket_id]
-        primary = kinds.get(primary_kind)
-        if primary is None:
-            continue
-        rails = {kind: kinds[kind].power_w for kind in COMPONENT_RAIL_KINDS if kind in kinds}
-        sockets.append(SocketPower(socket_id=socket_id, sensor=primary.sensor, power_w=primary.power_w, rails=rails))
-    return tuple(sockets)
 
 
 def _parse_dcgm(families) -> list[CpuReading]:

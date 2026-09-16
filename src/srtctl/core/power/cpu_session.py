@@ -166,14 +166,10 @@ class CpuPowerCollector:
             CpuSampleRow(
                 timestamp_unix=timestamp_unix,
                 hostname=endpoint.hostname,
-                source=scrape.mode,
-                sensor=socket.sensor,
-                socket_id=socket.socket_id,
-                power_w=socket.power_w,
-                rails=socket.rails,
+                sample=sample,
                 total_power_w=scrape.total_power_w,
             )
-            for socket in scrape.sockets
+            for sample in scrape.sockets
         ]
         return endpoint.hostname, scrape.mode, rows
 

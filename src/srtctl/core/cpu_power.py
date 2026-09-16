@@ -35,6 +35,7 @@ from srtctl.core.power.cpu_rails import (
     classify_acpi_label,
     sensor_name,
 )
+from srtctl.core.power.cpu_sample import CpuSample, RailReading, node_total_watts, pivot_socket_samples
 
 CPU_POWER_FIELD_ID = 1130
 DCGM_PYTHON_BINDING_DIRS = (
@@ -106,23 +107,32 @@ class CpuPowerSourceUnavailable(RuntimeError):
     """Raised when a CPU power source cannot be used on the current host."""
 
 
-class SocketSample(NamedTuple):
-    """One socket's pivoted readings for one collector tick (one CSV row)."""
-
-    socket_id: int
-    sensor: str  # the sensor that fed power_w
-    power_w: float
-    rails: dict[str, float]  # component kind -> watts; empty for DCGM
-
-
 class CpuPowerReader(ABC):
-    """CPU power source interface."""
+    """CPU power source interface.
+
+    Readers only *classify*: ``read_watts`` yields raw sensor values and
+    ``classify_readings`` tags each with its socket and rail kind. The pivot
+    into one :class:`CpuSample` per socket and the node aggregate are shared
+    (``cpu_sample``), so neither reader decides what a socket's power is.
+    """
 
     source_name: str
 
     @abstractmethod
     def read_watts(self) -> dict[str, float | None]:
         """Return watts by stable sensor name."""
+
+    @abstractmethod
+    def classify_readings(self, readings: dict[str, float | None]) -> list[RailReading]:
+        """Tag each non-None reading with its socket and rail kind."""
+
+    def socket_samples(self, readings: dict[str, float | None]) -> tuple[CpuSample, ...]:
+        """One :class:`CpuSample` per socket that has its primary rail (shared pivot)."""
+        return pivot_socket_samples(self.source_name, self.classify_readings(readings))
+
+    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
+        """Node total: the sum of every socket's primary rail, never a component rail."""
+        return node_total_watts(self.socket_samples(readings))
 
     def read_utilization(self) -> dict[int, dict[str, float]]:
         """Return utilization columns by socket id from the most recent ``read_watts``.
@@ -131,18 +141,6 @@ class CpuPowerReader(ABC):
         the sample rows leave the columns blank.
         """
         return {}
-
-    @abstractmethod
-    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
-        """Return the reader's node-level aggregate without double-counting components."""
-
-    @abstractmethod
-    def socket_samples(self, readings: dict[str, float | None]) -> list[SocketSample]:
-        """Pivot one ``read_watts`` result into one :class:`SocketSample` per socket.
-
-        A socket whose primary sensor read as None is omitted rather than
-        published with a component rail standing in for its power.
-        """
 
     @abstractmethod
     def metadata(self) -> dict[str, Any]:
@@ -233,27 +231,21 @@ class AcpiPowerMeterReader(CpuPowerReader):
                 readings[sensor["name"]] = None
         return readings
 
-    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
-        totals = [readings.get(sensor["name"]) for sensor in self._sensors if sensor["domain_kind"] == TOTAL_KIND]
-        valid = [watts for watts in totals if watts is not None]
-        return sum(valid) if totals and len(valid) == len(totals) else None
+    def classify_readings(self, readings: dict[str, float | None]) -> list[RailReading]:
+        return [
+            RailReading(sensor["socket_id"], sensor["domain_kind"], sensor["name"], watts)
+            for sensor in self._sensors
+            if (watts := readings.get(sensor["name"])) is not None
+        ]
 
-    def socket_samples(self, readings: dict[str, float | None]) -> list[SocketSample]:
-        by_socket: dict[int, dict[str, tuple[str, float]]] = {}
-        for sensor in self._sensors:
-            watts = readings.get(sensor["name"])
-            if watts is None:
-                continue
-            by_socket.setdefault(sensor["socket_id"], {})[sensor["domain_kind"]] = (sensor["name"], watts)
-        samples: list[SocketSample] = []
-        for socket_id in sorted(by_socket):
-            kinds = by_socket[socket_id]
-            if TOTAL_KIND not in kinds:
-                continue
-            name, watts = kinds[TOTAL_KIND]
-            rails = {kind: kinds[kind][1] for kind in COMPONENT_RAIL_KINDS if kind in kinds}
-            samples.append(SocketSample(socket_id=socket_id, sensor=name, power_w=watts, rails=rails))
-        return samples
+    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
+        # Stricter than the shared default: a node total is only published
+        # when EVERY discovered socket envelope read back, so a partial
+        # total can never masquerade as the node's power.
+        totals = [readings.get(sensor["name"]) for sensor in self._sensors if sensor["domain_kind"] == TOTAL_KIND]
+        if not totals or any(watts is None for watts in totals):
+            return None
+        return super().aggregate_watts(readings)
 
     def metadata(self) -> dict[str, Any]:
         sensors: list[dict[str, Any]] = []
@@ -401,22 +393,15 @@ class DcgmCpuPowerReader(CpuPowerReader):
     def read_utilization(self) -> dict[int, dict[str, float]]:
         return self._last_utilization
 
-    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
-        valid = [watts for watts in readings.values() if watts is not None]
-        return sum(valid) if valid else None
-
-    def socket_samples(self, readings: dict[str, float | None]) -> list[SocketSample]:
+    def classify_readings(self, readings: dict[str, float | None]) -> list[RailReading]:
         # One already-aggregated value per socket; no component rails. Whether
         # field 1130 corresponds to the ACPI cpu_rail or the total envelope is
-        # unverified, so the rail columns stay blank rather than guess.
-        samples: list[SocketSample] = []
-        for cpu_id in sorted(self._cpu_ids):
-            name = sensor_name(DCGM_KIND, cpu_id)
-            watts = readings.get(name)
-            if watts is None:
-                continue
-            samples.append(SocketSample(socket_id=int(cpu_id), sensor=name, power_w=watts, rails={}))
-        return samples
+        # unverified, so nothing here claims a rail kind beyond DCGM_KIND.
+        return [
+            RailReading(int(cpu_id), DCGM_KIND, name, watts)
+            for cpu_id in sorted(self._cpu_ids)
+            if (watts := readings.get(name := sensor_name(DCGM_KIND, cpu_id))) is not None
+        ]
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -524,11 +509,11 @@ def collect(*, output_dir: Path, ready_dir: Path, source: str, interval_seconds:
             except CpuPowerSourceUnavailable:
                 read_failures += 1
                 readings = {}
-            valid = {name: watts for name, watts in readings.items() if watts is not None}
-            total = reader.aggregate_watts(valid)
+            total = reader.aggregate_watts(readings)
             utilization = reader.read_utilization()
             for sample in reader.socket_samples(readings):
                 socket_utilization = utilization.get(sample.socket_id, {})
+                rails = sample.rails
                 writer.writerow(
                     (
                         SAMPLES_SCHEMA_VERSION,
@@ -539,7 +524,7 @@ def collect(*, output_dir: Path, ready_dir: Path, source: str, interval_seconds:
                         sample.sensor,
                         sample.socket_id,
                         repr(sample.power_w),
-                        *(repr(sample.rails[kind]) if kind in sample.rails else "" for kind in COMPONENT_RAIL_KINDS),
+                        *(repr(rails[kind]) if kind in rails else "" for kind in COMPONENT_RAIL_KINDS),
                         "" if total is None else repr(total),
                         *(
                             repr(socket_utilization[column]) if column in socket_utilization else ""

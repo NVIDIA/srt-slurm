@@ -95,7 +95,7 @@ def test_normalize_kind_accepts_canonical_and_legacy_exporter_types():
 def test_rail_columns_follow_component_kind_order():
     assert COMPONENT_RAIL_KINDS == ("cpu_rail", "soc", "dram")
     assert RAIL_COLUMN_NAMES == ("cpu_rail_w", "soc_w", "dram_w")
-    assert ACPI_RAIL_KINDS == frozenset({"total", "cpu_rail", "soc", "dram"})
+    assert frozenset({"total", "cpu_rail", "soc", "dram"}) == ACPI_RAIL_KINDS
 
 
 def test_every_acpi_kind_has_a_sensor_suffix():

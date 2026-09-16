@@ -22,12 +22,12 @@ from srtctl.core.cpu_power import (
     UTILIZATION_COLUMNS,
     AcpiPowerMeterReader,
     CpuPowerSourceUnavailable,
-    SocketSample,
     _add_standard_dcgm_binding_path,
     format_local_timestamp,
 )
 from srtctl.core.cpu_power_session import CpuPowerSessionSettings, CpuPowerTelemetrySession
 from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES
+from srtctl.core.power.cpu_sample import CpuSample, RailReading
 
 
 def _make_acpi_sensor(
@@ -137,12 +137,19 @@ def test_acpi_reader_collects_breakdowns_without_double_counting_total(tmp_path:
         "soc",
         "dram",
     }
-    # One pivoted sample per socket: power_w is the total envelope, the
-    # component rails ride along as columns and never stand in for it.
-    assert reader.socket_samples(readings) == [
-        SocketSample(0, "CPU0:cpuSidePowerUsageW", 150.0, {"cpu_rail": 70.0, "soc": 6.0, "dram": 8.0}),
-        SocketSample(1, "CPU1:cpuSidePowerUsageW", 160.0, {"cpu_rail": 75.0, "soc": 7.0, "dram": 9.0}),
+    # The reader only classifies; the shared pivot builds one CpuSample per
+    # socket whose power_w is the total envelope and whose component rails
+    # ride along without ever standing in for it.
+    assert reader.classify_readings(readings)[:2] == [
+        RailReading(0, "total", "CPU0:cpuSidePowerUsageW", 150.0),
+        RailReading(0, "cpu_rail", "CPU0:cpuRailPowerUsageW", 70.0),
     ]
+    samples = reader.socket_samples(readings)
+    assert [(s.source, s.socket_id, s.sensor, s.power_w, s.rails) for s in samples] == [
+        ("acpi", 0, "CPU0:cpuSidePowerUsageW", 150.0, {"cpu_rail": 70.0, "soc": 6.0, "dram": 8.0}),
+        ("acpi", 1, "CPU1:cpuSidePowerUsageW", 160.0, {"cpu_rail": 75.0, "soc": 7.0, "dram": 9.0}),
+    ]
+    assert all(isinstance(s, CpuSample) for s in samples)
 
 
 def test_acpi_socket_samples_drop_a_socket_whose_total_failed_to_read(tmp_path: Path) -> None:
@@ -154,7 +161,8 @@ def test_acpi_socket_samples_drop_a_socket_whose_total_failed_to_read(tmp_path: 
     readings = reader.read_watts()
     readings["CPU0:cpuSidePowerUsageW"] = None  # simulate a failed sysfs read of the envelope
 
-    assert reader.socket_samples(readings) == []
+    assert reader.socket_samples(readings) == ()
+    assert reader.aggregate_watts(readings) is None  # and no partial node total either
 
 
 def test_acpi_reader_collects_input_power_naming_variants(tmp_path: Path) -> None:
@@ -360,13 +368,13 @@ def test_samples_header_pins_wide_socket_layout() -> None:
         "total_power_w",
         *UTILIZATION_COLUMNS,
     )
-    assert SAMPLES_HEADER == expected
+    assert expected == SAMPLES_HEADER
     assert UTILIZATION_COLUMNS == ("cpu_util_total", "cpu_util_user", "cpu_util_nice", "cpu_util_sys", "cpu_util_irq")
     assert [field.field_id for field in CPU_UTILIZATION_FIELDS] == [1100, 1101, 1102, 1103, 1104]
 
 
 class _FakeReader(cpu_power.CpuPowerReader):
-    source_name = "fake"
+    source_name = "acpi"  # must be a real origin: it decides which rail kind is the socket's power
 
     def __init__(self, utilization: dict[int, dict[str, float]] | None = None) -> None:
         self._utilization = utilization or {}
@@ -377,13 +385,11 @@ class _FakeReader(cpu_power.CpuPowerReader):
     def read_utilization(self) -> dict[int, dict[str, float]]:
         return self._utilization
 
-    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
-        return sum(watts for watts in readings.values() if watts is not None)
-
-    def socket_samples(self, readings: dict[str, float | None]) -> list[SocketSample]:
+    def classify_readings(self, readings: dict[str, float | None]) -> list[RailReading]:
         return [
-            SocketSample(0, "CPU0:cpuSidePowerUsageW", 100.0, {"cpu_rail": 60.0}),
-            SocketSample(1, "CPU1:cpuSidePowerUsageW", 110.0, {}),
+            RailReading(0, "total", "CPU0:cpuSidePowerUsageW", 100.0),
+            RailReading(0, "cpu_rail", "CPU0:cpuRailPowerUsageW", 60.0),
+            RailReading(1, "total", "CPU1:cpuSidePowerUsageW", 110.0),
         ]
 
     def metadata(self) -> dict[str, object]:
