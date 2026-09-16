@@ -62,6 +62,7 @@ nav:
       - Mooncake KV Store: mooncake-kv-store.md
       - Services: services.md
       - Pools: pools.md
+      - Miles RL Post-Training: miles.md
   - Benchmarking:
       - Accuracy Benchmarks: accuracy.md
       - Profiling: profiling.md

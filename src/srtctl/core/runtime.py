@@ -420,6 +420,13 @@ class RuntimeContext:
             if configs_dir.exists():
                 container_mounts[configs_dir.resolve()] = Path("/configs")
 
+            # Repo-root benchmarks/: launchers and clients that are not core (RL frameworks
+            # under benchmarks/rl/). Recipes run them as custom benchmark commands by their
+            # container path, /benchmarks/<folder>/launch.sh.
+            benchmarks_dir = Path(source_dir) / "benchmarks"
+            if benchmarks_dir.exists():
+                container_mounts[benchmarks_dir.resolve()] = Path("/benchmarks")
+
             wheelhouse_dir = Path(source_dir) / "wheelhouse" / "dynamo"
             if wheelhouse_dir.exists():
                 container_mounts[wheelhouse_dir.resolve()] = Path("/srtctl-wheels")

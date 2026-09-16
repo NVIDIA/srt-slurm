@@ -1,0 +1,75 @@
+# Miles RL post-training (GRPO on Qwen3-4B) launched from srt-slurm.
+#
+# Miles (https://github.com/radixark/miles) pairs SGLang rollout engines with a
+# Megatron trainer under Ray. It owns every GPU; srt-slurm owns the allocation,
+# the container, Ray bring-up, the launcher step, logs, telemetry and teardown:
+#
+#   services[train] (type: ray)  -> ray head on node 0, ray workers on the rest, fleet gate
+#   benchmark (type: custom)     -> /benchmarks/rl/miles/launch.sh on node 0, which hands the
+#                                   cluster to Miles's launch script; that submits train.py as a Ray job
+#
+# Everything RL (engines, router, rollout executor, reward, trainer ranks) runs inside
+# that Ray job, on the raylets this recipe started. Nothing in srt-slurm's core knows
+# about Miles; the launcher is a script written against the custom-benchmark environment.
+# See docs/miles.md.
+#
+# Prerequisites on the shared filesystem:
+#   <model_dir>/Qwen3-4B/             HF weights (the rollout engines read these)
+#   <model_dir>/Qwen3-4B_torch_dist/  Megatron checkpoint from tools/convert_hf_to_torch_dist.py
+#   <data_dir>/dapo-math-17k/, <data_dir>/aime-2024/   the recipe's prompt and eval datasets
+#
+# Aliases (`qwen3-4b`, `miles`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-4b-grpo"
+
+slurm:
+  time_limit: "04:00:00"
+
+model:
+  path: "qwen3-4b"          # the HF weights; also MILES_SCRIPT_MODEL_DIR/MODEL_NAME below
+  container: "miles"        # radixark/miles image: patched SGLang, Megatron-LM, Ray, Miles at /root/miles
+  precision: "bf16"
+
+resources:
+  gpu_type: "b200"
+  gpus_per_node: 8
+
+frontend:
+  type: none                # no router, no OpenAI endpoint, no worker-count health gate
+
+services:
+  - name: train
+    type: ray               # one Ray cluster across the job's nodes
+    nodes: 2                # this service owns the job's two nodes and sets the allocation size
+    preamble: "cd /root/miles"   # the raylet's cwd is what Ray-spawned processes inherit
+
+benchmark:
+  type: custom
+  command: /benchmarks/rl/miles/launch.sh
+  env:
+    MILES_RECIPE: scripts/run_qwen3_dense.py
+    MILES_SCRIPT_MODEL_NAME: Qwen3-4B
+    MILES_SCRIPT_MODEL_DIR: /data/home/idhanani/models
+    MILES_SCRIPT_DATA_DIR: /data/home/idhanani/datasets
+    MILES_SCRIPT_OUTPUT_DIR: /data/home/idhanani/miles-runs/qwen3-4b-grpo   # stable: a resubmit resumes
+    MILES_SCRIPT_ENABLE_EVAL: "true"
+    # The recipe hardcodes --colocate; actor nodes equal the ray service's nodes.
+    MILES_SCRIPT_EXTRA_ARGS: "--num-rollout 20 --colocate --actor-num-nodes 2 --actor-num-gpus-per-node 8 --rollout-num-gpus-per-engine 2"
+    MILES_SCRIPT_EXTRA_ENV_VARS: '{"PYTHONNOUSERSITE": "1"}'
+
+# Miles reads and writes these on the host filesystem, from the trainer and engines
+# inside the ray service's containers, so mount them at the same path everywhere.
+extra_mount:
+  - "/data/home/idhanani/models:/data/home/idhanani/models"
+  - "/data/home/idhanani/datasets:/data/home/idhanani/datasets"
+  - "/data/home/idhanani/miles-runs:/data/home/idhanani/miles-runs"
+
+# Global env reaches every step (the ray raylets, the launcher, the exporters).
+environment:
+  NCCL_SOCKET_IFNAME: bond0
+  GLOO_SOCKET_IFNAME: bond0
+
+observability:
+  tachometer:
+    enabled: true
