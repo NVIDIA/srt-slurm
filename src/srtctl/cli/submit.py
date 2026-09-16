@@ -2119,7 +2119,14 @@ def main():
         return
 
     if args.command == "status-server":
-        serve_status_server(host=args.host, port=args.port, db_path=args.db)
+        serve_status_server(
+            host=args.host,
+            port=args.port,
+            db_path=args.db,
+            token_env=args.token_env,
+            read_token_env=args.read_token_env,
+            allow_unauthenticated=args.allow_unauthenticated,
+        )
         return
 
     # Parse config arg: supports path:selector format for overrides

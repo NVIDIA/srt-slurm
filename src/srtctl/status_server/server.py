@@ -17,14 +17,24 @@ recipes or ``srtslurm.yaml`` at it::
     reporting:
       status:
         endpoint: "http://login-node:8080"
+
+Authentication is bearer tokens read from the environment. ``$SRTCTL_STATUS_TOKEN``
+guards every write and also grants reads; the optional ``$SRTCTL_STATUS_READ_TOKEN``
+grants reads only. ``/api/health`` is always open. Binding to anything but
+loopback without a token is refused unless ``--allow-unauthenticated`` says the
+network is trusted (a cluster's internal network, for example).
 """
 
 from __future__ import annotations
 
 import argparse
+import hmac
+import ipaddress
 import json
 import logging
+import os
 import re
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -52,6 +62,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_DB_PATH = Path("~/.local/state/srtctl/status.db")
+DEFAULT_TOKEN_ENV = "SRTCTL_STATUS_TOKEN"
+DEFAULT_READ_TOKEN_ENV = "SRTCTL_STATUS_READ_TOKEN"
+# The largest legitimate body is the started-metadata PUT, a few KB. Anything
+# beyond this is rejected before it is read so a public endpoint cannot be
+# used to fill the disk.
+MAX_BODY_BYTES = 1 << 20
+HEALTH_PATH = "/api/health"
 
 _JOB_ROUTE = re.compile(r"^/api/jobs/(?P<job_id>[^/]+)$")
 _JOB_EVENTS_ROUTE = re.compile(r"^/api/jobs/(?P<job_id>[^/]+)/events$")
@@ -62,10 +79,97 @@ Response = tuple[HTTPStatus, dict[str, Any]]
 class ApiError(Exception):
     """An HTTP error the handler turns into ``{"detail": ...}``."""
 
-    def __init__(self, status: HTTPStatus, detail: str):
+    def __init__(self, status: HTTPStatus, detail: str, headers: dict[str, str] | None = None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.headers = headers or {}
+
+
+# ------------------------------------------------------------------------ auth
+
+
+def _same(presented: str, expected: str | None) -> bool:
+    return expected is not None and hmac.compare_digest(presented.encode(), expected.encode())
+
+
+def _bearer(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.strip().partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    return token.strip() or None
+
+
+@dataclass(frozen=True)
+class AuthPolicy:
+    """Bearer-token policy checked before anything else in a request.
+
+    ``write_token`` is required for POST, PUT and DELETE and also grants GET.
+    ``read_token`` grants GET only. With no ``write_token`` the server is open;
+    ``resolve_auth`` only allows that on loopback or with an explicit flag.
+    ``/api/health`` never needs a token, so load balancers and uptime checks
+    work, and it reveals nothing but ``{"status": "ok"}``.
+    """
+
+    write_token: str | None = None
+    read_token: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.write_token is not None
+
+    def check(self, method: str, path: str, authorization: str | None) -> None:
+        if not self.enabled or path == HEALTH_PATH:
+            return
+        presented = _bearer(authorization)
+        if presented is None:
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "Bearer token required", {"WWW-Authenticate": "Bearer"})
+        if _same(presented, self.write_token):
+            return
+        if _same(presented, self.read_token):
+            if method == "GET":
+                return
+            raise ApiError(HTTPStatus.FORBIDDEN, "The read token cannot modify jobs")
+        raise ApiError(
+            HTTPStatus.UNAUTHORIZED, "Invalid bearer token", {"WWW-Authenticate": 'Bearer error="invalid_token"'}
+        )
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def resolve_auth(
+    host: str,
+    *,
+    token_env: str = DEFAULT_TOKEN_ENV,
+    read_token_env: str = DEFAULT_READ_TOKEN_ENV,
+    allow_unauthenticated: bool = False,
+) -> AuthPolicy:
+    """Build the policy from the environment, refusing unsafe combinations.
+
+    Raises ``SystemExit`` with a plain-English reason when the server would be
+    reachable beyond loopback with no token, or when only a read token is set.
+    """
+    write_token = os.environ.get(token_env) or None
+    read_token = os.environ.get(read_token_env) or None
+    if write_token is None:
+        if read_token is not None:
+            raise SystemExit(f"${read_token_env} is set but ${token_env} is not; a read token needs a write token.")
+        if not _is_loopback(host) and not allow_unauthenticated:
+            raise SystemExit(
+                f"Refusing to listen on {host} without a bearer token: anyone who can reach this port could read "
+                f"and rewrite every job. Set ${token_env} (and optionally ${read_token_env}), or pass "
+                "--allow-unauthenticated when the network itself is trusted, such as a cluster login node."
+            )
+    return AuthPolicy(write_token=write_token, read_token=read_token)
 
 
 # --------------------------------------------------------------------- routing
@@ -77,7 +181,7 @@ def route(store: StatusStore, method: str, raw_path: str, body: dict[str, Any] |
     path = url.path.rstrip("/") or "/"
     query = {key: values[-1] for key, values in parse_qs(url.query).items()}
 
-    if path == "/api/health" and method == "GET":
+    if path == HEALTH_PATH and method == "GET":
         return HTTPStatus.OK, {"status": "ok"}
     if path == "/api/jobs":
         if method == "POST":
@@ -136,6 +240,7 @@ def _get_job(store: StatusStore, job_id: str) -> Response:
 def _delete_job(store: StatusStore, job_id: str) -> Response:
     if not store.delete_job(job_id):
         raise ApiError(HTTPStatus.NOT_FOUND, "Job not found")
+    logger.info("%s deleted", job_id)
     return HTTPStatus.OK, {"deleted": True, "job_id": job_id}
 
 
@@ -197,10 +302,22 @@ def _require_member(enum: type[JobStatus | JobStage], value: str, field: str) ->
         ) from None
 
 
+def _parse_json(raw: bytes | None) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"Body is not valid JSON: {exc.msg}") from None
+    if not isinstance(parsed, dict):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "Body must be a JSON object")
+    return parsed
+
+
 # ---------------------------------------------------------------------- server
 
 
-def _handler_class(store: StatusStore) -> type[BaseHTTPRequestHandler]:
+def _handler_class(store: StatusStore, auth: AuthPolicy) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "srtctl-status-server"
         protocol_version = "HTTP/1.1"
@@ -222,59 +339,106 @@ def _handler_class(store: StatusStore) -> type[BaseHTTPRequestHandler]:
             self._handle("DELETE")
 
         def _handle(self, method: str) -> None:
+            """Order matters: size cap, then auth, then JSON parsing, then routing.
+
+            An unauthenticated caller therefore learns nothing from the response,
+            not even whether the body parsed or the job exists.
+            """
+            headers: dict[str, str] = {}
             try:
-                status, body = route(store, method, self.path, self._read_json())
+                raw = self._read_body()
+                path = urlparse(self.path).path.rstrip("/") or "/"
+                auth.check(method, path, self.headers.get("Authorization"))
+                status, body = route(store, method, self.path, _parse_json(raw))
             except ApiError as exc:
-                status, body = exc.status, {"detail": exc.detail}
+                if exc.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+                    logger.info("%s %s %s from %s", exc.status.value, method, self.path, self.address_string())
+                status, body, headers = exc.status, {"detail": exc.detail}, exc.headers
             except ValidationError as exc:
                 status, body = HTTPStatus.UNPROCESSABLE_ENTITY, {"detail": json.loads(exc.json())}
             except Exception:
                 logger.exception("Unhandled error serving %s %s", method, self.path)
                 status, body = HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": "Internal server error"}
-            self._send_json(status, body)
+            self._send_json(status, body, headers)
 
-        def _read_json(self) -> dict[str, Any] | None:
-            length = int(self.headers.get("Content-Length") or 0)
+        def _read_body(self) -> bytes | None:
+            header = self.headers.get("Content-Length")
+            try:
+                length = int(header) if header else 0
+            except ValueError:
+                self.close_connection = True
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Content-Length must be an integer") from None
+            if length > MAX_BODY_BYTES:
+                # Not read, so the connection cannot be reused for a keep-alive request.
+                self.close_connection = True
+                raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"Body larger than {MAX_BODY_BYTES} bytes")
             if length == 0:
                 return None
-            raw = self.rfile.read(length)
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise ApiError(HTTPStatus.BAD_REQUEST, f"Body is not valid JSON: {exc.msg}") from None
-            if not isinstance(parsed, dict):
-                raise ApiError(HTTPStatus.BAD_REQUEST, "Body must be a JSON object")
-            return parsed
+            return self.rfile.read(length)
 
-        def _send_json(self, status: HTTPStatus, body: dict[str, Any]) -> None:
+        def _send_json(self, status: HTTPStatus, body: dict[str, Any], headers: dict[str, str]) -> None:
             data = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
+            for name, value in headers.items():
+                self.send_header(name, value)
+            if self.close_connection:
+                # Tell keep-alive clients not to reuse a connection whose body was never drained.
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(data)
 
     return Handler
 
 
-def make_server(store: StatusStore, *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> ThreadingHTTPServer:
-    """Bind a server for ``store``. ``port=0`` picks a free port; read it back from ``server.server_address``."""
-    server = ThreadingHTTPServer((host, port), _handler_class(store))
+def make_server(
+    store: StatusStore,
+    *,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    auth: AuthPolicy | None = None,
+) -> ThreadingHTTPServer:
+    """Bind a server for ``store``. ``port=0`` picks a free port; read it back from ``server.server_address``.
+
+    ``auth=None`` means no authentication; callers other than tests should go
+    through ``resolve_auth`` so the loopback rule is applied.
+    """
+    server = ThreadingHTTPServer((host, port), _handler_class(store, auth or AuthPolicy()))
     server.daemon_threads = True
     return server
 
 
-def serve(*, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, db_path: Path | None = None) -> None:
+def serve(
+    *,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    db_path: Path | None = None,
+    token_env: str = DEFAULT_TOKEN_ENV,
+    read_token_env: str = DEFAULT_READ_TOKEN_ENV,
+    allow_unauthenticated: bool = False,
+) -> None:
     """Run the collector until interrupted."""
+    auth = resolve_auth(
+        host, token_env=token_env, read_token_env=read_token_env, allow_unauthenticated=allow_unauthenticated
+    )
     store = StatusStore((db_path or DEFAULT_DB_PATH).expanduser())
     store.init()
-    server = make_server(store, host=host, port=port)
+    server = make_server(store, host=host, port=port, auth=auth)
     bound_host, bound_port = server.server_address[0], server.server_address[1]
     print(f"srtctl status-server listening on http://{bound_host}:{bound_port} (db: {store.db_path})")
+    if auth.enabled:
+        read = f", read token from ${read_token_env}" if auth.read_token else ""
+        print(f"auth: bearer token required on every route except {HEALTH_PATH} (write token from ${token_env}{read})")
+    else:
+        why = "loopback only" if _is_loopback(host) else "--allow-unauthenticated"
+        print(f"auth: none ({why})")
     print("Point srtslurm.yaml or a recipe at it with:")
     print("  reporting:")
     print("    status:")
     print(f'      endpoint: "http://<this-host>:{bound_port}"')
+    if auth.enabled:
+        print(f"and export ${token_env} in the shell that runs srtctl apply.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -297,6 +461,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=f"SQLite file for jobs and events (default: {DEFAULT_DB_PATH})",
     )
+    parser.add_argument(
+        "--token-env",
+        default=DEFAULT_TOKEN_ENV,
+        metavar="VAR",
+        help=f"Environment variable holding the write token; grants every route (default: {DEFAULT_TOKEN_ENV})",
+    )
+    parser.add_argument(
+        "--read-token-env",
+        default=DEFAULT_READ_TOKEN_ENV,
+        metavar="VAR",
+        help=f"Environment variable holding a read-only token for GET routes (default: {DEFAULT_READ_TOKEN_ENV})",
+    )
+    parser.add_argument(
+        "--allow-unauthenticated",
+        action="store_true",
+        help="Listen beyond loopback with no token set; only for a network that is trusted end to end",
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -307,7 +488,14 @@ def main(argv: list[str] | None = None) -> None:
     add_arguments(parser)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    serve(host=args.host, port=args.port, db_path=args.db)
+    serve(
+        host=args.host,
+        port=args.port,
+        db_path=args.db,
+        token_env=args.token_env,
+        read_token_env=args.read_token_env,
+        allow_unauthenticated=args.allow_unauthenticated,
+    )
 
 
 if __name__ == "__main__":

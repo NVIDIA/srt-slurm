@@ -11,9 +11,13 @@ agree with each other with nothing patched in between.
 
 from __future__ import annotations
 
+import http.client
+import logging
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,8 +29,25 @@ from srtctl.contract import JobStage, JobStatus, JobSummary
 from srtctl.core.schema import ReportingConfig, ReportingStatusConfig
 from srtctl.core.status import StatusReporter, create_job_record
 from srtctl.status_server import StatusStore, make_server
+from srtctl.status_server.server import MAX_BODY_BYTES, AuthPolicy, resolve_auth
 
 NOW = "2026-01-01T00:00:00Z"
+WRITE = "w-secret-token"
+READ = "r-secret-token"
+
+
+@contextmanager
+def _running(server: ThreadingHTTPServer):
+    """Serve on a background thread for the duration of the block."""
+    # Short poll interval so server.shutdown() returns quickly at teardown.
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 @pytest.fixture
@@ -38,16 +59,21 @@ def store(tmp_path: Path) -> StatusStore:
 
 @pytest.fixture
 def base_url(store: StatusStore):
-    server = make_server(store, host="127.0.0.1", port=0)
-    # Short poll interval so server.shutdown() returns quickly at teardown.
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+    """Open server (no tokens), as on a cluster login node."""
+    with _running(make_server(store, host="127.0.0.1", port=0)) as url:
+        yield url
+
+
+@pytest.fixture
+def auth_url(store: StatusStore):
+    """Server requiring a write token, with a separate read-only token."""
+    auth = AuthPolicy(write_token=WRITE, read_token=READ)
+    with _running(make_server(store, host="127.0.0.1", port=0, auth=auth)) as url:
+        yield url
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -173,13 +199,13 @@ class TestLifecycleThroughReporter:
 
     def test_multiple_endpoints_each_receive_everything(self, tmp_path):
         stores = [StatusStore(tmp_path / f"{i}.db") for i in range(2)]
-        servers = [make_server(store, host="127.0.0.1", port=0) for store in stores]
-        threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in servers]
-        for store, thread in zip(stores, threads, strict=True):
+        for store in stores:
             store.init()
-            thread.start()
-        try:
-            urls = [f"http://127.0.0.1:{server.server_address[1]}" for server in servers]
+        with (
+            _running(make_server(stores[0], host="127.0.0.1", port=0)) as first,
+            _running(make_server(stores[1], host="127.0.0.1", port=0)) as second,
+        ):
+            urls = [first, second]
             reporting = ReportingConfig(status=ReportingStatusConfig(endpoints=urls))
             assert create_job_record(reporting, job_id="1", job_name="dual")
             StatusReporter.from_config(reporting, job_id="1").report(JobStatus.WORKERS, JobStage.WORKERS, "go")
@@ -187,10 +213,6 @@ class TestLifecycleThroughReporter:
                 job = _get(url, "/api/jobs/1").json()
                 assert job["status"] == "workers"
                 assert len(job["events"]) == 2
-        finally:
-            for server in servers:
-                server.shutdown()
-                server.server_close()
 
 
 # ============================================================================
@@ -440,14 +462,244 @@ class TestCli:
         monkeypatch.setattr(
             sys,
             "argv",
-            ["srtctl", "status-server", "--host", "0.0.0.0", "--port", "9999", "--db", str(tmp_path / "x.db")],
+            [
+                "srtctl",
+                "status-server",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "9999",
+                "--db",
+                str(tmp_path / "x.db"),
+                "--token-env",
+                "MY_WRITE",
+                "--read-token-env",
+                "MY_READ",
+                "--allow-unauthenticated",
+            ],
         )
         submit_cli.main()
-        assert captured == {"host": "0.0.0.0", "port": 9999, "db_path": tmp_path / "x.db"}
+        assert captured == {
+            "host": "0.0.0.0",
+            "port": 9999,
+            "db_path": tmp_path / "x.db",
+            "token_env": "MY_WRITE",
+            "read_token_env": "MY_READ",
+            "allow_unauthenticated": True,
+        }
 
     def test_status_server_defaults(self, monkeypatch):
         captured: dict = {}
         monkeypatch.setattr(submit_cli, "serve_status_server", lambda **kwargs: captured.update(kwargs))
         monkeypatch.setattr(sys, "argv", ["srtctl", "status-server"])
         submit_cli.main()
-        assert captured == {"host": "127.0.0.1", "port": 8080, "db_path": None}
+        assert captured == {
+            "host": "127.0.0.1",
+            "port": 8080,
+            "db_path": None,
+            "token_env": "SRTCTL_STATUS_TOKEN",
+            "read_token_env": "SRTCTL_STATUS_READ_TOKEN",
+            "allow_unauthenticated": False,
+        }
+
+
+# ============================================================================
+# Authentication (public exposure)
+# ============================================================================
+
+
+class TestAuth:
+    def test_health_is_open_and_everything_else_needs_a_token(self, auth_url):
+        assert _get(auth_url, "/api/health").json() == {"status": "ok"}
+
+        denied = _get(auth_url, "/api/jobs")
+        assert denied.status_code == 401
+        assert denied.headers["WWW-Authenticate"] == "Bearer"
+        assert denied.json() == {"detail": "Bearer token required"}
+
+        assert _create(auth_url, "1").status_code == 401
+        assert _put(auth_url, "1", {"status": "workers"}).status_code == 401
+        assert requests.delete(f"{auth_url}/api/jobs/1", timeout=5).status_code == 401
+        assert _get(auth_url, "/api/events").status_code == 401
+        assert _get(auth_url, "/api/jobs/1/events").status_code == 401
+
+        # None of the rejected writes stored anything, not even a placeholder.
+        assert requests.get(f"{auth_url}/api/jobs", headers=_bearer(WRITE), timeout=5).json()["total"] == 0
+
+    def test_unauthenticated_requests_learn_nothing(self, auth_url):
+        """Auth runs before JSON parsing and routing: no 400, 404 or 422 without a token."""
+        headers = {"Content-Type": "application/json"}
+        assert requests.post(f"{auth_url}/api/jobs", data="not json", headers=headers, timeout=5).status_code == 401
+        assert _get(auth_url, "/api/jobs/does-not-exist").status_code == 401
+        assert _get(auth_url, "/api/nope").status_code == 401
+        assert _get(auth_url, "/api/jobs?per_page=0").status_code == 401
+
+    def test_wrong_token_or_scheme_is_401(self, auth_url):
+        wrong = requests.get(f"{auth_url}/api/jobs", headers=_bearer("nope"), timeout=5)
+        assert wrong.status_code == 401
+        assert wrong.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
+        # A prefix of the token is not the token.
+        assert requests.get(f"{auth_url}/api/jobs", headers=_bearer(WRITE[:-1]), timeout=5).status_code == 401
+        assert (
+            requests.get(f"{auth_url}/api/jobs", headers={"Authorization": f"Basic {WRITE}"}, timeout=5).status_code
+            == 401
+        )
+        assert requests.get(f"{auth_url}/api/jobs", headers={"Authorization": "Bearer "}, timeout=5).status_code == 401
+
+    def test_read_token_reads_but_cannot_write(self, auth_url):
+        requests.post(
+            f"{auth_url}/api/jobs",
+            json={"job_id": "1", "job_name": "a", "submitted_at": NOW},
+            headers=_bearer(WRITE),
+            timeout=5,
+        )
+        read = _bearer(READ)
+        assert requests.get(f"{auth_url}/api/jobs", headers=read, timeout=5).json()["total"] == 1
+        assert requests.get(f"{auth_url}/api/jobs/1", headers=read, timeout=5).status_code == 200
+        assert requests.get(f"{auth_url}/api/events", headers=read, timeout=5).status_code == 200
+
+        for response in (
+            requests.post(
+                f"{auth_url}/api/jobs",
+                json={"job_id": "2", "job_name": "b", "submitted_at": NOW},
+                headers=read,
+                timeout=5,
+            ),
+            requests.put(
+                f"{auth_url}/api/jobs/1", json={"status": "workers", "updated_at": NOW}, headers=read, timeout=5
+            ),
+            requests.delete(f"{auth_url}/api/jobs/1", headers=read, timeout=5),
+        ):
+            assert response.status_code == 403
+            assert response.json() == {"detail": "The read token cannot modify jobs"}
+
+        job = requests.get(f"{auth_url}/api/jobs/1", headers=read, timeout=5).json()
+        assert job["status"] == "submitted"
+        assert requests.get(f"{auth_url}/api/jobs/2", headers=read, timeout=5).status_code == 404
+
+    def test_write_token_grants_every_route(self, auth_url):
+        write = _bearer(WRITE)
+        assert (
+            requests.post(
+                f"{auth_url}/api/jobs",
+                json={"job_id": "1", "job_name": "a", "submitted_at": NOW},
+                headers=write,
+                timeout=5,
+            ).status_code
+            == 201
+        )
+        assert (
+            requests.put(
+                f"{auth_url}/api/jobs/1", json={"status": "workers", "updated_at": NOW}, headers=write, timeout=5
+            ).status_code
+            == 200
+        )
+        assert requests.get(f"{auth_url}/api/jobs/1", headers=write, timeout=5).json()["status"] == "workers"
+        assert requests.get(f"{auth_url}/api/jobs/1/events", headers=write, timeout=5).status_code == 200
+        assert requests.delete(f"{auth_url}/api/jobs/1", headers=write, timeout=5).status_code == 200
+
+    def test_reporter_sends_the_token_from_the_environment(self, auth_url, monkeypatch, tmp_path):
+        monkeypatch.setenv("SRTCTL_STATUS_TOKEN", WRITE)
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint=auth_url))
+        assert create_job_record(reporting, job_id="42", job_name="secure", cluster="c")
+        reporter = StatusReporter.from_config(reporting, job_id="42")
+        assert reporter.report_started(_config(), _runtime(tmp_path))
+        assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
+        assert reporter.report_completed(0)
+
+        job = requests.get(f"{auth_url}/api/jobs/42", headers=_bearer(READ), timeout=5).json()
+        assert job["job_name"] == "secure"
+        assert [e["status"] for e in job["events"]] == ["submitted", "starting", "workers", "completed"]
+
+    def test_reporter_with_wrong_or_missing_token_fails_loudly(self, auth_url, monkeypatch, caplog):
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint=auth_url))
+        reporter = StatusReporter.from_config(reporting, job_id="43")
+
+        monkeypatch.setenv("SRTCTL_STATUS_TOKEN", "wrong")
+        with caplog.at_level(logging.WARNING, logger="srtctl.core.status"):
+            assert create_job_record(reporting, job_id="43", job_name="x") is False
+            assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go") is False
+        assert "rejected (HTTP 401)" in caplog.text
+        assert "$SRTCTL_STATUS_TOKEN" in caplog.text
+        assert "wrong" not in caplog.text  # the token value is never logged
+
+        monkeypatch.delenv("SRTCTL_STATUS_TOKEN")
+        assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go") is False
+        assert requests.get(f"{auth_url}/api/jobs/43", headers=_bearer(READ), timeout=5).status_code == 404
+
+    def test_custom_token_variable_name(self, auth_url, monkeypatch):
+        monkeypatch.setenv("MY_COLLECTOR_TOKEN", WRITE)
+        monkeypatch.delenv("SRTCTL_STATUS_TOKEN", raising=False)
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint=auth_url, token_env="MY_COLLECTOR_TOKEN"))
+        assert create_job_record(reporting, job_id="44", job_name="custom")
+        reporter = StatusReporter.from_config(reporting, job_id="44")
+        assert reporter.token_env == "MY_COLLECTOR_TOKEN"
+        assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go")
+
+    def test_redirects_are_failures_not_success(self, caplog):
+        """A collector behind a login page answers 302; following it would look like HTTP 200."""
+
+        class Redirector(BaseHTTPRequestHandler):
+            def _redirect(self) -> None:
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:9/sign_in")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = do_POST = do_PUT = _redirect
+
+            def log_message(self, *args) -> None:
+                pass
+
+        with _running(ThreadingHTTPServer(("127.0.0.1", 0), Redirector)) as url:
+            reporting = ReportingConfig(status=ReportingStatusConfig(endpoint=url))
+            reporter = StatusReporter.from_config(reporting, job_id="45")
+            with caplog.at_level(logging.WARNING, logger="srtctl.core.status"):
+                assert create_job_record(reporting, job_id="45", job_name="x") is False
+                assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go") is False
+        assert "redirected (HTTP 302)" in caplog.text
+        assert "nothing was recorded" in caplog.text
+
+    def test_oversized_body_is_rejected_before_it_is_read(self, base_url):
+        host, port = base_url.removeprefix("http://").split(":")
+        conn = http.client.HTTPConnection(host, int(port), timeout=5)
+        conn.putrequest("PUT", "/api/jobs/1")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(MAX_BODY_BYTES + 1))
+        conn.endheaders()  # body deliberately never sent
+        response = conn.getresponse()
+        assert response.status == 413
+        assert response.getheader("Connection") == "close"
+        conn.close()
+        assert _get(base_url, "/api/jobs/1").status_code == 404
+
+    def test_resolve_auth_refuses_public_bind_without_a_token(self, monkeypatch):
+        monkeypatch.delenv("SRTCTL_STATUS_TOKEN", raising=False)
+        monkeypatch.delenv("SRTCTL_STATUS_READ_TOKEN", raising=False)
+
+        assert resolve_auth("127.0.0.1").enabled is False
+        assert resolve_auth("localhost").enabled is False
+        assert resolve_auth("::1").enabled is False
+        with pytest.raises(SystemExit, match="Refusing to listen on 0.0.0.0"):
+            resolve_auth("0.0.0.0")
+        with pytest.raises(SystemExit, match="Refusing"):
+            resolve_auth("login-node.internal")
+        assert resolve_auth("0.0.0.0", allow_unauthenticated=True).enabled is False
+
+        monkeypatch.setenv("SRTCTL_STATUS_READ_TOKEN", READ)
+        with pytest.raises(SystemExit, match="read token needs a write token"):
+            resolve_auth("127.0.0.1")
+
+        monkeypatch.setenv("SRTCTL_STATUS_TOKEN", WRITE)
+        policy = resolve_auth("0.0.0.0")
+        assert policy == AuthPolicy(write_token=WRITE, read_token=READ)
+
+        monkeypatch.setenv("OTHER_WRITE", "ow")
+        monkeypatch.delenv("SRTCTL_STATUS_READ_TOKEN")
+        assert resolve_auth("0.0.0.0", token_env="OTHER_WRITE") == AuthPolicy(write_token="ow", read_token=None)
+
+    def test_single_token_mode_uses_the_write_token_for_reads(self, store):
+        with _running(make_server(store, host="127.0.0.1", port=0, auth=AuthPolicy(write_token=WRITE))) as url:
+            assert _get(url, "/api/jobs").status_code == 401
+            assert requests.get(f"{url}/api/jobs", headers=_bearer(WRITE), timeout=5).status_code == 200
+            assert requests.get(f"{url}/api/jobs", headers=_bearer(READ), timeout=5).status_code == 401

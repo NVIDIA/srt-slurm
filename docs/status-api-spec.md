@@ -14,6 +14,8 @@ reporting:
     endpoints:
       - "http://login-node:8080"
       - "https://status.example.com"
+    # Optional: which environment variable holds the bearer token (default SRTCTL_STATUS_TOKEN)
+    token_env: SRTCTL_STATUS_TOKEN
 ```
 
 If not configured, status reporting is disabled and jobs run normally.
@@ -34,6 +36,42 @@ Behaviors of the native collector on top of the contract:
 - A repeated POST leaves the row alone and returns its current status.
 - An event is appended whenever `(status, stage, message)` differs from the job's last event. Same-status transitions are kept (`frontend / Starting frontend`, then `frontend / Inference endpoint ready`); pure `artifacts` or `metadata` patches emit nothing.
 - `status` and `stage` are validated against `srtctl.contract.JobStatus` and `JobStage`; anything else is HTTP 422.
+- Bodies over 1 MiB are rejected with 413 before they are read.
+
+## Authentication
+
+Tokens are bearer tokens read from the environment on both sides. Nothing token-shaped ever goes into a recipe or `srtslurm.yaml`: the resolved config is written to the lockfile and copied into the log directory that `reporting.s3` uploads.
+
+| Side | Variable | Effect |
+|------|----------|--------|
+| Server | `SRTCTL_STATUS_TOKEN` (`--token-env`) | Write token. Required for POST, PUT and DELETE; also grants GET |
+| Server | `SRTCTL_STATUS_READ_TOKEN` (`--read-token-env`) | Optional read-only token for GET routes (dashboards, humans) |
+| Reporter | `SRTCTL_STATUS_TOKEN` (`reporting.status.token_env` renames it) | Sent as `Authorization: Bearer` on every POST and PUT |
+
+Rules:
+
+- `GET /api/health` never needs a token and returns only `{"status": "ok"}`.
+- Authentication runs before body parsing and routing, so an unauthenticated caller gets 401 and learns nothing else: not whether a job exists, not whether the body parsed.
+- Missing or wrong token: 401 with `WWW-Authenticate: Bearer`. Read token on a write route: 403. Tokens are compared in constant time.
+- With no write token the server is open. That is only allowed on loopback, or with `--allow-unauthenticated` for a network that is trusted end to end (a cluster login node reachable only from its compute nodes). A read token without a write token is a startup error.
+- The reporter never follows redirects (`allow_redirects=False`). A 3xx means the endpoint is behind a login page or proxy and is logged at WARNING as a failure; so are 401 and 403. Network errors stay at DEBUG because reporting is fire-and-forget.
+
+The reporter reads the token from the shell that runs `srtctl apply`; SLURM's default `--export=ALL` carries it to the orchestrator on the head node, which runs outside the container.
+
+```bash
+# collector host
+export SRTCTL_STATUS_TOKEN=$(openssl rand -hex 32)
+export SRTCTL_STATUS_READ_TOKEN=$(openssl rand -hex 32)
+srtctl status-server --host 0.0.0.0 --port 8080
+
+# login node, before srtctl apply (same write token)
+export SRTCTL_STATUS_TOKEN=<write token>
+
+# reading
+curl -H "Authorization: Bearer $SRTCTL_STATUS_READ_TOKEN" https://collector.example.com/api/events
+```
+
+Exposing the collector on the public internet also needs TLS in front of it (a reverse proxy, or a platform that terminates TLS) and, where possible, a source allow-list for the cluster's egress addresses on the write path. The collector itself never speaks TLS.
 
 ## Endpoints
 
@@ -223,5 +261,6 @@ from srtctl.contract import (
 ## Behavior
 
 - All requests have a 5-second timeout
-- Failures are logged at DEBUG level and ignored
+- Redirects are never followed; a 3xx, 401 or 403 is logged at WARNING and counts as a failure
+- Other failures are logged at DEBUG level and ignored
 - Job execution is never blocked by status reporting failures
