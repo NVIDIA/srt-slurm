@@ -73,25 +73,21 @@ def test_placed_node_no_decode_workers_raises():
 
 def _config(*, orchestrator_placement="head", client_placement="head") -> SrtConfig:
     data = {
+        "schema": 2,
         "name": "test",
         "model": {"path": "/models/test", "container": "test.sqsh", "precision": "fp4"},
-        "resources": {
-            "gpu_type": "gb300",
-            "gpus_per_node": 4,
-            "prefill_nodes": 1,
-            "prefill_workers": 1,
-            "gpus_per_prefill": 4,
-            "decode_nodes": 2,
-            "decode_workers": 2,
-            "gpus_per_decode": 4,
+        "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+        "engine": "trtllm",
+        "roles": {
+            "prefill": {"nodes": 1, "workers": 1, "gpus": 4},
+            "decode": {"nodes": 2, "workers": 2, "gpus": 4},
         },
-        "backend": {"type": "trtllm"},
         "frontend": {
             "type": "trtllm_serve",
             "enable_multiple_frontends": False,
-            "orchestrator_placement": orchestrator_placement,
+            "placement": {"node": orchestrator_placement},
         },
-        "benchmark": {"type": "custom", "command": "true", "client_placement": client_placement},
+        "benchmark": {"type": "custom", "command": "true", "placement": {"node": client_placement}},
     }
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         yaml.dump(data, f)
@@ -128,7 +124,9 @@ def test_frontend_default_head_does_not_touch_processes():
 
 
 def test_frontend_orchestrator_on_first_decode():
-    orch = SweepOrchestrator(config=_config(orchestrator_placement="first_decode"), runtime=_runtime(["p0", "g0", "g1"]))
+    orch = SweepOrchestrator(
+        config=_config(orchestrator_placement="first_decode"), runtime=_runtime(["p0", "g0", "g1"])
+    )
     with patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_PROCS):
         topo = orch._compute_frontend_topology()
     assert topo.frontend_nodes == ["g0"]
@@ -164,15 +162,12 @@ def test_benchmark_env_injects_frontend_host():
 
 def _agg_vllm_config() -> SrtConfig:
     data = {
+        "schema": 2,
         "name": "test",
         "model": {"path": "/models/test", "container": "test.sqsh", "precision": "fp4"},
-        "resources": {
-            "gpu_type": "b200",
-            "gpus_per_node": 8,
-            "agg_nodes": 2,
-            "agg_workers": 1,
-        },
-        "backend": {"type": "vllm"},
+        "resources": {"gpu_type": "b200", "gpus_per_node": 8},
+        "engine": "vllm",
+        "roles": {"agg": {"nodes": 2, "workers": 1}},
         "frontend": {"type": "vllm", "enable_multiple_frontends": False},
         "benchmark": {"type": "custom", "command": "true"},
     }

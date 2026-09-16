@@ -9,7 +9,12 @@ lockfile so that it declares ``schema: <current>`` and uses the current layout.
 The transformation is done on a ruamel round-trip document, so comments, key
 order, and quoting survive; keys that move between blocks carry their comments.
 
-v1 -> v2 rewrites (each is a pure re-spelling; the resolved config is identical):
+This module is the only part of srtctl that still reads the pre-2.0 (v1)
+layout: the loader rejects it (``srtctl.core.config.require_current_schema``),
+so a v1 recipe has to pass through here first. The key-by-key mapping is
+documented in ``docs/legacy-v1.md``.
+
+v1 -> v2 rewrites (each is a pure re-spelling of the same resolved config):
 
 - ``resources.<role>_nodes/_workers``, ``gpus_per_<role>``, ``<role>_critical``,
   ``backend.<mode>_environment``, ``backend.<engine>_config.<mode>``, and
@@ -21,27 +26,33 @@ v1 -> v2 rewrites (each is a pure re-spelling; the resolved config is identical)
   ``dynamo.source``. ``top_of_tree`` has no immutable equivalent and is left.
 - ``benchmark`` fields the recipe's benchmark type never reads are removed
   (schema 2 rejects them; they were silent no-ops).
-
-``srtctl migrate --verify`` proves the equivalence: it migrates in memory,
-resolves both documents through the same loader, and compares the results.
+- schema 1 ``frontend.type: sglang`` (the router) becomes ``sglang-router``;
+  in schema 2 ``sglang`` is the router-free single worker.
 """
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from srtctl.core.roles import COLOCATE, ENGINE_CONFIG_KEY, ROLE_NAMES, ROLE_TO_MODE
-from srtctl.core.schema import CURRENT_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
+from srtctl.core.schema import CURRENT_SCHEMA_VERSION
 from srtctl.core.yaml_utils import dump_yaml_with_comments, load_yaml_text_with_comments
 
 _VARIANT_PREFIXES = ("override_", "zip_override_")
 _ENGINE_KEYS = frozenset(ENGINE_CONFIG_KEY.values())
+
+# Every schema version the migrator reads. The loader accepts only the current one.
+MIGRATABLE_SCHEMA_VERSIONS: tuple[int, ...] = (1, CURRENT_SCHEMA_VERSION)
+
+# Renamed frontend types: {schema-1 value: schema-2 value}. In schema 1 recipes
+# ``frontend.type: sglang`` was the SGLang Model Gateway; in 2.0 that router is
+# ``sglang-router`` and ``sglang`` is the router-free single worker.
+SCHEMA1_FRONTEND_RENAMES: dict[str, str] = {"sglang": "sglang-router"}
 
 
 @dataclass(frozen=True)
@@ -144,8 +155,8 @@ def _declared_version(doc: CommentedMap) -> int:
     raw = doc.get("schema", 1)
     if isinstance(raw, bool) or not isinstance(raw, int):
         raise TypeError(f"schema must be an integer version, got {raw!r}")
-    if raw not in SUPPORTED_SCHEMA_VERSIONS:
-        raise ValueError(f"schema {raw} is not supported; known versions: {list(SUPPORTED_SCHEMA_VERSIONS)}")
+    if raw not in MIGRATABLE_SCHEMA_VERSIONS:
+        raise ValueError(f"schema {raw} is not supported; known versions: {list(MIGRATABLE_SCHEMA_VERSIONS)}")
     return raw
 
 
@@ -579,8 +590,6 @@ def _fold_engine(variant: CommentedMap, base: CommentedMap, label: str) -> list[
 
 def _rename_schema1_frontends(doc: CommentedMap) -> list[str]:
     """``frontend.type: sglang`` (schema 1, the router) -> ``sglang-router`` in every variant."""
-    from srtctl.core.config import SCHEMA1_FRONTEND_RENAMES
-
     notes: list[str] = []
     for label, variant in _variants(doc):
         frontend = variant.get("frontend")
@@ -652,193 +661,3 @@ def recipe_files(paths: Iterable[Path]) -> list[Path]:
         else:
             found.add(path)
     return sorted(found)
-
-
-# --- golden equality ----------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class VerifyResult:
-    """Golden-equality outcome for one recipe file."""
-
-    path: Path
-    status: str  # ok | mismatch | skipped | error
-    detail: str = ""
-    variants: int = 0
-    notes: tuple[str, ...] = field(default_factory=tuple)
-
-    @property
-    def ok(self) -> bool:
-        return self.status in {"ok", "skipped"}
-
-
-def _expand(raw: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-    """Every concrete recipe a raw document produces: plain, override variants, or sweep points."""
-    from srtctl.core.config import generate_override_configs
-
-    if "base" in raw:
-        return generate_override_configs(raw)
-    if "sweep" in raw:
-        from srtctl.core.sweep import generate_sweep_configs
-
-        return [(str(params), cfg) for cfg, params in generate_sweep_configs(copy.deepcopy(raw))]
-    return [("", raw)]
-
-
-def _resolved_dump(raw: dict[str, Any]) -> dict[str, Any]:
-    """Resolve and load a raw recipe exactly as the loader does, then dump it for comparison."""
-    from srtctl.core.config import resolve_config_with_defaults
-    from srtctl.core.schema import SrtConfig
-
-    schema = SrtConfig.Schema()
-    loaded = schema.load(resolve_config_with_defaults(raw, None))
-    dumped = schema.dump(loaded)
-    dumped.pop("schema", None)
-    # kv_events_config is compared by effect, not spelling: `true` and a per-mode
-    # map that enables the same modes resolve to the same worker flags. Only modes
-    # with workers matter.
-    backend = dumped.get("backend")
-    if (
-        isinstance(backend, dict)
-        and "kv_events_config" in backend
-        and hasattr(loaded.backend, "get_kv_events_config_for_mode")
-    ):
-        active = {
-            "prefill": loaded.resources.num_prefill,
-            "decode": loaded.resources.num_decode,
-            "agg": loaded.resources.num_agg,
-        }
-        backend["kv_events_config"] = {
-            mode: loaded.backend.get_kv_events_config_for_mode(mode) for mode, count in active.items() if count > 0
-        }
-    # Worker GPU sizes are compared by effect: v1 derived them from nodes / workers
-    # (and let colocated decode inherit prefill); the migrator writes the same
-    # numbers out explicitly for `nodes: colocate`, which the job launches identically.
-    resources = dumped.get("resources")
-    if isinstance(resources, dict):
-        for role in ("prefill", "decode", "agg"):
-            if getattr(loaded.resources, f"num_{role}", 0):
-                resources[f"gpus_per_{role}"] = getattr(loaded.resources, f"gpus_per_{role}")
-    # services are compared by effect: the list the job would run, implied ones
-    # included, so `infra:` and declared etcd/nats entries (or mooncake_kv_store
-    # and a declared master) resolve to the same thing.
-    from srtctl.services.implicit import effective_services
-
-    effective = [entry.service for entry in effective_services(loaded)]
-    dumped["services"] = schema.fields["services"]._serialize(effective, "services", loaded)
-    if not any(service.type in ("etcd", "nats") for service in effective) and isinstance(dumped.get("infra"), dict):
-        # No discovery plane: the NATS payload knob never had an effect, and the migrator drops it.
-        dumped["infra"]["nats_max_payload_mb"] = None
-    for service, item in zip(effective, dumped["services"], strict=True):
-        # Kind defaults left implicit on one side and spelled out on the other are the same service.
-        item["placement"] = {"node": service.effective_placement}
-        item["start"] = service.effective_start
-        item["critical"] = service.effective_critical
-    # mooncake_kv_store.env is compared by effect too: it was injected into every
-    # worker on top of the per-mode env, which is where the migrator puts it.
-    mooncake = backend.get("mooncake_kv_store") if isinstance(backend, dict) else None
-    if isinstance(mooncake, dict) and mooncake.get("env"):
-        for mode, key in (
-            ("prefill", "prefill_environment"),
-            ("decode", "decode_environment"),
-            ("agg", "aggregated_environment"),
-        ):
-            if getattr(loaded.resources, f"num_{mode}") > 0:
-                backend[key] = {**(backend.get(key) or {}), **mooncake["env"]}
-        mooncake["env"] = {}
-    return dumped
-
-
-def _mask_spelling_only_fields(dump: dict[str, Any]) -> None:
-    """Blank fields that only record how the recipe was spelled, not what it resolves to.
-
-    ``dynamo.source`` maps onto ``hash`` / ``version`` / ``wheel`` / ``cargo_patches``
-    in ``DynamoConfig.__post_init__``; those mapped fields are what gets compared.
-    """
-    dynamo = dump.get("dynamo")
-    if isinstance(dynamo, dict):
-        dynamo["source"] = None
-
-
-def _mask_unused_benchmark_fields(dump: dict[str, Any]) -> None:
-    """Blank benchmark fields the type never reads: the migrator removes them, and they never had an effect."""
-    try:
-        import srtctl.benchmarks  # noqa: F401
-        from srtctl.benchmarks.base import benchmark_config_fields
-    except Exception:  # noqa: BLE001
-        return
-    benchmark = dump.get("benchmark")
-    if not isinstance(benchmark, dict):
-        return
-    accepted = benchmark_config_fields(str(benchmark.get("type", "manual")))
-    for key in list(benchmark):
-        if key not in accepted:
-            benchmark[key] = None
-
-
-def _diff(a: Any, b: Any, path: str = "") -> list[str]:
-    if isinstance(a, dict) and isinstance(b, dict):
-        out: list[str] = []
-        for key in sorted(set(a) | set(b)):
-            out += _diff(a.get(key), b.get(key), f"{path}.{key}" if path else str(key))
-        return out
-    if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
-        out = []
-        for i, (x, y) in enumerate(zip(a, b, strict=True)):
-            out += _diff(x, y, f"{path}[{i}]")
-        return out
-    return [] if a == b else [f"{path}: v1={a!r} v2={b!r}"]
-
-
-def verify_migration_text(text: str, path: Path = Path("<text>")) -> VerifyResult:
-    """Migrate in memory and prove the v1 and v2 documents resolve to the same config."""
-    import yaml
-
-    try:
-        original = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        return VerifyResult(path, "error", f"YAML parse error: {exc}")
-    if not isinstance(original, dict):
-        return VerifyResult(path, "error", "not a YAML mapping")
-
-    try:
-        result = migrate_recipe_text(text)
-        migrated = yaml.safe_load(result.text)
-    except Exception as exc:  # noqa: BLE001 - a migrator crash is a finding, not a skip
-        detail = next((line for line in str(exc).splitlines() if "duplicate key" in line), str(exc).splitlines()[0])
-        return VerifyResult(path, "error", f"migration failed: {detail} (fix the recipe, then re-run)")
-    if not isinstance(migrated, dict):
-        return VerifyResult(path, "error", "migrated document is not a YAML mapping", notes=result.notes)
-
-    try:
-        before = _expand(original)
-    except Exception as exc:  # noqa: BLE001
-        return VerifyResult(path, "skipped", f"v1 document does not expand: {exc}", notes=result.notes)
-    try:
-        after = _expand(migrated)
-    except Exception as exc:  # noqa: BLE001
-        return VerifyResult(path, "mismatch", f"migrated document does not expand: {exc}", notes=result.notes)
-    if len(before) != len(after):
-        return VerifyResult(path, "mismatch", f"{len(before)} variants before, {len(after)} after", notes=result.notes)
-
-    for (name_a, raw_a), (_name_b, raw_b) in zip(before, after, strict=True):
-        where = f" [{name_a}]" if name_a else ""
-        try:
-            dump_a = _resolved_dump(raw_a)
-        except Exception as exc:  # noqa: BLE001
-            return VerifyResult(path, "skipped", f"v1 does not load{where}: {exc}", notes=result.notes)
-        try:
-            dump_b = _resolved_dump(raw_b)
-        except Exception as exc:  # noqa: BLE001
-            return VerifyResult(path, "mismatch", f"migrated recipe does not load{where}: {exc}", notes=result.notes)
-        for dump in (dump_a, dump_b):
-            _mask_spelling_only_fields(dump)
-            _mask_unused_benchmark_fields(dump)
-        differences = _diff(dump_a, dump_b)
-        if differences:
-            return VerifyResult(path, "mismatch", f"resolved configs differ{where}: " + "; ".join(differences[:5]))
-    return VerifyResult(path, "ok", variants=len(before), notes=result.notes)
-
-
-def verify_migration_file(path: Path) -> VerifyResult:
-    return verify_migration_text(path.read_text(encoding="utf-8"), path)

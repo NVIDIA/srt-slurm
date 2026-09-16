@@ -490,7 +490,24 @@ def preflight_config_variants(
     )
     results: list[PreflightResult] = []
     for suffix, variant in variants:
-        resolved = resolve_config_with_defaults(variant, active_cluster_config)
+        try:
+            resolved = resolve_config_with_defaults(variant, active_cluster_config)
+        except (TypeError, ValueError) as exc:
+            # A pre-2.0 layout (or a malformed roles: / placement: block) is a
+            # finding for this variant, not a crash of the whole preflight.
+            unresolved = PreflightResolution(
+                field="recipe", raw=None, resolved=None, source="unresolved", ok=False, message=str(exc)
+            )
+            results.append(
+                PreflightResult(
+                    variant=suffix,
+                    ok=False,
+                    model=unresolved,
+                    container=unresolved,
+                    errors=[PreflightIssue(code="recipe-rejected", field="schema", message=str(exc))],
+                )
+            )
+            continue
         model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
         container, container_issues = _preflight_container(variant, resolved, active_cluster_config)
         # Validate the resolved resources (post roles: expansion), not the raw

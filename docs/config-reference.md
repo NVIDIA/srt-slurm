@@ -176,9 +176,9 @@ This is useful for portable recipes that you want to share across clusters or ha
 
 | Field    | Type    | Required | Description                                                                 |
 | -------- | ------- | -------- | --------------------------------------------------------------------------- |
-| `schema` | integer | Yes      | Recipe layout version. `2` is the layout this document describes. Absent means `1`, the layout in [legacy-v1.md](legacy-v1.md). |
+| `schema` | integer | Yes      | Recipe layout version. `2` is the layout this document describes and the only one that loads. A recipe without the key is the pre-2.0 layout in [legacy-v1.md](legacy-v1.md) and is rejected. |
 
-Put the key first in the file, beside `base:` in an override file. Upgrade a recipe with `srtctl migrate -f recipe.yaml --in-place`, which preserves comments and key order and folds the legacy layout into `engine:`, `roles:`, `placement:`, `services:`, and `dynamo.source` (a directory is walked recursively). `srtctl migrate --verify -f <path>` migrates in memory and checks that the v1 and v2 documents resolve to the same config; CI runs it over the examples and the historical recipe corpus (golden equality).
+Put the key first in the file, beside `base:` in an override file. Upgrade a recipe with `srtctl migrate -f recipe.yaml --in-place`, which preserves comments and key order and folds the legacy layout into `engine:`, `roles:`, `placement:`, `services:`, and `dynamo.source` (a directory is walked recursively). A `schema: 2` recipe that still carries a pre-2.0 key (`backend:`, `infra:`, `resources.prefill_nodes`, `dynamo.hash`, ...) is rejected too; the error names the keys and `srtctl migrate` rewrites them.
 
 ```yaml
 schema: 2

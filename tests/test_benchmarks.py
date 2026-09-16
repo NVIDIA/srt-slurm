@@ -1118,6 +1118,7 @@ class TestTraceReplayRunner:
         from srtctl.core.schema import SrtConfig
 
         config_data = {
+            "schema": 2,
             "name": "trace-test",
             "model": {"path": "/model", "container": "/image", "precision": "fp4"},
             "resources": {"gpu_type": "gb200"},
@@ -1168,17 +1169,13 @@ class TestAgentPerfRunner:
     def test_validate_missing_client_dir(self):
         """Validates that agentperf_client_dir is required."""
         runner = get_runner("agentperf")
-        errors = runner.validate_config(
-            self._config(agentperf_config="/workload/agentperf.yaml", concurrency=1010)
-        )
+        errors = runner.validate_config(self._config(agentperf_config="/workload/agentperf.yaml", concurrency=1010))
         assert any("agentperf_client_dir" in e for e in errors)
 
     def test_validate_missing_config(self):
         """Validates that agentperf_config is required."""
         runner = get_runner("agentperf")
-        errors = runner.validate_config(
-            self._config(agentperf_client_dir="/agentperf-client", concurrency=1010)
-        )
+        errors = runner.validate_config(self._config(agentperf_client_dir="/agentperf-client", concurrency=1010))
         assert any("agentperf_config" in e for e in errors)
 
     def test_validate_missing_concurrency(self):
@@ -1658,6 +1655,7 @@ class TestCustomDatasetLoader:
         from srtctl.core.schema import SrtConfig
 
         config_data = {
+            "schema": 2,
             "name": "custom-dataset-test",
             "model": {"path": "/model", "container": "/image", "precision": "fp4"},
             "resources": {"gpu_type": "h100"},

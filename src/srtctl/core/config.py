@@ -23,6 +23,8 @@ import yaml
 from ruamel.yaml.comments import CommentedMap
 
 from .lockfile import verify_lock_integrity
+from .placement import BENCHMARK_PLACEMENT_FIELDS, FRONTEND_PLACEMENT_FIELDS
+from .roles import ROLE_NAMES
 from .schema import ClusterConfig, SrtConfig
 
 logger = logging.getLogger(__name__)
@@ -144,21 +146,62 @@ def resolve_container_aliases(config: dict[str, Any], containers: Mapping[str, s
     return notes
 
 
-# Renamed frontend types: {schema-1 value: schema-2 value}. In schema 1 recipes
-# ``frontend.type: sglang`` was the SGLang Model Gateway; in 2.0 that router is
-# ``sglang-router`` and ``sglang`` is the router-free single worker.
-SCHEMA1_FRONTEND_RENAMES: dict[str, str] = {"sglang": "sglang-router"}
+# Recipe keys that only the pre-2.0 (v1) layout had. The 2.0 vocabularies
+# (``engine:``, ``roles:``, ``placement:``, ``services:``, ``dynamo.source``)
+# expand into internal dataclass fields of these same names, so the fields stay;
+# a recipe that spells them out itself is a v1 recipe and is rejected at load
+# with a pointer to ``srtctl migrate``, which rewrites every one of them
+# (docs/legacy-v1.md has the key-by-key mapping).
+LEGACY_TOP_LEVEL_KEYS: tuple[str, ...] = ("backend", "infra")
+LEGACY_SECTION_KEYS: dict[str, tuple[str, ...]] = {
+    "resources": tuple(
+        key
+        for role in ROLE_NAMES
+        for key in (f"{role}_nodes", f"{role}_workers", f"gpus_per_{role}", f"{role}_critical")
+    ),
+    "frontend": FRONTEND_PLACEMENT_FIELDS,
+    "benchmark": BENCHMARK_PLACEMENT_FIELDS,
+    "dynamo": ("version", "hash", "wheel", "cargo_patches"),
+}
+MIGRATE_HINT = "run `srtctl migrate -f <recipe> --in-place` to rewrite it (docs/legacy-v1.md maps every key)"
 
 
-def apply_schema1_frontend_rename(config: dict[str, Any]) -> dict[str, Any]:
-    """Give a schema 1 recipe its historical frontend meaning, in place."""
-    version = config.get("schema", 1)
-    frontend = config.get("frontend")
-    if isinstance(version, int) and not isinstance(version, bool) and version < 2 and isinstance(frontend, dict):
-        renamed = SCHEMA1_FRONTEND_RENAMES.get(frontend.get("type"))
-        if renamed:
-            frontend["type"] = renamed
-    return config
+def legacy_keys_present(config: Mapping[str, Any]) -> list[str]:
+    """Dotted paths of every v1-only key a raw recipe still carries."""
+    found = [key for key in LEGACY_TOP_LEVEL_KEYS if key in config]
+    for section, keys in LEGACY_SECTION_KEYS.items():
+        block = config.get(section)
+        if isinstance(block, Mapping):
+            found.extend(f"{section}.{key}" for key in keys if key in block)
+    return found
+
+
+def require_current_schema(config: Mapping[str, Any]) -> None:
+    """Reject a v1 recipe before any expansion runs.
+
+    A recipe must declare ``schema: 2``: the key was introduced with the 2.0
+    layout, so its absence marks a pre-2.0 recipe. Any key that only the v1
+    layout had is rejected too, even under ``schema: 2``, so the internal
+    fields cannot be reached from a recipe by their old spelling.
+    """
+    from srtctl.core.schema import CURRENT_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
+
+    version = config.get("schema")
+    if version is None:
+        raise ValueError(
+            "recipe has no `schema:` key, which marks the pre-2.0 layout; schema 1 recipes no longer load. "
+            f"Declare `schema: {CURRENT_SCHEMA_VERSION}` or {MIGRATE_HINT}"
+        )
+    if isinstance(version, bool) or not isinstance(version, int) or version not in SUPPORTED_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"schema {version!r} is not supported; this srtctl loads schema {CURRENT_SCHEMA_VERSION} only. "
+            f"For an older recipe, {MIGRATE_HINT}"
+        )
+    legacy = legacy_keys_present(config)
+    if legacy:
+        raise ValueError(
+            f"recipe uses the pre-2.0 (v1) layout: {', '.join(legacy)}. These keys no longer load; {MIGRATE_HINT}"
+        )
 
 
 def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: dict[str, Any] | None) -> dict[str, Any]:
@@ -177,13 +220,20 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
 
     Returns:
         Resolved config dict with all defaults applied
+
+    Raises:
+        ValueError: The recipe is pre-2.0 (no ``schema: 2`` or a v1-only key);
+            see :func:`require_current_schema`.
     """
+    require_current_schema(user_config)
+
     # Deep copy to avoid mutating original
     config = copy.deepcopy(user_config)
 
-    # Normalize the 2.0 ``roles:`` authoring block into the existing internal
-    # fields (resources.*_workers, backend.*_environment, backend.<engine>_config.*)
-    # before anything else reads them. No-op for legacy recipes.
+    # Normalize the 2.0 ``engine:`` / ``roles:`` / ``placement:`` / ``services:``
+    # vocabularies into the internal fields the runtime reads (resources.*_workers,
+    # backend.*_environment, backend.<engine>_config.*, infra.*) before anything
+    # else looks at them.
     from srtctl.core.placement import expand_placement
     from srtctl.core.roles import expand_roles
     from srtctl.services.normalize import expand_services
@@ -191,7 +241,6 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     expand_roles(config)
     expand_placement(config)
     expand_services(config)
-    apply_schema1_frontend_rename(config)
 
     if cluster_config is None:
         return config
@@ -630,10 +679,9 @@ def validate_config_file(path: Path | str) -> list[str]:
         cluster_config = load_cluster_config()
         schema = SrtConfig.Schema()
         for suffix, config_dict in variants:
-            resolved = resolve_config_with_defaults(config_dict, cluster_config)
             try:
-                schema.load(resolved)
-            except Exception as e:  # noqa: BLE001
+                schema.load(resolve_config_with_defaults(config_dict, cluster_config))
+            except Exception as e:  # noqa: BLE001 - a v1 layout or a bad value is a finding, not a crash
                 errors.append(f"{path} [{suffix}]: {e}")
     elif "sweep" in raw:
         # Sweep format — expand every combination; the expander validates each one
@@ -939,8 +987,8 @@ def expand_engine_config_defaults(resolved_config: dict) -> dict:
     Order matters: :func:`expand_observability` first, so its ``True`` for the
     iteration statistics is in place before :func:`expand_trtllm_engine_defaults`
     setdefaults ``False``. Kept out of :func:`resolve_config_with_defaults` so
-    tools that only inspect or migrate a recipe (validation, the MCP spec tools,
-    ``srtctl migrate --verify`` goldens) keep seeing the recipe's own keys; every
+    tools that only inspect a recipe (validation, the MCP spec tools) keep
+    seeing the recipe's own keys; every
     entry point that builds the ``SrtConfig`` a job runs under, or shows in
     ``srtctl dry-run``, calls this so the two agree. Mutates and returns
     ``resolved_config``.

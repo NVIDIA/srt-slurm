@@ -323,22 +323,24 @@ class TestExpandZipOverride:
 # =============================================================================
 
 MINIMAL_CONFIG = {
+    "schema": 2,
     "name": "test-job",
     "model": {"path": "/models/test-model", "container": "test-container.sqsh", "precision": "fp8"},
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "prefill_nodes": 1,
-        "decode_nodes": 1,
-        "prefill_workers": 1,
-        "decode_workers": 1,
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "roles": {
+        "prefill": {"nodes": 1, "workers": 1},
+        "decode": {"nodes": 1, "workers": 1},
     },
     "benchmark": {"type": "manual"},
 }
 
+# The same recipe as an override-file `base:` block: the file-level `schema` key
+# lives beside `base`, not inside it.
+_BASE = {key: value for key, value in MINIMAL_CONFIG.items() if key != "schema"}
+
 
 def _write_config(tmp_path: Path, extra: dict[str, Any] | None = None, filename: str = "test.yaml") -> Path:
-    raw = {"base": {**MINIMAL_CONFIG}, **(extra or {})}
+    raw = {"schema": 2, "base": {**_BASE}, **(extra or {})}
     path = tmp_path / filename
     path.write_text(yaml.dump(raw, default_flow_style=False))
     return path
@@ -350,8 +352,8 @@ class TestSubmitOverride:
         cfg = _write_config(
             tmp_path,
             {
-                "override_small": {"resources": {"decode_nodes": 2}},
-                "zip_override_tp": {"resources": {"decode_nodes": [1, 2]}},
+                "override_small": {"roles": {"decode": {"nodes": 2}}},
+                "zip_override_tp": {"roles": {"decode": {"nodes": [1, 2]}}},
             },
         )
 
@@ -382,8 +384,9 @@ class TestSubmitOverride:
         it must run the same engine-config expansions load_config does; otherwise
         dry-run reports enable_iter_perf_stats as unset for a job that runs with false."""
         raw = {
-            "base": {**MINIMAL_CONFIG, "backend": {"type": "trtllm"}, "frontend": {"type": "dynamo"}},
-            "override_small": {"resources": {"decode_nodes": 2}},
+            "schema": 2,
+            "base": {**_BASE, "engine": "trtllm", "frontend": {"type": "dynamo"}},
+            "override_small": {"roles": {"decode": {"nodes": 2}}},
         }
         cfg = tmp_path / "test.yaml"
         cfg.write_text(yaml.dump(raw, default_flow_style=False))
@@ -401,8 +404,8 @@ class TestSubmitOverride:
         cfg = _write_config(
             tmp_path,
             {
-                "override_small": {"resources": {"decode_nodes": 2}},
-                "zip_override_tp": {"resources": {"decode_nodes": [1, 2]}},
+                "override_small": {"roles": {"decode": {"nodes": 2}}},
+                "zip_override_tp": {"roles": {"decode": {"nodes": [1, 2]}}},
             },
         )
 
@@ -431,7 +434,7 @@ class TestSubmitOverride:
         cfg = _write_config(
             tmp_path,
             {
-                "zip_override_tp": {"resources": {"decode_nodes": [1, 2]}},
+                "zip_override_tp": {"roles": {"decode": {"nodes": [1, 2]}}},
             },
         )
 
@@ -456,7 +459,7 @@ class TestSubmitOverride:
         assert "zip_override_tp" in source_config
 
         assert runtime_config["name"] == "test-job_tp_1"
-        assert runtime_config["resources"]["decode_nodes"] == 2
+        assert runtime_config["roles"]["decode"]["nodes"] == 2
         assert "base" not in runtime_config
         assert "zip_override_tp" not in runtime_config
         assert 'do_sweep "${OUTPUT_DIR}/config_tp_1.yaml"' in sbatch_script
@@ -466,6 +469,7 @@ class TestSubmitOverride:
         cfg = tmp_path / "submit_override.yaml"
         cfg.write_text(
             textwrap.dedent("""\
+            schema: 2
             base:
               name: "test-job"
               model:
@@ -476,16 +480,20 @@ class TestSubmitOverride:
               resources:
                 gpu_type: h100
                 gpus_per_node: 8
-                prefill_nodes: 1
-                prefill_workers: 1
-                decode_nodes: 1  # one decoder
-                decode_workers: 1
+              roles:
+                prefill:
+                  nodes: 1
+                  workers: 1
+                decode:
+                  nodes: 1  # one decoder
+                  workers: 1
               benchmark:
                 type: manual
 
             override_lowmem:
-              resources:
-                decode_nodes: 4
+              roles:
+                decode:
+                  nodes: 4
         """)
         )
 
@@ -504,7 +512,7 @@ class TestSubmitOverride:
         job_dir = tmp_path / "99999"
         runtime_text = (job_dir / "config_lowmem.yaml").read_text()
         assert "resource section" in runtime_text
-        assert "decode_nodes: 4" in runtime_text
+        assert "nodes: 4" in runtime_text
 
 
 class TestSubmitSingleCompatibility:
@@ -530,7 +538,7 @@ class TestSubmitSingleCompatibility:
         sbatch_script = (job_dir / "sbatch_script.sh").read_text()
 
         assert copied_config["name"] == MINIMAL_CONFIG["name"]
-        assert copied_config["resources"]["decode_nodes"] == MINIMAL_CONFIG["resources"]["decode_nodes"]
+        assert copied_config["roles"]["decode"]["nodes"] == MINIMAL_CONFIG["roles"]["decode"]["nodes"]
         assert 'do_sweep "${OUTPUT_DIR}/config.yaml"' in sbatch_script
         assert not (job_dir / "config_base.yaml").exists()
 

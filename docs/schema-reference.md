@@ -2,7 +2,7 @@
 
 <!-- GENERATED FILE. Do not edit by hand. Regenerate with `srtctl schema-docs`; CI fails when this file is stale. -->
 
-Field-level reference for the 2.0 recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from `srtctl.core.roles`, `srtctl.core.placement`, and the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. The v1 layout and the internal fields it maps onto are documented in [legacy-v1.md](legacy-v1.md); for prose, examples, and semantics see [config-reference.md](config-reference.md).
+Field-level reference for the recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from `srtctl.core.roles`, `srtctl.core.placement`, and the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. The pre-2.0 (v1) layout no longer loads; its key-by-key mapping onto this layout is in [legacy-v1.md](legacy-v1.md) and `srtctl migrate` rewrites it. For prose, examples, and semantics see [config-reference.md](config-reference.md).
 
 ## Recipe
 
@@ -15,7 +15,7 @@ Top-level keys of a recipe YAML.
 | `resources` | [ResourceConfig](#resourceconfig) | required |  |
 | `engine` | str \| mapping | required | The engine type (`sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
 | `roles` | mapping of role -> [Role](#roles) | required | One block per worker role (`prefill`, `decode`, `agg`): topology, env, and engine args. |
-| `schema` | int | `2` | Recipe schema version. Write `schema: 2` for this layout. |
+| `schema` | int | required | Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`). |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` |  |
 | `frontend` | [FrontendConfig](#frontendconfig) | `FrontendConfig()` |  |
 | `dynamo` | [DynamoConfig](#dynamoconfig) | `DynamoConfig()` |  |
@@ -40,7 +40,7 @@ Top-level keys of a recipe YAML.
 
 ## Authoring surface
 
-Three vocabularies are specific to the 2.0 layout. They are normalized into the internal fields before validation (see [legacy-v1.md](legacy-v1.md) for those fields), so they are exactly equivalent to the v1 spelling and cannot be combined with it for the same block.
+Three vocabularies carry the topology, the engine, and the placement. The loader expands them into internal fields before validation; those fields keep the names of the pre-2.0 layout, which no longer loads and is documented for migration in [legacy-v1.md](legacy-v1.md).
 
 ### engine
 
@@ -94,9 +94,6 @@ Resource allocation configuration.
 |---|---|---|---|
 | `gpu_type` | str \| None | `None` | GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional: a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth setting in a recipe so it is self-describing for result rollups. |
 | `gpus_per_node` | int | `4` |  |
-| `prefill_critical` | bool | `True` | A worker exit normally fails the run (the process monitor tears the job down). A role's flag set to False keeps the run alive when one of its workers exits, for workloads that kill workers on purpose (migration or fault-tolerance probes). The per-role spelling is ``roles.<role>.critical``. |
-| `decode_critical` | bool | `True` | A decode worker exiting fails the run. False keeps the run alive. |
-| `agg_critical` | bool | `True` | An aggregated worker exiting fails the run. False keeps the run alive. |
 | `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). |
 | `het_jobs` | bool \| None | `None` | SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster default `use_het_jobs` on ClusterConfig; True/False overrides per recipe. When effectively True (and we are in disaggregated mode), the prefill and decode sides are submitted as two het components each with their own `--segment`. See HetComponent above and docs/slurm-faq.md. |
 
@@ -116,7 +113,7 @@ Frontend/router configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway) and "vllm-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process). In schema 1 recipes "sglang" still means the router and loads as "sglang-router". |
+| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway) and "vllm-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate`` rewrites that to "sglang-router". |
 | `enable_multiple_frontends` | bool | `True` | Scale with nginx + multiple routers. When ``True`` (default), srtctl stands up nginx and fans out to ``num_additional_frontends + 1`` router replicas. When ``False``, there is NO nginx proxy — the benchmark must target the single master router (or a worker) directly at ``http://localhost:<port>``. ``benchmark.command`` has no placeholder substitution, so write the URL out literally. |
 | `num_additional_frontends` | int | `9` | Additional routers beyond master (default: 9) |
 | `nginx_container` | str | `'nginx:1.27.4'` | Custom nginx container image (default: nginx:1.27.4) |
@@ -138,6 +135,7 @@ Dynamo installation configuration.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `install` | bool | `True` |  |
+| `top_of_tree` | bool | `False` | Clone and build Dynamo at HEAD (unpinned). No `source` equivalent; prefer a commit in `source.rev`. |
 | `source` | [DynamoSourceConfig](#dynamosourceconfig) \| None | `None` | Which Dynamo to install: exactly one of git+rev, pypi, or wheel. |
 | `request_plane` | str | `'tcp'` |  |
 | `event_plane` | str \| None | `None` |  |

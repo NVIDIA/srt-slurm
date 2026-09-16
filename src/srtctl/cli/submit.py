@@ -1686,9 +1686,8 @@ def main():
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl view /path/to/run-output                # Local ruter route-decision viewer
-  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md + docs/legacy-v1.md
-  srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
-  srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
+  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
+  srtctl migrate -f config.yaml --in-place       # Rewrite a pre-2.0 recipe into the current schema (dir: recursive)
   srtctl skill --target claude                   # Install the srtctl agent skill into this project
   srtctl --version                               # Version (from the git tag), commit, schema and lockfile versions
 """,
@@ -1844,18 +1843,18 @@ def main():
     # Generated schema reference: srtctl schema-docs [--check] [--output PATH]
     schema_docs_parser = subparsers.add_parser(
         "schema-docs",
-        help="Regenerate docs/schema-reference.md (2.0 layout) and docs/legacy-v1.md (v1 layout) from the code",
+        help="Regenerate docs/schema-reference.md from the code",
     )
     schema_docs_parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 if either checked-in document is stale instead of rewriting them (used by CI)",
+        help="Exit 1 if the checked-in document is stale instead of rewriting it (used by CI)",
     )
     schema_docs_parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Write the schema reference to this path instead of docs/schema-reference.md (legacy-v1.md lands beside it)",
+        help="Write the schema reference to this path instead of docs/schema-reference.md",
     )
 
     # Recipe migration: srtctl migrate -f recipe.yaml [--in-place | --output PATH]
@@ -1881,7 +1880,7 @@ def main():
 
     migrate_parser = subparsers.add_parser(
         "migrate",
-        help="Upgrade a recipe (plain, override, or lock file) to the current schema version",
+        help="Rewrite a pre-2.0 recipe (plain, override, sweep, or lock file) into the current schema version",
     )
     migrate_parser.add_argument(
         "-f",
@@ -1898,11 +1897,6 @@ def main():
         type=Path,
         default=None,
         help="Write the migrated recipe to this path (single file only; default: print to stdout)",
-    )
-    migrate_parser.add_argument(
-        "--verify",
-        action="store_true",
-        help="Do not write: migrate in memory and prove the v1 and v2 recipes resolve identically (golden equality)",
     )
 
     args = parser.parse_args()
@@ -2002,27 +1996,19 @@ def main():
         sys.exit(1 if all_results else 0)
 
     if args.command == "schema-docs":
-        from srtctl.core.schema_docs import (
-            DEFAULT_OUTPUT,
-            legacy_output_for,
-            schema_reference_is_current,
-            write_schema_reference,
-        )
+        from srtctl.core.schema_docs import DEFAULT_OUTPUT, schema_reference_is_current, write_schema_reference
 
         output = args.output or DEFAULT_OUTPUT
         if args.check:
             if schema_reference_is_current(output):
-                console.print(f"[green]✓[/] {output} and {legacy_output_for(output)} are up to date")
+                console.print(f"[green]✓[/] {output} is up to date")
                 restore_console()
                 return
-            console.print(
-                f"[bold red]✗[/] {output} or {legacy_output_for(output)} is stale; "
-                "run `srtctl schema-docs` and commit the result"
-            )
+            console.print(f"[bold red]✗[/] {output} is stale; run `srtctl schema-docs` and commit the result")
             restore_console()
             sys.exit(1)
         written = write_schema_reference(output)
-        console.print(f"[green]✓[/] Wrote {written} and {legacy_output_for(written)}")
+        console.print(f"[green]✓[/] Wrote {written}")
         restore_console()
         return
 
@@ -2039,29 +2025,12 @@ def main():
         return
 
     if args.command == "migrate":
-        from srtctl.core.migrate import migrate_recipe_file, recipe_files, verify_migration_file
+        from srtctl.core.migrate import migrate_recipe_file, recipe_files
 
         files = recipe_files(args.migrate_files)
         if not files:
             console.print("[bold red]No recipe files found[/]")
             sys.exit(1)
-        if args.verify:
-            counts: dict[str, int] = {"ok": 0, "mismatch": 0, "skipped": 0, "error": 0}
-            for path in files:
-                outcome = verify_migration_file(path)
-                counts[outcome.status] += 1
-                if outcome.status == "ok":
-                    console.print(f"[green]✓[/] {path} ({outcome.variants} variant(s) resolve identically)")
-                elif outcome.status == "skipped":
-                    console.print(f"[yellow]-[/] {path}: skipped, {outcome.detail}")
-                else:
-                    console.print(f"[bold red]✗[/] {path}: {outcome.detail}")
-            console.print(
-                f"\n{counts['ok']} identical, {counts['mismatch']} mismatched, "
-                f"{counts['skipped']} skipped (v1 does not load), {counts['error']} unreadable"
-            )
-            restore_console()
-            sys.exit(1 if counts["mismatch"] or counts["error"] else 0)
         if not args.in_place and args.output is None and len(files) > 1:
             console.print("[bold red]Error:[/] printing to stdout needs a single file; use --in-place for many")
             sys.exit(1)

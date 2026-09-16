@@ -74,26 +74,28 @@ class TestGetHfHome:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             """
+schema: 2
 name: test
 model:
   path: "hf:nvidia/test-model"
   container: "test-image:latest"
   precision: fp16
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "/cache/hub"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "/cache/hub"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -105,24 +107,26 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             """
+schema: 2
 name: test
 model:
   path: "hf:nvidia/test-model"
   container: "test-image:latest"
   precision: fp16
-backend:
-  type: vllm
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -160,26 +164,28 @@ class TestCleanStaleHfLocks:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "hf:nvidia/test-model"
   container: "test-image:latest"
   precision: fp16
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{cache_dir}"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{cache_dir}"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -195,24 +201,26 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             """
+schema: 2
 name: test
 model:
   path: "hf:nvidia/test-model"
   container: "test-image:latest"
   precision: fp16
-backend:
-  type: vllm
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -225,26 +233,28 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "hf:nvidia/test-model"
   container: "test-image:latest"
   precision: fp16
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{tmp_path / "nonexistent"}"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{tmp_path / "nonexistent"}"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -267,26 +277,28 @@ class TestEnsureModelCached:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "{model_dir}"
   container: "test-image:latest"
   precision: fp16
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{tmp_path / "cache"}"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{tmp_path / "cache"}"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -301,24 +313,26 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             """
+schema: 2
 name: test
 model:
   path: "hf:nvidia/test-model"
   container: "test-image:latest"
   precision: fp16
-backend:
-  type: vllm
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -337,26 +351,28 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "hf:nvidia/Kimi-K2.5-NVFP4"
   container: "test-image:latest"
   precision: fp4
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{tmp_path / "cache"}"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{tmp_path / "cache"}"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -385,26 +401,28 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "hf:nvidia/Kimi-K2.5-NVFP4"
   container: "test-image:latest"
   precision: fp4
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{tmp_path / "cache"}"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{tmp_path / "cache"}"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -443,27 +461,29 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "hf:nvidia/Kimi-K2.5-NVFP4"
   container: "test-image:latest"
   precision: fp4
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{tmp_path / "cache"}"
-    HF_TOKEN: "hf_secret_token_123"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{tmp_path / "cache"}"
+      HF_TOKEN: "hf_secret_token_123"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -483,26 +503,28 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "hf:nvidia/Kimi-K2.5-NVFP4"
   container: "test-image:latest"
   precision: fp4
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{tmp_path / "cache"}"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{tmp_path / "cache"}"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -522,26 +544,28 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "hf:nvidia/Kimi-K2.5-NVFP4"
   container: "test-image:latest"
   precision: fp4
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{tmp_path / "cache"}"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{tmp_path / "cache"}"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -559,26 +583,28 @@ resources:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "hf:nvidia/Kimi-K2.5-NVFP4"
   container: "test-image:latest"
   precision: fp4
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{tmp_path / "cache"}"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{tmp_path / "cache"}"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )
@@ -603,26 +629,28 @@ class TestRunHfModelGuard:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             f"""
+schema: 2
 name: test
 model:
   path: "{model_dir}"
   container: "test-image:latest"
   precision: fp16
-backend:
-  type: vllm
-  prefill_environment:
-    HF_HOME: "{tmp_path / "cache"}"
-  vllm_config:
-    prefill:
+engine: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      HF_HOME: "{tmp_path / "cache"}"
+    args:
       tensor-parallel-size: 1
-    decode:
+  decode:
+    nodes: 4
+    workers: 4
+    args:
       tensor-parallel-size: 1
 resources:
   gpu_type: gb200
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 4
-  decode_workers: 4
   gpus_per_node: 4
 """
         )

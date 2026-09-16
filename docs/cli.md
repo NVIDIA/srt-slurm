@@ -375,16 +375,15 @@ See [Config Overrides — Resolving Without Submitting](overrides.md#resolving-o
 
 ### `srtctl migrate`
 
-Rewrites a v1 recipe (no `schema: 2`; `backend:`, `backend.<mode>_environment`, `infra:`, `resources.<role>_nodes` / `_workers` / `gpus_per_<role>`, `dynamo.version` / `hash` / `wheel`) into the 2.0 layout. The rewrite is deterministic and keeps comments and key order; do not translate by hand.
+Rewrites a pre-2.0 (v1) recipe (no `schema: 2`; `backend:`, `backend.<mode>_environment`, `infra:`, `resources.<role>_nodes` / `_workers` / `gpus_per_<role>`, `dynamo.version` / `hash` / `wheel`) into the 2.0 layout. Such a recipe no longer loads: `srtctl apply` and `srtctl dry-run` reject it with a pointer to this command. The rewrite is deterministic and keeps comments and key order; do not translate by hand.
 
 ```bash
 srtctl migrate -f old.yaml                 # print the schema-2 document, file untouched
 srtctl migrate -f old.yaml --in-place      # rewrite it; a directory is walked recursively
 srtctl migrate -f old.yaml --output new.yaml
-srtctl migrate -f old.yaml --verify        # migrate in memory and prove v1 and v2 resolve identically
 ```
 
-The key-by-key mapping is in [legacy-v1.md](legacy-v1.md). Notable rewrites: `decode_nodes: 0` becomes `roles.decode.nodes: colocate` with an explicit `gpus` on both roles; v1 `frontend.type: sglang` (the router) becomes `sglang-router`; `infra` becomes `services:` entries; benchmark fields the recipe's type never reads are removed because schema 2 rejects them. The migrator prints a note for each change and for what it deliberately leaves to you: `dynamo.top_of_tree` (pin a commit in `source.rev`), a dedicated etcd node under a frontend that runs no etcd, and a v1 recipe that never named a Dynamo to install (v1 pip-installed PyPI 0.8.0 implicitly; choose `dynamo.source` or `dynamo.install: false`). Finish with `--verify` and a `dry-run`.
+The key-by-key mapping is in [legacy-v1.md](legacy-v1.md). Notable rewrites: `decode_nodes: 0` becomes `roles.decode.nodes: colocate` with an explicit `gpus` on both roles; v1 `frontend.type: sglang` (the router) becomes `sglang-router`; `infra` becomes `services:` entries; benchmark fields the recipe's type never reads are removed because schema 2 rejects them. The migrator prints a note for each change and for what it deliberately leaves to you: a dedicated etcd node under a frontend that runs no etcd, and a v1 recipe that never named a Dynamo to install (v1 pip-installed PyPI 0.8.0 implicitly; choose `dynamo.source` or `dynamo.install: false`). `dynamo.top_of_tree` is kept as is; it has no immutable equivalent under `dynamo.source`, so pin a commit in `source.rev` when you can. Finish with a `dry-run`.
 
 ### `srtctl monitor`
 

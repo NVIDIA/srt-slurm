@@ -1761,24 +1761,30 @@ def _serialize_node_install(install_cmd: str) -> str:
 class DynamoConfig:
     """Dynamo installation configuration.
 
-    Only one of version, hash, top_of_tree, or wheel should be specified.
-    Defaults to version="0.8.0" (pip install).
+    A recipe names the Dynamo to install through ``source`` (or ``top_of_tree``
+    for an unpinned HEAD build); without either, ``install: true`` pip-installs
+    the PyPI release ``version`` defaults to. ``version``, ``hash``, ``wheel``,
+    and ``cargo_patches`` are the internal fields ``source`` resolves into: the
+    install path reads them, and the pre-2.0 recipe layout set them directly
+    (``srtctl migrate`` rewrites that into ``source``).
 
     Options:
         install: Whether to install dynamo at all (default: True). Set to False
                  if your container already has dynamo pre-installed.
-        version: Install specific version from PyPI (e.g., "0.8.0")
-        hash: Clone repo and checkout specific commit hash
-        top_of_tree: Clone repo at HEAD (latest)
-        wheel: ai-dynamo package version to install via staged wheels. The
-               matching ai-dynamo-runtime wheel is installed automatically.
-        source: One block for all of the above: ``git`` + ``rev`` (commit, tag,
-               or ``refs/pull/<n>/head``; ``srtctl apply`` pins it to ``sha``),
-               ``pypi``, or ``wheel``. Cannot be combined with the legacy fields.
+        version: Internal: PyPI release to install (from ``source.pypi``; default "0.8.0").
+        hash: Internal: commit or ref to build from (from ``source.rev`` / ``source.sha``).
+        top_of_tree: Clone repo at HEAD (latest). No immutable equivalent under
+                     ``source``; prefer pinning a commit in ``source.rev``.
+        wheel: Internal: ai-dynamo package version to install via staged wheels
+               (from ``source.wheel``). The matching ai-dynamo-runtime wheel is
+               installed automatically.
+        source: Which Dynamo to install: ``git`` + ``rev`` (commit, tag, or
+               ``refs/pull/<n>/head``; ``srtctl apply`` pins it to ``sha``),
+               ``pypi``, or ``wheel``. Cannot be combined with the internal fields.
         request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
         event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
                      the Dynamo image's own default). Valid values: "nats", "zmq"
-        sidecar: Replace legacy Python workers with native engines and Dynamo sidecars.
+        sidecar: Replace the Python workers with native engines and Dynamo sidecars.
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
@@ -1789,6 +1795,7 @@ class DynamoConfig:
     install: bool = True
     version: str | None = "0.8.0"
     hash: str | None = None
+    # Clone and build Dynamo at HEAD (unpinned). No `source` equivalent; prefer a commit in `source.rev`.
     top_of_tree: bool = False
     wheel: str | None = None
     # Which Dynamo to install: exactly one of git+rev, pypi, or wheel.
@@ -1801,8 +1808,8 @@ class DynamoConfig:
     sidecar_startup_timeout: int = 3600
     sidecar_context_length: int | None = None
     sidecar_args: list[str] = field(default_factory=list)
-    # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
-    # source build (requires `hash`). Each entry is a full `<crate> = <spec>` TOML line, e.g.
+    # Internal (from `source.patches`): dependency-declaration overrides applied to the dynamo
+    # Cargo.toml tree before a git source build. Each entry is a full `<crate> = <spec>` TOML line, e.g.
     #   'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }'
     # The crate's existing declaration is replaced tree-wide, letting a source build pull a crate
     # from an unmerged branch without waiting for a crates.io release.
@@ -1963,8 +1970,8 @@ class FrontendConfig:
         type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
             Gateway) and "vllm-router" (static routers); "sglang", "vllm", and
             "trtllm_serve" (direct: the single aggregate worker binds the public
-            port, no router process). In schema 1 recipes "sglang" still means
-            the router and loads as "sglang-router".
+            port, no router process). Pre-2.0 recipes spelled the router
+            "sglang"; ``srtctl migrate`` rewrites that to "sglang-router".
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -2065,11 +2072,12 @@ class InfraConfig:
 # Main Configuration Dataclass
 # ============================================================================
 
-# Recipe schema versions. A recipe without a top-level `schema:` key is version 1
-# (the pre-2.0 layout); version 2 is the 2.0 layout. The loader accepts every
-# supported version; `srtctl migrate` rewrites a recipe to the current one.
+# Recipe schema versions. Version 2 is the 2.0 layout and the only one the
+# loader accepts; a recipe without a top-level `schema:` key is the pre-2.0
+# layout (version 1) and is rejected by `srtctl.core.config.require_current_schema`.
+# `srtctl migrate` still reads version 1 and rewrites it to the current one.
 CURRENT_SCHEMA_VERSION = 2
-SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
+SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (CURRENT_SCHEMA_VERSION,)
 
 
 @dataclass(frozen=True)
@@ -2086,15 +2094,16 @@ class SrtConfig:
     model: ModelConfig
     resources: ResourceConfig
 
-    # Recipe schema version (YAML key `schema`). Absent means 1, the pre-2.0
-    # layout. `schema: 2` selects the 2.0 layout; `srtctl migrate` upgrades a
-    # recipe in place. Both versions load on main.
+    # Recipe schema version (YAML key `schema`). A recipe must declare `schema: 2`;
+    # `require_current_schema` rejects a missing key as the pre-2.0 layout before
+    # the schema ever sees the document. The default only serves documents srtctl
+    # itself resolved (a lockfile's recipe, a dumped config).
     schema_version: int = field(
-        default=1,
+        default=CURRENT_SCHEMA_VERSION,
         metadata={
             "marshmallow_field": fields.Integer(
                 data_key="schema",
-                load_default=1,
+                load_default=CURRENT_SCHEMA_VERSION,
                 validate=validate.OneOf(SUPPORTED_SCHEMA_VERSIONS),
             )
         },
@@ -2205,23 +2214,19 @@ class SrtConfig:
             raise ValueError(f"Unknown benchmark.type {btype!r}. Available: {', '.join(sorted(allowed))}")
 
         # Per-type field split: a field set for a type whose runner never reads it
-        # is a silent no-op today (isl on gsm8k, num_shots on sa-bench). Schema 2
-        # rejects it; schema 1 recipes get a warning so the corpus keeps loading.
+        # would be a silent no-op (isl on gsm8k, num_shots on sa-bench), so it is
+        # rejected. `srtctl migrate` strips such fields from a pre-2.0 recipe.
         accepted = benchmark_config_fields(btype)
         stray = sorted(
             item.name
             for item in dataclasses.fields(BenchmarkConfig)
             if item.name not in accepted and getattr(self.benchmark, item.name) != _dataclass_default(item)
         )
-        if not stray:
-            return
-        message = (
-            f"benchmark.type {btype!r} does not use {', '.join(stray)}; fields it accepts: "
-            f"{', '.join(sorted(accepted))}"
-        )
-        if self.schema_version >= 2:
-            raise ValueError(message)
-        logger.warning("%s (a schema: 2 recipe would be rejected)", message)
+        if stray:
+            raise ValueError(
+                f"benchmark.type {btype!r} does not use {', '.join(stray)}; fields it accepts: "
+                f"{', '.join(sorted(accepted))}"
+            )
 
     def _validate_host_setup(self) -> None:
         """Reject host_setup blocks that would fail or hang mid-job.
@@ -2937,19 +2942,20 @@ class SrtConfig:
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
-        from srtctl.core.config import expand_engine_config_defaults
-        from srtctl.core.placement import expand_placement
-        from srtctl.core.roles import expand_roles
-        from srtctl.services.normalize import expand_services
+        """Load a recipe file without cluster defaults (``load_config`` applies them).
+
+        Runs the same gate and expansions as ``load_config``: a pre-2.0 recipe
+        is rejected, and the 2.0 vocabularies are normalized into the internal
+        fields before the schema loads the document.
+        """
+        from srtctl.core.config import expand_engine_config_defaults, resolve_config_with_defaults
 
         with open(yaml_path) as f:
             data = yaml.safe_load(f)
-        expand_roles(data)
-        expand_placement(data)
-        expand_services(data)
-        expand_engine_config_defaults(data)
+        resolved = resolve_config_with_defaults(data, None)
+        expand_engine_config_defaults(resolved)
         schema = cls.Schema()
-        return schema.load(data)
+        return schema.load(resolved)
 
     @property
     def served_model_name(self) -> str:

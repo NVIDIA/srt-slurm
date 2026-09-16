@@ -117,24 +117,18 @@ class TestGenerateSweepConfigs:
     def test_single_param_sweep(self):
         """Test sweep with single parameter."""
         config = {
+            "schema": 2,
             "name": "test",
             "model": {
                 "path": "model",
                 "container": "container.sqsh",
                 "precision": "fp8",
             },
-            "resources": {
-                "gpu_type": "h100",
-                "prefill_nodes": 1,
-                "decode_nodes": 1,
-            },
-            "backend": {
-                "sglang_config": {
-                    "prefill": {
-                        "max-total-tokens": "{tokens}",
-                    },
-                    "decode": {},
-                }
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "engine": "sglang",
+            "roles": {
+                "prefill": {"nodes": 1, "workers": 1, "args": {"max-total-tokens": "{tokens}"}},
+                "decode": {"nodes": 1, "workers": 1, "args": {}},
             },
             "sweep": {
                 "tokens": [1024, 2048, 4096],
@@ -153,25 +147,18 @@ class TestGenerateSweepConfigs:
     def test_cartesian_product(self):
         """Test that multiple params create Cartesian product."""
         config = {
+            "schema": 2,
             "name": "test",
             "model": {
                 "path": "model",
                 "container": "container.sqsh",
                 "precision": "fp8",
             },
-            "resources": {
-                "gpu_type": "h100",
-                "prefill_nodes": 1,
-                "decode_nodes": 1,
-            },
-            "backend": {
-                "sglang_config": {
-                    "prefill": {
-                        "val-a": "{a}",
-                        "val-b": "{b}",
-                    },
-                    "decode": {},
-                }
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "engine": "sglang",
+            "roles": {
+                "prefill": {"nodes": 1, "workers": 1, "args": {"val-a": "{a}", "val-b": "{b}"}},
+                "decode": {"nodes": 1, "workers": 1, "args": {}},
             },
             "sweep": {
                 "a": [1, 2],
@@ -193,22 +180,18 @@ class TestGenerateSweepConfigs:
     def test_sweep_removes_sweep_section(self):
         """Test that generated configs don't have sweep section."""
         config = {
+            "schema": 2,
             "name": "test",
             "model": {
                 "path": "model",
                 "container": "container.sqsh",
                 "precision": "fp8",
             },
-            "resources": {
-                "gpu_type": "h100",
-                "prefill_nodes": 1,
-                "decode_nodes": 1,
-            },
-            "backend": {
-                "sglang_config": {
-                    "prefill": {},
-                    "decode": {},
-                }
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "engine": "sglang",
+            "roles": {
+                "prefill": {"nodes": 1, "workers": 1, "args": {}},
+                "decode": {"nodes": 1, "workers": 1, "args": {}},
             },
             "sweep": {
                 "x": [1],
@@ -222,22 +205,18 @@ class TestGenerateSweepConfigs:
     def test_unique_names_generated(self):
         """Test that each config gets a unique name."""
         config = {
+            "schema": 2,
             "name": "base",
             "model": {
                 "path": "model",
                 "container": "container.sqsh",
                 "precision": "fp8",
             },
-            "resources": {
-                "gpu_type": "h100",
-                "prefill_nodes": 1,
-                "decode_nodes": 1,
-            },
-            "backend": {
-                "sglang_config": {
-                    "prefill": {},
-                    "decode": {},
-                }
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "engine": "sglang",
+            "roles": {
+                "prefill": {"nodes": 1, "workers": 1, "args": {}},
+                "decode": {"nodes": 1, "workers": 1, "args": {}},
             },
             "sweep": {
                 "val": [100, 200],
@@ -253,24 +232,18 @@ class TestGenerateSweepConfigs:
     def test_placeholder_substitution_in_generated_config(self):
         """Test that placeholders are actually replaced in output."""
         config = {
+            "schema": 2,
             "name": "test",
             "model": {
                 "path": "model",
                 "container": "container.sqsh",
                 "precision": "fp8",
             },
-            "resources": {
-                "gpu_type": "h100",
-                "prefill_nodes": 1,
-                "decode_nodes": 1,
-            },
-            "backend": {
-                "sglang_config": {
-                    "prefill": {
-                        "mem-fraction-static": "{mem}",
-                    },
-                    "decode": {},
-                }
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "engine": "sglang",
+            "roles": {
+                "prefill": {"nodes": 1, "workers": 1, "args": {"mem-fraction-static": "{mem}"}},
+                "decode": {"nodes": 1, "workers": 1, "args": {}},
             },
             "sweep": {
                 "mem": [0.85, 0.90],
@@ -278,12 +251,13 @@ class TestGenerateSweepConfigs:
         }
         results = generate_sweep_configs(config)
 
-        # Check that values are substituted (note: they become strings)
+        # Check that values are substituted (note: they become strings). Each
+        # point stays in the recipe layout the author wrote.
         config1 = results[0][0]
         config2 = results[1][0]
 
-        prefill1 = config1["backend"]["sglang_config"]["prefill"]
-        prefill2 = config2["backend"]["sglang_config"]["prefill"]
+        prefill1 = config1["roles"]["prefill"]["args"]
+        prefill2 = config2["roles"]["prefill"]["args"]
 
         assert prefill1["mem-fraction-static"] == "0.85"
         assert prefill2["mem-fraction-static"] == "0.9"

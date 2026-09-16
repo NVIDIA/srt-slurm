@@ -3,6 +3,8 @@
 
 """Tests for the `observability.enabled` knob and its config expansion."""
 
+import copy
+
 import pytest
 import yaml
 from marshmallow import ValidationError
@@ -11,8 +13,10 @@ from srtctl.core.config import (
     expand_observability,
     expand_trtllm_engine_defaults,
     expand_trtllm_serve_defaults,
+    legacy_keys_present,
     load_config,
 )
+from srtctl.core.roles import ENGINE_CONFIG_KEY, ROLE_TO_MODE
 from srtctl.core.schema import SrtConfig
 
 BASE_CONFIG = {
@@ -41,6 +45,59 @@ def _trtllm_config(**observability):
     if observability:
         cfg["observability"] = observability
     return cfg
+
+
+# roles.<role> key -> the internal resources field it expands into.
+_ROLE_RESOURCE_KEYS = {
+    "nodes": "{role}_nodes",
+    "workers": "{role}_workers",
+    "gpus": "gpus_per_{role}",
+    "critical": "{role}_critical",
+}
+# backend fields that hold a per-role setting (spelled under roles.<role> in a recipe), plus the type.
+_PER_ROLE_BACKEND_KEYS = frozenset(
+    {f"{mode}_{suffix}" for mode in ROLE_TO_MODE.values() for suffix in ("environment", "extra_args")}
+    | set(ENGINE_CONFIG_KEY.values())
+    | {"type"}
+)
+
+
+def _recipe(cfg):
+    """Spell an internal-layout dict as a schema-2 recipe.
+
+    The fixtures above (and ``SrtConfig.Schema().dump()``) use the internal
+    ``backend`` / ``resources.<role>_*`` fields the expanders operate on. The
+    YAML loaders reject that spelling, so tests going through ``from_yaml`` or
+    ``load_config`` write this instead. Only ``backend`` and the role fields are
+    translated; any other key the loaders reject fails here.
+    """
+    cfg = copy.deepcopy(cfg)
+    backend = cfg.pop("backend", None) or {}
+    resources = cfg.get("resources") or {}
+    engine_type = backend.get("type", "sglang")
+    engine_cfg = backend.get(ENGINE_CONFIG_KEY[engine_type]) or {}
+    roles = {}
+    for role, mode in ROLE_TO_MODE.items():
+        spec = {}
+        for key, template in _ROLE_RESOURCE_KEYS.items():
+            value = resources.pop(template.format(role=role), None)
+            if value is not None:
+                spec[key] = value
+        for key, value in (
+            ("env", backend.get(f"{mode}_environment")),
+            ("args", engine_cfg.get(mode)),
+            ("extra_args", backend.get(f"{mode}_extra_args")),
+        ):
+            if value:
+                spec[key] = value
+        if spec:
+            roles[role] = spec
+    engine_knobs = {key: value for key, value in backend.items() if key not in _PER_ROLE_BACKEND_KEYS}
+    recipe = {"schema": 2, **cfg, "engine": {"type": engine_type, **engine_knobs} if engine_knobs else engine_type}
+    if roles:
+        recipe["roles"] = roles
+    assert not legacy_keys_present(recipe), legacy_keys_present(recipe)
+    return recipe
 
 
 # --------------------------------------------------------------- expansion ---
@@ -79,18 +136,23 @@ class TestExpandObservability:
             if expected_events is True:
                 expected_flags += ("--publish-events-and-metrics",)
 
-        # Check the raw recipe and a schema-dumped recipe through the same real
-        # loader: configured values and effective flags must both survive.
+        # Check the raw recipe and a recipe carrying the schema-dumped backend
+        # through the same real loader: configured values and effective flags
+        # must both survive.
+        recipe = _recipe(cfg)
         for filename in ("recipe.yaml", "roundtrip.yaml"):
             path = tmp_path / filename
-            path.write_text(yaml.safe_dump(cfg))
+            path.write_text(yaml.safe_dump(recipe))
             loaded = loader(path)
             assert loaded.backend.publish_metrics is publish_metrics
             assert loaded.backend.publish_events_and_metrics is expected_events
             assert loaded.backend.dynamo_metrics_flags == expected_flags
-            cfg = SrtConfig.Schema().dump(loaded)
-            assert cfg["backend"]["publish_metrics"] is publish_metrics
-            assert cfg["backend"]["publish_events_and_metrics"] is expected_events
+            dumped = SrtConfig.Schema().dump(loaded)
+            assert dumped["backend"]["publish_metrics"] is publish_metrics
+            assert dumped["backend"]["publish_events_and_metrics"] is expected_events
+            # A dump is the internal layout, which the loaders reject; spell its
+            # backend block as a recipe for the second pass.
+            recipe = _recipe({**cfg, "backend": dumped["backend"]})
 
     @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
     @pytest.mark.parametrize("publish_metrics", [False, True])
@@ -98,7 +160,7 @@ class TestExpandObservability:
     def test_schema_dump_preserves_omission_before_observability_is_enabled(
         self, tmp_path, monkeypatch, loader_name, publish_metrics, explicit_optout
     ):
-        """The sweep's load/dump/reload path must not turn omission into False."""
+        """A schema dump (a saved or locked recipe) must not turn omission into False."""
         monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
         cfg = _trtllm_config()
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
@@ -114,7 +176,9 @@ class TestExpandObservability:
 
         dumped["observability"]["enabled"] = True
         path = tmp_path / "enable-observability.yaml"
-        path.write_text(yaml.safe_dump(dumped))
+        path.write_text(
+            yaml.safe_dump(_recipe({**cfg, "backend": dumped["backend"], "observability": dumped["observability"]}))
+        )
         loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
         loaded = loader(path)
 
@@ -489,7 +553,7 @@ class TestTrtllmServeDefaults:
         cfg = _trtllm_serve_config()
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.safe_dump(cfg))
+        config_path.write_text(yaml.safe_dump(_recipe(cfg)))
 
         loaded = SrtConfig.from_yaml(config_path)
 
@@ -507,7 +571,7 @@ class TestTrtllmServeDefaults:
         cfg = _trtllm_serve_config()
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
         config_path = tmp_path / "recipe.yaml"
-        config_path.write_text(yaml.safe_dump(cfg))
+        config_path.write_text(yaml.safe_dump(_recipe(cfg)))
 
         loaded = load_config(config_path)
 
@@ -637,7 +701,7 @@ class TestTrtllmEngineDefaults:
         )
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
         path = tmp_path / "recipe.yaml"
-        path.write_text(yaml.safe_dump(cfg))
+        path.write_text(yaml.safe_dump(_recipe(cfg)))
         loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
         loaded = loader(path)
         for mode in ("prefill", "decode"):
@@ -651,6 +715,7 @@ class TestTrtllmEngineDefaults:
         folds it into backend.trtllm_config before the default is applied."""
         monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
         cfg = {
+            "schema": 2,
             "name": "test-job",
             "model": {"path": "/models/test-model", "container": "test.sqsh", "precision": "fp8"},
             "resources": {"gpu_type": "h100", "gpus_per_node": 8},
@@ -672,9 +737,10 @@ class TestTrtllmEngineDefaults:
             assert section["max_batch_size"] in (256, 64)
 
     def test_dump_reload_carries_the_key_and_observability_warns(self, tmp_path, monkeypatch, caplog):
-        """The sweep's load/dump/reload path (and any saved or locked recipe) carries
-        the baked key as an explicit false. A later observability.enabled: true then
-        keeps that value, so the load step says so instead of failing silently."""
+        """A schema dump (a saved or locked recipe) carries the baked key as an
+        explicit false. A recipe that spells that value out and later sets
+        observability.enabled: true keeps it, so the load step says so instead of
+        failing silently."""
         monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
         cfg = _trtllm_config()
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
@@ -684,7 +750,9 @@ class TestTrtllmEngineDefaults:
 
         dumped["observability"]["enabled"] = True
         path = tmp_path / "enable-observability.yaml"
-        path.write_text(yaml.safe_dump(dumped))
+        path.write_text(
+            yaml.safe_dump(_recipe({**cfg, "backend": dumped["backend"], "observability": dumped["observability"]}))
+        )
         with caplog.at_level("WARNING"):
             loaded = load_config(path)
         for mode in ("prefill", "decode"):
@@ -759,13 +827,15 @@ class TestObservabilitySchema:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump(
-                {
-                    **BASE_CONFIG,
-                    "observability": {
-                        "enabled": True,
-                        "tachometer": {"enabled": True, "collect_interval_ms": 500},
-                    },
-                }
+                _recipe(
+                    {
+                        **BASE_CONFIG,
+                        "observability": {
+                            "enabled": True,
+                            "tachometer": {"enabled": True, "collect_interval_ms": 500},
+                        },
+                    }
+                )
             )
         )
 

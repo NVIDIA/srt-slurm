@@ -7,11 +7,13 @@ import copy
 
 import pytest
 
-from srtctl.core.roles import expand_roles, roles_from_legacy
+from srtctl.core.config import resolve_config_with_defaults
+from srtctl.core.roles import expand_engine, expand_roles
 from srtctl.core.schema import SrtConfig
 
 
-def _legacy_sglang_disagg() -> dict:
+def _internal_sglang_disagg() -> dict:
+    """The internal layout the schema reads (what ``roles:`` expands into)."""
     return {
         "schema": 2,
         "name": "roles-test",
@@ -46,7 +48,7 @@ def _roles_sglang_disagg() -> dict:
         "name": "roles-test",
         "model": {"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
         "resources": {"gpu_type": "h100", "gpus_per_node": 8},
-        "backend": {"type": "sglang"},
+        "engine": "sglang",
         "roles": {
             "prefill": {
                 "nodes": 2,
@@ -68,30 +70,25 @@ def _roles_sglang_disagg() -> dict:
     }
 
 
-def test_expand_roles_produces_the_legacy_layout() -> None:
+def test_expand_roles_produces_the_internal_layout() -> None:
     expanded = expand_roles(_roles_sglang_disagg())
     assert "roles" not in expanded
-    assert expanded["resources"] == _legacy_sglang_disagg()["resources"]
-    assert expanded["backend"] == _legacy_sglang_disagg()["backend"]
+    assert "engine" not in expanded
+    assert expanded["resources"] == _internal_sglang_disagg()["resources"]
+    assert expanded["backend"] == _internal_sglang_disagg()["backend"]
 
 
-def test_roles_and_legacy_load_to_identical_configs() -> None:
-    from_roles = SrtConfig.Schema().load(expand_roles(_roles_sglang_disagg()))
-    from_legacy = SrtConfig.Schema().load(_legacy_sglang_disagg())
+def test_roles_load_to_the_same_config_as_the_internal_layout() -> None:
     schema = SrtConfig.Schema()
-    assert schema.dump(from_roles) == schema.dump(from_legacy)
+    from_roles = schema.load(resolve_config_with_defaults(_roles_sglang_disagg(), None))
+    from_internal = schema.load(_internal_sglang_disagg())
+    assert schema.dump(from_roles) == schema.dump(from_internal)
 
 
-def test_roles_round_trips_through_roles_from_legacy() -> None:
-    legacy = _legacy_sglang_disagg()
-    as_roles = roles_from_legacy(legacy)
-    assert as_roles["roles"] == _roles_sglang_disagg()["roles"]
-    assert "prefill_workers" not in as_roles.get("resources", {})
-    assert "backend" not in as_roles  # the engine moved to the top level
-    assert as_roles["engine"] == "sglang"
-    # And expanding it back reproduces the original internal layout.
-    assert expand_roles(copy.deepcopy(as_roles))["resources"] == legacy["resources"]
-    assert expand_roles(copy.deepcopy(as_roles))["backend"] == legacy["backend"]
+def test_the_internal_layout_is_not_a_recipe() -> None:
+    """A recipe that spells the internal fields itself is the pre-2.0 layout and is rejected."""
+    with pytest.raises(ValueError, match=r"pre-2\.0 \(v1\) layout: backend, resources\.prefill_nodes"):
+        resolve_config_with_defaults(_internal_sglang_disagg(), None)
 
 
 def test_agg_role_maps_to_aggregated_env_and_config() -> None:
@@ -105,20 +102,20 @@ def test_agg_role_maps_to_aggregated_env_and_config() -> None:
     assert config["backend"]["vllm_config"]["aggregated"] == {"tensor-parallel-size": 1}
 
 
-def test_engine_config_key_follows_backend_type() -> None:
+def test_engine_config_key_follows_engine_type() -> None:
     for btype, key in (("sglang", "sglang_config"), ("vllm", "vllm_config"), ("trtllm", "trtllm_config")):
-        config = {"backend": {"type": btype}, "roles": {"agg": {"args": {"a": 1}}}}
+        config = {"engine": btype, "roles": {"agg": {"args": {"a": 1}}}}
         expand_roles(config)
         assert config["backend"][key]["aggregated"] == {"a": 1}
 
 
 def test_trtllm_extra_args_route_to_mode_extra_args() -> None:
-    config = {"backend": {"type": "trtllm"}, "roles": {"prefill": {"extra_args": ["--x"]}}}
+    config = {"engine": "trtllm", "roles": {"prefill": {"extra_args": ["--x"]}}}
     expand_roles(config)
     assert config["backend"]["prefill_extra_args"] == ["--x"]
 
 
-def test_mixing_roles_with_legacy_fields_is_rejected() -> None:
+def test_roles_cannot_overwrite_internal_fields_already_set() -> None:
     config = _roles_sglang_disagg()
     config["resources"]["prefill_workers"] = 1
     with pytest.raises(ValueError, match="cannot be combined"):
@@ -127,19 +124,19 @@ def test_mixing_roles_with_legacy_fields_is_rejected() -> None:
 
 def test_unknown_role_and_unknown_spec_key_rejected() -> None:
     with pytest.raises(ValueError, match="unknown role"):
-        expand_roles({"backend": {"type": "sglang"}, "roles": {"warmup": {"workers": 1}}})
+        expand_roles({"engine": "sglang", "roles": {"warmup": {"workers": 1}}})
     with pytest.raises(ValueError, match="unknown keys"):
-        expand_roles({"backend": {"type": "sglang"}, "roles": {"prefill": {"gpu": 1}}})
+        expand_roles({"engine": "sglang", "roles": {"prefill": {"gpu": 1}}})
 
 
 def test_no_roles_block_is_a_no_op() -> None:
-    legacy = _legacy_sglang_disagg()
-    assert expand_roles(copy.deepcopy(legacy)) == legacy
+    internal = _internal_sglang_disagg()
+    assert expand_roles(copy.deepcopy(internal)) == internal
 
 
-def test_decode_colocate_expands_to_the_v1_sentinel() -> None:
+def test_decode_colocate_expands_to_the_internal_sentinel() -> None:
     config = {
-        "backend": {"type": "sglang"},
+        "engine": "sglang",
         "roles": {
             "prefill": {"nodes": 1, "workers": 1, "gpus": 4},
             "decode": {"nodes": "colocate", "workers": 2, "gpus": 2},
@@ -158,24 +155,18 @@ def test_colocate_requires_explicit_gpus_on_both_roles() -> None:
         ({"nodes": 1, "workers": 1}, {"nodes": "colocate", "workers": 1}, "prefill, decode"),
     ):
         with pytest.raises(ValueError, match=f"explicit gpus: on both prefill and decode \\(missing on {missing}\\)"):
-            expand_roles({"backend": {"type": "sglang"}, "roles": {"prefill": prefill, "decode": decode}})
+            expand_roles({"engine": "sglang", "roles": {"prefill": prefill, "decode": decode}})
 
 
 def test_roles_reject_the_bare_zero_and_colocate_outside_decode() -> None:
     with pytest.raises(ValueError, match="nodes: colocate"):
-        expand_roles({"backend": {"type": "sglang"}, "roles": {"decode": {"nodes": 0, "workers": 2}}})
+        expand_roles({"engine": "sglang", "roles": {"decode": {"nodes": 0, "workers": 2}}})
     with pytest.raises(ValueError, match="only the decode role can colocate"):
-        expand_roles({"backend": {"type": "sglang"}, "roles": {"prefill": {"nodes": "colocate", "workers": 1}}})
+        expand_roles({"engine": "sglang", "roles": {"prefill": {"nodes": "colocate", "workers": 1}}})
     with pytest.raises(ValueError, match="at least 1"):
-        expand_roles({"backend": {"type": "sglang"}, "roles": {"prefill": {"nodes": 0, "workers": 1}}})
+        expand_roles({"engine": "sglang", "roles": {"prefill": {"nodes": 0, "workers": 1}}})
     with pytest.raises(ValueError, match="positive integer or 'colocate'"):
-        expand_roles({"backend": {"type": "sglang"}, "roles": {"decode": {"nodes": "shared", "workers": 1}}})
-
-
-def test_legacy_decode_nodes_zero_migrates_to_colocate() -> None:
-    as_roles = roles_from_legacy(_legacy_sglang_disagg())
-    assert as_roles["roles"]["decode"]["nodes"] == "colocate"
-    assert as_roles["roles"]["prefill"]["nodes"] == 2
+        expand_roles({"engine": "sglang", "roles": {"decode": {"nodes": "shared", "workers": 1}}})
 
 
 def _colocated(
@@ -184,17 +175,14 @@ def _colocated(
     config = _roles_sglang_disagg()
     config["roles"]["prefill"].update({"nodes": prefill_nodes, "workers": prefill_workers, "gpus": prefill_gpus})
     config["roles"]["decode"].update({"workers": decode_workers, "gpus": decode_gpus})
-    return expand_roles(config)
+    return resolve_config_with_defaults(config, None)
 
 
 def test_colocated_decode_that_fits_loads() -> None:
     # 1 node x 8 GPUs: 1 prefill x 4 + 2 decode x 2 = 8
     cfg = SrtConfig.Schema().load(_colocated(1, 1, 4, 2, 2))
     assert cfg.resources.total_nodes == 1
-    # legacy spelling keeps working
-    legacy = _legacy_sglang_disagg()
-    legacy["resources"].update({"prefill_nodes": 1, "prefill_workers": 1, "gpus_per_prefill": 4})
-    assert SrtConfig.Schema().load(legacy).resources.decode_nodes == 0
+    assert cfg.resources.decode_nodes == 0
 
 
 def test_colocated_decode_that_oversubscribes_is_rejected_at_load() -> None:
@@ -206,13 +194,6 @@ def test_colocated_decode_that_oversubscribes_is_rejected_at_load() -> None:
     # 2 nodes x 8 GPUs: 2 prefill x 5 leave 3 free per node; a 4-GPU decode worker cannot be packed
     with pytest.raises(ValidationError, match="cannot be packed onto the prefill nodes"):
         SrtConfig.Schema().load(_colocated(2, 2, 5, 1, 4))
-    # the same layout with legacy fields is rejected too (it would die in the job otherwise)
-    legacy = _legacy_sglang_disagg()
-    legacy["resources"].update(
-        {"prefill_nodes": 1, "prefill_workers": 1, "gpus_per_prefill": 6, "gpus_per_decode": 4, "decode_workers": 1}
-    )
-    with pytest.raises(ValidationError, match="do not fit"):
-        SrtConfig.Schema().load(legacy)
 
 
 def test_preflight_topology_reads_expanded_roles(tmp_path) -> None:
@@ -226,7 +207,7 @@ def test_preflight_topology_reads_expanded_roles(tmp_path) -> None:
         "name": "roles-preflight",
         "model": {"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
         "resources": {"gpu_type": "h100", "gpus_per_node": 8},
-        "backend": {"type": "sglang"},
+        "engine": "sglang",
         "roles": {"agg": {"nodes": 1, "workers": 2, "gpus": 1}},
         "benchmark": {"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": "4"},
     }
@@ -255,6 +236,24 @@ def test_engine_string_and_mapping_map_onto_backend() -> None:
         expand_roles({"engine": "vllm", "backend": {"type": "sglang"}})
 
 
+def test_engine_mapping_rejects_per_role_settings() -> None:
+    """The engine block carries engine-wide knobs only; per-role keys have one spelling, under roles."""
+    for key, value in (
+        ("sglang_config", {"prefill": {"tp": 1}}),
+        ("prefill_environment", {"A": "1"}),
+        ("decode_extra_args", ["--x"]),
+        ("kv_events_config", True),
+        ("mooncake_kv_store", {"env": {}}),
+    ):
+        with pytest.raises(ValueError, match=f"engine: carries per-role settings \\({key}\\)"):
+            expand_engine({"engine": {"type": "sglang", key: value}})
+    # engine-wide knobs are fine
+    assert expand_engine({"engine": {"type": "vllm", "connector": "nixl"}})["backend"] == {
+        "type": "vllm",
+        "connector": "nixl",
+    }
+
+
 def test_per_role_kv_events_and_sidecar() -> None:
     config = expand_roles(
         {
@@ -276,21 +275,6 @@ def test_per_role_kv_events_and_sidecar() -> None:
         expand_roles({"dynamo": {"sidecar": True}, "roles": {"prefill": {"sidecar": True}}})
 
 
-def test_roles_from_legacy_folds_kv_events_and_sidecar() -> None:
-    legacy = {
-        "backend": {"type": "vllm", "kv_events_config": True, "connector": "nixl"},
-        "resources": {"prefill_workers": 1, "decode_workers": 1, "agg_workers": 0},
-        "dynamo": {"sidecar": True, "sidecar_port": 50051},
-    }
-    folded = roles_from_legacy(legacy)
-    assert folded["engine"] == {"type": "vllm", "connector": "nixl"}
-    assert folded["roles"]["prefill"] == {"workers": 1, "kv_events": True, "sidecar": True}
-    assert folded["roles"]["decode"] == {"workers": 1, "kv_events": True, "sidecar": True}
-    assert folded["roles"]["agg"] == {"workers": 0, "sidecar": True}  # vLLM's bare `true` never covered agg
-    assert folded["dynamo"] == {"sidecar_port": 50051}
-    assert "backend" not in folded
-
-
 def test_per_role_critical_maps_onto_resources_and_the_worker_flag() -> None:
     config = expand_roles(
         {
@@ -303,7 +287,7 @@ def test_per_role_critical_maps_onto_resources_and_the_worker_flag() -> None:
 
     recipe = _roles_sglang_disagg()
     recipe["roles"]["prefill"]["critical"] = False
-    loaded = SrtConfig.Schema().load(expand_roles(recipe))
+    loaded = SrtConfig.Schema().load(resolve_config_with_defaults(recipe, None))
     assert loaded.resources.worker_critical("prefill") is False
     assert loaded.resources.worker_critical("decode") is True
     assert loaded.resources.worker_critical("agg") is True
@@ -312,15 +296,8 @@ def test_per_role_critical_maps_onto_resources_and_the_worker_flag() -> None:
         expand_roles({"roles": {"decode": {"critical": "no"}}})
     with pytest.raises(ValueError, match="cannot be combined"):
         expand_roles({"resources": {"decode_critical": False}, "roles": {"decode": {"workers": 1}}})
-
-
-def test_roles_from_legacy_folds_critical() -> None:
-    legacy = {
-        "backend": {"type": "sglang"},
-        "resources": {"prefill_workers": 1, "decode_workers": 1, "decode_critical": False},
-    }
-    folded = roles_from_legacy(legacy)
-    assert folded["roles"]["decode"] == {"workers": 1, "critical": False}
-    assert folded["roles"]["prefill"] == {"workers": 1}
-    assert "resources" not in folded
-    assert expand_roles(copy.deepcopy(folded))["resources"] == legacy["resources"]
+    # In a recipe the internal spelling is rejected outright, before roles: is even looked at.
+    recipe = _roles_sglang_disagg()
+    recipe["resources"]["decode_critical"] = False
+    with pytest.raises(ValueError, match=r"pre-2\.0 \(v1\) layout: resources\.decode_critical"):
+        resolve_config_with_defaults(recipe, None)

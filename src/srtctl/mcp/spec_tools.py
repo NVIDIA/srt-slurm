@@ -112,14 +112,16 @@ def validate_config(
     normalized: list[dict[str, Any]] = []
     errors: list[str] = []
     for suffix, variant in variants:
-        resolved = resolve_config_with_defaults(variant, cluster_config)
         try:
+            resolved = resolve_config_with_defaults(variant, cluster_config)
             loaded = schema.load(resolved)
-            normalized.append({"variant": suffix, "config": schema.dump(loaded)})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - a pre-2.0 layout is reported like any other invalid recipe
             errors.append(f"{suffix}: {exc}")
             continue
-        for issue in validate_topology(variant.get("resources")):
+        normalized.append({"variant": suffix, "config": schema.dump(loaded)})
+        # Topology lives under roles: in the recipe; the resources block only carries
+        # it after expansion, so check the resolved dict (as preflight_config_variants does).
+        for issue in validate_topology(resolved.get("resources")):
             errors.append(f"{suffix}: {issue.field}: {issue.message}")
 
     return {
