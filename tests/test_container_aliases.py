@@ -21,9 +21,12 @@ CONTAINERS = {
 
 def _recipe() -> dict:
     return {
+        "schema": 2,
         "name": "aliases",
         "model": {"path": "/models/m", "container": "sglang", "precision": "fp8"},
-        "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+        "engine": "sglang",
+        "roles": {"agg": {"nodes": 1}},
         "frontend": {"nginx_container": "nginx", "container_image": "router"},
         "benchmark": {"type": "custom", "command": "echo", "container_image": "evals"},
         "observability": {
@@ -34,7 +37,9 @@ def _recipe() -> dict:
             },
         },
         "telemetry": {"enabled": True, "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401}},
-        "backend": {"type": "sglang", "mooncake_kv_store": {"container": "mooncake", "env": {"image": "sglang"}}},
+        "services": [
+            {"name": "mooncake-master", "type": "mooncake-master", "container": "mooncake", "env": {"image": "sglang"}},
+        ],
     }
 
 
@@ -48,7 +53,8 @@ def test_every_known_container_key_resolves_in_one_pass() -> None:
     assert resolved["observability"]["tachometer"]["dcgm_exporter"]["container_image"] == "/sqsh/dcgm.sqsh"
     assert resolved["observability"]["tachometer"]["node_exporter"]["container_image"] == "/sqsh/node.sqsh"
     assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/sqsh/dcgm.sqsh"
-    # Newly covered: the Mooncake master container used to be the one image key no block resolved.
+    # The Mooncake master container used to be the one image key no block resolved; it is
+    # declared as a service and mapped onto backend.mooncake_kv_store before the walker runs.
     assert resolved["backend"]["mooncake_kv_store"]["container"] == "/sqsh/mooncake.sqsh"
 
 
@@ -56,8 +62,8 @@ def test_free_form_maps_and_identity_are_never_touched() -> None:
     recipe = _recipe()
     recipe["identity"] = {"container": {"image": "sglang"}}
     recipe["environment"] = {"image": "sglang", "container": "nginx"}
-    recipe["backend"]["aggregated_environment"] = {"container_image": "sglang"}
-    recipe["backend"]["sglang_config"] = {"aggregated": {"image": "sglang"}}
+    recipe["roles"]["agg"]["env"] = {"container_image": "sglang"}
+    recipe["roles"]["agg"]["args"] = {"image": "sglang"}
 
     resolved = resolve_config_with_defaults(recipe, {"containers": CONTAINERS})
 
@@ -65,7 +71,7 @@ def test_free_form_maps_and_identity_are_never_touched() -> None:
     assert resolved["environment"] == {"image": "sglang", "container": "nginx"}
     assert resolved["backend"]["aggregated_environment"] == {"container_image": "sglang"}
     assert resolved["backend"]["sglang_config"] == {"aggregated": {"image": "sglang"}}
-    assert resolved["backend"]["mooncake_kv_store"]["env"] == {"image": "sglang"}
+    assert resolved["services"][0]["env"] == {"image": "sglang"}
 
 
 def test_literal_paths_registry_uris_and_unknown_aliases_pass_through() -> None:

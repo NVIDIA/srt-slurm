@@ -52,6 +52,35 @@ observability:
 TACHOMETER_HEAD = DISAGG_HEAD.replace("observability:\n  tachometer:\n    enabled: false\n", "")
 assert TACHOMETER_HEAD != DISAGG_HEAD
 
+# DISAGG_HEAD as a 2.0 recipe (schema: 2, engine:, roles:), for tests that go through the real
+# loader (``_from_yaml``). ``_load`` feeds the internal layout straight to the marshmallow schema.
+DISAGG_RECIPE = """
+schema: 2
+name: services-test
+model:
+  path: /model
+  container: /job.sqsh
+  precision: bf16
+resources:
+  gpu_type: b200
+  gpus_per_node: 8
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 8
+  decode:
+    nodes: 2
+    workers: 2
+    gpus: 8
+benchmark:
+  type: manual
+observability:
+  tachometer:
+    enabled: false
+"""
+
 
 def _load(services_yaml: str, head: str = DISAGG_HEAD, backend: str = "backend:\n  type: sglang\n") -> SrtConfig:
     return SrtConfig.Schema().load(yaml.safe_load(head + backend + services_yaml))
@@ -641,8 +670,7 @@ def test_nats_max_payload_renders_a_config_file(tmp_path: Path) -> None:
 def test_declared_nats_options_flow_back_into_infra(tmp_path: Path) -> None:
     config = _from_yaml(
         tmp_path,
-        DISAGG_HEAD
-        + "backend:\n  type: sglang\n"
+        DISAGG_RECIPE
         + "services:\n  - name: etcd\n    type: etcd\n    placement:\n      node: dedicated\n"
         + "  - name: nats\n    type: nats\n    placement:\n      node: dedicated\n    options:\n"
         + "      max_payload_mb: 24\n",
@@ -656,8 +684,7 @@ def test_declared_etcd_dedicated_must_agree_with_nats(tmp_path: Path) -> None:
     with pytest.raises(Exception, match="dedicated"):
         _from_yaml(
             tmp_path,
-            DISAGG_HEAD
-            + "backend:\n  type: sglang\n"
+            DISAGG_RECIPE
             + "services:\n  - name: etcd\n    type: etcd\n    placement:\n      node: dedicated\n"
             + "  - name: nats\n    type: nats\n    placement:\n      node: infra\n",
         )
@@ -666,14 +693,35 @@ def test_declared_etcd_dedicated_must_agree_with_nats(tmp_path: Path) -> None:
 def test_declared_mooncake_master_maps_onto_the_backend(tmp_path: Path) -> None:
     config = _from_yaml(
         tmp_path,
-        DISAGG_HEAD
-        + """backend:
-  type: sglang
-  sglang_config:
-    prefill:
+        """
+schema: 2
+name: services-test
+model:
+  path: /model
+  container: /job.sqsh
+  precision: bf16
+resources:
+  gpu_type: b200
+  gpus_per_node: 8
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 8
+    args:
       disaggregation-transfer-backend: mooncake
-    decode:
+  decode:
+    nodes: 2
+    workers: 2
+    gpus: 8
+    args:
       disaggregation-transfer-backend: mooncake
+benchmark:
+  type: manual
+observability:
+  tachometer:
+    enabled: false
 services:
   - name: mooncake-master
     type: mooncake-master

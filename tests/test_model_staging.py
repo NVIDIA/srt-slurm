@@ -96,6 +96,7 @@ class TestSchema:
 
     def test_stage_dir_loads(self):
         data = {
+            "schema": 2,
             "name": "stage-test",
             "model": {
                 "path": "/lustre/DeepSeek-V4-Pro",
@@ -103,8 +104,9 @@ class TestSchema:
                 "precision": "fp4",
                 "stage_dir": "/raid/scratch/models",
             },
-            "resources": {"gpu_type": "gb300", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {"type": "trtllm"},
+            "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+            "engine": "trtllm",
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)
@@ -114,10 +116,12 @@ class TestSchema:
 
     def test_stage_dir_defaults_none(self):
         data = {
+            "schema": 2,
             "name": "no-stage",
             "model": {"path": "/lustre/m", "container": "trtllm", "precision": "fp4"},
-            "resources": {"gpu_type": "gb300", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {"type": "trtllm"},
+            "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+            "engine": "trtllm",
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)

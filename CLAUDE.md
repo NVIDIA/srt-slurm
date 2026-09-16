@@ -162,28 +162,39 @@ services:
 
 ### Mooncake KV Store
 
-When `mooncake_kv_store` is set under an SGLang or vLLM backend, srtslurm:
+When a recipe declares a `mooncake-master` service (SGLang or vLLM engine; internally this fills `backend.mooncake_kv_store`), srtslurm:
 1. Launches `mooncake_master` on the infra node (same node as etcd/nats)
 2. Injects `MOONCAKE_MASTER=<infra_ip>:8700` on all workers automatically
-3. Passes through any env vars in `mooncake_kv_store.env` to all workers
-4. For vLLM, also renders `mooncake_kv_store.store_config` into the JSON file
+3. Worker-side Mooncake env (`MOONCAKE_PROTOCOL`, segment size, device) lives on `roles.<role>.env` like any other worker env
+4. For vLLM, also renders the service's `options.store_config` into the JSON file
    pointed to by `MOONCAKE_CONFIG_PATH` (vLLM's `MooncakeStoreConnector` reads
    its config from JSON, not env vars). See `docs/mooncake-kv-store.md`.
 
 ```yaml
-backend:
-  type: sglang
-  mooncake_kv_store:
+engine: sglang
+services:
+  - name: mooncake-master
+    type: mooncake-master
     container: nvcr.io/nvidia/mooncake:latest  # optional, defaults to job container
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
     env:                                        # direct MOONCAKE_* / SGLANG_* env vars
       MOONCAKE_PROTOCOL: rdma
       MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
       MOONCAKE_DEVICE: mlx5_0
-  sglang_config:
-    prefill:
+    args:
       disaggregation-transfer-backend: mooncake  # user still sets this
       disaggregation-ib-device: "mlx5_0,mlx5_1"
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    env:
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
+      MOONCAKE_DEVICE: mlx5_0
+    args:
       disaggregation-transfer-backend: mooncake
       disaggregation-ib-device: "mlx5_0,mlx5_1"
 ```
@@ -192,7 +203,9 @@ backend:
 
 `MOONCAKE_LOCAL_HOSTNAME` is auto-resolved per-worker to that worker's own IP (using `runtime.network_interface`), so multi-node peer transfers don't fall back to `localhost`. If you need a specific NIC IP, set `MOONCAKE_LOCAL_HOSTNAME` in `env` to override the default.
 
-**Validation:** In disaggregated mode, srtslurm rejects configs that set `mooncake_kv_store` without `disaggregation-transfer-backend: mooncake` on `sglang_config.prefill` or `sglang_config.decode`. This catches the common misconfiguration where the master process gets launched but workers fall back to default transport.
+**Validation:** In disaggregated mode, srtslurm rejects configs that declare a `mooncake-master` service without `disaggregation-transfer-backend: mooncake` in `roles.prefill.args` or `roles.decode.args`. This catches the common misconfiguration where the master process gets launched but workers fall back to default transport.
+
+The pre-2.0 spelling of all of this (`backend.mooncake_kv_store`, `backend.sglang_config`, `resources.prefill_nodes`, `infra:`) no longer loads; `srtctl migrate -f <recipe> --in-place` rewrites it and `docs/legacy-v1.md` maps every key.
 
 ### Services
 
@@ -236,19 +249,23 @@ lives in `srtslurm.yaml` as `default_host_setup` (whole-block replace, like
 passwordless sudo. Always pair a `commands` entry that sets persistent state with a
 `teardown` — otherwise it leaks to the next job on that node.
 
-### ResourceConfig
+### Worker topology (roles -> ResourceConfig)
 
-Supports explicit GPUs per worker (overrides computed values):
+A recipe spells the topology per role; `expand_roles` maps it onto the internal `ResourceConfig` fields (`prefill_nodes`, `prefill_workers`, `gpus_per_prefill`, ...) the runtime reads. `gpus` is optional and overrides the computed `nodes * gpus_per_node // workers`:
 
-```python
+```yaml
 resources:
   gpu_type: "gb200"
-  prefill_nodes: 2
-  prefill_workers: 4
-  decode_nodes: 4
-  decode_workers: 8
-  gpus_per_prefill: 4  # Optional: explicit override
-  gpus_per_decode: 2   # Optional: explicit override
+  gpus_per_node: 4
+roles:
+  prefill:
+    nodes: 2
+    workers: 4
+    gpus: 2          # Optional: explicit override
+  decode:
+    nodes: 4
+    workers: 8
+    gpus: 2          # Optional: explicit override
 ```
 
 ## Testing
