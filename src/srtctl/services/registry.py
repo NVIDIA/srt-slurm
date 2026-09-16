@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
+    from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
-    from srtctl.services.config import ServiceConfig
+    from srtctl.services.config import ServiceConfig, ServiceReadinessConfig
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,23 @@ class ServiceKind:
     def skip_reason(self, service: ServiceConfig, runtime: RuntimeContext) -> str | None:
         """A reason not to launch this service in this job (a missing host binary); None to launch."""
         return None
+
+    def readiness(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> ServiceReadinessConfig | None:
+        """A per-instance readiness probe when the recipe writes none.
+
+        Kinds whose instances differ (a Ray head answers on its dashboard port, a
+        Ray worker only logs that it joined) return the probe for ``ctx``; None
+        falls back to ``default_readiness_ports``.
+        """
+        return None
+
+    def wait_fleet_ready(self, service: ServiceConfig, runtime: RuntimeContext, procs: list[ManagedProcess]) -> None:
+        """Block until every instance is visible to the service as a whole; raise to fail the job.
+
+        Called once per service after each instance passed its own readiness
+        probe. Per-instance probes see one node; a cluster-shaped kind (Ray)
+        also needs the head to report every member before the client starts.
+        """
 
 
 _SERVICE_KINDS: dict[str, ServiceKind] = {}

@@ -280,6 +280,35 @@ environment its process needs; the launch path is shared by every kind. Register
 | `node-exporter` | `/bin/node_exporter` with the cpu, infiniband, and meminfo collectors on 9101 in `quay.io/prometheus/node-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less. `options`: `port`. |
 | `process-exporter` | `configs/process-exporter -config.path <log_dir>/process-exporter.yml -web.listen-address=:9256 -threads=true ...` on the bare node | `after_frontend` | `false` | Implied on every allocated node (`placement.node: all`) while tachometer runs. Host-native from the static binary `make setup` installs; skipped with a warning when it is missing. A declared `container` switches to the image's `/bin/process-exporter` with the group file under `/logs`. `options`: `port`, `binary`. |
 | `mooncake-store` | `python -m mooncake.mooncake_store_service` | `before_workers` | `true` | Requires a `mooncake-master` entry. Container falls back to the master's. Injects the master's address. |
+| `ray` | `ray start --head ...` on the first instance, `ray start --address=<head>:6379 ...` on the rest, both `--block` | `before_workers` | `true` | One Ray cluster across the service's nodes; see [Ray cluster](#ray-cluster). Placement `workers` (default), `head`, or `all`. `options`: `port` (GCS, 6379), `dashboard_port` (8265), `num_gpus` (the node's count). `args` are appended to every `ray start`. |
+
+### Ray cluster
+
+`type: ray` turns the service's nodes into one Ray cluster: the first instance runs the head (GCS on
+`options.port`, dashboard and job-submission API on `options.dashboard_port`, bound to the node's
+fabric IP), every other instance joins it. Readiness is per role, then per fleet: the head is ready when
+its dashboard answers `/api/version`, a worker when its log says `Ray runtime started`, and the service
+is ready when the head's node summary lists every member `ALIVE`. The job waits for all three before
+anything that submits work starts.
+
+What Ray spawns later (actors, the driver of a `ray job submit`) runs inside these steps' containers,
+so the service carries the job's container, mounts, and environment. The client that submits work,
+typically the benchmark step, only needs to reach the dashboard port. `CUDA_VISIBLE_DEVICES` is
+exported to match `--num-gpus`, and `RAY_memory_monitor_refresh_ms=0` disables Ray's host-memory
+killer, which a trainer offloading to host RAM trips on purpose; both are defaults the recipe's `env`
+overrides.
+
+```yaml
+frontend:
+  type: none
+services:
+  - name: train
+    type: ray
+    nodes: 2                  # the job's two nodes belong to this cluster
+    options:
+      port: 6379
+      dashboard_port: 8265
+```
 
 The bespoke launch paths these replace (`start_head_infrastructure` with its own readiness loop, a
 Mooncake-master stage, exporter launches inside the tachometer stage) are gone; every one of these is
