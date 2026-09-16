@@ -223,4 +223,6 @@ def test_ui_supports_a_remote_api_base():
     # With nothing stored, the API base is the page's own directory ("" at /, "/status" under /status/),
     # so a web server that proxies <prefix>/api/* to a collector needs no configuration in the browser.
     assert 'const pageDir = trimSlash(location.pathname.replace(/\\/[^/]*$/, ""));' in html
-    assert "localStorage.getItem(API_KEY)) || pageDir" in html
+    assert "let apiBase = storedBase || pageDir;" in html
+    # A blank field (or "#api=" with no value) clears the stored base and returns to the default at once.
+    assert "apiBase = storedBase || pageDir; // a blank field" in html

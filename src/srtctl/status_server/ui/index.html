@@ -141,11 +141,13 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
   const trimSlash = (s) => (s || "").trim().replace(/\/+$/, "");
   const pageDir = trimSlash(location.pathname.replace(/\/[^/]*$/, ""));
   let token = localStorage.getItem(KEY) || "";
-  let apiBase = trimSlash(localStorage.getItem(API_KEY)) || pageDir;
+  let storedBase = trimSlash(localStorage.getItem(API_KEY));
   const frag = new URLSearchParams(location.hash.slice(1));
   if (frag.get("token")) { token = frag.get("token"); localStorage.setItem(KEY, token); }
-  if (frag.has("api")) { apiBase = trimSlash(frag.get("api")); localStorage.setItem(API_KEY, apiBase); }
+  // "#api=" with an empty value clears a stored base and returns to the default.
+  if (frag.has("api")) { storedBase = trimSlash(frag.get("api")); localStorage.setItem(API_KEY, storedBase); }
   if (frag.has("token") || frag.has("api")) history.replaceState(null, "", location.pathname + location.search);
+  let apiBase = storedBase || pageDir;
   $("token").value = token;
   $("api").value = apiBase;
   const isRemote = () => /^https?:\/\//.test(apiBase);
@@ -189,7 +191,8 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
       // A cross-origin call the collector did not allow fails here, before any status code.
       if (isRemote()) {
         setLive("err", "unreachable or blocked by CORS");
-        hint(`Could not reach <code>${esc(apiBase)}</code>. If it is up, it must be started with <code>${esc(corsFlag())}</code> so this page may call it.`);
+        hint(`Could not reach <code>${esc(apiBase)}</code>. If it is up, it must be started with <code>${esc(corsFlag())}</code> so this page may call it. `
+          + `Or clear the API base field and press <b>use</b> to go back to the default, <code>${esc(location.host + pageDir)}/api</code>.`);
       } else {
         setLive("err", "collector unreachable");
         hint(`Could not reach <code>${esc(apiBase || "")}/api</code> on this host. Is the collector, or the proxy in front of it, running?`);
@@ -358,9 +361,10 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
   $("token-form").addEventListener("submit", (e) => {
     e.preventDefault();
     token = $("token").value.trim();
-    apiBase = trimSlash($("api").value);
+    storedBase = trimSlash($("api").value);
+    apiBase = storedBase || pageDir; // a blank field means "next to this page" again
     localStorage.setItem(KEY, token);
-    localStorage.setItem(API_KEY, apiBase);
+    localStorage.setItem(API_KEY, storedBase);
     $("origin").textContent = apiHost();
     feedEl.innerHTML = ""; cursor = 0; eventCount = 0; selected = null;
     start();
