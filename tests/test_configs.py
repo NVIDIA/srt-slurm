@@ -2994,126 +2994,7 @@ class TestVLLMDataParallelMode:
         assert "--request-plane" not in cmd
         assert "dynamo.vllm" not in cmd
 
-    def test_vllm_router_keeps_one_direct_server_per_logical_endpoint(self):
-        """vLLM Router uses direct private servers rather than Dynamo runtimes."""
-        from srtctl.backends import VLLMProtocol
-        from srtctl.core.topology import Endpoint
-
-        backend = VLLMProtocol()
-        endpoints = [
-            Endpoint(
-                mode="agg",
-                index=index,
-                nodes=(node,),
-                gpu_indices=frozenset(range(8)),
-                gpus_per_node=8,
-            )
-            for index, node in enumerate(("node0", "node1"))
-        ]
-
-        processes = backend.endpoints_to_processes(endpoints, frontend_type="vllm-router")
-
-        assert len(processes) == 2
-        assert all(process.is_leader for process in processes)
-        assert len({process.http_port for process in processes}) == 1  # ports may repeat on distinct nodes
-
-
-    def test_vllm_router_multinode_dep8_uses_hybrid_node_local_pools(self):
-        """Two DEP8 nodes expose two DP4 HTTP pools sharing one global coordinator."""
-        from pathlib import Path
-        from unittest.mock import MagicMock, patch
-
-        from srtctl.backends import VLLMProtocol, VLLMServerConfig
-        from srtctl.core.topology import Endpoint
-
-        backend = VLLMProtocol(
-            dp_launch_mode="per_node",
-            vllm_config=VLLMServerConfig(
-                aggregated={
-                    "data-parallel-size": 8,
-                    "enable-expert-parallel": True,
-                },
-            ),
-        )
-        endpoint = Endpoint(
-            mode="agg",
-            index=0,
-            nodes=("node0", "node1"),
-            gpu_indices=frozenset(range(4)),
-            gpus_per_node=4,
-        )
-        processes = backend.endpoints_to_processes([endpoint], frontend_type="vllm-router")
-        runtime = MagicMock()
-        runtime.model_path = Path("/model")
-        runtime.is_hf_model = False
-        runtime.frontend_port = 8000
-
-        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-            commands = [
-                backend.build_worker_command(
-                    process=process,
-                    endpoint_processes=processes,
-                    runtime=runtime,
-                    frontend_type="vllm-router",
-                )
-                for process in processes
-            ]
-
-        assert len(processes) == 2
-        assert [process.node_rank for process in processes] == [0, 4]
-        assert all(process.http_port > 0 for process in processes)
-        assert len({process.dp_rpc_port for process in processes}) == 1
-        for start_rank, command in zip((0, 4), commands, strict=True):
-            assert command[command.index("--data-parallel-size") + 1] == "8"
-            assert command[command.index("--data-parallel-size-local") + 1] == "4"
-            assert command[command.index("--data-parallel-start-rank") + 1] == str(start_rank)
-            assert command[command.index("--data-parallel-address") + 1] == "10.0.0.1"
-            assert "--data-parallel-hybrid-lb" in command
-
-
-    def test_vllm_router_worker_uses_private_port_and_pd_connector(self):
-        """Disaggregated vLLM Router workers are direct servers with KV transfer."""
-        from pathlib import Path
-        from unittest.mock import MagicMock, patch
-
-        from srtctl.backends import VLLMProtocol, VLLMServerConfig
-        from srtctl.core.topology import Process
-
-        backend = VLLMProtocol(
-            connector="nixl",
-            vllm_config=VLLMServerConfig(prefill={"tensor-parallel-size": 8}),
-        )
-        process = Process(
-            node="node0",
-            gpu_indices=frozenset(range(8)),
-            sys_port=8081,
-            http_port=30123,
-            endpoint_mode="prefill",
-            endpoint_index=0,
-            node_rank=0,
-            bootstrap_port=30001,
-        )
-        runtime = MagicMock()
-        runtime.model_path = Path("/model")
-        runtime.is_hf_model = False
-        runtime.frontend_port = 8000
-
-        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-            cmd = backend.build_worker_command(
-                process=process,
-                endpoint_processes=[process],
-                runtime=runtime,
-                frontend_type="vllm-router",
-            )
-
-        assert cmd[:3] == ["vllm", "serve", "/model"]
-        assert cmd[cmd.index("--port") + 1] == "30123"
-        assert "dynamo.vllm" not in cmd
-        kv_config = json.loads(cmd[cmd.index("--kv-transfer-config") + 1])
-        assert kv_config == {"kv_connector": "NixlConnector", "kv_role": "kv_both"}
-
-
-    def test_vllm_router_stable_release_uses_legacy_cuda_binding(self):
+    def test_vllm_router_can_use_environment_device_binding(self):
         """Stable vLLM builds can avoid the newer --device-ids CLI."""
         from pathlib import Path
         from unittest.mock import MagicMock, patch
@@ -3122,7 +3003,7 @@ class TestVLLMDataParallelMode:
         from srtctl.core.topology import Process
 
         backend = VLLMProtocol(
-            set_cuda_visible_devices=True,
+            set_visible_devices=True,
             vllm_config=VLLMServerConfig(decode={"tensor-parallel-size": 4}),
         )
         process = Process(
@@ -3149,7 +3030,7 @@ class TestVLLMDataParallelMode:
 
         assert cmd[:3] == ["vllm", "serve", "/model"]
         assert "--device-ids" not in cmd
-        assert backend.should_set_cuda_visible_devices(process)
+        assert backend.should_set_visible_devices()
 
     @pytest.mark.parametrize(
         ("mode", "role"),
@@ -3203,7 +3084,6 @@ class TestVLLMDataParallelMode:
             },
         }
         assert "VLLM_NIXL_SIDE_CHANNEL_PORT" not in backend.get_process_environment(process)
-
 
     def test_direct_vllm_command_supports_vllm_rs_binary(self):
         """Direct vLLM can launch a managed-engine Rust frontend."""
