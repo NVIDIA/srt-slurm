@@ -398,7 +398,7 @@ while :; do
         wait "$child" 2>/dev/null
         exit "$rc"
     fi
-    echo "[srtctl] {label} exited with code $rc; relaunching in {backoff_seconds}s" >&2
+    echo "[srtctl $(date -u +%FT%TZ)] {label} exited with code $rc; relaunching in {backoff_seconds}s" >&2
     child=
     sleep {backoff_seconds} &
     wait $!

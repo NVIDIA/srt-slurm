@@ -75,7 +75,7 @@ node im-b200-c021                                   /dev/shm/srtctl-<job>/agg_0/
 - **GMS sidecar** (`gms_<role>_<index>_<node>`). Runs in the job container with the worker's `CUDA_VISIBLE_DEVICES` and starts one `gpu_memory_service` server per GPU of the worker, each binding a `weights` and a `kv_cache` socket in the worker's directory. The step prints `GMS ready:` once every socket exists and the worker stage waits for that line before starting the engines. It is critical (a worker without its weight server cannot recover) and is stopped after the engines at cleanup, when it removes the directory.
 - **Engine 0** (`<role>_<index>_<node>`). `ENGINE_ID=0` loads the weights from disk into GMS, or imports them read-only when they are already there after a relaunch. Every other engine imports read-only, so no two engines ever hold GMS's write lock at once.
 - **Shadow engines** (`<role>_<index>_<node>_e<k>`). Same command, same GPUs, own ports (`DYN_SYSTEM_PORT`, KV events, NIXL side channel, `VLLM_PORT`). Each engine initializes fully (weights mapped, CUDA graphs captured, communicators up), sleeps, and blocks on `failover.lock`. The one that acquires it wakes, materializes its KV cache and registers with the frontend. The frontend health gate counts registered instances, so shadows do not count toward the expected worker total.
-- **Relaunch** (`restart: always`). Each engine step is a loop: when the engine exits, the step logs `[srtctl] agg_0 engine 0 exited with code 137; relaunching in 5s` and starts it again. The step itself never exits, so the process monitor sees nothing and `roles.<role>.critical` never fires for an engine death. The relaunched engine loads through GMS (fast) and parks as the new shadow.
+- **Relaunch** (`restart: always`). Each engine step is a loop: when the engine exits, the step logs `[srtctl <UTC time>] agg_0 engine 0 exited with code 137; relaunching in 5s` and starts it again. The step itself never exits, so the process monitor sees nothing and `roles.<role>.critical` never fires for an engine death. The relaunched engine loads through GMS (fast) and parks as the new shadow.
 
 Multi-node workers get the same treatment per node; every engine of a multi-node worker gets its own `--master-port` (`29500 + 100 * ENGINE_ID`) so their `torch.distributed` stores do not collide. Only single-node workers have been run so far.
 
@@ -147,21 +147,30 @@ The relaunch loop shares the engine's environment but not its command line (the 
 
 - the shadow's log (`<node>_agg_w0_e1.out`): `[Shadow] Lock acquired, waking engine`, then `[Shadow] Engine awake, registering with discovery` and `failover_state engine=1 -> active`;
 - the frontend's `/health`: the dead instance id disappears and a new one takes its place;
-- engine 0's log (`<node>_agg_w0.out`): `[srtctl] agg_0 engine 0 exited with code 137; relaunching in 5s`, then `Connected with ro lock` (weights imported from GMS, no load from disk) and `[Shadow] Engine sleeping, startup probe now passing, waiting for lock`. The roles have swapped.
+- engine 0's log (`<node>_agg_w0.out`): `[srtctl <UTC time>] agg_0 engine 0 exited with code 137; relaunching in 5s`, then `Connected with rw_or_ro lock (granted=ro)` and `Read mode: imported 1.18 GiB` (weights imported from GMS, no load from disk) and `[Shadow] Engine sleeping, startup probe now passing, waiting for lock`. The roles have swapped.
 
 The lock file now reads `engine-1`. Kill again and it swaps back. The step logs are written by `srun`, which buffers, so read timings from the timestamps inside the lines rather than from when they appear in the file.
 
 ## Validation
 
-Validated on sa-b200 (B200, one node, two TP1 Qwen3-0.6B workers with one shadow each, `nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.2`, Dynamo 1.4.2, vLLM 0.26.0, GMS 0.9.0). See the timeline in the PR description; the numbers below are from that run.
+Validated on sa-b200 (one B200 node, two TP1 Qwen3-0.6B workers with one shadow each, `examples/features/vllm-failover.yaml`, `nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.2`: Dynamo 1.4.2, vLLM 0.26.0, GMS 0.9.0), job 16074 on 2026-09-17. Times are from the timestamps inside the step logs.
 
 | Event | Observed |
 | --- | --- |
-| GMS sidecar ready | see PR |
-| Engine 0 serving (weights loaded through GMS) | see PR |
-| Shadow parked | see PR |
-| SIGKILL engine 0 to shadow registered with the frontend | see PR |
-| Killed engine relaunched and parked as the new shadow | see PR |
+| GMS sidecar start to `GMS ready:` (both sockets bound) | 9 s |
+| Engine 0 start to serving: weights loaded from disk into GMS, `init engine` 34 s (13.5 s compile), lock taken, KV cache (69 GiB) materialized, registered | 1 min 40 s |
+| Shadow start to parked: weights imported from GMS, `init engine` 34 s, `Scratch-KV engaged` (0.5 GiB physical), sleeping on the lock | 1 min 40 s (started 2 s after engine 0) |
+| SIGKILL of the serving engine to the shadow holding the lock | 0.1 to 0.2 s (the lock is polled every 100 ms) |
+| Lock held to awake: weights remapped (60 allocations, 1.18 GiB), KV cache reallocated (28 allocations, 69.23 GiB) | 0.27 s (`It took 0.273367 seconds to wake up tags {'weights', 'kv_cache'}`) |
+| Awake to registered: the frontend logs `added model` | 0.05 s |
+| SIGKILL to the frontend routing to the shadow | about 0.5 s; the test script saw `/health` with the new instance id at 7.5 s and 11.7 s in two runs, at its own poll granularity |
+| Frontend drops the dead instance's event publisher (lease expiry) | 10 s after the kill |
+| Killed engine relaunched by the loop after the 5 s backoff: `Connected with rw_or_ro lock (granted=ro)`, `Read mode: imported 1.18 GiB` in 1 s, `init engine` 21.9 s (2.2 s compile, cache warm), parked | 49 s after the kill |
+| Completions before, during (against the survivor), and after | all answered |
+
+`nvidia-smi` during the run: 78.5 GiB used of 183 GiB per GPU, of which each engine process holds 2.7 GiB (CUDA context, graphs, communicators) and the rest is the GMS-owned weights plus the serving engine's KV cache. The weights appear under neither process.
+
+A second cutover on the same job, killing engine 1 so the relaunched engine 0 (which had imported the weights read-only) took the lock back, behaved the same way. The first attempt at this experiment killed the relaunch loop along with the engine (its command line used to inline the engine argv, so `pgrep -f dynamo.vllm` matched it), the step exited 137, and the process monitor ended the run; the loop now takes the argv from the environment.
 
 ## Limitations
 
