@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from srtctl.backends import AtomProtocol, AtomServerConfig
+from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Process
 from srtctl.frontends import AtomeshFrontend, get_frontend
@@ -18,6 +19,8 @@ from srtctl.frontends.static_router import RouterWorker
 
 def _config() -> dict:
     return {
+        "schema": 2,
+        "engine": "atom",
         "name": "atom-atomesh",
         "model": {
             "path": "hf:Qwen/Qwen3-0.6B",
@@ -27,64 +30,48 @@ def _config() -> dict:
         "resources": {
             "gpu_type": "mi300x",
             "gpus_per_node": 8,
-            "prefill_nodes": 1,
-            "decode_nodes": 1,
-            "prefill_workers": 1,
-            "decode_workers": 1,
         },
-        "backend": {
-            "type": "atom",
-            "atom_config": {"decode": {"gpu-memory-utilization": 0.9}},
+        "roles": {
+            "prefill": {"nodes": 1, "workers": 1},
+            "decode": {"nodes": 1, "workers": 1, "args": {"gpu-memory-utilization": 0.9}},
         },
         "frontend": {"type": "atomesh", "enable_multiple_frontends": False},
     }
 
 
 def test_schema_selects_atom_backend_and_atomesh_frontend() -> None:
-    config = SrtConfig.Schema().load(_config())
+    config = SrtConfig.Schema().load(resolve_config_with_defaults(_config(), None))
 
     assert isinstance(config.backend, AtomProtocol)
     assert isinstance(get_frontend("atomesh"), AtomeshFrontend)
 
 
-def test_v2_atom_roles_preserve_legacy_worker_launches(tmp_path) -> None:
-    """Load both recipe surfaces through the real orchestrator topology path."""
+def test_v2_atom_roles_build_prefill_decode_workers(tmp_path) -> None:
+    """Load a v2 recipe through the real orchestrator topology path."""
+    import yaml
+
     from srtctl.cli.do_sweep import SweepOrchestrator
     from srtctl.core.config import load_config
     from srtctl.core.runtime import Nodes
 
-    import yaml
-
-    legacy = _config()
-    modern = _config()
-    modern["schema"] = 2
-    modern["engine"] = "atom"
-    modern.pop("backend")
-    modern["resources"] = {"gpu_type": "mi300x", "gpus_per_node": 8}
-    modern["roles"] = {
-        "prefill": {"nodes": 1, "workers": 1},
-        "decode": {"nodes": 1, "workers": 1, "args": {"gpu-memory-utilization": 0.9}},
-    }
     runtime = SimpleNamespace(
         nodes=Nodes(head="node0", bench="node0", infra="node0", worker=("node0", "node1")),
         worker_model_arg="Qwen/Qwen3-0.6B",
         network_interface="hsn0",
     )
-    launches = []
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(_config()))
+    config = load_config(path)
+    orchestrator = SweepOrchestrator(config=config, runtime=runtime)
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.20"):
-        for index, recipe in enumerate((legacy, modern)):
-            path = tmp_path / f"recipe-{index}.yaml"
-            path.write_text(yaml.safe_dump(recipe))
-            config = load_config(path)
-            orchestrator = SweepOrchestrator(config=config, runtime=runtime)
-            processes = orchestrator.backend_processes
-            launches.append([
-                config.backend.build_worker_command(process, [process], runtime)
-                for process in processes
-            ])
-    assert len(launches[0]) == len(launches[1]) == 2
-    assert launches[0] == launches[1]
-    decode = launches[1][1]
+        processes = orchestrator.backend_processes
+        launches = [config.backend.build_worker_command(process, [process], runtime) for process in processes]
+    assert [(process.node, process.endpoint_mode) for process in processes] == [
+        ("node0", "prefill"),
+        ("node1", "decode"),
+    ]
+    prefill, decode = launches
+    assert json.loads(prefill[prefill.index("--kv-transfer-config") + 1])["kv_role"] == "kv_producer"
     assert decode[decode.index("--gpu-memory-utilization") + 1] == "0.9"
     assert json.loads(decode[decode.index("--kv-transfer-config") + 1])["kv_role"] == "kv_consumer"
 
@@ -101,7 +88,7 @@ def test_atom_served_name_matches_worker_model_argument(model_path: str, stage_d
     """ATOM advertises its literal --model, not the path basename used by other engines."""
     data = _config()
     data["model"].update(path=model_path, stage_dir=stage_dir)
-    config = SrtConfig.Schema().load(data)
+    config = SrtConfig.Schema().load(resolve_config_with_defaults(data, None))
     process = Process("node0", frozenset(range(8)), 7500, 6100, "prefill", 0, nixl_port=5400)
     runtime = SimpleNamespace(worker_model_arg=expected, network_interface=None)
 

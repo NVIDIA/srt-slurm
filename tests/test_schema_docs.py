@@ -15,6 +15,8 @@ from srtctl.core.schema_docs import (
     BACKEND_TYPES,
     DEFAULT_LEGACY_OUTPUT,
     DEFAULT_OUTPUT,
+    INTERNAL_CLASSES,
+    INTERNAL_FIELDS,
     LEGACY_CLASSES,
     LEGACY_FIELDS,
     LEGACY_TOP_LEVEL,
@@ -64,11 +66,11 @@ def test_schema_reference_documents_only_the_2_0_layout() -> None:
     recipe_table = text[text.index("## Recipe\n") : text.index("## Authoring surface")]
     for key in LEGACY_TOP_LEVEL:
         assert f"| `{key}` |" not in recipe_table, f"legacy top-level key {key} leaked into schema-reference.md"
-    for cls, mapping in LEGACY_FIELDS.items():
+    for cls, mapping in (LEGACY_FIELDS | INTERNAL_FIELDS).items():
         section = _section(text, cls.__name__)
         for key in mapping:
             assert f"| `{key}` |" not in section, f"legacy key {cls.__name__}.{key} leaked into schema-reference.md"
-    for cls in LEGACY_CLASSES:
+    for cls in LEGACY_CLASSES | INTERNAL_CLASSES:
         assert f"### {cls.__name__}" not in text, f"legacy class {cls.__name__} leaked into schema-reference.md"
     for needle in (
         "## Authoring surface",
@@ -77,6 +79,7 @@ def test_schema_reference_documents_only_the_2_0_layout() -> None:
         "### placement",
         "`colocate`",
         "## Engine types",
+        "`engine.type: atom`",
         "`engine.type: sglang`",
         "## Cluster config",
         "[legacy-v1.md](legacy-v1.md)",
@@ -100,8 +103,8 @@ def test_legacy_reference_documents_every_v1_key() -> None:
         assert f"### {cls.__name__}" in text, cls.__name__
     for needle in ("## v1 keys and what replaced them", "## backend", "## infra", "srtctl migrate"):
         assert needle in text, needle
-    for type_name, _ in BACKEND_TYPES:
-        assert f"`backend.type: {type_name}`" in text
+    for type_name, cls in BACKEND_TYPES:
+        assert (f"`backend.type: {type_name}`" in text) == (cls in LEGACY_FIELDS)
 
 
 def test_mooncake_device_mapping_is_documented_as_a_v2_service_option() -> None:

@@ -51,7 +51,7 @@ aggregate workers and prefill/decode topologies use static HTTP endpoints;
 disaggregated workers receive topology-owned Mooncake handshake ports.
 
 Engine flags belong under `roles.prefill.args`, `roles.decode.args`, or
-`roles.agg.args`. Schema-v1 `backend.atom_config` recipes remain supported.
+`roles.agg.args` (schema v2).
 srt-slurm owns the model path, HTTP port, tensor parallel size, and KV-transfer
 contract, so recipes cannot override those arguments.
 
