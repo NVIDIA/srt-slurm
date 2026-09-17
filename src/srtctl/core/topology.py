@@ -590,6 +590,7 @@ def endpoints_to_processes(
     endpoints: list[Endpoint],
     base_sys_port: int = DYN_SYSTEM_PORT_BASE,
     port_allocator: NodePortAllocator | None = None,
+    kv_events_port_sizes: dict[WorkerMode, int] | None = None,
 ) -> list[Process]:
     """Convert endpoints to physical processes.
 
@@ -603,6 +604,7 @@ def endpoints_to_processes(
         endpoints: List of Endpoint objects
         base_sys_port: Starting port for DYN_SYSTEM_PORT assignment
         port_allocator: NodePortAllocator for HTTP/bootstrap ports (created if None)
+        kv_events_port_sizes: KV publisher port range per process, keyed by worker mode.
 
     Returns:
         List of Process objects
@@ -628,7 +630,9 @@ def endpoints_to_processes(
 
             # Allocate kv_events port for each node in the endpoint (globally unique)
             # Each node publishes KV events independently
-            node_kv_events_port = port_allocator.next_kv_events_port()
+            node_kv_events_port = port_allocator.next_kv_events_port_block(
+                (kv_events_port_sizes or {}).get(endpoint.mode, 1)
+            )
 
             # Allocate NIXL side channel port (globally unique, used by vLLM)
             node_nixl_port = port_allocator.next_nixl_port()
