@@ -14,7 +14,13 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
-from srtctl.backends.vllm import GMS_READY_MARKER, VLLMFailoverConfig, VLLMProtocol, build_respawn_command
+from srtctl.backends.vllm import (
+    GMS_READY_MARKER,
+    RESPAWN_COMMAND_ENV,
+    VLLMFailoverConfig,
+    VLLMProtocol,
+    build_respawn_command,
+)
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
@@ -424,9 +430,11 @@ class WorkerStageMixin:
             bash_preamble = _append_preamble(bash_preamble, f"mkdir -p {shlex.quote(worker_dir)}")
             if failover.restart == "always":
                 # Relaunch in place after an exit, so the worker has a shadow again
-                # once a failover has promoted the other engine.
+                # once a failover has promoted the other engine. The engine argv
+                # travels in the environment, not in the loop's command line, so a
+                # `pkill -f dynamo.vllm` aimed at the engine leaves the loop alive.
+                env_to_set[RESPAWN_COMMAND_ENV] = shlex.join(cmd)
                 cmd = build_respawn_command(
-                    cmd,
                     backoff_seconds=failover.restart_backoff_seconds,
                     label=f"{mode}_{index} engine {process.engine_id}",
                 )

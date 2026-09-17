@@ -233,6 +233,8 @@ FAILOVER_LOCK_FILENAME = "failover.lock"
 GMS_READY_MARKER = "GMS ready:"
 # Every GMS server binds one socket per logical pool (weights, kv_cache).
 GMS_SOCKETS_PER_DEVICE = 2
+# Shell-quoted engine argv the relaunch loop of a ``restart: always`` engine step runs.
+RESPAWN_COMMAND_ENV = "SRTCTL_ENGINE_COMMAND"
 
 
 @dataclass(frozen=True)
@@ -367,22 +369,28 @@ exit "$rc"
     return ["bash", "-c", script]
 
 
-def build_respawn_command(command: list[str], *, backoff_seconds: int, label: str) -> list[str]:
-    """Run ``command`` again whenever it exits (Kubernetes ``restartPolicy: Always``).
+def build_respawn_command(*, backoff_seconds: int, label: str) -> list[str]:
+    """Run the engine again whenever it exits (Kubernetes ``restartPolicy: Always``).
 
     The loop is what the worker step execs, so the step stays up across engine
     deaths and the process monitor never sees an exit. SIGTERM from cleanup
     (``scancel --signal=TERM --full`` reaches every process in the step) stops the
     loop and is also delivered to the engine, which shuts down on its own; the
     loop then exits with the engine's code.
+
+    The engine argv comes from ``$SRTCTL_ENGINE_COMMAND`` (shell-quoted, set by the
+    worker stage), not from this script, so it never appears in the loop's own
+    command line: ``pkill -f dynamo.vllm``, the obvious way to test a failover,
+    kills the engine and leaves the loop to relaunch it.
     """
     script = f"""set -u
+if [ -z "${{{RESPAWN_COMMAND_ENV}:-}}" ]; then echo "{RESPAWN_COMMAND_ENV} is not set" >&2; exit 1; fi
 stopping=0
 child=
 on_term() {{ stopping=1; if [ -n "$child" ]; then kill -TERM "$child" 2>/dev/null; fi; }}
 trap on_term TERM INT
 while :; do
-    {shlex.join(command)} &
+    eval "${RESPAWN_COMMAND_ENV} &"
     child=$!
     wait "$child"
     rc=$?

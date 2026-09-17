@@ -23,6 +23,7 @@ from marshmallow import ValidationError
 from srtctl.backends.vllm import (
     FAILOVER_LOCK_FILENAME,
     GMS_READY_MARKER,
+    RESPAWN_COMMAND_ENV,
     VLLMFailoverConfig,
     VLLMProtocol,
     build_gms_sidecar_command,
@@ -320,12 +321,12 @@ def test_gms_sidecar_script_starts_one_server_per_gpu_and_reports_ready() -> Non
 
 
 def test_respawn_wrapper_relaunches_and_stops_on_term() -> None:
-    cmd = build_respawn_command(
-        ["python3", "-m", "dynamo.vllm", "--model", "/m"], backoff_seconds=7, label="agg_0 engine 1"
-    )
+    cmd = build_respawn_command(backoff_seconds=7, label="agg_0 engine 1")
     assert cmd[:2] == ["bash", "-c"]
     script = cmd[2]
-    assert "python3 -m dynamo.vllm --model /m &" in script
+    # The engine argv is not in the loop's command line: `pkill -f dynamo.vllm` must not hit the loop.
+    assert "dynamo.vllm" not in script
+    assert f'eval "${RESPAWN_COMMAND_ENV} &"' in script
     assert "relaunching in 7s" in script
     assert "trap on_term TERM INT" in script
     assert "while :; do" in script
@@ -373,10 +374,12 @@ def test_worker_stage_launches_sidecar_then_engines_per_worker(tmp_path: Path) -
         assert step["env_to_set"]["FAILOVER_LOCK_PATH"] == "/dev/shm/srtctl-15600/agg_0/failover.lock"
         assert step["env_to_set"]["DYN_VLLM_GMS_SHADOW_MODE"] == "true"
         assert "mkdir -p /dev/shm/srtctl-15600/agg_0" in step["bash_preamble"]
-        # restart: always wraps the engine in the relaunch loop
+        # restart: always wraps the engine in the relaunch loop; the engine argv rides in the env
         assert step["command"][:2] == ["bash", "-c"]
-        assert "--load-format gms --gms-shadow-mode" in step["command"][2]
         assert "relaunching in 5s" in step["command"][2]
+        assert "dynamo.vllm" not in step["command"][2]
+        assert step["env_to_set"][RESPAWN_COMMAND_ENV].startswith("python3 -m dynamo.vllm ")
+        assert "--load-format gms --gms-shadow-mode" in step["env_to_set"][RESPAWN_COMMAND_ENV]
     assert e0["env_to_set"]["ENGINE_ID"] == "0" and e1["env_to_set"]["ENGINE_ID"] == "1"
     assert e0["env_to_set"]["DYN_SYSTEM_PORT"] != e1["env_to_set"]["DYN_SYSTEM_PORT"]
     assert e0["env_to_set"]["VLLM_NIXL_SIDE_CHANNEL_PORT"] != e1["env_to_set"]["VLLM_NIXL_SIDE_CHANNEL_PORT"]

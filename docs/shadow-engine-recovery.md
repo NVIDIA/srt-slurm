@@ -132,23 +132,24 @@ Kill the engine process, not its step. `scancel --signal=KILL <job>.<step>` ends
 # which engine is serving: the lock file names the holder
 srun --jobid <job> --overlap -w <node> -N1 cat /dev/shm/srtctl-<job>/agg_0/failover.lock   # engine-0
 
-# find that engine's process and SIGKILL it
+# SIGKILL that engine (the dynamo.vllm parent and its EngineCore children)
 srun --jobid <job> --overlap -w <node> -N1 bash -c '
-  for pid in $(pgrep -f "dynamo.vllm"); do
-    if tr "\0" "\n" < /proc/$pid/environ 2>/dev/null | grep -qx "ENGINE_ID=0" &&
-       tr "\0" "\n" < /proc/$pid/environ | grep -q "FAILOVER_LOCK_PATH=/dev/shm/srtctl-'"$SLURM_JOB_ID"'/agg_0/"; then
-      echo "killing $pid"; kill -9 $pid; break
+  for pid in $(pgrep -f "^python3 -m dynamo.vllm"); do
+    env=$(tr "\0" "\n" < /proc/$pid/environ 2>/dev/null) || continue
+    if echo "$env" | grep -qx "ENGINE_ID=0" &&
+       echo "$env" | grep -qx "FAILOVER_LOCK_PATH=/dev/shm/srtctl-'"$SLURM_JOB_ID"'/agg_0/failover.lock"; then
+      echo "killing $pid"; kill -9 $pid $(pgrep -P $pid)
     fi
   done'
 ```
 
-Then watch:
+The relaunch loop shares the engine's environment but not its command line (the argv rides in `SRTCTL_ENGINE_COMMAND`), so `pkill -f dynamo.vllm` and the anchored `pgrep` above hit the engine only. Then watch:
 
-- the shadow's log (`<node>_agg_w0_e1.out`): `[Shadow] Lock acquired, waking engine`, then `[Shadow] Engine awake, registering with discovery`;
-- the frontend's `/health`: the instance count drops by one when the dead engine's lease expires and comes back with a new instance id when the shadow registers;
-- engine 0's log (`<node>_agg_w0.out`): `[srtctl] agg_0 engine 0 exited with code 137; relaunching in 5s`, then a GMS import (no weight load from disk) and `[Shadow] Engine paused, startup probe now passing, waiting for lock`. The roles have swapped.
+- the shadow's log (`<node>_agg_w0_e1.out`): `[Shadow] Lock acquired, waking engine`, then `[Shadow] Engine awake, registering with discovery` and `failover_state engine=1 -> active`;
+- the frontend's `/health`: the dead instance id disappears and a new one takes its place;
+- engine 0's log (`<node>_agg_w0.out`): `[srtctl] agg_0 engine 0 exited with code 137; relaunching in 5s`, then `Connected with ro lock` (weights imported from GMS, no load from disk) and `[Shadow] Engine sleeping, startup probe now passing, waiting for lock`. The roles have swapped.
 
-The lock file now reads `engine-1`. Kill again and it swaps back.
+The lock file now reads `engine-1`. Kill again and it swaps back. The step logs are written by `srun`, which buffers, so read timings from the timestamps inside the lines rather than from when they appear in the file.
 
 ## Validation
 
