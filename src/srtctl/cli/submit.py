@@ -444,28 +444,32 @@ def show_config_details(config: SrtConfig) -> None:
         from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, failover_root
 
         root = failover_root(failover.shared_dir, "<job_id>")
-        restart = (
-            f"always (relaunch in place after {failover.restart_backoff_seconds}s)"
-            if failover.restart == "always"
-            else "never (the step exits; roles.<role>.critical decides)"
+        restart_roles = [
+            role
+            for role in ("prefill", "decode", "agg")
+            if getattr(getattr(config.resources, f"{role}_restart", None), "enabled", False)
+        ]
+        relaunch = (
+            f"roles.{{{','.join(restart_roles)}}}.restart relaunches an exited engine in place as the new shadow"
+            if restart_roles
+            else "none: an exited engine's step ends and roles.<role>.critical decides (add roles.<role>.restart)"
         )
         lines = [
             f"engines per worker: {failover.engines_per_worker} (engine 0 + {failover.shadow_engines} shadow)",
-            f"engine restart: {restart}",
             (
                 f"shared dir: {root}/<role>_<index>/  (gms_*.sock, {FAILOVER_LOCK_FILENAME}; node-local, every "
                 "container on the node)"
             ),
             (
-                "per worker and node: step gms_<role>_<index>_<node> runs one `python3 -m gpu_memory_service "
-                "--device k` per GPU of the worker, then steps <role>_<index>_<node> and <role>_<index>_<node>_e<k>"
+                "per worker and node: the gms service (one instance per worker, listed under Services) then steps "
+                "<role>_<index>_<node> and <role>_<index>_<node>_e<k>"
             ),
             "engine flags: --load-format gms --gms-shadow-mode (no --device-ids; CUDA_VISIBLE_DEVICES is pinned)",
             (
                 "engine env: ENGINE_ID, GMS_SOCKET_DIR, FAILOVER_LOCK_PATH, DYN_VLLM_GMS_SHADOW_MODE=true, "
                 "DYN_SYSTEM_STARTING_HEALTH_STATUS=notready"
             ),
-            f"GMS startup timeout: {failover.gms_startup_timeout_seconds}s",
+            f"engine relaunch: {relaunch}",
         ]
         console.print(Panel("\n".join(lines), title="Shadow Engine Recovery (engine.failover)", border_style="magenta"))
         console.print(
@@ -524,7 +528,8 @@ def show_config_details(config: SrtConfig) -> None:
         for entry in effective:
             service = entry.service
             console.print(
-                f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement} "
+                f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement}"
+                f"{' per=worker' if service.effective_per == 'worker' else ''} "
                 f"start={service.effective_start} critical={str(service.effective_critical).lower()}"
                 f"{f' nodes={service.nodes}' if service.nodes is not None else ''}"
                 f"{' terminal' if service.terminal else ''}"

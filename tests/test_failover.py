@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shadow engine recovery (``engine.failover``): schema, topology, commands, launch, and dry-run.
+"""Shadow engine recovery (``engine.failover``): schema, the implied gms service, topology, launch, dry-run.
 
 The acceptance recipe is two TP1 vLLM workers on one node with one shadow each.
-Per worker that is three steps on the node: the GMS sidecar, engine 0, and the
-shadow, all pinned to the same GPU, with the engines told the same socket
+Per worker that is a gms service instance (``before_workers``, pinned to the
+worker's GPU) and two engine steps on the same GPU, all told the same socket
 directory and lock file.
 """
 
@@ -20,27 +20,24 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.backends.vllm import (
-    FAILOVER_LOCK_FILENAME,
-    GMS_READY_MARKER,
-    RESPAWN_COMMAND_ENV,
-    VLLMFailoverConfig,
-    VLLMProtocol,
-    build_gms_sidecar_command,
-    build_respawn_command,
-    failover_worker_dir,
-)
+from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, VLLMFailoverConfig, VLLMProtocol, failover_worker_dir
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.submit import show_config_details
-from srtctl.core.readiness import ProcessDied
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, endpoints_to_processes
 from srtctl.mock import MockOptions, run_mock_sweep
 from srtctl.ports import VLLM_MASTER_PORT_BASE, VLLM_MASTER_PORT_STRIDE
+from srtctl.services import ServiceConfig, ServicePlacementConfig
+from srtctl.services.gms import GMS_READY_MARKER, PREVIEW_COMMAND, GMSService, build_gms_sidecar_command
+from srtctl.services.implicit import effective_services
+from srtctl.services.registry import ServiceLaunchContext
 
-SRUN = "srtctl.cli.mixins.worker_stage.start_srun_process"
-WAIT = "srtctl.cli.mixins.worker_stage.wait_until_ready"
+SRUN_WORKER = "srtctl.cli.mixins.worker_stage.start_srun_process"
+HOST_IP_WORKER = "srtctl.cli.mixins.worker_stage.get_hostname_ip"
+SRUN_SERVICE = "srtctl.cli.mixins.service_stage.start_srun_process"
+WAIT_SERVICE = "srtctl.cli.mixins.service_stage.wait_until_ready"
+HOST_IP_SERVICE = "srtctl.cli.mixins.service_stage.get_hostname_ip"
 HOST_IP = "srtctl.core.slurm.get_hostname_ip"
 
 TOY = {
@@ -113,6 +110,21 @@ def _proc() -> MagicMock:
     return proc
 
 
+def _process(engine_id: int = 0, gpus: frozenset[int] = frozenset({3}), node_rank: int = 0) -> Process:
+    return Process(
+        node="node1",
+        gpu_indices=gpus,
+        sys_port=7500 + engine_id,
+        http_port=6100,
+        endpoint_mode="agg",
+        endpoint_index=0,
+        node_rank=node_rank,
+        kv_events_port=5200 + engine_id,
+        nixl_port=5400 + engine_id,
+        engine_id=engine_id,
+    )
+
+
 # --- schema -------------------------------------------------------------------
 
 
@@ -122,8 +134,6 @@ def test_defaults_and_engines_per_worker() -> None:
     failover = config.backend.failover
     assert failover == VLLMFailoverConfig()
     assert failover.shadow_engines == 1
-    assert failover.restart == "always"
-    assert failover.restart_backoff_seconds == 5
     assert failover.shared_dir == "/dev/shm"
     assert failover.engines_per_worker == 2
     assert config.backend.engines_per_process == 2
@@ -133,17 +143,16 @@ def test_without_failover_nothing_changes() -> None:
     config = _load(engine="vllm")
     assert config.backend.failover is None
     assert config.backend.engines_per_process == 1
+    assert all(entry.service.type != "gms" for entry in effective_services(config))
 
 
 @pytest.mark.parametrize(
     ("block", "message"),
     [
         ({"shadow_engines": 0}, "shadow_engines must be at least 1"),
-        ({"restart": "on-failure"}, "restart"),
-        ({"restart_backoff_seconds": 0}, "restart_backoff_seconds must be at least 1"),
         ({"shared_dir": "shm"}, "shared_dir must be an absolute directory"),
         ({"shared_dir": "/"}, "shared_dir must be an absolute directory"),
-        ({"gms_startup_timeout_seconds": 0}, "gms_startup_timeout_seconds must be at least 1"),
+        ({"restart": "always"}, "Unknown field"),  # relaunch is roles.<role>.restart, not a failover knob
     ],
 )
 def test_block_validation(block: dict, message: str) -> None:
@@ -184,6 +193,76 @@ def test_pip_installed_dynamo_only_warns(caplog) -> None:
         config = _load(dynamo={"install": True, "source": {"pypi": "1.4.2"}})
     assert config.backend.failover is not None
     assert "gpu_memory_service package" in caplog.text
+
+
+# --- the implied gms service -----------------------------------------------------
+
+
+def test_failover_implies_a_gms_service_per_worker() -> None:
+    config = _load()
+    entry = next(entry for entry in effective_services(config) if entry.service.type == "gms")
+    assert entry.implicit and entry.reason == "engine.failover"
+    service = entry.service
+    assert service.name == "gms"
+    assert service.effective_placement == "workers"
+    assert service.effective_per == "worker"
+    assert service.effective_start == "before_workers"
+    assert service.effective_critical is True
+    assert service.preview_command() == PREVIEW_COMMAND
+
+
+def test_declared_gms_takes_over_and_keeps_the_rules() -> None:
+    config = _load(
+        services=[
+            {"name": "gms", "type": "gms", "container": "/other.sqsh", "placement": {"node": "agg", "per": "worker"}}
+        ]
+    )
+    entry = next(entry for entry in effective_services(config) if entry.service.type == "gms")
+    assert not entry.implicit
+    assert entry.service.container == "/other.sqsh"
+    with pytest.raises(ValidationError, match="requires engine.failover"):
+        _load(engine="vllm", services=[{"name": "gms", "type": "gms"}])
+    with pytest.raises(ValidationError, match="set placement.per: worker"):
+        _load(services=[{"name": "gms", "type": "gms", "placement": {"node": "agg"}}])
+
+
+def test_gms_script_starts_one_server_per_gpu_and_reports_ready() -> None:
+    cmd = build_gms_sidecar_command("/dev/shm/srtctl-15600/agg_0", device_count=2, startup_timeout_seconds=90)
+    assert cmd[:2] == ["bash", "-c"]
+    script = cmd[2]
+    assert "python3 -m gpu_memory_service --device" in script
+    assert "seq 0 1" in script  # devices 0 and 1 as the worker sees them
+    assert "-ge 4" in script  # 2 sockets per device
+    assert "seq 1 90" in script
+    assert GMS_READY_MARKER in script
+    assert 'export GMS_SOCKET_DIR="$dir"' in script
+    assert "trap stop TERM INT" in script
+
+
+def test_gms_kind_sizes_the_script_for_the_attached_worker(tmp_path: Path) -> None:
+    config = _load()
+    kind = GMSService()
+    service = ServiceConfig(name="gms", type="gms", placement=ServicePlacementConfig(node="workers", per="worker"))
+    process = _process(gpus=frozenset({4, 5}))
+    ctx = ServiceLaunchContext(
+        runtime=_runtime(tmp_path),
+        node="node1",
+        node_ip="ip",
+        node_id=0,
+        index=0,
+        role="workers",
+        process=process,
+        config=config,
+    )
+    script = kind.build_command(service, ctx)[2]
+    assert "seq 0 1" in script and "-ge 4" in script and "seq 1 120" in script
+    assert "dir=/dev/shm/srtctl-15600/agg_0" in script
+    assert kind.forced_environment(service, ctx) == {"GMS_SOCKET_DIR": "/dev/shm/srtctl-15600/agg_0"}
+    probe = kind.readiness(service, ctx)
+    assert probe is not None and probe.log is not None and "GMS" in probe.log.pattern
+    # Without a worker (dry-run) there is nothing to size: a placeholder argv and no env.
+    assert kind.build_command(service, ServiceLaunchContext.preview()) == PREVIEW_COMMAND
+    assert kind.forced_environment(service, ServiceLaunchContext.preview()) == {}
 
 
 # --- topology -----------------------------------------------------------------
@@ -230,22 +309,7 @@ def test_backend_doubles_processes_under_failover() -> None:
     assert sum(p.engine_id == 0 for p in processes) == 2
 
 
-# --- commands and environment -----------------------------------------------------
-
-
-def _process(engine_id: int = 0, gpus: frozenset[int] = frozenset({3}), node_rank: int = 0) -> Process:
-    return Process(
-        node="node1",
-        gpu_indices=gpus,
-        sys_port=7500 + engine_id,
-        http_port=6100,
-        endpoint_mode="agg",
-        endpoint_index=0,
-        node_rank=node_rank,
-        kv_events_port=5200 + engine_id,
-        nixl_port=5400 + engine_id,
-        engine_id=engine_id,
-    )
+# --- engine command and environment -------------------------------------------------
 
 
 def test_worker_command_loads_through_gms_and_drops_device_ids(tmp_path: Path) -> None:
@@ -307,66 +371,51 @@ def test_failover_environment_names_the_worker_directory() -> None:
     assert config.backend.get_failover_environment(other, "15600")["GMS_SOCKET_DIR"] == "/dev/shm/srtctl-15600/agg_1"
 
 
-def test_gms_sidecar_script_starts_one_server_per_gpu_and_reports_ready() -> None:
-    cmd = build_gms_sidecar_command("/dev/shm/srtctl-15600/agg_0", device_count=2, startup_timeout_seconds=90)
-    assert cmd[:2] == ["bash", "-c"]
-    script = cmd[2]
-    assert "python3 -m gpu_memory_service --device" in script
-    assert "seq 0 1" in script  # devices 0 and 1 as the worker sees them
-    assert "-ge 4" in script  # 2 sockets per device
-    assert "seq 1 90" in script
-    assert GMS_READY_MARKER in script
-    assert 'export GMS_SOCKET_DIR="$dir"' in script
-    assert "trap stop TERM INT" in script
-
-
-def test_respawn_wrapper_relaunches_and_stops_on_term() -> None:
-    cmd = build_respawn_command(backoff_seconds=7, label="agg_0 engine 1")
-    assert cmd[:2] == ["bash", "-c"]
-    script = cmd[2]
-    # The engine argv is not in the loop's command line: `pkill -f dynamo.vllm` must not hit the loop.
-    assert "dynamo.vllm" not in script
-    assert f'eval "${RESPAWN_COMMAND_ENV} &"' in script
-    assert "relaunching in 7s" in script
-    assert "trap on_term TERM INT" in script
-    assert "while :; do" in script
-
-
-# --- launch -----------------------------------------------------------------------
+# --- launch: the gms service, then the engines -------------------------------------------
 
 
 def _orchestrator(config: SrtConfig, tmp_path: Path) -> SweepOrchestrator:
     return SweepOrchestrator(config=config, runtime=_runtime(tmp_path))
 
 
-def test_worker_stage_launches_sidecar_then_engines_per_worker(tmp_path: Path) -> None:
+def test_gms_service_launches_one_pinned_instance_per_worker(tmp_path: Path) -> None:
     orchestrator = _orchestrator(_load(), tmp_path)
     with (
-        patch(SRUN, return_value=_proc()) as srun,
-        patch(WAIT, return_value=True) as wait,
-        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.11"),
+        patch(SRUN_SERVICE, return_value=_proc()) as srun,
+        patch(WAIT_SERVICE, return_value=True) as wait,
+        patch(HOST_IP_SERVICE, return_value="10.0.0.11"),
+    ):
+        procs = orchestrator.start_services("before_workers")
+
+    assert [p.name for p in procs] == ["service_gms_agg_0_node1", "service_gms_agg_1_node1"]
+    calls = {call.kwargs["step_name"]: call.kwargs for call in srun.call_args_list}
+    first = calls["service_gms_agg_0_node1"]
+    assert first["env_to_set"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert first["env_to_set"]["GMS_SOCKET_DIR"] == "/dev/shm/srtctl-15600/agg_0"
+    assert first["command"][:2] == ["bash", "-c"] and "gpu_memory_service --device" in first["command"][2]
+    assert "seq 0 0" in first["command"][2]  # one GPU
+    assert first["container_image"] == "/vllm-runtime.sqsh"
+    assert first["output"] == str(tmp_path / "service_gms_agg_0_node1.out")
+    second = calls["service_gms_agg_1_node1"]
+    assert second["env_to_set"]["CUDA_VISIBLE_DEVICES"] == "1"
+    assert second["env_to_set"]["GMS_SOCKET_DIR"] == "/dev/shm/srtctl-15600/agg_1"
+    # Gated on the ready line of each instance; critical; stopped after the engines.
+    assert wait.call_count == 2
+    assert "GMS" in wait.call_args.args[0].pattern
+    assert all(p.critical and p.shutdown_tier == 1 for p in procs)
+
+
+def test_worker_stage_launches_only_engines(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(_load(), tmp_path)
+    with (
+        patch(SRUN_WORKER, return_value=_proc()) as srun,
+        patch(HOST_IP_WORKER, return_value="10.0.0.11"),
         patch(HOST_IP, return_value="10.0.0.11"),
     ):
         procs = orchestrator.start_all_workers()
 
-    names = list(procs)
-    assert names == [
-        "gms_agg_0_node1",
-        "agg_0_node1",
-        "agg_0_node1_e1",
-        "gms_agg_1_node1",
-        "agg_1_node1",
-        "agg_1_node1_e1",
-    ]
-    assert wait.call_count == 2
+    assert list(procs) == ["agg_0_node1", "agg_0_node1_e1", "agg_1_node1", "agg_1_node1_e1"]
     calls = {call.kwargs["step_name"]: call.kwargs for call in srun.call_args_list}
-
-    gms = calls["gms_agg_0_node1"]
-    assert gms["env_to_set"] == {"CUDA_VISIBLE_DEVICES": "0"}
-    assert gms["command"][:2] == ["bash", "-c"] and "gpu_memory_service --device" in gms["command"][2]
-    assert gms["container_image"] == "/vllm-runtime.sqsh"
-    assert gms["output"] == str(tmp_path / "node1_agg_w0_gms.out")
-
     e0, e1 = calls["agg_0_node1"], calls["agg_0_node1_e1"]
     for step in (e0, e1):
         assert step["env_to_set"]["CUDA_VISIBLE_DEVICES"] == "0"
@@ -374,57 +423,16 @@ def test_worker_stage_launches_sidecar_then_engines_per_worker(tmp_path: Path) -
         assert step["env_to_set"]["FAILOVER_LOCK_PATH"] == "/dev/shm/srtctl-15600/agg_0/failover.lock"
         assert step["env_to_set"]["DYN_VLLM_GMS_SHADOW_MODE"] == "true"
         assert "mkdir -p /dev/shm/srtctl-15600/agg_0" in step["bash_preamble"]
-        # restart: always wraps the engine in the relaunch loop; the engine argv rides in the env
-        assert step["command"][:2] == ["bash", "-c"]
-        assert "relaunching in 5s" in step["command"][2]
-        assert "dynamo.vllm" not in step["command"][2]
-        assert step["env_to_set"][RESPAWN_COMMAND_ENV].startswith("python3 -m dynamo.vllm ")
-        assert "--load-format gms --gms-shadow-mode" in step["env_to_set"][RESPAWN_COMMAND_ENV]
+        # The engine is the step's task; relaunch is roles.<role>.restart's job, not a wrapper's.
+        assert step["command"][:3] == ["python3", "-m", "dynamo.vllm"]
+        assert "--load-format gms --gms-shadow-mode" in shlex.join(step["command"])
     assert e0["env_to_set"]["ENGINE_ID"] == "0" and e1["env_to_set"]["ENGINE_ID"] == "1"
     assert e0["env_to_set"]["DYN_SYSTEM_PORT"] != e1["env_to_set"]["DYN_SYSTEM_PORT"]
     assert e0["env_to_set"]["VLLM_NIXL_SIDE_CHANNEL_PORT"] != e1["env_to_set"]["VLLM_NIXL_SIDE_CHANNEL_PORT"]
     assert e1["output"] == str(tmp_path / "node1_agg_w0_e1.out")
-    # the second worker pins its own GPU and its own directory
-    assert calls["gms_agg_1_node1"]["env_to_set"] == {"CUDA_VISIBLE_DEVICES": "1"}
     assert calls["agg_1_node1"]["env_to_set"]["GMS_SOCKET_DIR"] == "/dev/shm/srtctl-15600/agg_1"
-
-    sidecar, engine = procs["gms_agg_0_node1"], procs["agg_0_node1"]
-    assert sidecar.critical is True and sidecar.shutdown_tier == 1 and sidecar.step_name == "gms_agg_0_node1"
-    assert engine.shutdown_tier == 0 and engine.step_name == "agg_0_node1"
     assert procs["agg_0_node1_e1"].step_name == "agg_0_node1_e1"
-
-
-def test_restart_never_launches_the_bare_engine(tmp_path: Path) -> None:
-    orchestrator = _orchestrator(_load(engine={"type": "vllm", "failover": {"restart": "never"}}), tmp_path)
-    with (
-        patch(SRUN, return_value=_proc()) as srun,
-        patch(WAIT, return_value=True),
-        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.11"),
-        patch(HOST_IP, return_value="10.0.0.11"),
-    ):
-        orchestrator.start_all_workers()
-    engine = next(call.kwargs for call in srun.call_args_list if call.kwargs["step_name"] == "agg_0_node1")
-    assert engine["command"][:3] == ["python3", "-m", "dynamo.vllm"]
-
-
-def test_sidecar_that_dies_or_never_reports_fails_the_stage(tmp_path: Path) -> None:
-    orchestrator = _orchestrator(_load(), tmp_path)
-    with (
-        patch(SRUN, return_value=_proc()),
-        patch(WAIT, side_effect=ProcessDied()),
-        patch(HOST_IP, return_value="10.0.0.11"),
-        pytest.raises(RuntimeError, match="exited .* before its sockets came up"),
-    ):
-        orchestrator.start_all_workers()
-    proc = _proc()
-    with (
-        patch(SRUN, return_value=proc),
-        patch(WAIT, return_value=False),
-        patch(HOST_IP, return_value="10.0.0.11"),
-        pytest.raises(RuntimeError, match="did not report ready"),
-    ):
-        orchestrator.start_all_workers()
-    proc.terminate.assert_called()
+    assert procs["agg_0_node1"].shutdown_tier == 0
 
 
 def test_full_node_worker_pins_nothing(tmp_path: Path) -> None:
@@ -432,16 +440,21 @@ def test_full_node_worker_pins_nothing(tmp_path: Path) -> None:
     data["roles"]["agg"] = {"nodes": 1, "workers": 1, "gpus": 8, "args": {"tensor-parallel-size": 8}}
     orchestrator = _orchestrator(_load_data(data), tmp_path)
     with (
-        patch(SRUN, return_value=_proc()) as srun,
-        patch(WAIT, return_value=True),
-        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.11"),
+        patch(SRUN_SERVICE, return_value=_proc()) as srun_service,
+        patch(WAIT_SERVICE, return_value=True),
+        patch(HOST_IP_SERVICE, return_value="10.0.0.11"),
+    ):
+        (gms,) = orchestrator.start_services("before_workers")
+    assert gms.name == "service_gms_agg_0_node1"
+    assert "CUDA_VISIBLE_DEVICES" not in srun_service.call_args.kwargs["env_to_set"]
+    assert "seq 0 7" in srun_service.call_args.kwargs["command"][2]
+    with (
+        patch(SRUN_WORKER, return_value=_proc()) as srun_worker,
+        patch(HOST_IP_WORKER, return_value="10.0.0.11"),
         patch(HOST_IP, return_value="10.0.0.11"),
     ):
         orchestrator.start_all_workers()
-    calls = {call.kwargs["step_name"]: call.kwargs for call in srun.call_args_list}
-    assert calls["gms_agg_0_node1"]["env_to_set"] == {}
-    assert "CUDA_VISIBLE_DEVICES" not in calls["agg_0_node1"]["env_to_set"]
-    assert "seq 0 7" in calls["gms_agg_0_node1"]["command"][2]
+    assert "CUDA_VISIBLE_DEVICES" not in srun_worker.call_args.kwargs["env_to_set"]
 
 
 def test_mock_sweep_runs_the_failover_recipe_end_to_end(tmp_path: Path) -> None:
@@ -463,8 +476,9 @@ def test_mock_sweep_runs_the_failover_recipe_end_to_end(tmp_path: Path) -> None:
     )
     assert exit_code == 0
     logs = output_dir / "logs"
-    # Per worker: the sidecar's log, engine 0's log, and the shadow's log, all through the fake srun.
-    assert (logs / "mock-node-01_agg_w0_gms.out").is_file()
+    # Per worker: the gms service instance, engine 0, and the shadow, all through the fake srun.
+    assert (logs / "service_gms_agg_0_mock-node-01.out").is_file()
+    assert (logs / "service_gms_agg_1_mock-node-01.out").is_file()
     assert (logs / "mock-node-01_agg_w0.out").is_file()
     assert (logs / "mock-node-01_agg_w0_e1.out").is_file()
     assert (logs / "mock-node-01_agg_w1_e1.out").is_file()
@@ -483,11 +497,15 @@ def test_dry_run_shows_the_layout(tmp_path: Path, capsys) -> None:
     assert "engines per worker: 2" in out
     assert "/dev/shm/srtctl-<job_id>/<role>_<index>/" in out
     assert "--load-format gms --gms-shadow-mode" in out
-    assert "always (relaunch in place after 5s)" in out
+    assert "type=gms" in out and "per=worker" in out
+    assert "implied by: engine.failover" in out
+    assert "gpu_memory_service" in out
 
 
 def test_dry_run_is_silent_without_failover(tmp_path: Path, capsys) -> None:
     config_path = tmp_path / "recipe.yaml"
     config_path.write_text(yaml.dump(_data(engine="vllm")))
     show_config_details(SrtConfig.from_yaml(config_path))
-    assert "Shadow Engine Recovery" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Shadow Engine Recovery" not in out
+    assert "type=gms" not in out

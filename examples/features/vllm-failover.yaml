@@ -1,13 +1,14 @@
 # Shadow engine recovery: vLLM aggregated behind the Dynamo frontend, with a
 # preinitialized standby engine on every worker's GPUs.
 #
-# `engine.failover` makes each worker three steps on its node: a GPU Memory
-# Service (GMS) sidecar that owns the weights, engine 0, and a shadow engine that
-# maps the same weights (no second copy in HBM), warms up, then parks waiting on
-# a flock. Kill the serving engine and the shadow takes over in seconds; the dead
-# engine is relaunched in place and becomes the new shadow. No DRA or Kubernetes:
-# the steps of one worker share the node's GPUs natively. See
-# docs/shadow-engine-recovery.md for the layout, sizing, and how to test it.
+# `engine.failover` gives every worker a GPU Memory Service (the implied `gms`
+# service, one instance per worker) that owns the weights, engine 0, and a shadow
+# engine that maps the same weights (no second copy in HBM), warms up, then parks
+# waiting on a flock. Kill the serving engine and the shadow takes over in
+# seconds; `roles.<role>.restart` relaunches the dead engine in place and it
+# becomes the new shadow. No DRA or Kubernetes: the steps of one worker share the
+# node's GPUs natively. See docs/shadow-engine-recovery.md for the layout, sizing,
+# and how to test it.
 #
 # The container must ship the gpu_memory_service package (the ai-dynamo PyPI wheel
 # does not), so this example uses the Dynamo vLLM runtime image with
@@ -41,14 +42,15 @@ engine:
   type: vllm
   failover:
     shadow_engines: 1               # standby engines per worker (default 1)
-    restart: always                 # relaunch an exited engine in place (default); never
-    restart_backoff_seconds: 5      # delay before the relaunch (default 5)
     shared_dir: /dev/shm            # node-local, visible in every container on the node (default)
 roles:
   agg:
     nodes: 1
     workers: 2
     gpus: 1
+    # restart:                      # relaunch an exited engine in place as the new shadow
+    #   policy: always              # (roles.<role>.restart; without it an exited engine's
+    #   backoff_seconds: 5          #  step ends and `critical` decides the run's fate)
     env:
       DYN_HEALTH_CHECK_ENABLED: "false"
       PYTHONUNBUFFERED: "1"
@@ -59,6 +61,15 @@ roles:
       # for the shadow's CUDA context, captured graphs and NCCL/NIXL buffers.
       gpu-memory-utilization: 0.4
       max-model-len: 4096
+
+# The gms service is implied; declare it by name only to change it, e.g. a longer
+# startup budget for a slow image:
+# services:
+#   - name: gms
+#     type: gms
+#     readiness:
+#       log: {pattern: "GMS ready:"}
+#       timeout_seconds: 300
 
 benchmark:
   type: "manual"                    # serve until scancel; kill an engine process by hand
