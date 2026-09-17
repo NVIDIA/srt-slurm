@@ -19,17 +19,18 @@ from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process, wait_
 def test_wait_streams_late_logs_and_requires_allocation_accounting(monkeypatch, tmp_path: Path) -> None:
     log = tmp_path / "sweep.log"
     output = StringIO()
+    # scontrol always fails below, so each empty squeue reply falls through to sacct.
     replies = iter(
         [
-            ("squeue", 0, "42\n"),
+            ("squeue", 0, "42\n"),  # still queued: sleep, no accounting lookup
             ("squeue", 0, ""),
-            ("sacct", 0, ""),
+            ("sacct", 0, ""),  # gone from the queue but no accounting row yet: not success
             ("squeue", 0, ""),
-            ("sacct", 1, ""),
+            ("sacct", 1, ""),  # slurmdbd unavailable: warn and keep observing
             ("squeue", 0, ""),
-            ("sacct", 0, "99|COMPLETED|0:0\n42.batch|COMPLETED|0:0\n42|RUNNING|0:0\n"),
+            ("sacct", 0, "99|COMPLETED|0:0\n42.batch|COMPLETED|0:0\n42|RUNNING|0:0\n"),  # wrong job, step, live
             ("squeue", 0, ""),
-            ("sacct", 0, "42|COMPLETED|7:0\n"),
+            ("sacct", 0, "42|COMPLETED|7:0\n"),  # the allocation's own terminal record
         ]
     )
 
@@ -76,7 +77,7 @@ def test_wait_never_reports_unsuccessful_allocation_as_success(monkeypatch, stat
     assert wait_for_job("42").returncode == expected
 
 
-def test_wait_retries_observation_timeout_without_resubmission(monkeypatch) -> None:
+def test_wait_continues_after_status_query_timeout(monkeypatch) -> None:
     replies = iter([subprocess.TimeoutExpired("squeue", 15), "", "42|COMPLETED|0:0\n"])
 
     def query(command, **kwargs):

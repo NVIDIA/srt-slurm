@@ -1854,17 +1854,18 @@ class TestRunPostEval:
         assert env_to_set["MODEL_NAME"] == "test-model"
 
     def test_benchmark_env_passthrough(self):
-        """Eval preserves JSON and shell literals, not just plain string values."""
-        import json
+        """benchmark.env reaches eval verbatim (no template expansion); workflow variables still win."""
         import os
         import threading
         from unittest.mock import MagicMock, patch
 
+        metadata = '{\n  "name": "cache", "capacity": 128\n}'
         orch = self._make_orchestrator()
         orch.config.benchmark.env.update(
             {
-                "KV_OFFLOAD_BACKEND_METADATA": '{\n  "name": "cache", "capacity": 128\n}',
+                "KV_OFFLOAD_BACKEND_METADATA": metadata,
                 "CLIENT_LITERAL": "${HOME}/{unresolved}",
+                "ISL": "recipe-value",
             }
         )
         stop = threading.Event()
@@ -1879,15 +1880,16 @@ class TestRunPostEval:
             return mock_proc
 
         with (
-            patch.dict(os.environ, {"EVAL_ONLY": "false"}, clear=False),
+            patch.dict(os.environ, {"EVAL_ONLY": "false", "ISL": "1024"}, clear=False),
             patch("srtctl.cli.do_sweep.wait_for_port", return_value=True),
             patch("srtctl.cli.do_sweep.start_srun_process", side_effect=capture_srun),
         ):
             orch._run_post_eval(stop)
 
         env = captured_kwargs["env_to_set"]
-        assert json.loads(env["KV_OFFLOAD_BACKEND_METADATA"]) == {"name": "cache", "capacity": 128}
+        assert env["KV_OFFLOAD_BACKEND_METADATA"] == metadata
         assert env["CLIENT_LITERAL"] == "${HOME}/{unresolved}"
+        assert env["ISL"] == "1024"
 
     def test_eval_conc_from_env(self):
         """EVAL_CONC from env takes priority over benchmark concurrencies."""
