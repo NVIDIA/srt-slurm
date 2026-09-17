@@ -1,0 +1,14 @@
+# Dynamo frontend worker-selection policy: the shipped two-tier cost function
+# (lib/router-plugins in ai-dynamo, 1.5.0.dev20260908 and newer). Ranks on
+# active-request load first, then device-KV prefix overlap, instead of one
+# additive cost. srtctl passes this file with --router-policy-config whenever
+# frontend.type is dynamo, args.router-mode is kv, and frontend.router_policy
+# is "two-tier" (the default). Parameters are the policy's defaults; see
+# frontend.router_policy in docs/config-reference.md to point at your own file.
+worker_selection:
+  aggregated: dynamo-two-tier-cost-fn
+  prefill: dynamo-two-tier-cost-fn
+  decode: dynamo-two-tier-cost-fn
+  instances:
+    - name: dynamo-two-tier-cost-fn
+      type: dynamo-two-tier-cost-fn

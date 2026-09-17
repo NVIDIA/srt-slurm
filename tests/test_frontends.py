@@ -584,6 +584,83 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
     return mock_srun
 
 
+def _policy_config(*, args, router_policy="two-tier", version=None, install=True, frontend_type="dynamo"):
+    from srtctl.core.schema import DynamoConfig
+
+    return SimpleNamespace(
+        frontend=SimpleNamespace(type=frontend_type, args=args, env=None, router_policy=router_policy),
+        dynamo=DynamoConfig(install=install, version=version),
+    )
+
+
+class TestDynamoRouterPolicy:
+    """frontend.router_policy adds --router-policy-config for a KV-routed Dynamo frontend."""
+
+    def test_kv_mode_defaults_to_the_shipped_two_tier_policy(self):
+        config = _policy_config(args={"router-mode": "kv"}, install=False)
+        assert DynamoFrontend.router_policy_path(config) == DynamoFrontend.TWO_TIER_POLICY_PATH
+
+    def test_round_robin_and_other_frontends_get_nothing(self):
+        assert (
+            DynamoFrontend.router_policy_path(_policy_config(args={"router-mode": "round-robin"}, install=False))
+            is None
+        )
+        assert DynamoFrontend.router_policy_path(_policy_config(args=None, install=False)) is None
+        assert (
+            DynamoFrontend.router_policy_path(
+                _policy_config(args={"router-mode": "kv"}, install=False, frontend_type="sglang-router")
+            )
+            is None
+        )
+
+    def test_default_keeps_the_built_in_selector(self):
+        config = _policy_config(args={"router-mode": "kv"}, router_policy="default", install=False)
+        assert DynamoFrontend.router_policy_path(config) is None
+
+    def test_explicit_router_policy_args_win(self):
+        for key in ("router-policy-config", "router-prefill-policy", "router_decode_policy"):
+            config = _policy_config(args={"router-mode": "kv", key: "x"}, install=False)
+            assert DynamoFrontend.router_policy_path(config) is None, key
+
+    def test_a_path_is_passed_through(self):
+        config = _policy_config(args={"router-mode": "kv"}, router_policy="/configs/mine.yaml", install=False)
+        assert DynamoFrontend.router_policy_path(config) == "/configs/mine.yaml"
+
+    def test_old_pinned_dynamo_skips_the_policy_with_a_warning(self, caplog):
+        old = _policy_config(args={"router-mode": "kv"}, version="1.4.2")
+        with caplog.at_level("WARNING"):
+            assert DynamoFrontend.router_policy_path(old) is None
+        assert "1.5.0.dev20260908" in caplog.text
+        new = _policy_config(args={"router-mode": "kv"}, version="1.5.0.dev20260911")
+        assert DynamoFrontend.router_policy_path(new) == DynamoFrontend.TWO_TIER_POLICY_PATH
+
+    def test_start_frontends_appends_the_flag(self):
+        frontend = DynamoFrontend()
+        topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+        runtime = SimpleNamespace(
+            log_dir=Path("/logs"),
+            nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
+            container_image=Path("/container.sqsh"),
+            container_mounts={},
+            environment={},
+        )
+        config = _policy_config(args={"router-mode": "kv"}, install=False)
+        config.observability = ObservabilityConfig()
+        config.setup_script = None
+        config.dynamo = SimpleNamespace(
+            install=False,
+            get_install_commands=lambda: "",
+            request_plane="tcp",
+            event_plane=None,
+            supports_shipped_router_policies=lambda: True,
+        )
+        with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
+            mock_srun.return_value = MagicMock()
+            frontend.start_frontends(topology, runtime, config, MagicMock(), [])
+        command = mock_srun.call_args.kwargs["command"]
+        assert command[command.index("--router-policy-config") + 1] == DynamoFrontend.TWO_TIER_POLICY_PATH
+
+
 class TestDynamoFrontendRemapRoot:
     """Dynamo frontend injects ENROOT_REMAP_ROOT only when it installs dynamo."""
 

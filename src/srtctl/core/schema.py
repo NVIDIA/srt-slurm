@@ -18,6 +18,7 @@ import itertools
 import logging
 import math
 import os
+import re
 import shlex
 from collections.abc import Iterator, Mapping
 from dataclasses import field
@@ -1988,6 +1989,30 @@ class DynamoConfig:
             env["DYNAMO_VERSION"] = version
         return env
 
+    # First ai-dynamo build that links the shipped worker-selection policies
+    # (dynamo-two-tier-cost-fn), lib/router-plugins in ai-dynamo/dynamo.
+    TWO_TIER_MIN_RELEASE: ClassVar[tuple[int, int]] = (1, 5)
+    TWO_TIER_MIN_DEV_DATE: ClassVar[int] = 20260908
+
+    def supports_shipped_router_policies(self) -> bool:
+        """Whether the Dynamo this recipe runs is new enough for ``--router-policy-config`` policy types.
+
+        Only a pinned PyPI or wheel version can be judged; a container's own
+        Dynamo (``install: false``) and git builds are assumed current, and
+        Dynamo itself fails loudly at startup, naming the linked policy types,
+        if the guess is wrong.
+        """
+        pinned = self.wheel or self.version
+        if not self.install or self.hash is not None or self.top_of_tree or pinned is None:
+            return True
+        match = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:\.dev(\d{8}))?", pinned)
+        if match is None:
+            return True
+        if (int(match.group(1)), int(match.group(2))) < self.TWO_TIER_MIN_RELEASE:
+            return False
+        dev_date = match.group(4)
+        return dev_date is None or int(dev_date) >= self.TWO_TIER_MIN_DEV_DATE
+
     def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo.
 
@@ -2094,6 +2119,17 @@ class FrontendConfig:
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
     container_image: str | None = None
+    # Dynamo frontend, args.router-mode: kv only. Which worker-selection policy the
+    # KV router runs: "two-tier" (default) passes srtctl's
+    # configs/router-policies/dynamo-two-tier.yaml (Dynamo's shipped
+    # dynamo-two-tier-cost-fn: active-request load first, then KV prefix
+    # overlap); "default" keeps Dynamo's built-in additive cost model; any other
+    # value is a path (inside the container) to your own --router-policy-config
+    # YAML. Ignored when args already carry router-policy-config,
+    # router-prefill-policy, or router-decode-policy. The two-tier policy needs
+    # ai-dynamo 1.5.0.dev20260908 or newer; with an older pinned pypi/wheel
+    # version srtctl logs a warning and leaves the built-in selector in place.
+    router_policy: str = "two-tier"
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router

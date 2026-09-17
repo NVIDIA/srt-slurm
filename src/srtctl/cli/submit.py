@@ -529,6 +529,16 @@ def show_config_details(config: SrtConfig) -> None:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
 
+    if config.frontend.type == "dynamo":
+        from srtctl.frontends.dynamo import DynamoFrontend
+
+        policy_path = DynamoFrontend.router_policy_path(config)
+        if policy_path is not None:
+            console.print(
+                f"[dim]dynamo router policy:[/] {config.frontend.router_policy} "
+                f"[dim](--router-policy-config {policy_path})[/]"
+            )
+
     # Dynamo install runs apt-get/pip as root inside the container, so srtctl injects
     # ENROOT_REMAP_ROOT=yes (via srun --export) on the worker + dynamo-frontend launches.
     if installs_dynamo(config):
