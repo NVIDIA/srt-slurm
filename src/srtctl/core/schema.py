@@ -2252,6 +2252,7 @@ class SrtConfig:
         self._validate_sglang_direct_frontend()
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
+        self._validate_vllm_failover()
         self._validate_host_setup()
         self._validate_benchmark_type()
         self._validate_services_only()
@@ -2382,6 +2383,48 @@ class SrtConfig:
                 "host_setup.teardown is set without host_setup.commands; "
                 "teardown will still run after the job, which is only what you want "
                 "if something outside this recipe set the node state"
+            )
+
+    def _validate_vllm_failover(self) -> None:
+        """Rules for ``backend.failover`` (vLLM shadow engine recovery).
+
+        The election and the shadow's parked state live in ``dynamo.vllm``
+        (``--gms-shadow-mode``), so only the Dynamo frontend can drive it; a static
+        router would also list the parked shadows as targets. Data-parallel
+        layouts are refused because their per-rank processes would each need a
+        GMS session and a lock of their own, which is not modeled.
+        """
+        failover = getattr(self.backend, "failover", None)
+        if failover is None:
+            return
+        assert isinstance(self.backend, VLLMProtocol)
+        if self.frontend.type != "dynamo":
+            raise ValidationError(
+                f"engine.failover requires frontend.type: dynamo (shadow engines are elected by dynamo.vllm); "
+                f"got {self.frontend.type!r}"
+            )
+        if self.dynamo.sidecar:
+            raise ValidationError("engine.failover cannot be combined with dynamo.sidecar: true")
+        dp_modes = self.backend.find_dp_modes()
+        if dp_modes:
+            names = ", ".join(mode for mode, _ in dp_modes)
+            raise ValidationError(f"engine.failover does not support data-parallel-size (set on {names})")
+        for mode_name, mode_config in (
+            ("prefill", self.backend.vllm_config.prefill if self.backend.vllm_config else None),
+            ("decode", self.backend.vllm_config.decode if self.backend.vllm_config else None),
+            ("aggregated", self.backend.vllm_config.aggregated if self.backend.vllm_config else None),
+        ):
+            for key, value in (mode_config or {}).items():
+                if str(key).replace("_", "-") == "load-format" and str(value) != "gms":
+                    raise ValidationError(
+                        f"engine.failover loads weights through the GPU Memory Service; "
+                        f"vllm_config.{mode_name}.load-format must be gms or unset, got {value!r}"
+                    )
+        if installs_dynamo(self):
+            logger.warning(
+                "engine.failover needs the gpu_memory_service package, which the ai-dynamo PyPI wheel does not "
+                "include; the container must ship it (nvcr.io/nvidia/ai-dynamo/vllm-runtime does). "
+                "Consider dynamo.install: false."
             )
 
     def _validate_dynamo_sidecar(self) -> None:

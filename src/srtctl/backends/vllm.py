@@ -13,6 +13,7 @@ from __future__ import annotations
 import builtins
 import json
 import logging
+import shlex
 from collections.abc import Sequence
 from dataclasses import field
 from pathlib import Path
@@ -32,6 +33,8 @@ from srtctl.ports import (
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     VLLM_DATA_PARALLEL_RPC_PORT,
+    VLLM_MASTER_PORT_BASE,
+    VLLM_MASTER_PORT_STRIDE,
     VLLM_PORT_BASE,
     VLLM_PORT_STRIDE,
 )
@@ -224,6 +227,179 @@ class VLLMMooncakeKVStoreConfig:
             )
 
 
+# Name of the flock file the engines of one worker elect the serving engine with.
+FAILOVER_LOCK_FILENAME = "failover.lock"
+# Line the GMS sidecar prints once every server has bound its sockets; the worker stage waits for it.
+GMS_READY_MARKER = "GMS ready:"
+# Every GMS server binds one socket per logical pool (weights, kv_cache).
+GMS_SOCKETS_PER_DEVICE = 2
+
+
+@dataclass(frozen=True)
+class VLLMFailoverConfig:
+    """Shadow engine recovery for vLLM workers (Dynamo GPU Memory Service).
+
+    Every worker runs ``1 + shadow_engines`` ``dynamo.vllm`` engines on the same
+    GPUs plus a GPU Memory Service (GMS) sidecar that owns the weights, so a shadow
+    maps the one copy already in HBM instead of loading its own. The engines elect
+    the serving one with a ``flock`` on a shared file: when the active engine dies
+    the kernel drops the lock, a shadow acquires it, materializes its KV cache and
+    registers with the frontend within seconds, and the dead engine is relaunched
+    in place as the new shadow. This is the Kubernetes intra-pod failover layout
+    (``experimental.failover``) without DRA: on SLURM the steps of one worker
+    share the node's GPUs natively. See ``docs/shadow-engine-recovery.md``.
+
+    Attributes:
+        shadow_engines: Standby engines per worker.
+        restart: ``always`` relaunches an engine that exits, in place, after
+            ``restart_backoff_seconds`` (Kubernetes ``restartPolicy: Always``, so the
+            worker has a shadow again after a failover). ``never`` lets the step
+            exit; ``roles.<role>.critical`` then decides the run's fate.
+        restart_backoff_seconds: Delay before an engine is relaunched.
+        shared_dir: Node-local host directory that every container on a node sees.
+            The GMS sockets and the lock file of a worker live under
+            ``<shared_dir>/srtctl-<job_id>/<role>_<index>``. enroot bind-mounts the
+            host's ``/dev/shm`` into every container; ``/tmp`` is a fresh tmpfs per
+            container and does not work.
+        gms_startup_timeout_seconds: How long the GMS sidecar may take to bind its
+            sockets before the job fails.
+    """
+
+    shadow_engines: int = 1
+    restart: Literal["always", "never"] = "always"
+    restart_backoff_seconds: int = 5
+    shared_dir: str = "/dev/shm"
+    gms_startup_timeout_seconds: int = 120
+
+    Schema: ClassVar[builtins.type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.shadow_engines < 1:
+            raise ValidationError(f"engine.failover.shadow_engines must be at least 1, got {self.shadow_engines}")
+        if self.restart_backoff_seconds < 1:
+            raise ValidationError(
+                f"engine.failover.restart_backoff_seconds must be at least 1, got {self.restart_backoff_seconds}"
+            )
+        if self.gms_startup_timeout_seconds < 1:
+            raise ValidationError(
+                "engine.failover.gms_startup_timeout_seconds must be at least 1, "
+                f"got {self.gms_startup_timeout_seconds}"
+            )
+        if not self.shared_dir.startswith("/") or self.shared_dir == "/":
+            raise ValidationError(
+                f"engine.failover.shared_dir must be an absolute directory below /, got {self.shared_dir!r}"
+            )
+
+    @property
+    def engines_per_worker(self) -> int:
+        return 1 + self.shadow_engines
+
+
+def failover_root(shared_dir: str, job_id: str) -> str:
+    """Per-job directory under ``shared_dir`` holding every worker's sockets and lock file."""
+    return f"{shared_dir.rstrip('/')}/srtctl-{job_id}"
+
+
+def failover_worker_dir(shared_dir: str, job_id: str, process: Process) -> str:
+    """The directory one worker's engines and GMS sidecar share on a node (the same path on every node)."""
+    return f"{failover_root(shared_dir, job_id)}/{process.endpoint_mode}_{process.endpoint_index}"
+
+
+def build_gms_sidecar_command(socket_dir: str, device_count: int, startup_timeout_seconds: int) -> list[str]:
+    """One GMS server per GPU of the worker, supervised by bash.
+
+    The servers are started directly (``python3 -m gpu_memory_service --device k``)
+    instead of through ``gpu_memory_service.cli.server``: that supervisor enumerates
+    GPUs with NVML, which ignores CUDA_VISIBLE_DEVICES, so it would start a server
+    for every GPU on the node. Device ``k`` here is CUDA device k as the worker's
+    engines see it (the sidecar runs with the worker's CUDA_VISIBLE_DEVICES), and
+    both sides name the sockets after NVML index k, so they always agree on them.
+
+    Prints ``GMS ready: ...`` once every server has bound both of its sockets, which
+    is what the worker stage waits for; exits 1 if that takes longer than
+    ``startup_timeout_seconds`` or a server dies first. Afterwards any server exit
+    stops the rest and the step exits non-zero, so the registry sees a dead sidecar.
+    On SIGTERM (job cleanup, after the engines are gone) it stops the servers,
+    removes the directory, and exits 0.
+    """
+    expected = GMS_SOCKETS_PER_DEVICE * device_count
+    script = f"""set -u
+dir={shlex.quote(socket_dir)}
+mkdir -p "$dir" && rm -f "$dir"/gms_*.sock || exit 1
+export GMS_SOCKET_DIR="$dir"
+pids=()
+for device in $(seq 0 {device_count - 1}); do
+    python3 -m gpu_memory_service --device "$device" &
+    pids+=($!)
+done
+stopping=0
+stop() {{ stopping=1; kill -TERM "${{pids[@]}}" 2>/dev/null; }}
+trap stop TERM INT
+count=0
+for _ in $(seq 1 {startup_timeout_seconds}); do
+    for pid in "${{pids[@]}}"; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "GMS server pid $pid exited during startup" >&2
+            stop; wait; exit 1
+        fi
+    done
+    count=$(ls "$dir"/gms_*.sock 2>/dev/null | wc -l)
+    if [ "$count" -ge {expected} ]; then break; fi
+    sleep 1
+done
+if [ "$count" -lt {expected} ]; then
+    echo "GMS startup timed out: $count of {expected} sockets in $dir after {startup_timeout_seconds}s" >&2
+    stop; wait; exit 1
+fi
+echo "{GMS_READY_MARKER} {device_count} device(s), $count sockets in $dir"
+wait -n "${{pids[@]}}"
+rc=$?
+if [ "$stopping" = 1 ]; then
+    wait
+    rm -rf -- "$dir"
+    exit 0
+fi
+echo "GMS server exited (code=$rc); stopping the rest" >&2
+stop; wait
+if [ "$rc" = 0 ]; then rc=1; fi
+exit "$rc"
+"""
+    return ["bash", "-c", script]
+
+
+def build_respawn_command(command: list[str], *, backoff_seconds: int, label: str) -> list[str]:
+    """Run ``command`` again whenever it exits (Kubernetes ``restartPolicy: Always``).
+
+    The loop is what the worker step execs, so the step stays up across engine
+    deaths and the process monitor never sees an exit. SIGTERM from cleanup
+    (``scancel --signal=TERM --full`` reaches every process in the step) stops the
+    loop and is also delivered to the engine, which shuts down on its own; the
+    loop then exits with the engine's code.
+    """
+    script = f"""set -u
+stopping=0
+child=
+on_term() {{ stopping=1; if [ -n "$child" ]; then kill -TERM "$child" 2>/dev/null; fi; }}
+trap on_term TERM INT
+while :; do
+    {shlex.join(command)} &
+    child=$!
+    wait "$child"
+    rc=$?
+    if [ "$stopping" = 1 ]; then
+        wait "$child" 2>/dev/null
+        exit "$rc"
+    fi
+    echo "[srtctl] {label} exited with code $rc; relaunching in {backoff_seconds}s" >&2
+    child=
+    sleep {backoff_seconds} &
+    wait $!
+    if [ "$stopping" = 1 ]; then exit "$rc"; fi
+done
+"""
+    return ["bash", "-c", script]
+
+
 @dataclass(frozen=True)
 class VLLMServerConfig:
     """vLLM server CLI configuration per mode (prefill/decode/aggregated).
@@ -291,6 +467,10 @@ class VLLMProtocol:
     # infra node and auto-injects MOONCAKE_MASTER / MOONCAKE_TE_META_DATA_SERVER
     # / MOONCAKE_LOCAL_HOSTNAME on every vLLM worker.
     mooncake_kv_store: VLLMMooncakeKVStoreConfig | None = None
+
+    # Shadow engine recovery: when set, every worker runs a GMS sidecar plus
+    # shadow_engines standby engines on its GPUs. Dynamo frontend only.
+    failover: VLLMFailoverConfig | None = None
 
     # KV events config - enables --kv-events-config with auto-allocated ports.
     # Required for Dynamo's event-driven KV-aware routing.
@@ -785,6 +965,68 @@ class VLLMProtocol:
             for offset in range(0, len(sorted_gpus), gpus_per_rank)
         ]
 
+    # =========================================================================
+    # Shadow engine recovery (backend.failover)
+    # =========================================================================
+
+    @property
+    def engines_per_process(self) -> int:
+        """Engines launched per (worker, node): 1, or ``1 + shadow_engines`` under ``failover``."""
+        return self.failover.engines_per_worker if self.failover is not None else 1
+
+    def failover_worker_dir(self, job_id: str, process: Process) -> str:
+        """Node-local directory this worker's engines and GMS sidecar share; see ``VLLMFailoverConfig.shared_dir``."""
+        assert self.failover is not None
+        return failover_worker_dir(self.failover.shared_dir, job_id, process)
+
+    def get_failover_environment(self, process: Process, job_id: str) -> dict[str, str]:
+        """Environment one engine of a failover worker needs (the same names the Dynamo operator injects).
+
+        ``ENGINE_ID`` 0 is the engine that loads the weights into GMS (it takes a
+        read-write GMS session, or read-only when the weights are already there
+        after a relaunch); every other engine imports them read-only. The lock file
+        is per worker, so only that worker's engines contend for it.
+        """
+        worker_dir = self.failover_worker_dir(job_id, process)
+        return {
+            "ENGINE_ID": str(process.engine_id),
+            "GMS_SOCKET_DIR": worker_dir,
+            "FAILOVER_LOCK_PATH": f"{worker_dir}/{FAILOVER_LOCK_FILENAME}",
+            "DYN_VLLM_GMS_SHADOW_MODE": "true",
+            # /health answers "notready" until the engine holds the lock and serves; a
+            # parked shadow then reports healthy so nothing restarts it while it waits.
+            "DYN_SYSTEM_STARTING_HEALTH_STATUS": "notready",
+        }
+
+    def build_gms_sidecar_command(self, process: Process, job_id: str) -> list[str]:
+        """The GMS sidecar step for one worker on one node; see :func:`build_gms_sidecar_command`."""
+        assert self.failover is not None
+        return build_gms_sidecar_command(
+            self.failover_worker_dir(job_id, process),
+            len(process.gpu_indices),
+            self.failover.gms_startup_timeout_seconds,
+        )
+
+    def _failover_flags(self, config: dict[str, Any], process: Process, is_multi_node: bool) -> list[str]:
+        """``dynamo.vllm`` flags every engine of a failover worker gets; pops the keys it owns from ``config``."""
+        owned = {"load-format", "gms-shadow-mode"}
+        master_port: int | None = None
+        for key in list(config):
+            normalized = normalize_vllm_config_key(key)
+            if normalized in owned:
+                config.pop(key)
+            elif normalized == "master-port":
+                master_port = int(config.pop(key))
+        # Weights come from the worker's GMS sidecar; the engine parks after
+        # initialization and waits for the lock before it registers.
+        flags = ["--load-format", "gms", "--gms-shadow-mode"]
+        if is_multi_node:
+            # Every engine of a multi-node worker is its own torch.distributed job and
+            # needs its own TCPStore port on the leader node.
+            base = master_port if master_port is not None else VLLM_MASTER_PORT_BASE
+            flags.extend(["--master-port", str(base + process.engine_id * VLLM_MASTER_PORT_STRIDE)])
+        return flags
+
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
 
@@ -818,8 +1060,14 @@ class VLLMProtocol:
         has_dp_mode = any(self._is_dp_mode(ep.mode) for ep in endpoints)
 
         if not has_dp_mode:
-            # Standard TP mode: one process per node
-            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+            # Standard TP mode: one process per node, or one per engine of the
+            # worker under backend.failover (engine 0 plus its shadows).
+            return endpoints_to_processes(
+                endpoints,
+                base_sys_port=base_sys_port,
+                port_allocator=port_allocator,
+                engines_per_process=self.engines_per_process,
+            )
 
         if dynamo_sidecar or self.dp_launch_mode == "per_node":
             return self._dp_per_node_endpoints_to_processes(
@@ -1220,7 +1468,10 @@ class VLLMProtocol:
             kv_transfer_cfg = _connector_to_kv_transfer_config(connector)
             cmd.extend(["--kv-transfer-config", kv_transfer_cfg])
 
-        if not self.set_cuda_visible_devices:
+        # Under failover the worker stage pins CUDA_VISIBLE_DEVICES instead: the
+        # engines and their GMS sidecar must see the same device list so that
+        # "device k" means the same GPU (and the same socket) in all of them.
+        if not self.set_cuda_visible_devices and self.failover is None:
             device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
             if device_ids:
                 cmd.extend(["--device-ids", device_ids])
@@ -1326,6 +1577,9 @@ class VLLMProtocol:
             # Non-leader nodes run headless
             if node_rank > 0:
                 cmd.append("--headless")
+
+        if self.failover is not None:
+            cmd.extend(self._failover_flags(config, process, is_multi_node))
 
         # Add request plane
         cmd.extend(["--request-plane", runtime.request_plane])

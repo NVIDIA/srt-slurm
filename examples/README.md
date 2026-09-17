@@ -31,6 +31,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/mlperf-client.yaml` | `benchmark.type: custom` driving the MLPerf inference-endpoint client in its own image; placeholder paths, a reference rather than a runnable example |
 | `features/infra-services.yaml` | etcd and NATS as declared services on a dedicated node with a NATS payload limit; the implied exporters overridden or switched off |
 | `features/dynamo-source.yaml` | `dynamo.source:` building Dynamo from a git tag (or a PR head via `--set dynamo.source.rev=refs/pull/<n>/head`), pinned to a commit at submit |
+| `features/vllm-failover.yaml` | `engine.failover:` shadow engine recovery: a GPU Memory Service sidecar and a parked standby engine per vLLM worker, relaunched in place after a crash. Needs a container that ships `gpu_memory_service` (the `dynamo-vllm` alias, an `nvcr.io/nvidia/ai-dynamo/vllm-runtime` image). See [../docs/shadow-engine-recovery.md](../docs/shadow-engine-recovery.md) |
 
 ## Cluster aliases
 
@@ -44,6 +45,7 @@ containers:
   sglang: /path/to/sglang.sqsh              # SGLang image; Dynamo examples pip-install ai-dynamo into it
   vllm: /path/to/vllm.sqsh                  # vLLM image with the vllm-router executable
   trtllm: /path/to/tensorrtllm-runtime.sqsh # Dynamo TRT-LLM runtime image (ships ai-dynamo and trtllm-serve)
+  dynamo-vllm: /path/to/vllm-runtime.sqsh   # Dynamo vLLM runtime image (ships ai-dynamo and gpu_memory_service), for features/vllm-failover.yaml
 ```
 
 `resources.gpu_type` and `gpus_per_node` are set to `h100` and `8`; change them to match the partition you submit to.

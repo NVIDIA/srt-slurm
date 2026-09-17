@@ -438,6 +438,42 @@ def show_config_details(config: SrtConfig) -> None:
     else:
         console.print("[dim]No custom environment variables configured.[/]")
 
+    # --- Shadow engine recovery (engine.failover, vLLM + Dynamo GPU Memory Service) ---
+    failover = getattr(config.backend, "failover", None)
+    if failover is not None:
+        from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, failover_root
+
+        root = failover_root(failover.shared_dir, "<job_id>")
+        restart = (
+            f"always (relaunch in place after {failover.restart_backoff_seconds}s)"
+            if failover.restart == "always"
+            else "never (the step exits; roles.<role>.critical decides)"
+        )
+        lines = [
+            f"engines per worker: {failover.engines_per_worker} (engine 0 + {failover.shadow_engines} shadow)",
+            f"engine restart: {restart}",
+            (
+                f"shared dir: {root}/<role>_<index>/  (gms_*.sock, {FAILOVER_LOCK_FILENAME}; node-local, every "
+                "container on the node)"
+            ),
+            (
+                "per worker and node: step gms_<role>_<index>_<node> runs one `python3 -m gpu_memory_service "
+                "--device k` per GPU of the worker, then steps <role>_<index>_<node> and <role>_<index>_<node>_e<k>"
+            ),
+            "engine flags: --load-format gms --gms-shadow-mode (no --device-ids; CUDA_VISIBLE_DEVICES is pinned)",
+            (
+                "engine env: ENGINE_ID, GMS_SOCKET_DIR, FAILOVER_LOCK_PATH, DYN_VLLM_GMS_SHADOW_MODE=true, "
+                "DYN_SYSTEM_STARTING_HEALTH_STATUS=notready"
+            ),
+            f"GMS startup timeout: {failover.gms_startup_timeout_seconds}s",
+        ]
+        console.print(Panel("\n".join(lines), title="Shadow Engine Recovery (engine.failover)", border_style="magenta"))
+        console.print(
+            "[yellow]NOTE:[/] two engines share each GPU: size gpu-memory-utilization so the active engine's KV "
+            "cache leaves room for the shadow's CUDA context, graphs and communicator buffers. To test a failover "
+            "kill the engine process, not its step (see docs/shadow-engine-recovery.md)."
+        )
+
     # --- Host setup (runs on the bare node, outside the container) ---
     if config.host_setup.enabled:
         host_table = Table(title="Host Setup (outside container)", show_lines=False, pad_edge=False)

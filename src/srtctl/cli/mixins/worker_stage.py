@@ -8,18 +8,21 @@ Handles starting backend worker processes (prefill/decode/agg).
 """
 
 import logging
+import re
 import shlex
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
-from srtctl.backends.vllm import VLLMProtocol
+from srtctl.backends.vllm import GMS_READY_MARKER, VLLMFailoverConfig, VLLMProtocol, build_respawn_command
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
+from srtctl.core.readiness import ProcessDied, wait_until_ready
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, TRTLLM_DIST_INIT_PORT_BASE
+from srtctl.services.config import LogProbe
 from srtctl.services.implicit import discovery_env
 
 if TYPE_CHECKING:
@@ -89,6 +92,12 @@ class WorkerStageMixin:
     def backend(self) -> Any:
         """Access the backend config (implements BackendProtocol)."""
         return self.config.backend
+
+    @property
+    def failover(self) -> "VLLMFailoverConfig | None":
+        """``backend.failover`` when this is a vLLM job with shadow engine recovery, else None."""
+        backend = self.backend
+        return backend.failover if isinstance(backend, VLLMProtocol) else None
 
     @property
     def backend_processes(self) -> list["Process"]:
@@ -206,16 +215,95 @@ class WorkerStageMixin:
             process.node_rank,
         )
 
+    def start_gms_sidecar(self, process: "Process") -> ManagedProcess:
+        """Launch the GPU Memory Service sidecar of one failover worker on one node and wait for its sockets.
+
+        One step per (worker, node), started before that worker's engines, in the
+        job container with the same CUDA_VISIBLE_DEVICES the engines get, so
+        "device k" is the same GPU for the servers and the engines. Critical (a
+        worker without its weight server cannot recover) and stopped after the
+        engines at cleanup (shutdown tier 1), like the Mooncake master.
+        """
+        backend = self.backend
+        assert isinstance(backend, VLLMProtocol) and backend.failover is not None
+        mode = process.endpoint_mode
+        index = process.endpoint_index
+        step_name = f"gms_{mode}_{index}_{process.node}"
+        log_file = self.runtime.log_dir / f"{process.node}_{mode}_w{index}_gms.out"
+
+        env_to_set: dict[str, str] = {}
+        if len(process.gpu_indices) < self.runtime.gpus_per_node:
+            env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
+        cmd = backend.build_gms_sidecar_command(process, self.runtime.job_id)
+        logger.info(
+            "Starting GMS sidecar for %s worker %d on %s (GPUs %s): %s",
+            mode,
+            index,
+            process.node,
+            process.cuda_visible_devices,
+            backend.failover_worker_dir(self.runtime.job_id, process),
+        )
+        proc = start_srun_process(
+            command=cmd,
+            nodelist=[process.node],
+            output=str(log_file),
+            container_image=str(self.runtime.container_image),
+            container_mounts=self.runtime.container_mounts,
+            env_to_set=env_to_set,
+            srun_options=self.runtime.srun_options,
+            het_group=process.het_group,
+            step_name=step_name,
+        )
+        managed = ManagedProcess(
+            name=step_name,
+            popen=proc,
+            log_file=log_file,
+            node=process.node,
+            critical=True,
+            terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
+            step_name=step_name,
+            shutdown_tier=1,
+        )
+
+        # The sidecar's own startup timeout is what fails first; the margin covers srun.
+        timeout = backend.failover.gms_startup_timeout_seconds + 30
+        try:
+            ready = wait_until_ready(
+                LogProbe(pattern=re.escape(GMS_READY_MARKER)),
+                host=process.node,
+                log_file=log_file,
+                timeout=timeout,
+                interval=1.0,
+                is_alive=lambda: managed.is_running,
+            )
+        except ProcessDied:
+            raise RuntimeError(
+                f"GMS sidecar {step_name} exited with code {managed.exit_code} before its sockets came up "
+                f"(is gpu_memory_service installed in the container?); see {log_file}"
+            ) from None
+        if not ready:
+            managed.terminate()
+            raise RuntimeError(f"GMS sidecar {step_name} did not report ready within {timeout}s; see {log_file}")
+        logger.info("GMS sidecar %s ready", step_name)
+        return managed
+
     def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
         """Start a single worker process (one srun per node, used by SGLang)."""
         mode = process.endpoint_mode
         index = process.endpoint_index
+        failover = self.failover
+        # "" for engine 0, "_e<k>" for a shadow: step name, logs, and dumps stay apart.
+        # (getattr: tests drive this stage with plain namespaces standing in for Process.)
+        suffix = getattr(process, "engine_suffix", "")
 
-        logger.info("Starting %s worker %d on %s", mode, index, process.node)
+        if suffix:
+            logger.info("Starting %s worker %d shadow engine %d on %s", mode, index, process.engine_id, process.node)
+        else:
+            logger.info("Starting %s worker %d on %s", mode, index, process.node)
 
         # Log and config files
-        worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}.out"
-        config_dump = self.runtime.log_dir / f"{process.node}_config.json"
+        worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}{suffix}.out"
+        config_dump = self.runtime.log_dir / f"{process.node}_config{suffix}.json"
 
         # Profiling setup
         profiling = self.config.profiling
@@ -225,7 +313,7 @@ class WorkerStageMixin:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys and profiling_selects_process:
             gpu_label = process.cuda_visible_devices.replace(",", "-")
-            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}"
+            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}{suffix}_profile_gpu{gpu_label}"
             nsys_prefix = profiling.get_nsys_prefix(
                 nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
             )
@@ -278,11 +366,15 @@ class WorkerStageMixin:
 
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
         force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        # Failover engines share their device list with the GMS sidecar (see start_gms_sidecar).
+        force_cvd = force_cvd or failover is not None
         if (force_cvd or should_set_cvd(process)) and len(process.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
 
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(self.backend.get_process_environment(process))
+        if failover is not None:
+            env_to_set.update(self.backend.get_failover_environment(process, self.runtime.job_id))
 
         # Add mooncake worker env vars if configured (SGLang only). Resolve the
         # worker's own IP so MOONCAKE_LOCAL_HOSTNAME is correct for multi-node
@@ -318,11 +410,26 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}{suffix}.json")
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
         bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
+
+        if failover is not None:
+            # The engine creates the lock file itself; its directory (also the GMS
+            # socket dir) must exist. The sidecar made it, but the engine step should
+            # not depend on launch order after a relaunch.
+            worker_dir = self.backend.failover_worker_dir(self.runtime.job_id, process)
+            bash_preamble = _append_preamble(bash_preamble, f"mkdir -p {shlex.quote(worker_dir)}")
+            if failover.restart == "always":
+                # Relaunch in place after an exit, so the worker has a shadow again
+                # once a failover has promoted the other engine.
+                cmd = build_respawn_command(
+                    cmd,
+                    backoff_seconds=failover.restart_backoff_seconds,
+                    label=f"{mode}_{index} engine {process.engine_id}",
+                )
 
         # vLLM uses VLLM_PORT as the initial port for its internal message
         # queues. In a multi-node endpoint, concurrent TP ranks inherit the
@@ -331,7 +438,7 @@ class WorkerStageMixin:
         endpoint_nodes = {endpoint_process.node for endpoint_process in endpoint_processes}
         env_to_unset = ["VLLM_PORT"] if self.backend.type == "vllm" and len(endpoint_nodes) > 1 else None
 
-        step_name = f"{mode}_{index}_{process.node}"
+        step_name = f"{mode}_{index}_{process.node}{suffix}"
         proc = start_srun_process(
             command=cmd,
             nodelist=[process.node],
@@ -659,9 +766,15 @@ class WorkerStageMixin:
                     managed = self.start_endpoint_worker(endpoint_processes)
                     result[managed.name] = managed
         else:
-            # Per-process: one srun per node (SGLang)
+            # Per-process: one srun per node (SGLang, vLLM). Under backend.failover a
+            # worker's processes on a node are engine 0 and its shadows; the GMS
+            # sidecar that owns their weights starts first and must be serving.
+            failover = self.failover
             for endpoint_processes in grouped.values():
                 for process in endpoint_processes:
+                    if failover is not None and process.engine_id == 0:
+                        sidecar = self.start_gms_sidecar(process)
+                        result[sidecar.name] = sidecar
                     managed = self.start_worker(process, endpoint_processes)
                     result[managed.name] = managed
 
