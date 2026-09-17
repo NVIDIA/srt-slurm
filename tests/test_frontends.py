@@ -700,7 +700,6 @@ class TestDynamoFrontendEventPlane:
         env = _dynamo_frontend_call(dynamo_install=False, event_plane="nats").call_args.kwargs["env_to_set"]
         assert env["NATS_SERVER"] == "nats://10.0.0.9:4222"
         assert env["ETCD_ENDPOINTS"] == "http://10.0.0.9:2379"
-        assert "infra-node" not in env["NATS_SERVER"]
 
     @pytest.mark.parametrize("event_plane", ["zmq", "nats"])
     def test_explicit_injected(self, event_plane):

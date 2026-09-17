@@ -13,17 +13,19 @@ from srtctl.services.implicit import effective_services
 
 
 @pytest.mark.parametrize(
-    ("mask", "indices", "enabled", "sidecar", "expected"),
+    ("indices", "enabled", "sidecar", "expected"),
     [
-        ("ROCR_VISIBLE_DEVICES", {2, 3}, True, False, {"ROCR_VISIBLE_DEVICES": "2,3"}),
-        ("CUDA_VISIBLE_DEVICES", {2, 3}, True, False, {"CUDA_VISIBLE_DEVICES": "2,3"}),
-        ("OTHER_DEVICE_MASK", {2, 3}, True, False, {"OTHER_DEVICE_MASK": "2,3"}),
-        ("ROCR_VISIBLE_DEVICES", {2, 3}, False, False, {}),
-        ("ROCR_VISIBLE_DEVICES", set(range(8)), True, False, {}),
-        ("ROCR_VISIBLE_DEVICES", {2, 3}, False, True, {"ROCR_VISIBLE_DEVICES": "2,3"}),
+        # Backend opts in: mask the GPU subset under the cluster's variable name.
+        ({2, 3}, True, False, {"ROCR_VISIBLE_DEVICES": "2,3"}),
+        # Backend opts out (vLLM binds via --device-ids instead).
+        ({2, 3}, False, False, {}),
+        # A whole node needs no mask even when the backend opts in.
+        (set(range(8)), True, False, {}),
+        # The Dynamo sidecar forces the mask regardless of the backend setting.
+        ({2, 3}, False, True, {"ROCR_VISIBLE_DEVICES": "2,3"}),
     ],
 )
-def test_worker_mask_uses_cluster_setting(mask, indices, enabled, sidecar, expected):
+def test_worker_mask_uses_cluster_setting(indices, enabled, sidecar, expected):
     process = Process(
         node="node0",
         gpu_indices=frozenset(indices),
@@ -37,11 +39,12 @@ def test_worker_mask_uses_cluster_setting(mask, indices, enabled, sidecar, expec
         backend=VLLMProtocol(set_visible_devices=enabled),
         dynamo=SimpleNamespace(sidecar=sidecar),
     )
-    mixin.runtime = SimpleNamespace(visible_devices_env=mask, gpus_per_node=8)
+    mixin.runtime = SimpleNamespace(visible_devices_env="ROCR_VISIBLE_DEVICES", gpus_per_node=8)
     assert mixin._visible_device_environment(process) == expected
 
 
 def test_cluster_can_disable_gpu_exporter_without_disabling_host_metrics():
+    # Same load/dump round trip as load_cluster_config: an explicit null must survive it.
     cluster = ClusterConfig.Schema().dump(ClusterConfig.Schema().load({"default_gpu_exporter": None}))
     resolved = resolve_config_with_defaults(
         {

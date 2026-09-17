@@ -57,4 +57,4 @@ def test_runtime_resolves_control_plane_ips_on_cluster_interface(tmp_path):
 
     assert resolve.call_args_list[0].args == ("node-a", "fabric0")
     assert resolve.call_args_list[1].args == ("node-b", "fabric0")
-    assert runtime.infra_node_ip == "10.0.0.2"
+    assert (runtime.head_node_ip, runtime.infra_node_ip) == ("10.0.0.1", "10.0.0.2")
