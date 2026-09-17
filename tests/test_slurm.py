@@ -197,6 +197,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         network_interface=None,
         nodes=SimpleNamespace(infra="infra-node", worker=["node-a"]),
         gpus_per_node=8,
+        visible_devices_env="CUDA_VISIBLE_DEVICES",
         environment={},
         container_image=Path("/container.sqsh"),
         container_mounts={tmp_path: Path("/logs")},
@@ -272,6 +273,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
     )
+    mixin.runtime.visible_devices_env = "CUDA_VISIBLE_DEVICES"
     return mixin, process
 
 
@@ -651,7 +653,8 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("worker", [0, 1])
-def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int) -> None:
+@pytest.mark.parametrize("visibility_env", ["CUDA_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"])
+def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int, visibility_env: str) -> None:
     import os
 
     from srtctl.backends.trtllm import TRTLLMProtocol
@@ -659,13 +662,14 @@ def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int) -> None:
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.runtime.gpus_per_node = 4
+    mixin.runtime.visible_devices_env = visibility_env
     mixin.backend.type = "trtllm"
     mixin.runtime.srun_options = {"cpu-bind": "none", "kill-on-bad-exit": "1"}
     mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
     mixin.backend.build_worker_command.return_value = [
         "bash",
         "-c",
-        'printf "%s|%s|%s" "$CUDA_VISIBLE_DEVICES" "$MASTER_ADDR" "$MASTER_PORT"',
+        f'printf "%s|%s|%s" "${visibility_env}" "$MASTER_ADDR" "$MASTER_PORT"',
     ]
     endpoints = TRTLLMProtocol().allocate_endpoints(
         num_prefill=2,
