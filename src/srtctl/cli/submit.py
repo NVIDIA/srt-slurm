@@ -587,7 +587,9 @@ def show_config_details(config: SrtConfig) -> None:
         if profiling.enabled:
             details.add_row("profiling", "type", profiling.type)
             if profiling.is_nsys:
-                details.add_row("profiling", "nsys_trace", profiling.nsys_trace)
+                details.add_row("profiling", "nsys_trace", profiling.nsys_trace or "backend default")
+                details.add_row("profiling", "cuda_graph_trace_mode", profiling.cuda_graph_trace_mode or "node")
+                details.add_row("profiling", "sample_mode", profiling.sample_mode or "backend default")
                 details.add_row("profiling", "capture_range_end", profiling.capture_range_end)
                 fork_setting = (
                     "dynamo default"

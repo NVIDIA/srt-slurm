@@ -380,6 +380,8 @@ class TestDryRunExecutionExtensions:
                 "profiling": {
                     "type": "nsys",
                     "nsys_trace": "cuda-sw,nvtx",
+                    "cuda_graph_trace_mode": "graph",
+                    "sample_mode": "cpu",
                     "trace_fork_before_exec": True,
                     "capture_range_end": "repeat:1:async",
                     "nsys_library_paths": ["/host/lib64", "/host/lib"],
@@ -397,6 +399,8 @@ class TestDryRunExecutionExtensions:
         assert "all physical processes" in output
         assert "Execution Extensions" in output
         assert "profiling" in output
+        assert "cuda_graph_trace_mode" in output
+        assert "sample_mode" in output
 
     def test_custom_benchmark_details_shown(self, capsys):
         config = _make_config(

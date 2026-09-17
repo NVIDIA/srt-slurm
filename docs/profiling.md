@@ -63,6 +63,10 @@ profiling:
   nsys_library_paths: ["/usr/local/cuda/compat"]
   extra_nsys_args: []
 
+  # Optional nsys flag overrides. Omit these to preserve the backend defaults.
+  cuda_graph_trace_mode: "node:host-only:nvtx-precapture"
+  sample_mode: "cpu"
+
   # Disaggregated mode: must set both prefill and decode sections
   prefill:
     start_step: 0 # Step to start profiling for prefill workers
@@ -97,15 +101,25 @@ profiling:
 | `*.capture_scope`       | Capture one selected process or all physical processes | `all` |
 | `*.worker_index`        | Logical worker selected for iteration-based nsys | `0`    |
 | `*.worker_rank`         | Physical process rank selected within that worker | `0`  |
-| `nsys_trace`            | Non-TRT-LLM Nsight activity domains          | `cuda,nvtx` |
+| `nsys_trace`            | Nsight activity domains (all backends)          | null (backend-specific) |
 | `trace_fork_before_exec` | Override non-TRT-LLM child-process tracing; unset uses the Dynamo default | unset |
-| `capture_range_end`     | Non-TRT-LLM action after a CUDA profiler range ends | `stop` |
+| `capture_range_end`     | Action after an iteration-based CUDA profiler range ends | `stop` |
 | `nsys_library_paths`    | Paths prepended to the worker `LD_LIBRARY_PATH` | unset |
 | `extra_nsys_args`       | Additional `nsys profile` arguments          | unset    |
 
-For non-TRT-LLM workers, set `nsys_trace` to choose trace domains. Do not
+For all backends, set `nsys_trace` to choose trace domains. Do not
 also pass `--trace` in `extra_nsys_args`: that emits duplicate options whose
 precedence depends on Nsight's argument parsing.
+
+### Backend defaults for Nsight options
+
+For `nsys` and `nsys-time`, `nsys_trace: null` (or omission) uses `cuda,nvtx,ucx`
+on TRT-LLM and `cuda,nvtx` on other backends. An explicit `nsys_trace` applies to
+all backends. `cuda_graph_trace_mode` overrides `--cuda-graph-trace` (default `node`);
+`sample_mode` overrides `--sample` (default `none` on TRT-LLM, omitted elsewhere).
+Both new options default to null. `capture_range_end` applies to iteration-based
+capture on all backends and defaults to `stop`; time-based capture ignores it.
+
 
 ## Constraints
 

@@ -204,9 +204,11 @@ Profiling configuration.
 |---|---|---|---|
 | `type` | str | `'none'` | "none", "nsys", "nsys-time", or "torch" |
 | `extra_nsys_args` | list[str] \| None | `None` | Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix) |
-| `nsys_trace` | str | `'cuda,nvtx'` | Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected explicitly where software tracing is preferred over hardware tracing. |
+| `nsys_trace` | str \| None | `None` | Nsight activity domains. None uses cuda,nvtx,ucx for TRT-LLM and cuda,nvtx for other backends. Explicit values apply to every backend. |
+| `cuda_graph_trace_mode` | str \| None | `None` | Optional nsys overrides; None preserves the backend defaults. |
+| `sample_mode` | str \| None | `None` | nsys --sample (TRT-LLM: none; others: omitted) |
 | `trace_fork_before_exec` | bool \| None | `None` | None preserves the existing Dynamo-specific default. Set explicitly for worker launchers that require or cannot tolerate child-process injection. |
-| `capture_range_end` | str | `'stop'` | Non-TRT-LLM behavior when cudaProfilerStop closes a capture range. |
+| `capture_range_end` | str | `'stop'` | Behavior when cudaProfilerStop closes an iteration-based capture range. |
 | `nsys_library_paths` | list[str] \| None | `None` | Optional paths prepended to LD_LIBRARY_PATH for the Nsight wrapper and profiled worker, for containers that do not discover the host libcuda. |
 | `prefill` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` | Phase-specific profiling step configs (not used for nsys-time) |
 | `decode` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` |  |

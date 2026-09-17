@@ -1181,6 +1181,10 @@ profiling:
   nsys_library_paths: ["/usr/local/cuda/compat"]
   extra_nsys_args: ["--stats=true"]
 
+  # Optional nsys flag overrides. Omit to keep backend-specific defaults.
+  cuda_graph_trace_mode: "node:host-only:nvtx-precapture"
+  sample_mode: "cpu"
+
   # Phase-specific profiling step configs
   prefill:
     start_step: 10                   # Step to start profiling
@@ -1200,14 +1204,24 @@ profiling:
 | Field | Type | Required | Default | Description |
 | ----- | ---- | -------- | ------- | ----------- |
 | `type` | string | No | "none" | Profiling type: "none", "nsys", "nsys-time", or "torch" |
-| `nsys_trace` | string | No | "cuda,nvtx" | Nsight activity domains for non-TRT-LLM workers |
+| `nsys_trace` | string | No | null | Nsight activity domains; null uses backend defaults |
 | `trace_fork_before_exec` | bool | No | null | Override non-TRT-LLM child-process tracing; null enables it for Dynamo only |
-| `capture_range_end` | string | No | "stop" | Non-TRT-LLM Nsight behavior when a CUDA profiler range ends |
+| `capture_range_end` | string | No | "stop" | Nsight behavior when an iteration-based CUDA profiler range ends |
 | `nsys_library_paths` | list[string] | No | null | Paths prepended to the worker `LD_LIBRARY_PATH` |
 | `extra_nsys_args` | list[string] | No | null | Extra args for `nsys profile` |
 | `prefill` | object | Disaggregated | null | Prefill phase config |
 | `decode` | object | Disaggregated | null | Decode phase config |
 | `aggregated` | object | Aggregated | null | Aggregated phase config (the `agg` role) |
+
+### Backend defaults for Nsight options
+
+For `nsys` and `nsys-time`, `nsys_trace: null` (or omission) uses `cuda,nvtx,ucx`
+on TRT-LLM and `cuda,nvtx` on other backends. An explicit `nsys_trace` applies to
+all backends. `cuda_graph_trace_mode` overrides `--cuda-graph-trace` (default `node`);
+`sample_mode` overrides `--sample` (default `none` on TRT-LLM, omitted elsewhere).
+Both new options default to null. `capture_range_end` applies to iteration-based
+capture on all backends and defaults to `stop`; time-based capture ignores it.
+
 
 ### ProfilingPhaseConfig
 
