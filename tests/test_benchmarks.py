@@ -1854,13 +1854,19 @@ class TestRunPostEval:
         assert env_to_set["MODEL_NAME"] == "test-model"
 
     def test_benchmark_env_passthrough(self):
-        """Eval-only substitution preserves the configured benchmark env."""
+        """Eval preserves JSON and shell literals, not just plain string values."""
+        import json
         import os
         import threading
         from unittest.mock import MagicMock, patch
 
         orch = self._make_orchestrator()
-        orch.config.benchmark.env["SRTCTL_LM_EVAL_RESULT_DIR"] = "/results/{job_id}/eval"
+        orch.config.benchmark.env.update(
+            {
+                "KV_OFFLOAD_BACKEND_METADATA": '{\n  "name": "cache", "capacity": 128\n}',
+                "CLIENT_LITERAL": "${HOME}/{unresolved}",
+            }
+        )
         stop = threading.Event()
 
         mock_proc = MagicMock()
@@ -1879,7 +1885,9 @@ class TestRunPostEval:
         ):
             orch._run_post_eval(stop)
 
-        assert captured_kwargs["env_to_set"]["SRTCTL_LM_EVAL_RESULT_DIR"] == "/results/12345/eval"
+        env = captured_kwargs["env_to_set"]
+        assert json.loads(env["KV_OFFLOAD_BACKEND_METADATA"]) == {"name": "cache", "capacity": 128}
+        assert env["CLIENT_LITERAL"] == "${HOME}/{unresolved}"
 
     def test_eval_conc_from_env(self):
         """EVAL_CONC from env takes priority over benchmark concurrencies."""
