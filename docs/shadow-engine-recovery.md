@@ -176,12 +176,24 @@ Validated on sa-b200 (one B200 node, two TP1 Qwen3-0.6B workers with one shadow 
 | Awake to registered: the frontend logs `added model` | 0.05 s |
 | SIGKILL to the frontend routing to the shadow | about 0.5 s; the test script saw `/health` with the new instance id at 7.5 s and 11.7 s in two runs, at its own poll granularity |
 | Frontend drops the dead instance's event publisher (lease expiry) | 10 s after the kill |
-| Killed engine relaunched: `Connected with rw_or_ro lock (granted=ro)`, `Read mode: imported 1.18 GiB` in 1 s, `init engine` 21.9 s (2.2 s compile, cache warm), parked | 49 s after the kill (5 s backoff) |
+| Killed engine relaunched in place: `Connected with rw_or_ro lock (granted=ro)`, `Read mode: imported 1.18 GiB` in 1 s (no load from disk), `init engine` 21.9 s, parked | 49 s after the kill (in-step relaunch, compile cache warm) |
 | Completions before, during (against the survivor), and after | all answered |
 
 `nvidia-smi` during the run: 78.5 GiB used of 183 GiB per GPU, of which each engine process holds 2.7 GiB (CUDA context, graphs, communicators) and the rest is the GMS-owned weights plus the serving engine's KV cache. The weights appear under neither process.
 
-A second cutover on the same job, killing engine 1 so the relaunched engine 0 (which had imported the weights read-only) took the lock back, behaved the same way. That run relaunched the dead engine through an in-step loop, since replaced by `roles.<role>.restart`; the cutover numbers do not depend on how the relaunch happens.
+A second cutover on the same job, killing engine 1 so the relaunched engine 0 (which had imported the weights read-only) took the lock back, behaved the same way.
+
+Job 16086 (same recipe plus `roles.agg.restart: {policy: always, backoff_seconds: 5}`, on a build that merges this branch with `roles.<role>.restart`) is the layout as merged: the `gms` service launched `service_gms_agg_0_<node>` and `service_gms_agg_1_<node>` (each ready 9 s after its start) before the engines, and the supervisor tracked four units (`agg_0`, `agg_0_e1`, `agg_1`, `agg_1_e1`).
+
+| Event | Observed |
+| --- | --- |
+| SIGKILL of engine 0 to the shadow active and registered | 0.4 s (lock 08:12:34.96, active 08:12:35.35) |
+| Supervisor notices the exit (monitor tick) and schedules the relaunch | 5 s after the exit: `Worker agg_0_<node> exited with code 137; relaunching agg_0 in 5s (restart 1/3)` |
+| Relaunched as `agg_0_<node>_r1`; the shadow's step untouched | 11 s later (5 s backoff plus the srun) |
+| Relaunched engine imports the weights from GMS (`granted=ro`, `imported 1.18 GiB`), `init engine` 34 s (13.5 s compile: a new step is a new container, so the compile cache is cold), parked | 95 s after the kill; `worker_restarts.json`: `outcome: ready, ready_seconds: 90.7`, crash log rotated to `<node>_agg_w0.out.1` |
+| Reverse cutover (kill engine 1; the relaunched engine 0 takes the lock; the supervisor relaunches engine 1 as `agg_0_<node>_e1_r1`) | same shape, both engines back |
+
+A relaunched engine pays the compile again because each srun step is a fresh container. Mounting a persistent `TORCHINDUCTOR_CACHE_DIR` / `VLLM_CACHE_ROOT` through `container_mounts` brings the relaunch close to the in-step number above.
 
 ## Limitations
 
