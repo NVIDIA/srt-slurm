@@ -34,14 +34,17 @@ logger = logging.getLogger(__name__)
 WORKER_TERMINATE_TIMEOUT_SECONDS = 30.0
 
 
-def worker_step_name(mode: str, index: int, node: str, attempt: int = 0) -> str:
+def worker_step_name(mode: str, index: int, node: str, attempt: int = 0, engine_id: int = 0) -> str:
     """The Slurm step name (and registry name) of a worker step.
 
-    ``attempt`` is the supervisor's relaunch count; a relaunched step carries an
-    ``_r<n>`` suffix so ``squeue --steps`` can never confuse it with a lingering
-    step of the life it replaces.
+    ``engine_id`` > 0 is a shadow engine of the worker (vLLM ``engine.failover``)
+    and adds ``_e<k>``. ``attempt`` is the supervisor's relaunch count; a
+    relaunched step carries an ``_r<n>`` suffix so ``squeue --steps`` can never
+    confuse it with a lingering step of the life it replaces.
     """
     name = f"{mode}_{index}_{node}"
+    if engine_id:
+        name = f"{name}_e{engine_id}"
     return f"{name}_r{attempt}" if attempt else name
 
 
@@ -296,7 +299,7 @@ class WorkerStageMixin:
         endpoint_nodes = {endpoint_process.node for endpoint_process in endpoint_processes}
         env_to_unset = ["VLLM_PORT"] if self.backend.type == "vllm" and len(endpoint_nodes) > 1 else None
 
-        step_name = worker_step_name(mode, index, process.node, attempt)
+        step_name = worker_step_name(mode, index, process.node, attempt, getattr(process, "engine_id", 0))
         proc = start_srun_process(
             command=cmd,
             nodelist=[process.node],
@@ -525,10 +528,15 @@ class WorkerStageMixin:
             raise RuntimeError(f"Sequential node start: worker on {leader.node}:{port} did not become healthy")
 
     def worker_endpoint_groups(self) -> dict[EndpointKey, list["Process"]]:
-        """The physical processes of every logical worker, keyed by ``(mode, index)``, in launch order."""
+        """The physical processes of every restart unit, keyed by ``(mode, index, engine)``, in launch order.
+
+        The engine is 0 for every process unless the backend runs shadow engines
+        (vLLM ``engine.failover``), whose processes carry ``engine_id``; each
+        engine of a worker is launched, supervised, and relaunched on its own.
+        """
         grouped: dict[EndpointKey, list[Process]] = defaultdict(list)
         for process in self.backend_processes:
-            grouped[(process.endpoint_mode, process.endpoint_index)].append(process)
+            grouped[(process.endpoint_mode, process.endpoint_index, getattr(process, "engine_id", 0))].append(process)
         return dict(grouped)
 
     def relaunch_endpoint(self, endpoint_processes: list["Process"], *, attempt: int) -> list[ManagedProcess]:

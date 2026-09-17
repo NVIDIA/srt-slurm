@@ -393,7 +393,7 @@ def test_track_workers_supervises_only_roles_with_a_restart_policy(tmp_path: Pat
 
     assert worker_procs["decode_0_node-a"].supervised is True
     assert worker_procs["prefill_0_node-a"].supervised is False
-    assert stage.worker_endpoint_groups() == {("prefill", 0): [prefill], ("decode", 0): [decode]}
+    assert stage.worker_endpoint_groups() == {("prefill", 0, 0): [prefill], ("decode", 0, 0): [decode]}
 
 
 def test_sglang_workers_skip_the_post_sigterm_crash_diagnostics_by_default(tmp_path: Path) -> None:

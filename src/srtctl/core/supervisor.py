@@ -53,8 +53,13 @@ logger = logging.getLogger(__name__)
 
 WORKER_RESTARTS_FILENAME = "worker_restarts.json"
 
-# (mode, index): one logical worker, possibly spanning several processes/nodes.
-EndpointKey = tuple[str, int]
+# (mode, index, engine): one restart unit, possibly spanning several processes/nodes.
+# The engine is 0 for every worker except under vLLM shadow engine recovery
+# (``engine.failover``), where a worker's standby engines are separate
+# torch.distributed jobs on the same GPUs and each is relaunched on its own:
+# the engine that just took over must not be stopped with the one that died.
+# ``track`` also accepts the two-tuple ``(mode, index)`` as engine 0.
+EndpointKey = tuple[str, int, int]
 
 
 class WorkerLauncher(Protocol):
@@ -91,6 +96,12 @@ class RestartEvent:
     ready_at: str | None = None
     ready_seconds: float | None = None
     crash_log: str | None = None
+    engine: int = 0  # which engine of the worker (0 unless shadow engines are in play)
+
+
+def _label(key: EndpointKey) -> str:
+    mode, index, engine = key
+    return f"{mode}_{index}" + (f"_e{engine}" if engine else "")
 
 
 @dataclass
@@ -110,7 +121,8 @@ class _EndpointState:
 
     @property
     def label(self) -> str:
-        return f"{self.key[0]}_{self.key[1]}"
+        mode, index, engine = self.key
+        return f"{mode}_{index}" + (f"_e{engine}" if engine else "")
 
 
 class WorkerSupervisor:
@@ -150,27 +162,34 @@ class WorkerSupervisor:
 
     def track(
         self,
-        groups: dict[EndpointKey, list[Process]],
+        groups: dict[tuple, list[Process]],
         worker_names: Iterable[str],
         policy_for: Callable[[str], RestartPolicy],
     ) -> None:
         """Adopt the endpoints of roles with a restart policy; others are left to the registry.
 
         ``worker_names`` are the registry names ``start_all_workers`` produced
-        (``<mode>_<index>_<node>``); the ones belonging to a tracked endpoint are
-        flagged ``supervised`` so ``check_failures`` leaves their exits to us.
+        (``<mode>_<index>_<node>``, plus ``_e<k>`` for a shadow engine); the ones
+        belonging to a tracked unit are flagged ``supervised`` so ``check_failures``
+        leaves their exits to us. A step belongs to the unit whose processes name
+        it exactly, so ``decode_1_...`` never claims ``decode_10_...`` and engine 0
+        never claims its shadows.
         """
-        names = list(worker_names)
+        from srtctl.cli.mixins.worker_stage import worker_step_name
+
+        names = set(worker_names)
         with self._lock:
-            for key, processes in groups.items():
-                mode, index = key
+            for raw_key, processes in groups.items():
+                mode, index, *rest = raw_key
+                engine = int(rest[0]) if rest else 0
+                key: EndpointKey = (mode, index, engine)
                 policy = policy_for(mode)
                 if not policy.enabled:
                     continue
-                prefix = f"{mode}_{index}_"
-                mine = [name for name in names if name.startswith(prefix)]
+                expected = {worker_step_name(mode, index, process.node, engine_id=engine) for process in processes}
+                mine = sorted(names & expected)
                 if not mine:
-                    logger.warning("Worker supervisor: no registered steps found for %s_%d", mode, index)
+                    logger.warning("Worker supervisor: no registered steps found for %s", _label(key))
                     continue
                 for name in mine:
                     proc = self.registry.get_process(name)
@@ -178,9 +197,8 @@ class WorkerSupervisor:
                         proc.supervised = True
                 self._endpoints[key] = _EndpointState(key=key, processes=list(processes), policy=policy, names=mine)
                 logger.info(
-                    "Worker supervisor: %s_%d restart policy %s (max %d, backoff %.0fs..%.0fs)",
-                    mode,
-                    index,
+                    "Worker supervisor: %s restart policy %s (max %d, backoff %.0fs..%.0fs)",
+                    _label(key),
                     policy.policy,
                     policy.max_restarts,
                     policy.backoff_seconds,
@@ -290,6 +308,7 @@ class WorkerSupervisor:
                     index=state.key[1],
                     node=trigger.node,
                     attempt=state.restarts + 1,
+                    engine=state.key[2],
                     exit_code=exit_code,
                     exited_at=_now_iso(),
                     outcome="exhausted",
@@ -325,6 +344,7 @@ class WorkerSupervisor:
             index=state.key[1],
             node=trigger.node,
             attempt=state.restarts,
+            engine=state.key[2],
             exit_code=exit_code,
             exited_at=_now_iso(),
             backoff_seconds=delay,
