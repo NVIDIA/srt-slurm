@@ -188,6 +188,7 @@ mkdir -p "$result_dir"
 # Start profiling before benchmark
 start_all_profiling
 
+benchmark_exit_code=0
 for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
     if [ "$NUM_WARMUP_MULT" -gt 0 ]; then
@@ -207,7 +208,11 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
             --trust-remote-code \
             "${HTTP_CONNECTION_ARGS[@]}" \
             "${CHAT_TEMPLATE_ARGS[@]}" \
-            "${CUSTOM_TOKENIZER_ARGS[@]}"
+            "${CUSTOM_TOKENIZER_ARGS[@]}" || benchmark_exit_code=$?
+        if [[ "$benchmark_exit_code" != 0 ]]; then
+            echo "SA-Bench warmup failed at concurrency $concurrency (rc=$benchmark_exit_code)" >&2
+            break
+        fi
     fi
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
@@ -241,8 +246,12 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         "${CUSTOM_TOKENIZER_ARGS[@]}" \
         "${SLOW_DOWN_ARGS[@]}" \
         "${SLOW_DOWN_EXTRA[@]}" \
-        --save-result --result-dir "$result_dir" --result-filename "$result_filename"
+        --save-result --result-dir "$result_dir" --result-filename "$result_filename" || benchmark_exit_code=$?
     set +x
+    if [[ "$benchmark_exit_code" != 0 ]]; then
+        echo "SA-Bench failed at concurrency $concurrency (rc=$benchmark_exit_code); diagnostics remain in $result_dir" >&2
+        break
+    fi
 
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
     echo "Completed benchmark with concurrency: $concurrency"
@@ -251,4 +260,5 @@ done
 
 stop_all_profiling
 
-echo "SA-Bench complete. Results in $result_dir"
+echo "SA-Bench finished (rc=$benchmark_exit_code). Results in $result_dir"
+exit "$benchmark_exit_code"
