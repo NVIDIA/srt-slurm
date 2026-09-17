@@ -64,6 +64,11 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def placeholder_name(job_id: str) -> str:
+    """The job_name a row gets when a PUT arrives for a job the collector never saw a POST for."""
+    return f"job-{job_id}"
+
+
 def _decode_job(row: sqlite3.Row) -> dict[str, Any]:
     job = dict(row)
     for key in _JSON_COLUMNS:
@@ -129,16 +134,45 @@ class StatusStore:
     ) -> dict[str, Any]:
         """Insert a job in ``submitted`` state (``POST /api/jobs``).
 
-        Idempotent: a repeated POST leaves the row alone and returns its current
-        status, so a retried submit never rewinds a job that has moved on.
-        Returns ``{"job_id", "status", "created"}``.
+        Idempotent on status: a repeated POST never rewinds a job that has moved
+        on. It does complete the row's identity, though: a placeholder name (the
+        row was created by a PUT because the submit-time POST was lost) is
+        replaced, a null ``cluster`` or ``recipe`` is filled, ``submitted_at`` is
+        moved earlier to the real submit time (never later: a placeholder's value
+        is the start time, and a late POST stamped "now" must not reset a running
+        job's elapsed time), and ``metadata`` is merged. Existing non-null identity
+        is never overwritten.
+        Returns ``{"job_id", "status", "created", "backfilled"}``.
         """
         now = now_iso()
         submitted = submitted_at or now
         with self._transaction() as conn:
-            existing = conn.execute("SELECT status FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT status, job_name, cluster, recipe, metadata, submitted_at FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
             if existing is not None:
-                return {"job_id": job_id, "status": existing["status"], "created": False}
+                fields: dict[str, Any] = {}
+                if existing["job_name"] == placeholder_name(job_id):
+                    fields["job_name"] = job_name
+                if submitted < existing["submitted_at"]:  # ISO-8601 Z strings order lexically
+                    fields["submitted_at"] = submitted
+                if existing["cluster"] is None and cluster:
+                    fields["cluster"] = cluster
+                if existing["recipe"] is None and recipe:
+                    fields["recipe"] = recipe
+                if metadata:
+                    fields["metadata"] = _merge_json(existing["metadata"], metadata)
+                if fields:
+                    fields["updated_at"] = now
+                    assignments = ", ".join(f"{column} = ?" for column in fields)
+                    conn.execute(f"UPDATE jobs SET {assignments} WHERE job_id = ?", (*fields.values(), job_id))
+                return {
+                    "job_id": job_id,
+                    "status": existing["status"],
+                    "created": False,
+                    "backfilled": bool(fields),
+                }
             conn.execute(
                 """
                 INSERT INTO jobs (job_id, job_name, cluster, recipe, status, submitted_at, updated_at, metadata)
@@ -159,13 +193,16 @@ class StatusStore:
                 "INSERT INTO job_events (job_id, status, created_at) VALUES (?, ?, ?)",
                 (job_id, JobStatus.SUBMITTED.value, submitted),
             )
-        return {"job_id": job_id, "status": JobStatus.SUBMITTED.value, "created": True}
+        return {"job_id": job_id, "status": JobStatus.SUBMITTED.value, "created": True, "backfilled": False}
 
     def update_job(self, job_id: str, update: dict[str, Any]) -> dict[str, Any]:
         """Apply a validated ``PUT /api/jobs/{job_id}`` body.
 
         An unknown job gets a placeholder row, so a sweep whose submit-time POST
         was lost (collector down, network blip) still lands every later update.
+        The reporter repeats the job's identity in the started report's
+        ``metadata`` (``job_name``, ``cluster``); a placeholder name and a null
+        cluster are filled from it, so a lost POST costs nothing visible.
         ``artifacts`` and ``metadata`` are merged key-wise into the stored dicts;
         every other field overwrites.
 
@@ -181,8 +218,14 @@ class StatusStore:
         message = update.get("message")
         now = update.get("updated_at") or now_iso()
 
+        identity = update.get("metadata") or {}
+        identity_name = identity.get("job_name") or None
+        identity_cluster = identity.get("cluster") or None
+
         with self._transaction() as conn:
-            row = conn.execute("SELECT artifacts, metadata FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT artifacts, metadata, job_name, cluster FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
 
             fields: dict[str, Any] = {"status": status, "updated_at": now}
             for key in _SCALAR_UPDATE_COLUMNS:
@@ -193,10 +236,15 @@ class StatusStore:
             for key in ("artifacts", "metadata"):
                 if update.get(key) is not None:
                     fields[key] = _merge_json(row[key] if row is not None else None, update[key])
+            # Fill identity a lost POST would have supplied; never overwrite a real name or cluster.
+            if identity_name and (row is None or row["job_name"] == placeholder_name(job_id)):
+                fields["job_name"] = identity_name
+            if identity_cluster and (row is None or row["cluster"] is None):
+                fields["cluster"] = identity_cluster
 
             if row is None:
                 fields["job_id"] = job_id
-                fields["job_name"] = f"job-{job_id}"
+                fields.setdefault("job_name", placeholder_name(job_id))
                 fields["submitted_at"] = update.get("started_at") or now
                 columns = ", ".join(fields)
                 marks = ", ".join("?" * len(fields))

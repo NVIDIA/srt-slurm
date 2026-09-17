@@ -104,6 +104,11 @@ def test_legacy_reference_documents_every_v1_key() -> None:
         assert f"`backend.type: {type_name}`" in text
 
 
+def test_mooncake_device_mapping_is_documented_as_a_v2_service_option() -> None:
+    assert "device_names_by_gpu" in _section(render_schema_reference(), "ServiceConfig")
+    assert "device_names_by_gpu" not in render_legacy_reference()
+
+
 def test_every_documented_legacy_key_is_rewritten_by_migrate() -> None:
     """LEGACY_FIELDS is the doc partition; the migrator is the behavior. They must agree."""
     v1 = """

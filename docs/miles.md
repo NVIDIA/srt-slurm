@@ -50,7 +50,13 @@ model: { path: "qwen3-4b", container: "miles", precision: "bf16" }
 resources: { gpu_type: "b200", gpus_per_node: 8 }
 frontend: { type: none }
 services:
-  - { name: train, type: ray, nodes: 2, preamble: "cd /root/miles" }
+  - name: train                              # the Ray cluster; owns the job's two nodes
+    type: ray
+    nodes: 2
+    preamble: "cd /root/miles"
+    metrics:                                 # both on the Ray head; see Engine metrics
+      - { name: miles, port: 9090, nodes: first }
+      - { name: engines, port: 31000, path: /engine_metrics, nodes: first }
 benchmark:
   type: custom
   command: /benchmarks/rl/miles/launch.sh
@@ -61,15 +67,18 @@ benchmark:
     MILES_SCRIPT_DATA_DIR: /data/datasets
     MILES_SCRIPT_OUTPUT_DIR: /data/miles-runs/qwen3-4b-grpo
     MILES_SCRIPT_ENABLE_EVAL: "true"
-    MILES_SCRIPT_EXTRA_ARGS: "--num-rollout 20 --colocate --actor-num-nodes 2 --actor-num-gpus-per-node 8 --rollout-num-gpus-per-engine 2"
+    MILES_SCRIPT_EXTRA_ARGS: >-
+      --num-rollout 20 --colocate --actor-num-nodes 2 --actor-num-gpus-per-node 8 --rollout-num-gpus-per-engine 2
+      --sglang-router-port 31000 --use-prometheus --prometheus-port 9090 --prometheus-run-name qwen3-4b-grpo
 extra_mount:
   - "/data/models:/data/models"
   - "/data/datasets:/data/datasets"
   - "/data/miles-runs:/data/miles-runs"
 environment: { NCCL_SOCKET_IFNAME: bond0 }
+observability: { tachometer: { enabled: true } }
 ```
 
-`frontend.type: none` says there is no router and no worker-count health gate; the services' own probes are the only gate. `services[].nodes` on the ray service is the node count of the job: with no engine roles, the service that owns the nodes sets the allocation size. The directories Miles reads and writes are host paths, so they are mounted at the same path into every step with `extra_mount`; the raylets need them because the trainer and engines run there.
+`frontend.type: none` says there is no router and no worker-count health gate; the services' own probes are the only gate. `services[].nodes` on the ray service is the node count of the job: with no engine roles, the service that owns the nodes sets the allocation size. The directories Miles reads and writes are host paths, so they are mounted at the same path into every step with `extra_mount`; the raylets need them because the trainer and engines run there. The `metrics` list on the ray service is what puts Miles's own rewards and timers and the engines' KV usage into tachometer's parquet next to the GPU telemetry; see [Engine metrics](#engine-metrics).
 
 `examples/miles/qwen3-4b-grpo.yaml` is a runnable version.
 
@@ -154,6 +163,29 @@ Whether a provider works from a SLURM cluster depends on which direction the tra
 | Sandbox-hosted agent: a coding agent runs inside the sandbox and calls the policy through Miles's session server or router | sandbox to a compute node's fabric IP, inbound | Only if that endpoint is reachable from the sandbox: a route back from a Kubernetes AgentENV, or an ingress or tunnel for SaaS sandboxes. Miles's `--pin-rollout-manager-to-head` exists for the Kubernetes version of this |
 
 Before calling a recipe ready, check that its connector's Python dependencies are in the image. Miles's Harbor connector imports `harbor`, which its own README installs separately, so it may not be in `radixark/miles:latest`; steps run read-only containers, so the fix is a derived squashfs with the connector installed, or a venv on the shared filesystem added to `PYTHONPATH` in the ray service `preamble`. Per-task sandboxes hosted on the SLURM cluster itself are a different matter: pyxis containers have no Docker daemon, so that needs a daemonless provider such as an enroot-based sandbox service or rootless podman, which nothing here provides yet.
+
+## Engine metrics
+
+Miles's telemetry surfaces are all fixed-port endpoints on the Ray head once the recipe pins them, so a `metrics` list on the `ray` service is the whole integration; tachometer scrapes them like any other service (see [services.md](services.md#metrics)).
+
+- **The engines, through the router.** Miles picks its SGLang engines' ports at runtime, but its default router, the sgl-model-gateway, serves `GET /engine_metrics`: the metrics of every registered engine, each sample labeled `worker_addr`. Pin the router with `--sglang-router-port` and scrape that. Names arrive normalized by the router (`sglang_num_running_reqs` rather than `sglang:num_running_reqs`).
+- **Miles's training collector.** With `--use-prometheus` Miles runs a collector actor pinned to the driver node, the Ray head, that serves `miles_metric_*` gauges (rollout rewards, response lengths, actor and rollout timers, MFU) on `--prometheus-port`, 9090 by default, labeled `run_name`.
+
+```yaml
+services:
+  - name: train
+    type: ray
+    nodes: 2
+    metrics:
+      - { name: miles, port: 9090, nodes: first }                          # miles_metric_*
+      - { name: engines, port: 31000, path: /engine_metrics, nodes: first }  # sglang_* per engine, worker_addr label
+benchmark:
+  env:
+    MILES_SCRIPT_EXTRA_ARGS: "... --sglang-router-port 31000 --use-prometheus --prometheus-port 9090 --prometheus-run-name qwen3-4b-grpo"
+```
+
+`nodes: first` scrapes only the service's first node, the head; the rows land as endpoints `miles_<head>` and `engines_<head>` with `service=train`. Both endpoints appear a few minutes into the job, once Miles has started the router and the collector, so the scraper logs failures until then. On sa-b200 (job 15881, Qwen3-4B GSM8K smoke, four TP2 engines) the parquet held 83 `miles_metric_*` families and 71 `sglang_*` families per engine at one-second resolution; KV usage peaked at about a quarter of the pool per engine and dropped to zero during training steps.
+
 
 ## Gotchas
 

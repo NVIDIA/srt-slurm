@@ -24,7 +24,7 @@ from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
-from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, generate_tachometer_config
+from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, ServiceMetricsTarget, generate_tachometer_config
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -536,25 +536,61 @@ class TelemetryStageMixin:
             return router_metrics_port(self.config.frontend.args)
         return None
 
-    def _exporter_service_nodes(self) -> list[str]:
-        """Nodes hosting the dcgm and node exporter services, in allocation order.
+    def _service_metrics_targets(self) -> list[ServiceMetricsTarget]:
+        """One tachometer target per node for every service that serves metrics.
 
-        The scrape targets used to follow backend ranks only. A services-only job
-        (a Ray cluster driving a trainer) has none, but its exporters still run
-        wherever ``services[].placement`` put them (job 15414 scraped nothing).
-        ``service_nodes`` comes from ServiceStageMixin on the orchestrator.
+        The service's ``metrics`` block, or its kind's default (the exporters),
+        names the port and path; ``service_nodes`` (ServiceStageMixin) resolves
+        the nodes, pools included. External services launch nothing here.
         """
         from srtctl.services.implicit import effective_services
+        from srtctl.services.registry import get_service_kind
 
         service_nodes = getattr(self, "service_nodes", None)
         if service_nodes is None:
             return []
-        seen: dict[str, None] = {}
+        targets: list[ServiceMetricsTarget] = []
         for entry in effective_services(self.config):
-            if entry.service.type in ("dcgm-exporter", "node-exporter") and entry.service.enabled:
-                for node in service_nodes(entry.service):
-                    seen.setdefault(node, None)
-        return list(seen)
+            service = entry.service
+            if not service.enabled or service.external:
+                continue
+            kind = get_service_kind(service.type)
+            endpoints = kind.metrics(service)
+            if not endpoints:
+                continue
+            all_nodes = service_nodes(service)
+            for endpoint in endpoints:
+                nodes = all_nodes[:1] if endpoint.nodes == "first" else all_nodes
+                for node in nodes:
+                    targets.append(
+                        ServiceMetricsTarget(
+                            service=service.name,
+                            node=node,
+                            url=f"http://{node}:{endpoint.port}{endpoint.path}",
+                            filter=kind.metrics_filter,
+                            endpoint=endpoint.name or kind.metrics_endpoint_prefix,
+                            gpu_metadata=kind.metrics_gpu_metadata,
+                        )
+                    )
+        return targets
+
+    def _power_dcgm_targets(self) -> list[ServiceMetricsTarget]:
+        """DCGM targets when power telemetry runs its own exporter (no implied dcgm-exporter service)."""
+        power = self.config.telemetry
+        if not (power.enabled and power.dcgm_exporter is not None):
+            return []
+        nodes = sorted({process.node for process in self.backend_processes})
+        return [
+            ServiceMetricsTarget(
+                service="dcgm-exporter",
+                node=node,
+                url=f"http://{node}:{power.dcgm_exporter.port}/metrics",
+                filter="dcgm",
+                endpoint="dcgm",
+                gpu_metadata=True,
+            )
+            for node in nodes
+        ]
 
     def start_tachometer(self) -> list[ManagedProcess]:
         """Start Tachometer collection unless explicitly disabled."""
@@ -567,8 +603,6 @@ class TelemetryStageMixin:
         logger.info("Starting Tachometer")
 
         power_telemetry = self.config.telemetry
-        shares_dcgm_exporter = power_telemetry.enabled and power_telemetry.dcgm_exporter is not None
-        dcgm_exporter = power_telemetry.dcgm_exporter if shares_dcgm_exporter else tachometer.resolved_dcgm_exporter
         topology = self._compute_frontend_topology()
         config_path = self.runtime.log_dir / "tachometer_config.toml"
         config_path.write_text(
@@ -577,10 +611,9 @@ class TelemetryStageMixin:
                 frontend_topology=topology,
                 runtime=self.runtime,
                 tachometer=tachometer,
-                dcgm_exporter=dcgm_exporter,
                 frontend_type=self.config.frontend.type,
                 frontend_metrics_port=self._frontend_metrics_port(),
-                exporter_nodes=self._exporter_service_nodes(),
+                service_targets=[*self._service_metrics_targets(), *self._power_dcgm_targets()],
             )
         )
 

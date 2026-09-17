@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
+from srtctl.services.config import ServiceMetricsConfig
 from srtctl.services.registry import ServiceKind, ServiceLaunchContext, register_service
 
 if TYPE_CHECKING:
@@ -161,11 +162,23 @@ class _ExporterKind(ServiceKind):
     default_placement = "workers"
     use_bash_wrapper = False
     option_keys = ("port", "collect_interval_ms")
+    default_port: ClassVar[int] = 0
+
+    def metrics(self, service: ServiceConfig) -> list[ServiceMetricsConfig]:
+        """Exporters exist to be scraped: ``options.port`` (or the kind's default) at ``/metrics``."""
+        if service.metrics:
+            return list(service.metrics)
+        return [ServiceMetricsConfig(port=int(service.options.get("port", self.default_port)))]
 
 
 @register_service("dcgm-exporter")
 class DcgmExporterService(_ExporterKind):
     """NVIDIA DCGM exporter; samples NVML as often as tachometer scrapes (``options.collect_interval_ms``)."""
+
+    default_port = DCGM_EXPORTER_PORT
+    metrics_filter = "dcgm"
+    metrics_endpoint_prefix = "dcgm"
+    metrics_gpu_metadata = True
 
     def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
         if service.command is not None:
@@ -181,6 +194,10 @@ class DcgmExporterService(_ExporterKind):
 @register_service("node-exporter")
 class NodeExporterService(_ExporterKind):
     """Prometheus node exporter with the CPU, InfiniBand, memory, process-state, and pressure collectors."""
+
+    default_port = NODE_EXPORTER_PORT
+    metrics_filter = "node_exporter"
+    metrics_endpoint_prefix = "node_exporter"
 
     def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
         if service.command is not None:
@@ -207,6 +224,9 @@ class ProcessExporterService(_ExporterKind):
     unless the service declares a ``container``, in which case the image's
     ``/bin/process-exporter`` runs with the group file reached through ``/logs``.
     """
+
+    default_port = PROCESS_EXPORTER_PORT
+    metrics_endpoint_prefix = "process_exporter"
 
     default_placement = "all"
     option_keys = ("port", "binary")

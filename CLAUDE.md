@@ -142,6 +142,7 @@ create_job_record(
 - Job execution is never blocked by status reporting
 - Tags are passed via `metadata["tags"]` (not a separate field)
 - `metadata["log_dir"]` (from `report_started`) is the run's log directory on the cluster filesystem; `logs_url` is only set when `reporting.s3` uploads it
+- `report_started` also repeats `job_name` and `cluster` in `metadata`: the submit-time POST is one attempt (now two) from the login node, and when it is lost the collector's placeholder row (`job-<id>`) takes its identity from the started report; a late POST fills whatever is still null, only ever moves `submitted_at` earlier, and never rewinds status; every reporter request gets two attempts
 - `reporting.s3` uploads follow a policy (`DEFAULT_S3_EXCLUDE` / `DEFAULT_S3_ARCHIVE` in `core/schema.py`): aiperf's per-interval metrics scrapes, `perf_dashboard_bundle/` and `perf_dashboard.json` are skipped (tachometer parquet holds the same series; a 2 GB run becomes about 60 MB), aiperf's per-request `profile_export.jsonl` is packed into `bundle.tar.zst` by the inline `ARCHIVE_SCRIPT` in `postprocess_stage.py`, which runs in the plain `python:3.11` upload container (stdlib + optional `zstandard`, xz fallback). Change the policy in the schema constants and `docs/config-reference.md` together
 - Auth is a bearer token read from `$SRTCTL_STATUS_TOKEN` on both sides (`reporting.status.token_env` renames the variable). Never add a literal token field: `SrtConfig.Schema().dump` lands in the lockfile and resolved configs are copied into `logs/` and synced to S3. The reporter never follows redirects and warns on 3xx/401/403; the server refuses to listen beyond loopback without a token unless `--allow-unauthenticated`
 
@@ -217,6 +218,8 @@ services:
 ```
 
 Adding a kind: subclass `ServiceKind`, set `default_command` / `default_start` / `default_critical`, override `validate`, `container_fallback`, `default_environment`, `forced_environment` as needed, decorate, and import it from `src/srtctl/services/__init__.py`. `srtctl dry-run` prints every service; add a `tests/test_dry_run.py` case when a kind adds visible fields.
+
+**Metrics.** A service that serves Prometheus metrics declares `metrics: {port, path, nodes, name}` or a list of them (the scrape annotation; `nodes: first` for a cluster head, `name` required with several endpoints); `TelemetryStageMixin._service_metrics_targets` turns every endpoint into one tachometer target per node it runs on (`ServiceMetricsTarget`, endpoint `<name>_<node>`, name defaulting to the service). Kinds that always publish return their default from `ServiceKind.metrics()` and set `metrics_filter` / `metrics_endpoint_prefix` / `metrics_gpu_metadata`; the dcgm, node and process exporters are scraped this way (`core/telemetry.py` has no exporter special case left; only workers and the frontend keep their own target logic).
 
 ### Pools and services-only jobs
 

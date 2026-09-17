@@ -26,6 +26,8 @@ from srtctl.core.cpu_power import (
     format_local_timestamp,
 )
 from srtctl.core.cpu_power_session import CpuPowerSessionSettings, CpuPowerTelemetrySession
+from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES
+from srtctl.core.power.cpu_sample import CpuSample, RailReading
 
 
 def _make_acpi_sensor(
@@ -135,6 +137,32 @@ def test_acpi_reader_collects_breakdowns_without_double_counting_total(tmp_path:
         "soc",
         "dram",
     }
+    # The reader only classifies; the shared pivot builds one CpuSample per
+    # socket whose power_w is the total envelope and whose component rails
+    # ride along without ever standing in for it.
+    assert reader.classify_readings(readings)[:2] == [
+        RailReading(0, "total", "CPU0:cpuSidePowerUsageW", 150.0),
+        RailReading(0, "cpu_rail", "CPU0:cpuRailPowerUsageW", 70.0),
+    ]
+    samples = reader.socket_samples(readings)
+    assert [(s.source, s.socket_id, s.sensor, s.power_w, s.rails) for s in samples] == [
+        ("acpi", 0, "CPU0:cpuSidePowerUsageW", 150.0, {"cpu_rail": 70.0, "soc": 6.0, "dram": 8.0}),
+        ("acpi", 1, "CPU1:cpuSidePowerUsageW", 160.0, {"cpu_rail": 75.0, "soc": 7.0, "dram": 9.0}),
+    ]
+    assert all(isinstance(s, CpuSample) for s in samples)
+
+
+def test_acpi_socket_samples_drop_a_socket_whose_total_failed_to_read(tmp_path: Path) -> None:
+    """A component rail must never be published as a socket's power_w."""
+    _make_acpi_sensor(tmp_path, hwmon_id=0, socket_id=0, microwatts=150_000_000, domain="Grace Power Socket 0")
+    _make_acpi_sensor(tmp_path, hwmon_id=1, socket_id=0, microwatts=70_000_000, domain="CPU Power Socket 0")
+    reader = AcpiPowerMeterReader(tmp_path)
+
+    readings = reader.read_watts()
+    readings["CPU0:cpuSidePowerUsageW"] = None  # simulate a failed sysfs read of the envelope
+
+    assert reader.socket_samples(readings) == ()
+    assert reader.aggregate_watts(readings) is None  # and no partial node total either
 
 
 def test_acpi_reader_collects_input_power_naming_variants(tmp_path: Path) -> None:
@@ -330,16 +358,23 @@ def _fake_value(entity_id: int, field_id: int, dbl: float) -> object:
     return types.SimpleNamespace(entityId=entity_id, fieldId=field_id, status=0, value=types.SimpleNamespace(dbl=dbl))
 
 
-def test_samples_header_pins_utilization_columns_after_v2() -> None:
-    assert SAMPLES_SCHEMA_VERSION == 3
-    assert SAMPLES_HEADER[: len(SAMPLES_HEADER_V2)] == SAMPLES_HEADER_V2
-    assert SAMPLES_HEADER[len(SAMPLES_HEADER_V2) :] == UTILIZATION_COLUMNS
+def test_samples_header_pins_wide_socket_layout() -> None:
+    """v4: one row per socket; rails as columns between power_w and total_power_w."""
+    assert SAMPLES_SCHEMA_VERSION == 4
+    assert RAIL_COLUMN_NAMES == ("cpu_rail_w", "soc_w", "dram_w")
+    expected = (
+        *SAMPLES_HEADER_V2[:8],  # ... through power_w
+        *RAIL_COLUMN_NAMES,
+        "total_power_w",
+        *UTILIZATION_COLUMNS,
+    )
+    assert expected == SAMPLES_HEADER
     assert UTILIZATION_COLUMNS == ("cpu_util_total", "cpu_util_user", "cpu_util_nice", "cpu_util_sys", "cpu_util_irq")
     assert [field.field_id for field in CPU_UTILIZATION_FIELDS] == [1100, 1101, 1102, 1103, 1104]
 
 
 class _FakeReader(cpu_power.CpuPowerReader):
-    source_name = "fake"
+    source_name = "acpi"  # must be a real origin: it decides which rail kind is the socket's power
 
     def __init__(self, utilization: dict[int, dict[str, float]] | None = None) -> None:
         self._utilization = utilization or {}
@@ -350,8 +385,12 @@ class _FakeReader(cpu_power.CpuPowerReader):
     def read_utilization(self) -> dict[int, dict[str, float]]:
         return self._utilization
 
-    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
-        return sum(watts for watts in readings.values() if watts is not None)
+    def classify_readings(self, readings: dict[str, float | None]) -> list[RailReading]:
+        return [
+            RailReading(0, "total", "CPU0:cpuSidePowerUsageW", 100.0),
+            RailReading(0, "cpu_rail", "CPU0:cpuRailPowerUsageW", 60.0),
+            RailReading(1, "total", "CPU1:cpuSidePowerUsageW", 110.0),
+        ]
 
     def metadata(self) -> dict[str, object]:
         return {"source": self.source_name}
@@ -386,13 +425,18 @@ def test_collect_writes_socket_utilization_columns(monkeypatch: pytest.MonkeyPat
         rows = list(csv.DictReader(handle))
     assert list(rows[0].keys()) == list(SAMPLES_HEADER)
     assert [row["socket_id"] for row in rows] == ["0", "1"]
-    assert rows[0]["schema_version"] == "3"
+    assert rows[0]["schema_version"] == "4"
+    assert [row["power_w"] for row in rows] == ["100.0", "110.0"]
+    assert [row["total_power_w"] for row in rows] == ["210.0", "210.0"]
+    assert rows[0]["cpu_rail_w"] == "60.0"
+    assert rows[0]["soc_w"] == "" and rows[0]["dram_w"] == ""
+    assert all(rows[1][column] == "" for column in RAIL_COLUMN_NAMES)
     assert rows[0]["cpu_util_total"] == "0.5"
     assert rows[0]["cpu_util_sys"] == "0.1"
     assert rows[0]["cpu_util_user"] == ""
     assert all(rows[1][column] == "" for column in UTILIZATION_COLUMNS)
     metadata = json.loads(csv_path.with_name("node-a.metadata.json").read_text())
-    assert metadata["schema_version"] == 3
+    assert metadata["schema_version"] == 4
 
 
 def test_collect_leaves_utilization_blank_without_a_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -422,7 +466,8 @@ def _write_node_csv(path: Path, hostname: str, timestamp: float, watts: float) -
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(SAMPLES_HEADER)
-        blanks = ("",) * len(UTILIZATION_COLUMNS)
+        rail_blanks = ("",) * len(RAIL_COLUMN_NAMES)
+        util_blanks = ("",) * len(UTILIZATION_COLUMNS)
         writer.writerow(
             (
                 SAMPLES_SCHEMA_VERSION,
@@ -430,12 +475,13 @@ def _write_node_csv(path: Path, hostname: str, timestamp: float, watts: float) -
                 timestamp_local,
                 hostname,
                 "acpi",
-                "CPU0:cpuPowerUsageW",
+                "CPU0:cpuSidePowerUsageW",
                 0,
                 watts,
-                watts,
             )
-            + blanks
+            + rail_blanks
+            + (watts,)
+            + util_blanks
         )
 
 

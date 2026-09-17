@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeGuard, cast
 
+from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES as CPU_RAIL_COLUMN_NAMES
+
 SCHEMA_VERSION = 1
 # The samples CSV is versioned independently: SCHEMA_VERSION is shared with
 # manifest.json and with measurement-window files whose writer keeps its own copy.
@@ -64,11 +66,16 @@ SAMPLES_HEADER_V1 = (
 )
 SAMPLES_HEADER = (*SAMPLES_HEADER_V1, *(metric.column for metric in UTILIZATION_METRICS))
 
-CPU_SCHEMA_VERSION = 1
+CPU_SCHEMA_VERSION_V1 = 1
+# v2 pivots to one row per (timestamp, hostname, socket): power_w is the
+# socket's authoritative figure (ACPI "total" envelope or the DCGM value),
+# with the ACPI component rails as their own columns. v1 wrote one row per
+# rail, which left readers to work out which rows were the same socket.
+CPU_SCHEMA_VERSION = 2
 CPU_SAMPLES_FILENAME = "samples.csv"  # written under <power_dir>/cpu/
 CPU_MANIFEST_FILENAME = "cpu_manifest.json"  # written under <power_dir>/cpu/, non-authoritative
 
-CPU_SAMPLES_HEADER = (
+CPU_SAMPLES_HEADER_V1 = (
     "schema_version",
     "timestamp_unix",
     "hostname",
@@ -78,15 +85,25 @@ CPU_SAMPLES_HEADER = (
     "power_w",
     "total_power_w",
 )
-# NOTE: in ACPI mode, total_power_w sums only "total"-kind channels (e.g.
-# "Grace Power Socket N" or a platform's generic "Total Power socket N"
+CPU_SAMPLES_HEADER = (
+    "schema_version",
+    "timestamp_unix",
+    "hostname",
+    "source",
+    "sensor",  # the sensor that fed power_w (provenance only)
+    "socket_id",
+    "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130
+    *CPU_RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI only, blank for DCGM
+    "total_power_w",  # node aggregate: sum of power_w over sockets
+)
+# NOTE: in ACPI mode, power_w / total_power_w carry only "total"-kind channels
+# (e.g. "Grace Power Socket N" or a platform's generic "Total Power socket N"
 # rail). Real hardware traces show the total rail ~93-104W vs cpu_rail+soc
 # ~53-58W for the same socket -- total is a separate, larger measurement of
 # the whole Grace SoC power boundary, not literally cpu_rail + soc. This has
 # not been verified against NVIDIA hardware/DCGM documentation; if it turns
-# out to be wrong, only total_power_w in ACPI mode is affected, since
-# per-row power_w values and DCGM mode (one already-aggregate value per
-# socket) are unaffected.
+# out to be wrong, only the ACPI total is affected, since the component-rail
+# columns and DCGM mode (one already-aggregate value per socket) are unaffected.
 
 MAX_SAMPLE_GAP_SECONDS = 3.0
 COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0

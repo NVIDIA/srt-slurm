@@ -112,6 +112,9 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
         store_config = getattr(mooncake_cfg, "store_config", None)
         if store_config:
             options["store_config"] = dict(store_config)
+        devices = getattr(mooncake_cfg, "device_names_by_gpu", None)
+        if devices:
+            options["device_names_by_gpu"] = list(devices)
         implied.append(
             EffectiveService(
                 ServiceConfig(
@@ -129,8 +132,10 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
 
     tachometer = config.observability.tachometer
     if config.observability.tachometer_enabled:
-        # The power-telemetry path launches and owns its own DCGM exporter.
-        dcgm = None if config.telemetry.enabled else tachometer.resolved_dcgm_exporter
+        # When power telemetry brings its own DCGM exporter it launches and owns it, and the
+        # telemetry stage scrapes that one; CPU-only power telemetry leaves tachometer's.
+        power_owns_dcgm = config.telemetry.enabled and config.telemetry.dcgm_exporter is not None
+        dcgm = None if power_owns_dcgm else tachometer.resolved_dcgm_exporter
         if dcgm is not None:
             implied.append(
                 EffectiveService(

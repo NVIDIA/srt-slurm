@@ -426,6 +426,11 @@ LEGACY_CLASSES: frozenset[type] = frozenset(
     }
 )
 
+# New options are documented through v2 services, not legacy runtime tables.
+_V2_SERVICE_OPTION_FIELDS: dict[type, frozenset[str]] = {
+    VLLMMooncakeKVStoreConfig: frozenset({"device_names_by_gpu"}),
+}
+
 
 def _row(row: FieldDoc) -> str:
     return f"| `{row.key}` | {row.type_label} | {row.default} | {_cell(row.description)} |"
@@ -444,6 +449,8 @@ def _render_table(cls: type, *, only_legacy: bool = False) -> list[str]:
     legacy = _legacy_keys(cls)
     out = _table_header()
     for row in field_docs(cls):
+        if row.key in _V2_SERVICE_OPTION_FIELDS.get(cls, ()):
+            continue
         if (row.key in legacy) == only_legacy:
             out.append(_row(row))
     return out

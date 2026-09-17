@@ -175,12 +175,12 @@ def test_mock_sweep_runs_services_only_job_end_to_end(tmp_path: Path) -> None:
 # --- telemetry -------------------------------------------------------------------
 
 
-def test_tachometer_targets_follow_exporter_nodes_without_engines_or_frontend() -> None:
+def test_tachometer_targets_come_from_service_targets_without_engines_or_frontend() -> None:
     from unittest.mock import MagicMock, patch
 
     from srtctl.cli.mixins.frontend_stage import FrontendTopology
     from srtctl.core.schema import TachometerConfig, TelemetryExporterConfig
-    from srtctl.core.telemetry import generate_tachometer_config
+    from srtctl.core.telemetry import ServiceMetricsTarget, generate_tachometer_config
 
     tachometer = TachometerConfig(
         enabled=True,
@@ -198,7 +198,18 @@ def test_tachometer_targets_follow_exporter_nodes_without_engines_or_frontend() 
             runtime=runtime,
             tachometer=tachometer,
             frontend_type="none",
-            exporter_nodes=["n1", "n2"],
+            service_targets=[
+                *(
+                    ServiceMetricsTarget("dcgm-exporter", n, f"http://{n}:9401/metrics", "dcgm", "dcgm", True)
+                    for n in ("n1", "n2")
+                ),
+                *(
+                    ServiceMetricsTarget(
+                        "node-exporter", n, f"http://{n}:9101/metrics", "node_exporter", "node_exporter"
+                    )
+                    for n in ("n1", "n2")
+                ),
+            ],
         )
     assert 'name = "dcgm_n1"' in text and 'name = "dcgm_n2"' in text
     assert 'name = "node_exporter_n1"' in text and 'name = "node_exporter_n2"' in text
@@ -206,7 +217,7 @@ def test_tachometer_targets_follow_exporter_nodes_without_engines_or_frontend() 
     assert "backend_" not in text
 
 
-def test_start_tachometer_scrapes_the_exporter_service_nodes(tmp_path: Path) -> None:
+def test_start_tachometer_scrapes_every_service_that_serves_metrics(tmp_path: Path) -> None:
     from unittest.mock import patch
 
     from srtctl.cli.do_sweep import SweepOrchestrator
@@ -236,7 +247,13 @@ def test_start_tachometer_scrapes_the_exporter_service_nodes(tmp_path: Path) -> 
         patch.object(TelemetryStageMixin, "_resolve_tachometer_binary", return_value="/bin/tachometer"),
     ):
         orchestrator.start_tachometer()
-    assert gen.call_args.kwargs["exporter_nodes"] == ["node1", "node2"]
+    targets = gen.call_args.kwargs["service_targets"]
+    by_service: dict[str, list[str]] = {}
+    for target in targets:
+        by_service.setdefault(target.service, []).append(target.endpoint_name)
+    assert by_service["dcgm-exporter"] == ["dcgm_node1", "dcgm_node2"], "the implied exporters ride the pool"
+    assert by_service["node-exporter"] == ["node_exporter_node1", "node_exporter_node2"]
+    assert by_service["process-exporter"] == ["process_exporter_node1", "process_exporter_node2"]
     assert gen.call_args.kwargs["frontend_type"] == "none"
     assert gen.call_args.kwargs["processes"] == []
 

@@ -108,6 +108,7 @@ services:
 | `inherit_discovery_env` | `true` | Inject the same `ETCD_ENDPOINTS` / `NATS_SERVER` the Dynamo frontend gets. |
 | `critical` | type default | `generic`: `false`. `mooncake-store`: `true`. |
 | `terminal` | `false` | This service is the job's run: the job ends when every instance of every terminal service has exited, with the worst exit code as the job's. The recipe has no benchmark step (`benchmark.type` stays `manual`); combining the two is refused. See [pools.md](pools.md#ending-the-job-with-a-pool). |
+| `metrics` | kind default | Prometheus endpoints the service serves: one `{port, path, nodes, name}` or a list of them (`path` defaults to `/metrics`, `nodes` to `all`, `name` to the service name and is required when there are several). Tachometer scrapes each on every node the service runs on, pools included, as endpoint `<name>_<node>`, and the rows carry `service=<service>`; `nodes: first` scrapes only the service's first node (a cluster head that serves a collector or a router). The exporter kinds declare theirs; write it for anything else that publishes metrics. |
 | `preamble` | none | Shell run after the environment is exported and before `command`. |
 | `cpus_per_task`, `cpu_bind`, `srun_options` | none | Pass-through srun knobs for this service's launches. |
 | `source`, `build_command` | none | See [Building From Source](#building-from-source). |
@@ -309,6 +310,29 @@ services:
       port: 6379
       dashboard_port: 8265
 ```
+
+### Metrics
+
+Every service that serves Prometheus metrics says so through the same annotation, `metrics: {port, path}`, and tachometer builds its scrape targets from those declarations: one target per node the service runs on, named `<service>_<node>`, with `service=<name>` in the row metadata. The DCGM, node and process exporters are ordinary users of it: their kinds fill in the port from `options.port`, choose the scraper filter (`dcgm`, `node_exporter`, `passthrough`) and keep their historical endpoint prefixes (`dcgm_<node>`, `node_exporter_<node>`, `process_exporter_<node>`). A generic service writes the block itself; a service that serves several endpoints lists them with names:
+
+```yaml
+services:
+  - name: envsrv
+    type: generic
+    command: ["python3", "-m", "server"]
+    placement:
+      pool: train
+    metrics:
+      port: 8003          # tachometer scrapes http://<node>:8003/metrics on every pool node
+  - name: train
+    type: ray
+    nodes: 2
+    metrics:              # a trainer's collector and its router's engine aggregate, both on the Ray head
+      - { name: miles, port: 9090, nodes: first }
+      - { name: engines, port: 31000, path: /engine_metrics, nodes: first }
+```
+
+Workers and the frontend are not services and keep their own target logic in `core/telemetry.py`. When power telemetry brings its own DCGM exporter, the telemetry stage scrapes that one on the worker nodes instead of implying a `dcgm-exporter` service. `srtctl dry-run` prints `metrics=:<port><path>` on every scraped service.
 
 The bespoke launch paths these replace (`start_head_infrastructure` with its own readiness loop, a
 Mooncake-master stage, exporter launches inside the tachometer stage) are gone; every one of these is

@@ -299,17 +299,39 @@ jobs:
           # from the previous one to keep each release self-contained. A gap is
           # a warning, not a failure: the first-ever release has nothing to
           # carry forward, and a binary added later is absent from older ones.
+          # A failed download is a failure: the previous release has the
+          # assets, so publishing without them would ship a partial set that
+          # every later release then carries forward (v2.7.0 lost the x86_64
+          # scraper to a reset connection here and v2.8.0..v2.9.1 inherited it).
           carry() {
+            local tool="$1" names attempt
             if [ -z "$previous" ]; then
-              echo "::warning::No previous release to carry $1 forward from; this release omits it"
+              echo "::warning::No previous release to carry $tool forward from; this release omits it"
               return 0
             fi
-            if ! gh release download "$previous" --pattern "$1-*" --dir dist; then
-              echo "::warning::Previous release $previous has no $1 assets; this release omits them"
+            names=$(gh release view "$previous" --json assets --jq ".assets[].name | select(startswith(\"$tool-\"))")
+            if [ -z "$names" ]; then
+              echo "::warning::Previous release $previous has no $tool assets; this release omits them"
+              return 0
             fi
+            echo "Carrying forward from $previous:"; printf '  %s\n' $names
+            for attempt in 1 2 3; do
+              if gh release download "$previous" --pattern "$tool-*" --dir dist --clobber; then
+                return 0
+              fi
+              echo "Download of $tool assets from $previous failed (attempt $attempt of 3)"
+              sleep $((attempt * 15))
+            done
+            echo "::error::Could not download the $tool assets from $previous"
+            return 1
           }
           [ "$TACHOMETER_CHANGED" = "true" ] || carry tachometer-scraper
           [ "$CPU_POWER_EXPORTER_CHANGED" = "true" ] || carry cpu-power-exporter
+
+      - name: Verify the binary set is complete
+        # Built or carried forward, every tool present in dist/ must have both
+        # architectures, each with a binary and a .sha256 that matches it.
+        run: bash .github/scripts/verify_release_assets.sh dist tachometer-scraper cpu-power-exporter
 
       - name: Create release
         env:

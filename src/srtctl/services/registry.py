@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
-    from srtctl.services.config import ServiceConfig, ServiceReadinessConfig
+    from srtctl.services.config import ServiceConfig, ServiceMetricsConfig, ServiceReadinessConfig
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,13 @@ class ServiceKind:
     # gives no ``readiness`` (all of them, in order). Empty: launch is enough.
     default_readiness_ports: ClassVar[tuple[int, ...]] = ()
     default_readiness_timeout: ClassVar[int] = 120
+    # How tachometer treats this kind's metrics: the scraper filter (``passthrough``
+    # keeps names and labels as served; ``dcgm`` / ``node_exporter`` / ``backend`` are
+    # the shaped ones), the endpoint name prefix (default: the service name), and
+    # whether the scraper should attach per-GPU worker metadata (DCGM only).
+    metrics_filter: ClassVar[str] = "passthrough"
+    metrics_endpoint_prefix: ClassVar[str | None] = None
+    metrics_gpu_metadata: ClassVar[bool] = False
     # Whether the srun wraps the command in bash (exports, preamble). Distroless
     # images (the exporters) have no shell.
     use_bash_wrapper: ClassVar[bool] = True
@@ -156,6 +163,14 @@ class ServiceKind:
         probe. Per-instance probes see one node; a cluster-shaped kind (Ray)
         also needs the head to report every member before the client starts.
         """
+
+    def metrics(self, service: ServiceConfig) -> list[ServiceMetricsConfig]:
+        """The Prometheus endpoints this service serves; empty when it publishes none.
+
+        The recipe's ``metrics`` endpoints win; kinds that always publish (the
+        exporters) return their own default when the recipe writes none.
+        """
+        return list(service.metrics)
 
 
 _SERVICE_KINDS: dict[str, ServiceKind] = {}

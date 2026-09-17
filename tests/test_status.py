@@ -143,6 +143,7 @@ class TestStatusReporterReport:
         mock_put.return_value = MagicMock(status_code=200)
         reporter = StatusReporter(job_id="31315", api_endpoints=("https://status.example.com",))
         config = SimpleNamespace(
+            name="b300-agg-smoke",
             model=SimpleNamespace(path="/model", precision="fp8"),
             resources=SimpleNamespace(
                 gpu_type="b300",
@@ -166,6 +167,9 @@ class TestStatusReporterReport:
         payload = mock_put.call_args.kwargs["json"]
         assert payload["metadata"]["resources"]["cpu_allocation"]["allocated_total"] == 2
         assert payload["metadata"]["resources"]["cpu_check"]["status"] == "warning"
+        # Identity rides along so a collector that missed the submit-time POST can still name the row.
+        assert payload["metadata"]["job_name"] == "b300-agg-smoke"
+        assert "cluster" in payload["metadata"]
 
     @patch("srtctl.core.status.requests.put")
     def test_sends_put_request_to_correct_url(self, mock_put):
@@ -227,19 +231,20 @@ class TestStatusReporterReport:
 
     @patch("srtctl.core.status.requests.put")
     def test_one_endpoint_failing_does_not_block_others(self, mock_put):
-        """If first endpoint fails, second still gets called and result is True."""
+        """If first endpoint fails (both attempts), second still gets called and result is True."""
         import requests as req
 
         mock_put.side_effect = [
-            req.exceptions.ConnectionError("Network error"),
-            MagicMock(status_code=200),
+            req.exceptions.ConnectionError("Network error"),  # a.com, attempt 1
+            req.exceptions.ConnectionError("Network error"),  # a.com, attempt 2
+            MagicMock(status_code=200),  # b.com
         ]
         reporter = StatusReporter(job_id="12345", api_endpoints=("https://a.com", "https://b.com"))
 
         result = reporter.report(JobStatus.STARTING)
 
         assert result is True
-        assert mock_put.call_count == 2
+        assert mock_put.call_count == 3
 
 
 class TestStatusReporterCompleted:
@@ -541,12 +546,13 @@ class TestCreateJobRecord:
 
     @patch("srtctl.core.status.requests.post")
     def test_one_endpoint_failing_does_not_block_others(self, mock_post):
-        """If first endpoint fails, second still gets called."""
+        """If first endpoint fails (both attempts), second still gets called."""
         import requests as req
 
         mock_post.side_effect = [
-            req.exceptions.ConnectionError("Network error"),
-            MagicMock(status_code=201),
+            req.exceptions.ConnectionError("Network error"),  # a.com, attempt 1
+            req.exceptions.ConnectionError("Network error"),  # a.com, attempt 2
+            MagicMock(status_code=201),  # b.com
         ]
         reporting = ReportingConfig(status=ReportingStatusConfig(endpoints=["https://a.com", "https://b.com"]))
 
@@ -557,7 +563,7 @@ class TestCreateJobRecord:
         )
 
         assert result is True
-        assert mock_post.call_count == 2
+        assert mock_post.call_count == 3
 
 
 # ============================================================================

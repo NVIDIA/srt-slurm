@@ -154,6 +154,20 @@ class SweepOrchestrator(
         store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
         store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
         logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
+        if not backend.mooncake_kv_store.device_names_by_gpu:
+            return
+        # Render only GPU subsets actually launched, rather than all 2**N subsets.
+        written: set[str] = set()
+        for process in self.backend_processes:
+            local_config = backend.build_mooncake_process_config(
+                process, self.runtime.infra_node_ip, self.runtime.gpus_per_node
+            )
+            if local_config is not None:
+                filename, payload = local_config
+                if filename not in written:
+                    (self.runtime.log_dir / filename).write_text(json.dumps(payload, indent=2))
+                    logger.info("Wrote process-local Mooncake config %s: %s", filename, payload)
+                    written.add(filename)
 
     def _print_connection_info(self) -> None:
         """Print srun commands for connecting to nodes."""

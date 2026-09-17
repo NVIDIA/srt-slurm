@@ -83,6 +83,7 @@ def reporting(base_url: str) -> ReportingConfig:
 
 def _config() -> SimpleNamespace:
     return SimpleNamespace(
+        name="llama-pd",
         model=SimpleNamespace(path="/models/llama", precision="fp8"),
         resources=SimpleNamespace(gpu_type="h100", gpus_per_node=8, num_prefill=1, num_decode=2, num_agg=0),
         benchmark=SimpleNamespace(type="sa-bench"),
@@ -180,22 +181,49 @@ class TestLifecycleThroughReporter:
         assert job["logs_url"] is None
         assert [e["status"] for e in job["events"]] == ["submitted", "workers", "failed", "failed"]
 
-    def test_update_before_create_makes_placeholder(self, base_url, reporting, tmp_path):
-        """A sweep whose submit-time POST never reached the collector still shows up."""
+    def test_update_before_create_is_named_from_the_started_report(self, base_url, reporting, tmp_path, monkeypatch):
+        """A run whose submit-time POST never reached the collector still shows up with its name and cluster."""
+        import srtctl.core.config
+
+        monkeypatch.setattr(srtctl.core.config, "get_srtslurm_setting", lambda key, default=None: "sa-test")
         reporter = StatusReporter.from_config(reporting, job_id="779")
         assert reporter.report_started(_config(), _runtime(tmp_path))
 
         job = _get(base_url, "/api/jobs/779").json()
-        assert job["job_name"] == "job-779"
+        assert job["job_name"] == "llama-pd"  # from report_started metadata, not the job-779 placeholder
+        assert job["cluster"] == "sa-test"
+        assert job["recipe"] is None  # only the POST knows the recipe path
         assert job["status"] == "starting"
         assert job["submitted_at"] == job["started_at"]
         assert [e["status"] for e in job["events"]] == ["starting"]
 
-        # A late POST is acknowledged but does not rewind the job.
-        assert create_job_record(reporting, job_id="779", job_name="late")
+        # A late POST completes what is still missing and never rewinds the job.
+        assert create_job_record(reporting, job_id="779", job_name="late-name", cluster="other", recipe="r.yaml")
         job = _get(base_url, "/api/jobs/779").json()
+        assert job["job_name"] == "llama-pd"  # a real name is never overwritten
+        assert job["cluster"] == "sa-test"
+        assert job["recipe"] == "r.yaml"
         assert job["status"] == "starting"
         assert len(job["events"]) == 1
+
+    def test_placeholder_without_identity_is_completed_by_a_late_post(self, base_url):
+        """Older reporters send no identity; the late POST then fills name, cluster, recipe and the real submit time."""
+        _put(base_url, "780", {"status": "workers", "stage": "workers", "started_at": "2026-01-01T00:05:00Z"})
+        job = _get(base_url, "/api/jobs/780").json()
+        assert job["job_name"] == "job-780" and job["cluster"] is None
+
+        response = _create(
+            base_url, "780", cluster="sa-x", recipe="recipes/x.yaml", submitted_at="2026-01-01T00:00:00Z"
+        )
+        assert response.status_code == 201
+        assert response.json() == {"job_id": "780", "status": "workers"}
+        job = _get(base_url, "/api/jobs/780").json()
+        assert job["job_name"] == "name-780"
+        assert job["cluster"] == "sa-x"
+        assert job["recipe"] == "recipes/x.yaml"
+        assert job["submitted_at"] == "2026-01-01T00:00:00Z"
+        assert job["status"] == "workers"
+        assert [e["status"] for e in job["events"]] == ["workers"]
 
     def test_multiple_endpoints_each_receive_everything(self, tmp_path):
         stores = [StatusStore(tmp_path / f"{i}.db") for i in range(2)]
@@ -446,8 +474,65 @@ class TestStore:
         assert repeat == {"job_id": "1", "status": "workers", "event": False}
 
     def test_create_reports_whether_the_row_is_new(self, store):
-        assert store.create_job("1", "a")["created"] is True
-        assert store.create_job("1", "a")["created"] is False
+        first = store.create_job("1", "a")
+        assert first["created"] is True and first["backfilled"] is False
+        again = store.create_job("1", "a")
+        assert again["created"] is False and again["backfilled"] is False
+
+    def test_put_first_then_post_completes_identity_without_touching_status(self, store):
+        # Reporter without identity metadata: the row is a placeholder.
+        store.update_job("2", {"status": "workers", "stage": "workers", "started_at": "2026-01-01T00:05:00Z"})
+        assert store.get_job("2")["job_name"] == "job-2"
+        result = store.create_job(
+            "2",
+            "real-name",
+            cluster="sa-x",
+            recipe="r.yaml",
+            submitted_at="2026-01-01T00:00:00Z",
+            metadata={"tags": ["t"]},
+        )
+        assert result == {"job_id": "2", "status": "workers", "created": False, "backfilled": True}
+        job = store.get_job("2")
+        assert (job["job_name"], job["cluster"], job["recipe"], job["submitted_at"]) == (
+            "real-name",
+            "sa-x",
+            "r.yaml",
+            "2026-01-01T00:00:00Z",
+        )
+        assert job["metadata"] == {"tags": ["t"]}
+        assert [e["status"] for e in job["events"]] == ["workers"]  # no "submitted" event is invented
+
+        # Reporter with identity metadata: the row is named at once; a later POST only fills recipe.
+        store.update_job(
+            "3", {"status": "starting", "metadata": {"job_name": "from-report", "cluster": "sa-y", "model": {}}}
+        )
+        job = store.get_job("3")
+        assert (job["job_name"], job["cluster"]) == ("from-report", "sa-y")
+        result = store.create_job("3", "late-name", cluster="other", recipe="r3.yaml")
+        assert result["backfilled"] is True
+        job = store.get_job("3")
+        assert (job["job_name"], job["cluster"], job["recipe"]) == ("from-report", "sa-y", "r3.yaml")
+
+        # Identity metadata never overwrites a real name or cluster on a POST-created row.
+        store.create_job("4", "posted", cluster="sa-z")
+        store.update_job("4", {"status": "starting", "metadata": {"job_name": "other", "cluster": "elsewhere"}})
+        job = store.get_job("4")
+        assert (job["job_name"], job["cluster"]) == ("posted", "sa-z")
+
+    def test_late_post_only_moves_submitted_at_earlier(self, store):
+        """A repair POST stamped 'now' must not reset a running job's elapsed time."""
+        store.update_job("5", {"status": "benchmark", "started_at": "2026-01-01T01:00:00Z"})
+        assert store.get_job("5")["submitted_at"] == "2026-01-01T01:00:00Z"  # placeholder: start time
+        # Later than the start: ignored.
+        store.create_job("5", "name", submitted_at="2026-01-01T05:00:00Z")
+        assert store.get_job("5")["submitted_at"] == "2026-01-01T01:00:00Z"
+        # The real, earlier submit time: taken.
+        store.create_job("5", "name", submitted_at="2026-01-01T00:40:00Z")
+        assert store.get_job("5")["submitted_at"] == "2026-01-01T00:40:00Z"
+        # And on a POST-created row a repeated POST with a later time changes nothing.
+        store.create_job("6", "a", submitted_at="2026-01-01T00:00:00Z")
+        store.create_job("6", "a", submitted_at="2026-01-01T09:00:00Z")
+        assert store.get_job("6")["submitted_at"] == "2026-01-01T00:00:00Z"
 
 
 # ============================================================================
@@ -709,3 +794,77 @@ class TestAuth:
             assert _get(url, "/api/jobs").status_code == 401
             assert requests.get(f"{url}/api/jobs", headers=_bearer(WRITE), timeout=5).status_code == 200
             assert requests.get(f"{url}/api/jobs", headers=_bearer(READ), timeout=5).status_code == 401
+
+
+# ============================================================================
+# Submit-time POST resilience
+# ============================================================================
+
+
+class TestCreateJobRecordRetry:
+    """The submit-time POST is one request from the login node; a flaky path must not lose the identity silently."""
+
+    def test_retries_once_and_succeeds(self, caplog):
+        from unittest.mock import MagicMock, patch
+
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint="https://collector.example"))
+        with patch("srtctl.core.status.requests.post") as post:
+            post.side_effect = [requests.exceptions.ConnectionError("timed out"), MagicMock(status_code=201)]
+            with caplog.at_level(logging.DEBUG, logger="srtctl.core.status"):
+                assert create_job_record(reporting, job_id="1", job_name="a") is True
+        assert post.call_count == 2
+        assert "attempt 1/2" in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_warns_after_the_final_failure(self, caplog):
+        from unittest.mock import patch
+
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint="https://collector.example"))
+        with patch("srtctl.core.status.requests.post") as post:
+            post.side_effect = requests.exceptions.ConnectionError("Network is unreachable")
+            with caplog.at_level(logging.DEBUG, logger="srtctl.core.status"):
+                assert create_job_record(reporting, job_id="1", job_name="a") is False
+        assert post.call_count == 2
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "after 2 attempts" in warnings[0].getMessage()
+        assert "still appears" in warnings[0].getMessage()
+
+    def test_rejections_are_not_retried(self):
+        from unittest.mock import MagicMock, patch
+
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint="https://collector.example"))
+        with patch("srtctl.core.status.requests.post") as post:
+            post.return_value = MagicMock(status_code=401)
+            assert create_job_record(reporting, job_id="1", job_name="a") is False
+        assert post.call_count == 1
+
+    def test_explicit_submitted_at_is_sent(self):
+        from unittest.mock import MagicMock, patch
+
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint="https://collector.example"))
+        with patch("srtctl.core.status.requests.post") as post:
+            post.return_value = MagicMock(status_code=201)
+            assert create_job_record(reporting, job_id="1", job_name="a", submitted_at="2026-01-01T00:00:00Z")
+        assert post.call_args.kwargs["json"]["submitted_at"] == "2026-01-01T00:00:00Z"
+
+    def test_put_retries_once_and_warns_on_final_failure(self, caplog):
+        from unittest.mock import MagicMock, patch
+
+        reporter = StatusReporter(job_id="9", api_endpoints=("https://collector.example",))
+        with patch("srtctl.core.status.requests.put") as put:
+            put.side_effect = [requests.exceptions.ConnectionError("timed out"), MagicMock(status_code=200)]
+            with caplog.at_level(logging.DEBUG, logger="srtctl.core.status"):
+                assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go") is True
+        assert put.call_count == 2
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+        caplog.clear()
+        with patch("srtctl.core.status.requests.put") as put:
+            put.side_effect = requests.exceptions.ConnectionError("timed out")
+            with caplog.at_level(logging.DEBUG, logger="srtctl.core.status"):
+                assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go") is False
+        assert put.call_count == 2
+        assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+            "Status report to https://collector.example lost after 2 attempts: timed out"
+        ]
