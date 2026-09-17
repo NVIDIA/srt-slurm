@@ -398,11 +398,6 @@ class TestDcgmPowerConfig:
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=None), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[4, 4]), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[0]), "benchmark.concurrencies"),
-            (
-                {},
-                BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="last_decode"),
-                "benchmark.client_placement",
-            ),
         ],
     )
     def test_invalid_configurations_are_rejected(self, telemetry_overrides, benchmark, match):
@@ -411,6 +406,21 @@ class TestDcgmPowerConfig:
                 telemetry=_dcgm_power(**telemetry_overrides),
                 benchmark=benchmark or _sa_bench(),
             )
+
+    @pytest.mark.parametrize("placement", ["head", "first_decode", "last_decode"])
+    def test_any_client_placement_is_accepted(self, placement):
+        """Clocks are assumed NTP-synchronised across the allocation, so the client may run anywhere."""
+        config = _make_config(
+            telemetry=_dcgm_power(),
+            benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement=placement),
+        )
+
+        assert config.benchmark.client_placement == placement
+
+    def test_a_dedicated_client_node_is_accepted(self):
+        config = _make_config(telemetry=_dcgm_power(), benchmark=_sa_bench(client_dedicated_node=True))
+
+        assert config.benchmark.client_dedicated_node is True
 
     def test_dcgm_power_rejects_a_sample_interval_above_the_contract_limit(self):
         telemetry = TelemetryConfig(

@@ -12,8 +12,11 @@ window themselves.
 - One DCGM exporter task runs on each allocated worker node, launched through
   the normal SLURM/process-registry path (one `srun` per heterogeneous group).
 - A collector thread inside the orchestrator polls every exporter concurrently
-  from the physical head node, so all sample timestamps and benchmark
-  boundaries come from one clock.
+  from the head node. Sample timestamps come from the orchestrator host and
+  window boundaries from the benchmark client host; both are Unix wall-clock
+  readings and the cluster's NTP synchronisation is assumed to keep them
+  aligned, so the client may run on any node (`benchmark.client_placement`,
+  `benchmark.client_dedicated_node`).
 - Only `DCGM_FI_DEV_POWER_USAGE` is parsed. Device identity comes from the
   `gpu` and `UUID` labels.
 - **No in-tree benchmark stamps measurement windows yet**, so every run is
@@ -31,7 +34,7 @@ window themselves.
 # with this exact config every run is unpublishable and `required: true` fails.
 benchmark:
   type: sa-bench          # future benchmark-side adapter must stamp the windows
-  client_placement: head  # keeps sample and window clocks on one host
+  client_placement: head  # any placement is allowed; clocks are assumed NTP-synchronised
   isl: 8192
   osl: 1024
   concurrencies: [4]
@@ -87,8 +90,8 @@ machine-readable strings enumerated in `srtctl/core/power/contract.py`.
 The digest is required for offline publication validation, so packages created
 before `samples_sha256` was recorded cannot be certified by this validator.
 
-A window file records the formal benchmark boundaries on the head-node Unix
-clock plus a monotonic `duration`, and points at the SA-Bench result it
+A window file records the formal benchmark boundaries on the benchmark client's
+Unix clock plus a monotonic `duration`, and points at the SA-Bench result it
 brackets; result and window are boundary-identical.
 
 With `required: true`, all artifacts are written first and the job then exits
