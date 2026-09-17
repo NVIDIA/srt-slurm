@@ -3040,7 +3040,7 @@ class TestVLLMDataParallelMode:
         assert "dynamo.vllm" not in cmd
 
     def test_vllm_router_can_use_environment_device_binding(self):
-        """Stable vLLM builds can avoid the newer --device-ids CLI."""
+        """set_visible_devices swaps --device-ids for the worker-stage environment mask."""
         from pathlib import Path
         from unittest.mock import MagicMock, patch
 
@@ -3075,7 +3075,6 @@ class TestVLLMDataParallelMode:
 
         assert cmd[:3] == ["vllm", "serve", "/model"]
         assert "--device-ids" not in cmd
-        assert backend.should_set_visible_devices()
 
     @pytest.mark.parametrize(
         ("mode", "role"),

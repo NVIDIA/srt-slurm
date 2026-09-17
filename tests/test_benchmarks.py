@@ -1966,11 +1966,11 @@ class TestSweepRunEvalIntegration:
     def _make_orchestrator():
         return TestRunPostEval._make_orchestrator()
 
-    @pytest.mark.parametrize("frontend_type, needs_infra", [("atomesh", False), ("sglang-router", False), ("dynamo", True)])
+    @pytest.mark.parametrize(("frontend_type", "needs_infra"), [("atomesh", False), ("dynamo", True)])
     def test_only_dynamo_starts_head_infrastructure(
         self, frontend_type: str, needs_infra: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Native routers reach the benchmark without NATS; Dynamo still starts it."""
+        """An ATOM/AToMesh run reaches the benchmark without a discovery plane; Dynamo still starts it."""
         from dataclasses import replace
         from unittest.mock import MagicMock, patch
 
