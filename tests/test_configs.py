@@ -725,8 +725,90 @@ class TestFrontendConfig:
         assert frontend.type == "dynamo"
         assert frontend.enable_multiple_frontends is True
         assert frontend.nginx_container == "nginx:1.27.4"
+        assert frontend.worker_selection is None
         assert frontend.args is None
         assert frontend.env is None
+
+    def test_frontend_worker_selection_deserializes(self):
+        """Inline Dynamo worker-selection policy config is retained as a mapping."""
+        from srtctl.core.schema import SrtConfig
+
+        config = SrtConfig.Schema().load(
+            {
+                "name": "test",
+                "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+                "frontend": {
+                    "type": "dynamo",
+                    "worker_selection": {
+                        "prefill": "max-kv-overlap",
+                        "decode": "default",
+                        "instances": [
+                            {
+                                "name": "max-kv-overlap",
+                                "type": "dynamo-two-tier-cost-fn",
+                                "parameters": {"cache_threshold": 0.0},
+                            }
+                        ],
+                    },
+                },
+            }
+        )
+
+        assert config.frontend.worker_selection == {
+            "prefill": "max-kv-overlap",
+            "decode": "default",
+            "instances": [
+                {
+                    "name": "max-kv-overlap",
+                    "type": "dynamo-two-tier-cost-fn",
+                    "parameters": {"cache_threshold": 0.0},
+                }
+            ],
+        }
+
+    @pytest.mark.parametrize(
+        ("frontend", "environment"),
+        [
+            ({"type": "sglang", "worker_selection": {"prefill": "default"}}, None),
+            (
+                {
+                    "type": "dynamo",
+                    "worker_selection": {"prefill": "default"},
+                    "args": {"router-policy-config": "/configs/policy.yaml"},
+                },
+                None,
+            ),
+            (
+                {
+                    "type": "dynamo",
+                    "worker_selection": {"prefill": "default"},
+                    "env": {"DYN_ROUTER_POLICY_CONFIG": "/configs/policy.yaml"},
+                },
+                None,
+            ),
+            (
+                {"type": "dynamo", "worker_selection": {"prefill": "default"}},
+                {"DYN_ROUTER_POLICY_CONFIG": "/configs/policy.yaml"},
+            ),
+        ],
+    )
+    def test_frontend_worker_selection_rejects_ambiguous_configuration(self, frontend, environment):
+        """Inline policy config must target Dynamo and be its only policy source."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import SrtConfig
+
+        with pytest.raises(ValidationError, match="frontend.worker_selection"):
+            raw_config = {
+                "name": "test",
+                "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+                "frontend": frontend,
+            }
+            if environment is not None:
+                raw_config["environment"] = environment
+            SrtConfig.Schema().load(raw_config)
 
     def test_frontend_sglang_type(self):
         """Test sglang frontend config."""

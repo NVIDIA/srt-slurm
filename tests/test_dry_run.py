@@ -398,6 +398,33 @@ class TestDryRunExecutionExtensions:
         assert "Execution Extensions" in output
         assert "profiling" in output
 
+    def test_inline_worker_selection_translation_shown(self, capsys):
+        config = _make_config(
+            {
+                "frontend": {
+                    "type": "dynamo",
+                    "worker_selection": {
+                        "prefill": "max-kv-overlap",
+                        "decode": "default",
+                        "instances": [
+                            {
+                                "name": "max-kv-overlap",
+                                "type": "dynamo-two-tier-cost-fn",
+                            }
+                        ],
+                    },
+                }
+            }
+        )
+
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "router_policy_config" in output
+        assert "/logs/router_policy_config.yaml" in output
+        assert "(auto)" in output
+        assert "worker_selection" in output
+        assert "max-kv-overlap" in output
+
     def test_custom_benchmark_details_shown(self, capsys):
         config = _make_config(
             {

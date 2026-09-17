@@ -60,6 +60,7 @@ from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
+from srtctl.frontends.dynamo import ROUTER_POLICY_CONFIG_CONTAINER_PATH
 from srtctl.ports import MOONCAKE_MASTER_PORT
 from srtctl.runtime_scripts.dynamo_wheels import arch_from_binary, detect_target_arch
 from srtctl.status_server.server import add_arguments as add_status_server_arguments
@@ -563,6 +564,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.telemetry.enabled
         or mooncake_cfg is not None
         or config.profiling.enabled
+        or config.frontend.worker_selection is not None
     )
     if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
@@ -659,6 +661,14 @@ def show_config_details(config: SrtConfig) -> None:
                     f"host collector (source {cpu_power.source}, <log_dir>/{cpu_power.storage_subdir}"
                     f"{', required' if cpu_power.required else ''})",
                 )
+
+        if config.frontend.worker_selection is not None:
+            details.add_row("frontend", "router_policy_config", f"{ROUTER_POLICY_CONFIG_CONTAINER_PATH} (auto)")
+            details.add_row(
+                "frontend",
+                "worker_selection",
+                yaml.safe_dump(config.frontend.worker_selection, sort_keys=False).rstrip(),
+            )
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")

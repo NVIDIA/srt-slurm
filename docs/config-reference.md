@@ -602,6 +602,19 @@ frontend:
     policy: "cache_aware"             # sglang-router: policy
     no-kv-events: true                # boolean flags
 
+  # Dynamo only: inline worker-selection policy config. srtctl writes the
+  # router policy YAML and passes --router-policy-config automatically.
+  worker_selection:
+    prefill: max-kv-overlap
+    decode: default
+    instances:
+      - name: max-kv-overlap
+        type: dynamo-two-tier-cost-fn
+        parameters:
+          cache_threshold: 0.0
+          balance_abs_threshold: 1000000000
+          balance_rel_threshold: 1000000000.0
+
   # Environment variables for frontend processes
   env:
     MY_VAR: "value"
@@ -618,6 +631,7 @@ frontend:
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
 | `nginx_raise_ulimit`      | bool | false         | When true with nginx in use, run `ulimit -n 1048576` before nginx and emit `worker_rlimit_nofile 1048576` in generated `nginx.conf`. Off by default so restrictive clusters do not fail. Cluster `srtslurm.yaml` may set `nginx_raise_ulimit` for jobs that omit this field. |
+| `worker_selection`          | dict | null          | Dynamo worker-selection mapping. Written as `/logs/router_policy_config.yaml` and passed with `--router-policy-config`. Cannot be combined with a manually supplied policy-config argument or environment variable. |
 | `args`                      | dict | null          | CLI args for the frontend           |
 | `env`                       | dict | null          | Env vars for frontend processes     |
 | `container_image`           | str  | null          | Static-router image; falls back to `model.container` |

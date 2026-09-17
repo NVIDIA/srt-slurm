@@ -2077,6 +2077,10 @@ class FrontendConfig:
         nginx_session_affinity_header: Header hashed when affinity is on (default
             ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
             carry the session id in that header instead.
+        worker_selection: Inline Dynamo worker-selection policy configuration. srtctl
+            writes this mapping under the top-level ``worker_selection`` key in a
+            generated router policy YAML and passes it to the Dynamo frontend via
+            ``--router-policy-config``.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
         container_image: Optional router-specific image. Static routers use the
@@ -2091,6 +2095,7 @@ class FrontendConfig:
     nginx_session_affinity: bool = False
     nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     nginx_keepalive_timeout: str = "600s"
+    worker_selection: dict[str, Any] | None = None
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
     container_image: str | None = None
@@ -2240,6 +2245,7 @@ class SrtConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
+        self._validate_frontend_worker_selection()
         self._validate_profiling()
         self._validate_observability()
         self._validate_telemetry()
@@ -2416,6 +2422,25 @@ class SrtConfig:
             "use backend.dp_launch_mode: per_node instead. per_gpu will be removed in a future release",
             ", ".join(mode_name for mode_name, _ in dp_modes),
         )
+
+    def _validate_frontend_worker_selection(self):
+        """Validate srtctl's inline Dynamo worker-selection shorthand."""
+        if self.frontend.worker_selection is None:
+            return
+        if self.frontend.type != "dynamo":
+            raise ValidationError("frontend.worker_selection is only supported with frontend.type: dynamo")
+
+        args = self.frontend.args or {}
+        env = self.frontend.env or {}
+        if (
+            "router-policy-config" in args
+            or "DYN_ROUTER_POLICY_CONFIG" in env
+            or "DYN_ROUTER_POLICY_CONFIG" in self.environment
+        ):
+            raise ValidationError(
+                "frontend.worker_selection cannot be combined with frontend.args.router-policy-config "
+                "or DYN_ROUTER_POLICY_CONFIG in frontend.env/environment"
+            )
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
