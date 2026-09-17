@@ -575,6 +575,84 @@ def test_multinode_exact_gpu_count(gpu_count: int, expected_counts: list[int]) -
     assert [len(p.gpu_indices) for p in processes if p.endpoint_mode == "prefill"] == expected_counts
 
 
+@pytest.mark.parametrize("gpu_count", [0, -1])
+def test_trtllm_rejects_nonpositive_worker_gpu_count(gpu_count: int) -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    with pytest.raises(ValueError, match="GPUs per worker must be positive"):
+        TRTLLMProtocol().allocate_endpoints(
+            num_prefill=1,
+            num_decode=0,
+            num_agg=0,
+            gpus_per_prefill=gpu_count,
+            gpus_per_decode=0,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0",),
+        )
+
+
+def test_trtllm_partial_workers_stay_on_single_nodes() -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    endpoints = TRTLLMProtocol().allocate_endpoints(
+        num_prefill=2,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=3,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=("node0", "node1"),
+    )
+    assert [ep.nodes for ep in endpoints] == [("node0",), ("node1",)]
+    assert [ep.total_gpus for ep in endpoints] == [3, 3]
+    assert [(p.node, sorted(p.gpu_indices)) for p in endpoints_to_processes(endpoints)] == [
+        ("node0", [0, 1, 2]),
+        ("node1", [0, 1, 2]),
+    ]
+
+
+def test_two_dep6_workers_reject_insufficient_nodes() -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    with pytest.raises(ValueError, match="Not enough nodes for GPU allocation"):
+        TRTLLMProtocol().allocate_endpoints(
+            num_prefill=2,
+            num_decode=0,
+            num_agg=0,
+            gpus_per_prefill=6,
+            gpus_per_decode=0,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+        )
+
+
+def test_two_dep6_workers_spread_across_four_nodes() -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    endpoints = TRTLLMProtocol().allocate_endpoints(
+        num_prefill=2,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=6,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=("node0", "node1", "node2", "node3"),
+        spread_workers=True,
+    )
+    assert [ep.nodes for ep in endpoints] == [("node0", "node1"), ("node2", "node3")]
+    assert [ep.total_gpus for ep in endpoints] == [6, 6]
+    assert [(p.node, sorted(p.gpu_indices)) for p in endpoints_to_processes(endpoints)] == [
+        ("node0", [0, 1, 2, 3]),
+        ("node1", [0, 1]),
+        ("node2", [0, 1, 2, 3]),
+        ("node3", [0, 1]),
+    ]
+
+
 @pytest.mark.parametrize("heterogeneous", [False, True])
 def test_two_dep6_workers_share_three_nodes(heterogeneous: bool) -> None:
     from srtctl.backends.trtllm import TRTLLMProtocol
