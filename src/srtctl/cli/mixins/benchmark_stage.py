@@ -12,11 +12,9 @@ import re
 import shlex
 import threading
 import time
-from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from srtctl.backends.sglang import SGLangProtocol
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
 from srtctl.core.ip_utils import url_host
@@ -355,22 +353,6 @@ class BenchmarkStageMixin:
             self.backend_processes,
             self.runtime.network_interface,
         )
-        if (
-            self.config.frontend.type == "dynamo"
-            and self.config.dynamo.sidecar
-            and isinstance(self.config.backend, SGLangProtocol)
-        ):
-            # KV relays never register inference workers, so the frontend count
-            # can be ready before they subscribe. Gate benchmark traffic on the
-            # relay's own health endpoint to avoid losing the first cache events.
-            endpoint_processes: dict[tuple[str, int], list[Process]] = defaultdict(list)
-            for process in self.backend_processes:
-                endpoint_processes[(process.endpoint_mode, process.endpoint_index)].append(process)
-            for processes in endpoint_processes.values():
-                for process in processes:
-                    if self.config.backend.needs_telemetry_sidecar(process, processes):
-                        host = get_hostname_ip(process.node, self.runtime.network_interface)
-                        backend_health_urls.append(f"http://{url_host(host)}:{process.sys_port}/health")
         if not backend_health_urls:
             return True
 

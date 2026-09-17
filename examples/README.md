@@ -24,7 +24,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 
 | File | Shows |
 | --- | --- |
-| [features/sglang-sidecar-multinode-dp.yaml](features/sglang-sidecar-multinode-dp.yaml) | One SGLang aggregate worker across two one-GPU nodes, global TP2/attention DP2, a serving leader sidecar and a telemetry-only follower, with KV routing; requires a custom image containing both upstream fixes |
+| [features/sglang-sidecar-multinode-dp.yaml](features/sglang-sidecar-multinode-dp.yaml) | One SGLang aggregate worker across two one-GPU nodes, global TP2/attention DP2, a serving leader sidecar and a telemetry-only follower, with KV routing |
 | `features/sweep.yaml` | `sweep:` plus `{placeholder}` substitution; one job per combination |
 | `features/override.yaml` | `base` plus `override_*` and `zip_override_*` variants in one file |
 | `features/profiling.yaml` | `profiling:` torch capture on an aggregated worker |
@@ -33,7 +33,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/infra-services.yaml` | etcd and NATS as declared services on a dedicated node with a NATS payload limit; the implied exporters overridden or switched off |
 | `features/dynamo-source.yaml` | `dynamo.source:` building Dynamo from a git tag (or a PR head via `--set dynamo.source.rev=refs/pull/<n>/head`), pinned to a commit at submit |
 
-The multinode SGLang sidecar example requires rebuilt native components from [Dynamo #14908](https://github.com/ai-dynamo/dynamo/pull/14908) and [SGLang #39659](https://github.com/sgl-project/sglang/pull/39659), with reference commit pins in the recipe. Replace its placeholder image path with your prepared image; a Python-only source overlay is insufficient. See [Native sidecar mode](../docs/config-reference.md#native-sidecar-mode) for prerequisites and lifecycle behavior.
+See [Native sidecar mode](../docs/config-reference.md#native-sidecar-mode) for configuration and lifecycle behavior.
 
 ## Cluster aliases
 

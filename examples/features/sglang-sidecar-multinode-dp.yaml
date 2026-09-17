@@ -2,15 +2,6 @@
 # Node 0 serves inference; node 1's telemetry-only sidecar relays local KV events.
 # The Dynamo KV router can select either global DP rank through the same worker.
 #
-# Replace model.container with a custom image containing BOTH source fixes:
-#   https://github.com/ai-dynamo/dynamo/pull/14908
-#   Dynamo: 12ed73f0277d2c4d9c5a75d738dfcf2c4e101d36
-#   https://github.com/sgl-project/sglang/pull/39659
-#   SGLang: c50b251da8e455dfbb594f8c3b7ccae6eca72129
-# Build/install the Dynamo runtime and SGLang native gRPC extension as well as
-# their Python packages. A Python-only overlay is insufficient; srtctl defaults
-# SGLANG_RUST_BUILD_MODE=never and loads the installed extension.
-#
 # Restart all engines and sidecars together after failure. Independent sidecar
 # restart/replay recovery is unsupported.
 
@@ -30,7 +21,7 @@ resources:
   gpus_per_node: 1
 
 dynamo:
-  install: false  # The custom image supplies the pinned native and Python builds.
+  install: false  # Dynamo is preinstalled in the image.
   request_plane: "nats"
   event_plane: "nats"
 
