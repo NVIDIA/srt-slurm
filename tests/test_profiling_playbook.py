@@ -185,6 +185,21 @@ class TestFrontendProfiling:
         with pytest.raises(ValidationError, match="trace"):
             _disagg_config(frontend=ProfilingFrontendConfig(trace="  "))
 
+    def test_frontend_sampling_is_frontend_only(self):
+        from srtctl.core.schema import ProfilingFrontendConfig
+
+        cfg = _disagg_config(frontend=ProfilingFrontendConfig(sample="process-tree", cpuctxsw="process-tree", trace="osrt"))
+        fe = cfg.profiling.get_frontend_nsys_prefix("/logs/profiles/frontend/n_frontend_0")
+        assert "--sample=process-tree" in fe and "--cpuctxsw=process-tree" in fe and fe[fe.index("-t") + 1] == "osrt"
+        # workers keep the global (playbook) defaults
+        wk = cfg.profiling.get_nsys_prefix("/logs/profiles/decode/x_rank%q{SLURM_PROCID}", backend_type="trtllm")
+        assert "--sample=none" in wk and "--cpuctxsw=none" in wk
+        # unset -> inherit the global values
+        fe2 = _disagg_config(frontend=ProfilingFrontendConfig()).profiling.get_frontend_nsys_prefix("/logs/p/f")
+        assert "--sample=none" in fe2
+        with pytest.raises(ValidationError):
+            _disagg_config(frontend=ProfilingFrontendConfig(sample="cpu"))
+
     def test_teardown_grace_default_and_validation(self):
         assert _disagg_config().profiling.teardown_grace_secs == 180
         assert _disagg_config(teardown_grace_secs=600).profiling.teardown_grace_secs == 600

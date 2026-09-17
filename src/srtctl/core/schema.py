@@ -865,6 +865,11 @@ class ProfilingFrontendConfig:
 
     delay_secs: int = 900  # from frontend start; the workers need ~10-15 min to load before traffic flows
     duration_secs: int | None = None  # None: capture from delay until the frontend exits
+    # CPU sampling / context-switch tracing for the FRONTEND only (None = inherit profiling.nsys_sample /
+    # nsys_cpuctxsw, which default to "none"). The frontend has no CUDA work, so sampling it does not carry the
+    # cudaProfilerStop wedge seen on TRT-LLM workers; it is the way to attribute frontend CPU to code (stacks).
+    sample: str | None = None  # nsys --sample: "none" | "process-tree" | "system-wide"
+    cpuctxsw: str | None = None  # nsys --cpuctxsw: "none" | "process-tree" | "system-wide"
     trace: str = "nvtx"  # nsys -t for the frontend: "nvtx" or "nvtx,osrt"
     extra_nsys_args: list[str] | None = None
 
@@ -1073,8 +1078,8 @@ class ProfilingConfig:
             "--force-overwrite=true",
             "-t",
             fe.trace,
-            f"--sample={self.nsys_sample}",
-            f"--cpuctxsw={self.nsys_cpuctxsw}",
+            f"--sample={fe.sample or self.nsys_sample}",
+            f"--cpuctxsw={fe.cpuctxsw or self.nsys_cpuctxsw}",
             "--python-sampling=false",
             f"--gpu-metrics-devices={self.nsys_gpu_metrics_devices}",
             "--delay",
@@ -2415,6 +2420,10 @@ class SrtConfig:
                 raise ValidationError("profiling.frontend.delay_secs must be >= 0 and duration_secs > 0 or unset")
             if not prof.frontend.trace.strip():
                 raise ValidationError("profiling.frontend.trace must be a non-empty nsys -t list, e.g. 'nvtx'")
+            for fld in ("sample", "cpuctxsw"):
+                val = getattr(prof.frontend, fld)
+                if val is not None and val not in ("none", "process-tree", "system-wide"):
+                    raise ValidationError(f"profiling.frontend.{fld} must be none, process-tree or system-wide (got {val!r})")
         if prof.teardown_grace_secs <= 0:
             raise ValidationError("profiling.teardown_grace_secs must be > 0 seconds")
         if prof.app_exit_grace_secs <= 0 or prof.app_exit_grace_secs >= prof.teardown_grace_secs:
