@@ -188,7 +188,9 @@ class TestFrontendProfiling:
     def test_frontend_sampling_is_frontend_only(self):
         from srtctl.core.schema import ProfilingFrontendConfig
 
-        cfg = _disagg_config(frontend=ProfilingFrontendConfig(sample="process-tree", cpuctxsw="process-tree", trace="osrt"))
+        cfg = _disagg_config(
+            frontend=ProfilingFrontendConfig(sample="process-tree", cpuctxsw="process-tree", trace="osrt")
+        )
         fe = cfg.profiling.get_frontend_nsys_prefix("/logs/profiles/frontend/n_frontend_0")
         assert "--sample=process-tree" in fe and "--cpuctxsw=process-tree" in fe and fe[fe.index("-t") + 1] == "osrt"
         # workers keep the global (playbook) defaults

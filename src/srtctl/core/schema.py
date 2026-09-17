@@ -2423,7 +2423,9 @@ class SrtConfig:
             for fld in ("sample", "cpuctxsw"):
                 val = getattr(prof.frontend, fld)
                 if val is not None and val not in ("none", "process-tree", "system-wide"):
-                    raise ValidationError(f"profiling.frontend.{fld} must be none, process-tree or system-wide (got {val!r})")
+                    raise ValidationError(
+                        f"profiling.frontend.{fld} must be none, process-tree or system-wide (got {val!r})"
+                    )
         if prof.teardown_grace_secs <= 0:
             raise ValidationError("profiling.teardown_grace_secs must be > 0 seconds")
         if prof.app_exit_grace_secs <= 0 or prof.app_exit_grace_secs >= prof.teardown_grace_secs:
