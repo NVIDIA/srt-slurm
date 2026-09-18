@@ -13,9 +13,10 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
-from srtctl.backends.vllm import VLLMProtocol
+from srtctl.backends.vllm import VLLMFailoverConfig, VLLMProtocol
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
+from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
@@ -89,6 +90,12 @@ class WorkerStageMixin:
     def backend(self) -> Any:
         """Access the backend config (implements BackendProtocol)."""
         return self.config.backend
+
+    @property
+    def failover(self) -> "VLLMFailoverConfig | None":
+        """``backend.failover`` when this is a vLLM job with shadow engine recovery, else None."""
+        backend = self.backend
+        return backend.failover if isinstance(backend, VLLMProtocol) else None
 
     @property
     def backend_processes(self) -> list["Process"]:
@@ -210,12 +217,19 @@ class WorkerStageMixin:
         """Start a single worker process (one srun per node, used by SGLang)."""
         mode = process.endpoint_mode
         index = process.endpoint_index
+        failover = self.failover
+        # "" for engine 0, "_e<k>" for a shadow: step name, logs, and dumps stay apart.
+        # (getattr: tests drive this stage with plain namespaces standing in for Process.)
+        suffix = getattr(process, "engine_suffix", "")
 
-        logger.info("Starting %s worker %d on %s", mode, index, process.node)
+        if suffix:
+            logger.info("Starting %s worker %d shadow engine %d on %s", mode, index, process.engine_id, process.node)
+        else:
+            logger.info("Starting %s worker %d on %s", mode, index, process.node)
 
         # Log and config files
-        worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}.out"
-        config_dump = self.runtime.log_dir / f"{process.node}_config.json"
+        worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}{suffix}.out"
+        config_dump = self.runtime.log_dir / f"{process.node}_config{suffix}.json"
 
         # Profiling setup
         profiling = self.config.profiling
@@ -225,7 +239,7 @@ class WorkerStageMixin:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys and profiling_selects_process:
             gpu_label = process.cuda_visible_devices.replace(",", "-")
-            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}"
+            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}{suffix}_profile_gpu{gpu_label}"
             nsys_prefix = profiling.get_nsys_prefix(
                 nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
             )
@@ -241,7 +255,19 @@ class WorkerStageMixin:
             profiling=profiling if profiling_selects_process else None,
         )
 
-        # Environment variables
+        automatic_nsys = getattr(self.config, "observability_nsys_enabled", False) is True
+        nsys_env: dict[str, str] = {}
+        if automatic_nsys:
+            gpu_label = process.cuda_visible_devices.replace(",", "-")
+            cmd, nsys_env = wrap_observability_nsys(
+                cmd,
+                config=self.config,
+                log_dir=self.runtime.log_dir,
+                report_name=f"{mode}/{process.node}_{mode}_w{index}{suffix}_profile_gpu{gpu_label}",
+                ranks=1,
+            )
+
+        # Worker environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
             **discovery_env(self.config, self.runtime),
@@ -254,6 +280,7 @@ class WorkerStageMixin:
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
+        env_to_set.update(nsys_env)
 
         env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
@@ -278,11 +305,15 @@ class WorkerStageMixin:
 
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
         force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        # Failover engines share their device list with the GMS sidecar (see start_gms_sidecar).
+        force_cvd = force_cvd or failover is not None
         if (force_cvd or should_set_cvd(process)) and len(process.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
 
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(self.backend.get_process_environment(process))
+        if failover is not None:
+            env_to_set.update(self.backend.get_failover_environment(process, self.runtime.job_id))
 
         # Add mooncake worker env vars if configured (SGLang only). Resolve the
         # worker's own IP so MOONCAKE_LOCAL_HOSTNAME is correct for multi-node
@@ -318,11 +349,18 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}{suffix}.json")
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
         bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
+
+        if failover is not None:
+            # The engine creates the lock file itself; its directory (also the GMS
+            # socket dir) must exist. The gms service made it, but the engine step
+            # should not depend on that after a relaunch.
+            worker_dir = self.backend.failover_worker_dir(self.runtime.job_id, process)
+            bash_preamble = _append_preamble(bash_preamble, f"mkdir -p {shlex.quote(worker_dir)}")
 
         # vLLM uses VLLM_PORT as the initial port for its internal message
         # queues. In a multi-node endpoint, concurrent TP ranks inherit the
@@ -331,7 +369,7 @@ class WorkerStageMixin:
         endpoint_nodes = {endpoint_process.node for endpoint_process in endpoint_processes}
         env_to_unset = ["VLLM_PORT"] if self.backend.type == "vllm" and len(endpoint_nodes) > 1 else None
 
-        step_name = f"{mode}_{index}_{process.node}"
+        step_name = f"{mode}_{index}_{process.node}{suffix}"
         proc = start_srun_process(
             command=cmd,
             nodelist=[process.node],
@@ -357,7 +395,10 @@ class WorkerStageMixin:
             critical=self.config.resources.worker_critical(mode),
             # SIGTERM reaches the engine through the step so it deregisters and
             # frees the GPUs cleanly; a signalled srun would SIGKILL it instead.
-            terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
+            terminate_timeout=(
+                self.config.observability.nsys.terminate_timeout if automatic_nsys else WORKER_TERMINATE_TIMEOUT_SECONDS
+            ),
+            signal_full=not automatic_nsys,
             step_name=step_name,
         )
 
@@ -425,7 +466,18 @@ class WorkerStageMixin:
             profiling=profiling if profiling_selects_process else None,
         )
 
-        # Environment variables
+        automatic_nsys = getattr(self.config, "observability_nsys_enabled", False) is True
+        nsys_env: dict[str, str] = {}
+        if automatic_nsys:
+            cmd, nsys_env = wrap_observability_nsys(
+                cmd,
+                config=self.config,
+                log_dir=self.runtime.log_dir,
+                report_name=f"{mode}/{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}",
+                ranks=total_gpus,
+            )
+
+        # Worker environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
             **discovery_env(self.config, self.runtime),
@@ -438,6 +490,7 @@ class WorkerStageMixin:
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
+        env_to_set.update(nsys_env)
 
         env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
@@ -567,8 +620,11 @@ class WorkerStageMixin:
             log_file=worker_log,
             node=leader.node,
             critical=self.config.resources.worker_critical(mode),
-            # scancel --signal --full reaches every MPI rank of the step at once.
-            terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
+            # Signal every MPI task; profiler wrappers stop capture before the app.
+            terminate_timeout=(
+                self.config.observability.nsys.terminate_timeout if automatic_nsys else WORKER_TERMINATE_TIMEOUT_SECONDS
+            ),
+            signal_full=not automatic_nsys,
             step_name=step_name,
         )
 
@@ -659,7 +715,9 @@ class WorkerStageMixin:
                     managed = self.start_endpoint_worker(endpoint_processes)
                     result[managed.name] = managed
         else:
-            # Per-process: one srun per node (SGLang)
+            # Per-process: one srun per node (SGLang, vLLM). Under backend.failover a
+            # worker's processes on a node are engine 0 and its shadows; the gms
+            # service that owns their weights came up in the before_workers phase.
             for endpoint_processes in grouped.values():
                 for process in endpoint_processes:
                     managed = self.start_worker(process, endpoint_processes)

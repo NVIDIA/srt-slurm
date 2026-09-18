@@ -85,6 +85,11 @@ OUTPUT_BASE="{{ output_base }}"
 OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
+{% if staged_config_dir %}
+# Rendered by `srtctl render`: nothing submitted this script, so nothing copied the
+# recipe into OUTPUT_DIR after sbatch handed back the job id. Stage it here instead.
+cp "{{ staged_config_dir }}"/*.yaml "${OUTPUT_DIR}/"
+{% endif %}
 
 # Export for Python orchestrator to use the same paths
 export SRTCTL_OUTPUT_DIR="${OUTPUT_DIR}"

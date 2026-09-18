@@ -90,6 +90,7 @@ def test_registered_kinds() -> None:
         "dcgm-exporter",
         "etcd",
         "generic",
+        "gms",
         "mooncake-master",
         "mooncake-store",
         "nats",

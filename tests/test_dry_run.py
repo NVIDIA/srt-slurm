@@ -398,6 +398,33 @@ class TestDryRunExecutionExtensions:
         assert "Execution Extensions" in output
         assert "profiling" in output
 
+    def test_inline_worker_selection_translation_shown(self, capsys):
+        config = _make_config(
+            {
+                "frontend": {
+                    "type": "dynamo",
+                    "worker_selection": {
+                        "prefill": "max-kv-overlap",
+                        "decode": "default",
+                        "instances": [
+                            {
+                                "name": "max-kv-overlap",
+                                "type": "dynamo-two-tier-cost-fn",
+                            }
+                        ],
+                    },
+                }
+            }
+        )
+
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "router_policy_config" in output
+        assert "/logs/router_policy_config.yaml" in output
+        assert "(auto)" in output
+        assert "worker_selection" in output
+        assert "max-kv-overlap" in output
+
     def test_custom_benchmark_details_shown(self, capsys):
         config = _make_config(
             {
@@ -1029,3 +1056,42 @@ class TestInfmaxWorkspaceMount:
             show_config_details(config)
         output = capsys.readouterr().out
         assert "MISSING" not in output
+
+
+@pytest.mark.parametrize("nsys, expected", [({}, "enabled"), ({"enabled": False}, "disabled")])
+def test_observability_nsys_details(capsys, nsys, expected):
+    cfg = _make_config({"observability": {"enabled": True, "nsys": nsys}, "frontend": {"type": "dynamo"}})
+    show_config_details(cfg)
+    output = capsys.readouterr().out
+    assert "nsys" in output and expected in output
+    if expected == "enabled":
+        for text in (
+            "NVTX (no CUDA tracing)",
+            "nsys CPU sampling",
+            "process-tree (every target)",
+            "Dynamo frontends",
+            "measured_workload",
+            "after warmup",
+            "1800s",
+            "DYN_ENABLE_RUST_NVTX",
+        ):
+            assert text in output
+    else:
+        assert "nsys targets" not in output
+
+
+def test_explicit_profiling_explains_observability_precedence(capsys):
+    cfg = _make_config(
+        {
+            "observability": {"enabled": True},
+            "profiling": {
+                "type": "nsys-time",
+                "delay_secs": 1,
+                "duration_secs": 2,
+            },
+        }
+    )
+    show_config_details(cfg)
+    output = capsys.readouterr().out
+    assert "superseded by profiling" in output
+    assert "nsys targets" not in output

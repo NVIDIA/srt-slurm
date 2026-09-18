@@ -218,6 +218,10 @@ class Process:
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
         node_rank: Rank within the endpoint (0 for leader)
+        engine_id: Which engine of the worker this is. 0 is the one every job has;
+            under ``backend.failover`` (vLLM shadow engine recovery) engines 1.. are
+            the standbys, sharing node, GPUs and node_rank with engine 0 but with
+            their own ports and their own srun step.
     """
 
     node: str
@@ -233,11 +237,17 @@ class Process:
     dp_rpc_port: int | None = None
     # Inherited from the parent Endpoint when the job is heterogeneous.
     het_group: int | None = None
+    engine_id: int = 0
 
     @property
     def is_leader(self) -> bool:
         """Whether this is the leader process for the endpoint."""
         return self.node_rank == 0
+
+    @property
+    def engine_suffix(self) -> str:
+        """Step-name and log-name suffix that tells a shadow engine apart from engine 0 (``""`` for it)."""
+        return f"_e{self.engine_id}" if self.engine_id else ""
 
     @property
     def cuda_visible_devices(self) -> str:
@@ -590,6 +600,7 @@ def endpoints_to_processes(
     endpoints: list[Endpoint],
     base_sys_port: int = DYN_SYSTEM_PORT_BASE,
     port_allocator: NodePortAllocator | None = None,
+    engines_per_process: int = 1,
     kv_events_port_sizes: dict[WorkerMode, int] | None = None,
 ) -> list[Process]:
     """Convert endpoints to physical processes.
@@ -604,11 +615,17 @@ def endpoints_to_processes(
         endpoints: List of Endpoint objects
         base_sys_port: Starting port for DYN_SYSTEM_PORT assignment
         port_allocator: NodePortAllocator for HTTP/bootstrap ports (created if None)
+        engines_per_process: Engines launched per (endpoint, node). 1 is the usual
+            layout; vLLM shadow engine recovery asks for ``1 + shadows``, and every
+            engine of a node then gets its own Process (same GPUs and node_rank,
+            distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
         kv_events_port_sizes: KV publisher port range per process, keyed by worker mode.
 
     Returns:
         List of Process objects
     """
+    if engines_per_process < 1:
+        raise ValueError(f"engines_per_process must be at least 1, got {engines_per_process}")
     processes: list[Process] = []
     current_sys_port = base_sys_port
 
@@ -616,42 +633,46 @@ def endpoints_to_processes(
         port_allocator = NodePortAllocator()
 
     for endpoint in endpoints:
-        # Allocate bootstrap port once per prefill endpoint (shared by all processes)
+        # Allocate bootstrap ports once per prefill endpoint (shared by all of an
+        # engine's processes); each engine of a worker binds its own.
         leader_node = endpoint.nodes[0]
-        endpoint_bootstrap_port = (
+        endpoint_bootstrap_ports = [
             port_allocator.next_bootstrap_port(leader_node) if endpoint.mode == "prefill" else None
-        )
+            for _ in range(engines_per_process)
+        ]
 
         for node_rank, node in enumerate(endpoint.nodes):
             is_leader = node_rank == 0
 
-            # Only leaders need http_port (for router to connect to)
-            http_port = port_allocator.next_http_port(node) if is_leader else 0
+            for engine_id in range(engines_per_process):
+                # Only leaders need http_port (for router to connect to)
+                http_port = port_allocator.next_http_port(node) if is_leader else 0
 
-            # Allocate kv_events port for each node in the endpoint (globally unique)
-            # Each node publishes KV events independently
-            node_kv_events_port = port_allocator.next_kv_events_port_block(
-                (kv_events_port_sizes or {}).get(endpoint.mode, 1)
-            )
-
-            # Allocate NIXL side channel port (globally unique, used by vLLM)
-            node_nixl_port = port_allocator.next_nixl_port()
-
-            processes.append(
-                Process(
-                    node=node,
-                    gpu_indices=endpoint.gpus_on_node(node_rank),
-                    sys_port=current_sys_port,
-                    http_port=http_port,
-                    endpoint_mode=endpoint.mode,
-                    endpoint_index=endpoint.index,
-                    node_rank=node_rank,
-                    bootstrap_port=endpoint_bootstrap_port,
-                    kv_events_port=node_kv_events_port,
-                    nixl_port=node_nixl_port,
-                    het_group=endpoint.het_group,
+                # Allocate kv_events port for each node in the endpoint (globally unique)
+                # Each node publishes KV events independently
+                node_kv_events_port = port_allocator.next_kv_events_port_block(
+                    (kv_events_port_sizes or {}).get(endpoint.mode, 1)
                 )
-            )
-            current_sys_port += 1
+
+                # Allocate NIXL side channel port (globally unique, used by vLLM)
+                node_nixl_port = port_allocator.next_nixl_port()
+
+                processes.append(
+                    Process(
+                        node=node,
+                        gpu_indices=endpoint.gpus_on_node(node_rank),
+                        sys_port=current_sys_port,
+                        http_port=http_port,
+                        endpoint_mode=endpoint.mode,
+                        endpoint_index=endpoint.index,
+                        node_rank=node_rank,
+                        bootstrap_port=endpoint_bootstrap_ports[engine_id],
+                        kv_events_port=node_kv_events_port,
+                        nixl_port=node_nixl_port,
+                        het_group=endpoint.het_group,
+                        engine_id=engine_id,
+                    )
+                )
+                current_sys_port += 1
 
     return processes

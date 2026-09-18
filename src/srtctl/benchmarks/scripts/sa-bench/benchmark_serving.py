@@ -72,7 +72,7 @@ except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 
 from benchmark_utils import convert_to_pytorch_benchmark_format
-from measurement_window import MeasurementWindow
+from measurement_window import MeasurementWindow, control_nsys
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
 
@@ -730,6 +730,7 @@ async def benchmark(
     slow_down_wait_time: float = 60.0,
     request_session: aiohttp.ClientSession | None = None,
     measurement_window: MeasurementWindow | None = None,
+    nsys_capture: bool = False,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
@@ -837,6 +838,11 @@ async def benchmark(
         async with semaphore:
             return await request_func(request_func_input=request_func_input, pbar=pbar)
 
+    # Start all frontend/worker captures after warmup and the initial probe.
+    # Acknowledgment latency is outside measured throughput/latency.
+    if nsys_capture:
+        control_nsys("start")
+
     # Publish ``running`` before any measured request can be scheduled. Capture
     # the final start immediately afterward so distributed-filesystem latency
     # from the atomic marker write is not charged to benchmark throughput.
@@ -912,6 +918,8 @@ async def benchmark(
             end_unix=benchmark_end_time_unix,
             duration=benchmark_duration,
         )
+    if nsys_capture:
+        control_nsys("stop")
     if backend == "dynamo" and request_session is not None and not request_session.closed:
         await request_session.close()
         # Allow asyncio to finish closing pooled transports before CPU-heavy metrics.
@@ -1292,6 +1300,7 @@ def main(args: argparse.Namespace):
                 slow_down_sleep_time=args.slow_down_sleep_time,
                 slow_down_wait_time=args.slow_down_wait_time,
                 measurement_window=measurement_window,
+                nsys_capture=args.save_result,
             )
         )
 

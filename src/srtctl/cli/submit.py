@@ -57,10 +57,12 @@ from srtctl.core.git_state import (
     write_git_state_snapshot,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
+from srtctl.core.runtime import Nodes
 from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
-from srtctl.ports import MOONCAKE_MASTER_PORT
+from srtctl.frontends.dynamo import ROUTER_POLICY_CONFIG_CONTAINER_PATH
+from srtctl.ports import FRONTEND_PUBLIC_PORT, MOONCAKE_MASTER_PORT
 from srtctl.runtime_scripts.dynamo_wheels import arch_from_binary, detect_target_arch
 from srtctl.status_server.server import add_arguments as add_status_server_arguments
 from srtctl.status_server.server import serve as serve_status_server
@@ -438,6 +440,46 @@ def show_config_details(config: SrtConfig) -> None:
     else:
         console.print("[dim]No custom environment variables configured.[/]")
 
+    # --- Shadow engine recovery (engine.failover, vLLM + Dynamo GPU Memory Service) ---
+    failover = getattr(config.backend, "failover", None)
+    if failover is not None:
+        from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, failover_root
+
+        root = failover_root(failover.shared_dir, "<job_id>")
+        restart_roles = [
+            role
+            for role in ("prefill", "decode", "agg")
+            if getattr(getattr(config.resources, f"{role}_restart", None), "enabled", False)
+        ]
+        relaunch = (
+            f"roles.{{{','.join(restart_roles)}}}.restart relaunches an exited engine in place as the new shadow"
+            if restart_roles
+            else "none: an exited engine's step ends and roles.<role>.critical decides (add roles.<role>.restart)"
+        )
+        lines = [
+            f"engines per worker: {failover.engines_per_worker} (engine 0 + {failover.shadow_engines} shadow)",
+            (
+                f"shared dir: {root}/<role>_<index>/  (gms_*.sock, {FAILOVER_LOCK_FILENAME}; node-local, every "
+                "container on the node)"
+            ),
+            (
+                "per worker and node: the gms service (one instance per worker, listed under Services) then steps "
+                "<role>_<index>_<node> and <role>_<index>_<node>_e<k>"
+            ),
+            "engine flags: --load-format gms --gms-shadow-mode (no --device-ids; CUDA_VISIBLE_DEVICES is pinned)",
+            (
+                "engine env: ENGINE_ID, GMS_SOCKET_DIR, FAILOVER_LOCK_PATH, DYN_VLLM_GMS_SHADOW_MODE=true, "
+                "DYN_SYSTEM_STARTING_HEALTH_STATUS=notready"
+            ),
+            f"engine relaunch: {relaunch}",
+        ]
+        console.print(Panel("\n".join(lines), title="Shadow Engine Recovery (engine.failover)", border_style="magenta"))
+        console.print(
+            "[yellow]NOTE:[/] two engines share each GPU: size gpu-memory-utilization so the active engine's KV "
+            "cache leaves room for the shadow's CUDA context, graphs and communicator buffers. To test a failover "
+            "kill the engine process, not its step (see docs/shadow-engine-recovery.md)."
+        )
+
     # --- Host setup (runs on the bare node, outside the container) ---
     if config.host_setup.enabled:
         host_table = Table(title="Host Setup (outside container)", show_lines=False, pad_edge=False)
@@ -488,7 +530,8 @@ def show_config_details(config: SrtConfig) -> None:
         for entry in effective:
             service = entry.service
             console.print(
-                f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement} "
+                f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement}"
+                f"{' per=worker' if service.effective_per == 'worker' else ''} "
                 f"start={service.effective_start} critical={str(service.effective_critical).lower()}"
                 f"{f' nodes={service.nodes}' if service.nodes is not None else ''}"
                 f"{' terminal' if service.terminal else ''}"
@@ -563,6 +606,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.telemetry.enabled
         or mooncake_cfg is not None
         or config.profiling.enabled
+        or config.frontend.worker_selection is not None
     )
     if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
@@ -618,6 +662,42 @@ def show_config_details(config: SrtConfig) -> None:
                             target,
                         )
 
+        if config.observability.enabled:
+            settings = config.observability.nsys
+            state = (
+                "enabled"
+                if config.observability_nsys_enabled
+                else ("superseded by profiling" if profiling.enabled else "disabled")
+            )
+            details.add_row("observability", "nsys", state)
+            if config.observability_nsys_enabled:
+                targets = "all worker processes/ranks"
+                if config.frontend.type == "dynamo":
+                    targets += " + Dynamo frontends"
+                details.add_row("observability", "nsys targets", targets)
+                details.add_row("observability", "nsys binary", profiling.nsys_binary)
+                details.add_row("observability", "nsys trace", "NVTX (no CUDA tracing)")
+                window = (
+                    "after warmup until workload completes (client start/stop hooks)"
+                    if settings.capture_window == "measured_workload"
+                    else "process launch until teardown"
+                )
+                details.add_row("observability", "nsys capture_window", settings.capture_window)
+                details.add_row("observability", "nsys capture", window)
+                if settings.capture_window == "measured_workload":
+                    details.add_row("observability", "SRT_NSYS_CONTROL_SCRIPT", "/srtctl-runtime/nsys_window.py")
+                    details.add_row("observability", "SRT_NSYS_CONTROL_DIR", "/logs/profiles/.control")
+                details.add_row("observability", "nsys CPU sampling", "process-tree (every target)")
+                details.add_row("observability", "nsys report timeout", f"{settings.report_timeout_secs}s")
+                details.add_row("observability", "nsys reports", "<log_dir>/profiles/{prefill,decode,agg,frontend}/")
+                details.add_row("observability", "nsys env", "DYN_ENABLE_RUST_NVTX=1")
+                if config.backend_type == "trtllm":
+                    details.add_row(
+                        "observability", "nsys TRT-LLM env", "TLLM_PROFILE_LOG_RANKS=all; TLLM_LLMAPI_ENABLE_NVTX=1"
+                    )
+                if settings.nvtx_injection_path:
+                    details.add_row("observability", "NVTX_INJECTION64_PATH", settings.nvtx_injection_path)
+
         tachometer = config.observability.tachometer
         if config.observability.tachometer_enabled:
             details.add_row("observability", "tachometer", "enabled")
@@ -659,6 +739,14 @@ def show_config_details(config: SrtConfig) -> None:
                     f"host collector (source {cpu_power.source}, <log_dir>/{cpu_power.storage_subdir}"
                     f"{', required' if cpu_power.required else ''})",
                 )
+
+        if config.frontend.worker_selection is not None:
+            details.add_row("frontend", "router_policy_config", f"{ROUTER_POLICY_CONFIG_CONTAINER_PATH} (auto)")
+            details.add_row(
+                "frontend",
+                "worker_selection",
+                yaml.safe_dump(config.frontend.worker_selection, sort_keys=False).rstrip(),
+            )
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
@@ -768,6 +856,7 @@ def generate_minimal_sbatch_script(
     output_dir: Path | None = None,
     runtime_config_filename: str = "config.yaml",
     serve_only: bool = False,
+    staged_config_dir: Path | None = None,
 ) -> str:
     """Generate minimal sbatch script that calls the Python orchestrator.
 
@@ -781,6 +870,9 @@ def generate_minimal_sbatch_script(
         output_dir: Custom output directory (CLI flag, highest priority)
         runtime_config_filename: Config file name under OUTPUT_DIR used by do_sweep
         serve_only: Keep the inference endpoint running without launching a benchmark
+        staged_config_dir: Directory holding the recipe YAML(s) the job copies into its own
+            OUTPUT_DIR at start. Set by ``srtctl render``, whose script is submitted by
+            someone else, so the copy ``srtctl apply`` does after sbatch never happens.
 
     Returns:
         Rendered sbatch script as string
@@ -824,24 +916,9 @@ def generate_minimal_sbatch_script(
             "SLURM jobs, and this job resolved to heterogeneous (either resources.het_jobs: true or the "
             "cluster's use_het_jobs default)"
         )
-    if het_components is None:
-        total_nodes = config.total_nodes
-        # Add extra node(s) for any dedicated-node role requested (etcd/nats,
-        # frontend, benchmark client). Colocated roles share one reserved node;
-        # otherwise each gets its own.
-        num_dedicated_roles = sum(
-            (
-                config.infra.etcd_nats_dedicated_node,
-                config.frontend.dedicated_node,
-                config.benchmark.client_dedicated_node,
-            )
-        )
-        if num_dedicated_roles > 0:
-            total_nodes += 1 if config.benchmark.colocate_with_frontend else num_dedicated_roles
-    else:
-        # Sum is informational only — the template iterates het_components and
-        # ignores total_nodes when het_components is set.
-        total_nodes = sum(c.nodes for c in het_components)
+    # For het jobs the sum is informational only — the template iterates het_components
+    # and ignores total_nodes when het_components is set.
+    total_nodes = planned_total_nodes(config) if het_components is None else sum(c.nodes for c in het_components)
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     # Resolve container image path (expand aliases from srtslurm.yaml)
@@ -872,6 +949,7 @@ def generate_minimal_sbatch_script(
         output_base=output_base,
         setup_script=setup_script,
         serve_only=serve_only,
+        staged_config_dir=str(staged_config_dir.resolve()) if staged_config_dir else None,
         config_environment={key: shlex.quote(str(value)) for key, value in config_environment.items()},
     )
 
@@ -934,6 +1012,98 @@ def _print_running_summary(config: SrtConfig, console: Console, *, serve_only: b
         console.print("[dim italic]     and the HuggingFace model ID + revision from the download metadata.[/]")
 
 
+def planned_total_nodes(config: SrtConfig) -> int:
+    """Nodes a non-heterogeneous job asks Slurm for: engine roles, pools, plus one per
+    dedicated role (etcd/nats, frontend, benchmark client), or one shared node when
+    ``benchmark.colocate_with_frontend`` folds the dedicated roles together."""
+    total_nodes = config.total_nodes
+    num_dedicated_roles = sum(
+        (
+            config.infra.etcd_nats_dedicated_node,
+            config.frontend.dedicated_node,
+            config.benchmark.client_dedicated_node,
+        )
+    )
+    if num_dedicated_roles > 0:
+        total_nodes += 1 if config.benchmark.colocate_with_frontend else num_dedicated_roles
+    return total_nodes
+
+
+def render_placement(config: SrtConfig) -> dict[str, Any]:
+    """What an external launcher needs to know about the job it is about to submit.
+
+    Written next to a rendered script as ``render.json``. The node indices are positions
+    in the allocation's nodelist (``scontrol show hostnames`` order), computed with the
+    same rules the orchestrator applies at job start; they are ``None`` for
+    heterogeneous jobs, whose components are addressed differently.
+    """
+    het = config.resources.het_components(
+        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+        cluster_default=get_srtslurm_setting("use_het_jobs", False),
+    )
+    if het is None:
+        total_nodes = planned_total_nodes(config)
+        head, client = Nodes.planned_role_indices(
+            total_nodes,
+            frontend_dedicated_node=config.frontend.dedicated_node,
+            client_dedicated_node=config.benchmark.client_dedicated_node,
+            etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+            colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
+        )
+        indices: dict[str, int | None] = {"frontend_node_index": head, "client_node_index": client}
+    else:
+        total_nodes = sum(c.nodes for c in het)
+        indices = {"frontend_node_index": None, "client_node_index": None}
+    return {
+        "schema_version": 1,
+        "name": config.name,
+        "total_nodes": total_nodes,
+        "heterogeneous": het is not None,
+        **indices,
+        "frontend_port": FRONTEND_PUBLIC_PORT,
+        "served_model_name": config.served_model_name,
+        "benchmark_type": config.benchmark.type,
+        "frontend_type": config.frontend.type,
+    }
+
+
+def _render_to_dir(
+    render_dir: Path,
+    script_content: str,
+    config: SrtConfig,
+    *,
+    source_config_path: Path,
+    runtime_config_filename: str,
+    runtime_config_text: str | None,
+) -> str:
+    """Write the sbatch script and the recipe(s) it stages into render_dir.
+
+    A rendered script is submitted by someone else, so it has to carry everything
+    ``submit_with_orchestrator`` would otherwise arrange after sbatch returns: the
+    recipe under OUTPUT_DIR (the template copies it from render_dir at job start) and
+    the git-state snapshot of any mounted checkouts. The script path is the last line
+    on stdout so a caller can do ``sbatch --parsable "$(srtctl render ...)"``.
+    """
+    render_dir.mkdir(parents=True, exist_ok=True)
+    staged_recipe = render_dir / "config.yaml"
+    if not (staged_recipe.exists() and staged_recipe.samefile(source_config_path)):
+        shutil.copy(source_config_path, staged_recipe)
+    if runtime_config_text is not None and runtime_config_filename != "config.yaml":
+        (render_dir / runtime_config_filename).write_text(runtime_config_text)
+    git_sources = git_snapshot_sources_from_extra_mounts(config)
+    if git_sources:
+        write_git_state_snapshot(render_dir / GIT_STATE_FILENAME, git_sources)
+    script_path = render_dir / "sbatch_script.sh"
+    script_path.write_text(script_content)
+    script_path.chmod(0o755)
+    placement = {**render_placement(config), "script": str(script_path.resolve())}
+    (render_dir / "render.json").write_text(json.dumps(placement, indent=2) + "\n")
+    console.print(f"[bold cyan]📝 Rendered:[/] {config.name} -> {script_path}")
+    _print_running_summary(config, console)
+    print(str(script_path.resolve()), flush=True)
+    return str(script_path.resolve())
+
+
 def submit_with_orchestrator(
     config_path: Path,
     config: SrtConfig | None = None,
@@ -945,6 +1115,7 @@ def submit_with_orchestrator(
     source_config_path: Path | None = None,
     runtime_config_text: str | None = None,
     serve_only: bool = False,
+    render_dir: Path | None = None,
 ) -> str | None:
     """Submit job using the new Python orchestrator.
 
@@ -964,9 +1135,13 @@ def submit_with_orchestrator(
         runtime_config_text: Resolved runtime YAML written under OUTPUT_DIR when
                              source_config_path is set.
         serve_only: Keep the inference endpoint running without launching a benchmark.
+        render_dir: Write the sbatch script and staged recipe here instead of submitting.
+            The script is self-contained: whoever runs ``sbatch`` on it gets the same
+            job ``srtctl apply`` would have submitted.
 
     Returns:
-        job_id string on success, None for dry_run.
+        job_id string on success, the rendered script path when render_dir is set,
+        None for dry_run.
     """
 
     if config is None:
@@ -987,6 +1162,7 @@ def submit_with_orchestrator(
         output_dir=output_dir,
         runtime_config_filename=runtime_config_filename,
         serve_only=serve_only,
+        staged_config_dir=render_dir,
     )
 
     # Identity validation (inline, <1s) — runs for both dry-run and submit
@@ -1022,6 +1198,16 @@ def submit_with_orchestrator(
     srtctl_root = get_srtslurm_setting("srtctl_root")
     srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
     validate_setup(srtctl_source)
+
+    if render_dir is not None:
+        return _render_to_dir(
+            render_dir,
+            script_content,
+            config,
+            source_config_path=source_config_path or config_path,
+            runtime_config_filename=runtime_config_filename,
+            runtime_config_text=resolved_runtime_config_text,
+        )
 
     # Write script to temp file
     fd, script_path = tempfile.mkstemp(suffix=".slurm", prefix="srtctl_", text=True)
@@ -1179,6 +1365,7 @@ def submit_single(
     runtime_config_text: str | None = None,
     enforce_preflight: bool = True,
     serve_only: bool = False,
+    render_dir: Path | None = None,
 ) -> str | None:
     """Submit a single job from YAML config.
 
@@ -1230,6 +1417,7 @@ def submit_single(
         source_config_path=source_config_path,
         runtime_config_text=runtime_config_text,
         serve_only=serve_only,
+        render_dir=render_dir,
     )
 
 
@@ -1593,6 +1781,7 @@ def submit_override(
     output_dir: Path | None = None,
     enforce_preflight: bool = True,
     serve_only: bool = False,
+    render_dir: Path | None = None,
 ) -> None:
     """Expand an override config file and submit each variant.
 
@@ -1615,6 +1804,11 @@ def submit_override(
         raw_config = yaml.safe_load(f)
 
     override_configs = generate_override_configs(raw_config, selector=selector)
+    if render_dir is not None and len(override_configs) != 1:
+        raise ValueError(
+            "render needs exactly one variant: pass a selector (-f config.yaml:base or -f config.yaml:override_name) "
+            f"instead of rendering {len(override_configs)} variants into one directory"
+        )
 
     if dry_run:
         base_name = raw_config["base"].get("name", "unnamed")
@@ -1684,6 +1878,7 @@ def submit_override(
                 runtime_config_text=runtime_config_text,
                 enforce_preflight=enforce_preflight,
                 serve_only=serve_only,
+                render_dir=render_dir,
             )
 
 
@@ -1749,6 +1944,7 @@ def main():
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
   srtctl dry-run -f config.yaml                  # Dry run
+  srtctl render -f config.yaml --to ./rendered   # Write the sbatch script for someone else to submit
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
@@ -1855,6 +2051,29 @@ def main():
 
     dry_run_parser = subparsers.add_parser("dry-run", help="Validate without submitting")
     add_common_args(dry_run_parser)
+    render_parser = subparsers.add_parser(
+        "render",
+        help="Write a self-contained sbatch script instead of submitting it",
+        description=(
+            "Render the exact sbatch script `srtctl apply` would submit, plus the staged recipe, into "
+            "--to DIR, and print the script path as the last line of stdout. For launchers that must own "
+            "the sbatch call themselves (e.g. a harness whose contract is `exec sbatch --parsable ...`)."
+        ),
+    )
+    add_common_args(render_parser)
+    render_parser.add_argument("--to", type=Path, required=True, dest="render_dir", help="Directory to render into")
+    render_parser.add_argument("--setup-script", type=str, help="Custom setup script in configs/")
+    render_parser.add_argument(
+        "--serve-only",
+        action="store_true",
+        help="Render a serve-only job: deploy the endpoint and keep serving until the job is cancelled.",
+    )
+    render_parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        dest="no_preflight",
+        help="Skip the pre-render model.path / model.container / telemetry filesystem checks.",
+    )
 
     preflight_parser = subparsers.add_parser(
         "preflight",
@@ -1983,6 +2202,7 @@ def main():
     args = parser.parse_args()
 
     json_mode = bool(getattr(args, "json_output", False))
+    render_dir: Path | None = getattr(args, "render_dir", None)
     mock_mode = bool(getattr(args, "mock_mode", False))
     serve_only = bool(getattr(args, "serve_only", False))
     if serve_only and mock_mode:
@@ -1996,7 +2216,9 @@ def main():
     # submit_override (tests, etc.) must not see a leaked stderr binding.
     global console
     _original_console = console
-    console = Console(file=sys.stderr) if json_mode else Console()
+    # stdout is the machine-readable channel for --json and for render (whose last
+    # line is the script path a caller feeds to sbatch); prose goes to stderr there.
+    console = Console(file=sys.stderr) if (json_mode or render_dir is not None) else Console()
 
     def restore_console() -> None:
         global console
@@ -2267,6 +2489,8 @@ def main():
             if effective_config_path.is_dir():
                 if serve_only:
                     raise ValueError("--serve-only expects a single config file, not a directory")
+                if render_dir is not None:
+                    raise ValueError("render expects a single config file, not a directory")
                 if selector:
                     logger.warning(f"Selector ':{selector}' ignored for directory input")
                 submit_directory(
@@ -2288,6 +2512,7 @@ def main():
                     output_dir=output_dir,
                     enforce_preflight=enforce_preflight,
                     serve_only=serve_only,
+                    render_dir=render_dir,
                 )
             else:
                 if selector:
@@ -2296,6 +2521,8 @@ def main():
                 if is_sweep:
                     if serve_only:
                         raise ValueError("--serve-only does not support sweep configs")
+                    if render_dir is not None:
+                        raise ValueError("render does not support sweep configs; render one variant at a time")
                     submit_sweep(
                         effective_config_path,
                         dry_run=is_dry_run,
@@ -2313,6 +2540,7 @@ def main():
                         output_dir=output_dir,
                         enforce_preflight=enforce_preflight,
                         serve_only=serve_only,
+                        render_dir=render_dir,
                     )
     except Exception as e:
         # Restore subprocess.run etc. before we exit so in-process test

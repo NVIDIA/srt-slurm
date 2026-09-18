@@ -298,3 +298,30 @@ class TestTieredCleanup:
 
         with patch("srtctl.core.processes.shutil.which", return_value=None):
             assert signal_step("anything") is False
+
+
+def test_profile_wrapper_uses_task_only_step_signal():
+    from srtctl.core.processes import signal_step
+
+    with (
+        patch("srtctl.core.processes.shutil.which", return_value="/bin/scancel"),
+        patch("srtctl.core.processes.subprocess.run", return_value=MagicMock(returncode=0)) as run,
+    ):
+        assert signal_step("profiled", step_ids={"profiled": "123.4"}, full=False)
+    assert run.call_args.args[0] == ["scancel", "--signal=TERM", "123.4"]
+
+
+def test_profile_shutdown_metadata_survives_registry_rename():
+    registry = ProcessRegistry(job_id="123")
+    popen = MagicMock(spec=Popen)
+    popen.poll.return_value = None
+    popen.pid = 1234
+    proc = ManagedProcess("original", popen, step_name="profiled", terminate_timeout=90, signal_full=False)
+    registry.add_processes({"renamed": proc})
+    with (
+        patch("srtctl.core.processes.signal_step", return_value=True) as signal,
+        patch("srtctl.core.processes.list_step_ids", return_value={"profiled": "123.4"}),
+    ):
+        registry.cleanup()
+    signal.assert_called_once_with("profiled", "TERM", step_ids={"profiled": "123.4"}, full=False)
+    assert 85 < popen.wait.call_args.kwargs["timeout"] <= 90
