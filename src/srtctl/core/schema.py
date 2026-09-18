@@ -1348,6 +1348,42 @@ class TachometerConfig:
 
 
 @dataclass(frozen=True)
+class NsysObservabilityConfig:
+    """Automatic NVTX capture of workers and Dynamo frontends.
+
+    Enabled by ``observability.enabled`` unless explicitly opted out. An
+    explicit top-level ``profiling`` mode takes precedence over this preset.
+    Capture continues until teardown without changing benchmark traffic.
+    """
+
+    # Set false to keep other observability signals without launching nsys.
+    enabled: bool = True
+    # Seconds after each process starts before NVTX/CPU collection begins.
+    delay_secs: int = 0
+    # Collect frontend CPU samples in addition to NVTX; workers do not sample.
+    frontend_cpu_sampling: bool = True
+    # Maximum time to finalize a worker step's reports before stopping its apps.
+    report_timeout_secs: int = 1800
+    # Optional container path to libToolsInjection64.so for NVTX injection.
+    nvtx_injection_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.delay_secs < 0:
+            raise ValidationError("observability.nsys.delay_secs must be >= 0")
+        if self.report_timeout_secs <= 0:
+            raise ValidationError("observability.nsys.report_timeout_secs must be positive")
+        if self.nvtx_injection_path is not None and not self.nvtx_injection_path.startswith("/"):
+            raise ValidationError("observability.nsys.nvtx_injection_path must be an absolute container path")
+
+    @property
+    def terminate_timeout(self) -> int:
+        """Allow report finalization, then the application tree's shutdown grace."""
+        return self.report_timeout_secs + 150
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ObservabilityConfig:
     """Observability configuration for OTEL tracing.
 
@@ -1376,6 +1412,9 @@ class ObservabilityConfig:
 
     and, for the run's server-side capture:
 
+    * Nsight Systems NVTX capture on all worker processes/ranks and Dynamo
+      frontends, with frontend CPU samples (``nsys.enabled: false`` opts out).
+      Explicit top-level ``profiling`` takes precedence.
     * native Tachometer collection of every ``/metrics`` endpoint the benchmark
       client does not already poll (see ``TelemetryStageMixin.start_tachometer``
       and ``tachometer`` below).
@@ -1405,6 +1444,7 @@ class ObservabilityConfig:
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
+        nsys: Automatic Nsight Systems capture, enabled with the master switch.
         tachometer: Native Tachometer capture configuration. Follows ``enabled``
             unless ``tachometer.enabled`` is set explicitly (see
             :class:`TachometerConfig`).
@@ -1420,6 +1460,7 @@ class ObservabilityConfig:
     otel_endpoint: str | None = None
 
     tachometer: TachometerConfig = field(default_factory=TachometerConfig)
+    nsys: NsysObservabilityConfig = field(default_factory=NsysObservabilityConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -3094,6 +3135,11 @@ class SrtConfig:
                 f'telemetry.cpu_power.source: "{cpu_power.source}" has no effect unless telemetry.cpu_power.enabled; '
                 "it names a mandatory provider for a leg that will not run"
             )
+
+    @property
+    def observability_nsys_enabled(self) -> bool:
+        """Use the automatic preset only when no explicit profiler owns the run."""
+        return self.observability.enabled and self.observability.nsys.enabled and not self.profiling.enabled
 
     def _validate_observability(self):
         """Validate Tachometer collection under observability."""

@@ -4,6 +4,7 @@ srtctl supports two profiling backends for performance analysis: **Torch Profile
 
 ## Table of Contents
 
+- [Observability capture](#observability-capture)
 - [Quick Start](#quick-start)
 - [Profiling Modes](#profiling-modes)
 - [Configuration Options](#configuration-options)
@@ -17,6 +18,68 @@ srtctl supports two profiling backends for performance analysis: **Torch Profile
 - [Troubleshooting](#troubleshooting)
 
 ---
+
+## Observability capture
+
+To capture the serving timeline alongside metrics and request traces, add:
+
+```yaml
+observability:
+  enabled: true
+```
+
+This starts Nsight Systems on **every launched worker process, every TRT-LLM MPI
+rank, and every Dynamo frontend**. The preset records NVTX ranges on workers and
+frontends, plus CPU samples on Dynamo frontends. It does not collect CUDA API or
+GPU kernel events. Use the explicit `profiling` modes below for those domains.
+
+Capture begins at process launch and continues until teardown. It does not
+change the benchmark type, traffic, duration, or profiler HTTP/CUDA control
+routes, so it also works with custom benchmarks and manual serving sessions.
+Optional settings are:
+
+```yaml
+observability:
+  enabled: true
+  nsys:
+    enabled: true                 # false keeps other observability signals
+    delay_secs: 0                 # delay collection after each process starts
+    frontend_cpu_sampling: true
+    report_timeout_secs: 1800     # per-step report finalization budget
+    # nvtx_injection_path: /opt/nsys/target-linux-sbsa/libToolsInjection64.so
+```
+
+An enabled top-level `profiling` mode (`torch`, `nsys`, or `nsys-time`) takes
+precedence and disables this automatic preset, including automatic frontend
+capture. `profiling.type: none` leaves the preset active. With
+`observability.enabled: false`, `nsys.enabled` has no effect.
+
+**Container requirements.** The serving image must include `nsys` (or mount it
+and set `SRTCTL_NSYS_BIN` on the submitting/orchestrating host), Bash, `setsid`,
+`pgrep`, `pkill`, and `timeout`. The preset sets `DYN_ENABLE_RUST_NVTX=1`; Dynamo
+must have been built with NVTX support to emit Rust ranges. On TRT-LLM workers it
+also sets `TLLM_LLMAPI_ENABLE_NVTX=1` and `TLLM_PROFILE_LOG_RANKS=all`. Set
+`nvtx_injection_path` only when the image needs an explicit NVTX injection
+library; it must be an absolute **container** path compatible with that nsys
+installation. Frontend CPU sampling uses `--sample=system-wide`, a 26,000,000
+sampling period, and 32 samples per backtrace, and requires the host's perf
+permissions. Set `frontend_cpu_sampling: false` when sampling is unavailable.
+
+**Reports and shutdown.** Files are under the run's `logs/profiles/` directory:
+
+- `frontend/<node>_frontend_<index>.nsys-rep`
+- `<mode>/<node>_<mode>_w<index>_profile_rank<rank>.nsys-rep` for MPI workers
+- `<mode>/<node>_<mode>_w<index>_profile_gpu<devices>.nsys-rep` for other workers
+
+During normal srtctl teardown, each wrapper stops capture and waits for all
+reports in its MPI step to finalize before terminating applications. A failed
+stop or missing rank times out and makes the wrapper exit nonzero. Leave room
+in the job time limit for report export and application shutdown (up to the
+configured report budget plus 150 seconds); allocation timeouts and forced
+cancellation can interrupt export. Inspect the `.nsys-rep` contents before
+calling a profiling run successful: an existing file alone does not prove NVTX
+ranges or CPU samples were collected. `srtctl dry-run` shows the effective
+preset, opt-out, or explicit-profiling precedence.
 
 ## Quick Start
 
@@ -44,7 +107,7 @@ profiling:
 
 | Mode    | Description                                                      | Output                                         |
 | ------- | ---------------------------------------------------------------- | ---------------------------------------------- |
-| `none`  | Default. No profiling, uses `dynamo.sglang` for serving          | -                                              |
+| `none`  | No explicit profiling; the observability preset may still apply          | -                                              |
 | `torch` | PyTorch Profiler. Good for Python-level and CUDA kernel analysis | `/logs/profiles/{mode}/` (Chrome trace format) |
 | `nsys`  | NVIDIA Nsight Systems. Low-overhead GPU profiling                | `/logs/profiles/{mode}/` (`*.nsys-rep`)        |
 

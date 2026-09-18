@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.backends.vllm import VLLMProtocol
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
+from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
@@ -241,7 +242,16 @@ class WorkerStageMixin:
             profiling=profiling if profiling_selects_process else None,
         )
 
-        # Environment variables
+        automatic_nsys = getattr(self.config, "observability_nsys_enabled", False) is True
+        nsys_env: dict[str, str] = {}
+        if automatic_nsys:
+            gpu_label = process.cuda_visible_devices.replace(",", "-")
+            cmd, nsys_env = wrap_observability_nsys(
+                cmd, config=self.config, log_dir=self.runtime.log_dir,
+                report_name=f"{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}", ranks=1,
+            )
+
+        # Worker environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
             **discovery_env(self.config, self.runtime),
@@ -254,6 +264,7 @@ class WorkerStageMixin:
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
+        env_to_set.update(nsys_env)
 
         env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
@@ -357,7 +368,10 @@ class WorkerStageMixin:
             critical=self.config.resources.worker_critical(mode),
             # SIGTERM reaches the engine through the step so it deregisters and
             # frees the GPUs cleanly; a signalled srun would SIGKILL it instead.
-            terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
+            terminate_timeout=(
+                self.config.observability.nsys.terminate_timeout if automatic_nsys else WORKER_TERMINATE_TIMEOUT_SECONDS
+            ),
+            signal_full=not automatic_nsys,
             step_name=step_name,
         )
 
@@ -425,7 +439,15 @@ class WorkerStageMixin:
             profiling=profiling if profiling_selects_process else None,
         )
 
-        # Environment variables
+        automatic_nsys = getattr(self.config, "observability_nsys_enabled", False) is True
+        nsys_env: dict[str, str] = {}
+        if automatic_nsys:
+            cmd, nsys_env = wrap_observability_nsys(
+                cmd, config=self.config, log_dir=self.runtime.log_dir,
+                report_name=f"{mode}/{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}", ranks=total_gpus,
+            )
+
+        # Worker environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
             **discovery_env(self.config, self.runtime),
@@ -438,6 +460,7 @@ class WorkerStageMixin:
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
+        env_to_set.update(nsys_env)
 
         env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
@@ -567,8 +590,11 @@ class WorkerStageMixin:
             log_file=worker_log,
             node=leader.node,
             critical=self.config.resources.worker_critical(mode),
-            # scancel --signal --full reaches every MPI rank of the step at once.
-            terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
+            # Signal every MPI task; profiler wrappers stop capture before the app.
+            terminate_timeout=(
+                self.config.observability.nsys.terminate_timeout if automatic_nsys else WORKER_TERMINATE_TIMEOUT_SECONDS
+            ),
+            signal_full=not automatic_nsys,
             step_name=step_name,
         )
 

@@ -13,6 +13,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
+from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
 from srtctl.services.implicit import discovery_env
@@ -91,6 +92,15 @@ class DynamoFrontend:
             cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
 
+            automatic_nsys = getattr(config, "observability_nsys_enabled", False) is True
+            nsys_env: dict[str, str] = {}
+            if automatic_nsys:
+                cmd, nsys_env = wrap_observability_nsys(
+                    cmd, config=config, log_dir=runtime.log_dir,
+                    report_name=f"frontend/{node}_frontend_{idx}", frontend=True,
+                )
+                logger.info("Observability: nsys on frontend %d and all worker ranks", idx)
+
             env_to_set = {
                 **discovery_env(config, runtime),
                 "DYN_REQUEST_PLANE": config.dynamo.request_plane,
@@ -101,6 +111,7 @@ class DynamoFrontend:
 
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
             env_to_set.update(build_otel_env(config.observability, "frontend"))
+            env_to_set.update(nsys_env)
 
             # Add global recipe environment, including values derived from
             # dynamo.wheel, before frontend-specific overrides.
@@ -139,7 +150,10 @@ class DynamoFrontend:
                     log_file=frontend_log,
                     node=node,
                     critical=True,
-                    terminate_timeout=FRONTEND_TERMINATE_TIMEOUT_SECONDS,
+                    terminate_timeout=(
+                        config.observability.nsys.terminate_timeout if automatic_nsys else FRONTEND_TERMINATE_TIMEOUT_SECONDS
+                    ),
+                    signal_full=not automatic_nsys,
                     step_name=step_name,
                 )
             )

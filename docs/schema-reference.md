@@ -242,6 +242,7 @@ Observability configuration for OTEL tracing.
 | `enable_otel` | bool | `False` | If True, inject OTEL environment variables into all workers and frontends. Requires otel_endpoint to be set. Default: False. |
 | `otel_endpoint` | str \| None | `None` | OTEL collector endpoint (e.g. "http://10.0.0.1:4317"). Required when enable_otel is True. |
 | `tachometer` | [TachometerConfig](#tachometerconfig) | `TachometerConfig()` | Native Tachometer capture configuration. Follows ``enabled`` unless ``tachometer.enabled`` is set explicitly (see :class:`TachometerConfig`). |
+| `nsys` | [NsysObservabilityConfig](#nsysobservabilityconfig) | `NsysObservabilityConfig()` | Automatic Nsight Systems capture, enabled with the master switch. |
 
 ### TelemetryConfig
 
@@ -392,6 +393,18 @@ Native Tachometer collection for an observability-enabled run.
 | `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 | `node_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 | `process_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
+
+### NsysObservabilityConfig
+
+Automatic NVTX capture of workers and Dynamo frontends.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `True` | Set false to keep other observability signals without launching nsys. |
+| `delay_secs` | int | `0` | Seconds after each process starts before NVTX/CPU collection begins. |
+| `frontend_cpu_sampling` | bool | `True` | Collect frontend CPU samples in addition to NVTX; workers do not sample. |
+| `report_timeout_secs` | int | `1800` | Maximum time to finalize a worker step's reports before stopping its apps. |
+| `nvtx_injection_path` | str \| None | `None` | Optional container path to libToolsInjection64.so for NVTX injection. |
 
 ### TelemetryExporterConfig
 

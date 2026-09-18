@@ -618,6 +618,30 @@ def show_config_details(config: SrtConfig) -> None:
                             target,
                         )
 
+        if config.observability.enabled:
+            settings = config.observability.nsys
+            state = "enabled" if config.observability_nsys_enabled else (
+                "superseded by profiling" if profiling.enabled else "disabled"
+            )
+            details.add_row("observability", "nsys", state)
+            if config.observability_nsys_enabled:
+                targets = "all worker processes/ranks"
+                if config.frontend.type == "dynamo":
+                    targets += " + Dynamo frontends"
+                details.add_row("observability", "nsys targets", targets)
+                details.add_row("observability", "nsys binary", profiling.nsys_binary)
+                details.add_row("observability", "nsys trace", "NVTX (no CUDA tracing)")
+                details.add_row("observability", "nsys capture", f"launch + {settings.delay_secs}s until teardown")
+                if config.frontend.type == "dynamo":
+                    details.add_row("observability", "nsys frontend CPU", str(settings.frontend_cpu_sampling).lower())
+                details.add_row("observability", "nsys report timeout", f"{settings.report_timeout_secs}s")
+                details.add_row("observability", "nsys reports", "<log_dir>/profiles/{prefill,decode,agg,frontend}/")
+                details.add_row("observability", "nsys env", "DYN_ENABLE_RUST_NVTX=1")
+                if config.backend_type == "trtllm":
+                    details.add_row("observability", "nsys TRT-LLM env", "TLLM_PROFILE_LOG_RANKS=all; TLLM_LLMAPI_ENABLE_NVTX=1")
+                if settings.nvtx_injection_path:
+                    details.add_row("observability", "NVTX_INJECTION64_PATH", settings.nvtx_injection_path)
+
         tachometer = config.observability.tachometer
         if config.observability.tachometer_enabled:
             details.add_row("observability", "tachometer", "enabled")

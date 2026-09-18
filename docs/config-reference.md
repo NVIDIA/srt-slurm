@@ -1350,10 +1350,17 @@ The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable server-side metrics/traces, Tachometer collection, and host sampling |
+| `enabled` | bool | `false` | Enable server-side metrics/traces, Nsight Systems capture, and host sampling |
+| `nsys` | object | `enabled: true` | NVTX capture of all worker processes/ranks and Dynamo frontends when observability is enabled; see [Profiling](profiling.md#observability-capture) |
 | `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
 | `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
 | `tachometer` | object | `enabled: null` | Native Tachometer collection settings; `enabled: null` follows `observability.enabled`, explicit `false` opts out |
+
+`observability.enabled: true` also starts nsys with frontend CPU sampling. Set
+`observability.nsys.enabled: false` to opt out; an enabled top-level `profiling`
+mode takes precedence. The serving container must provide nsys and the required
+NVTX support. See [Observability capture](profiling.md#observability-capture)
+for timing, sampling, injection, and report-finalization settings.
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
