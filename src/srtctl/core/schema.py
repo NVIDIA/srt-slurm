@@ -1349,7 +1349,7 @@ class TachometerConfig:
 
 @dataclass(frozen=True)
 class NsysObservabilityConfig:
-    """Automatic NVTX capture of workers and Dynamo frontends.
+    """Automatic NVTX tracing and CPU sampling of workers and Dynamo frontends.
 
     Enabled by ``observability.enabled`` unless explicitly opted out. An
     explicit top-level ``profiling`` mode takes precedence over this preset.
@@ -1362,9 +1362,6 @@ class NsysObservabilityConfig:
     enabled: bool = True
     # measured_workload excludes warmup; including_startup spans process launch through teardown.
     capture_window: Literal["measured_workload", "including_startup"] = "measured_workload"
-    # Enable CPU sampling in frontend reports. NVTX tracing stays enabled when false.
-    # Sampling covers all processes on frontend hosts; worker profiler sessions disable sampling.
-    frontend_cpu_sampling: bool = True
     # Maximum wait for a control acknowledgment or a step's report finalization.
     report_timeout_secs: int = 1800
     # Optional container path to libToolsInjection64.so for NVTX injection.
@@ -1415,8 +1412,8 @@ class ObservabilityConfig:
 
     and, for the run's server-side capture:
 
-    * Nsight Systems NVTX capture on all worker processes/ranks and Dynamo
-      frontends, with frontend CPU samples (``nsys.enabled: false`` opts out).
+    * Nsight Systems NVTX tracing and CPU sampling on all worker processes/ranks
+      and Dynamo frontends (``nsys.enabled: false`` opts out).
       Explicit top-level ``profiling`` takes precedence.
     * native Tachometer collection of every ``/metrics`` endpoint the benchmark
       client does not already poll (see ``TelemetryStageMixin.start_tachometer``

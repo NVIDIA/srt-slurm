@@ -62,7 +62,6 @@ def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
             "enabled": True,
             "nsys": {
                 "capture_window": "including_startup",
-                "frontend_cpu_sampling": False,
                 "report_timeout_secs": 45,
                 "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
             },
@@ -122,9 +121,8 @@ def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, fr
         assert "--trace=nvtx" in script
     assert "--delay" not in script
     assert "--duration" not in script and "cuda,nvtx" not in script
-    assert ("--sample=system-wide" if frontend else "--sample=none") in script
-    if frontend:
-        assert "--sampling-period=26000000" in script and "--samples-per-backtrace=32" in script
+    assert "--sample=process-tree" in script
+    assert "--sampling-period=26000000" in script and "--samples-per-backtrace=32" in script
     assert env["SRT_NSYS_REPORT_EXPECTED"] == "8"
     assert env["NVTX_INJECTION64_PATH"] == "/opt/nvtx.so"
     assert env["DYN_ENABLE_RUST_NVTX"] == "1"
@@ -138,9 +136,7 @@ def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, fr
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, enabled):
-    cfg = config(
-        observability={"enabled": enabled, "nsys": {"frontend_cpu_sampling": False, "report_timeout_secs": 60}}
-    )
+    cfg = config(observability={"enabled": enabled, "nsys": {"report_timeout_secs": 60}})
     topology = SimpleNamespace(frontend_nodes=["node-a", "node-b"], frontend_port=8180)
     runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -156,7 +152,7 @@ def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, ena
         command = call.kwargs["command"]
         if enabled:
             spec = json.loads(command[4])
-            assert "dynamo.frontend" in command and "--sample=none" in spec["start_args"]
+            assert "dynamo.frontend" in command and "--sample=process-tree" in spec["start_args"]
             assert spec["output"].endswith(f"frontend/node-{'ab'[index]}_frontend_{index}")
             assert call.kwargs["env_to_set"]["SRT_NSYS_REPORT_EXPECTED"] == "1"
             assert proc.terminate_timeout == 210
@@ -194,7 +190,7 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
         managed = stage.start_endpoint_worker([process, second]) if mpi else stage.start_worker(process, [process])
     args = launch.call_args.kwargs
     spec = json.loads(args["command"][4])
-    assert "--sample=none" in spec["start_args"]
+    assert "--sample=process-tree" in spec["start_args"]
     assert args["env_to_set"]["SRT_NSYS_REPORT_EXPECTED"] == ("16" if mpi else "1")
     assert not managed.signal_full
     assert managed.terminate_timeout == cfg.observability.nsys.terminate_timeout

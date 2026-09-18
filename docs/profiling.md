@@ -29,8 +29,8 @@ observability:
 ```
 
 This starts Nsight Systems on **every launched worker process, every TRT-LLM MPI
-rank, and every Dynamo frontend**. The preset records NVTX ranges on workers and
-frontends. Frontend profiler sessions also enable CPU sampling by default.
+rank, and every Dynamo frontend**. Every profiler session records both NVTX
+ranges and CPU samples by default.
 The preset does not collect CUDA API or GPU kernel events. Use the explicit
 `profiling` modes below for those domains.
 
@@ -49,7 +49,6 @@ observability:
   nsys:
     enabled: true
     capture_window: measured_workload  # default: after warmup through workload completion
-    frontend_cpu_sampling: true        # false keeps NVTX ranges but disables CPU sampling
     report_timeout_secs: 1800          # control/report-finalization budget, not capture length
     # nvtx_injection_path: /opt/nsys/target-linux-sbsa/libToolsInjection64.so
 ```
@@ -67,15 +66,10 @@ periodically records instruction pointers and call stacks, helping identify
 functions that consume CPU time without requiring an NVTX range around each
 function. Both appear in the Nsight report.
 
-| `frontend_cpu_sampling` | Frontend profiler session | Worker profiler sessions |
-|---|---|---|
-| `true` (default) | NVTX ranges and CPU sampling | NVTX ranges; CPU sampling disabled |
-| `false` | NVTX ranges; CPU sampling disabled | NVTX ranges; CPU sampling disabled |
-
-The frontend session uses **system-wide** sampling on its host. Its report can
-therefore include samples from other processes on that host, including a
-colocated worker. The flag controls sampling initiated by the frontend
-profiler; NVTX tracing remains enabled in either setting.
+Every frontend and worker session uses **process-tree** CPU sampling: its
+report includes the launched application and its child processes. Each MPI
+rank has its own profiler session and collects CPU samples for that rank.
+There is no separate CPU-sampling toggle in this preset.
 
 **Benchmark boundaries.** SA-Bench starts capture after its warmup and initial
 probe, then stops after the measured requests finish, outside its timing
@@ -123,9 +117,10 @@ Rust ranges. On TRT-LLM workers it
 also sets `TLLM_LLMAPI_ENABLE_NVTX=1` and `TLLM_PROFILE_LOG_RANKS=all`. Set
 `nvtx_injection_path` only when the image needs an explicit NVTX injection
 library; it must be an absolute **container** path compatible with that nsys
-installation. Frontend CPU sampling uses `--sample=system-wide`, a 26,000,000
-sampling period, and 32 samples per backtrace, and requires the host's perf
-permissions. Set `frontend_cpu_sampling: false` when sampling is unavailable.
+installation. Frontend and worker CPU sampling uses `--sample=process-tree`,
+a 26,000,000 sampling period, and 32 samples per backtrace, and requires the
+host's perf permissions. Run `nsys status --environment` in the serving
+environment to verify CPU sampling is supported.
 
 **Reports and shutdown.** Files for `measured_workload` are under the run's
 `logs/profiles/` directory:

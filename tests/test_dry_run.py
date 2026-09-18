@@ -1067,6 +1067,8 @@ def test_observability_nsys_details(capsys, nsys, expected):
     if expected == "enabled":
         for text in (
             "NVTX (no CUDA tracing)",
+            "nsys CPU sampling",
+            "process-tree (every target)",
             "Dynamo frontends",
             "measured_workload",
             "after warmup",

@@ -397,13 +397,12 @@ Native Tachometer collection for an observability-enabled run.
 
 ### NsysObservabilityConfig
 
-Automatic NVTX capture of workers and Dynamo frontends.
+Automatic NVTX tracing and CPU sampling of workers and Dynamo frontends.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `True` | Set false to keep other observability signals without launching nsys. |
 | `capture_window` | one of `'measured_workload'`, `'including_startup'` | `'measured_workload'` | measured_workload excludes warmup; including_startup spans process launch through teardown. |
-| `frontend_cpu_sampling` | bool | `True` | Enable CPU sampling in frontend reports. NVTX tracing stays enabled when false. Sampling covers all processes on frontend hosts; worker profiler sessions disable sampling. |
 | `report_timeout_secs` | int | `1800` | Maximum wait for a control acknowledgment or a step's report finalization. |
 | `nvtx_injection_path` | str \| None | `None` | Optional container path to libToolsInjection64.so for NVTX injection. |
 

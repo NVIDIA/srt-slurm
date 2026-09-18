@@ -686,8 +686,7 @@ def show_config_details(config: SrtConfig) -> None:
                 if settings.capture_window == "measured_workload":
                     details.add_row("observability", "SRT_NSYS_CONTROL_SCRIPT", "/srtctl-runtime/nsys_window.py")
                     details.add_row("observability", "SRT_NSYS_CONTROL_DIR", "/logs/profiles/.control")
-                if config.frontend.type == "dynamo":
-                    details.add_row("observability", "nsys frontend CPU", str(settings.frontend_cpu_sampling).lower())
+                details.add_row("observability", "nsys CPU sampling", "process-tree (every target)")
                 details.add_row("observability", "nsys report timeout", f"{settings.report_timeout_secs}s")
                 details.add_row("observability", "nsys reports", "<log_dir>/profiles/{prefill,decode,agg,frontend}/")
                 details.add_row("observability", "nsys env", "DYN_ENABLE_RUST_NVTX=1")

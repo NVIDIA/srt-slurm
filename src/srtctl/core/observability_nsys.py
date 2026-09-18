@@ -34,22 +34,24 @@ def wrap_observability_nsys(
     """
     settings = config.observability.nsys
     (log_dir / "profiles" / report_name).parent.mkdir(parents=True, exist_ok=True)
-    sample_cpu = frontend and settings.frontend_cpu_sampling
+    capture_args = [
+        "--sample=process-tree",
+        "--cpuctxsw=process-tree",
+        "--gpu-metrics-devices=none",
+        "--sampling-period=26000000",
+        "--samples-per-backtrace=32",
+    ]
     prefix = [
         config.profiling.nsys_binary,
         "profile",
         "--force-overwrite=true",
         "--trace=nvtx",
-        "--sample=system-wide" if sample_cpu else "--sample=none",
-        "--cpuctxsw=none",
-        "--gpu-metrics-devices=none",
+        *capture_args,
         "--kill",
         "none",
         "--wait",
         "all",
     ]
-    if sample_cpu:
-        prefix += ["--sampling-period=26000000", "--samples-per-backtrace=32"]
     prefix += ["-o", f"/logs/profiles/{report_name}"]
     environment = {
         "DYN_ENABLE_RUST_NVTX": "1",
@@ -64,19 +66,12 @@ def wrap_observability_nsys(
     if settings.capture_window == "measured_workload":
         step = uuid.uuid4().hex
         write_json(log_dir / "profiles" / ".control" / "steps" / f"{step}.json", {"ranks": ranks})
-        start_args = [
-            "--sample=system-wide" if sample_cpu else "--sample=none",
-            "--cpuctxsw=none",
-            "--gpu-metrics-devices=none",
-        ]
-        if sample_cpu:
-            start_args += ["--sampling-period=26000000", "--samples-per-backtrace=32"]
         spec = {
             "control_dir": "/logs/profiles/.control",
             "step": step,
             "ranks": ranks,
             "nsys": config.profiling.nsys_binary,
-            "start_args": start_args,
+            "start_args": capture_args,
             "output": f"/logs/profiles/{report_name}",
             "timeout": settings.report_timeout_secs,
         }

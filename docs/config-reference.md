@@ -1365,12 +1365,13 @@ The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
 | `enabled` | bool | `false` | Enable server-side metrics/traces, Nsight Systems capture, and host sampling |
-| `nsys` | object | `enabled: true` | NVTX capture of all worker processes/ranks and Dynamo frontends when observability is enabled; see [Profiling](profiling.md#observability-capture) |
+| `nsys` | object | `enabled: true` | NVTX tracing and CPU sampling of all worker processes/ranks and Dynamo frontends when observability is enabled; see [Profiling](profiling.md#observability-capture) |
 | `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
 | `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
 | `tachometer` | object | `enabled: null` | Native Tachometer collection settings; `enabled: null` follows `observability.enabled`, explicit `false` opts out |
 
-`observability.enabled: true` also enables nsys with frontend CPU sampling.
+`observability.enabled: true` also enables nsys with NVTX tracing and CPU sampling
+on every frontend and worker process/rank.
 Its default `nsys.capture_window: measured_workload` starts collection after warmup and
 stops it when the measured workload finishes. Supported bundled runners call
 the boundary hooks automatically; custom/manual clients must call them at their
