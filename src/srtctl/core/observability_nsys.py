@@ -1,15 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The automatic observability profiler, independent of benchmark control."""
+"""Automatic observability profiling with process or benchmark-driven windows."""
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.core.nsys_keepalive import keepalive_command
+from srtctl.runtime_scripts.nsys_window import write_json
 
 if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
@@ -41,8 +43,6 @@ def wrap_observability_nsys(
         "--sample=system-wide" if sample_cpu else "--sample=none",
         "--cpuctxsw=none",
         "--gpu-metrics-devices=none",
-        "--delay",
-        str(settings.delay_secs),
         "--kill",
         "none",
         "--wait",
@@ -61,4 +61,31 @@ def wrap_observability_nsys(
         environment.update(TLLM_LLMAPI_ENABLE_NVTX="1", TLLM_PROFILE_LOG_RANKS="all")
     if settings.nvtx_injection_path:
         environment["NVTX_INJECTION64_PATH"] = settings.nvtx_injection_path
+    if settings.capture_window == "workload":
+        step = uuid.uuid4().hex
+        write_json(log_dir / "profiles" / ".control" / "steps" / f"{step}.json", {"ranks": ranks})
+        start_args = [
+            "--sample=system-wide" if sample_cpu else "--sample=none",
+            "--cpuctxsw=none", "--gpu-metrics-devices=none",
+        ]
+        if sample_cpu:
+            start_args += ["--sampling-period=26000000", "--samples-per-backtrace=32"]
+        spec = {
+            "control_dir": "/logs/profiles/.control", "step": step, "ranks": ranks,
+            "nsys": config.profiling.nsys_binary, "start_args": start_args,
+            "output": f"/logs/profiles/{report_name}", "timeout": settings.report_timeout_secs,
+        }
+        return ["python3", "/srtctl-runtime/nsys_window.py", "worker", "--spec", json.dumps(spec), "--", *command], environment
     return keepalive_command(prefix + command), environment
+
+
+def benchmark_nsys_env(config: SrtConfig) -> dict[str, str]:
+    """Make the same boundary API available to bundled and custom clients."""
+    if not config.observability_nsys_enabled or config.observability.nsys.capture_window != "workload":
+        return {}
+    return {
+        "SRT_NSYS_CONTROL_DIR": "/logs/profiles/.control",
+        "SRT_NSYS_CONTROL_SCRIPT": "/srtctl-runtime/nsys_window.py",
+        "SRT_NSYS_CONTROL_TIMEOUT": str(config.observability.nsys.report_timeout_secs),
+    }
+

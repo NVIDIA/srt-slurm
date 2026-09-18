@@ -33,9 +33,13 @@ rank, and every Dynamo frontend**. The preset records NVTX ranges on workers and
 frontends, plus CPU samples on Dynamo frontends. It does not collect CUDA API or
 GPU kernel events. Use the explicit `profiling` modes below for those domains.
 
-Capture begins at process launch and continues until teardown. It does not
-change the benchmark type, traffic, duration, or profiler HTTP/CUDA control
-routes, so it also works with custom benchmarks and manual serving sessions.
+By default, capture starts **after warmup** and stops **when the measured
+workload finishes**. There is no delay or fixed end time to estimate. The
+benchmark waits for every frontend and worker rank to acknowledge start before
+sending measured traffic, and waits for report export at stop. Applications
+remain running between capture windows. Each concurrency in a sweep gets a
+separate report.
+
 Optional settings are:
 
 ```yaml
@@ -43,11 +47,45 @@ observability:
   enabled: true
   nsys:
     enabled: true                 # false keeps other observability signals
-    delay_secs: 0                 # delay collection after each process starts
+    capture_window: workload     # default: after warmup through workload completion
     frontend_cpu_sampling: true
-    report_timeout_secs: 1800     # per-step report finalization budget
+    report_timeout_secs: 1800     # control/report-finalization budget, not capture length
     # nvtx_injection_path: /opt/nsys/target-linux-sbsa/libToolsInjection64.so
 ```
+
+Set `capture_window: process` to include initialization and warmup: collection
+then begins at each process launch and stops at teardown.
+
+**Benchmark boundaries.** SA-Bench starts capture after its warmup and initial
+probe, then stops after the measured requests finish, outside its timing
+measurement. SGLang-Bench runs with `--warmup-requests 0`, so the entire client
+invocation is captured. Trace-replay and mooncake-router start capture after
+their separate warmup command and stop when the measured AIPerf command exits;
+client initialization and final artifact writing can be included. Additional
+AIPerf warmup flags are rejected in workload mode because that warmup would
+otherwise happen inside the capture. Other bundled runners currently require
+`capture_window: process` or `nsys.enabled: false`.
+
+**Custom benchmarks and manual serving.** srtctl cannot infer an external
+client's internal warmup boundary. Custom clients receive the control script,
+directory, and timeout through `SRT_NSYS_CONTROL_SCRIPT`,
+`SRT_NSYS_CONTROL_DIR`, and `SRT_NSYS_CONTROL_TIMEOUT`. Invoke the hooks at the
+actual phase boundaries (the script is a no-op when the preset is disabled):
+
+```bash
+run_warmup
+python3 /srtctl-runtime/nsys_window.py start
+run_measured_workload
+python3 /srtctl-runtime/nsys_window.py stop
+```
+
+For manual serving, run these commands inside a container sharing the run's
+`/logs` and `/srtctl-runtime` mounts and set
+`SRT_NSYS_CONTROL_DIR=/logs/profiles/.control`. Repeat the pair for additional
+windows. A custom benchmark that finishes without a completed window fails
+validation. If it exits with an active window, srtctl attempts to export that
+report and fails validation because the stop boundary was missing. Use
+`capture_window: process` when the external client cannot provide hooks.
 
 An enabled top-level `profiling` mode (`torch`, `nsys`, or `nsys-time`) takes
 precedence and disables this automatic preset, including automatic frontend
@@ -55,8 +93,10 @@ capture. `profiling.type: none` leaves the preset active. With
 `observability.enabled: false`, `nsys.enabled` has no effect.
 
 **Container requirements.** The serving image must include `nsys` (or mount it
-and set `SRTCTL_NSYS_BIN` on the submitting/orchestrating host), Bash, `setsid`,
-`pgrep`, `pkill`, and `timeout`. The preset sets `DYN_ENABLE_RUST_NVTX=1`; Dynamo
+and set `SRTCTL_NSYS_BIN` on the submitting/orchestrating host) and Python 3.
+Workload mode uses Nsight's interactive `launch`/`start`/`stop`/`shutdown`
+commands and a shared writable `/logs` mount. Process mode additionally needs
+Bash, `setsid`, `pgrep`, `pkill`, and `timeout`. The preset sets `DYN_ENABLE_RUST_NVTX=1`; Dynamo
 must have been built with NVTX support to emit Rust ranges. On TRT-LLM workers it
 also sets `TLLM_LLMAPI_ENABLE_NVTX=1` and `TLLM_PROFILE_LOG_RANKS=all`. Set
 `nvtx_injection_path` only when the image needs an explicit NVTX injection
@@ -65,21 +105,27 @@ installation. Frontend CPU sampling uses `--sample=system-wide`, a 26,000,000
 sampling period, and 32 samples per backtrace, and requires the host's perf
 permissions. Set `frontend_cpu_sampling: false` when sampling is unavailable.
 
-**Reports and shutdown.** Files are under the run's `logs/profiles/` directory:
+**Reports and shutdown.** Workload-mode files are under the run's
+`logs/profiles/` directory:
 
-- `frontend/<node>_frontend_<index>.nsys-rep`
-- `<mode>/<node>_<mode>_w<index>_profile_rank<rank>.nsys-rep` for MPI workers
-- `<mode>/<node>_<mode>_w<index>_profile_gpu<devices>.nsys-rep` for other workers
+- `frontend/<node>_frontend_<index>_window001.nsys-rep`
+- `<mode>/<node>_<mode>_w<index>_profile_rank<rank>_window001.nsys-rep` for MPI workers
+- `<mode>/<node>_<mode>_w<index>_profile_gpu<devices>_window001.nsys-rep` for other workers
 
-During normal srtctl teardown, each wrapper stops capture and waits for all
-reports in its MPI step to finalize before terminating applications. A failed
-stop or missing rank times out and makes the wrapper exit nonzero. Leave room
-in the job time limit for report export and application shutdown (up to the
-configured report budget plus 150 seconds); allocation timeouts and forced
-cancellation can interrupt export. Inspect the `.nsys-rep` contents before
-calling a profiling run successful: an existing file alone does not prove NVTX
-ranges or CPU samples were collected. `srtctl dry-run` shows the effective
-preset, opt-out, or explicit-profiling precedence.
+Later windows use `_window002`, etc. Process mode omits the window suffix.
+Shared control requests and acknowledgments are kept in `profiles/.control/`.
+A start/stop failure or missing rank fails the benchmark, rather than allowing
+an unprofiled workload to appear successful.
+
+If teardown interrupts an active capture, each wrapper stops it and waits for
+all reports in its MPI step before terminating applications. This also bounds
+process-mode capture when no benchmark end hook is used. Leave room in the job
+time limit for report export and application shutdown (up to the configured
+report budget plus 150 seconds); allocation timeouts and forced cancellation
+can interrupt export. Inspect the `.nsys-rep` contents before calling a profiling
+run successful: an existing file alone does not prove NVTX ranges or CPU samples
+were collected. `srtctl dry-run` shows the effective window, opt-out, or
+explicit-profiling precedence.
 
 ## Quick Start
 

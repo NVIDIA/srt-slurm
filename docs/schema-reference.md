@@ -401,9 +401,9 @@ Automatic NVTX capture of workers and Dynamo frontends.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `True` | Set false to keep other observability signals without launching nsys. |
-| `delay_secs` | int | `0` | Seconds after each process starts before NVTX/CPU collection begins. |
+| `capture_window` | one of `'workload'`, `'process'` | `'workload'` | Workload hooks exclude warmup; process captures startup through teardown. |
 | `frontend_cpu_sampling` | bool | `True` | Collect frontend CPU samples in addition to NVTX; workers do not sample. |
-| `report_timeout_secs` | int | `1800` | Maximum time to finalize a worker step's reports before stopping its apps. |
+| `report_timeout_secs` | int | `1800` | Maximum wait for a control acknowledgment or a step's report finalization. |
 | `nvtx_injection_path` | str \| None | `None` | Optional container path to libToolsInjection64.so for NVTX injection. |
 
 ### TelemetryExporterConfig

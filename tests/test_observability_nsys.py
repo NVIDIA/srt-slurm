@@ -3,6 +3,7 @@
 
 """Automatic profiler configuration and launch wiring."""
 
+import json
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -37,7 +38,9 @@ def config(**overrides):
     ],
 )
 def test_preset_requires_observability_and_honors_opt_out(observability, expected):
-    assert config(observability=observability).observability_nsys_enabled is expected
+    cfg = config(observability=observability)
+    assert cfg.observability_nsys_enabled is expected
+    assert cfg.observability.nsys.capture_window == "workload"
 
 
 @pytest.mark.parametrize(
@@ -59,7 +62,7 @@ def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
         observability={
             "enabled": True,
             "nsys": {
-                "delay_secs": 12,
+                "capture_window": "process",
                 "frontend_cpu_sampling": False,
                 "report_timeout_secs": 45,
                 "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
@@ -78,7 +81,7 @@ def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"delay_secs": -1}, "delay_secs"),
+        ({"capture_window": "time"}, "capture_window"),
         ({"report_timeout_secs": 0}, "report_timeout_secs"),
         ({"nvtx_injection_path": "relative/library.so"}, "absolute container path"),
     ],
@@ -89,9 +92,10 @@ def test_invalid_settings_rejected(kwargs, message):
 
 
 @pytest.mark.parametrize("frontend", [False, True])
-def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, frontend, monkeypatch):
+@pytest.mark.parametrize("capture_window", ["workload", "process"])
+def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, frontend, capture_window, monkeypatch):
     monkeypatch.setenv("SRTCTL_NSYS_BIN", "/opt/nsys/bin/nsys")
-    cfg = config(observability={"enabled": True, "nsys": {"delay_secs": 7, "nvtx_injection_path": "/opt/nvtx.so"}})
+    cfg = config(observability={"enabled": True, "nsys": {"capture_window": capture_window, "nvtx_injection_path": "/opt/nvtx.so"}})
     command, env = wrap_observability_nsys(
         ["python3", "-m", "server"],
         config=cfg,
@@ -100,9 +104,19 @@ def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, fr
         ranks=8,
         frontend=frontend,
     )
-    script = command[2]
-    assert "/opt/nsys/bin/nsys profile" in script
-    assert "--trace=nvtx" in script and "--delay 7" in script
+    if capture_window == "workload":
+        assert command[:3] == ["python3", "/srtctl-runtime/nsys_window.py", "worker"]
+        spec = json.loads(command[4])
+        assert spec["nsys"] == "/opt/nsys/bin/nsys"
+        assert spec["ranks"] == 8
+        assert spec["output"].endswith("worker_rank%q{SLURM_PROCID}")
+        assert list((tmp_path / "profiles/.control/steps").glob("*.json"))
+        script = command[4]
+    else:
+        script = command[2]
+        assert "/opt/nsys/bin/nsys profile" in script
+        assert "--trace=nvtx" in script
+    assert "--delay" not in script
     assert "--duration" not in script and "cuda,nvtx" not in script
     assert ("--sample=system-wide" if frontend else "--sample=none") in script
     if frontend:
@@ -137,8 +151,9 @@ def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, ena
     for index, (call, proc) in enumerate(zip(launch.call_args_list, processes, strict=True)):
         command = call.kwargs["command"]
         if enabled:
-            assert "dynamo.frontend" in command[2] and "--sample=none" in command[2]
-            assert f"frontend/node-{'ab'[index]}_frontend_{index}" in command[2]
+            spec = json.loads(command[4])
+            assert "dynamo.frontend" in command and "--sample=none" in spec["start_args"]
+            assert spec["output"].endswith(f"frontend/node-{'ab'[index]}_frontend_{index}")
             assert call.kwargs["env_to_set"]["SRT_NSYS_REPORT_EXPECTED"] == "1"
             assert proc.terminate_timeout == 210
             assert not proc.signal_full
@@ -166,13 +181,69 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
     ):
         managed = stage.start_endpoint_worker([process, second]) if mpi else stage.start_worker(process, [process])
     args = launch.call_args.kwargs
-    assert "--sample=none" in args["command"][2]
+    spec = json.loads(args["command"][4])
+    assert "--sample=none" in spec["start_args"]
     assert args["env_to_set"]["SRT_NSYS_REPORT_EXPECTED"] == ("16" if mpi else "1")
     assert not managed.signal_full
     assert managed.terminate_timeout == cfg.observability.nsys.terminate_timeout
     assert "PROFILE_TYPE" not in args["env_to_set"]
     if mpi:
         assert args["ntasks"] == 16
-        assert "rank%q{SLURM_PROCID}" in args["command"][2]
+        assert "rank%q{SLURM_PROCID}" in spec["output"]
     else:
-        assert "profile_gpu0-1-2-3-4-5-6-7" in args["command"][2]
+        assert "profile_gpu0-1-2-3-4-5-6-7" in spec["output"]
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_benchmark_success_requires_a_completed_capture(tmp_path, completed):
+    import threading
+    from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
+    from srtctl.runtime_scripts.nsys_window import write_json
+
+    stage = BenchmarkStageMixin()
+    stage.config = config(benchmark={"type": "custom", "command": "echo measured"})
+    stage.runtime = MagicMock()
+    stage.runtime.log_dir = tmp_path
+    stage._get_benchmark_env = MagicMock(return_value={})
+    stage._benchmark_node = MagicMock(return_value="node")
+    runner = MagicMock()
+    runner.build_command.return_value = ["true"]
+    runner.get_environment.return_value = {}
+    proc = MagicMock()
+    proc.poll.return_value = proc.returncode = 0
+    if completed:
+        write_json(tmp_path / "profiles/.control/client.json", {"active": False, "completed": 1})
+    with patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc), patch(
+        "srtctl.analysis.host_sampler.try_start_host_sampler", return_value=None
+    ):
+        result = stage._run_benchmark_script(runner, tmp_path / "benchmark.out", threading.Event())
+    assert result == (0 if completed else 1)
+
+
+def test_benchmark_hooks_are_enabled_only_for_workload_capture():
+    from srtctl.core.observability_nsys import benchmark_nsys_env
+
+    env = benchmark_nsys_env(config())
+    assert env["SRT_NSYS_CONTROL_SCRIPT"] == "/srtctl-runtime/nsys_window.py"
+    assert env["SRT_NSYS_CONTROL_DIR"] == "/logs/profiles/.control"
+    assert not benchmark_nsys_env(config(observability={"enabled": True, "nsys": {"capture_window": "process"}}))
+    assert not benchmark_nsys_env(config(observability={"enabled": False}))
+
+
+@pytest.mark.parametrize("benchmark_type", ["agentperf", "mmlu", "router"])
+def test_benchmarks_without_warmup_hooks_require_an_explicit_capture_choice(benchmark_type):
+    with pytest.raises(ValidationError, match="has no warmup hooks"):
+        config(benchmark={"type": benchmark_type})
+    cfg = config(
+        benchmark={"type": benchmark_type},
+        observability={"enabled": True, "nsys": {"capture_window": "process"}},
+    )
+    assert cfg.observability_nsys_enabled
+    cfg = config(benchmark={"type": benchmark_type}, observability={"enabled": True, "nsys": {"enabled": False}})
+    assert not cfg.observability_nsys_enabled
+
+
+def test_aiperf_internal_warmup_cannot_silently_fall_inside_workload_capture():
+    with pytest.raises(ValidationError, match="additional aiperf_args warmup"):
+        config(benchmark={"type": "trace-replay", "aiperf_args": {"warmup-request-count": 10}})
+    config(benchmark={"type": "trace-replay", "aiperf_args": {"warmup-request-count": 0}})

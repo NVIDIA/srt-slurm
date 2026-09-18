@@ -24,6 +24,8 @@ from srtctl.core.power.contract import (
     MEASUREMENT_WINDOW_DIR_ENV,
     WINDOWS_DIRNAME,
 )
+from srtctl.core.observability_nsys import benchmark_nsys_env
+from srtctl.runtime_scripts.nsys_window import finish as finish_nsys_windows
 from srtctl.core.processes import terminate_and_reap
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
@@ -603,7 +605,14 @@ class BenchmarkStageMixin:
                 time.sleep(1)
             self.benchmark_child_reaped = True
             self.benchmark_child_allows_window_mutation = True
-            return proc.returncode or 0
+            exit_code = proc.returncode or 0
+            if getattr(self.config, "observability_nsys_enabled", False) is True and self.config.observability.nsys.capture_window == "workload":
+                try:
+                    finish_nsys_windows(self.runtime.log_dir / "profiles" / ".control", self.config.observability.nsys.report_timeout_secs)
+                except (RuntimeError, TimeoutError, OSError) as exc:
+                    logger.error("Observability capture failed: %s", exc)
+                    return exit_code or 1
+            return exit_code
         finally:
             if proc.poll() is None:
                 outcome = terminate_and_reap(
@@ -900,6 +909,8 @@ class BenchmarkStageMixin:
         # The windows directory is benchmark-agnostic: whichever benchmark runs
         # may adopt window stamping, so the env is not tied to one runner.
         env.update(self._get_measurement_window_env())
+        if getattr(self.config, "observability_nsys_enabled", False) is True:
+            env.update(benchmark_nsys_env(self.config))
 
         if runner.name == "SA-Bench":
             env.update(self._get_sa_bench_slow_down_env())

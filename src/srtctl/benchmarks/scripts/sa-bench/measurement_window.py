@@ -14,6 +14,8 @@ must not import srtctl.
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 
 SCHEMA_VERSION = 1
@@ -134,3 +136,9 @@ class MeasurementWindow:
         start_unix, end_unix, duration = self._boundary
         self.mark_failed(start_unix=start_unix, end_unix=end_unix, duration=duration, reason=reason)
         return True
+
+
+def control_nsys(action):
+    """Acknowledge the capture boundary; no-op when automatic nsys is disabled."""
+    if os.environ.get("SRT_NSYS_CONTROL_DIR"):
+        subprocess.run([sys.executable, os.environ["SRT_NSYS_CONTROL_SCRIPT"], action], check=True)
