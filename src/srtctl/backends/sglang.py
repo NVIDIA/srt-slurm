@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -287,7 +287,21 @@ class SGLangProtocol:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes
 
-        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+        # SGLang adds the global DP rank to the configured KV publisher port.
+        # Reserve the whole range on each node, including for co-located workers.
+        kv_events_port_sizes = None
+        if dynamo_sidecar:
+            kv_events_port_sizes = {
+                endpoint.mode: _parallel_size(self.get_config_for_mode(endpoint.mode), "data", "dp")
+                for endpoint in endpoints
+                if self.get_kv_events_config_for_mode(endpoint.mode)
+            }
+        return endpoints_to_processes(
+            endpoints,
+            base_sys_port=base_sys_port,
+            port_allocator=port_allocator,
+            kv_events_port_sizes=kv_events_port_sizes,
+        )
 
     def build_worker_command(
         self,
@@ -514,12 +528,13 @@ class SGLangProtocol:
                     str(node_rank),
                 ]
             )
-        if is_leader:
+        kv_cfg = self.get_kv_events_config_for_mode(mode)
+        relay_kv_events = self.needs_telemetry_sidecar(process, endpoint_processes)
+        if is_leader or relay_kv_events:
             engine.extend(["--grpc-port", str(grpc_port)])
 
         # The SGLang sidecar discovers the publisher; SGLang still needs this
         # flag to enable it and advertise the topology-assigned endpoint.
-        kv_cfg = self.get_kv_events_config_for_mode(mode)
         if kv_cfg and process.kv_events_port is not None:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             engine.extend(["--kv-events-config", json.dumps(kv_cfg)])
@@ -536,7 +551,7 @@ class SGLangProtocol:
                 process.endpoint_index,
             )
         engine.extend(_config_to_cli_args(config))
-        if not is_leader:
+        if not is_leader and not relay_kv_events:
             return engine
 
         sidecar = (
@@ -545,7 +560,8 @@ class SGLangProtocol:
             else ["python3", "-m", "dynamo.sglang.sidecar"]
         )
         sidecar.extend(["--grpc-endpoint", f"127.0.0.1:{grpc_port}"])
-        if mode == "prefill":
+        # Dynamo selects serving or telemetry mode from the local engine metadata.
+        if is_leader and mode == "prefill":
             sidecar.extend(["--bootstrap-host", leader_ip])
         sidecar.extend(sidecar_config.sidecar_args)
 
@@ -556,6 +572,53 @@ class SGLangProtocol:
             engine_name="SGLang",
             startup_timeout=sidecar_config.sidecar_startup_timeout,
         )
+
+    def needs_telemetry_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
+        """Whether a sidecar-enabled endpoint needs a KV relay on this follower."""
+        nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
+        node_rank = nodes.index(process.node)
+        kv_cfg = self.get_kv_events_config_for_mode(process.endpoint_mode)
+        return (
+            node_rank != 0
+            and kv_cfg is not None
+            and kv_cfg.get("publisher") == "zmq"
+            and process.kv_events_port is not None
+            and _node_has_kv_publisher(self.get_config_for_mode(process.endpoint_mode), len(nodes), node_rank)
+        )
+
+
+def _parallel_size(config: dict[str, Any], long_name: str, short_name: str) -> int:
+    """Read SGLang's long/short parallel-size aliases, including YAML underscores."""
+    aliases = (f"{long_name}-parallel-size", f"{short_name}-size")
+    # Match _config_to_cli_args' order when more than one alias is supplied.
+    value = 1
+    for key, configured in sorted(config.items()):
+        if key.replace("_", "-") in aliases and configured is not None:
+            value = int(configured)
+    if value < 1:
+        raise ValueError(f"SGLang {long_name}-parallel-size must be positive")
+    return value
+
+
+def _node_has_kv_publisher(config: dict[str, Any], nnodes: int, node_rank: int) -> bool:
+    """Select the nodes owning PP=0, attention CP=0/TP=0 scheduler ranks.
+
+    Attention DP partitions global TP into contiguous groups; only the first
+    rank of each group publishes. TP-only and later PP-stage followers must
+    stay engine-only because the telemetry sidecar requires a local source.
+    """
+    if not (config.get("enable-dp-attention") or config.get("enable_dp_attention")):
+        return node_rank == 0
+    tp = _parallel_size(config, "tensor", "tp")
+    dp = _parallel_size(config, "data", "dp")
+    pp = _parallel_size(config, "pipeline", "pp")
+    nodes_per_pp = max(nnodes // pp, 1)
+    if node_rank >= nodes_per_pp:
+        return False
+    if tp % nodes_per_pp or tp % dp:
+        raise ValueError("SGLang attention DP requires TP divisible by DP and nodes per PP stage")
+    local_tp = tp // nodes_per_pp
+    return any(node_rank * local_tp <= rank < (node_rank + 1) * local_tp for rank in range(0, tp, tp // dp))
 
 
 def _config_to_cli_args(config: dict[str, Any]) -> list[str]:

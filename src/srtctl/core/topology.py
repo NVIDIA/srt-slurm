@@ -601,6 +601,7 @@ def endpoints_to_processes(
     base_sys_port: int = DYN_SYSTEM_PORT_BASE,
     port_allocator: NodePortAllocator | None = None,
     engines_per_process: int = 1,
+    kv_events_port_sizes: dict[WorkerMode, int] | None = None,
 ) -> list[Process]:
     """Convert endpoints to physical processes.
 
@@ -618,6 +619,7 @@ def endpoints_to_processes(
             layout; vLLM shadow engine recovery asks for ``1 + shadows``, and every
             engine of a node then gets its own Process (same GPUs and node_rank,
             distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
+        kv_events_port_sizes: KV publisher port range per process, keyed by worker mode.
 
     Returns:
         List of Process objects
@@ -648,7 +650,9 @@ def endpoints_to_processes(
 
                 # Allocate kv_events port for each node in the endpoint (globally unique)
                 # Each node publishes KV events independently
-                node_kv_events_port = port_allocator.next_kv_events_port()
+                node_kv_events_port = port_allocator.next_kv_events_port_block(
+                    (kv_events_port_sizes or {}).get(endpoint.mode, 1)
+                )
 
                 # Allocate NIXL side channel port (globally unique, used by vLLM)
                 node_nixl_port = port_allocator.next_nixl_port()

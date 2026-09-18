@@ -1,0 +1,85 @@
+# Two disaggregated SGLang attention-DP workers across four physical nodes.
+# Each role is one TP2/DP2 worker spanning two one-GPU nodes. Prefill has a
+# serving leader sidecar and a telemetry-only follower relaying KV events.
+# Dynamo selects each sidecar's mode from its local engine metadata.
+# Decode keeps prefix caching disabled: its leader serves inference and its
+# follower runs only the engine. KV routing reuses cached prefill prefixes;
+# this example does not enable experimental decode prefix caching.
+#
+# Supply an image with compatible Dynamo/SGLang multinode sidecar support,
+# SGLang's prebuilt native gRPC extension, and the NIXL transfer backend.
+# Restart each distributed engine group and its sidecars together after failure;
+# independent sidecar restart/replay recovery is unsupported.
+
+schema: 2
+name: "qwen3-0.6b-sglang-sidecar-multinode-disagg-dp"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "hf:Qwen/Qwen3-0.6B"
+  container: "/path/to/sglang-dynamo-multinode-sidecar.sqsh"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 1
+
+dynamo:
+  install: false  # Dynamo is preinstalled in the image.
+  request_plane: "nats"
+  event_plane: "nats"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine: sglang
+roles:
+  prefill:
+    nodes: 2
+    workers: 1
+    gpus: 2  # Global GPU count for this one distributed prefill worker.
+    sidecar: true
+    kv_events: true
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 2
+      data-parallel-size: 2
+      enable-dp-attention: true
+      disaggregation-transfer-backend: nixl
+      page-size: 64
+      context-length: 2048
+      max-running-requests: 8
+      mem-fraction-static: 0.3
+      disable-cuda-graph: true
+  decode:
+    nodes: 2
+    workers: 1
+    gpus: 2  # A separate distributed decode worker on the other two nodes.
+    sidecar: true
+    kv_events: false  # Decode prefix caching is disabled by default.
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 2
+      data-parallel-size: 2
+      enable-dp-attention: true
+      disaggregation-transfer-backend: nixl
+      page-size: 64
+      context-length: 2048
+      max-running-requests: 8
+      mem-fraction-static: 0.3
+      disable-cuda-graph: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 64
+  concurrencies: "4"
