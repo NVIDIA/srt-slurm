@@ -208,6 +208,7 @@ roles:
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","mode":0}'
       max-cudagraph-capture-size: 32
       gpu-memory-utilization: 0.90
+      stream-interval: 32
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
