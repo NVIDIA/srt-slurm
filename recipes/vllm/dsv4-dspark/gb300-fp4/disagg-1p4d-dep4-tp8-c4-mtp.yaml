@@ -57,7 +57,7 @@ environment:
   NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"
 
 slurm:
-  time_limit: "08:00:00"
+  time_limit: "4:00:00"
 
 health_check:
   max_attempts: 2160
