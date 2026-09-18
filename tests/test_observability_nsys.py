@@ -39,7 +39,7 @@ def config(**overrides):
 def test_preset_requires_observability_and_honors_opt_out(observability, expected):
     cfg = config(observability=observability)
     assert cfg.observability_nsys_enabled is expected
-    assert cfg.observability.nsys.capture_window == "workload"
+    assert cfg.observability.nsys.capture_window == "measured_workload"
 
 
 @pytest.mark.parametrize(
@@ -61,7 +61,7 @@ def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
         observability={
             "enabled": True,
             "nsys": {
-                "capture_window": "process",
+                "capture_window": "including_startup",
                 "frontend_cpu_sampling": False,
                 "report_timeout_secs": 45,
                 "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
@@ -91,7 +91,7 @@ def test_invalid_settings_rejected(kwargs, message):
 
 
 @pytest.mark.parametrize("frontend", [False, True])
-@pytest.mark.parametrize("capture_window", ["workload", "process"])
+@pytest.mark.parametrize("capture_window", ["measured_workload", "including_startup"])
 def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, frontend, capture_window, monkeypatch):
     monkeypatch.setenv("SRTCTL_NSYS_BIN", "/opt/nsys/bin/nsys")
     cfg = config(
@@ -108,7 +108,7 @@ def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, fr
         ranks=8,
         frontend=frontend,
     )
-    if capture_window == "workload":
+    if capture_window == "measured_workload":
         assert command[:3] == ["python3", "/srtctl-runtime/nsys_window.py", "worker"]
         spec = json.loads(command[4])
         assert spec["nsys"] == "/opt/nsys/bin/nsys"
@@ -240,7 +240,7 @@ def test_benchmark_hooks_are_enabled_only_for_workload_capture():
     env = benchmark_nsys_env(config())
     assert env["SRT_NSYS_CONTROL_SCRIPT"] == "/srtctl-runtime/nsys_window.py"
     assert env["SRT_NSYS_CONTROL_DIR"] == "/logs/profiles/.control"
-    assert not benchmark_nsys_env(config(observability={"enabled": True, "nsys": {"capture_window": "process"}}))
+    assert not benchmark_nsys_env(config(observability={"enabled": True, "nsys": {"capture_window": "including_startup"}}))
     assert not benchmark_nsys_env(config(observability={"enabled": False}))
 
 
@@ -250,7 +250,7 @@ def test_benchmarks_without_warmup_hooks_require_an_explicit_capture_choice(benc
         config(benchmark={"type": benchmark_type})
     cfg = config(
         benchmark={"type": benchmark_type},
-        observability={"enabled": True, "nsys": {"capture_window": "process"}},
+        observability={"enabled": True, "nsys": {"capture_window": "including_startup"}},
     )
     assert cfg.observability_nsys_enabled
     cfg = config(benchmark={"type": benchmark_type}, observability={"enabled": True, "nsys": {"enabled": False}})

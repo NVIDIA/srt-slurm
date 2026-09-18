@@ -1371,10 +1371,10 @@ The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape
 | `tachometer` | object | `enabled: null` | Native Tachometer collection settings; `enabled: null` follows `observability.enabled`, explicit `false` opts out |
 
 `observability.enabled: true` also enables nsys with frontend CPU sampling.
-Its default `nsys.capture_window: workload` starts collection after warmup and
+Its default `nsys.capture_window: measured_workload` starts collection after warmup and
 stops it when the measured workload finishes. Supported bundled runners call
 the boundary hooks automatically; custom/manual clients must call them at their
-own phase boundaries. Set `nsys.capture_window: process` to include startup and
+own phase boundaries. Set `nsys.capture_window: including_startup` to include startup and
 warmup through teardown, or `nsys.enabled: false` to opt out. An enabled
 top-level `profiling` mode takes precedence. The serving container must provide nsys and the required
 NVTX support. See [Observability capture](profiling.md#observability-capture)

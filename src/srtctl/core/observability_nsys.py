@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Automatic observability profiling with process or benchmark-driven windows."""
+"""Automatic observability profiling during measured work or from process startup."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def wrap_observability_nsys(
         environment.update(TLLM_LLMAPI_ENABLE_NVTX="1", TLLM_PROFILE_LOG_RANKS="all")
     if settings.nvtx_injection_path:
         environment["NVTX_INJECTION64_PATH"] = settings.nvtx_injection_path
-    if settings.capture_window == "workload":
+    if settings.capture_window == "measured_workload":
         step = uuid.uuid4().hex
         write_json(log_dir / "profiles" / ".control" / "steps" / f"{step}.json", {"ranks": ranks})
         start_args = [
@@ -94,7 +94,7 @@ def wrap_observability_nsys(
 
 def benchmark_nsys_env(config: SrtConfig) -> dict[str, str]:
     """Make the same boundary API available to bundled and custom clients."""
-    if not config.observability_nsys_enabled or config.observability.nsys.capture_window != "workload":
+    if not config.observability_nsys_enabled or config.observability.nsys.capture_window != "measured_workload":
         return {}
     return {
         "SRT_NSYS_CONTROL_DIR": "/logs/profiles/.control",

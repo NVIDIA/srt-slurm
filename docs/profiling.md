@@ -30,8 +30,9 @@ observability:
 
 This starts Nsight Systems on **every launched worker process, every TRT-LLM MPI
 rank, and every Dynamo frontend**. The preset records NVTX ranges on workers and
-frontends, plus CPU samples on Dynamo frontends. It does not collect CUDA API or
-GPU kernel events. Use the explicit `profiling` modes below for those domains.
+frontends. Frontend profiler sessions also enable CPU sampling by default.
+The preset does not collect CUDA API or GPU kernel events. Use the explicit
+`profiling` modes below for those domains.
 
 By default, capture starts **after warmup** and stops **when the measured
 workload finishes**. There is no delay or fixed end time to estimate. The
@@ -46,15 +47,35 @@ Optional settings are:
 observability:
   enabled: true
   nsys:
-    enabled: true                 # false keeps other observability signals
-    capture_window: workload     # default: after warmup through workload completion
-    frontend_cpu_sampling: true
-    report_timeout_secs: 1800     # control/report-finalization budget, not capture length
+    enabled: true
+    capture_window: measured_workload  # default: after warmup through workload completion
+    frontend_cpu_sampling: true        # false keeps NVTX ranges but disables CPU sampling
+    report_timeout_secs: 1800          # control/report-finalization budget, not capture length
     # nvtx_injection_path: /opt/nsys/target-linux-sbsa/libToolsInjection64.so
 ```
 
-Set `capture_window: process` to include initialization and warmup: collection
-then begins at each process launch and stops at teardown.
+Set `capture_window: including_startup` to include initialization and warmup:
+collection then begins at each process launch and stops at teardown.
+
+**NVTX tracing and CPU sampling are separate.**
+[NVTX ranges](https://nvidia.github.io/NVTX/python/annotation_types.html#ranges)
+are named start/end annotations emitted by instrumented application code. They
+show when an operation ran and its elapsed duration; that duration can include
+waiting, so a long range alone does not prove the CPU was busy.
+[CPU sampling](https://docs.nvidia.com/nsight-systems/UserGuide/#cpu-profiling-on-linux)
+periodically records instruction pointers and call stacks, helping identify
+functions that consume CPU time without requiring an NVTX range around each
+function. Both appear in the Nsight report.
+
+| `frontend_cpu_sampling` | Frontend profiler session | Worker profiler sessions |
+|---|---|---|
+| `true` (default) | NVTX ranges and CPU sampling | NVTX ranges; CPU sampling disabled |
+| `false` | NVTX ranges; CPU sampling disabled | NVTX ranges; CPU sampling disabled |
+
+The frontend session uses **system-wide** sampling on its host. Its report can
+therefore include samples from other processes on that host, including a
+colocated worker. The flag controls sampling initiated by the frontend
+profiler; NVTX tracing remains enabled in either setting.
 
 **Benchmark boundaries.** SA-Bench starts capture after its warmup and initial
 probe, then stops after the measured requests finish, outside its timing
@@ -62,9 +83,9 @@ measurement. SGLang-Bench runs with `--warmup-requests 0`, so the entire client
 invocation is captured. Trace-replay and mooncake-router start capture after
 their separate warmup command and stop when the measured AIPerf command exits;
 client initialization and final artifact writing can be included. Additional
-AIPerf warmup flags are rejected in workload mode because that warmup would
-otherwise happen inside the capture. Other bundled runners currently require
-`capture_window: process` or `nsys.enabled: false`.
+AIPerf warmup flags are rejected in `measured_workload` mode because that
+warmup would otherwise happen inside the capture. Other bundled runners currently require
+`capture_window: including_startup` or `nsys.enabled: false`.
 
 **Custom benchmarks and manual serving.** srtctl cannot infer an external
 client's internal warmup boundary. Custom clients receive the control script,
@@ -85,7 +106,7 @@ For manual serving, run these commands inside a container sharing the run's
 windows. A custom benchmark that finishes without a completed window fails
 validation. If it exits with an active window, srtctl attempts to export that
 report and fails validation because the stop boundary was missing. Use
-`capture_window: process` when the external client cannot provide hooks.
+`capture_window: including_startup` when the external client cannot provide hooks.
 
 An enabled top-level `profiling` mode (`torch`, `nsys`, or `nsys-time`) takes
 precedence and disables this automatic preset, including automatic frontend
@@ -94,10 +115,11 @@ capture. `profiling.type: none` leaves the preset active. With
 
 **Container requirements.** The serving image must include `nsys` (or mount it
 and set `SRTCTL_NSYS_BIN` on the submitting/orchestrating host) and Python 3.
-Workload mode uses Nsight's interactive `launch`/`start`/`stop`/`shutdown`
-commands and a shared writable `/logs` mount. Process mode additionally needs
-Bash, `setsid`, `pgrep`, `pkill`, and `timeout`. The preset sets `DYN_ENABLE_RUST_NVTX=1`; Dynamo
-must have been built with NVTX support to emit Rust ranges. On TRT-LLM workers it
+`measured_workload` uses Nsight's interactive `launch`/`start`/`stop`/`shutdown`
+commands and a shared writable `/logs` mount. `including_startup` additionally
+needs Bash, `setsid`, `pgrep`, `pkill`, and `timeout`. The preset sets
+`DYN_ENABLE_RUST_NVTX=1`; Dynamo must have been built with NVTX support to emit
+Rust ranges. On TRT-LLM workers it
 also sets `TLLM_LLMAPI_ENABLE_NVTX=1` and `TLLM_PROFILE_LOG_RANKS=all`. Set
 `nvtx_injection_path` only when the image needs an explicit NVTX injection
 library; it must be an absolute **container** path compatible with that nsys
@@ -105,7 +127,7 @@ installation. Frontend CPU sampling uses `--sample=system-wide`, a 26,000,000
 sampling period, and 32 samples per backtrace, and requires the host's perf
 permissions. Set `frontend_cpu_sampling: false` when sampling is unavailable.
 
-**Reports and shutdown.** Workload-mode files are under the run's
+**Reports and shutdown.** Files for `measured_workload` are under the run's
 `logs/profiles/` directory:
 
 - `frontend/<node>_frontend_<index>_window001.nsys-rep`
@@ -113,16 +135,16 @@ permissions. Set `frontend_cpu_sampling: false` when sampling is unavailable.
 - `<mode>/<node>_<mode>_w<index>_profile_gpu<devices>_window001.nsys-rep` for other workers
 
 Later windows use `_window002`, etc. Shadow engines include their `_e<id>`
-suffix after the worker index so reports do not overwrite each other. Process
-mode omits the window suffix.
+suffix after the worker index so reports do not overwrite each other.
+`including_startup` omits the window suffix.
 Shared control requests and acknowledgments are kept in `profiles/.control/`.
 A start/stop failure or missing rank fails the benchmark, rather than allowing
 an unprofiled workload to appear successful.
 
 If teardown interrupts an active capture, each wrapper stops it and waits for
 all reports in its MPI step before terminating applications. This also bounds
-process-mode capture when no benchmark end hook is used. Leave room in the job
-time limit for report export and application shutdown (up to the configured
+`including_startup` capture when no benchmark end hook is used. Leave room in
+the job time limit for report export and application shutdown (up to the configured
 report budget plus 150 seconds); allocation timeouts and forced cancellation
 can interrupt export. Inspect the `.nsys-rep` contents before calling a profiling
 run successful: an existing file alone does not prove NVTX ranges or CPU samples

@@ -1354,14 +1354,16 @@ class NsysObservabilityConfig:
     Enabled by ``observability.enabled`` unless explicitly opted out. An
     explicit top-level ``profiling`` mode takes precedence over this preset.
     By default the benchmark starts capture after warmup and stops it when
-    measured work finishes. Process-lifetime capture is an explicit opt-in.
+    measured work finishes. ``including_startup`` captures from process launch
+    through teardown, including initialization and warmup.
     """
 
     # Set false to keep other observability signals without launching nsys.
     enabled: bool = True
-    # Workload hooks exclude warmup; process captures startup through teardown.
-    capture_window: Literal["workload", "process"] = "workload"
-    # Collect frontend CPU samples in addition to NVTX; workers do not sample.
+    # measured_workload excludes warmup; including_startup spans process launch through teardown.
+    capture_window: Literal["measured_workload", "including_startup"] = "measured_workload"
+    # Enable CPU sampling in frontend reports. NVTX tracing stays enabled when false.
+    # Sampling covers all processes on frontend hosts; worker profiler sessions disable sampling.
     frontend_cpu_sampling: bool = True
     # Maximum wait for a control acknowledgment or a step's report finalization.
     report_timeout_secs: int = 1800
@@ -1369,8 +1371,8 @@ class NsysObservabilityConfig:
     nvtx_injection_path: str | None = None
 
     def __post_init__(self) -> None:
-        if self.capture_window not in {"workload", "process"}:
-            raise ValidationError("observability.nsys.capture_window must be workload or process")
+        if self.capture_window not in {"measured_workload", "including_startup"}:
+            raise ValidationError("observability.nsys.capture_window must be measured_workload or including_startup")
         if self.report_timeout_secs <= 0:
             raise ValidationError("observability.nsys.report_timeout_secs must be positive")
         if self.nvtx_injection_path is not None and not self.nvtx_injection_path.startswith("/"):
@@ -3213,14 +3215,14 @@ class SrtConfig:
     def _validate_observability(self):
         """Validate automatic profiling and Tachometer collection."""
         observability = self.observability
-        if self.observability_nsys_enabled and observability.nsys.capture_window == "workload":
+        if self.observability_nsys_enabled and observability.nsys.capture_window == "measured_workload":
             # These scripts own warmup and invoke the acknowledged boundary API.
             # Custom/manual clients receive that API but must invoke it themselves.
             supported = {"sa-bench", "sglang-bench", "trace-replay", "mooncake-router", "custom", "manual"}
             if self.benchmark.type not in supported:
                 raise ValidationError(
-                    f"observability.nsys.capture_window: workload has no warmup hooks for "
-                    f"benchmark.type: {self.benchmark.type}; use capture_window: process, "
+                    f"observability.nsys.capture_window: measured_workload has no warmup hooks for "
+                    f"benchmark.type: {self.benchmark.type}; use capture_window: including_startup, "
                     "disable observability.nsys, or use a custom client with start/stop hooks"
                 )
             if self.benchmark.type in {"trace-replay", "mooncake-router"} and any(
@@ -3228,7 +3230,7 @@ class SrtConfig:
                 for key, value in self.benchmark.aiperf_args.items()
             ):
                 raise ValidationError(
-                    "workload nsys capture uses the bundled script's separate warmup; "
+                    "measured_workload nsys capture uses the bundled script's separate warmup; "
                     "additional aiperf_args warmup would occur inside capture. Remove those "
                     "flags or use a custom client with hooks at its actual warmup boundary"
                 )

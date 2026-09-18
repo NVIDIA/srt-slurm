@@ -608,7 +608,7 @@ class BenchmarkStageMixin:
             exit_code = proc.returncode or 0
             if (
                 getattr(self.config, "observability_nsys_enabled", False) is True
-                and self.config.observability.nsys.capture_window == "workload"
+                and self.config.observability.nsys.capture_window == "measured_workload"
             ):
                 try:
                     finish_nsys_windows(

@@ -1065,7 +1065,7 @@ def test_observability_nsys_details(capsys, nsys, expected):
     output = capsys.readouterr().out
     assert "nsys" in output and expected in output
     if expected == "enabled":
-        for text in ("NVTX (no CUDA tracing)", "Dynamo frontends", "after warmup", "1800s", "DYN_ENABLE_RUST_NVTX"):
+        for text in ("NVTX (no CUDA tracing)", "Dynamo frontends", "measured_workload", "after warmup", "1800s", "DYN_ENABLE_RUST_NVTX"):
             assert text in output
     else:
         assert "nsys targets" not in output

@@ -678,11 +678,12 @@ def show_config_details(config: SrtConfig) -> None:
                 details.add_row("observability", "nsys trace", "NVTX (no CUDA tracing)")
                 window = (
                     "after warmup until workload completes (client start/stop hooks)"
-                    if settings.capture_window == "workload"
+                    if settings.capture_window == "measured_workload"
                     else "process launch until teardown"
                 )
+                details.add_row("observability", "nsys capture_window", settings.capture_window)
                 details.add_row("observability", "nsys capture", window)
-                if settings.capture_window == "workload":
+                if settings.capture_window == "measured_workload":
                     details.add_row("observability", "SRT_NSYS_CONTROL_SCRIPT", "/srtctl-runtime/nsys_window.py")
                     details.add_row("observability", "SRT_NSYS_CONTROL_DIR", "/logs/profiles/.control")
                 if config.frontend.type == "dynamo":
