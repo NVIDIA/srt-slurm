@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
+    from srtctl.core.topology import Process
     from srtctl.services.config import ServiceConfig, ServiceMetricsConfig, ServiceReadinessConfig
 
 
@@ -36,6 +37,12 @@ class ServiceLaunchContext:
     # "just this node" (previews, single-instance construction in tests).
     nodes: tuple[str, ...] = ()
     node_ips: tuple[str, ...] = ()
+    # The worker this instance is attached to under ``placement.per: worker`` (engine 0 of one
+    # endpoint on this node); None for per-node instances and for previews.
+    process: Process | None = None
+    # The whole recipe, for kinds whose launch depends on facts outside their own block
+    # (the GMS kind reads ``engine.failover``); None in previews.
+    config: SrtConfig | None = None
 
     @classmethod
     def preview(cls, node: str = "<node>") -> ServiceLaunchContext:
@@ -46,6 +53,7 @@ class ServiceLaunchContext:
             nodes=SimpleNamespace(head="<head>", infra="<infra>", worker=()),
             head_node_ip="<head_ip>",
             infra_node_ip="<infra_ip>",
+            job_id="<job_id>",
         )
         return cls(runtime=runtime, node=node, node_ip="<node_ip>", node_id=0, index=0, role="<role>")  # type: ignore[arg-type]
 
@@ -55,7 +63,7 @@ class ServiceLaunchContext:
 
         pool_nodes = self.nodes or (self.node,)
         pool_ips = self.node_ips or (self.node_ip,)
-        return {
+        values = {
             "node": self.node,
             "node_ip": self.node_ip,
             "node_id": str(self.node_id),
@@ -73,10 +81,24 @@ class ServiceLaunchContext:
             "pool_nodes": ",".join(pool_nodes),
             "pool_ips": ",".join(pool_ips),
             "pool_node_count": str(len(pool_nodes)),
-            "gpus_per_node": str(self.runtime.gpus_per_node),
+            # A preview runtime has no GPU count; the placeholder stands in.
+            "gpus_per_node": str(getattr(self.runtime, "gpus_per_node", "<gpus_per_node>")),
             "master_port": str(MOONCAKE_MASTER_PORT),
             "metadata_port": str(MOONCAKE_HTTP_METADATA_PORT),
         }
+        if self.process is not None:
+            # placement.per: worker. The instance runs in this worker's device view, so
+            # {worker_gpus} is what its CUDA_VISIBLE_DEVICES is set to.
+            values.update(
+                {
+                    "worker_role": self.process.endpoint_mode,
+                    "worker_index": str(self.process.endpoint_index),
+                    "worker_node_rank": str(self.process.node_rank),
+                    "worker_gpus": self.process.cuda_visible_devices,
+                    "worker_gpu_count": str(len(self.process.gpu_indices)),
+                }
+            )
+        return values
 
 
 class ServiceKind:
@@ -89,6 +111,9 @@ class ServiceKind:
     default_critical: ClassVar[bool] = False
     # Where the service runs when the recipe gives no ``placement``.
     default_placement: ClassVar[str] = "head"
+    # ``node`` (one instance per placed node) or ``worker`` (one per engine worker on each
+    # placed node, in that worker's device view) when the recipe gives no ``placement``.
+    default_per: ClassVar[str] = "node"
     # TCP ports that must answer before the service counts as ready, when the recipe
     # gives no ``readiness`` (all of them, in order). Empty: launch is enough.
     default_readiness_ports: ClassVar[tuple[int, ...]] = ()

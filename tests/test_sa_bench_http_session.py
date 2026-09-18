@@ -333,12 +333,23 @@ def test_session_is_closed_before_metrics(monkeypatch):
     assert request_sessions == [sessions[0], sessions[0], sessions[0]]
 
 
-def test_benchmark_records_the_exact_measured_window(monkeypatch):
+@pytest.mark.parametrize("nsys_capture", [False, True])
+def test_benchmark_records_the_exact_measured_window(monkeypatch, nsys_capture):
     _import_sa_bench_module("backend_request_func")
     module = _import_sa_bench_module("benchmark_serving")
     window = MagicMock()
+    events = []
+    monkeypatch.setattr(module, "control_nsys", lambda action: events.append(action))
+    calculate_metrics = module.calculate_metrics
+
+    def metrics(*args, **kwargs):
+        events.append("metrics")
+        return calculate_metrics(*args, **kwargs)
+
+    monkeypatch.setattr(module, "calculate_metrics", metrics)
 
     async def fake_request(request_func_input, pbar=None):
+        events.append("request")
         return module.RequestFuncOutput(
             success=True,
             output_tokens=1,
@@ -372,6 +383,7 @@ def test_benchmark_records_the_exact_measured_window(monkeypatch):
             max_concurrency=1,
             lora_modules=None,
             measurement_window=window,
+            nsys_capture=nsys_capture,
         )
     )
 
@@ -383,6 +395,11 @@ def test_benchmark_records_the_exact_measured_window(monkeypatch):
     )
     assert result["benchmark_end_time_unix"] > result["benchmark_start_time_unix"]
     assert result["duration"] > 0
+
+    # Initial probe is outside capture; export/metrics are outside measured work.
+    assert events == (
+        ["request", "start", "request", "stop", "metrics"] if nsys_capture else ["request", "request", "metrics"]
+    )
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("probe failed"), asyncio.CancelledError()])

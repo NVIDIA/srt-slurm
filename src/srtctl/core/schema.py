@@ -1348,6 +1348,42 @@ class TachometerConfig:
 
 
 @dataclass(frozen=True)
+class NsysObservabilityConfig:
+    """Automatic NVTX tracing and CPU sampling of workers and Dynamo frontends.
+
+    Enabled by ``observability.enabled`` unless explicitly opted out. An
+    explicit top-level ``profiling`` mode takes precedence over this preset.
+    By default the benchmark starts capture after warmup and stops it when
+    measured work finishes. ``including_startup`` captures from process launch
+    through teardown, including initialization and warmup.
+    """
+
+    # Set false to keep other observability signals without launching nsys.
+    enabled: bool = True
+    # measured_workload excludes warmup; including_startup spans process launch through teardown.
+    capture_window: Literal["measured_workload", "including_startup"] = "measured_workload"
+    # Maximum wait for a control acknowledgment or a step's report finalization.
+    report_timeout_secs: int = 1800
+    # Optional container path to libToolsInjection64.so for NVTX injection.
+    nvtx_injection_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.capture_window not in {"measured_workload", "including_startup"}:
+            raise ValidationError("observability.nsys.capture_window must be measured_workload or including_startup")
+        if self.report_timeout_secs <= 0:
+            raise ValidationError("observability.nsys.report_timeout_secs must be positive")
+        if self.nvtx_injection_path is not None and not self.nvtx_injection_path.startswith("/"):
+            raise ValidationError("observability.nsys.nvtx_injection_path must be an absolute container path")
+
+    @property
+    def terminate_timeout(self) -> int:
+        """Allow report finalization, then the application tree's shutdown grace."""
+        return self.report_timeout_secs + 150
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ObservabilityConfig:
     """Observability configuration for OTEL tracing.
 
@@ -1376,6 +1412,9 @@ class ObservabilityConfig:
 
     and, for the run's server-side capture:
 
+    * Nsight Systems NVTX tracing and CPU sampling on all worker processes/ranks
+      and Dynamo frontends (``nsys.enabled: false`` opts out).
+      Explicit top-level ``profiling`` takes precedence.
     * native Tachometer collection of every ``/metrics`` endpoint the benchmark
       client does not already poll (see ``TelemetryStageMixin.start_tachometer``
       and ``tachometer`` below).
@@ -1405,6 +1444,7 @@ class ObservabilityConfig:
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
+        nsys: Automatic Nsight Systems capture, enabled with the master switch.
         tachometer: Native Tachometer capture configuration. Follows ``enabled``
             unless ``tachometer.enabled`` is set explicitly (see
             :class:`TachometerConfig`).
@@ -1420,6 +1460,7 @@ class ObservabilityConfig:
     otel_endpoint: str | None = None
 
     tachometer: TachometerConfig = field(default_factory=TachometerConfig)
+    nsys: NsysObservabilityConfig = field(default_factory=NsysObservabilityConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -2077,6 +2118,10 @@ class FrontendConfig:
         nginx_session_affinity_header: Header hashed when affinity is on (default
             ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
             carry the session id in that header instead.
+        worker_selection: Inline Dynamo worker-selection policy configuration. srtctl
+            writes this mapping under the top-level ``worker_selection`` key in a
+            generated router policy YAML and passes it to the Dynamo frontend via
+            ``--router-policy-config``.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
         container_image: Optional router-specific image. Static routers use the
@@ -2091,6 +2136,7 @@ class FrontendConfig:
     nginx_session_affinity: bool = False
     nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     nginx_keepalive_timeout: str = "600s"
+    worker_selection: dict[str, Any] | None = None
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
     container_image: str | None = None
@@ -2240,6 +2286,7 @@ class SrtConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
+        self._validate_frontend_worker_selection()
         self._validate_profiling()
         self._validate_observability()
         self._validate_telemetry()
@@ -2252,6 +2299,7 @@ class SrtConfig:
         self._validate_sglang_direct_frontend()
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
+        self._validate_vllm_failover()
         self._validate_host_setup()
         self._validate_benchmark_type()
         self._validate_services_only()
@@ -2384,6 +2432,48 @@ class SrtConfig:
                 "if something outside this recipe set the node state"
             )
 
+    def _validate_vllm_failover(self) -> None:
+        """Rules for ``backend.failover`` (vLLM shadow engine recovery).
+
+        The election and the shadow's parked state live in ``dynamo.vllm``
+        (``--gms-shadow-mode``), so only the Dynamo frontend can drive it; a static
+        router would also list the parked shadows as targets. Data-parallel
+        layouts are refused because their per-rank processes would each need a
+        GMS session and a lock of their own, which is not modeled.
+        """
+        failover = getattr(self.backend, "failover", None)
+        if failover is None:
+            return
+        assert isinstance(self.backend, VLLMProtocol)
+        if self.frontend.type != "dynamo":
+            raise ValidationError(
+                f"engine.failover requires frontend.type: dynamo (shadow engines are elected by dynamo.vllm); "
+                f"got {self.frontend.type!r}"
+            )
+        if self.dynamo.sidecar:
+            raise ValidationError("engine.failover cannot be combined with dynamo.sidecar: true")
+        dp_modes = self.backend.find_dp_modes()
+        if dp_modes:
+            names = ", ".join(mode for mode, _ in dp_modes)
+            raise ValidationError(f"engine.failover does not support data-parallel-size (set on {names})")
+        for mode_name, mode_config in (
+            ("prefill", self.backend.vllm_config.prefill if self.backend.vllm_config else None),
+            ("decode", self.backend.vllm_config.decode if self.backend.vllm_config else None),
+            ("aggregated", self.backend.vllm_config.aggregated if self.backend.vllm_config else None),
+        ):
+            for key, value in (mode_config or {}).items():
+                if str(key).replace("_", "-") == "load-format" and str(value) != "gms":
+                    raise ValidationError(
+                        f"engine.failover loads weights through the GPU Memory Service; "
+                        f"vllm_config.{mode_name}.load-format must be gms or unset, got {value!r}"
+                    )
+        if installs_dynamo(self):
+            logger.warning(
+                "engine.failover needs the gpu_memory_service package, which the ai-dynamo PyPI wheel does not "
+                "include; the container must ship it (nvcr.io/nvidia/ai-dynamo/vllm-runtime does). "
+                "Consider dynamo.install: false."
+            )
+
     def _validate_dynamo_sidecar(self) -> None:
         """Validate native sidecar configuration before job submission."""
         if not self.dynamo.sidecar:
@@ -2416,6 +2506,25 @@ class SrtConfig:
             "use backend.dp_launch_mode: per_node instead. per_gpu will be removed in a future release",
             ", ".join(mode_name for mode_name, _ in dp_modes),
         )
+
+    def _validate_frontend_worker_selection(self):
+        """Validate srtctl's inline Dynamo worker-selection shorthand."""
+        if self.frontend.worker_selection is None:
+            return
+        if self.frontend.type != "dynamo":
+            raise ValidationError("frontend.worker_selection is only supported with frontend.type: dynamo")
+
+        args = self.frontend.args or {}
+        env = self.frontend.env or {}
+        if (
+            "router-policy-config" in args
+            or "DYN_ROUTER_POLICY_CONFIG" in env
+            or "DYN_ROUTER_POLICY_CONFIG" in self.environment
+        ):
+            raise ValidationError(
+                "frontend.worker_selection cannot be combined with frontend.args.router-policy-config "
+                "or DYN_ROUTER_POLICY_CONFIG in frontend.env/environment"
+            )
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
@@ -3097,9 +3206,33 @@ class SrtConfig:
                 "it names a mandatory provider for a leg that will not run"
             )
 
+    @property
+    def observability_nsys_enabled(self) -> bool:
+        """Use the automatic preset only when no explicit profiler owns the run."""
+        return self.observability.enabled and self.observability.nsys.enabled and not self.profiling.enabled
+
     def _validate_observability(self):
-        """Validate Tachometer collection under observability."""
+        """Validate automatic profiling and Tachometer collection."""
         observability = self.observability
+        if self.observability_nsys_enabled and observability.nsys.capture_window == "measured_workload":
+            # These scripts own warmup and invoke the acknowledged boundary API.
+            # Custom/manual clients receive that API but must invoke it themselves.
+            supported = {"sa-bench", "sglang-bench", "trace-replay", "mooncake-router", "custom", "manual"}
+            if self.benchmark.type not in supported:
+                raise ValidationError(
+                    f"observability.nsys.capture_window: measured_workload has no warmup hooks for "
+                    f"benchmark.type: {self.benchmark.type}; use capture_window: including_startup, "
+                    "disable observability.nsys, or use a custom client with start/stop hooks"
+                )
+            if self.benchmark.type in {"trace-replay", "mooncake-router"} and any(
+                key.replace("_", "-").startswith(("warmup-", "num-warmup-")) and value not in (0, "0", False, None)
+                for key, value in self.benchmark.aiperf_args.items()
+            ):
+                raise ValidationError(
+                    "measured_workload nsys capture uses the bundled script's separate warmup; "
+                    "additional aiperf_args warmup would occur inside capture. Remove those "
+                    "flags or use a custom client with hooks at its actual warmup boundary"
+                )
         tachometer = observability.tachometer
         if not observability.tachometer_enabled:
             return

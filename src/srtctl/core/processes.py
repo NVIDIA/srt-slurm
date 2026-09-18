@@ -87,6 +87,8 @@ class ManagedProcess:
     # frontends (0) deregister from the Mooncake master (1) and etcd/NATS (2)
     # while those are still up, instead of hanging on a plane that is gone.
     shutdown_tier: int = 0
+    # False for wrappers that finalize a profiler before signalling its application.
+    signal_full: bool = True
     _stopped_via_step: bool = field(default=False, init=False, repr=False)
     _stop_deadline: float | None = field(default=None, init=False, repr=False)
 
@@ -110,7 +112,7 @@ class ManagedProcess:
             return
 
         wait = self.terminate_timeout if timeout is None else timeout
-        if self.step_name and signal_step(self.step_name, "TERM"):
+        if self.step_name and signal_step(self.step_name, "TERM", full=self.signal_full):
             try:
                 self.popen.wait(timeout=wait)
                 return
@@ -130,7 +132,9 @@ class ManagedProcess:
         """
         if not self.is_running:
             return
-        self._stopped_via_step = bool(self.step_name) and signal_step(self.step_name or "", "TERM", step_ids=step_ids)
+        self._stopped_via_step = bool(self.step_name) and signal_step(
+            self.step_name or "", "TERM", step_ids=step_ids, full=self.signal_full
+        )
         if not self._stopped_via_step:
             self.popen.terminate()
         self._stop_deadline = time.monotonic() + self.terminate_timeout
@@ -202,14 +206,18 @@ def find_step_id(step_name: str, job_id: str | None = None) -> str | None:
     return steps.get(step_name) if steps else None
 
 
-def signal_step(step_name: str, sig: str = "TERM", *, step_ids: dict[str, str] | None = None) -> bool:
-    """Send ``sig`` to every process of the Slurm step named ``step_name``; True when delivered.
+def signal_step(
+    step_name: str, sig: str = "TERM", *, step_ids: dict[str, str] | None = None, full: bool = True
+) -> bool:
+    """Signal the Slurm step named ``step_name``; True when delivered.
 
     ``srun`` turns a SIGTERM aimed at itself into a step abort that SIGKILLs the
     task, so a process that must flush on SIGTERM (tachometer compacting its
     parquet, an engine shutting down cleanly) has to be signalled through Slurm:
     ``scancel --signal=<sig> --full <job>.<step>``. ``step_ids`` is a listing from
-    ``list_step_ids`` to reuse instead of querying again.
+    ``list_step_ids`` to reuse instead of querying again. With ``full=False``,
+    only the tasks receive the signal; profiler wrappers use that to finalize
+    reports before stopping applications in a separate session.
     """
     if shutil.which("scancel") is None:
         return False  # not under Slurm (tests, the mock): the caller signals srun directly
@@ -219,7 +227,11 @@ def signal_step(step_name: str, sig: str = "TERM", *, step_ids: dict[str, str] |
         return False
     try:
         result = subprocess.run(
-            ["scancel", f"--signal={sig}", "--full", step_id], capture_output=True, text=True, timeout=30, check=False
+            ["scancel", f"--signal={sig}", *(["--full"] if full else []), step_id],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("scancel --signal=%s %s failed: %s", sig, step_id, exc)
@@ -286,6 +298,10 @@ class ProcessRegistry:
                     log_file=proc.log_file,
                     node=proc.node,
                     critical=proc.critical,
+                    terminate_timeout=proc.terminate_timeout,
+                    step_name=proc.step_name,
+                    shutdown_tier=proc.shutdown_tier,
+                    signal_full=proc.signal_full,
                 )
             self.add_process(proc)
 

@@ -29,6 +29,8 @@ else
     source "${LIB_DIR}/profiling.sh"
 fi
 profiling_init_from_env
+# shellcheck source=../lib/nsys.sh
+source "${LIB_DIR}/nsys.sh"
 
 cleanup() { stop_all_profiling; }
 trap cleanup EXIT
@@ -148,6 +150,7 @@ for C in "${CONCURRENCY_LIST[@]}"; do
     RUN_ARTIFACT_DIR="${ARTIFACT_DIR}/${MODEL_BASE_NAME}_trace_c${C}_${TIMESTAMP}"
     mkdir -p "${RUN_ARTIFACT_DIR}"
 
+    nsys_window_start
     aiperf profile \
         -m "${MODEL_NAME}" \
         --tokenizer "${TOKENIZER_PATH}" \
@@ -164,6 +167,8 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         "${SERVER_METRICS_ARGS[@]}" \
         --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}" \
         "${EXTRA_ARGS[@]}"
+
+    nsys_window_stop
 
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Concurrency ${C} complete"
 

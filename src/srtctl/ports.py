@@ -45,6 +45,11 @@ VLLM_NIXL_PORT_BASE = 5400
 VLLM_DATA_PARALLEL_RPC_PORT = 8400
 VLLM_PORT_BASE = 20000
 VLLM_PORT_STRIDE = 50
+# torch.distributed rendezvous of a multi-node vLLM engine (--master-port; vLLM's own
+# default). Under backend.failover every engine of a worker needs its own TCPStore, so
+# shadow engine k listens on BASE + k * STRIDE, the same stagger the Dynamo operator uses.
+VLLM_MASTER_PORT_BASE = 29500
+VLLM_MASTER_PORT_STRIDE = 100
 
 # Dynamo runtime and connector ports.
 DYN_SYSTEM_PORT_BASE = 7500
