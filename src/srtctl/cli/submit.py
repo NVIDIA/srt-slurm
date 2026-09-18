@@ -620,8 +620,10 @@ def show_config_details(config: SrtConfig) -> None:
 
         if config.observability.enabled:
             settings = config.observability.nsys
-            state = "enabled" if config.observability_nsys_enabled else (
-                "superseded by profiling" if profiling.enabled else "disabled"
+            state = (
+                "enabled"
+                if config.observability_nsys_enabled
+                else ("superseded by profiling" if profiling.enabled else "disabled")
             )
             details.add_row("observability", "nsys", state)
             if config.observability_nsys_enabled:
@@ -638,7 +640,9 @@ def show_config_details(config: SrtConfig) -> None:
                 details.add_row("observability", "nsys reports", "<log_dir>/profiles/{prefill,decode,agg,frontend}/")
                 details.add_row("observability", "nsys env", "DYN_ENABLE_RUST_NVTX=1")
                 if config.backend_type == "trtllm":
-                    details.add_row("observability", "nsys TRT-LLM env", "TLLM_PROFILE_LOG_RANKS=all; TLLM_LLMAPI_ENABLE_NVTX=1")
+                    details.add_row(
+                        "observability", "nsys TRT-LLM env", "TLLM_PROFILE_LOG_RANKS=all; TLLM_LLMAPI_ENABLE_NVTX=1"
+                    )
                 if settings.nvtx_injection_path:
                     details.add_row("observability", "NVTX_INJECTION64_PATH", settings.nvtx_injection_path)
 

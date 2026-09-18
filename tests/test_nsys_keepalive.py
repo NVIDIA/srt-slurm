@@ -19,7 +19,11 @@ from srtctl.core.nsys_keepalive import keepalive_command
 @pytest.fixture
 def fake_nsys(tmp_path):
     script = tmp_path / "fake nsys"
-    script.write_text("#!" + sys.executable + "\n" + r'''
+    script.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + r"""
 import json, os, signal, subprocess, sys, time
 from pathlib import Path
 root = Path(os.environ["FAKE_ROOT"])
@@ -45,7 +49,8 @@ elif mode == "stop":
         sys.exit(3)
     time.sleep(float(os.environ.get("FAKE_STOP_DELAY", "0")))
     (root / (rank + ".nsys-rep")).write_text("fake report")
-''')
+"""
+    )
     script.chmod(0o755)
     return script
 
@@ -55,18 +60,26 @@ def wait_for(path, processes, timeout=8):
     while not path.exists():
         assert all(p.poll() is None for p in processes), "wrapper exited before the fixture was ready"
         assert time.monotonic() < deadline, f"timed out waiting for {path}"
-        time.sleep(.02)
+        time.sleep(0.02)
 
 
 def launch(fake_nsys, tmp_path, rank, expected, **extra_env):
     env = {
-        **os.environ, "FAKE_ROOT": str(tmp_path), "SLURM_PROCID": str(rank),
+        **os.environ,
+        "FAKE_ROOT": str(tmp_path),
+        "SLURM_PROCID": str(rank),
         "SRT_NSYS_REPORT_BARRIER_DIR": str(tmp_path / "barrier"),
-        "SRT_NSYS_REPORT_EXPECTED": str(expected), "SRT_NSYS_REPORT_STOP_TIMEOUT": "3", **extra_env,
+        "SRT_NSYS_REPORT_EXPECTED": str(expected),
+        "SRT_NSYS_REPORT_STOP_TIMEOUT": "3",
+        **extra_env,
     }
     return subprocess.Popen(
         keepalive_command([str(fake_nsys), "profile"], app_exit_grace_secs=1),
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
 
 
@@ -81,7 +94,7 @@ def cleanup(processes, tmp_path):
 
 
 def test_all_rank_reports_finish_before_any_app_exits(fake_nsys, tmp_path):
-    processes = [launch(fake_nsys, tmp_path, rank, 2, FAKE_STOP_DELAY=str(rank * .6)) for rank in range(2)]
+    processes = [launch(fake_nsys, tmp_path, rank, 2, FAKE_STOP_DELAY=str(rank * 0.6)) for rank in range(2)]
     try:
         for rank in range(2):
             wait_for(tmp_path / f"{rank}.started", processes)
@@ -126,5 +139,7 @@ def test_term_during_profiler_startup_is_trapped(fake_nsys, tmp_path):
 
 def test_profiler_start_failure_is_propagated(tmp_path):
     missing = tmp_path / "not-installed"
-    result = subprocess.run(keepalive_command([str(missing), "profile"]), capture_output=True, text=True, timeout=5, check=False)
+    result = subprocess.run(
+        keepalive_command([str(missing), "profile"]), capture_output=True, text=True, timeout=5, check=False
+    )
     assert result.returncode != 0

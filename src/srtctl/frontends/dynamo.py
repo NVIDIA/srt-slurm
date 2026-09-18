@@ -96,8 +96,11 @@ class DynamoFrontend:
             nsys_env: dict[str, str] = {}
             if automatic_nsys:
                 cmd, nsys_env = wrap_observability_nsys(
-                    cmd, config=config, log_dir=runtime.log_dir,
-                    report_name=f"frontend/{node}_frontend_{idx}", frontend=True,
+                    cmd,
+                    config=config,
+                    log_dir=runtime.log_dir,
+                    report_name=f"frontend/{node}_frontend_{idx}",
+                    frontend=True,
                 )
                 logger.info("Observability: nsys on frontend %d and all worker ranks", idx)
 
@@ -151,7 +154,9 @@ class DynamoFrontend:
                     node=node,
                     critical=True,
                     terminate_timeout=(
-                        config.observability.nsys.terminate_timeout if automatic_nsys else FRONTEND_TERMINATE_TIMEOUT_SECONDS
+                        config.observability.nsys.terminate_timeout
+                        if automatic_nsys
+                        else FRONTEND_TERMINATE_TIMEOUT_SECONDS
                     ),
                     signal_full=not automatic_nsys,
                     step_name=step_name,

@@ -247,8 +247,11 @@ class WorkerStageMixin:
         if automatic_nsys:
             gpu_label = process.cuda_visible_devices.replace(",", "-")
             cmd, nsys_env = wrap_observability_nsys(
-                cmd, config=self.config, log_dir=self.runtime.log_dir,
-                report_name=f"{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}", ranks=1,
+                cmd,
+                config=self.config,
+                log_dir=self.runtime.log_dir,
+                report_name=f"{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}",
+                ranks=1,
             )
 
         # Worker environment variables
@@ -443,8 +446,11 @@ class WorkerStageMixin:
         nsys_env: dict[str, str] = {}
         if automatic_nsys:
             cmd, nsys_env = wrap_observability_nsys(
-                cmd, config=self.config, log_dir=self.runtime.log_dir,
-                report_name=f"{mode}/{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}", ranks=total_gpus,
+                cmd,
+                config=self.config,
+                log_dir=self.runtime.log_dir,
+                report_name=f"{mode}/{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}",
+                ranks=total_gpus,
             )
 
         # Worker environment variables

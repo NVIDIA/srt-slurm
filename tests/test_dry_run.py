@@ -1045,9 +1045,16 @@ def test_observability_nsys_details(capsys, nsys, expected):
 
 
 def test_explicit_profiling_explains_observability_precedence(capsys):
-    cfg = _make_config({"observability": {"enabled": True}, "profiling": {
-        "type": "nsys-time", "delay_secs": 1, "duration_secs": 2,
-    }})
+    cfg = _make_config(
+        {
+            "observability": {"enabled": True},
+            "profiling": {
+                "type": "nsys-time",
+                "delay_secs": 1,
+                "duration_secs": 2,
+            },
+        }
+    )
     show_config_details(cfg)
     output = capsys.readouterr().out
     assert "superseded by profiling" in output

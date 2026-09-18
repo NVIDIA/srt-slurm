@@ -132,7 +132,9 @@ class ManagedProcess:
         """
         if not self.is_running:
             return
-        self._stopped_via_step = bool(self.step_name) and signal_step(self.step_name or "", "TERM", step_ids=step_ids, full=self.signal_full)
+        self._stopped_via_step = bool(self.step_name) and signal_step(
+            self.step_name or "", "TERM", step_ids=step_ids, full=self.signal_full
+        )
         if not self._stopped_via_step:
             self.popen.terminate()
         self._stop_deadline = time.monotonic() + self.terminate_timeout
@@ -226,7 +228,10 @@ def signal_step(
     try:
         result = subprocess.run(
             ["scancel", f"--signal={sig}", *(["--full"] if full else []), step_id],
-            capture_output=True, text=True, timeout=30, check=False
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("scancel --signal=%s %s failed: %s", sig, step_id, exc)

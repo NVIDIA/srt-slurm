@@ -83,7 +83,7 @@ def keepalive_command(command: list[str], *, app_exit_grace_secs: int = _APP_EXI
         + 'if [ -z "$APP" ]; then APP=$(pgrep -P "$NSYS" 2>/dev/null | head -n1); fi; '
         + 'echo "[srtctl] SIGTERM: stopping profiled app pid ${APP:-?} (tree: $(echo $TREE)); nsys pid $NSYS; report-first=$REPORT_FIRST" >&2; '
         '[ -n "$APP" ] && kill -TERM "$APP" 2>/dev/null; '
-        f'( sleep {app_exit_grace_secs}; TREE="$TREE $(desc \"$NSYS\")"; alive=""; for p in $TREE; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done; '
+        f'( sleep {app_exit_grace_secs}; TREE="$TREE $(desc "$NSYS")"; alive=""; for p in $TREE; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done; '
         'if [ -n "$alive" ]; then '
         f'echo "[srtctl] app tree still alive {app_exit_grace_secs}s after SIGTERM (pids:$alive); TERM then KILL so nsys can finalise" >&2; '
         'for p in $alive; do kill -TERM "$p" 2>/dev/null; done; sleep 20; '

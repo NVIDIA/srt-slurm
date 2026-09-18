@@ -12,12 +12,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 from marshmallow import ValidationError
+from test_observability import BASE_CONFIG
+from test_slurm import _remap_worker_mixin
 
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import NsysObservabilityConfig, SrtConfig
 from srtctl.frontends.dynamo import DynamoFrontend
-from test_observability import BASE_CONFIG
-from test_slurm import _remap_worker_mixin
 
 
 def config(**overrides):
@@ -27,19 +27,27 @@ def config(**overrides):
     return SrtConfig.Schema().load(data)
 
 
-@pytest.mark.parametrize(("observability", "expected"), [
-    ({}, False), ({"enabled": False, "nsys": {"enabled": True}}, False),
-    ({"enabled": True}, True), ({"enabled": True, "nsys": {"enabled": False}}, False),
-])
+@pytest.mark.parametrize(
+    ("observability", "expected"),
+    [
+        ({}, False),
+        ({"enabled": False, "nsys": {"enabled": True}}, False),
+        ({"enabled": True}, True),
+        ({"enabled": True, "nsys": {"enabled": False}}, False),
+    ],
+)
 def test_preset_requires_observability_and_honors_opt_out(observability, expected):
     assert config(observability=observability).observability_nsys_enabled is expected
 
 
-@pytest.mark.parametrize("profiling", [
-    {"type": "torch", "prefill": {}, "decode": {}},
-    {"type": "nsys", "prefill": {}, "decode": {}},
-    {"type": "nsys-time", "delay_secs": 1, "duration_secs": 5},
-])
+@pytest.mark.parametrize(
+    "profiling",
+    [
+        {"type": "torch", "prefill": {}, "decode": {}},
+        {"type": "nsys", "prefill": {}, "decode": {}},
+        {"type": "nsys-time", "delay_secs": 1, "duration_secs": 5},
+    ],
+)
 def test_explicit_profiling_takes_precedence(profiling):
     cfg = config(profiling=profiling, backend={"type": "sglang"})
     assert not cfg.observability_nsys_enabled
@@ -47,10 +55,17 @@ def test_explicit_profiling_takes_precedence(profiling):
 
 
 def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
-    cfg = config(observability={"enabled": True, "nsys": {
-        "delay_secs": 12, "frontend_cpu_sampling": False, "report_timeout_secs": 45,
-        "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
-    }})
+    cfg = config(
+        observability={
+            "enabled": True,
+            "nsys": {
+                "delay_secs": 12,
+                "frontend_cpu_sampling": False,
+                "report_timeout_secs": 45,
+                "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
+            },
+        }
+    )
     path = tmp_path / "recipe.yaml"
     path.write_text(yaml.safe_dump(SrtConfig.Schema().dump(cfg)))
     loaded = SrtConfig.from_yaml(path)
@@ -60,11 +75,14 @@ def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
     assert loaded.profiling.get_env_vars("prefill", str(tmp_path)) == {}
 
 
-@pytest.mark.parametrize(("kwargs", "message"), [
-    ({"delay_secs": -1}, "delay_secs"),
-    ({"report_timeout_secs": 0}, "report_timeout_secs"),
-    ({"nvtx_injection_path": "relative/library.so"}, "absolute container path"),
-])
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"delay_secs": -1}, "delay_secs"),
+        ({"report_timeout_secs": 0}, "report_timeout_secs"),
+        ({"nvtx_injection_path": "relative/library.so"}, "absolute container path"),
+    ],
+)
 def test_invalid_settings_rejected(kwargs, message):
     with pytest.raises(ValidationError, match=message):
         NsysObservabilityConfig(**kwargs)
@@ -75,8 +93,12 @@ def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, fr
     monkeypatch.setenv("SRTCTL_NSYS_BIN", "/opt/nsys/bin/nsys")
     cfg = config(observability={"enabled": True, "nsys": {"delay_secs": 7, "nvtx_injection_path": "/opt/nvtx.so"}})
     command, env = wrap_observability_nsys(
-        ["python3", "-m", "server"], config=cfg, log_dir=tmp_path,
-        report_name="decode/worker_rank%q{SLURM_PROCID}", ranks=8, frontend=frontend,
+        ["python3", "-m", "server"],
+        config=cfg,
+        log_dir=tmp_path,
+        report_name="decode/worker_rank%q{SLURM_PROCID}",
+        ranks=8,
+        frontend=frontend,
     )
     script = command[2]
     assert "/opt/nsys/bin/nsys profile" in script
@@ -98,11 +120,16 @@ def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, fr
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, enabled):
-    cfg = config(observability={"enabled": enabled, "nsys": {"frontend_cpu_sampling": False, "report_timeout_secs": 60}})
+    cfg = config(
+        observability={"enabled": enabled, "nsys": {"frontend_cpu_sampling": False, "report_timeout_secs": 60}}
+    )
     topology = SimpleNamespace(frontend_nodes=["node-a", "node-b"], frontend_port=8180)
     runtime = SimpleNamespace(
-        log_dir=tmp_path, nodes=SimpleNamespace(infra="head", het_group_for=lambda node: None),
-        container_image=Path("/container.sqsh"), container_mounts={}, environment={},
+        log_dir=tmp_path,
+        nodes=SimpleNamespace(infra="head", het_group_for=lambda node: None),
+        container_image=Path("/container.sqsh"),
+        container_mounts={},
+        environment={},
     )
     with patch("srtctl.frontends.dynamo.start_srun_process", return_value=MagicMock()) as launch:
         processes = DynamoFrontend().start_frontends(topology, runtime, cfg, MagicMock(), [])
@@ -133,9 +160,10 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
     stage.runtime.srun_options = {}
     second = SimpleNamespace(**{**vars(process), "node": "node-b"})
     stage.runtime.nodes.worker.append("node-b")
-    with patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"), patch(
-        "srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()
-    ) as launch:
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()) as launch,
+    ):
         managed = stage.start_endpoint_worker([process, second]) if mpi else stage.start_worker(process, [process])
     args = launch.call_args.kwargs
     assert "--sample=none" in args["command"][2]

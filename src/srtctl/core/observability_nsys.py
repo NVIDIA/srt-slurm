@@ -34,10 +34,19 @@ def wrap_observability_nsys(
     (log_dir / "profiles" / report_name).parent.mkdir(parents=True, exist_ok=True)
     sample_cpu = frontend and settings.frontend_cpu_sampling
     prefix = [
-        config.profiling.nsys_binary, "profile", "--force-overwrite=true",
-        "--trace=nvtx", "--sample=system-wide" if sample_cpu else "--sample=none",
-        "--cpuctxsw=none", "--gpu-metrics-devices=none",
-        "--delay", str(settings.delay_secs), "--kill", "none", "--wait", "all",
+        config.profiling.nsys_binary,
+        "profile",
+        "--force-overwrite=true",
+        "--trace=nvtx",
+        "--sample=system-wide" if sample_cpu else "--sample=none",
+        "--cpuctxsw=none",
+        "--gpu-metrics-devices=none",
+        "--delay",
+        str(settings.delay_secs),
+        "--kill",
+        "none",
+        "--wait",
+        "all",
     ]
     if sample_cpu:
         prefix += ["--sampling-period=26000000", "--samples-per-backtrace=32"]
