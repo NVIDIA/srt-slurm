@@ -7,6 +7,7 @@ Benchmark stage mixin for SweepOrchestrator.
 Handles benchmark execution and profiling.
 """
 
+import json
 import logging
 import re
 import shlex
@@ -146,6 +147,27 @@ def _get_health_expectations(
 
     count_desc = worker_desc
     return logical_prefill, logical_decode, count_desc, logical_prefill + logical_decode
+
+
+SERVER_READY_FILENAME = "server_ready.json"
+
+
+def write_server_ready_marker(log_dir: Path) -> Path | None:
+    """Record that every configured worker passed the health gate.
+
+    An external load generator driving a ``manual`` job has only the frontend to ask,
+    and a Dynamo frontend lists the model as soon as its first worker registers — before
+    the rest have. This file is the launcher-side signal that srtctl's own gate (all
+    prefill and decode workers) has passed, so a client can wait for it instead of
+    racing the last worker. Best-effort: a failure to write it is logged, never raised.
+    """
+    marker = log_dir / SERVER_READY_FILENAME
+    try:
+        marker.write_text(json.dumps({"schema_version": 1, "ready_at_unix": time.time()}) + "\n")
+    except OSError as error:
+        logger.warning("could not write %s: %s", marker, error)
+        return None
+    return marker
 
 
 class BenchmarkStageMixin:
@@ -429,6 +451,7 @@ class BenchmarkStageMixin:
             return 1
 
         logger.info("Server is healthy")
+        write_server_ready_marker(self.runtime.log_dir)
 
         # Identity verification: compare recipe identity against runtime fingerprints
         # Store results on self so postprocess can include them in the lockfile

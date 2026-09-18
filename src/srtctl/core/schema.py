@@ -2960,7 +2960,9 @@ class SrtConfig:
         if not _is_safe_relative_subpath(telemetry.storage_subdir):
             raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
 
-        supported_benchmarks = {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentx", "custom"}
+        # `manual` holds the deployment for an external load generator; like serve-only it
+        # has no load window, so telemetry captures the whole serve session, best-effort.
+        supported_benchmarks = {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentx", "custom", "manual"}
         if self.benchmark.type not in supported_benchmarks:
             supported = ", ".join(sorted(supported_benchmarks))
             raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")

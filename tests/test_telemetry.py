@@ -394,7 +394,7 @@ class TestDcgmPowerConfig:
             ({"storage_subdir": "/abs"}, None, "storage_subdir"),
             ({"storage_subdir": "../escape"}, None, "storage_subdir"),
             ({"storage_subdir": ""}, None, "storage_subdir"),
-            ({}, BenchmarkConfig(type="manual"), "benchmark.type"),
+            ({}, BenchmarkConfig(type="mmlu"), "benchmark.type"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=None), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[4, 4]), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[0]), "benchmark.concurrencies"),
@@ -1960,3 +1960,31 @@ class TestCpuPowerHostCollectorLaunch:
 
         assert harness.finalize_cpu_power_host_telemetry(0) == 1
         assert harness.finalize_cpu_power_host_telemetry(3) == 3
+
+
+class TestTelemetryNodes:
+    def test_pool_nodes_are_sampled_alongside_engine_nodes(self) -> None:
+        from types import SimpleNamespace
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self) -> None:
+                self.runtime = SimpleNamespace(nodes=SimpleNamespace(compute=("n1", "pool-a", "pool-b")))
+
+            @property
+            def backend_processes(self):
+                return [SimpleNamespace(node="n1"), SimpleNamespace(node="n2")]
+
+        assert Harness()._telemetry_nodes() == ["n1", "n2", "pool-a", "pool-b"]
+
+    def test_a_services_only_job_still_samples_its_pool(self) -> None:
+        from types import SimpleNamespace
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self) -> None:
+                self.runtime = SimpleNamespace(nodes=SimpleNamespace(compute=("pool-a",)))
+
+            @property
+            def backend_processes(self):
+                return []
+
+        assert Harness()._telemetry_nodes() == ["pool-a"]
