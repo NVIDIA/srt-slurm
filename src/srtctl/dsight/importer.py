@@ -142,9 +142,7 @@ class Importer:
             m = row["metadata"]
             start, end = self.t(m["request_start_ns"]), self.t(m["request_end_ns"])
             ttft = metric_value(row, "time_to_first_token")
-            first = (
-                start + ttft / 1000 if isinstance(ttft, (int, float)) and math.isfinite(ttft) and ttft >= 0 else None
-            )
+            first = start + ttft / 1000 if isinstance(ttft, int | float) and math.isfinite(ttft) and ttft >= 0 else None
             if first is None:
                 ttft = None
             client_id = m.get("x_request_id") or m.get("request_id") or f"client-line-{line}"
