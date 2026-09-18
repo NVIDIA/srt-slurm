@@ -182,7 +182,11 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
         patch.object(backend_class, "build_worker_command", return_value=["python3", "-m", "worker"]),
         patch.object(backend_class, "get_environment_for_mode", return_value={}),
         patch.object(backend_class, "get_process_environment", return_value={}),
-        patch.object(backend_class, "get_srun_config", return_value=SimpleNamespace(mpi="pmix", oversubscribe=True, cpu_bind="none")),
+        patch.object(
+            backend_class,
+            "get_srun_config",
+            return_value=SimpleNamespace(mpi="pmix", oversubscribe=True, cpu_bind="none"),
+        ),
         patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.2"),
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
         patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()) as launch,
