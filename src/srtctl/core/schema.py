@@ -3156,7 +3156,7 @@ class SrtConfig:
                     "disable observability.nsys, or use a custom client with start/stop hooks"
                 )
             if self.benchmark.type in {"trace-replay", "mooncake-router"} and any(
-                key.replace("_", "-").startswith("warmup-") and value not in (0, "0", False, None)
+                key.replace("_", "-").startswith(("warmup-", "num-warmup-")) and value not in (0, "0", False, None)
                 for key, value in self.benchmark.aiperf_args.items()
             ):
                 raise ValidationError(

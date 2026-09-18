@@ -250,7 +250,8 @@ def test_benchmarks_without_warmup_hooks_require_an_explicit_capture_choice(benc
     assert not cfg.observability_nsys_enabled
 
 
-def test_aiperf_internal_warmup_cannot_silently_fall_inside_workload_capture():
+@pytest.mark.parametrize("flag", ["warmup-request-count", "num-warmup-requests", "warmup-duration"])
+def test_aiperf_internal_warmup_cannot_silently_fall_inside_workload_capture(flag):
     with pytest.raises(ValidationError, match="additional aiperf_args warmup"):
-        config(benchmark={"type": "trace-replay", "aiperf_args": {"warmup-request-count": 10}})
-    config(benchmark={"type": "trace-replay", "aiperf_args": {"warmup-request-count": 0}})
+        config(benchmark={"type": "trace-replay", "aiperf_args": {flag: 10}})
+    config(benchmark={"type": "trace-replay", "aiperf_args": {flag: 0}})
