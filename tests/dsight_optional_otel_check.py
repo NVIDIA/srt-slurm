@@ -115,7 +115,9 @@ async def run(output: Path, port: int) -> None:
             url = Path(report["html"]).as_uri()
             await navigate(url, mode)
             await check_request("client-only", False)
-            assert not await js("/Recorded request path|Identity bridge/.test(document.querySelector('#inspectorBody').innerText)")
+            assert not await js(
+                "/Recorded request path|Identity bridge/.test(document.querySelector('#inspectorBody').innerText)"
+            )
             available = mode == "mixed"
             check = await check_request(CLIENT, available)
             await click("#fitTTFT")
@@ -123,7 +125,13 @@ async def run(output: Path, port: int) -> None:
             assert state["from"] == 0 and state["to"] < 4, state
             assert (CLIENT in state["expandedRequests"]) is available, state
             # Restored links cannot force an unavailable breakdown or stage selection.
-            saved = {"from": 0, "to": 10, "request": CLIENT, "expandedRequests": [CLIENT, "client-only"], "span": "progress:0"}
+            saved = {
+                "from": 0,
+                "to": 10,
+                "request": CLIENT,
+                "expandedRequests": [CLIENT, "client-only"],
+                "span": "progress:0",
+            }
             await navigate(url + "#view=" + quote(json.dumps(saved)), mode)
             state = await js("traceExplorer.getState()")
             assert "client-only" not in state["expandedRequests"], state
@@ -139,9 +147,20 @@ async def run(output: Path, port: int) -> None:
                 "const r=document.querySelector('#clientTracks .lane').getBoundingClientRect();"
                 "return {x:r.x+r.width*.25,end:r.x+r.width*.75,y:r.y+r.height/2}})()"
             )
-            await call("Input.dispatchMouseEvent", type="mousePressed", button="left", clickCount=1, x=rect["x"], y=rect["y"])
-            await call("Input.dispatchMouseEvent", type="mouseMoved", button="left", buttons=1, x=rect["end"], y=rect["y"])
-            await call("Input.dispatchMouseEvent", type="mouseReleased", button="left", clickCount=1, x=rect["end"], y=rect["y"])
+            await call(
+                "Input.dispatchMouseEvent", type="mousePressed", button="left", clickCount=1, x=rect["x"], y=rect["y"]
+            )
+            await call(
+                "Input.dispatchMouseEvent", type="mouseMoved", button="left", buttons=1, x=rect["end"], y=rect["y"]
+            )
+            await call(
+                "Input.dispatchMouseEvent",
+                type="mouseReleased",
+                button="left",
+                clickCount=1,
+                x=rect["end"],
+                y=rect["y"],
+            )
             state = await js("traceExplorer.getState()")
             assert abs(state["from"] - 1) < 1e-5 and abs(state["to"] - 3) < 1e-5, state
             if mode != "client-only":
@@ -157,9 +176,15 @@ async def run(output: Path, port: int) -> None:
             await js("document.querySelector('#tracks').scrollTop=0")
             shot = await call("Page.captureScreenshot", format="png", captureBeyondViewport=False)
             (output / f"{mode}.png").write_bytes(base64.b64decode(shot["data"]))
-            results.append({"mode": mode, "request": check, "range_and_saved_view": "passed", "independent_sources": "passed"})
+            results.append(
+                {"mode": mode, "request": check, "range_and_saved_view": "passed", "independent_sources": "passed"}
+            )
         errors = [e for e in events if e.get("method") == "Runtime.exceptionThrown"]
-        external = [e for e in events if e.get("method") == "Network.requestWillBeSent" and e["params"]["request"]["url"].startswith("http")]
+        external = [
+            e
+            for e in events
+            if e.get("method") == "Network.requestWillBeSent" and e["params"]["request"]["url"].startswith("http")
+        ]
         assert not errors, errors
         assert not external, external
         summary = {"cases": results, "errors": errors, "external_requests": external}
