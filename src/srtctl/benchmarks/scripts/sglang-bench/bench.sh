@@ -32,6 +32,8 @@ echo "SGLang-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurr
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/profiling.sh
 source "${SCRIPT_DIR}/../lib/profiling.sh"
+# shellcheck source=../lib/nsys.sh
+source "${SCRIPT_DIR}/../lib/nsys.sh"
 profiling_init_from_env
 
 cleanup() { stop_all_profiling; }
@@ -51,6 +53,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
     echo "Running benchmark with concurrency: $concurrency"
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
 
+    nsys_window_start
     set -x
     python3 -m sglang.bench_serving \
         --backend sglang-oai \
@@ -65,6 +68,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --request-rate "${REQ_RATE}" \
         --warmup-requests 0
     set +x
+    nsys_window_stop
 
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
     echo "Completed benchmark with concurrency: $concurrency"

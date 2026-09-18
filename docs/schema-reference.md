@@ -243,6 +243,7 @@ Observability configuration for OTEL tracing.
 | `enable_otel` | bool | `False` | If True, inject OTEL environment variables into all workers and frontends. Requires otel_endpoint to be set. Default: False. |
 | `otel_endpoint` | str \| None | `None` | OTEL collector endpoint (e.g. "http://10.0.0.1:4317"). Required when enable_otel is True. |
 | `tachometer` | [TachometerConfig](#tachometerconfig) | `TachometerConfig()` | Native Tachometer capture configuration. Follows ``enabled`` unless ``tachometer.enabled`` is set explicitly (see :class:`TachometerConfig`). |
+| `nsys` | [NsysObservabilityConfig](#nsysobservabilityconfig) | `NsysObservabilityConfig()` | Automatic Nsight Systems capture, enabled with the master switch. |
 
 ### TelemetryConfig
 
@@ -394,6 +395,17 @@ Native Tachometer collection for an observability-enabled run.
 | `node_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 | `process_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 
+### NsysObservabilityConfig
+
+Automatic NVTX tracing and CPU sampling of workers and Dynamo frontends.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `True` | Set false to keep other observability signals without launching nsys. |
+| `capture_window` | one of `'measured_workload'`, `'including_startup'` | `'measured_workload'` | measured_workload excludes warmup; including_startup spans process launch through teardown. |
+| `report_timeout_secs` | int | `1800` | Maximum wait for a control acknowledgment or a step's report finalization. |
+| `nvtx_injection_path` | str \| None | `None` | Optional container path to libToolsInjection64.so for NVTX injection. |
+
 ### TelemetryExporterConfig
 
 Configuration for a metrics exporter deployed on worker nodes.
@@ -446,6 +458,7 @@ Where a service runs.
 |---|---|---|---|
 | `node` | str | `'head'` | ``head`` or ``infra`` (one instance), ``dedicated`` (reserve the infra node exclusively; infra-class kinds only), ``prefill`` / ``decode`` / ``agg`` (one instance per distinct physical node that role's workers use), ``workers`` (one instance per engine worker node; on a service that owns nodes, its own pool), ``compute`` (engine worker nodes plus every pool), or ``all`` (every node of the allocation). |
 | `pool` | str \| None | `None` | Run on the nodes another service owns (``services[].nodes``), one instance per node of that pool. Replaces ``node``. |
+| `per` | str | `'node'` | ``node`` (default): one instance per placed node. ``worker``: one instance per engine worker on each placed node, attached to that worker: it runs with the worker's ``CUDA_VISIBLE_DEVICES`` and sees ``{worker_role}``, ``{worker_index}``, ``{worker_node_rank}``, ``{worker_gpus}``, ``{worker_gpu_count}``. A sidecar in the Kubernetes sense (the GPU Memory Service next to each vLLM worker). Only with ``node`` in ``prefill``, ``decode``, ``agg``, ``workers``. |
 
 ### ServiceReadinessConfig
 
@@ -594,6 +607,7 @@ vLLM protocol - implements BackendProtocol.
 | `type` | one of `'vllm'` | `'vllm'` |  |
 | `set_cuda_visible_devices` | bool | `False` | Legacy device binding for vLLM builds without --device-ids. |
 | `connector` | str \| None | `'nixl'` | Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed). |
+| `failover` | [VLLMFailoverConfig](#vllmfailoverconfig) \| None | `None` | Shadow engine recovery: when set, every worker runs shadow_engines standby engines on its GPUs next to an implied `gms` service that owns the weights. Dynamo frontend only. |
 | `allow_prefill_decode_colocation` | bool | `False` | Allow prefill and decode workers to share one node when the combined GPU request fits within gpus_per_node. Defaults off to preserve existing P/D node separation. |
 | `allow_prefill_decode_colocation_across_nodes` | bool | `False` | Extend P/D colocation to multi-node topologies. When enabled together with allow_prefill_decode_colocation, workers are packed contiguously across the minimum number of nodes instead of reserving separate P/D node pools. Defaults off to preserve the original one-node-only policy. |
 | `dp_launch_mode` | one of `'per_gpu'`, `'per_node'` | `'per_node'` | DP process layout. Per-node lets vLLM manage the node-local portion of a DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP rendezvous when a replica is larger than the node-local GPU allocation. Per-GPU remains available as a deprecated compatibility layout. |
@@ -623,6 +637,15 @@ Dynamo Mocker protocol - implements BackendProtocol.
 | `enable_prefix_caching` | bool | `True` |  |
 | `enable_chunked_prefill` | bool | `True` |  |
 | `preemption_mode` | str \| None | `None` |  |
+
+### VLLMFailoverConfig
+
+Shadow engine recovery for vLLM workers (Dynamo GPU Memory Service).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `shadow_engines` | int | `1` | Standby engines per worker. |
+| `shared_dir` | str | `'/dev/shm'` | Node-local host directory that every container on a node sees. The GMS sockets and the lock file of a worker live under ``<shared_dir>/srtctl-<job_id>/<role>_<index>``. enroot bind-mounts the host's ``/dev/shm`` into every container; ``/tmp`` is a fresh tmpfs per container and does not work. |
 
 ## Cluster config
 

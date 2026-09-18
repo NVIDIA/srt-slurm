@@ -102,6 +102,7 @@ services:
 | `env` | `{}` | Merged over the type's defaults; see [Environment](#environment). |
 | `placement.node` | type default | `generic`: `head`. See [Placement](#placement). `compute` is every engine worker node plus every pool; `all` adds the head, infra and client nodes. |
 | `placement.pool` | none | Run on the nodes another service owns, one instance per node of that pool. Replaces `node`. See [pools.md](pools.md). |
+| `placement.per` | `node` | `worker`: one instance per engine worker on each placed node instead of one per node, attached to that worker (its `CUDA_VISIBLE_DEVICES`, the `{worker_*}` placeholders). See [Placement](#placement). |
 | `nodes` | none | Whole nodes this service owns: its pool, added to the allocation after the engine roles' nodes, in declaration order. Any number of services may own nodes, next to engine roles or without them. An owner is placed on its own pool (`placement.node: workers`). Not supported with `resources.het_jobs`. See [pools.md](pools.md). |
 | `start` | type default | `etcd`, `nats`: `infra`. `mooncake-master`, `mooncake-store`: `before_workers`. `generic` and the exporters: `after_frontend`. |
 | `readiness` | type default | One probe per node: `port` / `tcp`, `http`, or `log`, plus `timeout_seconds` and `interval_seconds`. The typed kinds gate on their well-known ports when no probe is written. See [Start Order and Readiness](#start-order-and-readiness). Timing out terminates what this stage started and fails the job. |
@@ -132,6 +133,7 @@ Things the recipe asks for elsewhere are services the job runs without an entry;
 | `frontend.type: dynamo` | `etcd` | the infra node, phase `infra` |
 | `dynamo.request_plane: nats`, `dynamo.event_plane: nats`, or a `nats_max_payload_mb` knob | `nats` | the infra node, phase `infra` |
 | a declared `mooncake-master` entry (see [Mooncake KV Store](mooncake-kv-store.md)) | `mooncake-master` | the infra node, phase `before_workers` |
+| `engine.failover` (see [Shadow Engine Recovery](shadow-engine-recovery.md)) | `gms` | one instance per vLLM worker (`placement.per: worker`), phase `before_workers` |
 | tachometer on (the default; `observability.tachometer.enabled`) | `dcgm-exporter`, `node-exporter` | every worker node, phase `after_frontend` |
 
 `srtctl dry-run` lists them next to the declared ones, marked `implied by:`. A declared entry with
@@ -183,6 +185,25 @@ per distinct node that role's workers use, so two TP1 decode workers on one node
 When a service launches on more than one node its processes and logs get a node suffix:
 `service_<name>_<node>`. Two services that declare the same `readiness.port` and land on the same
 node are rejected before anything launches; give them disjoint placements or ports.
+
+`placement.per: worker` changes the unit from the node to the engine worker: one instance per worker
+of the placed role(s) on each selected node (`node` must be `prefill`, `decode`, `agg`, or `workers`),
+a sidecar in the Kubernetes sense. The instance runs in that worker's device view (its
+`CUDA_VISIBLE_DEVICES`, the same pinning the worker's engine steps get) and sees `{worker_role}`,
+`{worker_index}`, `{worker_node_rank}`, `{worker_gpus}` and `{worker_gpu_count}`. Its step and log are
+`service_<name>_<role>_<index>_<node>`. Because the instances of one node share its network namespace,
+a per-worker service's `readiness` must be a log probe. The GPU Memory Service of
+[shadow engine recovery](shadow-engine-recovery.md) is the built-in per-worker kind:
+
+```yaml
+services:
+  - name: gpu-watch
+    type: generic
+    command: ["nvidia-smi", "dmon", "-i", "{worker_gpus}"]
+    placement:
+      node: decode
+      per: worker
+```
 
 ## Start Order and Readiness
 
@@ -282,6 +303,7 @@ environment its process needs; the launch path is shared by every kind. Register
 | `process-exporter` | `configs/process-exporter -config.path <log_dir>/process-exporter.yml -web.listen-address=:9256 -threads=true ...` on the bare node | `after_frontend` | `false` | Implied on every allocated node (`placement.node: all`) while tachometer runs. Host-native from the static binary `make setup` installs; skipped with a warning when it is missing. A declared `container` switches to the image's `/bin/process-exporter` with the group file under `/logs`. `options`: `port`, `binary`. |
 | `mooncake-store` | `python -m mooncake.mooncake_store_service` | `before_workers` | `true` | Requires a `mooncake-master` entry. Container falls back to the master's. Injects the master's address. |
 | `ray` | `ray start --head ...` on the first instance, `ray start --address=<head>:6379 ...` on the rest, both `--block` | `before_workers` | `true` | One Ray cluster across the service's nodes; see [Ray cluster](#ray-cluster). Placement `workers` (default), `head`, or `all`. `options`: `port` (GCS, 6379), `dashboard_port` (8265), `num_gpus` (the node's count). `args` are appended to every `ray start`. |
+| `gms` | one `python3 -m gpu_memory_service --device k` per GPU of the worker, supervised by bash, in the job container | `before_workers` | `true` | Implied by `engine.failover`; see [Shadow Engine Recovery](shadow-engine-recovery.md). `placement.per: worker` (required): one instance per vLLM worker in that worker's device view, sockets and lock file under `<shared_dir>/srtctl-<job>/<role>_<index>`. Ready when its log says `GMS ready:`; `readiness.timeout_seconds` (default 120) also bounds the servers' startup. |
 
 ### Ray cluster
 

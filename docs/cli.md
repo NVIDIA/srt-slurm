@@ -17,6 +17,7 @@
 - [Commands](#commands)
   - [srtctl apply](#srtctl-apply)
   - [srtctl dry-run](#srtctl-dry-run)
+  - [srtctl render](#srtctl-render)
   - [srtctl resolve-override](#srtctl-resolve-override)
   - [srtctl migrate](#srtctl-migrate)
   - [srtctl monitor](#srtctl-monitor)
@@ -338,6 +339,57 @@ Dry-run output includes:
 - srun options (if configured)
 - For sweeps: table of all jobs with parameters
 - Generated configs saved to `dry-runs/` folder
+
+### `srtctl render`
+
+Write the exact sbatch script `srtctl apply` would submit, without submitting it.
+
+```bash
+srtctl render -f <config.yaml> --to <dir> [--serve-only] [--setup-script NAME] [--no-preflight]
+```
+
+For launchers that must own the `sbatch` call themselves — for example a harness whose
+contract is that its launch script ends in `exec sbatch --parsable ...` and reads the job id
+from that one line. `render` gives such a launcher srtctl's orchestration without srtctl's
+submit.
+
+The script is self-contained: `apply` copies the recipe into `outputs/<job_id>/` *after*
+sbatch hands back the id, which no one does for a rendered script, so the rendered script
+copies its recipe from `--to <dir>` into its own output directory at job start. `--to <dir>`
+receives `sbatch_script.sh`, `config.yaml` (the recipe as given), `config_<variant>.yaml`
+for an override variant, the git-state snapshot of any mounted checkouts, and
+`render.json`: what the launcher needs to know about the job before it exists —
+`total_nodes`, `frontend_node_index` and `client_node_index` (positions in the
+allocation's `scontrol show hostnames` order, computed with the orchestrator's own
+node-carving rules; `null` for heterogeneous jobs), `frontend_port`, `served_model_name`,
+`benchmark_type`. The directory must stay in place until the job has started.
+
+Once every configured worker has passed the health gate, the job writes
+`<log_dir>/server_ready.json` (`ready_at_unix`). A launcher driving a `manual` job with its
+own client should wait for that file rather than for the frontend alone: a Dynamo frontend
+lists the model as soon as its first worker registers.
+
+Prose goes to stderr; the last line of stdout is the script path, so the whole thing
+composes into one submit line:
+
+```bash
+exec sbatch --parsable --output=/path/serve.log "$(srtctl render -f recipe.yaml --to /path/render)"
+```
+
+Only a single recipe (or one override variant via `file:selector`) can be rendered;
+sweeps, directories and unselected override files are refused. Cluster defaults
+(`srtslurm.yaml`: account, partition, container and model aliases, `--segment`) apply
+exactly as for `apply`, and are found the same way: `srtslurm.yaml` in the working
+directory (or its two parents), or the file `SRTSLURM_CONFIG` points at. A launcher
+that runs `render` from somewhere else should set `SRTSLURM_CONFIG`.
+
+| Flag | Description |
+|------|-------------|
+| `-f, --file` | Path to YAML config file, or `file:selector` for one override variant (required) |
+| `--to` | Directory to render into (required) |
+| `--serve-only` | Render a serve-only job (deploy, hold, no benchmark) |
+| `--setup-script` | Custom setup script in `configs/` |
+| `--no-preflight` | Skip the pre-render model/container/telemetry filesystem checks |
 
 ### `srtctl resolve-override`
 

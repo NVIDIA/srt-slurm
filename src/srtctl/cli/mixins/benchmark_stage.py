@@ -7,6 +7,7 @@ Benchmark stage mixin for SweepOrchestrator.
 Handles benchmark execution and profiling.
 """
 
+import json
 import logging
 import re
 import shlex
@@ -19,6 +20,7 @@ from srtctl.core.fingerprint import format_identity_verification, verify_identit
 from srtctl.core.health import wait_for_model
 from srtctl.core.ip_utils import url_host
 from srtctl.core.lockfile import collect_worker_fingerprints
+from srtctl.core.observability_nsys import benchmark_nsys_env
 from srtctl.core.power.contract import (
     CONTAINER_LOG_DIR,
     MEASUREMENT_WINDOW_DIR_ENV,
@@ -28,6 +30,7 @@ from srtctl.core.processes import terminate_and_reap
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
+from srtctl.runtime_scripts.nsys_window import finish as finish_nsys_windows
 
 _BENCHMARK_TERMINATE_TIMEOUT = 15.0
 _BENCHMARK_KILL_TIMEOUT = 10.0
@@ -146,6 +149,27 @@ def _get_health_expectations(
 
     count_desc = worker_desc
     return logical_prefill, logical_decode, count_desc, logical_prefill + logical_decode
+
+
+SERVER_READY_FILENAME = "server_ready.json"
+
+
+def write_server_ready_marker(log_dir: Path) -> Path | None:
+    """Record that every configured worker passed the health gate.
+
+    An external load generator driving a ``manual`` job has only the frontend to ask,
+    and a Dynamo frontend lists the model as soon as its first worker registers — before
+    the rest have. This file is the launcher-side signal that srtctl's own gate (all
+    prefill and decode workers) has passed, so a client can wait for it instead of
+    racing the last worker. Best-effort: a failure to write it is logged, never raised.
+    """
+    marker = log_dir / SERVER_READY_FILENAME
+    try:
+        marker.write_text(json.dumps({"schema_version": 1, "ready_at_unix": time.time()}) + "\n")
+    except OSError as error:
+        logger.warning("could not write %s: %s", marker, error)
+        return None
+    return marker
 
 
 class BenchmarkStageMixin:
@@ -429,6 +453,7 @@ class BenchmarkStageMixin:
             return 1
 
         logger.info("Server is healthy")
+        write_server_ready_marker(self.runtime.log_dir)
 
         # Identity verification: compare recipe identity against runtime fingerprints
         # Store results on self so postprocess can include them in the lockfile
@@ -603,7 +628,20 @@ class BenchmarkStageMixin:
                 time.sleep(1)
             self.benchmark_child_reaped = True
             self.benchmark_child_allows_window_mutation = True
-            return proc.returncode or 0
+            exit_code = proc.returncode or 0
+            if (
+                getattr(self.config, "observability_nsys_enabled", False) is True
+                and self.config.observability.nsys.capture_window == "measured_workload"
+            ):
+                try:
+                    finish_nsys_windows(
+                        self.runtime.log_dir / "profiles" / ".control",
+                        self.config.observability.nsys.report_timeout_secs,
+                    )
+                except (RuntimeError, TimeoutError, OSError) as exc:
+                    logger.error("Observability capture failed: %s", exc)
+                    return exit_code or 1
+            return exit_code
         finally:
             if proc.poll() is None:
                 outcome = terminate_and_reap(
@@ -900,6 +938,8 @@ class BenchmarkStageMixin:
         # The windows directory is benchmark-agnostic: whichever benchmark runs
         # may adopt window stamping, so the env is not tied to one runner.
         env.update(self._get_measurement_window_env())
+        if getattr(self.config, "observability_nsys_enabled", False) is True:
+            env.update(benchmark_nsys_env(self.config))
 
         if runner.name == "SA-Bench":
             env.update(self._get_sa_bench_slow_down_env())

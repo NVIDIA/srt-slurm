@@ -96,6 +96,12 @@ echo "Artifact dir: ${RUN_ARTIFACT_DIR}"
 echo ""
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting benchmark"
 
+# Acknowledged capture starts after the explicit warmup above.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/nsys.sh
+source "${SCRIPT_DIR}/../lib/nsys.sh"
+nsys_window_start
+
 # Run aiperf profile exactly as dynamo does
 aiperf profile \
     -m "${MODEL_NAME}" \
@@ -112,6 +118,7 @@ aiperf profile \
     --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}"
 
 BENCH_EXIT_CODE=$?
+nsys_window_stop
 
 echo ""
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Benchmark complete (exit code: ${BENCH_EXIT_CODE})"

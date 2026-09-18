@@ -1364,10 +1364,22 @@ The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable server-side metrics/traces, Tachometer collection, and host sampling |
+| `enabled` | bool | `false` | Enable server-side metrics/traces, Nsight Systems capture, and host sampling |
+| `nsys` | object | `enabled: true` | NVTX tracing and CPU sampling of all worker processes/ranks and Dynamo frontends when observability is enabled; see [Profiling](profiling.md#observability-capture) |
 | `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
 | `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
 | `tachometer` | object | `enabled: null` | Native Tachometer collection settings; `enabled: null` follows `observability.enabled`, explicit `false` opts out |
+
+`observability.enabled: true` also enables nsys with NVTX tracing and CPU sampling
+on every frontend and worker process/rank.
+Its default `nsys.capture_window: measured_workload` starts collection after warmup and
+stops it when the measured workload finishes. Supported bundled runners call
+the boundary hooks automatically; custom/manual clients must call them at their
+own phase boundaries. Set `nsys.capture_window: including_startup` to include startup and
+warmup through teardown, or `nsys.enabled: false` to opt out. An enabled
+top-level `profiling` mode takes precedence. The serving container must provide nsys and the required
+NVTX support. See [Observability capture](profiling.md#observability-capture)
+for timing, sampling, injection, and report-finalization settings.
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
@@ -1455,7 +1467,7 @@ telemetry:
 | `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
 | `cpu_power_exporter` | object/null | `null` | Enables the independent CPU power leg; see below |
 
-`telemetry` requires a `benchmark.type` of `sa-bench`, `custom`, `agentic`, or `agentx`, the benchmark client on the head node (`benchmark.placement.node: head`, the default), and no dedicated node for the discovery plane (an `etcd`/`nats` service with `placement.node: dedicated` moves the head off the batch host the collector runs on).
+`telemetry` requires a `benchmark.type` of `sa-bench`, `custom`, `agentic`, `agentx`, or `manual` (a `manual` job has no load window, so like serve-only it captures the whole serve session; use it when an external load generator drives the endpoint), the benchmark client on the head node (`benchmark.placement.node: head`, the default), and no dedicated node for the discovery plane (an `etcd`/`nats` service with `placement.node: dedicated` moves the head off the batch host the collector runs on).
 
 ### CPU power
 

@@ -1056,3 +1056,42 @@ class TestInfmaxWorkspaceMount:
             show_config_details(config)
         output = capsys.readouterr().out
         assert "MISSING" not in output
+
+
+@pytest.mark.parametrize("nsys, expected", [({}, "enabled"), ({"enabled": False}, "disabled")])
+def test_observability_nsys_details(capsys, nsys, expected):
+    cfg = _make_config({"observability": {"enabled": True, "nsys": nsys}, "frontend": {"type": "dynamo"}})
+    show_config_details(cfg)
+    output = capsys.readouterr().out
+    assert "nsys" in output and expected in output
+    if expected == "enabled":
+        for text in (
+            "NVTX (no CUDA tracing)",
+            "nsys CPU sampling",
+            "process-tree (every target)",
+            "Dynamo frontends",
+            "measured_workload",
+            "after warmup",
+            "1800s",
+            "DYN_ENABLE_RUST_NVTX",
+        ):
+            assert text in output
+    else:
+        assert "nsys targets" not in output
+
+
+def test_explicit_profiling_explains_observability_precedence(capsys):
+    cfg = _make_config(
+        {
+            "observability": {"enabled": True},
+            "profiling": {
+                "type": "nsys-time",
+                "delay_secs": 1,
+                "duration_secs": 2,
+            },
+        }
+    )
+    show_config_details(cfg)
+    output = capsys.readouterr().out
+    assert "superseded by profiling" in output
+    assert "nsys targets" not in output

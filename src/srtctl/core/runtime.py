@@ -8,6 +8,7 @@ This module provides the single source of truth for all runtime values,
 replacing scattered bash variables and Jinja templating with typed Python.
 """
 
+import logging
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 from .config import get_srtslurm_setting
 from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from srtctl.core.schema import DynamoConfig, SrtConfig
@@ -189,6 +192,54 @@ class Nodes:
         infra = reserved.get("infra", head)
 
         return cls(head=head, bench=bench, infra=infra, worker=worker, pools=carved)
+
+    @staticmethod
+    def planned_role_indices(
+        total_nodes: int,
+        *,
+        frontend_dedicated_node: bool = False,
+        client_dedicated_node: bool = False,
+        etcd_nats_dedicated_node: bool = False,
+        colocate_dedicated_nodes: bool = True,
+    ) -> tuple[int, int]:
+        """Where ``from_slurm`` will put the head (frontend) and the benchmark client.
+
+        Positions in the allocation's nodelist, before the job exists: the same carving
+        rules as :meth:`from_slurm`, applied to indices instead of hostnames, so a
+        launcher that submits a rendered script can tell its own client where the
+        endpoint is. Pools are not modelled (the head is the first engine node either
+        way). Returns ``(head_index, client_index)``.
+        """
+        dedicated_roles = [
+            role
+            for role, wanted in (
+                ("infra", etcd_nats_dedicated_node),
+                ("frontend", frontend_dedicated_node),
+                ("client", client_dedicated_node),
+            )
+            if wanted
+        ]
+        if not dedicated_roles:
+            return 0, 0
+        num_reserved = 1 if colocate_dedicated_nodes else len(dedicated_roles)
+        if total_nodes <= num_reserved:
+            raise ValueError(
+                f"dedicated node(s) for {'+'.join(dedicated_roles)} require at least {num_reserved + 1} nodes"
+            )
+        last = total_nodes - 1
+        has_client = "client" in dedicated_roles
+        if colocate_dedicated_nodes:
+            shared = last if has_client else 0
+            reserved = {role: shared for role in dedicated_roles}
+            first_worker = 0 if has_client else 1
+        else:
+            front_roles = [role for role in dedicated_roles if role != "client"]
+            reserved = dict(zip(front_roles, range(len(front_roles)), strict=False))
+            if has_client:
+                reserved["client"] = last
+            first_worker = len(front_roles)
+        head = reserved.get("frontend", first_worker)
+        return head, reserved.get("client", head)
 
     @staticmethod
     def _carve_pools(
@@ -448,12 +499,24 @@ class RuntimeContext:
                 expanded_host = os.path.expandvars(host_path)
                 container_mounts[Path(expanded_host).resolve()] = Path(container_path)
 
-        # Add extra mounts from config
+        # Add extra mounts from config. Sources are resolved, so two entries can collapse
+        # into one (on clusters where e.g. /lustre is a symlink onto /scratch) and a later
+        # entry silently replaces an earlier one's container path. Say so instead.
         if config.extra_mount:
             for mount_spec in config.extra_mount:
                 host_path, container_path = mount_spec.split(":", 1)
                 expanded_host = os.path.expandvars(host_path)
-                container_mounts[Path(expanded_host).expanduser().resolve()] = Path(container_path)
+                resolved_host = Path(expanded_host).expanduser().resolve()
+                previous = container_mounts.get(resolved_host)
+                if previous is not None and previous != Path(container_path):
+                    logger.warning(
+                        "extra_mount %r resolves to %s, already mounted at %s; the container will see it at %s only",
+                        mount_spec,
+                        resolved_host,
+                        previous,
+                        container_path,
+                    )
+                container_mounts[resolved_host] = Path(container_path)
 
         # Mount InferenceX workspace if available (for lm-eval support).
         # Skip exists() check: the orchestrator runs on the SLURM head node

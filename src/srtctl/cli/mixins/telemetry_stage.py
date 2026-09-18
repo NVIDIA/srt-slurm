@@ -81,6 +81,20 @@ class TelemetryStageMixin:
         """Backend worker processes."""
         raise NotImplementedError
 
+    def _telemetry_nodes(self) -> list[str]:
+        """Every node whose power is worth sampling: engine workers and service pools.
+
+        The engine nodes come from the backend processes; the pool nodes from the
+        allocation's carve (``runtime.nodes.compute``, which lists engine nodes first and
+        then each pool). A services-only job has no backend processes at all, and
+        sampling nothing there used to make every telemetry leg report itself failed.
+        """
+        nodes = {process.node for process in self.backend_processes}
+        runtime_nodes = getattr(self.runtime, "nodes", None)
+        if runtime_nodes is not None:
+            nodes.update(getattr(runtime_nodes, "compute", ()))
+        return sorted(nodes)
+
     def _compute_frontend_topology(self) -> Any:
         """Frontend topology helper provided by FrontendStageMixin."""
         raise NotImplementedError
@@ -168,7 +182,7 @@ class TelemetryStageMixin:
         if exporter_config is None:
             return None
 
-        worker_nodes = sorted({process.node for process in self.backend_processes})
+        worker_nodes = self._telemetry_nodes()
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
         command = resolve_exporter_command(exporter_config, DCGM_EXPORTER_COMMAND_TEMPLATE)
 
@@ -239,7 +253,7 @@ class TelemetryStageMixin:
         if not telemetry.enabled or telemetry.cpu_power_exporter is None:
             return None
 
-        worker_nodes = sorted({process.node for process in self.backend_processes})
+        worker_nodes = self._telemetry_nodes()
         collector = CpuPowerCollector(
             settings=CpuPowerSessionSettings(
                 power_dir=self.runtime.log_dir / telemetry.storage_subdir / "cpu",
@@ -328,7 +342,7 @@ class TelemetryStageMixin:
         if not telemetry.enabled or cpu_power.enabled is not True:
             return None
 
-        worker_nodes = sorted({process.node for process in self.backend_processes})
+        worker_nodes = self._telemetry_nodes()
         cpu_dir = self.runtime.log_dir / cpu_power.storage_subdir
         session = CpuPowerTelemetrySession(
             CpuPowerHostSessionSettings(
