@@ -105,7 +105,16 @@ CPU_SAMPLES_HEADER = (
 # out to be wrong, only the ACPI total is affected, since the component-rail
 # columns and DCGM mode (one already-aggregate value per socket) are unaffected.
 
+# Keep the configured cadence at or below three seconds. Coverage validation
+# derives its normal gap budget from the recorded cadence and request timeout;
+# this constant is only the configuration ceiling.
 MAX_SAMPLE_GAP_SECONDS = 3.0
+# A single gap may grow with the window, but never exceed 10 seconds or 0.5%
+# of the formal measurement duration. All gaps over the normal budget may
+# cover at most 5% of that duration for any device.
+MAX_TOLERATED_SAMPLE_GAP_SECONDS = 10.0
+MAX_TOLERATED_SAMPLE_GAP_WINDOW_FRACTION = 0.005
+MAX_LONG_SAMPLE_GAP_WINDOW_FRACTION = 0.05
 COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
 
 BENCHMARK_TYPE_SA_BENCH = "sa-bench"
@@ -124,6 +133,7 @@ class Reason:
     ENDPOINT_HTTP_ERROR = "endpoint_http_error"
     ENDPOINT_PARSE_ERROR = "endpoint_parse_error"
     ENDPOINT_RESOLUTION_FAILED = "endpoint_resolution_failed"
+    SAMPLE_SCHEDULE_OVERRUN = "sample_schedule_overrun"
     POWER_METRIC_MISSING = "power_metric_missing"
     DUPLICATE_POWER_METRIC = "duplicate_power_metric"
     SAMPLES_CSV_MISSING = "samples_csv_missing"

@@ -3,8 +3,8 @@
 
 """Head-node power collection session.
 
-The session owns the collector thread, the daemon request workers, and the
-``samples.csv`` writer. Exporter processes stay owned by ``ProcessRegistry``;
+The session owns the per-endpoint collector threads and the ``samples.csv``
+writer. Exporter processes stay owned by ``ProcessRegistry``;
 the session only holds handles so it can notice a premature exit. Expected
 telemetry invalidity is returned as an outcome rather than raised, so the
 orchestrator can finalize artifacts before deciding the job's exit code.
@@ -43,6 +43,7 @@ from srtctl.core.power.manifest import (
     STATUS_RUNNING,
     DcgmExporterIdentity,
     ExpectedWindow,
+    MissedSampleRange,
     PowerManifest,
 )
 from srtctl.core.power.parser import parse_power_scrape
@@ -130,13 +131,17 @@ class PowerTelemetrySession:
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._ready_at_monotonic: float | None = None
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
         self._writer: SampleWriter | None = None
         self._exporters: list[ManagedProcess] = []
 
         self._scrape_seq = 0
         self._scrape_count = 0
         self._max_scrape_duration: float | None = None
+        self._missed_sample_ranges: list[MissedSampleRange] = []
+        self._missed_range_indices: dict[tuple[str, tuple[str, ...]], int] = {}
+        self._readiness_keys_by_scrape_seq: dict[int, set[tuple[str, int]]] = {}
+        self._readiness_tracking = True
         self._reasons: list[str] = []
         self._outcome: SessionOutcome | None = None
         self._mutation_disabled = False
@@ -174,8 +179,7 @@ class PowerTelemetrySession:
 
     @property
     def collector_alive(self) -> bool:
-        thread = self._thread
-        return thread is not None and thread.is_alive()
+        return any(thread.is_alive() for thread in self._threads)
 
     @property
     def writer_closed(self) -> bool:
@@ -244,10 +248,26 @@ class PowerTelemetrySession:
             )
 
     def _start_collector(self) -> None:
-        if self._thread is not None:
+        if self._threads:
             return
-        self._thread = threading.Thread(target=self._run, name="PowerCollector", daemon=True)
-        self._thread.start()
+        with self._state_lock:
+            initial_scrape_seq = self._scrape_seq
+        started_monotonic = time.monotonic()
+        started_unix = time.time()
+        self._threads = [
+            threading.Thread(
+                target=self._run_endpoint,
+                name=f"PowerCollector-{endpoint.hostname}",
+                args=(endpoint, initial_scrape_seq, started_monotonic, started_unix),
+                daemon=True,
+            )
+            for endpoint in self._endpoints
+        ]
+        self._threads.append(
+            threading.Thread(target=self._run_supervisor, name="PowerCollectorSupervisor", daemon=True)
+        )
+        for thread in self._threads:
+            thread.start()
 
     def _wait_for_readiness(self, deadline: float) -> bool:
         """Wait for one persisted *complete* scrape covering every expected device.
@@ -257,9 +277,15 @@ class PowerTelemetrySession:
         """
         self._ready.wait(timeout=max(0.0, deadline - time.monotonic()))
         if self._ready_at_monotonic is not None and self._ready_at_monotonic < deadline:
+            with self._state_lock:
+                self._readiness_tracking = False
+                self._readiness_keys_by_scrape_seq.clear()
             return True
 
         self.record_reason(Reason.EXPORTER_STARTUP_TIMEOUT)
+        with self._state_lock:
+            self._readiness_tracking = False
+            self._readiness_keys_by_scrape_seq.clear()
         return False
 
     def collect_once(self) -> int:
@@ -271,7 +297,7 @@ class PowerTelemetrySession:
         with self._state_lock:
             scrape_seq = self._scrape_seq
             self._scrape_seq += 1
-            self._scrape_count += 1
+        scheduled_at_unix = time.time()
 
         # NOTE: requests applies its timeout to connect and read separately, so an endpoint can take 2x.
         deadline = time.monotonic() + 2 * self._settings.request_timeout_seconds + COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
@@ -285,35 +311,114 @@ class PowerTelemetrySession:
         if failures:
             raise failures[0]
 
-        rows: list[SampleRow] = []
-        reasons: list[str] = []
-        durations: list[float] = []
         settled = sorted(results, key=lambda item: item.hostname)
+        written = 0
         for result in settled:
-            rows.extend(result.rows)
-            reasons.extend(result.reason_codes)
-            if result.duration_seconds is not None:
-                durations.append(result.duration_seconds)
+            written += self._persist_endpoint_result(
+                result,
+                scrape_seq=scrape_seq,
+                scheduled_at_unix=scheduled_at_unix,
+            )
         # A poller abandoned at the deadline settles nothing; it must still
         # account as a miss or the manifest under-reports scrape coverage.
         settled_hosts = {result.hostname for result in settled}
-        reasons.extend(Reason.ENDPOINT_TIMEOUT for endpoint in endpoints if endpoint.hostname not in settled_hosts)
+        for endpoint in endpoints:
+            if endpoint.hostname not in settled_hosts:
+                self._record_missed_sample_range(
+                    hostname=endpoint.hostname,
+                    first_scrape_seq=scrape_seq,
+                    last_scrape_seq=scrape_seq,
+                    first_scheduled_at_unix=scheduled_at_unix,
+                    last_scheduled_at_unix=scheduled_at_unix,
+                    reason_codes=(Reason.ENDPOINT_TIMEOUT,),
+                )
+        return written
 
+    def _persist_endpoint_result(
+        self,
+        result: _EndpointResult,
+        *,
+        scrape_seq: int,
+        scheduled_at_unix: float,
+    ) -> int:
+        """Persist one endpoint independently and update its schedule evidence."""
+        reasons = tuple(dedupe(result.reason_codes))
         with self._state_lock:
+            self._scrape_count = max(self._scrape_count, scrape_seq + 1)
             self._reasons.extend(reasons)
-            if durations:
-                self._max_scrape_duration = max(durations + [self._max_scrape_duration or 0.0])
+            if result.duration_seconds is not None:
+                self._max_scrape_duration = max(
+                    result.duration_seconds,
+                    self._max_scrape_duration or 0.0,
+                )
+
+        if not result.rows:
+            self._record_missed_sample_range(
+                hostname=result.hostname,
+                first_scrape_seq=scrape_seq,
+                last_scrape_seq=scrape_seq,
+                first_scheduled_at_unix=scheduled_at_unix,
+                last_scheduled_at_unix=scheduled_at_unix,
+                reason_codes=reasons or (Reason.ENDPOINT_PARSE_ERROR,),
+            )
 
         with self._writer_lock:
             if self._mutation_disabled or self._writer is None:
                 return 0
-            self._writer.append(rows)
+            self._writer.append(result.rows)
             self._writer.flush()
-            observed_keys = {(row.hostname, row.gpu_index) for row in rows}
-            if self._expected_device_keys and self._expected_device_keys <= observed_keys and not self._ready.is_set():
-                self._ready_at_monotonic = time.monotonic()
-                self._ready.set()
-        return len(rows)
+
+        observed_keys = {(row.hostname, row.gpu_index) for row in result.rows}
+        if observed_keys:
+            with self._state_lock:
+                if self._readiness_tracking and not self._ready.is_set():
+                    cycle_keys = self._readiness_keys_by_scrape_seq.setdefault(scrape_seq, set())
+                    cycle_keys.update(observed_keys)
+                    if self._expected_device_keys and self._expected_device_keys <= cycle_keys:
+                        self._ready_at_monotonic = time.monotonic()
+                        self._ready.set()
+        return len(result.rows)
+
+    def _record_missed_sample_range(
+        self,
+        *,
+        hostname: str,
+        first_scrape_seq: int,
+        last_scrape_seq: int,
+        first_scheduled_at_unix: float,
+        last_scheduled_at_unix: float,
+        reason_codes: tuple[str, ...],
+    ) -> None:
+        """Record exact missing slots, coalescing adjacent misses with the same cause."""
+        reasons = tuple(dedupe(list(reason_codes)))
+        key = (hostname, reasons)
+        with self._state_lock:
+            self._scrape_count = max(self._scrape_count, last_scrape_seq + 1)
+            self._reasons.extend(reasons)
+            previous_index = self._missed_range_indices.get(key)
+            if previous_index is not None:
+                previous = self._missed_sample_ranges[previous_index]
+                if previous.last_scrape_seq + 1 == first_scrape_seq:
+                    self._missed_sample_ranges[previous_index] = MissedSampleRange(
+                        hostname=hostname,
+                        first_scrape_seq=previous.first_scrape_seq,
+                        last_scrape_seq=last_scrape_seq,
+                        first_scheduled_at_unix=previous.first_scheduled_at_unix,
+                        last_scheduled_at_unix=last_scheduled_at_unix,
+                        reason_codes=reasons,
+                    )
+                    return
+            self._missed_range_indices[key] = len(self._missed_sample_ranges)
+            self._missed_sample_ranges.append(
+                MissedSampleRange(
+                    hostname=hostname,
+                    first_scrape_seq=first_scrape_seq,
+                    last_scrape_seq=last_scrape_seq,
+                    first_scheduled_at_unix=first_scheduled_at_unix,
+                    last_scheduled_at_unix=last_scheduled_at_unix,
+                    reason_codes=reasons,
+                )
+            )
 
     def _poll(self, endpoint: PowerEndpoint, scrape_seq: int) -> _EndpointResult:
         """One endpoint request, timestamped adjacently on the head-node clock."""
@@ -352,20 +457,70 @@ class PowerTelemetrySession:
             duration_seconds=settled_monotonic - started_monotonic,
         )
 
-    def _run(self) -> None:
-        """Collector thread: fixed-cadence cycles that never overlap."""
+    def _run_endpoint(
+        self,
+        endpoint: PowerEndpoint,
+        initial_scrape_seq: int,
+        started_monotonic: float,
+        started_unix: float,
+    ) -> None:
+        """Poll one endpoint on its own fixed schedule without overlapping requests."""
         interval = self._settings.sample_interval_seconds
+        scrape_seq = initial_scrape_seq
+        next_cycle = started_monotonic
         try:
-            next_cycle = time.monotonic()
             while not self._stop.is_set():
-                self.collect_once()
-                self._check_exporters()
+                if self._stop.wait(max(0.0, next_cycle - time.monotonic())):
+                    break
+                scheduled_at_unix = started_unix + (next_cycle - started_monotonic)
+                result = self._poll(endpoint, scrape_seq)
+                self._persist_endpoint_result(
+                    result,
+                    scrape_seq=scrape_seq,
+                    scheduled_at_unix=scheduled_at_unix,
+                )
+                scrape_seq += 1
                 next_cycle += interval
-                self._stop.wait(max(0.0, next_cycle - time.monotonic()))
-            self.collect_once()
+
+                now = time.monotonic()
+                if not self._stop.is_set() and next_cycle <= now:
+                    missed_count = int((now - next_cycle) / interval) + 1
+                    last_scrape_seq = scrape_seq + missed_count - 1
+                    self._record_missed_sample_range(
+                        hostname=endpoint.hostname,
+                        first_scrape_seq=scrape_seq,
+                        last_scrape_seq=last_scrape_seq,
+                        first_scheduled_at_unix=started_unix + (next_cycle - started_monotonic),
+                        last_scheduled_at_unix=(
+                            started_unix + (next_cycle - started_monotonic) + (missed_count - 1) * interval
+                        ),
+                        reason_codes=(Reason.SAMPLE_SCHEDULE_OVERRUN,),
+                    )
+                    scrape_seq += missed_count
+                    next_cycle += missed_count * interval
+
+            # Bracket a measurement window that ended just before shutdown.
+            result = self._poll(endpoint, scrape_seq)
+            self._persist_endpoint_result(
+                result,
+                scrape_seq=scrape_seq,
+                scheduled_at_unix=time.time(),
+            )
         except Exception:
-            logger.exception("Power collector stopped")
+            logger.exception("Power collector stopped for endpoint %s", endpoint.hostname)
             self.record_reason(Reason.COLLECTOR_EXCEPTION)
+            self._stop.set()
+
+    def _run_supervisor(self) -> None:
+        """Watch exporter processes independently of endpoint request latency."""
+        interval = min(self._settings.sample_interval_seconds, 1.0)
+        try:
+            while not self._stop.wait(interval):
+                self._check_exporters()
+        except Exception:
+            logger.exception("Power collector supervisor stopped")
+            self.record_reason(Reason.COLLECTOR_EXCEPTION)
+            self._stop.set()
 
     def _any_exporter_exited(self) -> bool:
         with self._exporters_lock:
@@ -395,11 +550,10 @@ class PowerTelemetrySession:
         self._check_exporters()
         self._stop.set()
 
-        thread = self._thread
-        if thread is not None:
+        for thread in self._threads:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-            if thread.is_alive():
-                self.record_reason(Reason.COLLECTOR_JOIN_TIMEOUT)
+        if any(thread.is_alive() for thread in self._threads):
+            self.record_reason(Reason.COLLECTOR_JOIN_TIMEOUT)
         if interrupted:
             self.record_reason(Reason.COLLECTOR_INTERRUPTED)
         # NOTE: the pre-stop poll cannot see an exporter that died during the final scrape.
@@ -428,6 +582,9 @@ class PowerTelemetrySession:
         """
         with self._state_lock:
             reasons = list(self._reasons)
+            self._manifest.scrape_count = self._scrape_count
+            self._manifest.max_scrape_duration_seconds = self._max_scrape_duration
+            self._manifest.missed_sample_ranges = list(self._missed_sample_ranges)
         self._manifest.reason_codes = list(dedupe(reasons))
         self._manifest.mark_terminal(
             status=STATUS_INCOMPLETE,
@@ -458,6 +615,7 @@ class PowerTelemetrySession:
             reasons = [*self._reasons, *sample_reasons, *devices.reason_codes]
             self._manifest.scrape_count = self._scrape_count
             self._manifest.max_scrape_duration_seconds = self._max_scrape_duration
+            self._manifest.missed_sample_ranges = list(self._missed_sample_ranges)
 
         if allow_window_mutation:
             convert_running_windows(self.windows_dir, reason="benchmark did not reach a formal end boundary")
@@ -471,6 +629,8 @@ class PowerTelemetrySession:
             expected_device_keys={device.key for device in self._manifest.expected_devices},
             observed_devices=observed,
             artifact_errors=self._manifest.artifact_errors,
+            sample_interval_seconds=self._settings.sample_interval_seconds,
+            request_timeout_seconds=self._settings.request_timeout_seconds,
         )
         reasons.extend(reason for validation in self._manifest.window_validations for reason in validation.reason_codes)
         # NOTE: an unusable artifact file is itself a publication gate, not something to ignore.

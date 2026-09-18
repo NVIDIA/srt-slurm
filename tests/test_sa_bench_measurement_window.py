@@ -135,7 +135,24 @@ def _samples(start, end, *, step=1.0, devices=(("node-a", 0, "GPU-a0"),), pad=No
     return derive_observed_devices(rows)
 
 
-def _validate(logs, observed, expected=(("sa-bench", 4),), errors=None):
+def _samples_with_omissions(start, end, omit):
+    rows = [
+        SampleRow(timestamp, seq, "node-a", 0, "GPU-a0", 400.0)
+        for seq, timestamp in enumerate(range(int(start) - 2, int(end) + 3))
+        if not omit(timestamp)
+    ]
+    return derive_observed_devices(rows)
+
+
+def _validate(
+    logs,
+    observed,
+    expected=(("sa-bench", 4),),
+    errors=None,
+    *,
+    sample_interval_seconds=1.0,
+    request_timeout_seconds=1.0,
+):
     return validate_expected_windows(
         power_dir=logs / "power",
         result_root=logs,
@@ -143,6 +160,8 @@ def _validate(logs, observed, expected=(("sa-bench", 4),), errors=None):
         expected_device_keys={device.key for device in observed},
         observed_devices=observed,
         artifact_errors=errors if errors is not None else [],
+        sample_interval_seconds=sample_interval_seconds,
+        request_timeout_seconds=request_timeout_seconds,
     )
 
 
@@ -347,6 +366,58 @@ class TestCoverageValidation:
         start, end = self._completed(logs)
 
         rows = _validate(logs, _samples(start, end, step=MAX_SAMPLE_GAP_SECONDS + 0.5))
+
+        assert rows[0].power_coverage_valid is False
+        assert Reason.SAMPLE_GAP_EXCEEDED in rows[0].reason_codes
+
+    def test_gap_budget_uses_the_recorded_cadence_and_timeout(self, logs):
+        start, end = self._completed(logs)
+        observed = _samples(start, end, step=4.0)
+
+        strict = _validate(
+            logs,
+            observed,
+            sample_interval_seconds=1.0,
+            request_timeout_seconds=1.0,
+        )
+        configured = _validate(
+            logs,
+            observed,
+            sample_interval_seconds=1.0,
+            request_timeout_seconds=1.5,
+        )
+
+        assert strict[0].power_coverage_valid is False
+        assert configured[0].power_coverage_valid is True
+
+    def test_long_window_tolerates_a_bounded_sampling_overrun(self, logs):
+        start, end = self._completed(logs, end=4640.0, duration=3640.0)
+        observed = _samples_with_omissions(start, end, lambda timestamp: 2000 < timestamp < 2009)
+
+        rows = _validate(logs, observed)
+
+        assert rows[0].power_coverage_valid is True
+        assert rows[0].reason_codes == ()
+        assert rows[0].per_device_max_sample_gap_seconds["node-a/GPU-a0"] == pytest.approx(9.0)
+
+    def test_long_window_rejects_an_overrun_above_the_absolute_limit(self, logs):
+        start, end = self._completed(logs, end=4640.0, duration=3640.0)
+        observed = _samples_with_omissions(start, end, lambda timestamp: 2000 < timestamp < 2011)
+
+        rows = _validate(logs, observed)
+
+        assert rows[0].power_coverage_valid is False
+        assert Reason.SAMPLE_GAP_EXCEEDED in rows[0].reason_codes
+
+    def test_long_window_rejects_sustained_sampling_overruns(self, logs):
+        start, end = self._completed(logs, end=4640.0, duration=3640.0)
+        observed = _samples_with_omissions(
+            start,
+            end,
+            lambda timestamp: 0 < (timestamp - int(start)) % 60 < 4,
+        )
+
+        rows = _validate(logs, observed)
 
         assert rows[0].power_coverage_valid is False
         assert Reason.SAMPLE_GAP_EXCEEDED in rows[0].reason_codes

@@ -14,6 +14,7 @@ reviewer can check a run without access to the live job.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 from collections.abc import Sequence
@@ -86,6 +87,7 @@ _RUNTIME_ONLY_REASON_CODES = frozenset(
         Reason.ENDPOINT_HTTP_ERROR,
         Reason.ENDPOINT_PARSE_ERROR,
         Reason.ENDPOINT_RESOLUTION_FAILED,
+        Reason.SAMPLE_SCHEDULE_OVERRUN,
         Reason.POWER_METRIC_MISSING,
         Reason.DUPLICATE_POWER_METRIC,
         Reason.GPU_INDEX_MISSING,
@@ -147,6 +149,7 @@ def validate_power_artifacts(
         stored_publication_valid = None
 
     failures: list[str] = _check_wire_contract(manifest)
+    failures += _check_missed_sample_ranges(manifest)
     failures += _check_samples_digest(manifest, power_dir / SAMPLES_FILENAME)
 
     try:
@@ -169,6 +172,8 @@ def validate_power_artifacts(
     failures += [f"{reason} (device identity/topology)" for reason in devices.reason_codes]
 
     artifact_errors: list[ArtifactError] = []
+    sample_interval = manifest.get("sample_interval_seconds")
+    request_timeout = manifest.get("request_timeout_seconds")
     validations = validate_expected_windows(
         power_dir=power_dir,
         result_root=result_root,
@@ -176,6 +181,12 @@ def validate_power_artifacts(
         expected_device_keys={device.key for device in expected_devices},
         observed_devices=observed,
         artifact_errors=artifact_errors,
+        sample_interval_seconds=float(sample_interval)
+        if is_finite_number(sample_interval) and sample_interval > 0
+        else 1.0,
+        request_timeout_seconds=float(request_timeout)
+        if is_finite_number(request_timeout) and request_timeout > 0
+        else 1.0,
     )
     if not expected_windows:
         failures.append("no expected measurement window")
@@ -208,6 +219,7 @@ def validate_power_artifacts(
         "observed_devices": len(observed),
         "stable_uuids": sum(1 for device in observed if len(device.gpu_uuids) == 1),
         "sample_rows": len(rows),
+        "missed_samples": manifest.get("missed_sample_count"),
         "windows": len(validations),
         "max_sample_gap_seconds": max(gaps) if gaps else None,
     }
@@ -250,6 +262,90 @@ def _check_samples_digest(manifest: dict[str, Any], samples_path: Path) -> list[
     if actual != stored:
         return [f"samples_sha256 mismatch: manifest records {stored}, recomputed {actual}"]
     return []
+
+
+def _check_missed_sample_ranges(manifest: dict[str, Any]) -> list[str]:
+    """Validate the compact runtime evidence for endpoint sample slots with no rows."""
+    failures: list[str] = []
+    has_count = "missed_sample_count" in manifest
+    has_ranges = "missed_sample_ranges" in manifest
+    if not has_count and not has_ranges:
+        return []
+    if has_count != has_ranges:
+        return ["missed sample evidence is only partially present"]
+
+    stored_count = manifest.get("missed_sample_count")
+    if not isinstance(stored_count, int) or isinstance(stored_count, bool) or stored_count < 0:
+        failures.append("missed_sample_count is not a non-negative integer")
+
+    entries = manifest.get("missed_sample_ranges")
+    if not isinstance(entries, list):
+        return [*failures, "missed_sample_ranges is not a list"]
+
+    total = 0
+    ranges_by_host: dict[str, list[tuple[int, int]]] = {}
+    range_reasons: set[str] = set()
+    scrape_count = manifest.get("scrape_count")
+    for index, entry in enumerate(entries):
+        label = f"missed_sample_ranges[{index}]"
+        if not isinstance(entry, dict):
+            failures.append(f"{label} is not an object")
+            continue
+        hostname = entry.get("hostname")
+        first_seq = entry.get("first_scrape_seq")
+        last_seq = entry.get("last_scrape_seq")
+        first_scheduled = entry.get("first_scheduled_at_unix")
+        last_scheduled = entry.get("last_scheduled_at_unix")
+        count = entry.get("count")
+        reasons = entry.get("reason_codes")
+
+        if not isinstance(hostname, str) or not hostname:
+            failures.append(f"{label}.hostname is not a non-empty string")
+        valid_seq = all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in (first_seq, last_seq)
+        )
+        if not valid_seq or last_seq < first_seq:
+            failures.append(f"{label} has an invalid scrape sequence range")
+        else:
+            expected_count = last_seq - first_seq + 1
+            if count != expected_count:
+                failures.append(f"{label}.count is {count!r}, expected {expected_count}")
+            else:
+                total += expected_count
+            if isinstance(scrape_count, int) and not isinstance(scrape_count, bool) and last_seq >= scrape_count:
+                failures.append(f"{label} exceeds scrape_count {scrape_count}")
+            if isinstance(hostname, str) and hostname:
+                ranges_by_host.setdefault(hostname, []).append((first_seq, last_seq))
+
+        if not (is_finite_number(first_scheduled) and is_finite_number(last_scheduled)):
+            failures.append(f"{label} scheduled timestamps are not finite")
+        elif last_scheduled < first_scheduled:
+            failures.append(f"{label} scheduled timestamps are reversed")
+
+        if not isinstance(reasons, list) or not reasons or not all(isinstance(reason, str) for reason in reasons):
+            failures.append(f"{label}.reason_codes is not a non-empty list of strings")
+        else:
+            reason_strings = [str(reason) for reason in reasons]
+            unknown = sorted(set(reason_strings) - ALL_REASON_CODES)
+            if unknown:
+                failures.append(f"{label}.reason_codes contains unknown values: {', '.join(unknown)}")
+            if len(reason_strings) != len(set(reason_strings)):
+                failures.append(f"{label}.reason_codes contains duplicates")
+            range_reasons.update(reason_strings)
+
+    for hostname, ranges in ranges_by_host.items():
+        ordered = sorted(ranges)
+        if any(current[0] <= previous[1] for previous, current in itertools.pairwise(ordered)):
+            failures.append(f"missed_sample_ranges overlap for hostname {hostname!r}")
+
+    if isinstance(stored_count, int) and not isinstance(stored_count, bool) and stored_count != total:
+        failures.append(f"missed_sample_count is {stored_count}, ranges contain {total}")
+    top_level_reasons = manifest.get("reason_codes")
+    if isinstance(top_level_reasons, list) and all(isinstance(reason, str) for reason in top_level_reasons):
+        missing_reasons = sorted(range_reasons - set(top_level_reasons))
+        if missing_reasons:
+            failures.append(f"missed sample reasons absent from reason_codes: {', '.join(missing_reasons)}")
+    return failures
 
 
 def _check_wire_contract(manifest: dict[str, Any]) -> list[str]:

@@ -348,7 +348,20 @@ class TestCollection:
 
         rows, _ = read_samples(session.power_dir / SAMPLES_FILENAME)
         assert {row.hostname for row in rows} == {"node-a"}
-        assert Reason.ENDPOINT_TIMEOUT in _manifest(session)["reason_codes"]
+        manifest = _manifest(session)
+        assert Reason.ENDPOINT_TIMEOUT in manifest["reason_codes"]
+        assert manifest["missed_sample_count"] == 1
+        assert manifest["missed_sample_ranges"] == [
+            {
+                "hostname": "node-b",
+                "first_scrape_seq": 0,
+                "last_scrape_seq": 0,
+                "first_scheduled_at_unix": manifest["missed_sample_ranges"][0]["first_scheduled_at_unix"],
+                "last_scheduled_at_unix": manifest["missed_sample_ranges"][0]["last_scheduled_at_unix"],
+                "count": 1,
+                "reason_codes": [Reason.ENDPOINT_TIMEOUT],
+            }
+        ]
 
     def test_abandoned_poller_is_reported_as_endpoint_timeout(self, tmp_path, exporters, monkeypatch):
         """A worker still alive at the cycle deadline settles nothing but must still count as a miss."""
@@ -387,6 +400,55 @@ class TestCollection:
         assert first == GPUS_PER_NODE
         assert second == 2 * GPUS_PER_NODE
         assert Reason.ENDPOINT_HTTP_ERROR in _manifest(session)["reason_codes"]
+
+    def test_slow_endpoint_does_not_delay_healthy_endpoint_schedule(self, tmp_path, exporters, monkeypatch):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", a.url), ("node-b", b.url)),
+            sample_interval_seconds=0.05,
+            request_timeout_seconds=0.5,
+        )
+        session.initialize()
+        real_poll = session._poll
+        starts: dict[str, list[float]] = {"node-a": [], "node-b": []}
+        active_slow = 0
+        max_active_slow = 0
+        lock = threading.Lock()
+
+        def poll(endpoint, scrape_seq):
+            nonlocal active_slow, max_active_slow
+            starts[endpoint.hostname].append(time.monotonic())
+            if endpoint.hostname != "node-b":
+                return real_poll(endpoint, scrape_seq)
+            with lock:
+                active_slow += 1
+                max_active_slow = max(max_active_slow, active_slow)
+            try:
+                time.sleep(0.22)
+                return real_poll(endpoint, scrape_seq)
+            finally:
+                with lock:
+                    active_slow -= 1
+
+        monkeypatch.setattr(session, "_poll", poll)
+        assert session.start_and_wait_for_readiness() is True
+        time.sleep(0.16)
+        session.stop_and_finalize()
+
+        healthy_before_first_slow_completion = [
+            started for started in starts["node-a"] if started < starts["node-b"][0] + 0.22
+        ]
+        manifest = _manifest(session)
+        assert len(healthy_before_first_slow_completion) >= 4
+        assert max_active_slow == 1
+        assert manifest["missed_sample_count"] >= 3
+        assert any(
+            item["hostname"] == "node-b" and item["reason_codes"] == [Reason.SAMPLE_SCHEDULE_OVERRUN]
+            for item in manifest["missed_sample_ranges"]
+        )
+        assert Reason.SAMPLE_SCHEDULE_OVERRUN in manifest["reason_codes"]
 
 
 class TestReadiness:

@@ -39,7 +39,7 @@ benchmark:
 telemetry:
   enabled: true
   provider: dcgm-power
-  collect_interval_ms: 1000         # milliseconds between collector cycles; must be <= 3000
+  collect_interval_ms: 1000         # target interval for each endpoint; must be <= 3000
   storage_subdir: power             # relative to the run log directory
   required: true                    # exit non-zero when artifacts are unpublishable
   startup_timeout_seconds: 30
@@ -54,9 +54,19 @@ telemetry:
 not require the top-level `container_image` or a `node_exporter`, because the
 collector runs inside srtctl. Config loading validates the block and rejects
 inconsistent values with actionable messages; in particular
-`collect_interval_ms` must not exceed the 3-second max sample gap the validator
-accepts, or every window would fail `sample_gap_exceeded`. Telemetry stays
-disabled by default and existing `provider: scraper` recipes are unchanged.
+`collect_interval_ms` must not exceed three seconds. Each endpoint runs on an
+independent fixed schedule, so a slow node cannot delay healthy nodes and an
+endpoint never starts a second request while its previous request is in
+flight. Slots missed because of a failed request or schedule overrun are
+recorded in compact `missed_sample_ranges` manifest entries.
+
+Coverage validation derives its normal gap budget from the recorded sample
+interval plus twice the request timeout (the connect and read timeout phases).
+For long measurement windows it tolerates a bounded overrun up to 10 seconds
+when one gap covers at most 0.5% and all gaps over that configured budget cover
+at most 5% of the window. Missing brackets, larger gaps, and sustained data
+loss still fail `sample_gap_exceeded`. Telemetry stays disabled by default and
+existing `provider: scraper` recipes are unchanged.
 The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.
@@ -81,7 +91,9 @@ group live once in the manifest topology.
 and its SHA-256), the sample interval, expected and observed device sets, the
 topology mapping, the expected window list, the SHA-256 of the finalized
 `samples.csv` bytes, terminal status, per-window coverage validation, and
-reason codes. `status` is the lifecycle outcome;
+reason codes. It also records `missed_sample_count` and compact ranges with the
+endpoint, exact scrape sequence range, scheduled timestamps, and cause.
+`status` is the lifecycle outcome;
 `publication_valid` is the separate publication gate. Reason codes are stable
 machine-readable strings enumerated in `srtctl/core/power/contract.py`.
 The digest is required for offline publication validation, so packages created

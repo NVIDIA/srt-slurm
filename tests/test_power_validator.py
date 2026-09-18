@@ -134,6 +134,8 @@ def package(tmp_path):
             expected_device_keys={device.key for device in expected},
             observed_devices=observed,
             artifact_errors=manifest.artifact_errors,
+            sample_interval_seconds=manifest.sample_interval_seconds,
+            request_timeout_seconds=manifest.request_timeout_seconds,
         )
         manifest.mark_terminal(status=STATUS_COMPLETE, stopped_at_unix=END + 5, publication_valid=publication_valid)
         atomic_write_json(power_dir / MANIFEST_FILENAME, manifest.to_dict())
@@ -271,7 +273,7 @@ class TestIndependenceFromTheManifestBooleans:
 
     def test_gap_beyond_the_threshold_is_rejected(self, package):
         expected = build_expected_devices(_processes())
-        log_dir, power_dir = package(rows=_rows(expected, step=4.0))
+        log_dir, power_dir = package(rows=_rows(expected, step=6.0))
 
         report = _validate(power_dir, log_dir)
 
@@ -496,6 +498,8 @@ class TestWireContract:
             ("max_scrape_duration_seconds", {}),
             ("scrape_count", -1),
             ("sample_row_count", "many"),
+            ("missed_sample_count", -1),
+            ("missed_sample_ranges", "not-a-list"),
             ("publication_valid", None),
             ("publication_valid", "true"),
             ("publication_valid", 1),
@@ -696,7 +700,7 @@ class TestEvidenceReconciliation:
 
     def test_a_missing_disk_derived_reason_is_rejected(self, package):
         expected = build_expected_devices(_processes())
-        log_dir, power_dir = package(rows=_rows(expected, step=4.0), publication_valid=False)
+        log_dir, power_dir = package(rows=_rows(expected, step=6.0), publication_valid=False)
 
         report = _validate(power_dir, log_dir)
 
