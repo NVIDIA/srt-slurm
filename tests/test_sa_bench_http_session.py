@@ -397,7 +397,9 @@ def test_benchmark_records_the_exact_measured_window(monkeypatch, nsys_capture):
     assert result["duration"] > 0
 
     # Initial probe is outside capture; export/metrics are outside measured work.
-    assert events == (["request", "start", "request", "stop", "metrics"] if nsys_capture else ["request", "request", "metrics"])
+    assert events == (
+        ["request", "start", "request", "stop", "metrics"] if nsys_capture else ["request", "request", "metrics"]
+    )
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("probe failed"), asyncio.CancelledError()])

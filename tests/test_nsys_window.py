@@ -19,7 +19,11 @@ from srtctl.runtime_scripts import nsys_window
 @pytest.fixture
 def fake_nsys(tmp_path):
     tool = tmp_path / "fake nsys"
-    tool.write_text("#!" + sys.executable + "\n" + r'''
+    tool.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + r"""
 import json, os, signal, subprocess, sys, threading, time
 from pathlib import Path
 root = Path(os.environ["FAKE_ROOT"])
@@ -60,7 +64,8 @@ else:
     elif mode == "shutdown":
         try: os.kill(int((root / (session + ".pid")).read_text()), signal.SIGTERM)
         except ProcessLookupError: pass
-''')
+"""
+    )
     tool.chmod(0o755)
     return tool
 
@@ -70,7 +75,7 @@ def wait_for(path, processes, timeout=8):
     while not path.exists():
         assert all(p.poll() is None for p in processes), "wrapper exited before readiness"
         assert time.monotonic() < deadline, f"missing {path}"
-        time.sleep(.02)
+        time.sleep(0.02)
 
 
 def start_workers(root, fake_nsys, *, count=2, expected=2, **extra):
@@ -79,15 +84,24 @@ def start_workers(root, fake_nsys, *, count=2, expected=2, **extra):
     processes = []
     for rank in range(count):
         spec = {
-            "control_dir": str(root), "step": "group", "ranks": expected,
-            "nsys": str(fake_nsys), "output": str(root / "report_rank%q{SLURM_PROCID}"),
-            "start_args": ["--sample=none"], "timeout": 3, "app_grace_secs": 1,
+            "control_dir": str(root),
+            "step": "group",
+            "ranks": expected,
+            "nsys": str(fake_nsys),
+            "output": str(root / "report_rank%q{SLURM_PROCID}"),
+            "start_args": ["--sample=none"],
+            "timeout": 3,
+            "app_grace_secs": 1,
         }
-        processes.append(subprocess.Popen(
-            [sys.executable, nsys_window.__file__, "worker", "--spec", json.dumps(spec), "--", "application"],
-            env={**os.environ, "FAKE_ROOT": str(root), "SLURM_PROCID": str(rank), **extra},
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        ))
+        processes.append(
+            subprocess.Popen(
+                [sys.executable, nsys_window.__file__, "worker", "--spec", json.dumps(spec), "--", "application"],
+                env={**os.environ, "FAKE_ROOT": str(root), "SLURM_PROCID": str(rank), **extra},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
     for rank in range(count):
         wait_for(root / f"{rank}.app-ready", processes)
         wait_for(root / "ready" / f"group-{rank}.json", processes)
@@ -149,7 +163,7 @@ def test_missing_rank_blocks_capture_before_workload(fake_nsys, tmp_path):
     processes = start_workers(root, fake_nsys, count=1, expected=2)
     try:
         with pytest.raises(TimeoutError, match="group-1"):
-            nsys_window.request(root, "start", timeout=.2)
+            nsys_window.request(root, "start", timeout=0.2)
         assert not list(root.glob("*.active"))
     finally:
         stop_workers(processes, root)

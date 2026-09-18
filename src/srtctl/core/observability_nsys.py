@@ -66,16 +66,29 @@ def wrap_observability_nsys(
         write_json(log_dir / "profiles" / ".control" / "steps" / f"{step}.json", {"ranks": ranks})
         start_args = [
             "--sample=system-wide" if sample_cpu else "--sample=none",
-            "--cpuctxsw=none", "--gpu-metrics-devices=none",
+            "--cpuctxsw=none",
+            "--gpu-metrics-devices=none",
         ]
         if sample_cpu:
             start_args += ["--sampling-period=26000000", "--samples-per-backtrace=32"]
         spec = {
-            "control_dir": "/logs/profiles/.control", "step": step, "ranks": ranks,
-            "nsys": config.profiling.nsys_binary, "start_args": start_args,
-            "output": f"/logs/profiles/{report_name}", "timeout": settings.report_timeout_secs,
+            "control_dir": "/logs/profiles/.control",
+            "step": step,
+            "ranks": ranks,
+            "nsys": config.profiling.nsys_binary,
+            "start_args": start_args,
+            "output": f"/logs/profiles/{report_name}",
+            "timeout": settings.report_timeout_secs,
         }
-        return ["python3", "/srtctl-runtime/nsys_window.py", "worker", "--spec", json.dumps(spec), "--", *command], environment
+        return [
+            "python3",
+            "/srtctl-runtime/nsys_window.py",
+            "worker",
+            "--spec",
+            json.dumps(spec),
+            "--",
+            *command,
+        ], environment
     return keepalive_command(prefix + command), environment
 
 
@@ -88,4 +101,3 @@ def benchmark_nsys_env(config: SrtConfig) -> dict[str, str]:
         "SRT_NSYS_CONTROL_SCRIPT": "/srtctl-runtime/nsys_window.py",
         "SRT_NSYS_CONTROL_TIMEOUT": str(config.observability.nsys.report_timeout_secs),
     }
-

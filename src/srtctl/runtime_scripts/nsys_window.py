@@ -39,9 +39,7 @@ def read_json(path: Path) -> Any:
 
 def expected_participants(root: Path) -> set[str]:
     return {
-        f"{path.stem}-{rank}"
-        for path in (root / "steps").glob("*.json")
-        for rank in range(read_json(path)["ranks"])
+        f"{path.stem}-{rank}" for path in (root / "steps").glob("*.json") for rank in range(read_json(path)["ranks"])
     }
 
 
@@ -158,7 +156,11 @@ def worker(spec: dict[str, Any], command: list[str]) -> int:
         stopping = True
 
     def control(action: str, *options: str) -> None:
-        subprocess.run([nsys, action, f"--session={session}", *options], check=True, timeout=min(timeout, 10) if action == "shutdown" else timeout)
+        subprocess.run(
+            [nsys, action, f"--session={session}", *options],
+            check=True,
+            timeout=min(timeout, 10) if action == "shutdown" else timeout,
+        )
 
     def stop_capture() -> None:
         control("stop")

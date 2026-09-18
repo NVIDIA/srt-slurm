@@ -635,7 +635,8 @@ def show_config_details(config: SrtConfig) -> None:
                 details.add_row("observability", "nsys trace", "NVTX (no CUDA tracing)")
                 window = (
                     "after warmup until workload completes (client start/stop hooks)"
-                    if settings.capture_window == "workload" else "process launch until teardown"
+                    if settings.capture_window == "workload"
+                    else "process launch until teardown"
                 )
                 details.add_row("observability", "nsys capture", window)
                 if settings.capture_window == "workload":

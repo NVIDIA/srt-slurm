@@ -95,7 +95,12 @@ def test_invalid_settings_rejected(kwargs, message):
 @pytest.mark.parametrize("capture_window", ["workload", "process"])
 def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, frontend, capture_window, monkeypatch):
     monkeypatch.setenv("SRTCTL_NSYS_BIN", "/opt/nsys/bin/nsys")
-    cfg = config(observability={"enabled": True, "nsys": {"capture_window": capture_window, "nvtx_injection_path": "/opt/nvtx.so"}})
+    cfg = config(
+        observability={
+            "enabled": True,
+            "nsys": {"capture_window": capture_window, "nvtx_injection_path": "/opt/nvtx.so"},
+        }
+    )
     command, env = wrap_observability_nsys(
         ["python3", "-m", "server"],
         config=cfg,
@@ -197,6 +202,7 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
 @pytest.mark.parametrize("completed", [False, True])
 def test_benchmark_success_requires_a_completed_capture(tmp_path, completed):
     import threading
+
     from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
     from srtctl.runtime_scripts.nsys_window import write_json
 
@@ -213,8 +219,9 @@ def test_benchmark_success_requires_a_completed_capture(tmp_path, completed):
     proc.poll.return_value = proc.returncode = 0
     if completed:
         write_json(tmp_path / "profiles/.control/client.json", {"active": False, "completed": 1})
-    with patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc), patch(
-        "srtctl.analysis.host_sampler.try_start_host_sampler", return_value=None
+    with (
+        patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
+        patch("srtctl.analysis.host_sampler.try_start_host_sampler", return_value=None),
     ):
         result = stage._run_benchmark_script(runner, tmp_path / "benchmark.out", threading.Event())
     assert result == (0 if completed else 1)

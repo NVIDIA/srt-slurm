@@ -19,17 +19,17 @@ from srtctl.core.fingerprint import format_identity_verification, verify_identit
 from srtctl.core.health import wait_for_model
 from srtctl.core.ip_utils import url_host
 from srtctl.core.lockfile import collect_worker_fingerprints
+from srtctl.core.observability_nsys import benchmark_nsys_env
 from srtctl.core.power.contract import (
     CONTAINER_LOG_DIR,
     MEASUREMENT_WINDOW_DIR_ENV,
     WINDOWS_DIRNAME,
 )
-from srtctl.core.observability_nsys import benchmark_nsys_env
-from srtctl.runtime_scripts.nsys_window import finish as finish_nsys_windows
 from srtctl.core.processes import terminate_and_reap
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
+from srtctl.runtime_scripts.nsys_window import finish as finish_nsys_windows
 
 _BENCHMARK_TERMINATE_TIMEOUT = 15.0
 _BENCHMARK_KILL_TIMEOUT = 10.0
@@ -606,9 +606,15 @@ class BenchmarkStageMixin:
             self.benchmark_child_reaped = True
             self.benchmark_child_allows_window_mutation = True
             exit_code = proc.returncode or 0
-            if getattr(self.config, "observability_nsys_enabled", False) is True and self.config.observability.nsys.capture_window == "workload":
+            if (
+                getattr(self.config, "observability_nsys_enabled", False) is True
+                and self.config.observability.nsys.capture_window == "workload"
+            ):
                 try:
-                    finish_nsys_windows(self.runtime.log_dir / "profiles" / ".control", self.config.observability.nsys.report_timeout_secs)
+                    finish_nsys_windows(
+                        self.runtime.log_dir / "profiles" / ".control",
+                        self.config.observability.nsys.report_timeout_secs,
+                    )
                 except (RuntimeError, TimeoutError, OSError) as exc:
                     logger.error("Observability capture failed: %s", exc)
                     return exit_code or 1
