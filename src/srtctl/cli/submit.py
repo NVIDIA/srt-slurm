@@ -60,6 +60,7 @@ from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
+from srtctl.frontends.dynamo import ROUTER_POLICY_CONFIG_CONTAINER_PATH
 from srtctl.ports import MOONCAKE_MASTER_PORT
 from srtctl.runtime_scripts.dynamo_wheels import arch_from_binary, detect_target_arch
 from srtctl.status_server.server import add_arguments as add_status_server_arguments
@@ -438,6 +439,46 @@ def show_config_details(config: SrtConfig) -> None:
     else:
         console.print("[dim]No custom environment variables configured.[/]")
 
+    # --- Shadow engine recovery (engine.failover, vLLM + Dynamo GPU Memory Service) ---
+    failover = getattr(config.backend, "failover", None)
+    if failover is not None:
+        from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, failover_root
+
+        root = failover_root(failover.shared_dir, "<job_id>")
+        restart_roles = [
+            role
+            for role in ("prefill", "decode", "agg")
+            if getattr(getattr(config.resources, f"{role}_restart", None), "enabled", False)
+        ]
+        relaunch = (
+            f"roles.{{{','.join(restart_roles)}}}.restart relaunches an exited engine in place as the new shadow"
+            if restart_roles
+            else "none: an exited engine's step ends and roles.<role>.critical decides (add roles.<role>.restart)"
+        )
+        lines = [
+            f"engines per worker: {failover.engines_per_worker} (engine 0 + {failover.shadow_engines} shadow)",
+            (
+                f"shared dir: {root}/<role>_<index>/  (gms_*.sock, {FAILOVER_LOCK_FILENAME}; node-local, every "
+                "container on the node)"
+            ),
+            (
+                "per worker and node: the gms service (one instance per worker, listed under Services) then steps "
+                "<role>_<index>_<node> and <role>_<index>_<node>_e<k>"
+            ),
+            "engine flags: --load-format gms --gms-shadow-mode (no --device-ids; CUDA_VISIBLE_DEVICES is pinned)",
+            (
+                "engine env: ENGINE_ID, GMS_SOCKET_DIR, FAILOVER_LOCK_PATH, DYN_VLLM_GMS_SHADOW_MODE=true, "
+                "DYN_SYSTEM_STARTING_HEALTH_STATUS=notready"
+            ),
+            f"engine relaunch: {relaunch}",
+        ]
+        console.print(Panel("\n".join(lines), title="Shadow Engine Recovery (engine.failover)", border_style="magenta"))
+        console.print(
+            "[yellow]NOTE:[/] two engines share each GPU: size gpu-memory-utilization so the active engine's KV "
+            "cache leaves room for the shadow's CUDA context, graphs and communicator buffers. To test a failover "
+            "kill the engine process, not its step (see docs/shadow-engine-recovery.md)."
+        )
+
     # --- Host setup (runs on the bare node, outside the container) ---
     if config.host_setup.enabled:
         host_table = Table(title="Host Setup (outside container)", show_lines=False, pad_edge=False)
@@ -488,7 +529,8 @@ def show_config_details(config: SrtConfig) -> None:
         for entry in effective:
             service = entry.service
             console.print(
-                f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement} "
+                f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement}"
+                f"{' per=worker' if service.effective_per == 'worker' else ''} "
                 f"start={service.effective_start} critical={str(service.effective_critical).lower()}"
                 f"{f' nodes={service.nodes}' if service.nodes is not None else ''}"
                 f"{' terminal' if service.terminal else ''}"
@@ -563,6 +605,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.telemetry.enabled
         or mooncake_cfg is not None
         or config.profiling.enabled
+        or config.frontend.worker_selection is not None
     )
     if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
@@ -695,6 +738,14 @@ def show_config_details(config: SrtConfig) -> None:
                     f"host collector (source {cpu_power.source}, <log_dir>/{cpu_power.storage_subdir}"
                     f"{', required' if cpu_power.required else ''})",
                 )
+
+        if config.frontend.worker_selection is not None:
+            details.add_row("frontend", "router_policy_config", f"{ROUTER_POLICY_CONFIG_CONTAINER_PATH} (auto)")
+            details.add_row(
+                "frontend",
+                "worker_selection",
+                yaml.safe_dump(config.frontend.worker_selection, sort_keys=False).rstrip(),
+            )
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")

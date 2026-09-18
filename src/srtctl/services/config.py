@@ -37,6 +37,10 @@ SERVICE_PLACEMENTS: tuple[str, ...] = (
     "all",
 )
 SINGLE_NODE_PLACEMENTS: frozenset[str] = frozenset({"head", "infra", "dedicated"})
+# Placements whose nodes carry engine workers, the only ones ``placement.per: worker`` can attach to.
+PER_WORKER_PLACEMENTS: tuple[str, ...] = ("prefill", "decode", "agg", "workers")
+# How many instances a placed node gets: one, or one per engine worker on it.
+SERVICE_PERS: tuple[str, ...] = ("node", "worker")
 
 # When a service starts relative to the rest of the job. ``infra`` is the discovery
 # plane (etcd, NATS) that everything else may depend on; ``before_workers`` runs after
@@ -61,10 +65,18 @@ class ServicePlacementConfig:
             the allocation).
         pool: Run on the nodes another service owns (``services[].nodes``), one
             instance per node of that pool. Replaces ``node``.
+        per: ``node`` (default): one instance per placed node. ``worker``: one
+            instance per engine worker on each placed node, attached to that
+            worker: it runs with the worker's ``CUDA_VISIBLE_DEVICES`` and sees
+            ``{worker_role}``, ``{worker_index}``, ``{worker_node_rank}``,
+            ``{worker_gpus}``, ``{worker_gpu_count}``. A sidecar in the
+            Kubernetes sense (the GPU Memory Service next to each vLLM worker).
+            Only with ``node`` in ``prefill``, ``decode``, ``agg``, ``workers``.
     """
 
     node: str = "head"
     pool: str | None = None
+    per: str = "node"
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -73,6 +85,18 @@ class ServicePlacementConfig:
             raise ValidationError(
                 f"services[].placement.node must be one of {', '.join(SERVICE_PLACEMENTS)}; got {self.node!r}"
             )
+        if self.per not in SERVICE_PERS:
+            raise ValidationError(
+                f"services[].placement.per must be one of {', '.join(SERVICE_PERS)}; got {self.per!r}"
+            )
+        if self.per == "worker":
+            if self.pool is not None:
+                raise ValidationError("services[].placement.per: worker attaches to engine workers, not to a pool")
+            if self.node not in PER_WORKER_PLACEMENTS:
+                raise ValidationError(
+                    f"services[].placement.per: worker needs placement.node in {', '.join(PER_WORKER_PLACEMENTS)}; "
+                    f"got {self.node!r}"
+                )
         if self.pool is not None:
             if not str(self.pool).strip():
                 raise ValidationError("services[].placement.pool must name a service that declares nodes")
@@ -390,6 +414,18 @@ class ServiceConfig:
                     f"{label}.nodes owns a pool, so placement.node must be workers, meaning that pool "
                     f"(got {self.effective_placement!r})"
                 )
+        if self.effective_per == "worker":
+            if self.nodes is not None:
+                raise ValidationError(f"{label}.placement.per: worker attaches to engine workers; it cannot own a pool")
+            if self.effective_placement not in PER_WORKER_PLACEMENTS:
+                raise ValidationError(
+                    f"{label}.placement.per: worker needs placement.node in {', '.join(PER_WORKER_PLACEMENTS)}; "
+                    f"got {self.effective_placement!r}"
+                )
+            if self.readiness is not None and self.readiness.log is None:
+                raise ValidationError(
+                    f"{label}.placement.per: worker instances share their node's ports, so readiness must be a log probe"
+                )
         if len(self.metrics) > 1:
             names = [endpoint.name for endpoint in self.metrics]
             if any(name is None for name in names) or len(set(names)) != len(names):
@@ -445,6 +481,15 @@ class ServiceConfig:
         if self.nodes is not None:
             return self.name
         return self.placement.pool if self.placement is not None else None
+
+    @property
+    def effective_per(self) -> str:
+        """``placement.per`` as written, else the kind's default (``node`` for every kind but ``gms``)."""
+        from srtctl.services.registry import get_service_kind
+
+        if self.placement is not None:
+            return self.placement.per
+        return get_service_kind(self.type).default_per
 
     @property
     def effective_critical(self) -> bool:

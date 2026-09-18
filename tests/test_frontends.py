@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from srtctl.core.schema import ObservabilityConfig
 from srtctl.frontends import DynamoFrontend, SGLangFrontend, SGLangRouterFrontend, VLLMFrontend, get_frontend
@@ -568,7 +569,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         environment={},
     )
     config = SimpleNamespace(
-        frontend=SimpleNamespace(args=None, env=None),
+        frontend=SimpleNamespace(args=None, env=None, worker_selection=None),
         observability=ObservabilityConfig(),
         dynamo=SimpleNamespace(
             install=dynamo_install,
@@ -607,3 +608,53 @@ class TestDynamoFrontendEventPlane:
     def test_explicit_injected(self, event_plane):
         mock_srun = _dynamo_frontend_call(dynamo_install=False, event_plane=event_plane)
         assert mock_srun.call_args.kwargs["env_to_set"]["DYN_EVENT_PLANE"] == event_plane
+
+
+def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
+    """Inline policy config becomes a mounted YAML file and frontend CLI argument."""
+    frontend = DynamoFrontend()
+    topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+    runtime = SimpleNamespace(
+        log_dir=tmp_path,
+        nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
+        container_image=Path("/container.sqsh"),
+        container_mounts={tmp_path: Path("/logs")},
+        environment={},
+    )
+    worker_selection = {
+        "prefill": "max-kv-overlap",
+        "decode": "default",
+        "instances": [
+            {
+                "name": "max-kv-overlap",
+                "type": "dynamo-two-tier-cost-fn",
+                "parameters": {
+                    "cache_threshold": 0.0,
+                    "balance_abs_threshold": 1_000_000_000,
+                    "balance_rel_threshold": 1_000_000_000.0,
+                },
+            }
+        ],
+    }
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args={"router-mode": "kv"}, env=None, worker_selection=worker_selection),
+        observability=ObservabilityConfig(),
+        dynamo=SimpleNamespace(
+            install=False,
+            get_install_commands=lambda: "",
+            request_plane="nats",
+            event_plane=None,
+        ),
+        setup_script=None,
+    )
+
+    with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
+        mock_srun.return_value = MagicMock()
+        frontend.start_frontends(topology, runtime, config, MagicMock(), [])
+
+    policy_path = tmp_path / "router_policy_config.yaml"
+    assert yaml.safe_load(policy_path.read_text()) == {"worker_selection": worker_selection}
+    cmd = mock_srun.call_args.kwargs["command"]
+    policy_arg = cmd.index("--router-policy-config")
+    assert cmd[policy_arg + 1] == "/logs/router_policy_config.yaml"
+    assert cmd[cmd.index("--router-mode") + 1] == "kv"

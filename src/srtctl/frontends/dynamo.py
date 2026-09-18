@@ -12,6 +12,8 @@ import shlex
 import threading
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
@@ -24,6 +26,9 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 logger = logging.getLogger(__name__)
+
+ROUTER_POLICY_CONFIG_FILENAME = "router_policy_config.yaml"
+ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
 
 
 class DynamoFrontend:
@@ -84,13 +89,20 @@ class DynamoFrontend:
         from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
         processes: list[ManagedProcess] = []
+        frontend_args = dict(config.frontend.args or {})
+        worker_selection = getattr(config.frontend, "worker_selection", None)
+        if worker_selection is not None:
+            policy_path = runtime.log_dir / ROUTER_POLICY_CONFIG_FILENAME
+            policy_path.write_text(yaml.safe_dump({"worker_selection": worker_selection}, sort_keys=False))
+            frontend_args["router-policy-config"] = ROUTER_POLICY_CONFIG_CONTAINER_PATH
+            logger.info("Dynamo router policy config written to %s", policy_path)
 
         for idx, node in enumerate(topology.frontend_nodes):
             logger.info("Starting dynamo frontend %d on %s", idx, node)
 
             frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
             cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
-            cmd.extend(self.get_frontend_args_list(config.frontend.args))
+            cmd.extend(self.get_frontend_args_list(frontend_args))
 
             automatic_nsys = getattr(config, "observability_nsys_enabled", False) is True
             nsys_env: dict[str, str] = {}

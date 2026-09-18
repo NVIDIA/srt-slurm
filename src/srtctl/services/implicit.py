@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 ETCD_SERVICE_NAME = "etcd"
 NATS_SERVICE_NAME = "nats"
 MOONCAKE_MASTER_SERVICE_NAME = "mooncake-master"
+GMS_SERVICE_NAME = "gms"
 DCGM_EXPORTER_SERVICE_NAME = "dcgm-exporter"
 NODE_EXPORTER_SERVICE_NAME = "node-exporter"
 PROCESS_EXPORTER_SERVICE_NAME = "process-exporter"
@@ -105,6 +106,12 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     reason=", ".join(nats_reasons),
                 )
             )
+
+    if getattr(config.backend, "failover", None) is not None:
+        # The kind's defaults are the placement: every worker node, one instance per worker.
+        implied.append(
+            EffectiveService(ServiceConfig(name=GMS_SERVICE_NAME, type="gms"), implicit=True, reason="engine.failover")
+        )
 
     mooncake_cfg = getattr(config.backend, "mooncake_kv_store", None)
     if mooncake_cfg is not None:
