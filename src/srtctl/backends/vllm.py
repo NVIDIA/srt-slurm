@@ -350,21 +350,6 @@ class VLLMProtocol:
         if not dp_mode_configs or self.dp_launch_mode == "per_gpu":
             return
 
-        self._validate_per_node_dp_config(dp_mode_configs, sidecar=False)
-
-    def validate_sidecar_dp_config(self) -> None:
-        """Validate DP flags when Dynamo sidecar mode forces the per-node layout."""
-        if self.dp_launch_mode == "per_node":
-            # __post_init__ already validated this configuration.
-            return
-        self._validate_per_node_dp_config(self.find_dp_modes(), sidecar=True)
-
-    def _validate_per_node_dp_config(
-        self,
-        dp_mode_configs: list[tuple[str, dict[str, Any]]],
-        *,
-        sidecar: bool,
-    ) -> None:
         hybrid_lb_modes: list[str] = []
         headless_modes: list[str] = []
         for mode_name, mode_config in dp_mode_configs:
@@ -383,18 +368,11 @@ class VLLMProtocol:
 
         if hybrid_lb_modes:
             fields = ", ".join(f"vllm_config.{mode}.data-parallel-hybrid-lb" for mode in hybrid_lb_modes)
-            if sidecar:
-                logger.warning(
-                    "%s is unnecessary in vLLM sidecar mode; "
-                    "srtslurm derives --data-parallel-hybrid-lb from the topology and ignores the configured value",
-                    fields,
-                )
-            else:
-                logger.warning(
-                    "%s is unnecessary when dp_launch_mode=per_node; "
-                    "srtslurm derives --data-parallel-hybrid-lb from the topology and ignores the configured value",
-                    fields,
-                )
+            logger.warning(
+                "%s is unnecessary when dp_launch_mode=per_node; "
+                "srtslurm derives --data-parallel-hybrid-lb from the topology and ignores the configured value",
+                fields,
+            )
 
     # =========================================================================
     # BackendProtocol Implementation
@@ -785,7 +763,7 @@ class VLLMProtocol:
             # Standard TP mode: one process per node
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
-        if dynamo_sidecar or self.dp_launch_mode == "per_node":
+        if self.dp_launch_mode == "per_node":
             return self._dp_per_node_endpoints_to_processes(
                 endpoints,
                 base_sys_port=base_sys_port,
@@ -1365,8 +1343,9 @@ class VLLMProtocol:
         command: list[str] = list(nsys_prefix or [])
         if hybrid_lb:
             # Python owns the shared DP rendezvous and passes only this node's
-            # engine sockets to its Rust frontend. Rust-managed `serve` owns a
-            # complete group and cannot substitute for hybrid load balancing.
+            # engine sockets to its Rust frontend. The current `vllm-rs serve`
+            # launcher owns a complete group and does not implement hybrid
+            # startup; requests still use the Rust frontend in this path.
             # VLLM_RUST_FRONTEND_PATH, when configured, is inherited unchanged.
             command.extend(["env", "VLLM_USE_RUST_FRONTEND=1", "python3", "-m", "vllm.entrypoints.cli.main"])
         else:

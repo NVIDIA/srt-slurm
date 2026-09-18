@@ -1982,8 +1982,10 @@ class SrtConfig:
             raise ValidationError("dynamo.sidecar: true requires frontend.type: dynamo")
         if not isinstance(self.backend, (SGLangProtocol, VLLMProtocol, TRTLLMProtocol)):
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
-        if isinstance(self.backend, VLLMProtocol):
-            self.backend.validate_sidecar_dp_config()
+        if isinstance(self.backend, VLLMProtocol) and self.backend.dp_launch_mode != "per_node":
+            raise ValidationError(
+                "dynamo.sidecar: true requires backend.dp_launch_mode: per_node; per_gpu is unsupported"
+            )
 
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
