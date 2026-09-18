@@ -144,7 +144,7 @@ roles:
       gpu-memory-utilization: 0.92
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
-      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"use_fp4_indexer_cache":true}'
+      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
       speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
@@ -204,7 +204,7 @@ roles:
       gpu-memory-utilization: 0.92
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
-      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"use_fp4_indexer_cache":true}'
+      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
       speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true

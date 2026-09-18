@@ -96,7 +96,7 @@ roles:
       data-parallel-size: 4
       data-parallel-rpc-port: 13345
       enable-expert-parallel: true
-      attention-config: '{"use_fp4_indexer_cache": true}'
+      attention-config: '{"indexer_kv_dtype":"mxfp4"}'
       moe-backend: "deep_gemm_mega_moe"
       # enforce-eager: true
       # max-num-seqs: 256
