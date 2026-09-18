@@ -390,6 +390,145 @@ def test_sa_bench_window_rejects_missing_field(tmp_path: Path) -> None:
         sa_bench_window(1, result_path)
 
 
+def test_aiperf_window_records_the_warmup_span_from_warmup_phase_rows(tmp_path: Path) -> None:
+    conc_dir = tmp_path / "conc_8" / "aiperf_artifacts"
+    jsonl_path = conc_dir / "profile_export.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                "metadata": {
+                    "benchmark_phase": "warmup",
+                    "request_start_ns": 1_000_000_000,
+                    "request_end_ns": 3_000_000_000,
+                }
+            },
+            {
+                "metadata": {
+                    "benchmark_phase": "warmup",
+                    "request_start_ns": 2_000_000_000,
+                    "request_end_ns": 4_000_000_000,
+                }
+            },
+            {
+                "metadata": {
+                    "benchmark_phase": "profiling",
+                    "request_start_ns": 5_000_000_000,
+                    "request_end_ns": 9_000_000_000,
+                }
+            },
+        ],
+    )
+    (conc_dir / "profile_export_aiperf.json").write_text(
+        json.dumps({"total_osl": {"avg": 1.0}, "total_isl": {"avg": 1.0}})
+    )
+
+    window = aiperf_window(8, jsonl_path)
+
+    assert window.warmup_start_unix == pytest.approx(1.0)
+    assert window.warmup_end_unix == pytest.approx(4.0)
+    assert window.start_unix == pytest.approx(5.0)  # profile window unaffected by warmup rows
+
+
+def test_aiperf_window_warmup_is_none_without_warmup_rows(tmp_path: Path) -> None:
+    conc_dir = tmp_path / "conc_8" / "aiperf_artifacts"
+    jsonl_path = conc_dir / "profile_export.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [{"metadata": {"benchmark_phase": "profiling", "request_start_ns": 0, "request_end_ns": 1_000_000_000}}],
+    )
+    (conc_dir / "profile_export_aiperf.json").write_text(
+        json.dumps({"total_osl": {"avg": 1.0}, "total_isl": {"avg": 1.0}})
+    )
+
+    window = aiperf_window(8, jsonl_path)
+
+    assert window.warmup_start_unix is None
+    assert window.warmup_end_unix is None
+
+
+def test_aiperf_window_reads_tpot_percentiles_from_aggregate(tmp_path: Path) -> None:
+    conc_dir = tmp_path / "conc_8" / "aiperf_artifacts"
+    jsonl_path = conc_dir / "profile_export.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [{"metadata": {"benchmark_phase": "profiling", "request_start_ns": 0, "request_end_ns": 1_000_000_000}}],
+    )
+    (conc_dir / "profile_export_aiperf.json").write_text(
+        json.dumps(
+            {
+                "total_osl": {"avg": 42.0},
+                "total_isl": {"avg": 7.0},
+                "inter_token_latency": {"p50": 8.86, "p90": 10.44},
+            }
+        )
+    )
+
+    window = aiperf_window(8, jsonl_path)
+
+    assert window.tpot_p50_ms == pytest.approx(8.86)
+    assert window.tpot_p90_ms == pytest.approx(10.44)
+
+
+def test_aiperf_window_tpot_is_none_without_the_percentile_block(tmp_path: Path) -> None:
+    conc_dir = tmp_path / "conc_8" / "aiperf_artifacts"
+    jsonl_path = conc_dir / "profile_export.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [{"metadata": {"benchmark_phase": "profiling", "request_start_ns": 0, "request_end_ns": 1_000_000_000}}],
+    )
+    (conc_dir / "profile_export_aiperf.json").write_text(
+        json.dumps({"total_osl": {"avg": 42.0}, "total_isl": {"avg": 7.0}})
+    )
+
+    window = aiperf_window(8, jsonl_path)
+
+    assert window.tpot_p50_ms is None
+    assert window.tpot_p90_ms is None
+
+
+def test_sa_bench_window_reads_tpot_from_median_and_percentiles(tmp_path: Path) -> None:
+    result_path = tmp_path / "results_concurrency_1_gpus_4.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "benchmark_start_time_unix": 100.0,
+                "benchmark_end_time_unix": 101.5,
+                "total_input_tokens": 10,
+                "total_output_tokens": 20,
+                "median_tpot_ms": 12.3,
+                "percentiles_tpot_ms": [[50, 12.3], [90, 18.7], [99, 25.0]],
+            }
+        )
+    )
+
+    window = sa_bench_window(1, result_path)
+
+    assert window.tpot_p50_ms == pytest.approx(12.3)
+    assert window.tpot_p90_ms == pytest.approx(18.7)
+
+
+def test_sa_bench_window_tpot_p90_is_none_without_percentiles(tmp_path: Path) -> None:
+    result_path = tmp_path / "results_concurrency_1_gpus_4.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "benchmark_start_time_unix": 100.0,
+                "benchmark_end_time_unix": 101.5,
+                "total_input_tokens": 10,
+                "total_output_tokens": 20,
+                "median_tpot_ms": 12.3,
+                "percentiles_tpot_ms": None,
+            }
+        )
+    )
+
+    window = sa_bench_window(1, result_path)
+
+    assert window.tpot_p50_ms == pytest.approx(12.3)
+    assert window.tpot_p90_ms is None
+
+
 # ---------------------------------------------------------------------------
 # GPU roles
 # ---------------------------------------------------------------------------
@@ -979,6 +1118,39 @@ def test_perf_per_watt_is_tokens_per_joule_and_needs_both_legs_for_combined() ->
     assert both.coverage_start_unix == 100.0 and both.coverage_end_unix == 110.0
 
 
+def test_per_gpu_throughput_divides_by_device_count() -> None:
+    from srtctl.analysis.power_energy_report import GpuSamples
+
+    gpu = GpuSamples(
+        per_device={
+            ("node-a", 0): _flat_series(400.0),
+            ("node-a", 1): _flat_series(400.0),
+            ("node-a", 2): _flat_series(400.0),
+            ("node-a", 3): _flat_series(400.0),
+        },
+        per_node={"node-a": _flat_series(1600.0)},
+        per_role={},
+    )
+    report = build_concurrency_report(_window(), None, gpu)
+
+    assert report.num_gpus == 4
+    assert report.output_tokens_per_second_per_gpu == pytest.approx(50.0 / 4)
+
+
+def test_cpu_only_perf_per_watt_computed_independent_of_gpu() -> None:
+    from srtctl.analysis.power_energy_report import CpuSamples, GpuSamples
+
+    cpu = CpuSamples(per_socket={("node-a", 0): _flat_series(100.0)}, per_node={"node-a": _flat_series(100.0)})
+    gpu = GpuSamples(
+        per_device={("node-a", 0): _flat_series(400.0)}, per_node={"node-a": _flat_series(400.0)}, per_role={}
+    )
+    report = build_concurrency_report(_window(), cpu, gpu)
+
+    assert report.cpu_avg_power_w == pytest.approx(100.0)
+    assert report.output_tokens_per_second_per_cpu_watt == pytest.approx(50.0 / 100.0)
+    assert report.total_tokens_per_second_per_cpu_watt == pytest.approx(200.0 / 100.0)
+
+
 def test_perf_per_watt_is_none_without_a_gpu_leg() -> None:
     from srtctl.analysis.power_energy_report import CpuSamples
 
@@ -1013,8 +1185,10 @@ def test_render_and_json_carry_timing_and_perf_per_watt() -> None:
     assert "timing: computed start=100.000 end=110.000 duration=10.00s" in text
     assert "reported[sa-bench-json] start=100.000 end=110.000 duration=9.80s (computed-reported=+0.20s)" in text
     assert "samples cover 100.000..110.000 (10.00s)" in text
-    assert "perf/W: output=50.00 tok/s total=200.00 tok/s | gpu avg=400.00 W" in text
+    assert "perf/W: output=50.00 tok/s (50.00 tok/s/gpu across 1 gpu(s)) total=200.00 tok/s" in text
+    assert "gpu avg=400.00 W" in text
     assert "output 0.1250 tok/s/W" in text and "total 0.5000 tok/s/W" in text
+    assert "cpu: n/a" in text
     assert "combined: n/a" in text
 
     payload = report_to_dict(report)
@@ -1108,3 +1282,131 @@ def test_render_and_json_carry_power_percentiles() -> None:
     for key in ("mean_w", "min_w", "p5_w", "p50_w", "p95_w", "p99_w", "max_w"):
         assert entry[key] == pytest.approx(400.0), key
     assert EnergyBreakdown(label="x", joules=1.0, avg_power_w=1.0).p99_w is None
+
+
+def test_cpu_socket_sum_matches_node_total_for_acpi_component_rails(tmp_path: Path) -> None:
+    """With Grace/CPU/SysIO rows per socket, socket energy (from the Grace envelope) must
+    integrate to the same total as the exporter's per-node total_power_w -- and the
+    report records which channel was used."""
+    from srtctl.analysis.power_energy_report import ConcurrencyWindow, build_concurrency_report
+
+    path = tmp_path / "cpu" / "samples.csv"
+    rows = []
+    for t in (10.0, 11.0, 12.0):
+        for sock, grace, cpu, sysio in ((0, 90.0, 45.0, 6.0), (1, 110.0, 55.0, 7.0)):
+            rows += [
+                (1, t, "node-a", "acpi", f"Grace Power Socket {sock}", sock, grace, 200.0),
+                (1, t, "node-a", "acpi", f"CPU Power Socket {sock}", sock, cpu, 200.0),
+                (1, t, "node-a", "acpi", f"SysIO Power Socket {sock}", sock, sysio, 200.0),
+            ]
+    _write_cpu_csv(path, rows)
+    window = ConcurrencyWindow(
+        benchmark_type="aiperf",
+        concurrency=1,
+        start_unix=10.0,
+        end_unix=12.0,
+        output_tokens=10.0,
+        input_tokens=10.0,
+        source=path,
+    )
+
+    report = build_concurrency_report(window, load_cpu_samples(path), None)
+
+    socket_total = sum(b.joules for b in report.cpu_per_socket)
+    assert socket_total == pytest.approx(report.cpu_total_joules)
+    assert report.cpu_total_joules == pytest.approx(400.0)  # 200 W x 2 s
+    assert not any("CPU energy mismatch" in w for w in report.warnings)
+    assert [p.sensor for p in report.cpu_sensors] == ["Grace Power Socket 0", "Grace Power Socket 1"]
+    assert report.cpu_sensors[0].other_sensors == ("CPU Power Socket 0", "SysIO Power Socket 0")
+
+
+def test_cpu_socket_sum_mismatch_is_reported_as_a_warning(tmp_path: Path) -> None:
+    from srtctl.analysis.power_energy_report import ConcurrencyWindow, build_concurrency_report
+
+    path = tmp_path / "cpu" / "samples.csv"
+    # node total claims 500 W while the sockets only add to 200 W
+    rows = [
+        (1, t, "node-a", "acpi", f"Grace Power Socket {sock}", sock, 100.0, 500.0)
+        for t in (10.0, 11.0, 12.0)
+        for sock in (0, 1)
+    ]
+    _write_cpu_csv(path, rows)
+    window = ConcurrencyWindow(
+        benchmark_type="aiperf",
+        concurrency=1,
+        start_unix=10.0,
+        end_unix=12.0,
+        output_tokens=10.0,
+        input_tokens=10.0,
+        source=path,
+    )
+
+    report = build_concurrency_report(window, load_cpu_samples(path), None)
+
+    assert any("CPU energy mismatch" in w for w in report.warnings)
+
+
+def test_aiperf_aggregate_window_used_when_per_record_export_is_absent(tmp_path: Path) -> None:
+    """Runs without profile_export.jsonl fall back to the aggregate JSON's phase-level
+    start/end, resolved in the run's recorded timezone offset, with the warmup span
+    anchored from the phase log."""
+    from srtctl.analysis.power_energy_report import discover_run, load_concurrency_windows
+
+    log_dir = tmp_path
+    artifacts = log_dir / "agentic" / "conc_8" / "aiperf_artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "profile_export_aiperf.json").write_text(
+        json.dumps(
+            {
+                "start_time": "2026-09-16T15:12:02.200000",
+                "end_time": "2026-09-16T16:12:42.200000",
+                "benchmark_duration": {"avg": 3640.0},
+                "total_osl": {"avg": 100.0},
+                "total_isl": {"avg": 50.0},
+                "inter_token_latency": {"p50": 9.0, "p90": 11.0},
+            }
+        )
+    )
+    (log_dir / "agentic" / "conc_8" / "agentic_power_timezone_offset.txt").write_text("-0700\n")
+    (log_dir / "benchmark.out").write_text(
+        "14:42:23.718 NOTICE   Phase warmup (warmup) started | target: 8 requests (runner.py:593)\n"
+        "15:12:01.957 NOTICE   Phase warmup (warmup) complete | completed=8 | elapsed=1778.24s (runner.py:1162)\n"
+        "15:12:02.200 NOTICE   Phase profiling (profiling) started | phase_index=0 | target: 3600.0s duration (runner.py:593)\n"
+        "16:12:42.205 NOTICE   Phase profiling (profiling) complete | completed=82,543 | elapsed=3640.00s (runner.py:1162)\n"
+    )
+    _write_gpu_csv(
+        log_dir / "power" / "samples.csv", [[1, 1789596722.0, 1, "node-a", 0, "GPU-a", 100.0]], utilization=False
+    )
+
+    windows = load_concurrency_windows(discover_run(log_dir))
+
+    assert len(windows) == 1
+    w = windows[0]
+    assert w.concurrency == 8
+    # 2026-09-16T15:12:02.2 at UTC-7 == 22:12:02.2Z
+    assert w.start_unix == pytest.approx(1789596722.2, abs=0.01)
+    assert w.end_unix == pytest.approx(1789600362.2, abs=0.01)
+    assert w.output_tokens == 100.0
+    assert w.tpot_p90_ms == 11.0
+    assert w.reported.source == "aiperf-json"
+    assert "recorded timezone offset" in w.reported.note
+    assert w.warmup_end_unix == pytest.approx(w.start_unix)
+    assert w.warmup_start_unix == pytest.approx(w.start_unix - 1778.24)
+
+
+def test_aiperf_per_record_export_wins_over_the_aggregate(tmp_path: Path) -> None:
+    from srtctl.analysis.power_energy_report import discover_run
+
+    log_dir = tmp_path
+    artifacts = log_dir / "agentic" / "conc_8" / "aiperf_artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "profile_export.jsonl").write_text("")
+    (artifacts / "profile_export_aiperf.json").write_text("{}")
+    (log_dir / "benchmark.out").write_text(
+        "15:12:02.200 NOTICE   Phase profiling (profiling) started | phase_index=0 (runner.py:593)\n"
+    )
+    _write_gpu_csv(log_dir / "power" / "samples.csv", [[1, 1.0, 1, "node-a", 0, "GPU-a", 100.0]], utilization=False)
+
+    paths = discover_run(log_dir)
+
+    assert [p.name for _, p in paths.concurrency_sources] == ["profile_export.jsonl"]

@@ -949,6 +949,12 @@ class TestBuildPowerEnergyReport:
         assert payload[0]["concurrency"] == 4
         assert payload[0]["cpu_total_joules"] > 0.0
 
+        # The HTML companion is best-effort but should succeed alongside the JSON
+        # for the same valid run.
+        html_path = log_dir / "power_report.html"
+        assert html_path.exists()
+        assert "Throughput" in html_path.read_text()
+
     def test_run_postprocess_calls_power_energy_report(self, tmp_path):
         """Verify run_postprocess wires this step in, without depending on real telemetry data."""
         from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
