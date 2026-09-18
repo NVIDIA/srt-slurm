@@ -12,11 +12,11 @@ model:
 
 identity:
   model:
-    repo: "deepseek-ai/DeepSeek-V4-Pro"
+    repo: "deepseek-ai/DeepSeek-V4-Pro-0813"
   container:
     image: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-nightly-dev-arm64-cu13.0.1-591bb95.sqsh"
   frameworks:
-    dynamo: "1.2.1"
+    dynamo: "1.5.0"
 
 dynamo:
   install: false
