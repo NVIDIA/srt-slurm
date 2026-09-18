@@ -240,7 +240,9 @@ def test_benchmark_hooks_are_enabled_only_for_workload_capture():
     env = benchmark_nsys_env(config())
     assert env["SRT_NSYS_CONTROL_SCRIPT"] == "/srtctl-runtime/nsys_window.py"
     assert env["SRT_NSYS_CONTROL_DIR"] == "/logs/profiles/.control"
-    assert not benchmark_nsys_env(config(observability={"enabled": True, "nsys": {"capture_window": "including_startup"}}))
+    assert not benchmark_nsys_env(
+        config(observability={"enabled": True, "nsys": {"capture_window": "including_startup"}})
+    )
     assert not benchmark_nsys_env(config(observability={"enabled": False}))
 
 
