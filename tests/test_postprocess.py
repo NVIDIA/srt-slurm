@@ -165,7 +165,7 @@ class TestPostProcessStageMixin:
         mixin._copy_config_to_logs = MagicMock()
         mixin._generate_rollup = MagicMock()
         mixin._extract_benchmark_results = MagicMock(return_value=None)
-        mixin._run_postprocess_container = MagicMock(return_value=(None, None))
+        mixin._run_postprocess_container = MagicMock(return_value=None)
         mixin._get_ai_analysis_config = MagicMock(return_value=None)
         mixin._run_ai_analysis = MagicMock()
         return mixin
@@ -217,7 +217,7 @@ class TestPostProcessStageMixin:
         """When a reporter is passed and S3 sync produces a URL, push eagerly."""
         mixin = self._create_mixin_with_mocks()
         s3_url = "s3://bucket/prefix/12345/"
-        mixin._run_postprocess_container = MagicMock(return_value=(None, s3_url))
+        mixin._run_postprocess_container = MagicMock(return_value=s3_url)
         reporter = MagicMock()
 
         mixin.run_postprocess(0, reporter=reporter)
@@ -239,7 +239,7 @@ class TestPostProcessStageMixin:
         """Without a reporter, stash happens but no PUT is attempted."""
         mixin = self._create_mixin_with_mocks()
         s3_url = "s3://bucket/prefix/12345/"
-        mixin._run_postprocess_container = MagicMock(return_value=(None, s3_url))
+        mixin._run_postprocess_container = MagicMock(return_value=s3_url)
 
         # Should not raise even though no reporter is provided
         mixin.run_postprocess(0)
@@ -341,6 +341,27 @@ class TestS3Config:
         assert config.bucket == "my-bucket"
         assert config.prefix is None
         assert config.region is None
+        # None means "use the defaults"; an explicit [] means "nothing".
+        assert config.exclude is None
+        assert config.archive is None
+
+    def test_schema_load_upload_policy(self):
+        config = S3Config.Schema().load({"bucket": "b", "exclude": [], "archive": ["*.out"]})
+        assert config.exclude == []
+        assert config.archive == ["*.out"]
+
+    def test_default_excludes_are_scoped_to_the_aiperf_artifact_roots(self):
+        """A same-named file from another benchmark type (a custom runner's inputs.json) must not be dropped."""
+        from srtctl.core.schema import DEFAULT_S3_EXCLUDE
+
+        aiperf_patterns = [p for p in DEFAULT_S3_EXCLUDE if not p.startswith("perf_dashboard")]
+        assert aiperf_patterns, DEFAULT_S3_EXCLUDE
+        for pattern in aiperf_patterns:
+            assert pattern.startswith(("artifacts/*/", "sa-bench_*/*/")), pattern
+        for name in ("server_metrics_export.jsonl", "gpu_telemetry_export.jsonl", "inputs.json"):
+            assert f"artifacts/*/{name}" in DEFAULT_S3_EXCLUDE
+            assert f"sa-bench_*/*/{name}" in DEFAULT_S3_EXCLUDE
+        assert "perf_dashboard_bundle/*" in DEFAULT_S3_EXCLUDE and "perf_dashboard.json" in DEFAULT_S3_EXCLUDE
 
     def test_full_config(self):
         """Test S3Config with all fields."""
@@ -558,7 +579,7 @@ class TestRollupFaultTolerance:
         mixin = self._create_mixin_with_runtime(tmp_path, benchmark_type="sa-bench")
 
         # Mock all the other methods to isolate rollup behavior
-        mixin._run_postprocess_container = MagicMock(return_value=(None, None))
+        mixin._run_postprocess_container = MagicMock(return_value=None)
         mixin._get_ai_analysis_config = MagicMock(return_value=None)
 
         # Mock _generate_rollup to raise (simulating worst case)
@@ -608,7 +629,7 @@ class TestS3UploadFaultTolerance:
 
         result = mixin._run_postprocess_container()
 
-        assert result == (None, None)
+        assert result is None
 
     def test_srun_failure_does_not_raise(self, tmp_path):
         """Test _run_postprocess_container handles srun failure gracefully."""
@@ -623,7 +644,7 @@ class TestS3UploadFaultTolerance:
 
             result = mixin._run_postprocess_container()
 
-        assert result == (None, None)
+        assert result is None
 
     def test_srun_timeout_does_not_raise(self, tmp_path):
         """Test _run_postprocess_container handles timeout gracefully."""
@@ -644,8 +665,50 @@ class TestS3UploadFaultTolerance:
 
             result = mixin._run_postprocess_container()
 
-        assert result == (None, None)
+        assert result is None
         mock_proc.kill.assert_called_once()
+
+    def test_upload_script_carries_the_policy(self, tmp_path):
+        """The container script excludes the defaults, archives aiperf's per-request file, and is valid bash."""
+        import shlex
+        import subprocess
+
+        from srtctl.core.schema import DEFAULT_S3_ARCHIVE, DEFAULT_S3_EXCLUDE
+
+        mixin = self._create_mixin_with_runtime(tmp_path)
+        mixin._get_s3_config = MagicMock(
+            return_value=S3Config(bucket="test-bucket", endpoint_url="https://minio.example")
+        )
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+        with patch("srtctl.cli.mixins.postprocess_stage.start_srun_process") as mock_srun:
+            mock_srun.return_value = mock_proc
+            result = mixin._run_postprocess_container()
+
+        assert result is not None and result.startswith("s3://test-bucket/srtslurm/") and result.endswith("/12345/")
+        script = mock_srun.call_args.kwargs["command"][2]
+        for pattern in DEFAULT_S3_EXCLUDE:
+            assert f"--exclude {shlex.quote(pattern)}" in script, pattern
+        # The archived files are kept out of the plain sync, with ** collapsed to the AWS wildcard.
+        assert "--exclude 'artifacts/*/profile_export.jsonl'" in script
+        assert "--exclude 'sa-bench_*/*/profile_export.jsonl'" in script
+        assert shlex.quote(__import__("json").dumps(list(DEFAULT_S3_ARCHIVE))) in script
+        assert 'aws s3 cp "$archive_path"' in script
+        assert "--endpoint-url https://minio.example" in script
+        assert '"s3_url": "s3://test-bucket/' in script and '"exclude": [' in script
+        assert subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False).returncode == 0
+
+    def test_upload_script_with_policy_disabled(self, tmp_path):
+        """exclude: [] and archive: [] ship the whole directory as-is, like before."""
+        import subprocess
+
+        mixin = self._create_mixin_with_runtime(tmp_path)
+        script = mixin._build_postprocess_script("s3://b/p/1/", "", exclude=[], archive=[])
+        assert "--exclude" not in script
+        assert "Packing" not in script and "aws s3 cp" in script  # the cp branch stays but archive_path is empty
+        assert "aws s3 sync /logs s3://b/p/1/" in script
+        assert subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False).returncode == 0
 
     def test_srun_nonzero_exit_does_not_raise(self, tmp_path):
         """Test _run_postprocess_container handles non-zero exit gracefully."""
@@ -662,40 +725,19 @@ class TestS3UploadFaultTolerance:
         with patch("srtctl.cli.mixins.postprocess_stage.start_srun_process") as mock_srun:
             mock_srun.return_value = mock_proc
 
-            parquet_path, s3_url = mixin._run_postprocess_container()
+            s3_url = mixin._run_postprocess_container()
 
         # Should return None for s3_url on failure
         assert s3_url is None
 
-    def test_parse_failure_still_returns_s3_url(self, tmp_path):
-        """Raw logs should still report an S3 URL when parsing fails after upload."""
-        mixin = self._create_mixin_with_runtime(tmp_path)
-        mixin._get_s3_config = MagicMock(return_value=S3Config(bucket="test-bucket"))
-
-        mock_proc = MagicMock()
-        mock_proc.wait.return_value = None
-        mock_proc.returncode = 20
-
-        with patch("srtctl.cli.mixins.postprocess_stage.start_srun_process") as mock_srun:
-            mock_srun.return_value = mock_proc
-
-            parquet_path, s3_url = mixin._run_postprocess_container()
-
-        assert parquet_path is None
-        assert s3_url is not None
-        assert s3_url.startswith("s3://test-bucket/")
-
-    def test_postprocess_script_uploads_after_parse(self, tmp_path):
-        """The generated script should upload even when parsing fails."""
+    def test_postprocess_script_only_uploads(self, tmp_path):
+        """The upload container ships the log directory as is; no log parser runs in it."""
         mixin = self._create_mixin_with_runtime(tmp_path)
         script = mixin._build_postprocess_script("s3://test-bucket/run/", "")
 
-        parse_line = "srtlog parse . || PARSE_STATUS=$?"
-        upload_line = "aws s3 sync /logs s3://test-bucket/run/"
-
-        assert parse_line in script
-        assert upload_line in script
-        assert script.index(parse_line) < script.index(upload_line)
+        assert "aws s3 sync /logs s3://test-bucket/run/" in script
+        assert "srtlog" not in script
+        assert '"s3_url": "s3://test-bucket/run/"' in script
 
     def test_run_postprocess_completes_with_s3_failure(self, tmp_path):
         """Test run_postprocess completes even when S3 upload fails entirely."""
@@ -705,7 +747,7 @@ class TestS3UploadFaultTolerance:
         mixin._generate_rollup = MagicMock()
 
         # Mock _run_postprocess_container to simulate S3 failure
-        mixin._run_postprocess_container = MagicMock(return_value=(None, None))
+        mixin._run_postprocess_container = MagicMock(return_value=None)
 
         # Mock AI config
         mixin._get_ai_analysis_config = MagicMock(return_value=None)
@@ -929,3 +971,70 @@ class TestBuildPowerEnergyReport:
         mixin.run_postprocess(0)
 
         mixin._build_power_energy_report.assert_called_once()
+
+
+class TestArchiveScript:
+    """The inline archive builder that runs inside the upload container."""
+
+    @staticmethod
+    def _tree(root):
+        files = {
+            "artifacts/run_c32/profile_export.jsonl": "a" * 5000,
+            "artifacts/run_c32/server_metrics_export.jsonl": "m" * 5000,
+            "artifacts/run_c128/profile_export.jsonl": "b" * 5000,
+            "sa-bench_isl_128/conc_4/aiperf_artifacts/profile_export.jsonl": "c" * 5000,
+            "perf_dashboard_bundle/profile_export.jsonl": "d" * 5000,  # a copy; not an archive default
+            "sweep_1.log": "log",
+        }
+        for rel, body in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+
+    def _run(self, root, out_dir, patterns):
+        import json
+        import subprocess
+        import sys
+
+        from srtctl.cli.mixins.postprocess_stage import ARCHIVE_SCRIPT
+
+        return subprocess.run(
+            [sys.executable, "-", str(root), str(out_dir), json.dumps(patterns)],
+            input=ARCHIVE_SCRIPT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_packs_only_the_matching_files_with_relative_names(self, tmp_path):
+        import tarfile
+
+        from srtctl.core.schema import DEFAULT_S3_ARCHIVE
+
+        root, out_dir = tmp_path / "logs", tmp_path / "out"
+        self._tree(root)
+        out_dir.mkdir()
+        result = self._run(root, out_dir, list(DEFAULT_S3_ARCHIVE))
+        assert result.returncode == 0, result.stderr
+        archive = result.stdout.strip().splitlines()[-1]
+        assert archive.startswith(str(out_dir / "bundle.tar."))
+        assert "3 files" in result.stderr
+        with tarfile.open(archive) as tar:
+            names = sorted(tar.getnames())
+        assert names == [
+            "artifacts/run_c128/profile_export.jsonl",
+            "artifacts/run_c32/profile_export.jsonl",
+            "sa-bench_isl_128/conc_4/aiperf_artifacts/profile_export.jsonl",
+        ]
+        # The log directory itself is untouched: the archive lives in out_dir only.
+        assert not list(root.glob("bundle.tar.*"))
+
+    def test_no_match_writes_nothing_and_exits_zero(self, tmp_path):
+        root, out_dir = tmp_path / "logs", tmp_path / "out"
+        self._tree(root)
+        out_dir.mkdir()
+        result = self._run(root, out_dir, ["nothing/**/here.jsonl"])
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert "no file matched" in result.stderr
+        assert list(out_dir.iterdir()) == []

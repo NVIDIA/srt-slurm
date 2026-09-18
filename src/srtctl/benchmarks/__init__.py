@@ -19,18 +19,24 @@ from srtctl.benchmarks import (
     trace_replay,
 )
 from srtctl.benchmarks.base import (
+    SHARED_BENCHMARK_FIELDS,
     BenchmarkRunner,
+    benchmark_config_fields,
     get_runner,
+    get_runner_class,
     list_benchmarks,
     register_benchmark,
 )
 
 __all__ = [
+    "SHARED_BENCHMARK_FIELDS",
     "BenchmarkRunner",
     # Runners
     "agentperf",
+    "benchmark_config_fields",
     "custom",
     "get_runner",
+    "get_runner_class",
     "gpqa",
     "gsm8k",
     "list_benchmarks",

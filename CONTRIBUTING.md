@@ -93,3 +93,23 @@ make check
 3. Follow existing code style (ruff enforced)
 4. Include SPDX headers in all new source files
 5. Sign off all commits with `git commit -s`
+6. Give the PR a conventional-commit title (see below); `pr-title.yaml` (amannn/action-semantic-pull-request) rejects anything else
+
+## Versioning
+
+There is one version, the git tag, and everything else is derived from it.
+
+- Every merge to `main` cuts a GitHub release. `release.yaml` reads the highest existing release, bumps it from the merged PR title, creates the tag on the merge commit **first**, and only then builds the wheel and the binaries from that tag.
+- The PR title decides the bump (conventional commits):
+
+  | Title | Bump | Example |
+  |---|---|---|
+  | `<type>!: ...` or a body with `BREAKING CHANGE:` | MAJOR | `feat!: drop the v1 recipe layout` |
+  | `feat: ...` / `feat(scope): ...` | MINOR | `feat(roles): add nodes: colocate` |
+  | `fix`, `docs`, `refactor`, `perf`, `test`, `chore`, `ci`, `build`, `revert` | PATCH | `fix(sglang): pass the bootstrap port` |
+
+- The Python package version is the tag (`hatch-vcs`, `pyproject.toml`); `srtctl --version` prints it with the commit and the recipe-schema and lockfile versions it speaks. A checkout between tags reports `2.0.0.post3+g<sha>`; a tree without git metadata reports `0.0.0+unknown`. Do not hand-edit a version anywhere.
+- The Rust binaries (`tachometer-scraper`, `cpu-power-exporter`) print the same tag from `--version`; the release build passes it as `SRTCTL_RELEASE_VERSION`. The `version` in `Cargo.toml` is a baseline for local builds only.
+- Every run stamps `srtctl_version` and `srtctl_commit` into `recipe.lock.yaml` and the resource snapshot, so an output directory says exactly which srtctl produced it.
+- Format versions are separate from the package version on purpose: `schema:` in a recipe (`SUPPORTED_SCHEMA_VERSIONS`), the lockfile version, and the status API spec. Each release's notes list which of them that release reads and writes.
+- To publish a version by hand (a MAJOR bump, or to correct history), create the release with `gh release create vX.Y.Z --target <sha>`; the next merge continues from it.

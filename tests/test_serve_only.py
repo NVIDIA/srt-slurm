@@ -34,7 +34,7 @@ CONFIG = {
         "agg_workers": 1,
     },
     "backend": {"type": "sglang"},
-    "frontend": {"type": "sglang", "enable_multiple_frontends": False},
+    "frontend": {"type": "sglang-router", "enable_multiple_frontends": False},
     "benchmark": {"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": [1]},
 }
 
@@ -152,8 +152,8 @@ def test_serve_only_takes_precedence_over_eval_only(monkeypatch, tmp_path: Path)
         patch("srtctl.cli.do_sweep.StatusReporter.from_config", return_value=reporter),
         patch("srtctl.cli.do_sweep.setup_signal_handlers"),
         patch("srtctl.cli.do_sweep.start_process_monitor"),
-        patch.object(orchestrator, "start_head_infrastructure", return_value=MagicMock()),
-        patch.object(orchestrator, "start_mooncake_master", return_value=None),
+        patch.object(orchestrator, "start_head_infrastructure"),
+        patch.object(orchestrator, "start_services", return_value=[]),
         patch.object(orchestrator, "start_all_workers", return_value={}),
         patch.object(orchestrator, "start_frontend", return_value=[]),
         patch.object(orchestrator, "start_tachometer", return_value=[]),

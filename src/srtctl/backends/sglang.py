@@ -9,6 +9,7 @@ Implements BackendProtocol for SGLang inference serving with prefill/decode disa
 
 import builtins
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import field
 from pathlib import Path
@@ -30,6 +31,8 @@ from srtctl.ports import (
     SGLANG_DIST_INIT_PORT_BASE,
     SGLANG_NCCL_PORT_BASE,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
@@ -222,9 +225,12 @@ class SGLangProtocol:
         if not self.kv_events_config:
             return None
 
-        # Global bool: enable for prefill+decode with defaults
+        # Global bool: enable for every worker mode with defaults. Aggregated
+        # workers publish too; without this, `kv_events_config: true` on an agg
+        # topology silently dropped --kv-events-config and the router's cache
+        # overlap stayed at zero.
         if self.kv_events_config is True:
-            if mode in ("prefill", "decode"):
+            if mode in ("prefill", "decode", "agg"):
                 return {"publisher": "zmq", "topic": "kv-events"}
             return None
 
@@ -299,7 +305,8 @@ class SGLangProtocol:
             process: The process to start
             endpoint_processes: All processes for this endpoint (for multi-node)
             runtime: Runtime context with paths and settings
-            frontend_type: Frontend type - "sglang" uses sglang.launch_server, "dynamo" uses dynamo.sglang
+            frontend_type: Frontend type - "sglang" (direct) and "sglang-router" use
+                sglang.launch_server, "dynamo" uses dynamo.sglang
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
         """
@@ -342,7 +349,7 @@ class SGLangProtocol:
         dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
         # Choose Python module based on frontend type
-        use_sglang = frontend_type == "sglang"
+        use_sglang = frontend_type in ("sglang", "sglang-router")
         python_module = "sglang.launch_server" if use_sglang else "dynamo.sglang"
 
         # Get served model name from config
@@ -370,9 +377,20 @@ class SGLangProtocol:
             ]
         )
 
-        # Always pass --port when using sglang.launch_server or dynamo.sglang
-        cmd.extend(["--port", str(process.http_port)])
+        # Always pass --port when using sglang.launch_server or dynamo.sglang.
+        # Direct mode (frontend.type: sglang): the single aggregate worker is the
+        # public endpoint, so it binds the frontend port instead of its own.
+        api_port = runtime.frontend_port if frontend_type == "sglang" and mode == "agg" else process.http_port
+        cmd.extend(["--port", str(api_port)])
         cmd.extend(["--nccl-port", str(nccl_port)])
+
+        if use_sglang:
+            # sglang.launch_server serves Prometheus /metrics on its HTTP port only
+            # with --enable-metrics; tachometer (on by default) scrapes it there.
+            # Dynamo workers expose metrics on their system port without this.
+            mode_config = self.get_config_for_mode(mode)
+            if not any(key in mode_config for key in ("enable-metrics", "enable_metrics")):
+                cmd.append("--enable-metrics")
 
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":
@@ -405,7 +423,7 @@ class SGLangProtocol:
             )
 
         # Add config dump path (not when using sglang frontend)
-        if dump_config_path and frontend_type != "sglang":
+        if dump_config_path and not use_sglang:
             cmd.extend(["--dump-config-to", str(dump_config_path)])
 
         # Add kv-events-config if enabled for this mode and we have an allocated port
@@ -506,6 +524,17 @@ class SGLangProtocol:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             engine.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
+        if not any(key in config for key in ("incremental-streaming-output", "incremental_streaming_output")):
+            # The Dynamo sidecar treats every gRPC chunk as a delta. Without this flag this SGLang
+            # build streams the cumulative text per chunk, so clients receive repeated prefixes and
+            # token counts balloon. Force delta streaming unless the recipe set the flag itself.
+            engine.append("--incremental-streaming-output")
+            logger.info(
+                "sglang %s worker %d: adding --incremental-streaming-output (required by the Dynamo sidecar; "
+                "set the role's args.incremental-streaming-output explicitly to override)",
+                mode,
+                process.endpoint_index,
+            )
         engine.extend(_config_to_cli_args(config))
         if not is_leader:
             return engine

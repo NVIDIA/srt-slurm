@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchmark
 
@@ -22,6 +22,9 @@ class LMEvalRunner(BenchmarkRunner):
     Runs lm-eval via the InferenceX benchmark_lib.sh harness,
     which handles task selection, result collection, and summary generation.
     """
+
+    # BenchmarkConfig fields this runner reads (beyond the shared ones); see benchmark_config_fields().
+    config_fields: ClassVar[frozenset[str]] = frozenset()
 
     @property
     def name(self) -> str:

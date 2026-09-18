@@ -837,8 +837,8 @@ class TestRequiredReadinessGate:
             patch.object(SweepOrchestrator, "run_benchmark") as run_benchmark,
             patch.object(SweepOrchestrator, "start_all_workers", return_value={}),
             patch.object(SweepOrchestrator, "start_frontend", return_value=[]),
-            patch.object(SweepOrchestrator, "start_head_infrastructure", return_value=MagicMock()),
-            patch.object(SweepOrchestrator, "start_mooncake_master", return_value=None),
+            patch.object(SweepOrchestrator, "start_head_infrastructure"),
+            patch.object(SweepOrchestrator, "start_services", return_value=[]),
             patch.object(SweepOrchestrator, "_print_connection_info"),
             patch.object(SweepOrchestrator, "run_postprocess"),
             patch.object(SweepOrchestrator, "finalize_power_telemetry", side_effect=lambda code, **_: code),
@@ -854,7 +854,10 @@ class TestRequiredReadinessGate:
             exit_code = orchestrator.run()
 
         run_benchmark.assert_not_called()
-        start_tachometer.assert_called_once()
+        # Tachometer aligns with the load window (started inside
+        # run_benchmark); a run whose benchmark was skipped has no window,
+        # so nothing starts the capture.
+        start_tachometer.assert_not_called()
         assert exit_code == 1
 
     def test_eval_only_run_never_starts_power_telemetry(self, tmp_path):
@@ -869,8 +872,8 @@ class TestRequiredReadinessGate:
             patch.object(SweepOrchestrator, "_run_post_eval", return_value=0),
             patch.object(SweepOrchestrator, "start_all_workers", return_value={}),
             patch.object(SweepOrchestrator, "start_frontend", return_value=[]),
-            patch.object(SweepOrchestrator, "start_head_infrastructure", return_value=MagicMock()),
-            patch.object(SweepOrchestrator, "start_mooncake_master", return_value=None),
+            patch.object(SweepOrchestrator, "start_head_infrastructure"),
+            patch.object(SweepOrchestrator, "start_services", return_value=[]),
             patch.object(SweepOrchestrator, "_print_connection_info"),
             patch.object(SweepOrchestrator, "run_postprocess"),
             patch("srtctl.cli.do_sweep.record_resource_snapshot"),
@@ -1009,7 +1012,6 @@ class TestBenchmarkChildReaping:
 
         with (
             patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
-            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
             patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=SystemExit(1)),
             pytest.raises(SystemExit),
         ):
@@ -1029,7 +1031,6 @@ class TestBenchmarkChildReaping:
 
         with (
             patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
-            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
         ):
             exit_code = harness._run_benchmark_script(runner, tmp_path / "benchmark.out", stop_event)
 
@@ -1046,7 +1047,6 @@ class TestBenchmarkChildReaping:
 
         with (
             patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
-            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
             patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=SystemExit(1)),
             pytest.raises(SystemExit),
         ):
@@ -1062,7 +1062,6 @@ class TestBenchmarkChildReaping:
 
         with (
             patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
-            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
             patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=SystemExit(1)),
             pytest.raises(SystemExit),
         ):

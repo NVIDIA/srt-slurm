@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import re
 import signal
 import sys
 import threading
@@ -28,12 +27,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
 
-# Channels we surface; others (NVSwitch rails etc.) are collected but labelled separately.
-_OEM_LABELS = {
-    re.compile(r"CPU Power Socket (\d+)", re.IGNORECASE): "cpu",
-    re.compile(r"Grace Power Socket (\d+)", re.IGNORECASE): "grace",
-    re.compile(r"SysIO Power Socket (\d+)", re.IGNORECASE): "sysio",
-}
+from srtctl.core.power.cpu_rails import OTHER_KIND, classify_acpi_label
+
+# Channel classification is shared with the scraper and host collector via
+# cpu_rails so the published ``type`` label uses the canonical rail kinds
+# (total / cpu_rail / soc / dram). Unrecognised rails (NVSwitch etc.) are
+# still published, as ``type="other"`` with no socket.
 
 
 def _find_power_meter_sensors(hwmon_root: Path = Path("/sys/class/hwmon")) -> list[dict[str, Any]]:
@@ -55,14 +54,10 @@ def _find_power_meter_sensors(hwmon_root: Path = Path("/sys/class/hwmon")) -> li
                     continue
                 chan = avg_path.stem.removesuffix("_average")
                 oem = _read_text(root / f"{chan}_oem_info") or _read_text(root / f"{chan}_label") or chan
-                channel_type = "other"
-                socket_id = ""
-                for pattern, kind in _OEM_LABELS.items():
-                    m = pattern.search(oem)
-                    if m:
-                        channel_type = kind
-                        socket_id = m.group(1)
-                        break
+                classified = classify_acpi_label(oem)
+                channel_type, socket_id = (
+                    (OTHER_KIND, "") if classified is None else (classified[0], str(classified[1]))
+                )
                 sensors.append(
                     {
                         "path": avg_path,

@@ -591,14 +591,33 @@ class TestArtifactErrors:
                 slow_down_wait_time=1.0,
             ),
             telemetry=harness.config.telemetry,
-            frontend=FrontendConfig(type="sglang"),
+            frontend=FrontendConfig(type="sglang-router"),
             profiling=ProfilingConfig(
                 type="nsys",
                 prefill=ProfilingPhaseConfig(start_step=1, stop_step=2),
                 decode=ProfilingPhaseConfig(start_step=1, stop_step=2),
             ),
         )
-        processes = [SimpleNamespace(is_leader=True, endpoint_mode="decode", node="node-d", http_port=1234, sys_port=0)]
+        processes = [
+            SimpleNamespace(
+                is_leader=True,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=0,
+                node="node-p",
+                http_port=1233,
+                sys_port=0,
+            ),
+            SimpleNamespace(
+                is_leader=True,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+                node="node-d",
+                http_port=1234,
+                sys_port=0,
+            ),
+        ]
         harness.runtime.environment = {}
         harness.runtime.network_interface = "eth0"
         runner = SimpleNamespace(name="SA-Bench")

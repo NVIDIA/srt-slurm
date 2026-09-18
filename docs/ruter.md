@@ -14,12 +14,10 @@
        enabled: true
    ```
 
-2. Run the recipe through either lifecycle. The post-process step is the same for SLURM and the [direct Docker lifecycle](direct-host.md):
+2. Run the recipe:
 
    ```bash
    uv run srtctl apply -f recipe.yaml
-   uv run srtctl apply -f recipe.yaml --bash > benchmark.sh
-   bash benchmark.sh
    ```
 
 3. At completion, find the generated bundle in `logs/.ruter/`:

@@ -7,7 +7,12 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.core.config import expand_observability, expand_trtllm_serve_defaults
+from srtctl.core.config import (
+    expand_observability,
+    expand_trtllm_engine_defaults,
+    expand_trtllm_serve_defaults,
+    load_config,
+)
 from srtctl.core.schema import SrtConfig
 
 BASE_CONFIG = {
@@ -40,6 +45,87 @@ def _trtllm_config(**observability):
 
 # --------------------------------------------------------------- expansion ---
 class TestExpandObservability:
+    @pytest.mark.parametrize("enabled", [None, False, True])
+    def test_metrics_default_does_not_depend_on_observability(self, enabled):
+        cfg = _trtllm_config() if enabled is None else _trtllm_config(enabled=enabled)
+        loaded = SrtConfig.Schema().load(expand_observability(cfg))
+
+        assert loaded.backend.publish_metrics is True
+        # The master observability switch remains a superset that adds events.
+        assert loaded.backend.publish_events_and_metrics is (True if enabled is True else None)
+        expected = ("--publish-metrics",)
+        if enabled is True:
+            expected += ("--publish-events-and-metrics",)
+        assert loaded.backend.dynamo_metrics_flags == expected
+
+    @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("publish_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [None, False, True])
+    def test_publishing_yaml_loaders_and_roundtrip(
+        self, tmp_path, monkeypatch, loader_name, enabled, publish_metrics, publish_events_and_metrics
+    ):
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
+        cfg = _trtllm_config(enabled=enabled)
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        cfg["backend"]["publish_metrics"] = publish_metrics
+        cfg["backend"]["publish_events_and_metrics"] = publish_events_and_metrics
+        loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
+        expected_events = True if enabled and publish_events_and_metrics is None else publish_events_and_metrics
+        if expected_events is False:
+            expected_flags = ()
+        else:
+            expected_flags = ("--publish-metrics",) if publish_metrics else ()
+            if expected_events is True:
+                expected_flags += ("--publish-events-and-metrics",)
+
+        # Check the raw recipe and a schema-dumped recipe through the same real
+        # loader: configured values and effective flags must both survive.
+        for filename in ("recipe.yaml", "roundtrip.yaml"):
+            path = tmp_path / filename
+            path.write_text(yaml.safe_dump(cfg))
+            loaded = loader(path)
+            assert loaded.backend.publish_metrics is publish_metrics
+            assert loaded.backend.publish_events_and_metrics is expected_events
+            assert loaded.backend.dynamo_metrics_flags == expected_flags
+            cfg = SrtConfig.Schema().dump(loaded)
+            assert cfg["backend"]["publish_metrics"] is publish_metrics
+            assert cfg["backend"]["publish_events_and_metrics"] is expected_events
+
+    @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
+    @pytest.mark.parametrize("publish_metrics", [False, True])
+    @pytest.mark.parametrize("explicit_optout", [False, True])
+    def test_schema_dump_preserves_omission_before_observability_is_enabled(
+        self, tmp_path, monkeypatch, loader_name, publish_metrics, explicit_optout
+    ):
+        """The sweep's load/dump/reload path must not turn omission into False."""
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
+        cfg = _trtllm_config()
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        cfg["backend"]["publish_metrics"] = publish_metrics
+        if explicit_optout:
+            cfg["backend"]["publish_events_and_metrics"] = False
+        else:
+            assert "publish_events_and_metrics" not in cfg["backend"]
+        schema = SrtConfig.Schema()
+        dumped = schema.dump(schema.load(cfg))
+        assert "publish_events_and_metrics" in dumped["backend"]
+        assert dumped["backend"]["publish_events_and_metrics"] is (False if explicit_optout else None)
+
+        dumped["observability"]["enabled"] = True
+        path = tmp_path / "enable-observability.yaml"
+        path.write_text(yaml.safe_dump(dumped))
+        loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
+        loaded = loader(path)
+
+        assert loaded.backend.publish_metrics is publish_metrics
+        assert loaded.backend.publish_events_and_metrics is (not explicit_optout)
+        if explicit_optout:
+            assert loaded.backend.dynamo_metrics_flags == ()
+        else:
+            expected = ("--publish-metrics",) if publish_metrics else ()
+            assert loaded.backend.dynamo_metrics_flags == (*expected, "--publish-events-and-metrics")
+
     def test_disabled_is_a_noop(self):
         cfg = expand_observability(_trtllm_config(enabled=False))
         assert "publish_events_and_metrics" not in cfg["backend"]
@@ -82,11 +168,23 @@ class TestExpandObservability:
         cfg = expand_observability(_trtllm_config(enabled=True))
         assert "telemetry" not in cfg
         assert cfg["backend"]["publish_events_and_metrics"] is True
+        assert SrtConfig.Schema().load(cfg).backend.publish_metrics is True
         for mode in ("prefill", "decode"):
             section = cfg["backend"]["trtllm_config"][mode]
             # enable_iter_perf_stats is what produces trtllm_kv_cache_*_blocks.
             assert section["enable_iter_perf_stats"] is True
             assert section["return_perf_metrics"] is True
+
+    def test_enabled_creates_engine_sections_for_the_modes_in_use(self):
+        """A recipe with no engine yaml still gets the iteration-level gauges:
+        the sections the layout uses are created; unused ones are not."""
+        cfg = _trtllm_config(enabled=True)
+        del cfg["backend"]["trtllm_config"]
+        out = expand_observability(cfg)
+        assert out["backend"]["trtllm_config"] == {
+            "prefill": {"enable_iter_perf_stats": True, "return_perf_metrics": True},
+            "decode": {"enable_iter_perf_stats": True, "return_perf_metrics": True},
+        }
 
     def test_explicit_recipe_values_win(self):
         """setdefault semantics: an explicit recipe value must never be clobbered."""
@@ -98,6 +196,37 @@ class TestExpandObservability:
         assert out["backend"]["decode_environment"]["DYN_LOG"] == "info"
         assert out["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] is False
         assert out["backend"]["publish_events_and_metrics"] is False
+
+    @pytest.mark.parametrize("frontend_type", ["dynamo", "trtllm_serve"])
+    @pytest.mark.parametrize("publish_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
+    def test_publishing_optouts_are_preserved_and_only_disabled_dynamo_metrics_warn(
+        self, caplog, frontend_type, publish_metrics, publish_events_and_metrics
+    ):
+        cfg = _trtllm_config(enabled=True)
+        cfg["frontend"]["type"] = frontend_type
+        cfg["backend"]["publish_metrics"] = publish_metrics
+        cfg["backend"]["publish_events_and_metrics"] = publish_events_and_metrics
+
+        with caplog.at_level("WARNING"):
+            out = expand_observability(cfg)
+
+        assert out["backend"]["publish_metrics"] is publish_metrics
+        assert out["backend"]["publish_events_and_metrics"] is publish_events_and_metrics
+        publishing_warnings = [record for record in caplog.records if "publish_events_and_metrics" in record.message]
+        should_warn = frontend_type == "dynamo" and publish_events_and_metrics is False
+        assert bool(publishing_warnings) is should_warn
+
+    def test_observability_can_publish_legacy_metrics_when_standalone_flag_is_disabled(self, caplog):
+        cfg = _trtllm_config(enabled=True)
+        cfg["backend"]["publish_metrics"] = False
+
+        with caplog.at_level("WARNING"):
+            out = expand_observability(cfg)
+
+        assert out["backend"]["publish_metrics"] is False
+        assert out["backend"]["publish_events_and_metrics"] is True
+        assert not [record for record in caplog.records if "publish_metrics" in record.message]
 
     def test_preexisting_env_is_preserved(self):
         cfg = expand_observability(_trtllm_config(enabled=True))
@@ -218,8 +347,8 @@ class TestExpandObservability:
 
         A recipe still carrying `scrape_metrics` (or the other scrape_* knobs)
         must fail loudly at submit time rather than silently promising a
-        raw_prometheus.jsonl that will never be written. The ingest keeps
-        reading historical raw_prometheus.jsonl artifacts regardless."""
+        raw_prometheus.jsonl that will never be written. Tachometer's parquet is
+        the only in-job metrics capture."""
         cfg = _trtllm_config(enabled=True, scrape_metrics=True)
 
         with pytest.raises(ValidationError, match="scrape_metrics"):
@@ -395,6 +524,219 @@ class TestTrtllmServeDefaults:
             section = out["backend"]["trtllm_config"][mode]
             assert section["return_perf_metrics"] is True
             assert section["enable_iter_perf_stats"] is True
+
+
+def _expand_all(cfg):
+    """Apply the three engine-config expansions in load_config / from_yaml order."""
+    expand_observability(cfg)
+    expand_trtllm_serve_defaults(cfg)
+    return expand_trtllm_engine_defaults(cfg)
+
+
+class TestTrtllmEngineDefaults:
+    """dynamo.trtllm derives enable_iter_perf_stats from --publish-metrics, which
+    backend.publish_metrics passes by default, and the engine yaml wins over that
+    derived value. srtctl therefore bakes enable_iter_perf_stats: false into every
+    TRT-LLM engine section a recipe uses, under both frontends, so the default
+    publication costs the per-request perf metrics only. Explicit recipe values
+    and the observability expansion (which runs first) win."""
+
+    def test_iteration_stats_default_off_under_dynamo(self):
+        out = expand_trtllm_engine_defaults(_trtllm_config())
+        for mode in ("prefill", "decode"):
+            section = out["backend"]["trtllm_config"][mode]
+            assert section["enable_iter_perf_stats"] is False
+            # Only this key is touched; the recipe's own values survive and
+            # the dynamo path gets no trtllm-serve route default.
+            assert section["max_batch_size"] in (256, 64)
+            assert "return_perf_metrics" not in section
+        assert "aggregated" not in out["backend"]["trtllm_config"]
+
+    def test_iteration_stats_default_off_under_trtllm_serve(self):
+        out = _expand_all(_trtllm_serve_config())
+        for mode in ("prefill", "decode"):
+            section = out["backend"]["trtllm_config"][mode]
+            assert section["enable_iter_perf_stats"] is False
+            assert section["return_perf_metrics"] is True
+
+    def test_frontend_omitted_is_the_dynamo_default(self):
+        cfg = _trtllm_config()
+        del cfg["frontend"]
+        out = expand_trtllm_engine_defaults(cfg)
+        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
+
+    def test_explicit_true_wins(self):
+        cfg = _trtllm_config()
+        cfg["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] = True
+        out = expand_trtllm_engine_defaults(cfg)
+        assert out["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] is True
+        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
+
+    @pytest.mark.parametrize("frontend_type", ["dynamo", "trtllm_serve"])
+    @pytest.mark.parametrize("with_sections", [True, False])
+    def test_observability_keeps_iteration_stats_on(self, frontend_type, with_sections):
+        """The analytics capture reads the trtllm_kv_cache_* gauges, which only
+        exist with iteration statistics; observability's setdefault runs first,
+        also for a recipe that carries no engine yaml at all."""
+        cfg = _trtllm_serve_config(enabled=True) if frontend_type == "trtllm_serve" else _trtllm_config(enabled=True)
+        if not with_sections:
+            del cfg["backend"]["trtllm_config"]
+        out = _expand_all(cfg)
+        for mode in ("prefill", "decode"):
+            section = out["backend"]["trtllm_config"][mode]
+            assert section["enable_iter_perf_stats"] is True
+            assert section["return_perf_metrics"] is True
+
+    def test_observability_does_not_override_an_explicit_false(self):
+        cfg = _trtllm_config(enabled=True)
+        cfg["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] = False
+        out = _expand_all(cfg)
+        assert out["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] is False
+        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is True
+
+    def test_missing_sections_are_created_for_the_modes_in_use(self):
+        disagg = _trtllm_config()
+        del disagg["backend"]["trtllm_config"]
+        out = expand_trtllm_engine_defaults(disagg)
+        assert out["backend"]["trtllm_config"] == {
+            "prefill": {"enable_iter_perf_stats": False},
+            "decode": {"enable_iter_perf_stats": False},
+        }
+
+        agg = _trtllm_config()
+        agg["resources"] = {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1}
+        del agg["backend"]["trtllm_config"]
+        out = expand_trtllm_engine_defaults(agg)
+        assert out["backend"]["trtllm_config"] == {"aggregated": {"enable_iter_perf_stats": False}}
+
+    def test_unused_mode_section_is_left_alone_unless_present(self):
+        cfg = _trtllm_config()
+        cfg["backend"]["trtllm_config"]["aggregated"] = {"max_batch_size": 8}
+        out = expand_trtllm_engine_defaults(cfg)
+        # Present-but-unused sections get the default too (they would be used
+        # by a layout override); absent ones are not invented.
+        assert out["backend"]["trtllm_config"]["aggregated"] == {"max_batch_size": 8, "enable_iter_perf_stats": False}
+
+    def test_non_trtllm_backend_is_untouched(self):
+        cfg = dict(BASE_CONFIG)
+        cfg["backend"] = {"type": "sglang", "sglang_config": {"prefill": {}}}
+        out = expand_trtllm_engine_defaults(cfg)
+        assert out["backend"] == {"type": "sglang", "sglang_config": {"prefill": {}}}
+
+    @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
+    @pytest.mark.parametrize("frontend_type", ["dynamo", "trtllm_serve"])
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_yaml_loaders_apply_the_default(self, tmp_path, monkeypatch, loader_name, frontend_type, enabled):
+        """Both real loaders bake the key into the engine config the worker will
+        receive, and observability flips it back on through the same path."""
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
+        cfg = (
+            _trtllm_serve_config(enabled=enabled)
+            if frontend_type == "trtllm_serve"
+            else _trtllm_config(enabled=enabled)
+        )
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        path = tmp_path / "recipe.yaml"
+        path.write_text(yaml.safe_dump(cfg))
+        loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
+        loaded = loader(path)
+        for mode in ("prefill", "decode"):
+            section = loaded.backend.get_config_for_mode(mode)
+            assert section["enable_iter_perf_stats"] is enabled
+            assert section["max_batch_size"] in (256, 64)
+
+    @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
+    def test_v2_roles_args_get_the_default(self, tmp_path, monkeypatch, loader_name):
+        """The 2.0 layout spells the engine yaml as roles.<role>.args; expand_roles
+        folds it into backend.trtllm_config before the default is applied."""
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
+        cfg = {
+            "name": "test-job",
+            "model": {"path": "/models/test-model", "container": "test.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "engine": {"type": "trtllm"},
+            "roles": {
+                "prefill": {"nodes": 1, "workers": 1, "gpus": 8, "args": {"max_batch_size": 256}},
+                "decode": {"nodes": 1, "workers": 1, "gpus": 8, "args": {"max_batch_size": 64}},
+            },
+            "benchmark": {"type": "sa-bench", "concurrencies": [4]},
+        }
+        path = tmp_path / "recipe.yaml"
+        path.write_text(yaml.safe_dump(cfg))
+        loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
+        loaded = loader(path)
+        assert loaded.backend.dynamo_metrics_flags == ("--publish-metrics",)
+        for mode in ("prefill", "decode"):
+            section = loaded.backend.get_config_for_mode(mode)
+            assert section["enable_iter_perf_stats"] is False
+            assert section["max_batch_size"] in (256, 64)
+
+    def test_dump_reload_carries_the_key_and_observability_warns(self, tmp_path, monkeypatch, caplog):
+        """The sweep's load/dump/reload path (and any saved or locked recipe) carries
+        the baked key as an explicit false. A later observability.enabled: true then
+        keeps that value, so the load step says so instead of failing silently."""
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
+        cfg = _trtllm_config()
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        schema = SrtConfig.Schema()
+        dumped = schema.dump(schema.load(_expand_all(cfg)))
+        assert dumped["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
+
+        dumped["observability"]["enabled"] = True
+        path = tmp_path / "enable-observability.yaml"
+        path.write_text(yaml.safe_dump(dumped))
+        with caplog.at_level("WARNING"):
+            loaded = load_config(path)
+        for mode in ("prefill", "decode"):
+            assert loaded.backend.get_config_for_mode(mode)["enable_iter_perf_stats"] is False
+        assert any(
+            "prefill.enable_iter_perf_stats" in rec.message and "decode.enable_iter_perf_stats" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_observability_warns_on_an_explicit_false(self, caplog):
+        cfg = _trtllm_config(enabled=True)
+        cfg["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] = False
+        with caplog.at_level("WARNING"):
+            expand_observability(cfg)
+        warnings = [rec.message for rec in caplog.records if "enable_iter_perf_stats" in rec.message]
+        assert warnings and "decode.enable_iter_perf_stats" in warnings[0]
+        assert "prefill" not in warnings[0]
+
+    def test_non_mapping_engine_config_is_left_for_schema_validation(self):
+        """A bogus trtllm_config (or role section) must still fail validation
+        instead of being silently replaced by the defaults."""
+        cfg = _trtllm_config()
+        cfg["backend"]["trtllm_config"] = "bogus"
+        out = expand_trtllm_engine_defaults(cfg)
+        assert out["backend"]["trtllm_config"] == "bogus"
+        with pytest.raises(ValidationError):
+            SrtConfig.Schema().load(out)
+
+        cfg = _trtllm_config()
+        cfg["backend"]["trtllm_config"]["decode"] = ["not", "a", "mapping"]
+        out = expand_trtllm_engine_defaults(cfg)
+        assert out["backend"]["trtllm_config"]["decode"] == ["not", "a", "mapping"]
+        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
+
+    def test_null_sections_are_treated_as_absent(self):
+        cfg = _trtllm_config()
+        cfg["backend"]["trtllm_config"] = None
+        out = expand_trtllm_engine_defaults(cfg)
+        assert out["backend"]["trtllm_config"] == {
+            "prefill": {"enable_iter_perf_stats": False},
+            "decode": {"enable_iter_perf_stats": False},
+        }
+
+    @pytest.mark.parametrize("spelling", ["tensorrt", "TensorRT", "trt"])
+    def test_legacy_tensorrt_backend_sections_are_skipped(self, spelling):
+        """The legacy TensorRT engine's LlmArgs rejects the key on containers that
+        predate the backend's removal, and always collected the statistics anyway."""
+        cfg = _trtllm_config()
+        cfg["backend"]["trtllm_config"]["decode"]["backend"] = spelling
+        out = expand_trtllm_engine_defaults(cfg)
+        assert out["backend"]["trtllm_config"]["decode"] == {"max_batch_size": 64, "backend": spelling}
+        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
 
 
 class TestObservabilitySchema:

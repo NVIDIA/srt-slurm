@@ -122,7 +122,7 @@ python3 -m src.visualization.build_dynamo_bench_dash \
     --frontend-log outputs/<job_id>/logs/<node>_frontend_0.out
 ```
 
-Verified on job 2753007 (TIMEOUT at 20:12): `raw_prometheus.jsonl`, `host_samples.jsonl`,
+Verified on job 2753007 (TIMEOUT at 20:12): the tachometer parquet, `host_samples.jsonl`,
 `dynamo-request-trace`, all four `fingerprint_*.json` and `resource_snapshot.json` were
 intact, and the bundle rebuilt in **53 s** with `aiperf=True traces=True metrics=True
 request_trace=True`.
@@ -170,7 +170,7 @@ and loses Overview.
 
 | Leg | Recipe requirement | Artifact | Bundle output | Feeds |
 | --- | ------------------ | -------- | ------------- | ----- |
-| **Metrics** | `observability.enabled` (Tachometer), else the client's own export | `<log_dir>/tachometer/raw/scrape/*.parquet`, else historical `<log_dir>/raw_prometheus.jsonl`, else `<log_dir>/agentic/*/…/server_metrics_export.json(l)` | `server_metrics_export.jsonl` | every time-series panel |
+| **Metrics** | `observability.enabled` (Tachometer), else the client's own export | `<log_dir>/tachometer/raw/scrape/*.parquet`, else `<log_dir>/agentic/*/…/server_metrics_export.json(l)` | `server_metrics_export.jsonl` | every time-series panel |
 | **Request trace** | `observability.enabled` | `<log_dir>/dynamo-request-trace` | `request_trace.jsonl` | per-request card, per-session view, the waterfall's KV-transfer band |
 | **Per-iteration** | `print_iter_log: true` in the engine config | `SPAN`-free lines in `<log_dir>/*_w*.out` | `iter_bins.json` | batch composition, host/device step time |
 | **Traces** | `observability.enabled` **and** an AIPerf benchmark | `SPAN_CLOSED` lines in `<log_dir>/*.out` | `tempo_traces/<xid>.json` | Overview, routing outcome on the card |
@@ -269,7 +269,6 @@ Produces:
 | `--client-input` | `agentic/*/aiperf_artifacts/…` then `artifacts/*/…` | both harness layouts are tried; AgentX nests one level deeper and shards by concurrency |
 | `--traces` | `spanlog` | `none` to skip |
 | `--span-logs` | `*.out` | srt-slurm's worker/frontend log naming |
-| `--metrics` | `prometheus` | parses `raw_prometheus.jsonl` |
 | `--request-trace` | `dynamo` | parses `dynamo-request-trace`; the only source of KV-transfer cost and `session_id` |
 | `--iter-log` | `trtllm` | parses `print_iter_log` lines from the worker logs; local->UTC offset is derived per run, not hardcoded |
 | *(automatic)* | — | `trtllm_config_*.yaml` are copied from the run dir into the bundle, giving the Engine tab its real in-flight-batch ceilings instead of the `--max-batch-*` defaults |

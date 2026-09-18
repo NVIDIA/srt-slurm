@@ -91,15 +91,17 @@ For aggregated mode, pass `expected_prefill=0, expected_decode=num_agg`.
 
 ### Status Reporting
 
-Optional fire-and-forget HTTP status reporting to external APIs. Configure in `srtslurm.yaml`:
+Optional fire-and-forget HTTP status reporting to one or more collectors. Configure in `srtslurm.yaml`:
 
 ```yaml
 # Cluster-level config (srtslurm.yaml)
 cluster: "bruh"  # Cluster name for dashboard display
 reporting:
   status:
-    endpoint: "test-endpoint.com"
+    endpoint: "http://login-node:8080"
 ```
+
+**srtctl status-server** is the in-repo collector for that endpoint (`src/srtctl/status_server/`: `store.py` is the SQLite side, `server.py` the stdlib HTTP side validating with `srtctl.contract`, `ui/index.html` the dependency-free single-page UI served at `/`, which fetches the same `/api` routes with the read token from `localStorage`). It appends an event whenever `(status, stage, message)` changes, creates a placeholder row for a PUT whose POST never arrived, and serves cursor-based feeds at `/api/events` and `/api/jobs/{id}/events`. `make_server(store, port=0)` gives tests a real server on an ephemeral port (`tests/test_status_server.py` drives it with the real `StatusReporter`). The wire contract is `docs/status-api-spec.md`; a payload field changes in `srtctl.contract`, the server, and the spec together.
 
 **StatusReporter** - Used in `do_sweep.py` to report job lifecycle:
 
@@ -107,15 +109,15 @@ reporting:
 from srtctl.core.status import StatusReporter, JobStatus, JobStage
 
 reporter = StatusReporter.from_config(config.reporting, job_id)
-reporter.report_started(runtime)  # Job started with metadata
-reporter.report(JobStatus.WORKERS_READY, JobStage.WORKERS, "All workers healthy")
-reporter.report_completed(exit_code)  # Final status
+reporter.report_started(config, runtime)  # Job started, with model/resources/head_node/log_dir metadata
+reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
+reporter.report_completed(exit_code, logs_url=s3_url)  # Final status
 ```
 
-**Status lifecycle:**
+**Status lifecycle** (status is the stage being entered, not readiness):
 ```
-submitted → starting → head_ready → workers_starting → workers_ready
-         → frontend_starting → frontend_ready → benchmark → completed | failed
+submitted → starting → workers → frontend → benchmark → completed | failed
+stages: starting, head_infrastructure, preflight, workers, frontend, benchmark, cleanup
 ```
 
 **create_job_record()** - Standalone function for job submission:
@@ -139,15 +141,30 @@ create_job_record(
 - Failures are logged at DEBUG and silently ignored
 - Job execution is never blocked by status reporting
 - Tags are passed via `metadata["tags"]` (not a separate field)
+- `metadata["log_dir"]` (from `report_started`) is the run's log directory on the cluster filesystem; `logs_url` is only set when `reporting.s3` uploads it
+- `report_started` also repeats `job_name` and `cluster` in `metadata`: the submit-time POST is one attempt (now two) from the login node, and when it is lost the collector's placeholder row (`job-<id>`) takes its identity from the started report; a late POST fills whatever is still null, only ever moves `submitted_at` earlier, and never rewinds status; every reporter request gets two attempts
+- `reporting.s3` uploads follow a policy (`DEFAULT_S3_EXCLUDE` / `DEFAULT_S3_ARCHIVE` in `core/schema.py`): aiperf's per-interval metrics scrapes, `perf_dashboard_bundle/` and `perf_dashboard.json` are skipped (tachometer parquet holds the same series; a 2 GB run becomes about 60 MB), aiperf's per-request `profile_export.jsonl` is packed into `bundle.tar.zst` by the inline `ARCHIVE_SCRIPT` in `postprocess_stage.py`, which runs in the plain `python:3.11` upload container (stdlib + optional `zstandard`, xz fallback). Change the policy in the schema constants and `docs/config-reference.md` together
+- Auth is a bearer token read from `$SRTCTL_STATUS_TOKEN` on both sides (`reporting.status.token_env` renames the variable). Never add a literal token field: `SrtConfig.Schema().dump` lands in the lockfile and resolved configs are copied into `logs/` and synced to S3. The reporter never follows redirects and warns on 3xx/401/403; the server refuses to listen beyond loopback without a token unless `--allow-unauthenticated`
 
-### InfraConfig
+### Services (etcd, NATS, Mooncake master, exporters)
 
-Controls infrastructure placement (etcd/nats):
+Everything that is not a worker or the frontend is a service (`src/srtctl/services/`, launched by `ServiceStageMixin`). The Dynamo frontend implies `etcd` and `nats`, `backend.mooncake_kv_store` implies `mooncake-master`, tachometer implies `dcgm-exporter` and `node-exporter` on every worker node (`services/implicit.py`). A recipe declares one by name only to change it:
 
-```python
-infra:
-  etcd_nats_dedicated_node: true  # Reserve first node for infra services
+```yaml
+services:
+  - name: etcd
+    type: etcd
+    placement:
+      node: dedicated    # reserve a node for the discovery plane (v1: infra.etcd_nats_dedicated_node)
+  - name: nats
+    type: nats
+    placement:
+      node: dedicated
+    options:
+      max_payload_mb: 24 # v1: infra.nats_max_payload_mb
 ```
+
+`services/normalize.py` maps declared etcd/nats/mooncake-master entries back onto `infra` and `backend.mooncake_kv_store` before schema load, so the runtime reads one set of fields. Adding a kind: subclass `ServiceKind` in `services/`, `@register_service("<type>")`, import it from `services/__init__.py`; if the rest of the recipe should imply it, add it to `implied_services`. See `docs/services.md`.
 
 ### Mooncake KV Store
 
@@ -182,6 +199,69 @@ backend:
 `MOONCAKE_LOCAL_HOSTNAME` is auto-resolved per-worker to that worker's own IP (using `runtime.network_interface`), so multi-node peer transfers don't fall back to `localhost`. If you need a specific NIC IP, set `MOONCAKE_LOCAL_HOSTNAME` in `env` to override the default.
 
 **Validation:** In disaggregated mode, srtslurm rejects configs that set `mooncake_kv_store` without `disaggregation-transfer-backend: mooncake` on `sglang_config.prefill` or `sglang_config.decode`. This catches the common misconfiguration where the master process gets launched but workers fall back to default transport.
+
+### Shadow engine recovery (vLLM, `engine.failover`)
+
+`VLLMProtocol.failover` (recipe key `engine.failover`, dataclass `VLLMFailoverConfig` in `backends/vllm.py`) runs Dynamo's shadow engine recovery on SLURM without DRA. It implies the `gms` service (`services/gms.py`, `placement.per: worker`): one GPU Memory Service instance per vLLM worker, in the `before_workers` phase, running one `python3 -m gpu_memory_service --device k` per GPU of the worker and gated on its `GMS ready:` log line. The worker stage then launches `1 + shadow_engines` engine steps per worker and node (`<role>_<index>_<node>` and `..._e<k>`) with `--load-format gms --gms-shadow-mode`. Each engine is its own `Process` (`Process.engine_id`, emitted by `endpoints_to_processes(engines_per_process=...)`) so ports come from the usual allocators; the gms instance and the engines of a worker get the same pinned `CUDA_VISIBLE_DEVICES` (no `--device-ids`) so "device k" is the same GPU for the servers and the engines, and the sockets and `failover.lock` live under `<shared_dir>/srtctl-<job_id>/<role>_<index>` (`/dev/shm`: enroot bind-mounts the host's; `/tmp` is per container). Relaunching a dead engine is `roles.<role>.restart`'s job (the supervisor's unit is one engine, not the worker). Validation (`_validate_vllm_failover`): Dynamo frontend, no sidecar mode, no DP, `load-format` gms or unset. See `docs/shadow-engine-recovery.md`; `tests/test_failover.py` is the acceptance suite.
+
+`placement.per: worker` is the general mechanism behind the gms kind: `ServiceStageMixin.service_instances` attaches one instance to each engine-0 `Process` on the placed nodes, `ServiceLaunchContext.process` / `.config` carry the worker and the recipe to the kind, the stage pins `CUDA_VISIBLE_DEVICES`, and the step is `service_<name>_<role>_<index>_<node>`. `tests/test_service_per_worker.py` covers it for a generic service.
+
+### Services
+
+The top-level `services:` list declares long-running processes launched next to the job (see `docs/services.md`). Each entry has a `type` that selects a `ServiceKind` registered in `src/srtctl/services/` with `@register_service("<name>")`; the kind supplies defaults (command, start phase, criticality) and the env it injects, and `ServiceStageMixin` (`src/srtctl/cli/mixins/service_stage.py`) launches every kind the same way: resolve `placement.node` to physical nodes, optional clone/build of `source`, one `srun` per node, optional TCP `readiness` gate, `ManagedProcess` into the shared registry. `start_services("before_workers")` runs after the Mooncake master; `start_services("after_frontend")` runs after the frontend is healthy.
+
+```yaml
+services:
+  - name: store
+    type: mooncake-store       # generic (default) | mooncake-store
+    placement:
+      node: workers            # head | infra | prefill | decode | agg | workers | compute | all
+                               # or pool: <owner> to ride on the nodes another service owns
+    env:
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: 100gb
+    readiness:
+      port: 8800
+```
+
+Adding a kind: subclass `ServiceKind`, set `default_command` / `default_start` / `default_critical`, override `validate`, `container_fallback`, `default_environment`, `forced_environment` as needed, decorate, and import it from `src/srtctl/services/__init__.py`. `srtctl dry-run` prints every service; add a `tests/test_dry_run.py` case when a kind adds visible fields.
+
+**Metrics.** A service that serves Prometheus metrics declares `metrics: {port, path, nodes, name}` or a list of them (the scrape annotation; `nodes: first` for a cluster head, `name` required with several endpoints); `TelemetryStageMixin._service_metrics_targets` turns every endpoint into one tachometer target per node it runs on (`ServiceMetricsTarget`, endpoint `<name>_<node>`, name defaulting to the service). Kinds that always publish return their default from `ServiceKind.metrics()` and set `metrics_filter` / `metrics_endpoint_prefix` / `metrics_gpu_metadata`; the dcgm, node and process exporters are scraped this way (`core/telemetry.py` has no exporter special case left; only workers and the frontend keep their own target logic).
+
+### Pools and services-only jobs
+
+A service that declares `nodes: N` owns a **pool** of N whole nodes, added to the allocation after the engine roles' nodes, in `services:` order (see `docs/pools.md`). Any number of services may own nodes, next to engine roles or without them. An owner runs one instance per node of its pool (`placement.node: workers` means its own pool); `placement.pool: <owner>` makes a **rider** that runs one instance per node of that pool. A job with only pools sets `frontend.type: none`: no frontend, no worker-count health gate, the services' readiness probes are the gate before the benchmark step.
+
+```yaml
+services:
+  - name: train
+    type: generic
+    command: ["torchrun", "--nnodes={pool_node_count}", "--nproc-per-node={gpus_per_node}",
+              "--node-rank={index}", "--master-addr={pool_ip}", "train.py"]
+    nodes: 2                   # pool "train": 2 nodes; instance 0 is the rendezvous; no readiness probe
+                               # (instances launch one after another, gated on readiness, and a static
+                               # torchrun rendezvous only completes once every node has joined)
+    terminal: true             # the job ends when every instance has exited, worst exit code; no benchmark block
+  - name: watcher
+    type: generic
+    command: ["sleep", "infinity"]
+    placement:
+      pool: train              # rides on the train pool
+```
+
+Where things live:
+
+- Carving: `Nodes.from_slurm(engine_nodes=..., pools=[(name, count), ...])` in `src/srtctl/core/runtime.py`; `Nodes.worker` is the engine nodes, `Nodes.pools` the carve, `Nodes.compute` both. Recipes without pools carve exactly as before.
+- Counts: `SrtConfig.engine_node_count`, `services_node_count`, `total_nodes`, `pool_services` in `src/srtctl/core/schema.py`; rules in `_validate_services_only` and `ServiceConfig.__post_init__` (`src/srtctl/services/config.py`).
+- Placement: `ServiceStageMixin.service_nodes` resolves `effective_pool`, then `placement.node` (`compute` = engine worker nodes plus every pool; `all` adds head, infra, client). The implied dcgm/node exporters run on `compute`.
+- Placeholders per instance (`ServiceLaunchContext.template_vars`): `{index}`, `{node_ip}`, `{pool_node}`, `{pool_ip}`, `{pool_nodes}`, `{pool_ips}`, `{pool_node_count}`, `{gpus_per_node}`. `{head_ip}` is the job head, an engine node when a pool sits next to roles, so a cluster rendezvous uses `{pool_ip}`. Services do not inherit the recipe's top-level `environment:` (workers and the benchmark do); fabric env such as `NCCL_SOCKET_IFNAME` goes in the service's `env:`.
+- Custom benchmark env (`BenchmarkStageMixin._get_service_env`): `SRT_SERVICE_<NAME>_NODES` / `_IPS` / `_NODE_COUNT` per launched service, `SRT_GPUS_PER_NODE`, `SRT_WORKER_NODES`. This is how a launcher script drives a pool.
+- Terminal services (`services[].terminal: true`): the job's run. `ServiceStageMixin.terminal_processes` collects their `ManagedProcess`es; the manual loop in `BenchmarkStageMixin.run_benchmark` returns once every one has exited, with the worst exit code, instead of holding until Ctrl+C. Refused together with a non-`manual` benchmark type or on an `external` service. Without a terminal service, manual mode holds the allocation as before.
+- Readers of "every node doing work" use `runtime.nodes.compute`, not `.worker`: host setup, resource snapshot, download node, exporters. New code that means all work nodes should do the same.
+- Limits: whole nodes only, fixed sizes, refused with `resources.het_jobs`. `srtctl dry-run` prints the `Nodes:` map; `tests/test_pools.py` is the acceptance suite (toy recipe through the mock orchestrator on four nodes).
+
+### Process cleanup and graceful shutdown
+
+Every long-running `srun` (workers, frontends, nginx, services, tachometer) is launched with a `step_name` and tracked as a `ManagedProcess` carrying the same name. `ProcessRegistry.cleanup()` stops processes by `shutdown_tier`: tier 0 (workers, frontends, sidecars) is SIGTERMed all at once through `scancel --signal=TERM --full <job>.<step>`, waited for up to each process's `terminate_timeout`, and killed if still up; then tier 1 (Mooncake master, stores), then tier 2 (etcd, NATS). SIGTERM aimed at the `srun` client itself aborts the step and SIGKILLs the task, which is why the step name matters: it is the only way the engine, router, or scraper sees the signal and gets to deregister, drain, or flush. New launch sites must pass `step_name` to both `start_srun_process` and `ManagedProcess`.
 
 ### Host Setup
 
@@ -267,6 +347,10 @@ with patch.dict(os.environ, H100Rack.slurm_env()):
 2. Implement `run(config, log_dir)` method
 3. Add bash script to `benchmarks/scripts/mybench/bench.sh`
 4. Register in benchmark type mapping
+
+### Adding or Changing Any Config Field
+
+`docs/schema-reference.md` is generated from the dataclasses in `core/schema.py` and `backends/`. After adding, renaming, or re-typing a field, run `uv run srtctl schema-docs` and commit the result; CI and `tests/test_schema_docs.py` fail when the file is stale. Put the field's description in the class docstring `Attributes:` block or in a `#` comment directly above the field so it lands in the generated table.
 
 ### Adding Config That Affects srun (Mounts, Env Vars, Options)
 

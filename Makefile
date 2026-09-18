@@ -1,14 +1,14 @@
-.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
+.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check golden-check tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
+PROCESS_EXPORTER_VERSION ?= 0.8.7
 LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
 TACHOMETER_RELEASE ?= latest
 CPU_POWER_EXPORTER_RELEASE ?= latest
 
-default:
-	./run_dashboard.sh
+default: check
 
 # === CI targets ===
 lint:
@@ -22,8 +22,25 @@ test:
 test-cov:
 	uv run pytest tests/ --cov=srtctl --cov-report=term-missing --cov-report=html
 
+# Regenerate docs/schema-reference.md (2.0) and docs/legacy-v1.md (v1) from the code
+schema-docs:
+	uv run srtctl schema-docs
+
+# Fail if docs/schema-reference.md or docs/legacy-v1.md is stale (also enforced by CI and tests/test_schema_docs.py)
+schema-docs-check:
+	uv run srtctl schema-docs --check
+
 # Run lint + tests in one command
-check: lint test
+check: lint schema-docs-check test
+
+# Golden equality: migrate every known v1 recipe in memory and prove the resolved
+# config is unchanged. Extracts the historical recipes from the last commit that
+# carried recipes/ (same corpus as the CI job).
+GOLDEN_RECIPES_COMMIT ?= e6e9d8b9bee3e6c85e6f121eb4dacd88d8ca1d2c
+golden-check:
+	@rm -rf /tmp/srt-golden && mkdir -p /tmp/srt-golden
+	@git archive $(GOLDEN_RECIPES_COMMIT) recipes | tar -x -C /tmp/srt-golden
+	uv run srtctl migrate --verify -f examples -f /tmp/srt-golden/recipes
 	@echo "✓ All checks passed"
 
 tachometer-scraper:
@@ -54,6 +71,9 @@ tachometer-scraper-download:
 	(cd "$$tmp_dir" && sha256sum --check "$$asset.sha256"); \
 	install -Dm755 "$$tmp_dir/$$asset" bin/tachometer-scraper; \
 	echo "Installed Tachometer scraper at bin/tachometer-scraper"
+
+examples:
+	@find examples -type f -name '*.yaml' -print | sort
 
 cpu-power-exporter:
 	cargo build --release --locked --bin cpu-power-exporter
@@ -107,22 +127,6 @@ cpu-power-exporter-setup:
 	else \
 		$(MAKE) --no-print-directory cpu-power-exporter-download; \
 	fi
-
-# Runners
-gb200-fp8:
-	srtctl apply -f recipes/gb200-fp8/1k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp8/1k1k/max-tpt-2p1d.yaml
-	srtctl apply -f recipes/gb200-fp8/1k1k/mid-curve-3p1d.yaml
-	srtctl apply -f recipes/gb200-fp8/8k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp8/8k1k/mid-curve-5p1d.yaml
-
-gb200-fp4:
-	srtctl apply -f recipes/gb200-fp4/1k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp4/1k1k/max-tpt.yaml
-	srtctl apply -f recipes/gb200-fp4/1k1k/mid-curve.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/max-tpt.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/mid-curve.yaml
 
 setup: tachometer-scraper-download cpu-power-exporter-setup
 	@echo "📦 Setting up configs and logs directories..."
@@ -180,6 +184,26 @@ setup: tachometer-scraper-download cpu-power-exporter-setup
 		chmod +x configs/etcd configs/etcdctl; \
 		rm "configs/$$ETCD_TAR"; \
 		echo "✅ ETCD installed to configs/etcd"; \
+	fi; \
+	echo ""; \
+	echo "--- process-exporter $(PROCESS_EXPORTER_VERSION) (Tachometer per-process/thread telemetry) ---"; \
+	if [ -f configs/process-exporter ] && file configs/process-exporter | grep -q "$$ARCH_FILE_PATTERN"; then \
+		echo "✅ process-exporter already installed at configs/process-exporter ($(ARCH))"; \
+	else \
+		echo "⬇️  Downloading process-exporter ($(PROCESS_EXPORTER_VERSION)) for $$ARCH_SHORT..."; \
+		PE_NAME="process-exporter-$(PROCESS_EXPORTER_VERSION).linux-$$ARCH_SHORT"; \
+		PE_TAR="$$PE_NAME.tar.gz"; \
+		PE_URL="https://github.com/ncabatoff/process-exporter/releases/download/v$(PROCESS_EXPORTER_VERSION)/$$PE_TAR"; \
+		if ! wget -q --show-progress --tries=3 --waitretry=5 "$$PE_URL" -O "configs/$$PE_TAR"; then \
+			rm -f "configs/$$PE_TAR"; \
+			echo "❌ Failed to download process-exporter from $$PE_URL"; \
+			exit 1; \
+		fi; \
+		echo "📁 Extracting process-exporter binary..."; \
+		tar -xzf "configs/$$PE_TAR" --strip-components=1 -C configs "$$PE_NAME/process-exporter"; \
+		chmod +x configs/process-exporter; \
+		rm "configs/$$PE_TAR"; \
+		echo "✅ process-exporter installed to configs/process-exporter"; \
 	fi; \
 	echo ""; \
 	echo "--- uv (compute node arch: $(ARCH)) ---"; \

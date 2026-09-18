@@ -47,11 +47,57 @@ def test_acpi_mode_totals_only_total_channels():
     assert scrape.total_power_w == 93.4
 
 
+def test_acpi_mode_pivots_one_socket_row_with_component_rails():
+    scrape = parse_cpu_scrape(_acpi_body())
+
+    assert [(s.socket_id, s.sensor, s.power_w, s.rails) for s in scrape.sockets] == [
+        (0, "CPU0:cpuSidePowerUsageW", 93.4, {"cpu_rail": 48.1, "soc": 5.2}),
+    ]
+
+
+def test_acpi_mode_normalizes_sensor_names_from_oem_labels():
+    """Scraper rows carry the canonical CPU<n>:<suffix> name, not the raw firmware label."""
+    scrape = parse_cpu_scrape(_acpi_body())
+
+    assert {r.sensor for r in scrape.readings} == {
+        "CPU0:cpuSidePowerUsageW",
+        "CPU0:cpuRailPowerUsageW",
+        "CPU0:socPowerUsageW",
+    }
+
+
+def test_acpi_mode_accepts_legacy_exporter_type_aliases():
+    """Older exporter builds published type=grace/cpu/sysio; they map onto the canonical kinds."""
+    body = (
+        "# TYPE cpu_power_acpi_watts gauge\n"
+        'cpu_power_acpi_watts{type="grace",socket="1",oem_info="Grace Power Socket 1"} 90.0\n'
+        'cpu_power_acpi_watts{type="cpu",socket="1",oem_info="CPU Power Socket 1"} 40.0\n'
+        'cpu_power_acpi_watts{type="sysio",socket="1",oem_info="SysIO Power Socket 1"} 6.0\n'
+    )
+    scrape = parse_cpu_scrape(body)
+
+    assert [(r.kind, r.socket_id) for r in scrape.readings] == [("total", 1), ("cpu_rail", 1), ("soc", 1)]
+    assert scrape.sockets[0].power_w == 90.0
+    assert scrape.sockets[0].rails == {"cpu_rail": 40.0, "soc": 6.0}
+
+
+def test_dcgm_mode_pivots_one_socket_row_with_no_rails():
+    scrape = parse_cpu_scrape(_dcgm_body())
+
+    assert [(s.socket_id, s.sensor, s.power_w, s.rails) for s in scrape.sockets] == [
+        (0, "CPU0:cpuPowerUsageW", 43.878, {}),
+        (1, "CPU1:cpuPowerUsageW", 52.35, {}),
+    ]
+
+
 def test_acpi_mode_leaves_total_blank_without_a_total_channel():
     scrape = parse_cpu_scrape(_acpi_body(include_grace=False))
 
     assert scrape.mode == "acpi"
     assert scrape.total_power_w is None
+    # And publishes no socket row: a component rail must not stand in for power_w.
+    assert scrape.sockets == ()
+    assert len(scrape.readings) == 2  # the rails themselves are still parsed
 
 
 def test_acpi_mode_totals_a_generic_total_power_label_too():
@@ -66,6 +112,29 @@ def test_acpi_mode_totals_a_generic_total_power_label_too():
     scrape = parse_cpu_scrape(body)
 
     assert scrape.mode == "acpi"
+    assert scrape.total_power_w == 88.0
+
+
+def test_acpi_mode_recovers_input_power_labels_from_older_exporter_output():
+    body = (
+        "# HELP cpu_power_acpi_watts x\n"
+        "# TYPE cpu_power_acpi_watts gauge\n"
+        'cpu_power_acpi_watts{sensor="a/0",type="other",socket="",oem_info="Total Input Power in uW socket 0"} 88.0\n'
+        'cpu_power_acpi_watts{sensor="a/1",type="other",socket="",oem_info="CPU Rail Input Power in uW socket 0"} 60.0\n'
+        'cpu_power_acpi_watts{sensor="a/2",type="other",socket="",oem_info="SoC Rail Input Power in uW socket 0"} 8.0\n'
+        'cpu_power_acpi_watts{sensor="a/3",type="other",socket="",oem_info="DRAM Input Power in uW socket 0"} 10.0\n'
+        'cpu_power_acpi_watts{sensor="a/4",type="other",socket="",oem_info="CPU Rail Output Power in uW socket 0"} 50.0\n'
+    )
+
+    scrape = parse_cpu_scrape(body)
+
+    assert scrape.mode == "acpi"
+    assert [(reading.kind, reading.socket_id) for reading in scrape.readings] == [
+        ("total", 0),
+        ("cpu_rail", 0),
+        ("soc", 0),
+        ("dram", 0),
+    ]
     assert scrape.total_power_w == 88.0
 
 

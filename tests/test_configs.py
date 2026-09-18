@@ -3,8 +3,8 @@
 
 """Tests for configuration loading and validation."""
 
-import glob
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,35 +25,66 @@ from srtctl.ports import (
 class TestConfigLoading:
     """Tests for config file loading."""
 
-    def test_config_loading_from_yaml(self):
-        """Test that config files in recipes/ can be loaded."""
-        # Find all yaml files in recipes/
-        config_files = glob.glob("recipes/**/*.yaml", recursive=True)
+    TOPOLOGY_EXAMPLE_DIRS = ("examples/sglang", "examples/vllm", "examples/trtllm", "examples/mocker")
 
+    def test_topology_examples_load_as_plain_configs(self):
+        """Every topology example is a plain (non-sweep, non-override) config that loads."""
+        config_files = sorted(
+            path for example_dir in self.TOPOLOGY_EXAMPLE_DIRS for path in Path(example_dir).rglob("*.yaml")
+        )
         if not config_files:
-            pytest.skip("No config files found in recipes/")
+            pytest.fail(f"No topology examples found under {self.TOPOLOGY_EXAMPLE_DIRS}")
 
         errors = []
-        loaded = 0
         for config_path in config_files:
             try:
-                config = SrtConfig.from_yaml(Path(config_path))
+                config = SrtConfig.from_yaml(config_path)
                 assert config.name is not None
                 assert config.model is not None
                 assert config.resources is not None
                 assert config.backend is not None
-                loaded += 1
-                print(f"\n✓ Loaded config: {config_path}")
-                print(f"  Name: {config.name}")
-                print(f"  Backend: {config.backend_type}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 errors.append(f"{config_path}: {e}")
 
-        print(f"\nLoaded {loaded}/{len(config_files)} configs")
         if errors:
-            print(f"Errors ({len(errors)}):")
-            for err in errors[:5]:  # Show first 5 errors
-                print(f"  - {err}")
+            pytest.fail("Failed to load topology examples:\n" + "\n".join(errors))
+
+    def test_every_example_validates(self):
+        """validate_config_file accepts every file under examples/, including sweep and override files."""
+        from srtctl.core.config import validate_config_file
+
+        example_files = sorted(Path("examples").rglob("*.yaml"))
+        if not example_files:
+            pytest.fail("No examples found under examples/")
+
+        errors = [error for path in example_files for error in validate_config_file(path)]
+        if errors:
+            pytest.fail("Example validation errors:\n" + "\n".join(errors))
+
+    def test_examples_cover_the_frontend_matrix(self):
+        """The matrix documented in examples/README.md is present on disk."""
+        expected = {
+            "examples/sglang/dynamo-agg.yaml",
+            "examples/sglang/dynamo-disagg.yaml",
+            "examples/sglang/sglang-router-agg.yaml",
+            "examples/sglang/sglang-router-disagg.yaml",
+            "examples/vllm/dynamo-agg.yaml",
+            "examples/vllm/dynamo-disagg.yaml",
+            "examples/vllm/vllm-router-agg.yaml",
+            "examples/vllm/vllm-router-disagg.yaml",
+            "examples/vllm/vllm-direct-agg.yaml",
+            "examples/trtllm/dynamo-agg.yaml",
+            "examples/trtllm/dynamo-disagg.yaml",
+            "examples/trtllm/trtllm-serve-agg.yaml",
+            "examples/trtllm/trtllm-serve-disagg.yaml",
+            "examples/mocker/dynamo-agg.yaml",
+            "examples/features/sweep.yaml",
+            "examples/features/override.yaml",
+            "examples/features/profiling.yaml",
+        }
+        present = {str(p) for p in Path("examples").rglob("*.yaml")}
+        missing = expected - present
+        assert not missing, f"Missing examples: {sorted(missing)}"
 
     def test_cpu_power_test_recipe_loads(self):
         """configs/cpu-power-test.yaml lives outside recipes/, so the recipes/**/*.yaml glob
@@ -486,7 +517,7 @@ class TestSidecarValidation:
         from marshmallow import ValidationError
 
         with pytest.raises(ValidationError, match="dynamo.sidecar: true requires frontend.type: dynamo"):
-            self._config(frontend_type="sglang")
+            self._config(frontend_type="sglang-router")
 
     def test_sidecar_rejects_unsupported_backend(self) -> None:
         from marshmallow import ValidationError
@@ -507,7 +538,7 @@ class TestSidecarValidation:
             dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": dp_size}),
         )
-        with pytest.raises(ValidationError, match="dynamo.sidecar: true requires backend.dp_launch_mode: per_node"):
+        with pytest.raises(ValidationError, match="sidecar mode requires engine.dp_launch_mode: per_node"):
             self._config(backend=backend, gpus_per_node=dp_size)
 
 
@@ -535,7 +566,7 @@ class TestSGLangProtocol:
         assert config.get_environment_for_mode("agg") == {}
 
     def test_kv_events_config_global_bool(self):
-        """Test kv_events_config=True enables prefill+decode with defaults."""
+        """Test kv_events_config=True enables prefill+decode+aggregated with defaults."""
         config = SGLangProtocol(kv_events_config=True)
 
         assert config.get_kv_events_config_for_mode("prefill") == {
@@ -546,7 +577,10 @@ class TestSGLangProtocol:
             "publisher": "zmq",
             "topic": "kv-events",
         }
-        assert config.get_kv_events_config_for_mode("agg") is None
+        assert config.get_kv_events_config_for_mode("agg") == {
+            "publisher": "zmq",
+            "topic": "kv-events",
+        }
 
     def test_kv_events_config_per_mode(self):
         """Test kv_events_config per-mode control."""
@@ -705,8 +739,90 @@ class TestFrontendConfig:
         assert frontend.type == "dynamo"
         assert frontend.enable_multiple_frontends is True
         assert frontend.nginx_container == "nginx:1.27.4"
+        assert frontend.worker_selection is None
         assert frontend.args is None
         assert frontend.env is None
+
+    def test_frontend_worker_selection_deserializes(self):
+        """Inline Dynamo worker-selection policy config is retained as a mapping."""
+        from srtctl.core.schema import SrtConfig
+
+        config = SrtConfig.Schema().load(
+            {
+                "name": "test",
+                "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+                "frontend": {
+                    "type": "dynamo",
+                    "worker_selection": {
+                        "prefill": "max-kv-overlap",
+                        "decode": "default",
+                        "instances": [
+                            {
+                                "name": "max-kv-overlap",
+                                "type": "dynamo-two-tier-cost-fn",
+                                "parameters": {"cache_threshold": 0.0},
+                            }
+                        ],
+                    },
+                },
+            }
+        )
+
+        assert config.frontend.worker_selection == {
+            "prefill": "max-kv-overlap",
+            "decode": "default",
+            "instances": [
+                {
+                    "name": "max-kv-overlap",
+                    "type": "dynamo-two-tier-cost-fn",
+                    "parameters": {"cache_threshold": 0.0},
+                }
+            ],
+        }
+
+    @pytest.mark.parametrize(
+        ("frontend", "environment"),
+        [
+            ({"type": "sglang", "worker_selection": {"prefill": "default"}}, None),
+            (
+                {
+                    "type": "dynamo",
+                    "worker_selection": {"prefill": "default"},
+                    "args": {"router-policy-config": "/configs/policy.yaml"},
+                },
+                None,
+            ),
+            (
+                {
+                    "type": "dynamo",
+                    "worker_selection": {"prefill": "default"},
+                    "env": {"DYN_ROUTER_POLICY_CONFIG": "/configs/policy.yaml"},
+                },
+                None,
+            ),
+            (
+                {"type": "dynamo", "worker_selection": {"prefill": "default"}},
+                {"DYN_ROUTER_POLICY_CONFIG": "/configs/policy.yaml"},
+            ),
+        ],
+    )
+    def test_frontend_worker_selection_rejects_ambiguous_configuration(self, frontend, environment):
+        """Inline policy config must target Dynamo and be its only policy source."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import SrtConfig
+
+        with pytest.raises(ValidationError, match="frontend.worker_selection"):
+            raw_config = {
+                "name": "test",
+                "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+                "frontend": frontend,
+            }
+            if environment is not None:
+                raw_config["environment"] = environment
+            SrtConfig.Schema().load(raw_config)
 
     def test_frontend_sglang_type(self):
         """Test sglang frontend config."""
@@ -5087,3 +5203,129 @@ class TestSequentialNodeStart:
 
             # Each node has only 1 worker — no wait should be triggered
             assert wait_called == []
+
+
+class TestClusterGpuDefaults:
+    """resources.gpu_type / gpus_per_node inherit from srtslurm.yaml when omitted."""
+
+    def _recipe(self, resources: dict) -> dict:
+        return {
+            "name": "gpu-defaults",
+            "model": {"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": resources,
+        }
+
+    def test_recipe_without_gpu_type_inherits_default_gpu_type(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        resolved = resolve_config_with_defaults(
+            self._recipe({"agg_nodes": 1, "agg_workers": 1}),
+            {"default_gpu_type": "gb200", "gpus_per_node": 4},
+        )
+        assert resolved["resources"]["gpu_type"] == "gb200"
+        assert resolved["resources"]["gpus_per_node"] == 4
+
+    def test_recipe_gpu_fields_win_over_cluster_defaults(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        resolved = resolve_config_with_defaults(
+            self._recipe({"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1}),
+            {"default_gpu_type": "gb200", "gpus_per_node": 4},
+        )
+        assert resolved["resources"]["gpu_type"] == "h100"
+        assert resolved["resources"]["gpus_per_node"] == 8
+
+    def test_recipe_without_gpu_type_and_no_cluster_default_loads(self):
+        from srtctl.core.schema import SrtConfig
+
+        config = SrtConfig.Schema().load(self._recipe({"agg_nodes": 1, "agg_workers": 1}))
+        assert config.resources.gpu_type is None
+        assert config.resources.gpus_per_node == 4
+
+
+class TestBenchmarkTypeValidation:
+    """benchmark.type must name a registered runner (or 'manual')."""
+
+    def _recipe(self, benchmark: dict) -> dict:
+        return {
+            "name": "bench-type",
+            "model": {"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1},
+            "benchmark": benchmark,
+        }
+
+    def test_registered_and_manual_types_load(self):
+        from srtctl.core.schema import SrtConfig
+
+        for btype in ("manual", "sa-bench", "custom", "mmlu", "trace-replay", "mooncake-router"):
+            benchmark = {"type": btype}
+            if btype == "custom":
+                benchmark["command"] = "echo hi"
+            config = SrtConfig.Schema().load(self._recipe(benchmark))
+            assert config.benchmark.type == btype
+
+    def test_unknown_type_is_rejected_at_load(self):
+        import pytest
+
+        from srtctl.core.schema import SrtConfig
+
+        with pytest.raises(Exception, match="gsm8k-bench"):
+            SrtConfig.Schema().load(self._recipe({"type": "gsm8k-bench"}))
+
+    def test_benchmark_type_enum_is_gone(self):
+        import srtctl.core.schema as schema_mod
+
+        assert not hasattr(schema_mod, "BenchmarkType")
+
+
+class TestClusterConfigPreflight:
+    """`preflight: false` in srtslurm.yaml must be a declared key (an unknown key
+    rejects the whole file) and must switch the pre-submit check off in apply."""
+
+    def test_cluster_schema_accepts_the_key_and_defaults_on(self):
+        from srtctl.core.schema import ClusterConfig
+
+        assert ClusterConfig.Schema().load({}).preflight is True
+        assert ClusterConfig.Schema().load({"preflight": False}).preflight is False
+
+    def test_apply_skips_preflight_when_cluster_file_says_so(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        import yaml
+
+        from srtctl.cli import submit as submit_cli
+
+        monkeypatch.delenv("SRTSLURM_CONFIG", raising=False)
+
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "schema": 2,
+                    "name": "cluster-preflight-off",
+                    "model": {"path": "/raid/only-on-compute", "container": "/c.sqsh", "precision": "fp8"},
+                    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+                    "frontend": {"type": "sglang", "enable_multiple_frontends": False},
+                    "engine": "sglang",
+                    "roles": {"agg": {"nodes": 1, "workers": 1, "gpus": 8}},
+                    "benchmark": {"type": "manual"},
+                }
+            )
+        )
+
+        def setting(key, default=None):
+            return False if key == "preflight" else default
+
+        seen = {}
+
+        def fake_submit(config_path, **kwargs):
+            seen.update(kwargs)
+            return None
+
+        monkeypatch.setattr(sys, "argv", ["srtctl", "apply", "-f", str(cfg), "-y"])
+        with (
+            patch("srtctl.cli.submit.get_srtslurm_setting", side_effect=setting),
+            patch("srtctl.cli.submit.submit_single", side_effect=fake_submit),
+        ):
+            submit_cli.main()
+        assert seen["enforce_preflight"] is False

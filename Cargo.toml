@@ -7,7 +7,9 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+# Baseline only. Release builds pass SRTCTL_RELEASE_VERSION=<tag without v>, which the
+# binaries report from --version; see .github/workflows/release.yaml and CONTRIBUTING.md.
+version = "2.0.0"
 edition = "2021"
 authors = ["Tachometer Contributors"]
 license = "Apache-2.0"

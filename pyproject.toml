@@ -1,10 +1,11 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "srtctl"
-version = "0.3.0"
+# The version is the git tag (vX.Y.Z); see CONTRIBUTING.md "Versioning".
+dynamic = ["version"]
 description = "Benchmark submission framework for distributed serving workloads"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,6 +43,25 @@ ruter = "srtctl.ruter.__main__:main"
 packages = ["src/srtctl"]
 
 # =============================================================================
+# Versioning: one source of truth, the git tag
+# =============================================================================
+# `vX.Y.Z` tags are created by .github/workflows/release.yaml on every merge to
+# main (bump size from the conventional-commit PR title). hatch-vcs derives the
+# package version from the nearest tag, so `srtctl --version`, the wheel, the
+# lockfile stamp, and the GitHub release always agree. Between tags a checkout
+# reports e.g. 2.0.0.post3+g49715b7; without git metadata it falls back below.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+# 2.0.0 at the tag, 2.0.0.post3+g<sha> three commits later (not a guessed 2.0.1.dev3).
+version_scheme = "post-release"
+fallback_version = "0.0.0+unknown"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/srtctl/_version.py"
+
+# =============================================================================
 # Development dependencies
 # =============================================================================
 [dependency-groups]
@@ -53,7 +73,20 @@ dev = [
     "fastapi>=0.109.0",
     "httpx>=0.27.0",  # Required by FastAPI TestClient
     "uvicorn>=0.27.0",  # Required for integration test mock server
-    "aiperf",  # Benchmark tool for trace replay integration tests
+    # Imported by the sa-bench scripts that tests/test_sa_bench_*.py load directly
+    # (previously reached the dev env only as transitive dependencies of aiperf).
+    "aiohttp>=3.9",
+    "transformers>=4.40",
+    "tqdm>=4.66",
+    "datasets>=2.19",
+    "pillow>=10.0",
+    "pandas>=2.0",
+]
+# Real aiperf for the trace-replay integration tests (`pytest -m integration`).
+# Kept out of `dev`: aiperf pulls pyzmq, whose wheels stop at CPython 3.13, so a
+# plain `uv sync` on a 3.14 host otherwise tries to build libzmq from source.
+integration = [
+    "aiperf",
 ]
 
 # =============================================================================
@@ -115,7 +148,6 @@ markers = [
 exclude = [
     "src/srtctl/benchmarks/scripts/",
     "scripts/",
-    "analysis/",
     "ignition/",
     "src/ingest/",
     "src/visualization/",

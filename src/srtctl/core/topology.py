@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -173,6 +173,12 @@ class Endpoint:
     # as "omit --het-group".
     het_group: int | None = None
 
+    # Optional per-node allocation for workers spanning partially occupied nodes.
+    node_gpu_indices: tuple[frozenset[int], ...] = ()
+
+    def gpus_on_node(self, node_rank: int) -> frozenset[int]:
+        return self.node_gpu_indices[node_rank] if self.node_gpu_indices else self.gpu_indices
+
     @property
     def leader_node(self) -> str:
         """The first node in the endpoint (used for distributed init)."""
@@ -186,7 +192,7 @@ class Endpoint:
     @property
     def total_gpus(self) -> int:
         """Total GPUs used by this endpoint across all nodes."""
-        return self.num_nodes * len(self.gpu_indices)
+        return sum(len(self.gpus_on_node(i)) for i in range(self.num_nodes))
 
     @property
     def is_multi_node(self) -> bool:
@@ -212,6 +218,10 @@ class Process:
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
         node_rank: Rank within the endpoint (0 for leader)
+        engine_id: Which engine of the worker this is. 0 is the one every job has;
+            under ``backend.failover`` (vLLM shadow engine recovery) engines 1.. are
+            the standbys, sharing node, GPUs and node_rank with engine 0 but with
+            their own ports and their own srun step.
     """
 
     node: str
@@ -227,11 +237,17 @@ class Process:
     dp_rpc_port: int | None = None
     # Inherited from the parent Endpoint when the job is heterogeneous.
     het_group: int | None = None
+    engine_id: int = 0
 
     @property
     def is_leader(self) -> bool:
         """Whether this is the leader process for the endpoint."""
         return self.node_rank == 0
+
+    @property
+    def engine_suffix(self) -> str:
+        """Step-name and log-name suffix that tells a shadow engine apart from engine 0 (``""`` for it)."""
+        return f"_e{self.engine_id}" if self.engine_id else ""
 
     @property
     def cuda_visible_devices(self) -> str:
@@ -287,6 +303,7 @@ def allocate_endpoints(
     available_nodes: Sequence[str],
     spread_workers: bool = False,
     allow_prefill_decode_colocation: bool = False,
+    pack_multinode_workers: bool = False,
 ) -> list[Endpoint]:
     """Allocate endpoints to nodes based on GPU requirements.
 
@@ -304,6 +321,8 @@ def allocate_endpoints(
         spread_workers: If True, place each partial-node worker on its own
             node instead of packing multiple onto the same node. Requires the
             caller to reserve enough nodes (one per worker per mode).
+        pack_multinode_workers: Preserve exact per-node GPU allocations for MPI
+            workers, allowing adjacent workers to share a partially filled node.
         allow_prefill_decode_colocation: If True, decode workers may use
             remaining GPUs on a node already used by prefill workers.
 
@@ -406,7 +425,43 @@ def allocate_endpoints(
         nodes_per_worker = (gpus_per_worker + gpus_per_node - 1) // gpus_per_node
 
         for i in range(count):
-            if nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
+            if pack_multinode_workers:
+                if gpus_per_worker <= 0:
+                    raise ValueError("GPUs per worker must be positive")
+                if gpus_per_worker <= gpus_per_node and gpu_offset + gpus_per_worker > gpus_per_node:
+                    node_idx += 1
+                    gpu_offset = 0
+                worker_nodes = []
+                node_gpus = []
+                remaining = gpus_per_worker
+                while remaining:
+                    if node_idx >= len(available_nodes):
+                        raise ValueError("Not enough nodes for GPU allocation")
+                    take = min(remaining, gpus_per_node - gpu_offset)
+                    worker_nodes.append(available_nodes[node_idx])
+                    node_gpus.append(frozenset(range(gpu_offset, gpu_offset + take)))
+                    remaining -= take
+                    gpu_offset += take
+                    if gpu_offset == gpus_per_node:
+                        node_idx += 1
+                        gpu_offset = 0
+                # MPI model mappings expect full nodes before a partial tail.
+                allocations = sorted(zip(worker_nodes, node_gpus, strict=True), key=lambda item: -len(item[1]))
+                worker_nodes, node_gpus = zip(*allocations, strict=True)
+                result.append(
+                    Endpoint(
+                        mode=mode,
+                        index=i,
+                        nodes=tuple(worker_nodes),
+                        gpu_indices=node_gpus[0],
+                        node_gpu_indices=tuple(node_gpus),
+                        gpus_per_node=gpus_per_node,
+                    )
+                )
+                if spread_workers and gpu_offset:
+                    node_idx += 1
+                    gpu_offset = 0
+            elif nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
                 # Multi-node or full-node worker
                 worker_nodes = tuple(available_nodes[node_idx + j] for j in range(nodes_per_worker))
                 node_idx += nodes_per_worker
@@ -476,6 +531,7 @@ def allocate_endpoints_het(
     gpus_per_decode: int,
     decode_nodes: Sequence[str],
     gpus_per_node: int,
+    pack_multinode_workers: bool = False,
 ) -> list[Endpoint]:
     """Allocate endpoints for a SLURM heterogeneous job.
 
@@ -498,6 +554,7 @@ def allocate_endpoints_het(
         gpus_per_agg=0,
         gpus_per_node=gpus_per_node,
         available_nodes=prefill_nodes,
+        pack_multinode_workers=pack_multinode_workers,
     )
     decode_eps = allocate_endpoints(
         num_prefill=0,
@@ -508,6 +565,7 @@ def allocate_endpoints_het(
         gpus_per_agg=0,
         gpus_per_node=gpus_per_node,
         available_nodes=decode_nodes,
+        pack_multinode_workers=pack_multinode_workers,
     )
     # Endpoint is frozen; re-emit with het_group set.
     tagged: list[Endpoint] = []
@@ -518,6 +576,7 @@ def allocate_endpoints_het(
                 index=ep.index,
                 nodes=ep.nodes,
                 gpu_indices=ep.gpu_indices,
+                node_gpu_indices=ep.node_gpu_indices,
                 gpus_per_node=ep.gpus_per_node,
                 het_group=0,
             )
@@ -529,6 +588,7 @@ def allocate_endpoints_het(
                 index=ep.index,
                 nodes=ep.nodes,
                 gpu_indices=ep.gpu_indices,
+                node_gpu_indices=ep.node_gpu_indices,
                 gpus_per_node=ep.gpus_per_node,
                 het_group=1,
             )
@@ -540,6 +600,7 @@ def endpoints_to_processes(
     endpoints: list[Endpoint],
     base_sys_port: int = DYN_SYSTEM_PORT_BASE,
     port_allocator: NodePortAllocator | None = None,
+    engines_per_process: int = 1,
 ) -> list[Process]:
     """Convert endpoints to physical processes.
 
@@ -553,10 +614,16 @@ def endpoints_to_processes(
         endpoints: List of Endpoint objects
         base_sys_port: Starting port for DYN_SYSTEM_PORT assignment
         port_allocator: NodePortAllocator for HTTP/bootstrap ports (created if None)
+        engines_per_process: Engines launched per (endpoint, node). 1 is the usual
+            layout; vLLM shadow engine recovery asks for ``1 + shadows``, and every
+            engine of a node then gets its own Process (same GPUs and node_rank,
+            distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
 
     Returns:
         List of Process objects
     """
+    if engines_per_process < 1:
+        raise ValueError(f"engines_per_process must be at least 1, got {engines_per_process}")
     processes: list[Process] = []
     current_sys_port = base_sys_port
 
@@ -564,40 +631,44 @@ def endpoints_to_processes(
         port_allocator = NodePortAllocator()
 
     for endpoint in endpoints:
-        # Allocate bootstrap port once per prefill endpoint (shared by all processes)
+        # Allocate bootstrap ports once per prefill endpoint (shared by all of an
+        # engine's processes); each engine of a worker binds its own.
         leader_node = endpoint.nodes[0]
-        endpoint_bootstrap_port = (
+        endpoint_bootstrap_ports = [
             port_allocator.next_bootstrap_port(leader_node) if endpoint.mode == "prefill" else None
-        )
+            for _ in range(engines_per_process)
+        ]
 
         for node_rank, node in enumerate(endpoint.nodes):
             is_leader = node_rank == 0
 
-            # Only leaders need http_port (for router to connect to)
-            http_port = port_allocator.next_http_port(node) if is_leader else 0
+            for engine_id in range(engines_per_process):
+                # Only leaders need http_port (for router to connect to)
+                http_port = port_allocator.next_http_port(node) if is_leader else 0
 
-            # Allocate kv_events port for each node in the endpoint (globally unique)
-            # Each node publishes KV events independently
-            node_kv_events_port = port_allocator.next_kv_events_port()
+                # Allocate kv_events port for each node in the endpoint (globally unique)
+                # Each node publishes KV events independently
+                node_kv_events_port = port_allocator.next_kv_events_port()
 
-            # Allocate NIXL side channel port (globally unique, used by vLLM)
-            node_nixl_port = port_allocator.next_nixl_port()
+                # Allocate NIXL side channel port (globally unique, used by vLLM)
+                node_nixl_port = port_allocator.next_nixl_port()
 
-            processes.append(
-                Process(
-                    node=node,
-                    gpu_indices=endpoint.gpu_indices,
-                    sys_port=current_sys_port,
-                    http_port=http_port,
-                    endpoint_mode=endpoint.mode,
-                    endpoint_index=endpoint.index,
-                    node_rank=node_rank,
-                    bootstrap_port=endpoint_bootstrap_port,
-                    kv_events_port=node_kv_events_port,
-                    nixl_port=node_nixl_port,
-                    het_group=endpoint.het_group,
+                processes.append(
+                    Process(
+                        node=node,
+                        gpu_indices=endpoint.gpus_on_node(node_rank),
+                        sys_port=current_sys_port,
+                        http_port=http_port,
+                        endpoint_mode=endpoint.mode,
+                        endpoint_index=endpoint.index,
+                        node_rank=node_rank,
+                        bootstrap_port=endpoint_bootstrap_ports[engine_id],
+                        kv_events_port=node_kv_events_port,
+                        nixl_port=node_nixl_port,
+                        het_group=endpoint.het_group,
+                        engine_id=engine_id,
+                    )
                 )
-            )
-            current_sys_port += 1
+                current_sys_port += 1
 
     return processes

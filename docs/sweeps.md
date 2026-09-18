@@ -26,6 +26,7 @@ Parameter sweeps let you run multiple configurations with a single command. Swee
 
 ```yaml
 # configs/concurrency-sweep.yaml
+schema: 2
 name: "concurrency-sweep"
 
 model:
@@ -35,14 +36,22 @@ model:
 
 resources:
   gpu_type: "gb200"
-  prefill_nodes: 1
-  decode_nodes: 4
+  gpus_per_node: 4
+
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+  decode:
+    nodes: 4
+    workers: 1
 
 benchmark:
   type: "sa-bench"
   isl: 1024
   osl: 1024
-  concurrencies: [{ concurrency }] # <-- placeholder
+  concurrencies: "{concurrency}" # <-- placeholder
 
 sweep:
   concurrency: [128, 256, 512] # <-- sweep values
@@ -69,13 +78,13 @@ This submits 3 separate jobs, one for each concurrency value (128, 256, 512).
 Multiple parameters create a Cartesian product:
 
 ```yaml
-backend:
-  sglang_config:
-    decode:
-      mem-fraction-static: { mem }
+roles:
+  decode:
+    args:
+      mem-fraction-static: "{mem}"
 
 benchmark:
-  concurrencies: [{ conc }]
+  concurrencies: "{conc}"
 
 sweep:
   mem: [0.85, 0.90]
@@ -95,13 +104,17 @@ This generates 4 jobs (2 x 2):
 
 ## Where Placeholders Can Go
 
-Placeholders work anywhere in the YAML:
+Placeholders work anywhere in the YAML, quoted so YAML reads them as strings:
 
 ```yaml
 name: "sweep-{param}"
-mem-fraction-static: { mem }
-concurrencies: [{ conc }]
-dp-size: { dp }
+roles:
+  decode:
+    args:
+      mem-fraction-static: "{mem}"
+      dp-size: "{dp}"
+benchmark:
+  concurrencies: "{conc}"
 ```
 
 ## Auto-Detection

@@ -342,7 +342,7 @@ def _preflight_telemetry(
     return issues
 
 
-def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
+def validate_topology(resources: dict[str, Any] | None, *, service_nodes: int | None = None) -> list[PreflightIssue]:
     """Catch semantically wrong resources blocks that pass the marshmallow schema.
 
     The schema accepts any combination of prefill_*, decode_*, and agg_* fields,
@@ -350,6 +350,8 @@ def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
     but express "disaggregated with no prefill" — which is really aggregated and
     should use agg_nodes/agg_workers instead.
     """
+    if not resources and service_nodes is not None:
+        return []
     if not resources:
         return [
             PreflightIssue(
@@ -380,6 +382,11 @@ def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
 
     has_disagg = any(v is not None for v in disagg_fields.values())
     has_agg = any(v is not None for v in agg_fields.values())
+
+    # Services that own nodes (pools) add to the allocation next to the roles. A
+    # recipe with pools and no roles is a services-only job and needs no topology here.
+    if service_nodes is not None and not (has_disagg or has_agg):
+        return []
 
     if has_disagg and has_agg:
         set_disagg = sorted(k for k, v in disagg_fields.items() if v is not None)
@@ -478,6 +485,18 @@ def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
     ]
 
 
+def _declared_service_nodes(services: Any) -> int | None:
+    """Nodes the recipe's services own through ``services[].nodes``, summed; None when none do."""
+    if not isinstance(services, list):
+        return None
+    counts = [entry["nodes"] for entry in services if isinstance(entry, dict) and entry.get("nodes") is not None]
+    return sum(counts) if counts else None
+    for entry in services:
+        if isinstance(entry, dict) and entry.get("nodes") is not None:
+            return entry["nodes"]
+    return None
+
+
 def preflight_config_variants(
     raw_config: dict[str, Any],
     *,
@@ -493,7 +512,11 @@ def preflight_config_variants(
         resolved = resolve_config_with_defaults(variant, active_cluster_config)
         model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
         container, container_issues = _preflight_container(variant, resolved, active_cluster_config)
-        topology_issues = validate_topology(variant.get("resources"))
+        # Validate the resolved resources (post roles: expansion), not the raw
+        # variant: a roles: recipe has its topology under roles, not resources.
+        topology_issues = validate_topology(
+            resolved.get("resources"), service_nodes=_declared_service_nodes(resolved.get("services"))
+        )
         telemetry_issues = _preflight_telemetry(variant, resolved, active_cluster_config)
         issues = [*model_issues, *container_issues, *topology_issues, *telemetry_issues]
         results.append(

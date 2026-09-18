@@ -22,16 +22,23 @@ def _make_yaml() -> YAML:
     y = YAML()
     y.preserve_quotes = True
     y.width = 120
-    object.__setattr__(y, "best_sequence_indent", 2)
+    # Block sequences nested under a key render as `key:\n  - item` (the style the
+    # examples and downstream recipes use) instead of a dash at the key's column.
+    y.indent(mapping=2, sequence=4, offset=2)
     object.__setattr__(y, "best_map_flow_style", False)
     return y
 
 
 def load_yaml_with_comments(path: Path) -> CommentedMap:
     """Load a YAML file preserving comments and key insertion order."""
-    y = _make_yaml()
     with open(path) as f:
-        result = y.load(f)
+        return load_yaml_text_with_comments(f.read())
+
+
+def load_yaml_text_with_comments(text: str) -> CommentedMap:
+    """Load YAML text preserving comments and key insertion order."""
+    y = _make_yaml()
+    result = y.load(text)
     if not isinstance(result, CommentedMap):
         raise TypeError(f"Expected a YAML mapping at top level, got {type(result).__name__}")
     return result

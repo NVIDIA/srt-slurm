@@ -1,0 +1,102 @@
+# Miles RL post-training: GRPO on Qwen3-4B, launched from srt-slurm, fully instrumented.
+#
+# Miles (https://github.com/radixark/miles) pairs SGLang rollout engines with a Megatron
+# trainer under Ray and owns every GPU. srt-slurm owns everything around it: the
+# allocation, the container, Ray bring-up, the launcher step, logs, telemetry, teardown.
+#
+# What runs where:
+#   services[train]  the Ray cluster: head on node 0, workers on the rest, one raylet per node.
+#                    Its `metrics` block tells tachometer about two things Miles serves on the head:
+#                    its training collector (rewards, response lengths, step timers) and its router's
+#                    engine aggregate (KV usage, running requests, throughput of every SGLang engine)
+#   benchmark        /benchmarks/rl/miles/launch.sh on node 0: hands the cluster to Miles's own
+#                    launch script, which submits train.py as a Ray job
+#   tachometer       scrapes every service that declares `metrics`, plus DCGM, node and process
+#                    exporters on every node, into one parquet: GPU power and memory, per-engine KV
+#                    pressure, and Miles's own rewards and timers, on one timeline
+#
+# Everything RL (engines, router, rollout executor, reward, trainer ranks) runs inside the
+# Ray job, on the raylets this recipe started. srt-slurm's core knows nothing about Miles.
+# See docs/miles.md.
+#
+# Prerequisites on the shared filesystem:
+#   <model_dir>/Qwen3-4B/             HF weights (the rollout engines read these)
+#   <model_dir>/Qwen3-4B_torch_dist/  Megatron checkpoint from tools/convert_hf_to_torch_dist.py
+#   <data_dir>/dapo-math-17k/, <data_dir>/aime-2024/   the recipe's prompt and eval datasets
+#
+# Aliases (`qwen3-4b`, `miles`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-4b-grpo"
+
+slurm:
+  time_limit: "04:00:00"
+
+model:
+  path: "qwen3-4b"                # the HF weights; Miles reads them from MILES_SCRIPT_MODEL_DIR below
+  container: "miles"              # radixark/miles image: patched SGLang, Megatron-LM, Ray, Miles at /root/miles
+  precision: "bf16"
+
+resources:
+  gpu_type: "b200"
+  gpus_per_node: 8
+
+frontend:
+  type: none                      # no router of ours, no OpenAI endpoint, no worker-count health gate
+
+services:
+  # The Ray cluster. It owns the job's two nodes, so it also sets the allocation size.
+  - name: train
+    type: ray
+    nodes: 2
+    preamble: "cd /root/miles"    # the raylet's cwd is what every Ray-spawned process inherits
+    # Both endpoints live on the Ray head, hence `nodes: first`. Miles picks its engines' ports at
+    # runtime, so the engines are reached through the router's aggregate, which is on a fixed port
+    # (--sglang-router-port below) and labels every sample with the engine's worker_addr.
+    metrics:
+      - name: miles                    # miles_metric_*: needs --use-prometheus in the launcher args
+        port: 9090
+        nodes: first
+      - name: engines                  # sglang_* for every engine, via the sgl-model-gateway router
+        port: 31000
+        path: /engine_metrics
+        nodes: first
+
+benchmark:
+  type: custom
+  command: /benchmarks/rl/miles/launch.sh
+  env:
+    MILES_RECIPE: scripts/run_qwen3_dense.py           # Miles's own recipe, relative to /root/miles
+    MILES_SCRIPT_MODEL_NAME: Qwen3-4B
+    MILES_SCRIPT_MODEL_DIR: /data/home/idhanani/models
+    MILES_SCRIPT_DATA_DIR: /data/home/idhanani/datasets
+    MILES_SCRIPT_OUTPUT_DIR: /data/home/idhanani/miles-runs/qwen3-4b-grpo   # keep stable: a resubmit resumes here
+    MILES_SCRIPT_ENABLE_EVAL: "true"
+    # Layout: the recipe hardcodes --colocate, so actor nodes equal the ray service's nodes.
+    # --sglang-router-port pins the router the `engines` endpoint above scrapes;
+    # --use-prometheus turns on the collector the `miles` endpoint scrapes.
+    MILES_SCRIPT_EXTRA_ARGS: >-
+      --num-rollout 20 --colocate --actor-num-nodes 2 --actor-num-gpus-per-node 8
+      --rollout-num-gpus-per-engine 2
+      --sglang-router-port 31000
+      --use-prometheus --prometheus-port 9090 --prometheus-run-name qwen3-4b-grpo
+    MILES_SCRIPT_EXTRA_ENV_VARS: '{"PYTHONNOUSERSITE": "1"}'
+
+# Miles reads and writes these on the host filesystem, from the trainer and engines
+# inside the ray service's containers, so mount them at the same path everywhere.
+extra_mount:
+  - "/data/home/idhanani/models:/data/home/idhanani/models"
+  - "/data/home/idhanani/datasets:/data/home/idhanani/datasets"
+  - "/data/home/idhanani/miles-runs:/data/home/idhanani/miles-runs"
+
+# Reaches the launcher step; Miles copies the NCCL and GLOO settings into its Ray job.
+# Services do not inherit this block; a service that needs fabric settings has its own env.
+environment:
+  NCCL_SOCKET_IFNAME: bond0
+  GLOO_SOCKET_IFNAME: bond0
+
+# Tachometer scrapes the DCGM, node and process exporters on every node plus every endpoint
+# declared under `metrics` above. Output: outputs/<job>/logs/tachometer/local/final.parquet.
+observability:
+  tachometer:
+    enabled: true

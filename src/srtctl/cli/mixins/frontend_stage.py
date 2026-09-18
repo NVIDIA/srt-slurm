@@ -167,6 +167,7 @@ class FrontendStageMixin:
                 "container-remap-root": "",
             },
             het_group=self.runtime.nodes.het_group_for(topology.nginx_node),
+            step_name="nginx",
         )
 
         return ManagedProcess(
@@ -175,6 +176,7 @@ class FrontendStageMixin:
             log_file=nginx_log,
             node=topology.nginx_node,
             critical=True,
+            step_name="nginx",
         )
 
     def _generate_nginx_config(self, topology: FrontendTopology) -> str:
@@ -211,6 +213,9 @@ class FrontendStageMixin:
         Returns:
             List of ManagedProcess instances for all frontend processes.
         """
+        if self.config.frontend.type == "none":
+            logger.info("frontend.type none: no frontend layer (services-only job)")
+            return []
         logger.info("Starting frontend layer")
         if self.config.frontend.type == "dynamo" and self.config.observability.enabled:
             trace_path = (self.config.frontend.env or {}).get("DYN_REQUEST_TRACE_FILE_PATH")

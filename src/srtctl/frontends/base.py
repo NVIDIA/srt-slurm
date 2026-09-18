@@ -19,8 +19,11 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
 
-# Supported frontend types - extensible by adding new literals
-FrontendType = Literal["dynamo", "sglang", "trtllm_serve", "vllm", "vllm-router"]
+# Supported frontend types - extensible by adding new literals. ``none`` is a
+# services-only job: no router process, no OpenAI endpoint, no worker-count
+# health gate (see SrtConfig._validate_services_only); it has no implementation
+# and every stage short-circuits on it before calling get_frontend().
+FrontendType = Literal["dynamo", "sglang", "sglang-router", "trtllm_serve", "vllm", "vllm-router", "none"]
 
 
 class FrontendProtocol(Protocol):
@@ -104,7 +107,8 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
     """
     # Import here to avoid circular imports
     from srtctl.frontends.dynamo import DynamoFrontend
-    from srtctl.frontends.sglang import SGLangFrontend
+    from srtctl.frontends.sglang import SGLangRouterFrontend
+    from srtctl.frontends.sglang_direct import SGLangFrontend
     from srtctl.frontends.trtllm_serve import TRTLLMServeFrontend
     from srtctl.frontends.vllm import VLLMFrontend
     from srtctl.frontends.vllm_router import VLLMRouterFrontend
@@ -113,13 +117,21 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
         return DynamoFrontend()
     elif frontend_type == "sglang":
         return SGLangFrontend()
+    elif frontend_type == "sglang-router":
+        return SGLangRouterFrontend()
     elif frontend_type == "trtllm_serve":
         return TRTLLMServeFrontend()
     elif frontend_type == "vllm":
         return VLLMFrontend()
     elif frontend_type == "vllm-router":
         return VLLMRouterFrontend()
+    elif frontend_type == "none":
+        raise ValueError(
+            "frontend.type 'none' has no frontend implementation: services-only jobs skip the frontend layer "
+            "and the health gate, so nothing should ask for one"
+        )
     else:
         raise ValueError(
-            f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, trtllm_serve, vllm, vllm-router"
+            f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, sglang-router, trtllm_serve, "
+            "vllm, vllm-router, none"
         )

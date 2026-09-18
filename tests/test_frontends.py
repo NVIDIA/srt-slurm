@@ -9,9 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from srtctl.core.schema import ObservabilityConfig
-from srtctl.frontends import DynamoFrontend, SGLangFrontend, VLLMFrontend, get_frontend
+from srtctl.frontends import DynamoFrontend, SGLangFrontend, SGLangRouterFrontend, VLLMFrontend, get_frontend
 
 # ============================================================================
 # get_frontend() Tests
@@ -28,9 +29,13 @@ class TestGetFrontend:
         assert frontend.type == "dynamo"
 
     def test_get_sglang_frontend(self):
-        """get_frontend('sglang') returns SGLangFrontend."""
+        """get_frontend('sglang') is the direct frontend; 'sglang-router' is the Model Gateway."""
         frontend = get_frontend("sglang")
         assert isinstance(frontend, SGLangFrontend)
+        assert frontend.type == "sglang"
+        router = get_frontend("sglang-router")
+        assert isinstance(router, SGLangRouterFrontend)
+        assert router.type == "sglang-router"
         assert frontend.type == "sglang"
 
     def test_get_vllm_frontend(self):
@@ -62,9 +67,9 @@ class TestFrontendProperties:
         assert frontend.type == "dynamo"
 
     def test_sglang_type(self):
-        """SGLangFrontend.type is 'sglang'."""
-        frontend = SGLangFrontend()
-        assert frontend.type == "sglang"
+        """SGLangRouterFrontend.type is 'sglang-router'."""
+        frontend = SGLangRouterFrontend()
+        assert frontend.type == "sglang-router"
 
     def test_vllm_type(self):
         """VLLMFrontend.type is 'vllm'."""
@@ -78,7 +83,7 @@ class TestFrontendProperties:
 
     def test_sglang_health_endpoint(self):
         """SGLangFrontend uses /workers endpoint."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         assert frontend.health_endpoint == "/workers"
 
     def test_vllm_health_endpoint(self):
@@ -97,56 +102,56 @@ class TestGetFrontendArgsList:
 
     def test_empty_args_returns_empty_list(self):
         """None or empty args returns empty list."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         assert frontend.get_frontend_args_list(None) == []
         assert frontend.get_frontend_args_list({}) == []
 
     def test_boolean_true_flag(self):
         """Boolean True generates flag without value."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"verbose": True})
         assert result == ["--verbose"]
 
     def test_boolean_false_flag_skipped(self):
         """Boolean False is skipped."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"verbose": False})
         assert result == []
 
     def test_none_value_skipped(self):
         """None values are skipped."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"some-arg": None})
         assert result == []
 
     def test_string_value(self):
         """String values become --key value pairs."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"policy": "cache_aware"})
         assert result == ["--policy", "cache_aware"]
 
     def test_numeric_value(self):
         """Numeric values are converted to strings."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"timeout": 120})
         assert result == ["--timeout", "120"]
 
     def test_float_value(self):
         """Float values are converted to strings."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list({"temperature": 0.5})
         assert result == ["--temperature", "0.5"]
 
     def test_mixed_args(self):
         """Mixed arg types are handled correctly."""
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
 
         result = frontend.get_frontend_args_list(
             {
@@ -253,7 +258,7 @@ class TestSGLangGrpcScheme:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
@@ -294,7 +299,7 @@ class TestSGLangGrpcScheme:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
@@ -333,7 +338,7 @@ class TestSGLangGrpcScheme:
         mock_get_ip.side_effect = lambda node: f"10.0.0.{node[-1]}"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
@@ -374,7 +379,7 @@ class TestSGLangGrpcScheme:
         mock_get_ip.side_effect = lambda node: f"10.0.0.{node[-1]}"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
@@ -420,7 +425,7 @@ class TestFrontendEnvHandling:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(env={"MY_VAR": "my_value", "ANOTHER": "123"}),
@@ -456,7 +461,7 @@ class TestFrontendEnvHandling:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(env=None),
@@ -491,7 +496,7 @@ class TestFrontendEnvHandling:
         mock_get_ip.return_value = "10.0.0.1"
         mock_srun.return_value = MagicMock()
 
-        frontend = SGLangFrontend()
+        frontend = SGLangRouterFrontend()
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(args={"policy": "cache_aware", "verbose": True}),
@@ -526,6 +531,32 @@ class TestFrontendEnvHandling:
 # ============================================================================
 
 
+def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
+    from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS
+
+    frontend = DynamoFrontend()
+    topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+    runtime = SimpleNamespace(
+        log_dir=Path("/logs"),
+        nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
+        container_image=Path("/container.sqsh"),
+        container_mounts={},
+        environment={},
+    )
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args=None, env=None),
+        observability=ObservabilityConfig(),
+        dynamo=SimpleNamespace(install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None),
+        setup_script=None,
+    )
+    with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
+        mock_srun.return_value = MagicMock()
+        (proc,) = frontend.start_frontends(topology, runtime, config, MagicMock(), [])
+    assert mock_srun.call_args.kwargs["step_name"] == "frontend_0"
+    assert proc.step_name == "frontend_0"
+    assert proc.terminate_timeout == FRONTEND_TERMINATE_TIMEOUT_SECONDS
+
+
 def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zmq"):
     """Invoke DynamoFrontend.start_frontends with a minimal config; return the mock srun call."""
     frontend = DynamoFrontend()
@@ -538,7 +569,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         environment={},
     )
     config = SimpleNamespace(
-        frontend=SimpleNamespace(args=None, env=None),
+        frontend=SimpleNamespace(args=None, env=None, worker_selection=None),
         observability=ObservabilityConfig(),
         dynamo=SimpleNamespace(
             install=dynamo_install,
@@ -577,3 +608,53 @@ class TestDynamoFrontendEventPlane:
     def test_explicit_injected(self, event_plane):
         mock_srun = _dynamo_frontend_call(dynamo_install=False, event_plane=event_plane)
         assert mock_srun.call_args.kwargs["env_to_set"]["DYN_EVENT_PLANE"] == event_plane
+
+
+def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
+    """Inline policy config becomes a mounted YAML file and frontend CLI argument."""
+    frontend = DynamoFrontend()
+    topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+    runtime = SimpleNamespace(
+        log_dir=tmp_path,
+        nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
+        container_image=Path("/container.sqsh"),
+        container_mounts={tmp_path: Path("/logs")},
+        environment={},
+    )
+    worker_selection = {
+        "prefill": "max-kv-overlap",
+        "decode": "default",
+        "instances": [
+            {
+                "name": "max-kv-overlap",
+                "type": "dynamo-two-tier-cost-fn",
+                "parameters": {
+                    "cache_threshold": 0.0,
+                    "balance_abs_threshold": 1_000_000_000,
+                    "balance_rel_threshold": 1_000_000_000.0,
+                },
+            }
+        ],
+    }
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args={"router-mode": "kv"}, env=None, worker_selection=worker_selection),
+        observability=ObservabilityConfig(),
+        dynamo=SimpleNamespace(
+            install=False,
+            get_install_commands=lambda: "",
+            request_plane="nats",
+            event_plane=None,
+        ),
+        setup_script=None,
+    )
+
+    with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
+        mock_srun.return_value = MagicMock()
+        frontend.start_frontends(topology, runtime, config, MagicMock(), [])
+
+    policy_path = tmp_path / "router_policy_config.yaml"
+    assert yaml.safe_load(policy_path.read_text()) == {"worker_selection": worker_selection}
+    cmd = mock_srun.call_args.kwargs["command"]
+    policy_arg = cmd.index("--router-policy-config")
+    assert cmd[policy_arg + 1] == "/logs/router_policy_config.yaml"
+    assert cmd[cmd.index("--router-mode") + 1] == "kv"

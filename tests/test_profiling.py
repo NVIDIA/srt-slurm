@@ -3,10 +3,42 @@
 
 """Tests for profiling configuration, validation, and benchmark runner."""
 
+import subprocess
+
 import pytest
 
 from srtctl.benchmarks import get_runner
 from srtctl.benchmarks.base import SCRIPTS_DIR
+
+
+@pytest.mark.parametrize(
+    ("frontend_type", "start_path", "stop_path"),
+    [
+        ("dynamo", "/engine/control/start_profile", "/engine/control/stop_profile"),
+        ("sglang", "/start_profile", "/stop_profile"),
+    ],
+)
+def test_profiling_shell_uses_frontend_control_routes(frontend_type, start_path, stop_path):
+    """The shared shell helper must use each frontend's actual control API."""
+    helper = SCRIPTS_DIR / "lib" / "profiling.sh"
+    shell = r"""
+source "$1"
+SRTCTL_FRONTEND_TYPE="$2"
+curl() {
+    printf 'CURL %s\n' "$*" >&2
+}
+profiling__start_profile_on_worker "worker.example:7500" 1 3 "/profiles" "nsys" 9090
+profiling__stop_profile_on_worker "worker.example:7500" 9090
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell, "bash", str(helper), frontend_type],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert f"http://worker.example:7500{start_path}" in result.stderr
+    assert f"http://worker.example:7500{stop_path}" in result.stderr
 
 
 class TestProfilingConfig:
@@ -22,6 +54,10 @@ class TestProfilingConfig:
         assert profiling.is_nsys is False
         assert profiling.is_torch is False
         assert profiling.type == "none"
+        assert profiling.nsys_trace == "cuda,nvtx"
+        assert profiling.trace_fork_before_exec is None
+        assert profiling.capture_range_end == "stop"
+        assert profiling.nsys_library_paths is None
 
     def test_nsys_profiling(self):
         """Test nsys profiling configuration."""
@@ -66,6 +102,63 @@ class TestProfilingConfig:
         o_idx = prefix.index("-o")
         stats_idx = prefix.index("--stats=true")
         assert stats_idx < o_idx
+
+    def test_nsys_profiling_options(self):
+        """Trace, fork, range-end, and library lookup settings are configurable."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig(
+            type="nsys",
+            nsys_trace="cuda-sw,nvtx,osrt",
+            trace_fork_before_exec=False,
+            capture_range_end="repeat:1:async",
+            nsys_library_paths=["/host/lib64", "/host/lib"],
+        )
+
+        prefix = profiling.get_nsys_prefix("/output/test", frontend_type="dynamo")
+        assert prefix[prefix.index("-t") + 1] == "cuda-sw,nvtx,osrt"
+        assert "--trace-fork-before-exec=true" not in prefix
+        assert prefix[prefix.index("--capture-range-end") + 1] == "repeat:1:async"
+
+        env = profiling.get_env_vars("agg", "/logs/profiles")
+        assert "LD_LIBRARY_PATH" not in env
+
+    def test_nsys_library_paths_preserve_container_environment(self):
+        """Nsight paths are prepended without replacing image-provided paths."""
+        from srtctl.cli.mixins.worker_stage import _nsys_library_path_preamble
+
+        preamble = _nsys_library_path_preamble(["/host/lib64", "/host/lib", "/host/lib64"])
+        assert preamble is not None
+        result = subprocess.run(
+            ["bash", "-c", f'export LD_LIBRARY_PATH=/image/lib && {preamble} && printf %s "$LD_LIBRARY_PATH"'],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert result.stdout == "/host/lib64:/host/lib:/image/lib"
+
+    def test_nsys_process_selector(self):
+        """Each phase selects one logical worker and physical process rank."""
+        from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
+
+        profiling = ProfilingConfig(
+            type="nsys",
+            decode=ProfilingPhaseConfig(capture_scope="selected", worker_index=2, worker_rank=3),
+        )
+
+        assert profiling.selects_process("decode", 2, 3)
+        assert not profiling.selects_process("decode", 2, 0)
+        assert not profiling.selects_process("decode", 1, 3)
+        assert not profiling.selects_process("prefill", 2, 3)
+
+        all_processes = ProfilingConfig(
+            type="nsys",
+            decode=ProfilingPhaseConfig(capture_scope="all"),
+        )
+        assert all_processes.captures_all_processes("decode")
+        assert all_processes.selects_process("decode", 0, 0)
+        assert all_processes.selects_process("decode", 4, 7)
+        assert not all_processes.selects_process("prefill", 0, 0)
 
     def test_nsys_trtllm_prefix_includes_extra_args(self):
         """TRTLLM nsys wrap should honor extra_nsys_args (same ordering as default path: before -o)."""
@@ -301,6 +394,180 @@ class TestProfilingValidation:
         )
         assert config.profiling.enabled
 
+    @pytest.mark.parametrize(
+        ("phase", "error"),
+        [
+            ({"worker_index": -1}, "worker_index must be non-negative"),
+            ({"worker_index": 1}, "worker_index=1 is out of range"),
+            ({"worker_rank": -1}, "worker_rank must be non-negative"),
+            ({"worker_rank": 1}, "worker_rank=1 is not a physical process rank"),
+        ],
+    )
+    def test_nsys_worker_selector_validation(self, phase, error):
+        """Invalid physical process selectors fail during recipe validation."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ProfilingPhaseConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        with pytest.raises(ValidationError, match=error):
+            SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1),
+                profiling=ProfilingConfig(
+                    type="nsys",
+                    aggregated=ProfilingPhaseConfig(capture_scope="selected", start_step=0, stop_step=10, **phase),
+                ),
+            )
+
+    @pytest.mark.parametrize("backend_type", ["sglang", "vllm"])
+    @pytest.mark.parametrize("phase_name", ["prefill", "decode", "aggregated"])
+    @pytest.mark.parametrize("explicit_all", [False, True])
+    @pytest.mark.parametrize("selector", [{}, {"worker_index": 1}, {"worker_rank": 1}])
+    def test_nsys_all_scope_warns_on_ignored_selectors(self, caplog, backend_type, phase_name, explicit_all, selector):
+        """Implicit and explicit all scope warn on ignored selectors without narrowing capture."""
+        from srtctl.backends.sglang import SGLangProtocol
+        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.core.schema import ModelConfig, ProfilingConfig, ProfilingPhaseConfig, ResourceConfig, SrtConfig
+
+        phase = ProfilingPhaseConfig(
+            start_step=0,
+            stop_step=10,
+            **({"capture_scope": "all"} if explicit_all else {}),
+            **selector,
+        )
+        if phase_name == "aggregated":
+            resources = ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1)
+            phases = {phase_name: phase}
+        else:
+            resources = ResourceConfig(
+                gpu_type="h100", prefill_nodes=1, decode_nodes=1, prefill_workers=1, decode_workers=1
+            )
+            phases = {"prefill": ProfilingPhaseConfig(), "decode": ProfilingPhaseConfig(), phase_name: phase}
+        with caplog.at_level("WARNING", logger="srtctl.core.schema"):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=resources,
+                backend=VLLMProtocol() if backend_type == "vllm" else SGLangProtocol(),
+                profiling=ProfilingConfig(type="nsys", **phases),
+            )
+
+        messages = [record.message for record in caplog.records if "ignores worker_index=" in record.message]
+        if selector:
+            assert len(messages) == 1
+            assert f"profiling.{phase_name}.capture_scope='all'" in messages[0]
+            assert f"worker_index={phase.worker_index} and worker_rank={phase.worker_rank}" in messages[0]
+            assert "Set capture_scope='selected'" in messages[0]
+        else:
+            assert messages == []
+        assert phase.capture_scope == "all"
+        mode = "agg" if phase_name == "aggregated" else phase_name
+        assert config.profiling.selects_process(mode, worker_index=0, worker_rank=0)
+
+    def test_nsys_capture_scope_validation(self):
+        """Only the documented selected/all capture scopes are accepted."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ProfilingPhaseConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        with pytest.raises(ValidationError, match="capture_scope"):
+            SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1),
+                profiling=ProfilingConfig(
+                    type="nsys",
+                    aggregated=ProfilingPhaseConfig(
+                        start_step=0,
+                        stop_step=10,
+                        capture_scope="invalid",
+                    ),
+                ),
+            )
+
+    def test_nsys_worker_rank_uses_configured_physical_topology(self, caplog):
+        """A multi-node worker accepts only ranks that its layout creates."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ProfilingPhaseConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        def make_config(worker_rank):
+            return SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=4,
+                    agg_nodes=2,
+                    agg_workers=1,
+                ),
+                profiling=ProfilingConfig(
+                    type="nsys",
+                    aggregated=ProfilingPhaseConfig(
+                        start_step=0,
+                        stop_step=10,
+                        worker_rank=worker_rank,
+                        capture_scope="selected",
+                    ),
+                ),
+            )
+
+        assert make_config(1).profiling.aggregated.worker_rank == 1
+        with pytest.raises(ValidationError, match="worker_rank=2 is not a physical process rank"):
+            make_config(2)
+        assert "ignores worker_index=" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("profiling_kwargs", "error"),
+        [
+            ({"nsys_trace": ""}, "nsys_trace must not be empty"),
+            ({"capture_range_end": ""}, "capture_range_end must not be empty"),
+            ({"nsys_library_paths": [""]}, "nsys_library_paths must not contain empty paths"),
+        ],
+    )
+    def test_nsys_option_validation(self, profiling_kwargs, error):
+        """Invalid Nsight command settings fail during recipe validation."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ProfilingPhaseConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        with pytest.raises(ValidationError, match=error):
+            SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1),
+                profiling=ProfilingConfig(
+                    type="nsys",
+                    aggregated=ProfilingPhaseConfig(start_step=0, stop_step=10),
+                    **profiling_kwargs,
+                ),
+            )
+
     def test_nsys_time_allowed_for_non_trtllm_backend(self):
         """nsys-time is no longer TRTLLM-only — it must validate for the default
         (non-TRTLLM) backend so vllm+dynamo can use time-based capture."""
@@ -484,6 +751,311 @@ class TestVllmNsysProfilerConfig:
         profiling = ProfilingConfig(type="nsys")  # no decode phase
         cmd = self._build_decode_cmd(profiling, monkeypatch)
         assert self._profiler_config(cmd) is None
+
+
+class TestProfilingTargetSelection:
+    """Tests for selecting the one physical process controlled by a capture."""
+
+    @pytest.mark.parametrize(
+        ("launch_mode", "expected_ranks"),
+        [("per_gpu", set(range(8))), ("per_node", {0, 4})],
+    )
+    def test_default_scope_captures_allocated_workers_and_ranks(self, monkeypatch, launch_mode, expected_ranks):
+        """Legacy phase configs wrap every process and use every allocated system port."""
+        from types import SimpleNamespace
+
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.cli.mixins import benchmark_stage
+        from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.schema import ModelConfig, ProfilingConfig, ProfilingPhaseConfig, ResourceConfig, SrtConfig
+        from srtctl.core.topology import allocate_endpoints
+
+        class Stage(BenchmarkStageMixin, WorkerStageMixin):
+            @property
+            def backend_processes(self):
+                return self._processes
+
+        backend = VLLMProtocol(
+            dp_launch_mode=launch_mode,
+            vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 8, "tensor-parallel-size": 1}),
+        )
+        phase = ProfilingPhaseConfig(start_step=10, stop_step=30)
+        config = SrtConfig(
+            name="profiling-default",
+            model=ModelConfig(path="/model", container="/container", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=4, agg_nodes=4, agg_workers=2),
+            backend=backend,
+            profiling=ProfilingConfig(type="nsys", aggregated=phase),
+        )
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=0,
+            num_agg=2,
+            gpus_per_prefill=4,
+            gpus_per_decode=4,
+            gpus_per_agg=8,
+            gpus_per_node=4,
+            available_nodes=["node-a", "node-b", "node-c", "node-d"],
+        )
+        stage = Stage()
+        stage.config = config
+        stage._processes = backend.endpoints_to_processes(endpoints, base_sys_port=7500)
+        stage.runtime = SimpleNamespace(
+            frontend_port=8000, network_interface="eth0", nodes=SimpleNamespace(head="head")
+        )
+        monkeypatch.setattr(benchmark_stage, "get_hostname_ip", lambda node, _interface: f"{node}.test")
+
+        assert phase.capture_scope == "all"
+        assert {p.endpoint_index for p in stage.backend_processes} == {0, 1}
+        assert config._profiling_worker_ranks("agg") == expected_ranks
+        for worker_index in (0, 1):
+            assert {p.node_rank for p in stage.backend_processes if p.endpoint_index == worker_index} == expected_ranks
+        assert all(stage._profiling_selects_process(p) for p in stage.backend_processes)
+        controls = stage._profiling_worker_endpoints()
+        assert controls == [("agg", f"{p.node}.test", p.sys_port) for p in stage.backend_processes]
+        assert [port for _, _, port in controls] == list(range(7500, 7500 + 2 * len(expected_ranks)))
+        env = stage._get_benchmark_profiling_env(get_runner("sa-bench"), controls)
+        assert env["PROFILE_AGG_ENDPOINTS"] == ",".join(f"{host}:{port}" for _, host, port in controls)
+
+    def test_worker_wrapper_targets_only_selected_process(self):
+        from types import SimpleNamespace
+
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
+        from srtctl.core.topology import Process
+
+        stage = WorkerStageMixin()
+        stage.config = SimpleNamespace(
+            backend=SimpleNamespace(type="vllm"),
+            profiling=ProfilingConfig(
+                type="nsys",
+                aggregated=ProfilingPhaseConfig(capture_scope="selected", worker_index=1, worker_rank=2),
+            ),
+        )
+        selected = Process(
+            node="worker-b",
+            gpu_indices=frozenset({2}),
+            sys_port=7002,
+            http_port=8002,
+            endpoint_mode="agg",
+            endpoint_index=1,
+            node_rank=2,
+        )
+        other = Process(
+            node="worker-a",
+            gpu_indices=frozenset({0}),
+            sys_port=7000,
+            http_port=8000,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+
+        assert stage._profiling_selects_process(selected)
+        assert not stage._profiling_selects_process(other)
+
+        stage.config.profiling = ProfilingConfig(
+            type="nsys",
+            aggregated=ProfilingPhaseConfig(capture_scope="all"),
+        )
+        assert stage._profiling_selects_process(selected)
+        assert stage._profiling_selects_process(other)
+
+        stage.config.profiling = ProfilingConfig(type="nsys-time", delay_secs=1, duration_secs=1)
+        assert stage._profiling_selects_process(selected)
+        assert stage._profiling_selects_process(other)
+
+        stage.config.backend.type = "trtllm"
+        stage.config.profiling = ProfilingConfig(
+            type="nsys",
+            aggregated=ProfilingPhaseConfig(capture_scope="selected", worker_index=1, worker_rank=2),
+        )
+        assert stage._profiling_selects_process(selected)
+        assert stage._profiling_selects_process(other)
+
+    def test_dynamo_control_uses_selected_system_port(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from srtctl.cli.mixins import benchmark_stage
+        from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
+        from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
+        from srtctl.core.topology import Process
+
+        class Stage(BenchmarkStageMixin):
+            @property
+            def backend_processes(self):
+                return self._processes
+
+        stage = Stage()
+        stage._processes = [
+            Process(
+                node="worker-a",
+                gpu_indices=frozenset({0}),
+                sys_port=7000,
+                http_port=8000,
+                endpoint_mode="agg",
+                endpoint_index=0,
+            ),
+            Process(
+                node="worker-b",
+                gpu_indices=frozenset({1}),
+                sys_port=7001,
+                http_port=8001,
+                endpoint_mode="agg",
+                endpoint_index=1,
+            ),
+        ]
+        stage.config = SimpleNamespace(
+            backend_type="vllm",
+            frontend=SimpleNamespace(type="dynamo"),
+            dynamo=SimpleNamespace(sidecar=False),
+            profiling=ProfilingConfig(
+                type="nsys",
+                aggregated=ProfilingPhaseConfig(
+                    start_step=4,
+                    stop_step=12,
+                    worker_index=1,
+                    capture_scope="selected",
+                ),
+            ),
+            served_model_name="model",
+        )
+        stage.runtime = SimpleNamespace(
+            frontend_port=9000,
+            network_interface="eth0",
+            nodes=SimpleNamespace(head="head"),
+        )
+        monkeypatch.setattr(benchmark_stage, "get_hostname_ip", lambda node, _interface: f"{node}.test")
+
+        endpoints = stage._profiling_worker_endpoints()
+        assert endpoints == [("agg", "worker-b.test", 7001)]
+
+        env = stage._get_benchmark_profiling_env(get_runner("sa-bench"), endpoints)
+        assert env["PROFILE_AGG_ENDPOINTS"] == "worker-b.test:7001"
+        assert env["PROFILE_OUTPUT_DIR"] == "/logs/profiles"
+
+        stage.config.profiling = ProfilingConfig(
+            type="nsys",
+            aggregated=ProfilingPhaseConfig(
+                start_step=4,
+                stop_step=12,
+                capture_scope="all",
+            ),
+        )
+        all_endpoints = stage._profiling_worker_endpoints()
+        assert all_endpoints == [
+            ("agg", "worker-a.test", 7000),
+            ("agg", "worker-b.test", 7001),
+        ]
+        all_env = stage._get_benchmark_profiling_env(get_runner("sa-bench"), all_endpoints)
+        assert all_env["PROFILE_AGG_ENDPOINTS"] == "worker-a.test:7000,worker-b.test:7001"
+
+        stage.config.dynamo.sidecar = True
+        assert stage._profiling_worker_endpoints() == all_endpoints
+
+    @pytest.mark.parametrize(
+        ("frontend_type", "sidecar", "expected_port"),
+        [("dynamo", True, 7000), ("vllm", False, 9000)],
+    )
+    def test_leader_only_control_endpoint_skips_followers(
+        self,
+        monkeypatch,
+        frontend_type,
+        sidecar,
+        expected_port,
+    ):
+        """All-process capture controls leader-only servers exactly once."""
+        from types import SimpleNamespace
+
+        from srtctl.cli.mixins import benchmark_stage
+        from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
+        from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
+        from srtctl.core.topology import Process
+
+        class Stage(BenchmarkStageMixin):
+            @property
+            def backend_processes(self):
+                return self._processes
+
+        stage = Stage()
+        stage._processes = [
+            Process(
+                node="worker-a",
+                gpu_indices=frozenset({0}),
+                sys_port=7000,
+                http_port=8000,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=0,
+            ),
+            Process(
+                node="worker-b",
+                gpu_indices=frozenset({1}),
+                sys_port=7001,
+                http_port=0,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=1,
+            ),
+        ]
+        stage.config = SimpleNamespace(
+            backend_type="vllm",
+            frontend=SimpleNamespace(type=frontend_type),
+            dynamo=SimpleNamespace(sidecar=sidecar),
+            profiling=ProfilingConfig(
+                type="nsys",
+                aggregated=ProfilingPhaseConfig(capture_scope="all"),
+            ),
+        )
+        stage.runtime = SimpleNamespace(frontend_port=9000, network_interface="eth0")
+        monkeypatch.setattr(benchmark_stage, "get_hostname_ip", lambda node, _interface: f"{node}.test")
+
+        assert stage._profiling_worker_endpoints() == [("agg", "worker-a.test", expected_port)]
+
+        stage.config.profiling = ProfilingConfig(
+            type="nsys",
+            aggregated=ProfilingPhaseConfig(capture_scope="selected", worker_rank=1),
+        )
+        with pytest.raises(ValueError, match="does not expose its own control endpoint"):
+            stage._profiling_worker_endpoints()
+
+    def test_missing_physical_rank_is_rejected(self):
+        from types import SimpleNamespace
+
+        from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
+        from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
+        from srtctl.core.topology import Process
+
+        class Stage(BenchmarkStageMixin):
+            @property
+            def backend_processes(self):
+                return self._processes
+
+        stage = Stage()
+        stage._processes = [
+            Process(
+                node="worker-a",
+                gpu_indices=frozenset({0}),
+                sys_port=7000,
+                http_port=8000,
+                endpoint_mode="agg",
+                endpoint_index=0,
+            )
+        ]
+        stage.config = SimpleNamespace(
+            backend_type="vllm",
+            frontend=SimpleNamespace(type="dynamo"),
+            dynamo=SimpleNamespace(sidecar=False),
+            profiling=ProfilingConfig(
+                type="nsys",
+                aggregated=ProfilingPhaseConfig(capture_scope="selected", worker_rank=1),
+            ),
+        )
+        stage.runtime = SimpleNamespace(frontend_port=9000, network_interface="eth0")
+
+        with pytest.raises(ValueError, match="No physical process matches"):
+            stage._profiling_worker_endpoints()
 
 
 class TestProfilingIntegration:

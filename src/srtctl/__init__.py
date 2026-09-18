@@ -28,7 +28,9 @@ Usage:
     srtctl apply -f config.yaml
 """
 
-__version__ = "0.3.0"
+from srtctl.version import package_version as _package_version
+
+__version__ = _package_version()
 
 # Logging utilities (should be first)
 # Backend configs

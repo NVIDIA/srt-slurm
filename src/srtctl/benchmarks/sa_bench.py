@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchmark
 
@@ -34,6 +34,26 @@ class SABenchRunner(BenchmarkRunner):
           frontend is sglang, SA-Bench POSTs /slow_down on each decode worker leader (framework-derived
           URLs). Omit either field to disable slow_down.
     """
+
+    # BenchmarkConfig fields this runner reads (beyond the shared ones); see benchmark_config_fields().
+    config_fields: ClassVar[frozenset[str]] = frozenset(
+        {
+            "isl",
+            "osl",
+            "concurrencies",
+            "req_rate",
+            "random_range_ratio",
+            "num_prompts_mult",
+            "num_warmup_mult",
+            "dataset_name",
+            "dataset_path",
+            "custom_tokenizer",
+            "use_chat_template",
+            "reuse_http_connections",
+            "slow_down_sleep_time",
+            "slow_down_wait_time",
+        }
+    )
 
     @property
     def name(self) -> str:

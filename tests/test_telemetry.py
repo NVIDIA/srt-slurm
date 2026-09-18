@@ -4,10 +4,12 @@
 """Tests for Tachometer and DCGM power telemetry."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from marshmallow import ValidationError
 
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
@@ -28,7 +30,7 @@ from srtctl.core.schema import (
     TelemetryConfig,
     TelemetryExporterConfig,
 )
-from srtctl.core.telemetry import generate_tachometer_config
+from srtctl.core.telemetry import ServiceMetricsTarget, generate_tachometer_config
 from srtctl.core.topology import Process
 
 
@@ -95,6 +97,101 @@ class TestTachometerConfig:
         assert "dcgm-exporter" in tachometer.resolved_dcgm_exporter.container_image
         assert tachometer.resolved_node_exporter.port == 9101
         assert "node-exporter" in tachometer.resolved_node_exporter.container_image
+        assert tachometer.process_exporter is None
+        assert tachometer.resolved_process_exporter.port == 9256
+        # Host-native by default: the upstream image is FROM scratch and some
+        # enroot deployments cannot start it (no /root, no /bin/sh).
+        assert tachometer.resolved_process_exporter.binary == "configs/process-exporter"
+        assert tachometer.resolved_process_exporter.container_image == ""
+
+    def test_process_exporter_requires_binary_or_container_image(self):
+        with pytest.raises(ValidationError, match="observability.tachometer.process_exporter"):
+            _make_config(
+                tachometer=TachometerConfig(
+                    enabled=True,
+                    process_exporter=TelemetryExporterConfig(container_image="", port=9256),
+                )
+            )
+
+    def test_process_exporter_container_override_is_accepted(self):
+        custom = TelemetryExporterConfig(container_image="/containers/process-exporter.sqsh", port=9300)
+        config = _make_config(tachometer=TachometerConfig(enabled=True, process_exporter=custom))
+        assert config.observability.tachometer.resolved_process_exporter is custom
+        assert config.observability.tachometer.resolved_process_exporter.binary is None
+
+    def test_process_exporter_groups_name_every_srtctl_process_class(self):
+        """The process-exporter config must isolate the frontend in its own group
+        (its CPU is the signal the Prometheus surface cannot carry) and expose
+        thread-name breakdowns; first match wins, so the launcher precedes the
+        module it wraps."""
+        from srtctl.services.config import ServiceConfig
+        from srtctl.services.exporters import ProcessExporterService, process_exporter_config_yaml
+        from srtctl.services.registry import ServiceLaunchContext
+
+        text = process_exporter_config_yaml()
+        names = [line.split("name:", 1)[1].strip() for line in text.splitlines() if "name:" in line]
+        assert names[0] == "frontend"
+        assert names.index("trtllm_llmapi_launch") < names.index("dynamo_trtllm")
+        for expected in ("dynamo_trtllm", "dynamo_sglang", "dynamo_vllm", "aiperf", "etcd", "nats"):
+            assert expected in names
+        assert "dynamo\\.frontend" in text
+
+        # The container launch (a declared container) reaches the group file through /logs.
+        service = ServiceConfig(name="process-exporter", type="process-exporter", container="pe:latest")
+        cmd = ProcessExporterService().build_command(service, ServiceLaunchContext.preview())
+        assert cmd[:3] == ["/bin/process-exporter", "-config.path", "/logs/process-exporter.yml"]
+        assert "-threads=true" in cmd
+        assert "-children=false" in cmd
+        assert "-web.listen-address=:9256" in cmd
+
+    @pytest.mark.parametrize(
+        ("cmdline", "expected"),
+        [
+            ("trtllm-llmapi-launch python3 -m dynamo.trtllm", "trtllm_llmapi_launch"),
+            ("/opt/bin/trtllm-llmapi-launch python3 -m dynamo.trtllm", "trtllm_llmapi_launch"),
+            ("/bin/bash /opt/bin/trtllm-llmapi-launch python3 -m dynamo.trtllm", "trtllm_llmapi_launch"),
+            ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node --rank 0", "trtllm_engine"),
+            ("python3 -m dynamo.trtllm --disaggregation-mode decode", "dynamo_trtllm"),
+            ("python3 -m dynamo.frontend", "frontend"),
+            ("trtllm-llmapi-launch-other", None),
+            ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node_extra", None),
+        ],
+    )
+    def test_process_exporter_matches_full_command_lines(self, cmdline, expected):
+        """Match full argv, including interpreter prefixes and separate engine children."""
+        from srtctl.services.exporters import process_exporter_config_yaml
+
+        groups = yaml.safe_load(process_exporter_config_yaml())["process_names"]
+        matched = next(
+            (
+                group["name"]
+                for group in groups
+                if group.get("cmdline") and all(re.search(pattern, cmdline) for pattern in group["cmdline"])
+            ),
+            None,
+        )
+        assert matched == expected
+
+    def test_process_exporter_host_command_uses_host_paths(self):
+        """Host-native launch: no /logs mount exists, so the binary and the
+        group file are both addressed by their host paths."""
+        from types import SimpleNamespace
+
+        from srtctl.services.config import ServiceConfig
+        from srtctl.services.exporters import ProcessExporterService
+        from srtctl.services.registry import ServiceLaunchContext
+
+        ctx = ServiceLaunchContext.preview()
+        ctx.runtime.log_dir = Path("/lustre/out/logs")
+        service = ServiceConfig(
+            name="process-exporter", type="process-exporter", options={"binary": "/srt/configs/process-exporter"}
+        )
+        with patch("srtctl.services.exporters.resolve_host_binary", return_value=Path("/srt/configs/process-exporter")):
+            cmd = ProcessExporterService().build_command(service, ctx)
+        assert cmd[:3] == ["/srt/configs/process-exporter", "-config.path", "/lustre/out/logs/process-exporter.yml"]
+        assert "-web.listen-address=:9256" in cmd
+        assert "-threads=true" in cmd
+        del SimpleNamespace
 
     def test_dcgm_sampling_follows_the_scrape_knob(self):
         """One knob rules both cadences: the tachometer-owned DCGM exporter
@@ -102,32 +199,71 @@ class TestTachometerConfig:
         inherit the power template's 100ms — 10 Hz NVML sampling measured
         ~2% ITL p50 overhead on GB300 decode (isolation runs, 2026-09-06);
         the power path keeps 100ms because dense sampling is its purpose."""
-        from srtctl.cli.mixins.telemetry_stage import (
-            DCGM_EXPORTER_COMMAND_TEMPLATE,
-            resolve_exporter_command,
-            tachometer_dcgm_command_template,
-        )
+        from srtctl.cli.mixins.telemetry_stage import DCGM_EXPORTER_COMMAND_TEMPLATE
+        from srtctl.services.implicit import find_service
+        from srtctl.services.registry import ServiceLaunchContext, get_service_kind
 
-        default = TachometerConfig()
-        cmd = resolve_exporter_command(default.resolved_dcgm_exporter, tachometer_dcgm_command_template(default))
-        assert "--collect-interval=1000" in cmd
-        assert ":9401" in cmd
+        def command(config):
+            service = find_service(config, "dcgm-exporter")
+            return get_service_kind(service.type).build_command(service, ServiceLaunchContext.preview())
 
-        slow = TachometerConfig(collect_interval_ms=5000)
-        assert "--collect-interval=5000" in tachometer_dcgm_command_template(slow)
+        assert command(_make_config(tachometer=TachometerConfig(enabled=True))) == [
+            "dcgm-exporter",
+            "--collect-interval=1000",
+            "--address",
+            ":9401",
+        ]
+        slow = _make_config(tachometer=TachometerConfig(enabled=True, collect_interval_ms=5000))
+        assert "--collect-interval=5000" in command(slow)
 
         # An explicit recipe command must still win over the derived template.
-        custom = TachometerConfig(
-            dcgm_exporter=TelemetryExporterConfig(
-                container_image="dcgm:latest", port=9401, command="dcgm-exporter --custom --address :{port}"
+        custom = _make_config(
+            tachometer=TachometerConfig(
+                enabled=True,
+                dcgm_exporter=TelemetryExporterConfig(
+                    container_image="dcgm:latest", port=9401, command="dcgm-exporter --custom --address :{port}"
+                ),
             )
         )
-        assert (
-            resolve_exporter_command(custom.resolved_dcgm_exporter, tachometer_dcgm_command_template(custom))
-            == "dcgm-exporter --custom --address :9401"
-        )
+        assert command(custom) == ["dcgm-exporter", "--custom", "--address", ":9401"]
 
         assert "--collect-interval=100 " in DCGM_EXPORTER_COMMAND_TEMPLATE
+
+    def test_node_exporter_enables_host_scheduler_collectors(self):
+        """The tachometer node_exporter must collect the host scheduler-pressure
+        family (PSI, procs/context-switch counters, memory-reclaim, per-NUMA free)
+        on top of cpu/infiniband/meminfo -- the steady_probe.sh signal set that was
+        otherwise uncollected. An explicit recipe command still wins."""
+        from srtctl.services.exporters import NODE_EXPORTER_COLLECTORS
+        from srtctl.services.implicit import find_service
+        from srtctl.services.registry import ServiceLaunchContext, get_service_kind
+
+        def command(config):
+            service = find_service(config, "node-exporter")
+            return get_service_kind(service.type).build_command(service, ServiceLaunchContext.preview())
+
+        cmd = command(_make_config(tachometer=TachometerConfig(enabled=True)))
+        assert "--collector.disable-defaults" in cmd
+        for collector in ("cpu", "infiniband", "meminfo", "processes", "stat", "vmstat", "pressure", "meminfo_numa"):
+            assert f"--collector.{collector}" in cmd, collector
+        assert set(NODE_EXPORTER_COLLECTORS) >= {"stat", "vmstat", "pressure", "meminfo_numa"}
+        # vmstat's default field set omits pgsteal (page-reclaim); the override
+        # must add it while keeping pgmajfault. Verified against node-exporter v1.8.2.
+        vmstat_fields = next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("--collector.vmstat.fields="))
+        assert re.search(vmstat_fields, "pgmajfault")
+        assert re.search(vmstat_fields, "pgsteal_kswapd")
+        assert "--web.listen-address=:9101" in cmd
+
+        # An explicit recipe command must still win over the derived template.
+        custom = _make_config(
+            tachometer=TachometerConfig(
+                enabled=True,
+                node_exporter=TelemetryExporterConfig(
+                    container_image="node:latest", port=9101, command="/bin/node_exporter --custom :{port}"
+                ),
+            )
+        )
+        assert command(custom) == ["/bin/node_exporter", "--custom", ":9101"]
 
     def test_host_sampler_follows_the_scrape_knob(self, tmp_path):
         """The host sampler's cadence derives from the same single knob."""
@@ -148,6 +284,7 @@ class TestTachometerConfig:
         tachometer = TachometerConfig(default_exporters=False)
         assert tachometer.resolved_dcgm_exporter is None
         assert tachometer.resolved_node_exporter is None
+        assert tachometer.resolved_process_exporter is None
 
     def test_explicit_exporter_block_wins_over_default(self):
         custom = TelemetryExporterConfig(container_image="/containers/dcgm.sqsh", port=9500)
@@ -257,7 +394,7 @@ class TestDcgmPowerConfig:
             ({"storage_subdir": "/abs"}, None, "storage_subdir"),
             ({"storage_subdir": "../escape"}, None, "storage_subdir"),
             ({"storage_subdir": ""}, None, "storage_subdir"),
-            ({}, BenchmarkConfig(type="manual"), "benchmark.type"),
+            ({}, BenchmarkConfig(type="mmlu"), "benchmark.type"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=None), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[4, 4]), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[0]), "benchmark.concurrencies"),
@@ -630,6 +767,11 @@ class TestTachometerConfigGeneration:
             frontend_topology=topology,
             runtime=runtime,
             tachometer=tachometer,
+            # The exporters are services; the stage resolves them to one target per node.
+            service_targets=[
+                ServiceMetricsTarget("dcgm-exporter", node, f"http://{node}:9401/metrics", "dcgm", "dcgm", True)
+                for node in ("node-a", "node-b")
+            ],
         )
 
         # The storage leaf must NOT be a directory srtctl has already created --
@@ -883,6 +1025,61 @@ class TestTachometerConfigGeneration:
         assert 'name = "frontend0"' in config_text
         assert "dcgm_" not in config_text
         assert "node_exporter_" not in config_text
+        assert "process_exporter_" not in config_text
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_process_exporter_targets_frontend_node_even_without_backend(self, _mock_get_hostname_ip):
+        """A head-placed or dedicated frontend node hosts no backend process, yet it is
+        where frontend CPU lives. The process exporter service runs on `all`, so its
+        targets cover the frontend node too, preserving groupname/threadname labels
+        and host metadata."""
+        tachometer = TachometerConfig(enabled=True, extra_metadata={"study": "process-monitoring"})
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        processes = [
+            Process(
+                node="node-a",
+                gpu_indices=frozenset({0}),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=0,
+            )
+        ]
+        topology = FrontendTopology(
+            nginx_node=None,
+            frontend_nodes=["fe-node"],
+            frontend_port=8000,
+            public_port=8000,
+        )
+
+        config_text = generate_tachometer_config(
+            processes=processes,
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=tachometer,
+            # The process exporter service is placed on `all`, so the stage hands the
+            # generator both the backend node and the frontend node.
+            service_targets=[
+                ServiceMetricsTarget(
+                    "process-exporter", node, f"http://{node}:9256/metrics", endpoint="process_exporter"
+                )
+                for node in ("node-a", "fe-node")
+            ],
+        )
+
+        assert 'name = "process_exporter_node-a"' in config_text
+        assert 'name = "process_exporter_fe-node"' in config_text
+        assert 'url = "http://fe-node:9256/metrics"' in config_text
+        # DCGM/node exporters keep their backend-node scope.
+        assert 'name = "node_exporter_fe-node"' not in config_text
+        block = config_text.split('name = "process_exporter_fe-node"', 1)[1].split("[[endpoints]]", 1)[0]
+        assert 'filter = "passthrough"' in block
+        assert '"hostname" = "fe-node"' in block
+        assert '"job_id" = "12345"' in block
+        assert '"run_name" = "test_12345"' in block
+        assert '"study" = "process-monitoring"' in block
 
     @patch("srtctl.core.telemetry.get_hostname_ip")
     def test_vllm_frontend_targets_only_agg_leader_metrics(self, mock_get_hostname_ip):
@@ -950,7 +1147,7 @@ class TestTachometerStageMixin:
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch("srtctl.cli.mixins.telemetry_stage.generate_tachometer_config", return_value='storage = "/run/tachometer"\n')
-    def test_start_tachometer_starts_exporters_and_scraper(self, _mock_config, mock_srun, tmp_path):
+    def test_start_tachometer_starts_only_the_scraper(self, _mock_config, mock_srun, tmp_path):
         class Harness(TelemetryStageMixin):
             def __init__(self):
                 self.config = _make_config(
@@ -985,6 +1182,10 @@ class TestTachometerStageMixin:
             def backend_processes(self):
                 return self._backend_processes
 
+            def service_nodes(self, service):
+                # The implied exporters run on the compute nodes; here that is the one backend node.
+                return ["node-a"]
+
             def _compute_frontend_topology(self):
                 return FrontendTopology(
                     nginx_node=None,
@@ -998,13 +1199,16 @@ class TestTachometerStageMixin:
         # Pin the default-name PATH fallback so the assertion below does not
         # depend on whether the developer's checkout has bin/tachometer-scraper.
         harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        # Likewise pin the host-native process-exporter binary (installed by make setup).
 
         procs = harness.start_tachometer()
 
-        assert len(procs) == 3
+        # The DCGM and node exporters are services now (see test_services.py);
+        # this stage launches exactly one thing: the scraper.
+        assert len(procs) == 1
         assert (tmp_path / "tachometer_config.toml").exists()
         assert (tmp_path / "tachometer" / "local").exists()
-        assert mock_srun.call_count == 3
+        assert mock_srun.call_count == 1
         scraper_call = mock_srun.call_args_list[-1]
         assert scraper_call.kwargs["command"] == [
             "tachometer-scraper",
@@ -1017,17 +1221,18 @@ class TestTachometerStageMixin:
         ]
         assert "container_image" not in scraper_call.kwargs
         assert "container_mounts" not in scraper_call.kwargs
+        # Shell-less launch is load-bearing for graceful shutdown: srun
+        # forwards SIGTERM to the task it launched, and the scraper only
+        # compacts final.parquet if IT is that task. Under the bash wrapper
+        # the signal dies with bash and the capture is lost to step SIGKILL
+        # (hecate job 487539). Env must ride --export, not a bash `export`.
+        assert scraper_call.kwargs["use_bash_wrapper"] is False
+        assert scraper_call.kwargs["srun_export_env"] == {"POLARS_MAX_THREADS": "4"}
+        assert "env_to_set" not in scraper_call.kwargs
         # Telemetry is best-effort by contract: a dead scraper must never
         # tear down the benchmark via the critical-process check.
         assert procs[-1].name == "tachometer"
         assert procs[-1].critical is False
-        # Exporter sidecars share the contract: shell-less launch (distroless
-        # images have no bash) and non-critical (a dead sidecar never kills
-        # the run — regression guard for the 7-node startup teardown).
-        for call in mock_srun.call_args_list[:-1]:
-            assert call.kwargs["use_bash_wrapper"] is False
-        for proc in procs[:-1]:
-            assert proc.critical is False
 
     def test_resolve_tachometer_binary(self, tmp_path, monkeypatch):
         """Explicit paths are respected verbatim; the default bare name
@@ -1078,6 +1283,10 @@ class TestTachometerStageMixin:
             def backend_processes(self):
                 return self._backend_processes
 
+            def service_nodes(self, service):
+                # The implied exporters run on the compute nodes; here that is the one backend node.
+                return ["node-a"]
+
             def _compute_frontend_topology(self):
                 return FrontendTopology(
                     nginx_node=None,
@@ -1092,13 +1301,13 @@ class TestTachometerStageMixin:
 
         procs = harness.start_tachometer()
 
-        # Built-in exporters launch by default alongside the scraper.
-        assert [proc.name for proc in procs] == [
-            "tachometer_dcgm_exporter",
-            "tachometer_node_exporter",
-            "tachometer",
-        ]
-        assert (tmp_path / "tachometer_config.toml").exists()
+        # The built-in exporters are implied services (launched by the service
+        # stage, which also writes the process-exporter group file); this stage
+        # starts the scraper alone and scrapes all three.
+        assert [proc.name for proc in procs] == ["tachometer"]
+        config_text = (tmp_path / "tachometer_config.toml").read_text()
+        assert 'name = "dcgm_node-a"' in config_text
+        assert 'name = "process_exporter_node-a"' in config_text
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_tachometer_explicit_false_opts_out(self, mock_srun, tmp_path):
@@ -1152,6 +1361,10 @@ class TestTachometerStageMixin:
             def backend_processes(self):
                 return self._backend_processes
 
+            def service_nodes(self, service):
+                # The implied exporters run on the compute nodes; here that is the one backend node.
+                return ["node-a"]
+
             def _compute_frontend_topology(self):
                 return FrontendTopology(
                     nginx_node=None,
@@ -1161,11 +1374,13 @@ class TestTachometerStageMixin:
                 )
 
         mock_srun.return_value = _running_exporter()
+        harness = Harness()
 
-        processes = Harness().start_tachometer()
+        processes = harness.start_tachometer()
 
-        assert [process.name for process in processes] == ["tachometer_node_exporter", "tachometer"]
-        assert mock_srun.call_count == 2
+        # The power path owns the DCGM exporter; tachometer only scrapes it.
+        assert [process.name for process in processes] == ["tachometer"]
+        assert mock_srun.call_count == 1
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
@@ -1206,6 +1421,10 @@ class TestTachometerStageMixin:
             def backend_processes(self):
                 return self._backend_processes
 
+            def service_nodes(self, service):
+                # The implied exporters run on the compute nodes; here that is the one backend node.
+                return ["node-a"]
+
             def _compute_frontend_topology(self):
                 return FrontendTopology(
                     nginx_node=None,
@@ -1220,72 +1439,98 @@ class TestTachometerStageMixin:
 
         processes = harness.start_tachometer()
 
-        # The built-in node exporter launches by default alongside the explicit DCGM exporter.
-        assert [process.name for process in processes] == [
-            "tachometer_dcgm_exporter",
-            "tachometer_node_exporter",
-            "tachometer",
-        ]
+        # The exporters are services; this stage still launches only the scraper,
+        # and the explicit DCGM exporter is a scrape target in its config.
+        assert [process.name for process in processes] == ["tachometer"]
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
 
-    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    @patch("srtctl.cli.mixins.telemetry_stage.generate_tachometer_config", return_value='storage = "/run/tachometer"\n')
-    def test_multinode_exporters_request_one_node_per_task(self, _mock_config, mock_srun, tmp_path):
-        """srun rejects --nodes 1 with a longer --nodelist, so the exporter launch
-        must size --nodes to the worker set."""
 
-        class Harness(TelemetryStageMixin):
-            def __init__(self):
-                self.config = _make_config(
-                    tachometer=TachometerConfig(
-                        enabled=True,
-                        dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
-                        node_exporter=TelemetryExporterConfig(container_image="node:latest", port=9101),
-                    )
-                )
-                self.runtime = MagicMock()
-                self.runtime.log_dir = tmp_path
-                self.runtime.nodes.head = "node-a"
-                self.runtime.nodes.het = False
-                self.runtime.srun_options = {}
-                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
-                self._backend_processes = [
-                    Process(
-                        node=node,
-                        gpu_indices=frozenset({0}),
-                        sys_port=8081,
-                        http_port=30000,
-                        endpoint_mode="agg",
-                        endpoint_index=index,
-                        node_rank=index,
-                    )
-                    for index, node in enumerate(["node-a", "node-b"])
-                ]
+class TestStopTachometer:
+    """Graceful shutdown: SIGTERM through the Slurm step, with the scraper's compaction grace."""
 
-            @property
-            def backend_processes(self):
-                return self._backend_processes
+    @staticmethod
+    def _stage(grace: float = 120.0) -> TelemetryStageMixin:
+        stage = TelemetryStageMixin()
+        stage.config = _make_config(tachometer=TachometerConfig(enabled=True, shutdown_grace_secs=grace))
+        return stage
 
-            def _compute_frontend_topology(self):
-                return FrontendTopology(
-                    nginx_node=None,
-                    frontend_nodes=["node-a"],
-                    frontend_port=8000,
-                    public_port=8000,
-                )
+    def test_scraper_gets_the_shutdown_grace_and_sidecars_do_not(self):
+        from srtctl.core.processes import ManagedProcess
 
-        mock_srun.return_value = _running_exporter()
-        harness = Harness()
+        sidecar = ManagedProcess(name="tachometer_sidecar", popen=_running_exporter(), critical=False)
+        scraper = ManagedProcess(name="tachometer", popen=_running_exporter(), critical=False, step_name="tachometer")
+        with patch.object(ManagedProcess, "terminate") as terminate:
+            self._stage(grace=45.0).stop_tachometer([sidecar, scraper])
 
-        harness.start_tachometer()
+        # The scraper compacts final.parquet after SIGTERM and needs the
+        # configured grace; anything else launched beside it is a plain daemon.
+        assert [call.kwargs["timeout"] for call in terminate.call_args_list] == [10.0, 45.0]
 
-        exporter_calls = [
-            call for call in mock_srun.call_args_list if call.kwargs.get("nodelist") == ["node-a", "node-b"]
-        ]
-        assert len(exporter_calls) == 2
-        for call in exporter_calls:
-            assert call.kwargs["nodes"] == 2
-            assert call.kwargs["ntasks"] == 2
+    def test_already_exited_processes_are_skipped(self):
+        from srtctl.core.processes import ManagedProcess
+
+        popen = MagicMock()
+        popen.poll.return_value = 0
+        with patch.object(ManagedProcess, "terminate") as terminate:
+            self._stage().stop_tachometer([ManagedProcess(name="tachometer", popen=popen, critical=False)])
+
+        terminate.assert_not_called()
+
+
+class TestBenchmarkWindowTachometerLifecycle:
+    """run_benchmark brackets the load with the Tachometer capture.
+
+    Starting with the other telemetry (before the health gate) records only
+    dead-endpoint noise while workers load; leaving the stop to the registry's
+    hard teardown SIGKILLs the scraper mid-write and strands the capture in
+    the arrow WAL (hecate job 487539). The window contract mirrors the
+    client's own AIPERF polling: scrape while the load runs.
+    """
+
+    @staticmethod
+    def _harness(tmp_path, calls):
+        from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
+        from srtctl.core.processes import ManagedProcess
+
+        class Stage(BenchmarkStageMixin):
+            pass
+
+        stage = Stage()
+        stage.config = _make_config(benchmark=BenchmarkConfig(type="custom", command="echo load", concurrencies=[1]))
+        stage.runtime = MagicMock()
+        stage.runtime.log_dir = tmp_path
+        stage._wait_for_service_ready = lambda stop_event: True
+        scraper = ManagedProcess(name="tachometer", popen=_running_exporter(), critical=False)
+        stage.start_tachometer = MagicMock(side_effect=lambda: (calls.append("start"), [scraper])[1])
+        stage.stop_tachometer = MagicMock(side_effect=lambda procs: calls.append("stop"))
+        return stage, scraper
+
+    def test_capture_brackets_the_benchmark_script(self, tmp_path):
+        import threading
+
+        calls: list[str] = []
+        stage, scraper = self._harness(tmp_path, calls)
+        stage._run_benchmark_script = MagicMock(side_effect=lambda *a, **k: (calls.append("script"), 0)[1])
+        registry = MagicMock()
+
+        exit_code = stage.run_benchmark(registry, threading.Event(), reporter=None)
+
+        assert exit_code == 0
+        assert calls == ["start", "script", "stop"]
+        registry.add_process.assert_called_once_with(scraper)
+        stage.stop_tachometer.assert_called_once_with([scraper])
+
+    def test_capture_stops_even_when_the_script_raises(self, tmp_path):
+        import threading
+
+        calls: list[str] = []
+        stage, _ = self._harness(tmp_path, calls)
+        stage._run_benchmark_script = MagicMock(side_effect=RuntimeError("client crashed"))
+
+        with pytest.raises(RuntimeError, match="client crashed"):
+            stage.run_benchmark(MagicMock(), threading.Event(), reporter=None)
+
+        assert calls == ["start", "stop"]
 
 
 def _running_exporter():
@@ -1715,3 +1960,31 @@ class TestCpuPowerHostCollectorLaunch:
 
         assert harness.finalize_cpu_power_host_telemetry(0) == 1
         assert harness.finalize_cpu_power_host_telemetry(3) == 3
+
+
+class TestTelemetryNodes:
+    def test_pool_nodes_are_sampled_alongside_engine_nodes(self) -> None:
+        from types import SimpleNamespace
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self) -> None:
+                self.runtime = SimpleNamespace(nodes=SimpleNamespace(compute=("n1", "pool-a", "pool-b")))
+
+            @property
+            def backend_processes(self):
+                return [SimpleNamespace(node="n1"), SimpleNamespace(node="n2")]
+
+        assert Harness()._telemetry_nodes() == ["n1", "n2", "pool-a", "pool-b"]
+
+    def test_a_services_only_job_still_samples_its_pool(self) -> None:
+        from types import SimpleNamespace
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self) -> None:
+                self.runtime = SimpleNamespace(nodes=SimpleNamespace(compute=("pool-a",)))
+
+            @property
+            def backend_processes(self):
+                return []
+
+        assert Harness()._telemetry_nodes() == ["pool-a"]

@@ -32,14 +32,14 @@ def mock_api():
     """
     client = mock_status_server.create_test_client()
 
-    def route_post(url, json=None, timeout=None):
+    def route_post(url, json=None, timeout=None, **kwargs):
         """Route POST requests through TestClient."""
         # Extract path from URL (e.g., "http://mock:8080/api/jobs" -> "/api/jobs")
         path = "/" + url.split("/", 3)[-1]
         response = client.post(path, json=json)
         return _MockResponse(response.status_code, response.json())
 
-    def route_put(url, json=None, timeout=None):
+    def route_put(url, json=None, timeout=None, **kwargs):
         """Route PUT requests through TestClient."""
         path = "/" + url.split("/", 3)[-1]
         response = client.put(path, json=json)
@@ -91,7 +91,7 @@ class TestStatusLifecycleHappyPath:
             job_id="99999",
             job_name="test-benchmark",
             cluster="ptyche",
-            recipe="recipes/qwen3-32b/disagg-kv-sglang.yaml",
+            recipe="examples/sglang/sglang-router-disagg.yaml",
             metadata={"tags": ["nightly", "disagg"]},
         )
         assert created is True
@@ -131,7 +131,7 @@ class TestStatusLifecycleHappyPath:
         assert events[0]["job_id"] == "99999"
         assert events[0]["job_name"] == "test-benchmark"
         assert events[0]["cluster"] == "ptyche"
-        assert events[0]["recipe"] == "recipes/qwen3-32b/disagg-kv-sglang.yaml"
+        assert events[0]["recipe"] == "examples/sglang/sglang-router-disagg.yaml"
         assert events[0]["metadata"]["tags"] == ["nightly", "disagg"]
 
         # Verify status progression
@@ -214,7 +214,7 @@ class TestContractValidation:
             job_id="11111",
             job_name="full-payload-test",
             cluster="lyris",
-            recipe="recipes/llama/agg.yaml",
+            recipe="examples/sglang/sglang-router-agg.yaml",
             metadata={
                 "tags": ["ci", "smoke"],
                 "commit_sha": "abc123",

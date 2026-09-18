@@ -80,8 +80,7 @@ def find_repo_root() -> Path | None:
     1. Relative to the installed ``srtctl`` package. Under the editable install that
        compute nodes use, ``srtctl/__init__.py`` is at ``<root>/src/srtctl/``, so the
        root is two parents up. This is the common case and needs no configuration.
-    2. ``srtctl_root`` from ``srtslurm.yaml`` -- the same setting
-       ``PostProcessStageMixin._export_node_metrics_csv`` uses to reach ``analysis/``.
+    2. ``srtctl_root`` from ``srtslurm.yaml``.
 
     Both are validated by checking the vendored entry point actually exists, so a
     non-editable install falling back to a site-packages path is rejected rather than

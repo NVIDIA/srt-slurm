@@ -222,10 +222,10 @@ def check_vllm_health(
     port: int,
     health_url: str,
 ) -> WorkerHealthResult:
-    """Check direct vLLM OpenAI server readiness.
+    """Check a direct OpenAI-compatible server (vllm serve, sglang.launch_server) for readiness.
 
-    vLLM's /health returns HTTP 200 when the server is up; /v1/models verifies
-    that the OpenAI serving stack has exposed at least one model.
+    /health returns HTTP 200 when the server is up; /v1/models verifies that
+    the OpenAI serving stack has exposed at least one model.
     """
     models_url = f"http://{host}:{port}/v1/models"
     try:
@@ -233,14 +233,14 @@ def check_vllm_health(
         if models_response.status_code != 200:
             return WorkerHealthResult(
                 ready=False,
-                message=f"vLLM /health is up but /v1/models returned {models_response.status_code}",
+                message=f"/health is up but /v1/models returned {models_response.status_code}",
             )
         data = models_response.json()
         models = data.get("data", [])
         if models:
             return WorkerHealthResult(
                 ready=True,
-                message=f"vLLM OpenAI server ready at {health_url}; {len(models)} model(s) available",
+                message=f"OpenAI server ready at {health_url}; {len(models)} model(s) available",
                 decode_ready=1,
                 decode_expected=1,
             )
@@ -529,7 +529,8 @@ def wait_for_model(
                 if frontend_type == "trtllm_serve":
                     logger.info("trtllm-serve frontend healthy at %s", health_url)
                     return True
-                if frontend_type == "vllm":
+                if frontend_type in ("vllm", "sglang"):
+                    # Direct modes: the worker's own /health + /v1/models.
                     result = check_vllm_health(host, port, health_url)
                     if result.ready:
                         logger.info(result.message)

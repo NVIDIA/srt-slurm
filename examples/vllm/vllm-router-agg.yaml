@@ -1,0 +1,47 @@
+# vLLM aggregated behind the official vLLM Router.
+#
+# Two TP1 `vllm serve` workers on one node; the Router receives them through
+# `--worker-urls` and distributes sessions with consistent hashing. No Dynamo,
+# NATS, or etcd. The `vllm-router` executable must be present in the container.
+#
+# Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-vllm-router-agg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+frontend:
+  type: vllm-router
+  enable_multiple_frontends: false
+  args:
+    policy: "consistent_hash"
+
+engine: vllm
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

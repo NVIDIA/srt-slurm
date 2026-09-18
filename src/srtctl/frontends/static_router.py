@@ -183,7 +183,7 @@ class StaticRouterFrontend:
         stop_event: threading.Event | None = None,
     ) -> list[ManagedProcess]:
         del stop_event  # Static routers return immediately after launch.
-        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
         configured_backend = getattr(getattr(config, "backend", None), "type", self.backend_type)
         if configured_backend != self.backend_type:
@@ -203,6 +203,7 @@ class StaticRouterFrontend:
             container_image = getattr(config.frontend, "container_image", None) or str(runtime.container_image)
             router_env = dict(getattr(runtime, "environment", {}))
             router_env.update(config.frontend.env or {})
+            step_name = f"{self.process_name}_{idx}"
             proc = self.start_process(
                 command=cmd,
                 nodelist=[node],
@@ -212,14 +213,17 @@ class StaticRouterFrontend:
                 env_to_set=router_env or None,
                 bash_preamble=self.build_bash_preamble(config),
                 het_group=runtime.nodes.het_group_for(node),
+                step_name=step_name,
             )
             processes.append(
                 ManagedProcess(
-                    name=f"{self.process_name}_{idx}",
+                    name=step_name,
                     popen=proc,
                     log_file=router_log,
                     node=node,
                     critical=True,
+                    terminate_timeout=FRONTEND_TERMINATE_TIMEOUT_SECONDS,
+                    step_name=step_name,
                 )
             )
         return processes

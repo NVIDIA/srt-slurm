@@ -1,0 +1,509 @@
+# Services
+
+The top-level `services:` block declares long-running processes that srtctl launches and tracks next
+to the inference workers, the frontend, and the benchmark client. One list, one shape, for everything
+that is not a worker or the frontend: the discovery plane (etcd, NATS), the Mooncake master, the
+metrics exporters tachometer scrapes, an experimental router built from an unmerged PR, a standalone
+Mooncake Store per worker node, a debugging HTTP server. The built-in ones are implied by the rest of
+the recipe and need no entry; declaring one by name takes it over. Adding a new one is a recipe
+change, not a code change.
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Configuration Reference](#configuration-reference)
+- [Implicit Services](#implicit-services)
+- [Placement](#placement)
+- [Start Order and Readiness](#start-order-and-readiness)
+- [Environment](#environment)
+- [Building From Source](#building-from-source)
+- [Service Types](#service-types)
+- [Example: a router from a PR](#example-a-router-from-a-pr)
+- [Example: standalone Mooncake stores](#example-standalone-mooncake-stores)
+- [Validation](#validation)
+- [Limitations](#limitations)
+
+## Quick Start
+
+```yaml
+services:
+  - name: my-sidecar
+    command:
+      - python3
+      - -m
+      - my_package.my_sidecar
+      - --port
+      - "9000"
+    readiness:
+      port: 9000
+```
+
+`name` and `command` are the only required fields for the default `generic` type. The service runs in
+the job container on the head node, starts once workers and the frontend are healthy, and the job
+waits until port 9000 answers before moving on. Its log is `service_my-sidecar.out` in the job's log
+directory. `examples/features/services.yaml` is a runnable version of this.
+
+## Configuration Reference
+
+```yaml
+services:
+  - name: my-sidecar             # required, unique across the list
+    type: generic                # generic (default) | etcd | nats | mooncake-master | dcgm-exporter | node-exporter | mooncake-store
+    enabled: true                # false drops the service (the way to switch an implied one off)
+    external: null               # typed kinds only: use an instance that already runs at this address
+    command:                     # argv, not shell-interpreted; required for generic
+      - python3
+      - -m
+      - pkg
+    args:                        # appended to command
+      - --flag
+    container: my-image          # image or srtslurm.yaml alias; default: job container
+    env:                         # environment for the service process
+      MY_FLAG: "1"
+    options:                     # kind-specific knobs (nats: max_payload_mb; exporters: port, collect_interval_ms)
+      max_payload_mb: 24
+    placement:
+      node: head                 # head | infra | dedicated | prefill | decode | agg | workers | compute | all
+      pool: train                # or: ride on the nodes another service owns (replaces node)
+    nodes: 2                     # own whole nodes: a pool added to the allocation next to the roles' nodes
+    start: after_frontend        # infra | before_workers | after_frontend
+    readiness:                   # optional probe, checked on every service node; typed kinds have default ports
+      port: 9000                 # or tcp: {port} / http: {port, path, status} / log: {pattern}
+      timeout_seconds: 120
+      interval_seconds: 2
+    inherit_discovery_env: true  # inject ETCD_ENDPOINTS / NATS_SERVER
+    critical: false              # a crash fails the run when true
+    preamble: |                  # shell run before command, inside the container
+      ulimit -n 1048576
+    cpus_per_task: 8             # srun --cpus-per-task
+    cpu_bind: none               # srun --cpu-bind
+    srun_options:                # extra srun options for this service only
+      exclusive: ""
+    source:                      # clone before build/launch; single-node placements only
+      git: https://github.com/org/repo
+      rev: <commit-sha, tag, or refs/pull/N/head>
+      path: subdir
+    build_command:               # run once from the clone, inside the container
+      - bash
+      - -lc
+      - pip install -e .
+```
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `name` | required | Unique. Names `service_<name>.out` and the tracked process. |
+| `type` | `generic` | Selects a [service type](#service-types) that supplies defaults, and for the typed kinds the command. |
+| `enabled` | `true` | `false` drops the service. Declaring an implied name with `enabled: false` switches it off. |
+| `external` | none | `etcd`, `nats`, `mooncake-master` only: an address of an already-running instance. Nothing launches; the address is injected where the job's own would have been. |
+| `options` | `{}` | Kind-specific knobs; unknown keys are rejected. `nats`: `max_payload_mb`. `dcgm-exporter`, `node-exporter`: `port`, `collect_interval_ms`. `mooncake-master`: `store_config` (vLLM). |
+| `command` | type default | Argv passed directly to the process. `generic` has no default, so it is required there. |
+| `args` | `[]` | Appended to `command`. Handy with typed services that supply the command. |
+| `container` | type fallback, then job container | Aliases resolve through `srtslurm.yaml` like every other container key. |
+| `env` | `{}` | Merged over the type's defaults; see [Environment](#environment). |
+| `placement.node` | type default | `generic`: `head`. See [Placement](#placement). `compute` is every engine worker node plus every pool; `all` adds the head, infra and client nodes. |
+| `placement.pool` | none | Run on the nodes another service owns, one instance per node of that pool. Replaces `node`. See [pools.md](pools.md). |
+| `placement.per` | `node` | `worker`: one instance per engine worker on each placed node instead of one per node, attached to that worker (its `CUDA_VISIBLE_DEVICES`, the `{worker_*}` placeholders). See [Placement](#placement). |
+| `nodes` | none | Whole nodes this service owns: its pool, added to the allocation after the engine roles' nodes, in declaration order. Any number of services may own nodes, next to engine roles or without them. An owner is placed on its own pool (`placement.node: workers`). Not supported with `resources.het_jobs`. See [pools.md](pools.md). |
+| `start` | type default | `etcd`, `nats`: `infra`. `mooncake-master`, `mooncake-store`: `before_workers`. `generic` and the exporters: `after_frontend`. |
+| `readiness` | type default | One probe per node: `port` / `tcp`, `http`, or `log`, plus `timeout_seconds` and `interval_seconds`. The typed kinds gate on their well-known ports when no probe is written. See [Start Order and Readiness](#start-order-and-readiness). Timing out terminates what this stage started and fails the job. |
+| `inherit_discovery_env` | `true` | Inject the same `ETCD_ENDPOINTS` / `NATS_SERVER` the Dynamo frontend gets. |
+| `critical` | type default | `generic`: `false`. `mooncake-store`: `true`. |
+| `terminal` | `false` | This service is the job's run: the job ends when every instance of every terminal service has exited, with the worst exit code as the job's. The recipe has no benchmark step (`benchmark.type` stays `manual`); combining the two is refused. See [pools.md](pools.md#ending-the-job-with-a-pool). |
+| `metrics` | kind default | Prometheus endpoints the service serves: one `{port, path, nodes, name}` or a list of them (`path` defaults to `/metrics`, `nodes` to `all`, `name` to the service name and is required when there are several). Tachometer scrapes each on every node the service runs on, pools included, as endpoint `<name>_<node>`, and the rows carry `service=<service>`; `nodes: first` scrapes only the service's first node (a cluster head that serves a collector or a router). The exporter kinds declare theirs; write it for anything else that publishes metrics. |
+| `preamble` | none | Shell run after the environment is exported and before `command`. |
+| `cpus_per_task`, `cpu_bind`, `srun_options` | none | Pass-through srun knobs for this service's launches. |
+| `source`, `build_command` | none | See [Building From Source](#building-from-source). |
+| `build_timeout_seconds` | `1800` | `build_command` is killed when this runs out, so a hung build cannot hold the allocation. |
+
+`command`, `args`, `env` values, and `preamble` may use these placeholders: `{node}`, `{node_ip}`,
+`{node_id}` (position in the worker list), `{index}` (instance index within the service), `{role}`
+(the `placement.node` value), `{head_node}`, `{head_ip}`, `{infra_node}`, `{infra_ip}`,
+`{master_port}`, `{metadata_port}`, `{gpus_per_node}`, and the service's own node set: `{pool_node}` /
+`{pool_ip}` (its first node), `{pool_nodes}` / `{pool_ips}` (every node, comma-separated, in order),
+`{pool_node_count}`. Only those names are substituted; other braces (JSON in an env value) are left alone.
+
+`{pool_ip}` is the rendezvous for a service that forms its own cluster on the nodes it owns; `{head_ip}` is the job head, an engine node when the service runs on a pool next to engine roles. A torchrun owner reads `--nnodes={pool_node_count} --nproc-per-node={gpus_per_node} --node-rank={index} --master-addr={pool_ip}`; see [pools.md](pools.md#forming-a-cluster-on-a-pool), including why such a service should not carry a `readiness` probe that needs every rank.
+
+## Implicit Services
+
+Things the recipe asks for elsewhere are services the job runs without an entry; the Mooncake master is the one built-in kind that is always declared. NATS is not implied by the Dynamo frontend alone: the default request plane is `tcp` and KV events travel over direct ZMQ, so a plain Dynamo job runs etcd only. Declare a `nats` service to run one regardless.
+
+| Implied by | Services | Where |
+| --- | --- | --- |
+| `frontend.type: dynamo` | `etcd` | the infra node, phase `infra` |
+| `dynamo.request_plane: nats`, `dynamo.event_plane: nats`, or a `nats_max_payload_mb` knob | `nats` | the infra node, phase `infra` |
+| a declared `mooncake-master` entry (see [Mooncake KV Store](mooncake-kv-store.md)) | `mooncake-master` | the infra node, phase `before_workers` |
+| `engine.failover` (see [Shadow Engine Recovery](shadow-engine-recovery.md)) | `gms` | one instance per vLLM worker (`placement.per: worker`), phase `before_workers` |
+| tachometer on (the default; `observability.tachometer.enabled`) | `dcgm-exporter`, `node-exporter` | every worker node, phase `after_frontend` |
+
+`srtctl dry-run` lists them next to the declared ones, marked `implied by:`. A declared entry with
+the same `name` replaces the implied one, so the recipe only says what differs:
+
+```yaml
+services:
+  - name: etcd
+    type: etcd
+    placement:
+      node: dedicated             # reserve a node for the discovery plane
+  - name: nats
+    type: nats
+    placement:
+      node: dedicated             # etcd and nats share the infra node: both or neither
+    options:
+      max_payload_mb: 24
+  - name: dcgm-exporter
+    type: dcgm-exporter
+    container: mirror/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04   # air-gapped cluster
+  - name: node-exporter
+    type: node-exporter
+    enabled: false                # drop it
+```
+
+`external` uses an instance that already runs: nothing launches, and the workers and frontend get its
+address in `ETCD_ENDPOINTS` / `NATS_SERVER` (or `MOONCAKE_MASTER`) instead of the infra node's.
+
+```yaml
+services:
+  - name: etcd
+    type: etcd
+    external: http://etcd.shared.example:2379
+```
+
+The power-telemetry path (`telemetry.enabled`) launches and owns its own DCGM exporter; the implied
+`dcgm-exporter` steps aside when it is on.
+
+The v1 layout (`infra:` and `backend.mooncake_kv_store`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it into the entries above.
+
+## Placement
+
+`placement.node` picks the physical nodes. `head`, `infra`, and `dedicated` launch one instance;
+`dedicated` reserves a node for the infra services (the job asks Slurm for one more node) and is
+accepted by `etcd`, `nats`, and `mooncake-master`. `prefill`, `decode`, and `agg` launch one instance
+per distinct node that role's workers use, so two TP1 decode workers on one node share one service.
+`workers` launches one instance per worker node; `all` one per allocated node (head, infra, benchmark client, and workers).
+
+When a service launches on more than one node its processes and logs get a node suffix:
+`service_<name>_<node>`. Two services that declare the same `readiness.port` and land on the same
+node are rejected before anything launches; give them disjoint placements or ports.
+
+`placement.per: worker` changes the unit from the node to the engine worker: one instance per worker
+of the placed role(s) on each selected node (`node` must be `prefill`, `decode`, `agg`, or `workers`),
+a sidecar in the Kubernetes sense. The instance runs in that worker's device view (its
+`CUDA_VISIBLE_DEVICES`, the same pinning the worker's engine steps get) and sees `{worker_role}`,
+`{worker_index}`, `{worker_node_rank}`, `{worker_gpus}` and `{worker_gpu_count}`. Its step and log are
+`service_<name>_<role>_<index>_<node>`. Because the instances of one node share its network namespace,
+a per-worker service's `readiness` must be a log probe. The GPU Memory Service of
+[shadow engine recovery](shadow-engine-recovery.md) is the built-in per-worker kind:
+
+```yaml
+services:
+  - name: gpu-watch
+    type: generic
+    command: ["nvidia-smi", "dmon", "-i", "{worker_gpus}"]
+    placement:
+      node: decode
+      per: worker
+```
+
+## Start Order and Readiness
+
+Services launch in three phases; within a phase, implied services first, then declared ones in
+declaration order:
+
+- `infra`: the discovery plane (etcd, NATS). Nothing else should need this phase.
+- `before_workers`: after the discovery plane, before any worker. The Mooncake master, standalone
+  stores, anything workers connect to at startup.
+- `after_frontend`: once workers and the frontend are healthy, before the scraper. The exporters,
+  sidecars that register into a running job.
+
+Within a phase, a service with `readiness` blocks until its probe passes on each of its nodes. The
+typed kinds gate on their well-known ports by default (etcd 2379, NATS 4222, the Mooncake master
+8700, 8701, and 8702, the exporters none); a `generic` service without a probe is considered started
+when its `srun` is launched. Three probes are available, and a `readiness` block names exactly one:
+
+```yaml
+readiness:
+  port: 9000                 # shorthand for tcp
+  timeout_seconds: 120       # per node; the job fails when it runs out
+  interval_seconds: 2        # between attempts
+```
+
+```yaml
+readiness:
+  tcp:
+    port: 9000               # a TCP connection is accepted
+```
+
+```yaml
+readiness:
+  http:
+    port: 8000
+    path: /ready             # GET http://<node>:8000/ready
+    status: 200              # returns this status
+```
+
+```yaml
+readiness:
+  log:
+    pattern: 'Uvicorn running on .*:\d+'   # a regex matched against service_<name>.out
+```
+
+The probe is re-run every `interval_seconds` until it passes. Between attempts the stage checks that
+the process is still alive, so a service that crashes fails the job at once with its exit code rather
+than after the full timeout. Ongoing health is the shared
+`ProcessRegistry` monitor, the same as every other process in the job. It tears the run down only for
+`critical: true` services. Anything other components register under or route through should be
+critical: a router that dies mid-run otherwise leaves the frontend silently talking to the raw
+backend and the benchmark measuring something other than what it claims.
+
+## Environment
+
+The service process environment is built in layers, later ones winning:
+
+1. Discovery env, when `inherit_discovery_env` is true: `ETCD_ENDPOINTS=http://<infra>:2379`,
+   `NATS_SERVER=nats://<infra>:4222` (or the `external` addresses). etcd and NATS themselves never get
+   it.
+2. The type's defaults (`mooncake-store` sets `MOONCAKE_LOCAL_HOSTNAME` to the node's IP).
+3. The recipe's `env`, with placeholders substituted.
+4. Values srtctl owns for the type (`mooncake-store`: `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`).
+   A recipe value for these is ignored.
+
+## Building From Source
+
+`source` plus `build_command` clone and build once before launch. The clone runs on the bare host of
+the service node (git and network access are host concerns, and the job container may lack git) into
+`<log_dir>/services/<name>/src`, which every container sees at `/logs/services/<name>/src`.
+`build_command` and `command` then run inside the service container from that directory (or
+`source.path` under it).
+
+`rev` must be immutable: a commit SHA, a tag, or `refs/pull/<n>/head` while iterating on an open
+PR. `main`, `master`, and `HEAD` are rejected at load time. Because the build installs into one
+container instance, `source` is only allowed with single-node placements (`head`, `infra`).
+
+`source` is the same shape `dynamo.source` uses. At submit time `srtctl apply` resolves a non-commit
+`rev` with `git ls-remote` and records the commit as `source.sha` in the submitted `config.yaml`
+(the recipe on disk is untouched), so the job checks out exactly the commit the lockfile names even
+if the PR is pushed to again while the job waits in the queue. `--json` output lists what was pinned
+under `pinned_sources`. `srtctl dry-run` never touches the network.
+
+## Service Types
+
+`type` selects a registered `ServiceKind` (`src/srtctl/services/`). A kind supplies defaults and the
+environment its process needs; the launch path is shared by every kind. Register a new one with
+`@register_service("<name>")`, the same pattern as `@register_benchmark`.
+
+| Type | Default command | Start | Critical | Notes |
+| --- | --- | --- | --- | --- |
+| `generic` | none (required) | `after_frontend` | `false` | Launches exactly what you wrote. |
+| `etcd` | `/configs/etcd` from the job container, advertising the node's IP | `infra` | `true` | Implied by the Dynamo frontend. Placement `head`, `infra`, or `dedicated`; supports `external`. Fresh data dir on node-local `/tmp` each job. |
+| `nats` | `/configs/nats-server -js` from the job container | `infra` | `true` | Implied by the Dynamo frontend. `options.max_payload_mb` writes a server config. Same placements as etcd; supports `external`. |
+| `mooncake-master` | `mooncake_master` with the RPC, HTTP metadata, and metrics ports srtctl owns | `before_workers` | `true` | Declared by name; see [Mooncake KV Store](mooncake-kv-store.md). `args` are appended; `options.store_config` is the vLLM connector JSON. Container falls back to the job container. Supports `dedicated` and `external`. |
+| `dcgm-exporter` | `dcgm-exporter --collect-interval=<ms> --address :9401` in `nvcr.io/nvidia/k8s/dcgm-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less (distroless image). `options`: `port`, `collect_interval_ms`. |
+| `node-exporter` | `/bin/node_exporter` with the cpu, infiniband, and meminfo collectors on 9101 in `quay.io/prometheus/node-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less. `options`: `port`. |
+| `process-exporter` | `configs/process-exporter -config.path <log_dir>/process-exporter.yml -web.listen-address=:9256 -threads=true ...` on the bare node | `after_frontend` | `false` | Implied on every allocated node (`placement.node: all`) while tachometer runs. Host-native from the static binary `make setup` installs; skipped with a warning when it is missing. A declared `container` switches to the image's `/bin/process-exporter` with the group file under `/logs`. `options`: `port`, `binary`. |
+| `mooncake-store` | `python -m mooncake.mooncake_store_service` | `before_workers` | `true` | Requires a `mooncake-master` entry. Container falls back to the master's. Injects the master's address. |
+| `ray` | `ray start --head ...` on the first instance, `ray start --address=<head>:6379 ...` on the rest, both `--block` | `before_workers` | `true` | One Ray cluster across the service's nodes; see [Ray cluster](#ray-cluster). Placement `workers` (default), `head`, or `all`. `options`: `port` (GCS, 6379), `dashboard_port` (8265), `num_gpus` (the node's count). `args` are appended to every `ray start`. |
+| `gms` | one `python3 -m gpu_memory_service --device k` per GPU of the worker, supervised by bash, in the job container | `before_workers` | `true` | Implied by `engine.failover`; see [Shadow Engine Recovery](shadow-engine-recovery.md). `placement.per: worker` (required): one instance per vLLM worker in that worker's device view, sockets and lock file under `<shared_dir>/srtctl-<job>/<role>_<index>`. Ready when its log says `GMS ready:`; `readiness.timeout_seconds` (default 120) also bounds the servers' startup. |
+
+### Ray cluster
+
+`type: ray` turns the service's nodes into one Ray cluster: the first instance runs the head (GCS on
+`options.port`, dashboard and job-submission API on `options.dashboard_port`, bound to the node's
+fabric IP), every other instance joins it. Readiness is per role, then per fleet: the head is ready when
+its dashboard answers `/api/version`, a worker when its log says `Ray runtime started`, and the service
+is ready when the head's node summary lists every member `ALIVE`. The job waits for all three before
+anything that submits work starts.
+
+What Ray spawns later (actors, the driver of a `ray job submit`) runs inside these steps' containers,
+so the service carries the job's container, mounts, and environment. The client that submits work,
+typically the benchmark step, only needs to reach the dashboard port. `CUDA_VISIBLE_DEVICES` is
+exported to match `--num-gpus`, and `RAY_memory_monitor_refresh_ms=0` disables Ray's host-memory
+killer, which a trainer offloading to host RAM trips on purpose; both are defaults the recipe's `env`
+overrides.
+
+```yaml
+frontend:
+  type: none
+services:
+  - name: train
+    type: ray
+    nodes: 2                  # the job's two nodes belong to this cluster
+    options:
+      port: 6379
+      dashboard_port: 8265
+```
+
+### Metrics
+
+Every service that serves Prometheus metrics says so through the same annotation, `metrics: {port, path}`, and tachometer builds its scrape targets from those declarations: one target per node the service runs on, named `<service>_<node>`, with `service=<name>` in the row metadata. The DCGM, node and process exporters are ordinary users of it: their kinds fill in the port from `options.port`, choose the scraper filter (`dcgm`, `node_exporter`, `passthrough`) and keep their historical endpoint prefixes (`dcgm_<node>`, `node_exporter_<node>`, `process_exporter_<node>`). A generic service writes the block itself; a service that serves several endpoints lists them with names:
+
+```yaml
+services:
+  - name: envsrv
+    type: generic
+    command: ["python3", "-m", "server"]
+    placement:
+      pool: train
+    metrics:
+      port: 8003          # tachometer scrapes http://<node>:8003/metrics on every pool node
+  - name: train
+    type: ray
+    nodes: 2
+    metrics:              # a trainer's collector and its router's engine aggregate, both on the Ray head
+      - { name: miles, port: 9090, nodes: first }
+      - { name: engines, port: 31000, path: /engine_metrics, nodes: first }
+```
+
+Workers and the frontend are not services and keep their own target logic in `core/telemetry.py`. When power telemetry brings its own DCGM exporter, the telemetry stage scrapes that one on the worker nodes instead of implying a `dcgm-exporter` service. `srtctl dry-run` prints `metrics=:<port><path>` on every scraped service.
+
+The bespoke launch paths these replace (`start_head_infrastructure` with its own readiness loop, a
+Mooncake-master stage, exporter launches inside the tachometer stage) are gone; every one of these is
+a `ManagedProcess` from the same stage, with the same registry, cleanup, and dry-run output.
+
+## Example: a router from a PR
+
+```yaml
+frontend:
+  type: dynamo
+
+services:
+  - name: thunderagent-router
+    source:
+      git: https://github.com/ai-dynamo/dynamo
+      rev: refs/pull/14000/head      # switch to a commit SHA once merged
+    build_command:
+      - bash
+      - -lc
+      - "cd lib/bindings/python && maturin develop --uv && cd ../../.. && pip install -e ."
+    command:
+      - python3
+      - -m
+      - dynamo.thunderagent_router
+      - --endpoint
+      - dyn://namespace.component.endpoint
+      - --model-name
+      - my-model
+    # The router is the thing under test: other components register under its
+    # endpoint, so running without it must fail the run, not degrade it.
+    critical: true
+```
+
+`inherit_discovery_env` defaults to true, so the router sees the same etcd/NATS as the Dynamo
+frontend and workers with no extra configuration.
+
+## Example: standalone Mooncake stores
+
+Inference workers run embedded Mooncake clients with `MOONCAKE_GLOBAL_SEGMENT_SIZE=0` while dedicated
+per-node stores own the DRAM segments. Decode nodes contribute host memory without an in-process
+HiCache pool. One entry per role gives each role its own segment size:
+
+```yaml
+engine: sglang
+roles:
+  prefill:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: "0"
+    args:
+      disaggregation-transfer-backend: mooncake
+  decode:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: "0"
+    args:
+      disaggregation-transfer-backend: mooncake
+
+services:
+  - name: mooncake-master
+    type: mooncake-master
+    container: mooncake        # the master; also the stores' default container
+  - name: store-prefill
+    type: mooncake-store
+    placement:
+      node: prefill
+    args:
+      - --port
+      - "8800"
+    env:
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: 100gb
+    preamble: |
+      ulimit -n 1048576
+      ulimit -l unlimited
+    cpus_per_task: 8
+    readiness:
+      port: 8800
+  - name: store-decode
+    type: mooncake-store
+    placement:
+      node: decode
+    args:
+      - --port
+      - "8800"
+    env:
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: 400gb
+    preamble: |
+      ulimit -n 1048576
+      ulimit -l unlimited
+    cpus_per_task: 8
+    readiness:
+      port: 8800
+```
+
+Stores start after the master is healthy and before workers. Each store gets `MOONCAKE_MASTER`,
+`MOONCAKE_TE_META_DATA_SERVER`, and `MOONCAKE_LOCAL_HOSTNAME` from the runtime. If prefill and decode
+share a node, the two entries above collide on port 8800 and the job fails before launching; use one
+entry with `placement.node: workers` and a single segment size instead. See
+[Mooncake KV Store](mooncake-kv-store.md) for the worker side.
+
+## Validation
+
+Rejected at load time, so `srtctl dry-run` catches them:
+
+- Empty or duplicate `name`; unknown `type`.
+- `generic` without `command`; a `command`/`args` entry that is blank; `build_command: []`.
+- `placement.node` or `start` outside their vocabularies; `dedicated` or `external` on a kind that does
+  not support them; an `options` key the kind does not know.
+- `source` with a moving `rev`, or with a multi-node placement.
+- `type: mooncake-store` without a `mooncake-master` entry; two `mooncake-master` entries.
+- `etcd` and `nats` disagreeing on `dedicated` (they share the infra node).
+
+Rejected at launch, before any service starts: two services listening on the same port on one node.
+
+`srtctl dry-run` prints every service's type, placement, start phase, criticality, command,
+container, source, readiness, and env.
+
+## Cleanup
+
+Nothing a service launches outlives the job:
+
+- Every long-running service is a named Slurm step (`service_<name>`), so cleanup delivers SIGTERM
+  through `scancel --signal=TERM` and the process gets 30 seconds to flush (etcd its WAL, a scraper
+  its parquet) before the step is killed. Signalling the `srun` client directly would have killed
+  the task outright.
+- Every `srun` the stage starts, including the one-shot clone and build steps, is registered with the
+  job's `ProcessRegistry` the moment it exists, not when the stage returns. The registry's cleanup
+  runs on normal completion, on any failed stage, from the SIGTERM handler (`scancel`), and from the
+  crash monitor when a critical process dies, and it terminates then kills each tracked `srun`. Slurm
+  cancels the step, which kills the whole step cgroup inside the container, so forked or daemonized
+  children of the service go with it.
+- A readiness gate that fails, or a signal that arrives during one, terminates everything the stage
+  already launched before the error propagates.
+- A service whose process exits before its readiness port answers fails immediately with its exit
+  code instead of waiting out the readiness timeout.
+- The clone step is bounded by the `timeout` on each git command (600s each) and the build step by
+  `build_timeout_seconds`; a step that overruns is killed and the job fails with a pointer to its log.
+- When the batch script exits, Slurm releases the allocation and reaps any remaining step, so even a
+  cleanup path srtctl never reaches cannot leave a service running on a compute node.
+
+## Limitations
+
+- Declared order is launch order, and `readiness` is the only wait. A service that needs another
+  service to be ready polls for it in its own `command`.
+- `source` builds are single-node only.
+- Services run on the sbatch/SLURM path only; there is no local dev mode in 2.0.

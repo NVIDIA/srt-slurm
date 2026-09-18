@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -203,6 +203,7 @@ def start_srun_process(
     oversubscribe: bool = False,
     cpu_bind: str | None = None,
     het_group: int | None = None,
+    step_name: str | None = None,
 ) -> subprocess.Popen:
     """Start a process via srun with container support.
 
@@ -222,6 +223,9 @@ def start_srun_process(
         env_to_set: Environment variables to set (name -> value)
         env_to_unset: Environment variable names to unset before the preamble and command
         bash_preamble: Bash commands to run before the main command
+        step_name: Name the Slurm step (``srun --job-name``) so it can be found in
+            ``squeue --steps`` and signalled with ``scancel --signal`` later. SIGTERM
+            to the srun process itself only aborts the step (the task is SIGKILLed).
         srun_options: Additional srun options as dict
         srun_export_env: Env vars to set in the srun *task* environment (rendered as
             ``--export=ALL,K=V,...``). Unlike env_to_set (which exports inside the
@@ -264,7 +268,9 @@ def start_srun_process(
     if cpu_bind:
         srun_cmd.append(f"--cpu-bind={cpu_bind}")
 
-    srun_cmd.extend(["--nodes", str(nodes)])
+    # Arbitrary layouts derive their node count from the repeated host list.
+    if not srun_options or srun_options.get("distribution") != "arbitrary":
+        srun_cmd.extend(["--nodes", str(nodes)])
     srun_cmd.extend(["--ntasks", str(ntasks)])
 
     if cpus_per_task:
@@ -297,6 +303,9 @@ def start_srun_process(
                 srun_cmd.append(f"--{key}={value}")
             else:
                 srun_cmd.append(f"--{key}")
+
+    if step_name:
+        srun_cmd.append(f"--job-name={step_name}")
 
     # Set env vars in the task environment so the container runtime (enroot/pyxis)
     # sees them at container-creation time. Prefix ALL to preserve srun's normal
@@ -332,8 +341,11 @@ def start_srun_process(
         if bash_preamble:
             bash_parts.append(bash_preamble)
 
-        # Add the main command
-        bash_parts.append(shlex.join(command))
+        # exec the main command so it replaces bash as the step's task: srun forwards
+        # SIGTERM to the task, and a bash -c parent would hold the signal until its
+        # child exited, so the child was only ever SIGKILLed at the cleanup timeout
+        # (tachometer never compacted, workers never shut down cleanly).
+        bash_parts.append("exec " + shlex.join(command))
 
         # Join with && for sequential execution
         bash_command = " && ".join(bash_parts)

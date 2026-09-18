@@ -1,0 +1,54 @@
+# torchrun across a pool: a two-node service forms its own cluster from placeholders
+# and is the job's run.
+#
+# The `train` service owns two nodes. Each instance runs one torchrun with one
+# process per GPU; instance 0 of the pool is the rendezvous ({pool_ip}), and every
+# rank runs examples/features/torchrun-pool/train.py, mounted at /demo. The service
+# is `terminal`: the job ends when every instance has exited, with the worst exit
+# code, so there is no benchmark block. Each rank's line lands in
+# outputs/<job>/logs/service_train_<node>.out.
+#
+#   srtctl dry-run -f examples/features/torchrun-pool.yaml
+schema: 2
+name: "torchrun-pool"
+
+slurm:
+  time_limit: "00:20:00"
+
+model:
+  path: "hf:Qwen/Qwen3-0.6B"                 # unused by the run; the schema requires a model
+  container: "nvcr.io/nvidia/pytorch:25.06-py3"
+  precision: "bf16"
+
+resources:
+  gpu_type: "b200"
+  gpus_per_node: 8
+
+frontend:
+  type: none
+
+services:
+  - name: train
+    type: generic
+    nodes: 2
+    terminal: true
+    command:
+      - torchrun
+      - --nnodes={pool_node_count}
+      - --nproc-per-node={gpus_per_node}
+      - --node-rank={index}
+      - --master-addr={pool_ip}
+      - --master-port=29500
+      - /demo/train.py
+    env:
+      NCCL_SOCKET_IFNAME: bond0
+      GLOO_SOCKET_IFNAME: bond0
+    # No readiness probe: instances launch back to back, and a static torchrun
+    # rendezvous only completes once every node has joined.
+
+extra_mount:
+  - "$SRTCTL_SOURCE_DIR/examples/features/torchrun-pool:/demo"
+
+observability:
+  tachometer:
+    enabled: false

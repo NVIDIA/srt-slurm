@@ -12,10 +12,13 @@ import shlex
 import threading
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
+from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
-from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
+from srtctl.services.implicit import discovery_env
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -23,6 +26,9 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 logger = logging.getLogger(__name__)
+
+ROUTER_POLICY_CONFIG_FILENAME = "router_policy_config.yaml"
+ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
 
 
 class DynamoFrontend:
@@ -80,20 +86,38 @@ class DynamoFrontend:
         stop_event: "threading.Event | None" = None,  # unused: returns immediately
     ) -> list["ManagedProcess"]:
         """Start dynamo frontends on designated nodes."""
-        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
         processes: list[ManagedProcess] = []
+        frontend_args = dict(config.frontend.args or {})
+        worker_selection = getattr(config.frontend, "worker_selection", None)
+        if worker_selection is not None:
+            policy_path = runtime.log_dir / ROUTER_POLICY_CONFIG_FILENAME
+            policy_path.write_text(yaml.safe_dump({"worker_selection": worker_selection}, sort_keys=False))
+            frontend_args["router-policy-config"] = ROUTER_POLICY_CONFIG_CONTAINER_PATH
+            logger.info("Dynamo router policy config written to %s", policy_path)
 
         for idx, node in enumerate(topology.frontend_nodes):
             logger.info("Starting dynamo frontend %d on %s", idx, node)
 
             frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
             cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
-            cmd.extend(self.get_frontend_args_list(config.frontend.args))
+            cmd.extend(self.get_frontend_args_list(frontend_args))
+
+            automatic_nsys = getattr(config, "observability_nsys_enabled", False) is True
+            nsys_env: dict[str, str] = {}
+            if automatic_nsys:
+                cmd, nsys_env = wrap_observability_nsys(
+                    cmd,
+                    config=config,
+                    log_dir=runtime.log_dir,
+                    report_name=f"frontend/{node}_frontend_{idx}",
+                    frontend=True,
+                )
+                logger.info("Observability: nsys on frontend %d and all worker ranks", idx)
 
             env_to_set = {
-                "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
-                "NATS_SERVER": f"nats://{runtime.nodes.infra}:{NATS_PORT}",
+                **discovery_env(config, runtime),
                 "DYN_REQUEST_PLANE": config.dynamo.request_plane,
                 "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
             }
@@ -102,6 +126,7 @@ class DynamoFrontend:
 
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
             env_to_set.update(build_otel_env(config.observability, "frontend"))
+            env_to_set.update(nsys_env)
 
             # Add global recipe environment, including values derived from
             # dynamo.wheel, before frontend-specific overrides.
@@ -114,6 +139,7 @@ class DynamoFrontend:
             # Build bash preamble (setup script + dynamo install)
             bash_preamble = self._build_preamble(config)
 
+            step_name = f"frontend_{idx}"
             proc = start_srun_process(
                 command=cmd,
                 nodelist=[node],
@@ -129,15 +155,23 @@ class DynamoFrontend:
                 # why this is needed in later versions of Dynamo, but it is.
                 mpi="pmix",
                 het_group=runtime.nodes.het_group_for(node),
+                step_name=step_name,
             )
 
             processes.append(
                 ManagedProcess(
-                    name=f"frontend_{idx}",
+                    name=step_name,
                     popen=proc,
                     log_file=frontend_log,
                     node=node,
                     critical=True,
+                    terminate_timeout=(
+                        config.observability.nsys.terminate_timeout
+                        if automatic_nsys
+                        else FRONTEND_TERMINATE_TIMEOUT_SECONDS
+                    ),
+                    signal_full=not automatic_nsys,
+                    step_name=step_name,
                 )
             )
 

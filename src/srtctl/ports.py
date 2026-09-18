@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Centralized default ports used by srt-slurm runtime components."""
@@ -25,6 +25,12 @@ SGLANG_DIST_INIT_PORT_BASE = 8300
 # One per physical SGLang server process. This is used for SGLang's local TP
 # rendezvous; a deterministic assignment avoids concurrent free-port races.
 SGLANG_NCCL_PORT_BASE = 17500
+# SGLang Model Gateway (sglang_router) Prometheus listener; the router's own default.
+# Only started when --prometheus-port is passed, which srtctl does so tachometer can scrape it.
+SGLANG_ROUTER_METRICS_PORT = 29000
+
+# TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
+TRTLLM_DIST_INIT_PORT_BASE = 29500
 
 # Mooncake transfer-engine ports (shared by SGLang and vLLM backends).
 MOONCAKE_MASTER_PORT = 8700
@@ -39,7 +45,17 @@ VLLM_NIXL_PORT_BASE = 5400
 VLLM_DATA_PARALLEL_RPC_PORT = 8400
 VLLM_PORT_BASE = 20000
 VLLM_PORT_STRIDE = 50
+# torch.distributed rendezvous of a multi-node vLLM engine (--master-port; vLLM's own
+# default). Under backend.failover every engine of a worker needs its own TCPStore, so
+# shadow engine k listens on BASE + k * STRIDE, the same stagger the Dynamo operator uses.
+VLLM_MASTER_PORT_BASE = 29500
+VLLM_MASTER_PORT_STRIDE = 100
 
 # Dynamo runtime and connector ports.
 DYN_SYSTEM_PORT_BASE = 7500
 KVBM_ZMQ_PORT_BASE = 5600
+
+# Ray cluster (services[].type: ray): GCS on the head, dashboard (also the job
+# submission API) on the head. Ray's own defaults; options.port / dashboard_port move them.
+RAY_GCS_PORT = 6379
+RAY_DASHBOARD_PORT = 8265
