@@ -5,7 +5,6 @@
 
 import json
 from copy import deepcopy
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -167,20 +166,24 @@ def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, ena
             assert proc.signal_full
 
 
-@pytest.mark.parametrize("mpi", [False, True])
-def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mpi):
-    cfg = config()
+@pytest.mark.parametrize(("mpi", "engine_suffix"), [(False, ""), (True, ""), (False, "_e1")])
+def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mpi, engine_suffix):
+    cfg = config(backend={"type": "trtllm" if mpi else "vllm"})
     stage, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
-    # Keep the backend launcher stub, but exercise the real schema decision.
-    backend = stage.backend
-    backend.type = "trtllm" if mpi else "vllm"
-    backend.mooncake_kv_store = None
-    backend.get_srun_config.return_value = SimpleNamespace(mpi="pmix", oversubscribe=True, cpu_bind="none")
-    stage.config = replace(cfg, backend=backend)
+    # Validate the actual backend schema; stub only command/env construction.
+    stage.config = cfg
+    backend_class = type(cfg.backend)
+    process.engine_suffix = engine_suffix
+    process.engine_id = 1 if engine_suffix else 0
     stage.runtime.srun_options = {}
     second = SimpleNamespace(**{**vars(process), "node": "node-b"})
     stage.runtime.nodes.worker.append("node-b")
     with (
+        patch.object(backend_class, "build_worker_command", return_value=["python3", "-m", "worker"]),
+        patch.object(backend_class, "get_environment_for_mode", return_value={}),
+        patch.object(backend_class, "get_process_environment", return_value={}),
+        patch.object(backend_class, "get_srun_config", return_value=SimpleNamespace(mpi="pmix", oversubscribe=True, cpu_bind="none")),
+        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.2"),
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
         patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()) as launch,
     ):
@@ -196,7 +199,7 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
         assert args["ntasks"] == 16
         assert "rank%q{SLURM_PROCID}" in spec["output"]
     else:
-        assert "profile_gpu0-1-2-3-4-5-6-7" in spec["output"]
+        assert f"_w0{engine_suffix}_profile_gpu0-1-2-3-4-5-6-7" in spec["output"]
 
 
 @pytest.mark.parametrize("completed", [False, True])

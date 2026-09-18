@@ -112,7 +112,9 @@ permissions. Set `frontend_cpu_sampling: false` when sampling is unavailable.
 - `<mode>/<node>_<mode>_w<index>_profile_rank<rank>_window001.nsys-rep` for MPI workers
 - `<mode>/<node>_<mode>_w<index>_profile_gpu<devices>_window001.nsys-rep` for other workers
 
-Later windows use `_window002`, etc. Process mode omits the window suffix.
+Later windows use `_window002`, etc. Shadow engines include their `_e<id>`
+suffix after the worker index so reports do not overwrite each other. Process
+mode omits the window suffix.
 Shared control requests and acknowledgments are kept in `profiles/.control/`.
 A start/stop failure or missing rank fails the benchmark, rather than allowing
 an unprofiled workload to appear successful.

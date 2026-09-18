@@ -263,7 +263,7 @@ class WorkerStageMixin:
                 cmd,
                 config=self.config,
                 log_dir=self.runtime.log_dir,
-                report_name=f"{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}",
+                report_name=f"{mode}/{process.node}_{mode}_w{index}{suffix}_profile_gpu{gpu_label}",
                 ranks=1,
             )
 
