@@ -713,6 +713,7 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
     topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
     runtime = SimpleNamespace(
         log_dir=tmp_path,
+        infra_node_ip="10.0.0.9",
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         container_image=Path("/container.sqsh"),
         container_mounts={tmp_path: Path("/logs")},
@@ -734,7 +735,7 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
         ],
     }
     config = SimpleNamespace(
-        frontend=SimpleNamespace(args={"router-mode": "kv"}, env=None, worker_selection=worker_selection),
+        frontend=SimpleNamespace(type="dynamo", args={"router-mode": "kv"}, env=None, worker_selection=worker_selection),
         observability=ObservabilityConfig(),
         dynamo=SimpleNamespace(
             install=False,
