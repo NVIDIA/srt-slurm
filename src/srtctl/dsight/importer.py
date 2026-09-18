@@ -52,6 +52,7 @@ class Importer:
         phase: str = "profiling",
         iteration_timezone: str | None = None,
         max_profile_events: int = 250_000,
+        otel: bool = True,
     ) -> None:
         self.logs = logs / "logs" if (logs / "logs").is_dir() else logs
         if not self.logs.is_dir():
@@ -61,11 +62,14 @@ class Importer:
         self.phase = phase
         self.iteration_zone = ZoneInfo(iteration_timezone) if iteration_timezone else None
         self.max_profile_events = max_profile_events
+        self.otel = otel
+        self.workers: dict[str, dict[str, Any]] = {}
+        self.worker_epochs: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
         self.warnings: list[str] = []
         self.iterations: list[dict[str, Any]] = []
         self.sources: list[dict[str, Any]] = []
         self.source_ids: dict[str, int] = {}
-        self.audit: collections.Counter[str] = collections.Counter()
+        self.audit: collections.Counter[str] = collections.Counter(joined_spans=0, clients_with_lifecycle=0)
         self.origin = 0
         self.profiles_data: list[dict[str, Any]] = []
 
@@ -230,12 +234,12 @@ class Importer:
                 self.by_server[d[1]] = r
         self.audit["clients_with_server_identity"] = sum(bool(r["server_ids"]) for r in self.requests)
         self.audit["multiple_server_attempts"] = sum(len(r["server_ids"]) > 1 for r in self.requests)
+        for r in self.requests:
+            r["bridge_evidence"] = [self.bridge[x] for x in r["server_ids"]]
 
     def lifecycle(self) -> None:
         spans: list[dict[str, Any]] = []
         trace_requests = collections.defaultdict(set)
-        self.workers: dict[str, dict[str, Any]] = {}
-        self.worker_epochs = collections.defaultdict(set)
         seen = {}
         for p in sorted(self.logs.glob("otel/*/traces.jsonl")):
             if not p.stat().st_size:
@@ -327,9 +331,7 @@ class Importer:
             r["spans"].append(s)
         for r in self.requests:
             r["spans"].sort(key=lambda s: (s["start"], -s["end"]))
-            r["bridge_evidence"] = [self.bridge[x] for x in r["server_ids"]]
             self.route_context(r)
-        self.audit["clients_with_lifecycle"] = sum(bool(r["spans"]) for r in self.requests)
         self.audit["joined_spans"] = sum(len(r["spans"]) for r in self.requests)
 
     def route_context(self, request: dict[str, Any]) -> None:
@@ -465,7 +467,8 @@ class Importer:
     def run(self) -> dict[str, Any]:
         self.clients()
         self.frontend_bridge()
-        self.lifecycle()
+        if self.otel:
+            self.lifecycle()
         self.engine()
         self.metrics()
         read_profiles(self)
@@ -473,6 +476,7 @@ class Importer:
         for request in self.requests:
             sessions[request["session"]].append(request)
             request["lifecycle"] = lifecycle(request)
+        self.audit["clients_with_lifecycle"] = sum(r["lifecycle"]["available"] for r in self.requests)
         grouped = [
             {
                 "id": sid,
@@ -501,11 +505,9 @@ class Importer:
                 "Iteration timestamps have no timezone: they remain unaligned. Rebuild with --iteration-timezone to align coarse windows."
             )
         if not self.profiles_data:
-            self.warnings.append("No Nsight SQLite exports supplied; lifecycle and sampled metrics remain available.")
+            self.warnings.append("No Nsight SQLite exports supplied.")
         if not self.metric_series:
             self.warnings.append("No selected raw metric series available.")
-        if not self.audit["joined_spans"]:
-            self.warnings.append("No client-correlated lifecycle spans; displaying client timing only.")
         data = {
             "schema": SCHEMA,
             "meta": {
@@ -515,6 +517,7 @@ class Importer:
                 "duration": self.duration,
                 "source_root": str(self.logs.resolve()),
                 "phase": self.phase,
+                "otel_enabled": self.otel,
                 "session_key": "root_correlation_id, then client correlation/session/request identity",
                 "clock": "Recorded UTC anchors; cross-host skew uncalibrated",
                 "iteration_timezone": str(self.iteration_zone) if self.iteration_zone else None,

@@ -197,6 +197,10 @@
     ]) {
       if (Array.isArray(value[k])) state[k] = new Set(value[k]);
     }
+    state.expandedRequests = new Set(
+      [...state.expandedRequests].filter((id) => hasLifecycle(requests.get(id))),
+    );
+    if (state.span && !findInterval(selected(), state.span)) state.span = null;
     state.page = Math.max(0, Number.isInteger(state.page) ? state.page : 0);
   }
   function setRange(from, to, remember = true) {
@@ -246,7 +250,7 @@
     state.span = null;
     state.expandedSessions.add(r.session);
     state.expandedAgents.add(r.agent);
-    if (expand) state.expandedRequests.add(id);
+    if (expand && hasLifecycle(r)) state.expandedRequests.add(id);
     for (const worker of r.workers) state.expandedWorkers.add(worker);
     if (fit) {
       const pad = Math.max((r.end - r.start) * 0.06, 0.00001);
@@ -260,7 +264,7 @@
   }
   function expandRequest(id, expanded = true) {
     selectRequest(id);
-    if (expanded) state.expandedRequests.add(id);
+    if (expanded && hasLifecycle(requests.get(id))) state.expandedRequests.add(id);
     else state.expandedRequests.delete(id);
     render();
     return stateJSON();
@@ -627,7 +631,7 @@
         r.first === null
           ? 0
           : Math.min(100, Math.max(0, ((r.first - lo) / (hi - lo)) * 100));
-    const text = `Turn ${r.turn} · ${short(r.id)}\nClient TTFT ${fmt(r.ttft_ms)} ms · request ${ms(r.end - r.start)}\n${r.input_tokens ?? "?"} input / ${r.output_tokens ?? "?"} output tokens\nClick to select; expand stages for the full lifecycle.`;
+    const text = `Turn ${r.turn} · ${short(r.id)}\nClient TTFT ${fmt(r.ttft_ms)} ms · request ${ms(r.end - r.start)}\n${r.input_tokens ?? "?"} input / ${r.output_tokens ?? "?"} output tokens\nClick to select.${hasLifecycle(r) ? " Expand stages for the full lifecycle." : ""}`;
     return bar(
       r.start,
       r.end,
@@ -651,6 +655,9 @@
     `<button class="toggle" data-toggle="${kind}" data-id="${esc(id)}" aria-expanded="${open}" aria-label="${esc(description)}">${open ? "▾" : "▸"}</button>`;
   const labelText = (s, cls = "") =>
     `<span class="text ${cls}" title="${esc(s)}">${esc(s)}</span>`;
+  function hasLifecycle(r) {
+    return Boolean(r?.lifecycle?.available ?? r?.lifecycle?.activities?.length);
+  }
   function lifecycleModel(r) {
     return r.lifecycle;
   }
@@ -664,6 +671,7 @@
     );
   }
   function lifecycleRows(r) {
+    if (!hasLifecycle(r)) return "";
     const model = lifecycleModel(r);
     const html = model.stages
       .map((current, i) => {
@@ -764,15 +772,17 @@
           : ar.slice(0, 8);
         chosen.sort((a, b) => a.start - b.start);
         for (const r of chosen) {
-          const ropen = state.expandedRequests.has(r.id);
+          const ropen = hasLifecycle(r) && state.expandedRequests.has(r.id);
           html += track(
             '<span class="indent2"></span>' +
-              toggle(
-                "request",
-                r.id,
-                ropen,
-                "Expand lifecycle stages for request " + r.id,
-              ) +
+              (hasLifecycle(r)
+                ? toggle(
+                    "request",
+                    r.id,
+                    ropen,
+                    "Expand lifecycle stages for request " + r.id,
+                  )
+                : "") +
               labelText(`T${r.turn}  ${short(r.id)}`),
             requestBar(r),
             { classes: r.id === state.request ? "selected" : "" },
@@ -1023,7 +1033,7 @@
       ],
       sp = findInterval(r, state.span),
       front = r.spans.find((s) => s.role === "frontend");
-    let html = `<div class="help">Session ${esc(short(r.session))} / ${r.client_kind === "agentperf" ? "client" : r.depth ? "subagent" : "main agent"} / turn ${esc(r.turn)}</div><div class="request-id mono">${esc(r.id)}</div><div class="stats"><div class="stat">${fmt(r.ttft_ms)}<small>Client TTFT · ms</small></div><div class="stat">${fmt(r.end - r.start, 3)}<small>Request duration · s</small></div><div class="stat">${fmt(r.input_tokens, 0)}<small>Input tokens</small></div><div class="stat">${fmt(r.output_tokens, 0)}<small>Output tokens</small></div></div><div class="actions"><button id="fitRequest">Fit request</button><button id="fitTTFT" ${r.first === null ? "disabled" : ""}>Fit TTFT</button><button id="expandTTFT" aria-expanded="${state.expandedRequests.has(r.id)}">${state.expandedRequests.has(r.id) ? "Collapse" : "Expand"} lifecycle</button></div>`;
+    let html = `<div class="help">Session ${esc(short(r.session))} / ${r.client_kind === "agentperf" ? "client" : r.depth ? "subagent" : "main agent"} / turn ${esc(r.turn)}</div><div class="request-id mono">${esc(r.id)}</div><div class="stats"><div class="stat">${fmt(r.ttft_ms)}<small>Client TTFT · ms</small></div><div class="stat">${fmt(r.end - r.start, 3)}<small>Request duration · s</small></div><div class="stat">${fmt(r.input_tokens, 0)}<small>Input tokens</small></div><div class="stat">${fmt(r.output_tokens, 0)}<small>Output tokens</small></div></div><div class="actions"><button id="fitRequest">Fit request</button><button id="fitTTFT" ${r.first === null ? "disabled" : ""}>Fit TTFT</button>${hasLifecycle(r) ? `<button id="expandTTFT" aria-expanded="${state.expandedRequests.has(r.id)}">${state.expandedRequests.has(r.id) ? "Collapse" : "Expand"} lifecycle</button>` : ""}</div>`;
     if (sp) {
       const stage = [
           ...lifecycleModel(r).stages,
@@ -1047,7 +1057,7 @@
         );
     if (sp && sp.kind !== "progress")
       html += evidence(sp.evidence, "Dynamo OTel span");
-    if (state.expandedRequests.has(r.id)) {
+    if (hasLifecycle(r) && state.expandedRequests.has(r.id)) {
       html += `<h3>Progress milestones</h3><div class="stage-list">${lifecycleModel(
         r,
       )
@@ -1059,41 +1069,54 @@
           "",
         )}</div><p class="help">Each delta begins at the preceding milestone. Raw spans keep their original inclusive durations in the source table and worker tracks.</p>`;
     }
-    if (state.expandedRequests.has(r.id)) {
+    if (hasLifecycle(r) && state.expandedRequests.has(r.id)) {
       html += `<h3>Source measurements</h3><p class="help">Dynamo OTel spans below are inclusive. The operation contains backend stream creation and response pumping. Frontend streaming runs concurrently.</p><table class="mini-table"><thead><tr><th>Runtime activity</th><th>Elapsed</th><th>Source</th></tr></thead><tbody>${r.lifecycle.activities.map((a) => `<tr><td><button data-span="${esc(a.id)}" title="${esc(a.description)}">${esc((a.depth ? "↳ " : "") + a.label)}</button></td><td>${ms(a.end - a.start)}</td><td title="${esc(a.name)}">OTel</td></tr>`).join("")}</tbody></table>`;
       if (r.lifecycle.issues.length)
         html += `<p class="notice">${r.lifecycle.issues.map(esc).join("<br>")}</p>`;
     }
-    html += `<h3>Recorded request path</h3>${pathNode("frontend", "Frontend + router", front?.host, true)}<div class="path-arrow">↓</div><div class="prefill-options">${D.workers
-      .filter((w) => w.role === "prefill")
-      .map(
-        (w) =>
-          `<button data-path-worker="${w.id}" class="${r.workers.includes(w.id) ? "active" : ""}">${esc(w.id)}</button>`,
-      )
-      .join("")}</div>`;
-    for (const role of ["prefill", "decode", "aggregated"]) {
-      const recorded = pathWorkers.filter((e) => e.role === role);
-      if (recorded.length) {
-        if (role !== "prefill") html += '<div class="path-arrow">↓</div>';
-        html += recorded
-          .map((e) => pathNode(e.worker, e.worker, e.host, true))
-          .join("");
+    if (front || pathWorkers.length) {
+      html += "<h3>Recorded request path</h3>";
+      if (front) {
+        html += pathNode("frontend", "Frontend + router", front.host, true);
+        const prefill = D.workers.filter((w) => w.role === "prefill");
+        if (prefill.length)
+          html += `<div class="path-arrow">↓</div><div class="prefill-options">${prefill
+            .map(
+              (w) =>
+                `<button data-path-worker="${w.id}" class="${r.workers.includes(w.id) ? "active" : ""}">${esc(w.id)}</button>`,
+            )
+            .join("")}</div>`;
       }
+      let hasPathNode = Boolean(front);
+      for (const role of ["prefill", "decode", "aggregated"]) {
+        const recorded = pathWorkers.filter((e) => e.role === role);
+        if (recorded.length) {
+          if (hasPathNode && role !== "prefill") html += '<div class="path-arrow">↓</div>';
+          html += recorded
+            .map((e) => pathNode(e.worker, e.worker, e.host, true))
+            .join("");
+          hasPathNode = true;
+        }
+      }
+      if (pathWorkers.length > 2)
+        html +=
+          '<p class="help">All recorded workers are shown, including repeated routing attempts.</p>';
+      if (pathWorkers.length)
+        html += '<p class="help" style="margin-top:9px">Click a worker to expand its aligned measurements. Metric values are sample means for the explicitly selected series.</p>';
     }
-    if (!pathWorkers.length) html += "<p>No worker ID mapping recorded.</p>";
-    if (pathWorkers.length > 2)
+    if (r.server_ids.length || r.engine.length) {
       html +=
-        '<p class="help">All recorded workers are shown, including repeated routing attempts.</p>';
-    html +=
-      '<p class="help" style="margin-top:9px">Click a worker to expand its aligned measurements. Metric values are sample means for the explicitly selected series.</p><div class="detail-heading">Identity bridge</div><dl class="facts"><dt>Client</dt><dd class="mono">' +
-      esc(r.id) +
-      '</dd><dt>Dynamo</dt><dd class="mono">' +
-      r.server_ids.map(esc).join("<br>") +
-      "</dd>";
-    for (const e of r.engine)
-      html += `<dt>${esc(e.worker)}</dt><dd>engine client ${esc(e.client_id)}<br><span class="mono">disagg ${esc(e.disagg_id)}</span></dd>`;
-    html +=
-      '</dl><p class="help">Engine client IDs are process-local. Route spans record routing DP ranks. Mapping these to Nsight process ranks has not been established; rank selection shows shared activity.</p>';
+        '<div class="detail-heading">Identity bridge</div><dl class="facts"><dt>Client</dt><dd class="mono">' +
+        esc(r.id) +
+        '</dd><dt>Dynamo</dt><dd class="mono">' +
+        r.server_ids.map(esc).join("<br>") +
+        "</dd>";
+      for (const e of r.engine)
+        html += `<dt>${esc(e.worker)}</dt><dd>engine client ${esc(e.client_id)}<br><span class="mono">disagg ${esc(e.disagg_id)}</span></dd>`;
+      html += '</dl>';
+      if (r.engine.length)
+        html += '<p class="help">Engine client IDs are process-local. Router DP rank is not assumed to match a Nsight process rank; rank selection shows shared activity.</p>';
+    }
     if (r.issues.length)
       html += `<p class="warn">${r.issues.map(esc).join("; ")}</p>`;
     return html;
@@ -1120,7 +1143,7 @@
   }
   function evidenceInspector() {
     const r = selected();
-    return `<h3>Join coverage</h3><dl class="facts"><dt>Client requests</dt><dd>${fmt(D.audit.client_requests, 0)}</dd><dt>Client → Dynamo</dt><dd>${fmt(D.audit.clients_with_server_identity, 0)}</dd><dt>With lifecycle</dt><dd>${fmt(D.audit.clients_with_lifecycle, 0)}</dd><dt>Both engine maps</dt><dd>${fmt(D.audit.clients_with_both_engine_maps, 0)}</dd><dt>Ambiguous engine IDs</dt><dd>${D.audit.ambiguous_engine_ids}</dd></dl><h3>Timing and coverage</h3><ul class="quality-list">${[...D.meta.warnings, ...D.meta.limitations].map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="help">No negative residual is relabeled as execution time. Clock anchors remain uncorrected; GPU metrics preserve host / GPU labels.</p>${
+    return `<h3>Join coverage</h3><dl class="facts"><dt>Client requests</dt><dd>${fmt(D.audit.client_requests, 0)}</dd><dt>Client → Dynamo</dt><dd>${fmt(D.audit.clients_with_server_identity, 0)}</dd>${D.audit.clients_with_lifecycle ? `<dt>With lifecycle</dt><dd>${fmt(D.audit.clients_with_lifecycle, 0)}</dd>` : ""}<dt>Both engine maps</dt><dd>${fmt(D.audit.clients_with_both_engine_maps, 0)}</dd><dt>Ambiguous engine IDs</dt><dd>${D.audit.ambiguous_engine_ids}</dd></dl><h3>Timing and coverage</h3><ul class="quality-list">${[...D.meta.warnings, ...D.meta.limitations].map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="help">No negative residual is relabeled as execution time. Clock anchors remain uncorrected; GPU metrics preserve host / GPU labels.</p>${
       r
         ? evidence(r.evidence, "Client record") +
           r.bridge_evidence
@@ -1149,9 +1172,11 @@
       "const x = window.traceExplorer;",
       "x.selectRange(10, 20);",
       "x.queryRequests({limit: 10});",
-      `x.getLifecycle("${id}");`,
       `x.selectRequest("${id}");`,
-      `x.expandRequest("${id}");`,
+      `x.getRequest("${id}");`,
+      ...(hasLifecycle(selected())
+        ? [`x.getLifecycle("${id}");`, `x.expandRequest("${id}");`]
+        : []),
       'x.inspectNsys({worker: "prefill-0", rank: 0});',
       "x.queryNsys({limit: 20});",
       "x.queryMetrics();",
@@ -1353,7 +1378,7 @@
         fitRequest: () => r && fitRange(r.start, r.end),
         fitTTFT: () => {
           if (r && r.first !== null) {
-            state.expandedRequests.add(r.id);
+            if (hasLifecycle(r)) state.expandedRequests.add(r.id);
             fitRange(r.start, r.first);
           }
         },
@@ -1619,11 +1644,12 @@
     `Run ${D.meta.job} · ${D.workers.filter((w) => w.role === "prefill").length} prefill / ${D.workers.filter((w) => w.role === "decode").length} decode workers · ${D.meta.phase} client phase`;
   $("joinBadge").textContent =
     `${fmt(D.audit.clients_with_server_identity, 0)} / ${fmt(D.requests.length, 0)} client → server`;
+  $("joinBadge").style.display = D.audit.clients_with_server_identity ? "" : "none";
   $("joinBadge").classList.add(
     D.audit.clients_with_server_identity === D.requests.length ? "ok" : "warn",
   );
   $("coverageNotice").innerHTML =
-    `<strong>Imported:</strong> ${D.requests.length} clients · ${D.audit.joined_spans ?? 0} joined OTel spans · ${D.metrics.length} metric series · ${D.profiles.length} Nsight exports. ${D.meta.warnings.map(esc).join(" ")} <button data-tab="evidence">View evidence</button>`;
+    `<strong>Imported:</strong> ${D.requests.length} clients${D.audit.joined_spans ? ` · ${D.audit.joined_spans} joined OTel spans` : ""} · ${D.metrics.length} metric series · ${D.profiles.length} Nsight exports. ${D.meta.warnings.map(esc).join(" ")} <button data-tab="evidence">View evidence</button>`;
   if (D.meta.qualification?.passed)
     $("runSubtitle").textContent += " · capture qualified";
   const candidates = [...D.requests]

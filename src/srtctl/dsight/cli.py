@@ -27,6 +27,9 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     build.add_argument(
         "--nsys-sqlite", type=Path, dest="sqlites", help="Existing Nsight SQLite exports; does not enable profiling"
     )
+    build.add_argument(
+        "--no-otel", action="store_false", dest="otel", help="Skip OTel import and request lifecycle breakdowns"
+    )
     build.add_argument("--job", help="Display identifier (default: parent directory of logs)")
     build.add_argument(
         "--phase", default="profiling", help="Client benchmark_phase to include; 'all' includes warmup explicitly"
@@ -69,6 +72,7 @@ def run(args: argparse.Namespace) -> int:
                 client=args.client,
                 metrics=args.metrics,
                 sqlites=args.sqlites,
+                otel=args.otel,
                 job=args.job,
                 phase=args.phase,
                 iteration_timezone=args.iteration_timezone,

@@ -560,6 +560,8 @@ independent of the benchmark job workflow.
 
 ```bash
 srtctl dsight build outputs/<job_id> --output reports/<job_id>
+# Optional: skip OTel processing and lifecycle breakdowns.
+srtctl dsight build outputs/<job_id> --output reports/<job_id> --no-otel
 srtctl dsight query reports/<job_id> summary
 srtctl dsight query reports/<job_id> requests --from 10 --to 20 --limit 10
 ```

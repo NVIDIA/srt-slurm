@@ -190,6 +190,7 @@ def test_real_source_joins_and_inclusive_lifecycle(artifacts):
     assert {e["process"] for e in request["engine"]} == {"epoch-prefill", "epoch-decode"}
     assert all(not e["identity_ambiguous"] for e in request["engine"])
     model = request["lifecycle"]
+    assert model["available"]
     assert not model["issues"]
     stages = model["stages"]
     assert sum(s["end"] - s["start"] for s in stages) == pytest.approx(8)
@@ -206,6 +207,8 @@ def test_real_source_joins_and_inclusive_lifecycle(artifacts):
     assert raw["dselect"]["routing_context"]["phase"] == "Decode"
     # A worker-local engine ID reused by another worker must not collide.
     assert data["audit"]["ambiguous_engine_ids"] == 0
+    assert data["requests"][1]["lifecycle"]["available"] is False
+    assert data["requests"][1]["lifecycle"]["stages"] == []
     assert data["requests"][1]["lifecycle"]["activities"] == []
     assert data["requests"][1]["status"] == "cancelled"
 
@@ -243,10 +246,51 @@ def test_missing_optional_sources_still_build_a_client_dashboard(artifacts, tmp_
     result = build_dashboard(bare, tmp_path / "dashboard")
     assert result["counts"]["requests"] == 2
     assert result["counts"]["profiles"] == 0
-    assert "client timing only" in " ".join(result["meta"]["warnings"])
+    assert result["audit"]["clients_with_lifecycle"] == 0
+    assert not any("lifecycle" in warning or "OTel" in warning for warning in result["meta"]["warnings"])
+    assert query_trace(result["output"], "lifecycle", request_id=CLIENT)["available"] is False
     html = Path(result["html"]).read_text()
     assert "__TRACE_DATA_GZIP_BASE64__" not in html
     assert '<script src="' not in html
+
+
+@pytest.mark.parametrize("mode", ["missing", "empty", "unjoined", "unsupported", "disabled"])
+def test_optional_otel_preserves_independent_sources(artifacts, mode):
+    logs, sqlites = artifacts
+    path = next(logs.glob("otel/*/traces.jsonl"))
+    if mode == "missing":
+        path.unlink()
+    elif mode == "empty":
+        path.write_text("")
+    elif mode == "unjoined":
+        path.write_text(path.read_text().replace(SERVER, "33333333-3333-4333-8333-333333333333"))
+    elif mode == "unsupported":
+        doc = json.loads(path.read_text())
+        for span in doc["resourceSpans"][0]["scopeSpans"][0]["spans"]:
+            span["name"] = "request.lifecycle"
+        path.write_text(json.dumps(doc) + "\n")
+    else:
+        # Explicit opt-out must not even parse an existing, malformed OTel file.
+        path.write_text("not valid OTLP JSON\n")
+    data = Importer(logs, sqlites, otel=mode != "disabled", iteration_timezone="UTC").run()
+    assert data["meta"]["otel_enabled"] is (mode != "disabled")
+    assert data["audit"]["clients_with_lifecycle"] == 0
+    for request in data["requests"]:
+        model = TraceDataset(data).query("lifecycle", request_id=request["id"])
+        assert model["available"] is False
+        assert all(model[field] == [] for field in ("stages", "activities", "milestones", "rows"))
+    assert data["requests"][0]["ttft_ms"] == 3000
+    assert data["requests"][0]["workers"] == ["decode-0", "prefill-0"]
+    assert data["requests"][0]["bridge_evidence"]
+    assert len(data["metrics"]) == 2
+    assert len(data["profiles"]) == 1
+    assert len(data["iterations"]) == 2
+    if mode in ("missing", "empty", "disabled"):
+        assert not any(source["kind"] == "otel" for source in data["sources"])
+    if mode != "unsupported":
+        assert data["audit"]["joined_spans"] == 0
+        assert all(not request["spans"] for request in data["requests"])
+        assert all(entry["process"] is None for entry in data["requests"][0]["engine"])
 
 
 def test_queries_match_evidence_and_are_bounded(artifacts):
@@ -320,12 +364,16 @@ def test_rebuild_is_safe_and_mcp_reads_new_generation(artifacts, tmp_path, monke
     assert result["counts"]["profiles"] == 1
 
 
-def test_cli_and_embedded_data_share_the_same_contract(artifacts, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("no_otel", [False, True])
+def test_cli_and_embedded_data_share_the_same_contract(artifacts, tmp_path, monkeypatch, capsys, no_otel):
     from srtctl.cli.submit import main
 
     logs, _ = artifacts
     out = tmp_path / "out"
-    monkeypatch.setattr(sys, "argv", ["srtctl", "dsight", "build", str(logs), "--output", str(out)])
+    args = ["srtctl", "dsight", "build", str(logs), "--output", str(out)]
+    if no_otel:
+        args.append("--no-otel")
+    monkeypatch.setattr(sys, "argv", args)
     with pytest.raises(SystemExit) as exit_info:
         main()
     assert exit_info.value.code == 0
@@ -333,6 +381,8 @@ def test_cli_and_embedded_data_share_the_same_contract(artifacts, tmp_path, monk
     assert result["counts"]["requests"] == 2
     payload = json.loads(gzip.decompress((out / "trace-data.json.gz").read_bytes()))
     assert payload["schema"] == "srtctl-trace/1"
+    assert payload["meta"]["otel_enabled"] is not no_otel
+    assert payload["requests"][0]["lifecycle"]["available"] is not no_otel
     monkeypatch.setattr(sys, "argv", ["srtctl", "dsight", "query", str(out), "requests", "--from", "0", "--to", "4"])
     with pytest.raises(SystemExit) as exit_info:
         main()

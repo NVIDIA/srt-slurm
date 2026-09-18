@@ -73,6 +73,7 @@ def lifecycle(request: Record) -> Record:
     No timestamp proximity join or clock correction is performed. Multiple
     attempts, repeated milestones, or non-monotonic clocks leave only the
     measured client split; raw activities remain available for inspection.
+    Without supported OTel activities, no request breakdown is constructed.
     """
     activities: list[Record] = []
     for span in request["spans"]:
@@ -80,6 +81,18 @@ def lifecycle(request: Record) -> Record:
         if definition:
             label, kind, description = definition
             activities.append({**span, "label": label, "kind": kind, "description": description})
+    if not activities:
+        return {
+            "request": request["id"],
+            "available": False,
+            "layout": "cumulative-milestones",
+            "stages": [],
+            "activities": [],
+            "milestones": [],
+            "issues": [],
+            "rows": [],
+            "timing": "",
+        }
     activities.sort(key=lambda s: (s["start"], -s["end"], s["trace"], s["id"]))
     keys = {(s["trace"], s["id"]): s for s in activities}
     for span in activities:
@@ -202,6 +215,7 @@ def lifecycle(request: Record) -> Record:
         previous = item
     return {
         "request": request["id"],
+        "available": True,
         "layout": "cumulative-milestones",
         "stages": stages,
         "activities": activities,

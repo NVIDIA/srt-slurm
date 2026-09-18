@@ -6,6 +6,8 @@ from a preserved run:
 
 ```bash
 uv run srtctl dsight build outputs/601843 --output reports/601843
+# Skip OTel processing, even when trace files exist:
+uv run srtctl dsight build outputs/601843 --output reports/601843 --no-otel
 # Optional existing profiles and a known timezone for TRT-LLM iteration logs:
 uv run srtctl dsight build outputs/601843 --output reports/601843 \
   --nsys-sqlite exported-sqlites/ --iteration-timezone America/Los_Angeles
@@ -33,6 +35,14 @@ the importer checks registered source files for changes during generation.
 Pass a run directory containing `logs/`, or the log directory itself. Multiple
 client exports require `--client /path/to/export.jsonl`; DSight does not silently
 mix concurrency sweeps or duplicated exports.
+
+OTel is optional and is imported automatically when available. Use `--no-otel`
+to skip reading OTel files entirely. A request without supported, correlated
+OTel activity has no lifecycle expansion button, stage rows, or source-measurement
+breakdown. This also applies to untraced requests in a partially traced run.
+Client request bars and their measured TTFT remain available, along with any
+independent worker logs, metrics, and Nsight exports. Empty request paths and
+identity bridges are omitted.
 
 | Input | Discovery / selection | Contribution |
 | --- | --- | --- |
@@ -71,8 +81,10 @@ report; a CUDA table's presence is reported separately from imported data.
 
 - Drag in the overview **or Client sessions & agents**, or enter From/To.
   All tracks follow the same time range.
-- Expand session → agent → request. **Expand lifecycle** and **Fit TTFT** reveal
-  cumulative rows: each appends elapsed time ending at its named milestone.
+- Expand session → agent → request. For requests with OTel activity, **Expand
+  lifecycle** reveals cumulative rows: each appends elapsed time ending at its
+  named milestone. **Fit TTFT** selects the client TTFT window and expands the
+  lifecycle only when available.
 - Click a milestone or raw span for boundaries and source references. Expand
   workers for operation/dispatch/response-pump nesting. Select a metric series
   explicitly when a worker has several rank/label combinations.
@@ -135,6 +147,11 @@ return total, offset, limit, range and items. Limits are at most 1,000; metric
 `summary`, `requests`, `request`, `lifecycle`, `metrics`, `profiles`, `nsys`,
 `cpu`, `iterations`, `sources`.
 
+Lifecycle queries return `available: false` and empty `stages`, `activities`,
+`milestones`, and `rows` when no supported OTel activity is joined. No fallback
+breakdown is synthesized from client timing. The browser's `getLifecycle()`
+returns the same model; `expandRequest()` keeps these requests unexpanded.
+
 ```python
 from srtctl.dsight.query import TraceDataset
 
@@ -178,4 +195,12 @@ port, a generated traced artifact, and no GPU:
 ```bash
 uv run --with websockets python tests/dsight_browser_check.py reports/601843/index.html \
   --port 9338 --out /tmp/dsight-browser-check --request <joined-client-request-id>
+```
+
+Check missing, empty, unjoined, disabled, and mixed OTel inputs with synthetic
+source files (uses the same isolated Chrome port):
+
+```bash
+uv run --with websockets python tests/dsight_optional_otel_check.py \
+  --port 9338 --out /tmp/dsight-optional-otel-check
 ```
