@@ -201,7 +201,7 @@ roles:
       enable-ep-weight-filter: true
       max-model-len: 1048576
       max-num-seqs: 64
-      max-num-batched-tokens: 256
+      max-num-batched-tokens: 448
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
