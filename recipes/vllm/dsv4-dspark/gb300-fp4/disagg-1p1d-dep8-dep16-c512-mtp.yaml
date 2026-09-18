@@ -150,7 +150,7 @@ roles:
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
-      speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
+      speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic"}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
       numa-bind-nodes: [0, 0, 1, 1]
@@ -212,7 +212,7 @@ roles:
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
-      speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
+      speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic"}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
       numa-bind-nodes: [0, 0, 1, 1]
