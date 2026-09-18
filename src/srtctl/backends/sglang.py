@@ -560,9 +560,8 @@ class SGLangProtocol:
             else ["python3", "-m", "dynamo.sglang.sidecar"]
         )
         sidecar.extend(["--grpc-endpoint", f"127.0.0.1:{grpc_port}"])
-        if relay_kv_events:
-            sidecar.append("--telemetry-only")
-        elif mode == "prefill":
+        # Dynamo selects serving or telemetry mode from the local engine metadata.
+        if is_leader and mode == "prefill":
             sidecar.extend(["--bootstrap-host", leader_ip])
         sidecar.extend(sidecar_config.sidecar_args)
 

@@ -18,6 +18,9 @@ from srtctl.backends import (
     VLLMProtocol,
     VLLMServerConfig,
 )
+from srtctl.cli.do_sweep import SweepOrchestrator
+from srtctl.core.config import load_config
+from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import DynamoConfig
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
@@ -169,11 +172,98 @@ def test_sglang_multinode_dp_sidecar_relays_follower_kv_events(mode: str, args: 
         kv_config = json.loads(engine[engine.index("--kv-events-config") + 1])
         assert kv_config["endpoint"] == f"tcp://*:{processes[node_rank].kv_events_port}"
         assert kv_config["topic"] == "cache events"
-        assert ("--telemetry-only" in sidecar) is (node_rank != 0)
+        assert "--telemetry-only" not in sidecar
         assert ("--bootstrap-host" in sidecar) is (mode == "prefill" and node_rank == 0)
         if mode != "agg":
             assert engine[engine.index("--disaggregation-mode") + 1] == mode
         assert 'wait -n "${ENGINE_PID}" "${SIDECAR_PID}"' in command[2]
+
+
+def test_sglang_disagg_dp_example_launches_two_disjoint_worker_groups(tmp_path: Path) -> None:
+    """Exercise recipe normalization, allocation, role grouping, and all four srun launches."""
+    recipe = Path(__file__).parents[1] / "examples/features/sglang-sidecar-multinode-disagg-dp.yaml"
+    with patch("srtctl.core.config.load_cluster_config", return_value={}):
+        config = load_config(recipe)
+    nodes = ("prefill0", "prefill1", "decode0", "decode1")
+    node_ips = {node: f"10.0.0.{index + 1}" for index, node in enumerate(nodes)}
+    runtime = RuntimeContext(
+        job_id="12345",
+        run_name=config.name,
+        nodes=Nodes(head=nodes[0], bench=nodes[0], infra=nodes[0], worker=nodes),
+        head_node_ip=node_ips[nodes[0]],
+        infra_node_ip=node_ips[nodes[0]],
+        log_dir=tmp_path,
+        model_path=Path("Qwen/Qwen3-0.6B"),
+        container_image=Path(config.model.container),
+        gpus_per_node=config.resources.gpus_per_node,
+        network_interface=None,
+        is_hf_model=True,
+        dynamo=config.dynamo,
+        request_plane=config.dynamo.request_plane,
+    )
+    orchestrator = SweepOrchestrator(config, runtime)
+
+    assert config.total_nodes == 4
+    assert config.dynamo.sidecar
+    assert config.frontend.args["router-mode"] == "kv"
+    assert [(endpoint.mode, endpoint.nodes, endpoint.total_gpus) for endpoint in orchestrator.endpoints] == [
+        ("prefill", nodes[:2], 2),
+        ("decode", nodes[2:], 2),
+    ]
+
+    def node_ip(node: str, _interface: str | None = None) -> str:
+        return node_ips[node]
+
+    with (
+        patch("srtctl.core.slurm.get_hostname_ip", side_effect=node_ip),
+        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", side_effect=node_ip),
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        managed = orchestrator.start_all_workers()
+
+    assert len(managed) == mock_srun.call_count == 4
+    for process, launch in zip(orchestrator.backend_processes, mock_srun.call_args_list, strict=True):
+        args = launch.kwargs
+        engine, sidecar = _sglang_launch_commands(args["command"])
+        prefill = process.endpoint_mode == "prefill"
+        leader = process.node_rank == 0
+        group_leader = nodes[0] if prefill else nodes[2]
+        assert process.gpu_indices == frozenset({0})
+        assert args["nodelist"] == [process.node]
+        assert managed[args["step_name"]].critical
+        assert args["env_to_set"]["DYN_REQUEST_PLANE"] == "nats"
+        assert args["env_to_set"]["DYN_EVENT_PLANE"] == "nats"
+        assert args["env_to_set"]["SGLANG_RUST_BUILD_MODE"] == "never"
+        assert engine[engine.index("--model-path") + 1] == "Qwen/Qwen3-0.6B"
+        assert engine[engine.index("--disaggregation-mode") + 1] == process.endpoint_mode
+        assert engine[engine.index("--disaggregation-transfer-backend") + 1] == "nixl"
+        assert engine[engine.index("--nnodes") + 1] == "2"
+        assert engine[engine.index("--node-rank") + 1] == str(process.node_rank)
+        assert engine[engine.index("--dist-init-addr") + 1].split(":")[0] == node_ips[group_leader]
+        assert engine[engine.index("--tensor-parallel-size") + 1] == "2"
+        assert engine[engine.index("--data-parallel-size") + 1] == "2"
+        assert "--enable-dp-attention" in engine
+        assert "--skip-server-warmup" in engine
+        assert "--incremental-streaming-output" in engine
+
+        assert ("--disaggregation-bootstrap-port" in engine) is prefill
+        assert ("--kv-events-config" in engine) is prefill
+        if prefill:
+            assert engine[engine.index("--disaggregation-bootstrap-port") + 1] == str(process.bootstrap_port)
+            kv_config = json.loads(engine[engine.index("--kv-events-config") + 1])
+            assert kv_config["endpoint"] == f"tcp://*:{process.kv_events_port}"
+            assert kv_config["publisher"] == "zmq"
+
+        assert (sidecar is not None) is (prefill or leader)
+        assert ("--grpc-port" in engine) is (prefill or leader)
+        if sidecar is not None:
+            grpc_port = engine[engine.index("--grpc-port") + 1]
+            assert sidecar[sidecar.index("--grpc-endpoint") + 1] == f"127.0.0.1:{grpc_port}"
+            assert "--telemetry-only" not in sidecar
+            assert ("--bootstrap-host" in sidecar) is (prefill and leader)
+            if prefill and leader:
+                assert sidecar[sidecar.index("--bootstrap-host") + 1] == node_ips[group_leader]
 
 
 @pytest.mark.parametrize(
@@ -217,7 +307,7 @@ def test_sglang_sidecar_only_runs_on_nodes_with_publishers(
         assert (sidecar is not None) is (node_rank in publisher_nodes)
         assert ("--grpc-port" in engine) is (node_rank in publisher_nodes)
         if sidecar is not None:
-            assert ("--telemetry-only" in sidecar) is (node_rank != 0)
+            assert "--telemetry-only" not in sidecar
 
 
 @pytest.mark.parametrize("kv_events_config", [None, False, {"aggregated": False}, {"decode": True}])
@@ -316,7 +406,7 @@ def test_sglang_follower_global_dp_port_offsets_do_not_collide_with_next_worker(
 
     follower_engine, follower_sidecar = _sglang_launch_commands(follower_command)
     local_engine, local_sidecar = _sglang_launch_commands(local_command)
-    assert follower_sidecar is not None and "--telemetry-only" in follower_sidecar
+    assert follower_sidecar is not None and "--telemetry-only" not in follower_sidecar
     assert local_sidecar is not None and "--telemetry-only" not in local_sidecar
     follower_config = json.loads(follower_engine[follower_engine.index("--kv-events-config") + 1])
     local_config = json.loads(local_engine[local_engine.index("--kv-events-config") + 1])

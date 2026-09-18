@@ -1,5 +1,6 @@
 # One aggregate SGLang attention-DP worker across two physical nodes.
 # Node 0 serves inference; node 1's telemetry-only sidecar relays local KV events.
+# Dynamo selects each sidecar's mode from its local engine metadata.
 # The Dynamo KV router can select either global DP rank through the same worker.
 #
 # Restart all engines and sidecars together after failure. Independent sidecar
