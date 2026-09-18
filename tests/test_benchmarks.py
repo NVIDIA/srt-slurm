@@ -3,6 +3,8 @@
 
 """Tests for benchmark runners."""
 
+from pathlib import Path
+
 import pytest
 
 from srtctl.benchmarks import get_runner, list_benchmarks
@@ -1851,6 +1853,44 @@ class TestRunPostEval:
         assert env_to_set["MODEL"] == "test-model"
         assert env_to_set["MODEL_NAME"] == "test-model"
 
+    def test_benchmark_env_passthrough(self):
+        """benchmark.env reaches eval verbatim (no template expansion); workflow variables still win."""
+        import os
+        import threading
+        from unittest.mock import MagicMock, patch
+
+        metadata = '{\n  "name": "cache", "capacity": 128\n}'
+        orch = self._make_orchestrator()
+        orch.config.benchmark.env.update(
+            {
+                "KV_OFFLOAD_BACKEND_METADATA": metadata,
+                "CLIENT_LITERAL": "${HOME}/{unresolved}",
+                "ISL": "recipe-value",
+            }
+        )
+        stop = threading.Event()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+        captured_kwargs = {}
+
+        def capture_srun(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_proc
+
+        with (
+            patch.dict(os.environ, {"EVAL_ONLY": "false", "ISL": "1024"}, clear=False),
+            patch("srtctl.cli.do_sweep.wait_for_port", return_value=True),
+            patch("srtctl.cli.do_sweep.start_srun_process", side_effect=capture_srun),
+        ):
+            orch._run_post_eval(stop)
+
+        env = captured_kwargs["env_to_set"]
+        assert env["KV_OFFLOAD_BACKEND_METADATA"] == metadata
+        assert env["CLIENT_LITERAL"] == "${HOME}/{unresolved}"
+        assert env["ISL"] == "1024"
+
     def test_eval_conc_from_env(self):
         """EVAL_CONC from env takes priority over benchmark concurrencies."""
         import os
@@ -1935,6 +1975,43 @@ class TestSweepRunEvalIntegration:
     @staticmethod
     def _make_orchestrator():
         return TestRunPostEval._make_orchestrator()
+
+    @pytest.mark.parametrize(("frontend_type", "needs_infra"), [("atomesh", False), ("dynamo", True)])
+    def test_only_dynamo_starts_head_infrastructure(
+        self, frontend_type: str, needs_infra: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An ATOM/AToMesh run reaches the benchmark without a discovery plane; Dynamo still starts it."""
+        from dataclasses import replace
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import AtomProtocol
+        from srtctl.core.schema import FrontendConfig
+
+        orch = self._make_orchestrator()
+        orch.config = replace(
+            orch.config,
+            frontend=FrontendConfig(type=frontend_type),
+            backend=AtomProtocol() if frontend_type == "atomesh" else orch.config.backend,
+        )
+        orch.runtime = replace(orch.runtime, log_dir=tmp_path / "logs")
+        orch.runtime.log_dir.mkdir()
+        monkeypatch.setenv("EVAL_ONLY", "false")
+        monkeypatch.setenv("RUN_EVAL", "false")
+        with (
+            patch.object(orch, "start_head_infrastructure", return_value=MagicMock()) as head,
+            patch.object(orch, "start_all_workers", return_value={}),
+            patch.object(orch, "start_frontend", return_value=[]),
+            patch.object(orch, "run_benchmark", return_value=0) as benchmark,
+            patch.object(orch, "run_postprocess"),
+            patch("srtctl.cli.do_sweep.StatusReporter"),
+        ):
+            assert orch.run() == 0
+
+        benchmark.assert_called_once()
+        if needs_infra:
+            head.assert_called_once()
+        else:
+            head.assert_not_called()
 
     def test_run_eval_only_mode(self):
         """EVAL_ONLY=true skips benchmark and runs _run_post_eval."""

@@ -9,6 +9,7 @@ Supported backends:
 - TRTLLM: TensorRT-LLM backend with prefill/decode disaggregation
 """
 
+from .atom import AtomProtocol, AtomServerConfig
 from .base import BackendProtocol, BackendType, SrunConfig
 from .mocker import MockerProtocol, MockerServerConfig
 from .sglang import SGLangProtocol, SGLangServerConfig
@@ -16,9 +17,12 @@ from .trtllm import TRTLLMProtocol, TRTLLMServerConfig
 from .vllm import VLLMProtocol, VLLMServerConfig
 
 # Union type for all backend configs
-BackendConfig = SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
+BackendConfig = AtomProtocol | SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
 
 __all__ = [
+    # ATOM
+    "AtomProtocol",
+    "AtomServerConfig",
     "BackendConfig",
     # Base types
     "BackendProtocol",

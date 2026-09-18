@@ -13,6 +13,25 @@ import yaml
 from srtctl.cli import submit as submit_cli
 from srtctl.core.config import load_config
 
+
+def test_wait_cli_propagates_job_failure(monkeypatch, capsys, tmp_path: Path) -> None:
+    from srtctl.core.slurm import SlurmJobResult
+
+    log = tmp_path / "sweep.log"
+
+    def wait(job_id, *, log_path):
+        assert job_id == "42"
+        assert log_path == log
+        return SlurmJobResult("42", "FAILED", 7, 0)
+
+    monkeypatch.setattr("srtctl.core.slurm.wait_for_job", wait)
+    monkeypatch.setattr(sys, "argv", ["srtctl", "wait", "42", "--log-file", str(log)])
+    with pytest.raises(SystemExit) as failure:
+        submit_cli.main()
+    assert failure.value.code == 7
+    assert "FAILED (7:0)" in capsys.readouterr().out
+
+
 MINIMAL_DRY_RUN_CONFIG = {
     "name": "stdin-dry-run",
     "model": {

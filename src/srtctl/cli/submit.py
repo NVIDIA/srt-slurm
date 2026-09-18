@@ -250,6 +250,9 @@ def show_config_details(config: SrtConfig) -> None:
     environment variables (global and backend per-mode) so users can verify their
     config is correct before submitting.
     """
+    visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
+    console.print(f"GPU subset visibility variable: {visible_devices_env}")
+
     if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
         from srtctl.backends.trtllm import TRTLLMProtocol
 
@@ -2089,6 +2092,10 @@ def main():
     )
     add_override_args(preflight_parser)
 
+    wait_parser = subparsers.add_parser("wait", help="Wait for a submitted Slurm job and return its exit status")
+    wait_parser.add_argument("job_id", help="Slurm job ID returned by apply --json")
+    wait_parser.add_argument("--log-file", type=Path, help="Stream this shared-filesystem log while waiting")
+
     monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
     monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -2389,6 +2396,23 @@ def main():
             sys.exit(1)
         restore_console()
         return
+
+    if args.command == "wait":
+        from srtctl.core.slurm import wait_for_job
+
+        try:
+            result = wait_for_job(args.job_id, log_path=args.log_file)
+        except (ValueError, OSError) as error:
+            console.print(f"[bold red]Error:[/] {error}")
+            restore_console()
+            sys.exit(1)
+        except KeyboardInterrupt:
+            console.print("Stopped observing; the Slurm job has not been cancelled.")
+            restore_console()
+            sys.exit(130)
+        console.print(f"Job {result.job_id}: {result.state} ({result.exit_code}:{result.signal})")
+        restore_console()
+        sys.exit(result.returncode)
 
     if args.command == "monitor":
         from srtctl.cli.monitor import main as _monitor_main

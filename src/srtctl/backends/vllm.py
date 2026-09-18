@@ -32,6 +32,7 @@ from srtctl.ports import (
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     VLLM_DATA_PARALLEL_RPC_PORT,
+    VLLM_DISCOVERY_PORT,
     VLLM_MASTER_PORT_BASE,
     VLLM_MASTER_PORT_STRIDE,
     VLLM_PORT_BASE,
@@ -337,10 +338,10 @@ class VLLMProtocol:
     # vLLM server CLI config per mode
     vllm_config: VLLMServerConfig | None = None
 
-    # Legacy device binding for vLLM builds without --device-ids.
-    set_cuda_visible_devices: bool = False
+    # Use an environment mask instead of the engine's --device-ids option.
+    set_visible_devices: bool = False
 
-    # Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config.
+    # Default KV connector: "nixl", "lmcache", "moriio", or a raw JSON string for --kv-transfer-config.
     # Can be overridden per role by setting "connector" in roles.<role>.args.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
@@ -541,6 +542,16 @@ class VLLMProtocol:
 
         return environment
 
+    def get_connector_for_mode(self, mode: WorkerMode) -> str | None:
+        """Return the effective connector after applying a mode override."""
+        config = self.get_config_for_mode(mode)
+        mode_connector = config.get("connector")
+        return mode_connector if mode_connector is not None else self.connector
+
+    def uses_moriio(self) -> bool:
+        """Whether this backend uses srtctl's managed MoRI-IO integration."""
+        return isinstance(self.connector, str) and self.connector.lower() == "moriio"
+
     def get_process_environment(self, process: Process) -> dict[str, str]:
         """Get process-specific environment variables for vLLM workers.
 
@@ -559,7 +570,9 @@ class VLLMProtocol:
         env: dict[str, str] = {}
         if process.kv_events_port is not None:
             env["DYN_VLLM_KV_EVENT_PORT"] = str(process.kv_events_port)
-        if process.nixl_port is not None:
+        connector = self.get_connector_for_mode(process.endpoint_mode)
+        uses_moriio = isinstance(connector, str) and connector.lower() == "moriio"
+        if process.nixl_port is not None and not uses_moriio:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
             env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
         # Unique per-process VLLM_PORT base to avoid EADDRINUSE rendezvous races
@@ -567,8 +580,13 @@ class VLLMProtocol:
         # 4xGB200 nodes: each prefill endpoint is DEP2 (uses 2 of the 4 GPUs), so
         # two endpoints share one physical node and would otherwise scan
         # overlapping get_open_port() ranges.
-        proc_index = max(process.sys_port - DYN_SYSTEM_PORT_BASE, 0)
-        env["VLLM_PORT"] = str(VLLM_PORT_BASE + proc_index * VLLM_PORT_STRIDE)
+        # MoRI allocates listeners inside TP child processes, which inherit the
+        # same environment. A fixed scan base makes get_open_port() return the
+        # same unbound port to multiple ranks. Let upstream request ephemeral
+        # ports from the kernel instead; keep existing non-MoRI rendezvous bases.
+        if not uses_moriio:
+            proc_index = max(process.sys_port - DYN_SYSTEM_PORT_BASE, 0)
+            env["VLLM_PORT"] = str(VLLM_PORT_BASE + proc_index * VLLM_PORT_STRIDE)
         return env
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
@@ -900,14 +918,9 @@ class VLLMProtocol:
             flags.extend(["--master-port", str(base + process.engine_id * VLLM_MASTER_PORT_STRIDE)])
         return flags
 
-    def should_set_cuda_visible_devices(self, process: Process) -> bool:
-        """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
-
-        Newer vLLM builds should use ``--device-ids`` instead. Older builds
-        before https://github.com/vllm-project/vllm/pull/45026 should set
-        CUDA_VISIBLE_DEVICES.
-        """
-        return self.set_cuda_visible_devices
+    def should_set_visible_devices(self) -> bool:
+        """Whether worker launch should set the cluster-configured GPU mask."""
+        return self.set_visible_devices
 
     def endpoints_to_processes(
         self,
@@ -1209,7 +1222,10 @@ class VLLMProtocol:
                 mode_connector = config.pop("connector", None)
                 connector = mode_connector if mode_connector is not None else self.connector
                 if mode in {"prefill", "decode"} and connector and connector not in ("null", "none", None):
-                    config.setdefault("kv-transfer-config", _connector_to_kv_transfer_config(connector))
+                    config.setdefault(
+                        "kv-transfer-config",
+                        _build_direct_kv_transfer_config(connector, mode, process, runtime),
+                    )
 
             node_rank = endpoint_nodes.index(process.node)
             serve_binary = self.vllm_serve_binary if frontend_type == "vllm" else "vllm"
@@ -1307,7 +1323,7 @@ class VLLMProtocol:
                             process.node,
                         )
             _log_overridden_recipe_flags(overridden, srtslurm_owned, process.node)
-            if not self.set_cuda_visible_devices:
+            if not self.should_set_visible_devices():
                 device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
                 if device_ids:
                     cmd.extend(["--device-ids", device_ids])
@@ -1344,7 +1360,7 @@ class VLLMProtocol:
         # Under failover the worker stage pins CUDA_VISIBLE_DEVICES instead: the
         # engines and their GMS sidecar must see the same device list so that
         # "device k" means the same GPU (and the same socket) in all of them.
-        if not self.set_cuda_visible_devices and self.failover is None:
+        if not self.should_set_visible_devices() and self.failover is None:
             device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
             if device_ids:
                 cmd.extend(["--device-ids", device_ids])
@@ -1620,6 +1636,32 @@ def _connector_to_kv_transfer_config(connector: str) -> str:
     if preset is not None:
         return json.dumps(preset)
     return connector
+
+
+def _build_direct_kv_transfer_config(
+    connector: str,
+    mode: WorkerMode,
+    process: Process,
+    runtime: RuntimeContext,
+) -> str:
+    """Build connector JSON that depends on the realized Slurm topology."""
+    if connector.lower() != "moriio":
+        return _connector_to_kv_transfer_config(connector)
+    if mode not in {"prefill", "decode"}:
+        raise ValueError("MoRI-IO requires a prefill/decode topology")
+
+    return json.dumps(
+        {
+            "kv_connector": "MoRIIOConnector",
+            "kv_role": "kv_producer" if mode == "prefill" else "kv_consumer",
+            "kv_connector_extra_config": {
+                "proxy_ip": runtime.head_node_ip,
+                "proxy_ping_port": str(VLLM_DISCOVERY_PORT),
+                "http_port": str(process.http_port),
+                "read_mode": True,
+            },
+        }
+    )
 
 
 def _config_to_cli_args(config: dict[str, Any]) -> list[str]:

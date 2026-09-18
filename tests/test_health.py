@@ -3,10 +3,14 @@
 
 """Tests for health check parsing (Dynamo and SGLang router)."""
 
+from unittest.mock import Mock
+
+import pytest
 from srtctl.core.health import (
     WorkerHealthResult,
     check_dynamo_health,
     check_sglang_router_health,
+    wait_for_model,
 )
 
 # ============================================================================
@@ -427,3 +431,43 @@ class TestWorkerHealthResult:
 
         assert result.prefill_ready == 2
         assert result.decode_ready == 4
+
+
+def test_vllm_router_dynamic_discovery_health_uses_generation_probe(monkeypatch):
+    """MoRI discovery readiness must validate the live P/D request path."""
+    response = Mock(status_code=200)
+    post = Mock(return_value=response)
+    get = Mock()
+    monkeypatch.setattr("srtctl.core.health.requests.post", post)
+    monkeypatch.setattr("srtctl.core.health.requests.get", get)
+
+    assert wait_for_model(
+        "router-host",
+        8000,
+        frontend_type="vllm-router",
+        model_name="Qwen/Qwen3-0.6B",
+        dynamic_worker_discovery=True,
+        timeout=1,
+    )
+    get.assert_not_called()
+    post.assert_called_once_with(
+        "http://router-host:8000/v1/completions",
+        json={
+            "model": "Qwen/Qwen3-0.6B",
+            "prompt": "srtctl readiness probe",
+            "max_tokens": 1,
+            "temperature": 0,
+        },
+        timeout=30.0,
+    )
+
+
+def test_vllm_router_dynamic_discovery_health_requires_model():
+    with pytest.raises(ValueError, match="model_name is required"):
+        wait_for_model(
+            "router-host",
+            8000,
+            frontend_type="vllm-router",
+            dynamic_worker_discovery=True,
+            timeout=1,
+        )

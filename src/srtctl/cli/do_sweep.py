@@ -546,7 +546,9 @@ class SweepOrchestrator(
         # Pass through eval-related env vars. InferenceX writes multi-node
         # metadata from these variables in append_lm_eval_summary(). The recipe
         # extends this list with post_eval.passthrough_env.
-        env_to_set = {}
+        # Preserve benchmark values verbatim, just like the custom runner:
+        # JSON metadata and shell literals are data, not runtime templates.
+        env_to_set = dict(self.config.benchmark.env)
         for var in [
             *self.config.post_eval.passthrough_env,
             "RUN_EVAL",

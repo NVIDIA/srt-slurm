@@ -42,6 +42,10 @@ MOONCAKE_METRICS_PORT = 8702
 
 # vLLM backend ports.
 VLLM_NIXL_PORT_BASE = 5400
+# ZMQ registration endpoint used by discovery-based vLLM P/D connectors such
+# as MoRI-IO. Workers register their HTTP and transfer addresses with the
+# router at this port.
+VLLM_DISCOVERY_PORT = 36367
 VLLM_DATA_PARALLEL_RPC_PORT = 8400
 VLLM_PORT_BASE = 20000
 VLLM_PORT_STRIDE = 50

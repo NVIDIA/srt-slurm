@@ -43,6 +43,18 @@ This page is the prose guide: what each block means, how the pieces interact, an
 
 ## Overview
 
+### ATOM with AToMesh
+
+Use `engine: atom` with `frontend.type: atomesh` to launch native
+`atom.entrypoints.openai_server` workers and the official AToMesh router. Both
+aggregate workers and prefill/decode topologies use static HTTP endpoints;
+disaggregated workers receive topology-owned Mooncake handshake ports.
+
+Engine flags belong under `roles.prefill.args`, `roles.decode.args`, or
+`roles.agg.args` (schema v2).
+srt-slurm owns the model path, HTTP port, tensor parallel size, and KV-transfer
+contract, so recipes cannot override those arguments.
+
 ```yaml
 schema: 2                      # Required: recipe layout version
 name: "my-benchmark"           # Required: job name
@@ -134,6 +146,8 @@ The `srtslurm.yaml` file can contain the following fields:
 | `gpus_per_node`                 | int    | Default GPUs per node (applied to recipes that omit `resources.gpus_per_node`) |
 | `default_gpu_type`              | string | Default `resources.gpu_type` for recipes that omit it |
 | `network_interface`             | string | Network interface for NCCL                            |
+| `visible_devices_env`           | string | Worker GPU-subset mask; defaults to `CUDA_VISIBLE_DEVICES` |
+| `default_gpu_exporter`          | dict/null | Cluster GPU exporter; defaults to DCGM, explicit null disables it |
 | `srtctl_root`                   | string | Root directory for srtctl                             |
 | `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
 | `model_paths`                   | dict   | Model path aliases                                    |
@@ -241,6 +255,22 @@ model:
 
 ## engine
 
+GPU scheduling uses upstream's existing cluster settings. For eight-GPU
+allocations on GRES-only clusters, set `use_gpus_per_node_directive: false`
+and `default_sbatch_directives: {gres: "gpu:8"}`.
+
+### GPU visibility on AMD
+
+Set `visible_devices_env: ROCR_VISIBLE_DEVICES` in the cluster profile for ROCm
+workers. GPU subsets then use only that mask, without applying a second mask to
+already-renumbered devices. Set `default_gpu_exporter: null` to disable the
+NVIDIA GPU exporter, or configure an exporter image, port, and command once for
+the cluster. Other telemetry is unchanged; an explicit recipe exporter wins.
+
+For vLLM builds without `--device-ids`, set `engine.set_visible_devices: true`.
+This is one explicit boolean, not automatic vLLM version detection. The default
+is false: vLLM binds devices with `--device-ids`. There is no CUDA-named alias.
+
 `engine:` names the inference engine that builds every worker role's command. A bare string is the common form; a mapping carries the engine-wide knobs, the fields that are not per role:
 
 ```yaml
@@ -271,7 +301,7 @@ Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. Everything that is per
 | Engine | Engine-wide knobs |
 | --- | --- |
 | `sglang-router` | none beyond `type` |
-| `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_cuda_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes` |
+| `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes` |
 | `trtllm` | `served_model_name`, `publish_metrics`, `publish_events_and_metrics`, `sequential_node_start`, `numa_memory_bind`, `numa_cpu_bind` |
 | `mocker` | the simulation parameters: `engine_type`, `speedup_ratio`, `decode_speedup_ratio`, `num_gpu_blocks_override`, `max_num_seqs`, `max_num_batched_tokens`, `block_size`, `data_parallel_size`, ... |
 
@@ -637,6 +667,36 @@ frontend:
 | `container_image`           | str  | null          | Static-router image; falls back to `model.container` |
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
+
+### vllm-router frontend
+
+`type: vllm-router` pairs with `backend.type: vllm` and launches the official
+`vllm-router` process against direct private `vllm serve` endpoints. Aggregate
+layouts use `--worker-urls`; disaggregated layouts use
+`--vllm-pd-disaggregation` with the allocated prefill and decode URLs. For
+data-parallel endpoints, srtctl derives Router's
+`--intra-node-data-parallel-size` when one base URL owns the complete logical
+endpoint. Router then expands that URL into DP-aware targets and injects
+`X-Data-Parallel-Rank`; vLLM continues to own the engine processes behind that
+HTTP server. Multi-node DP endpoints instead expose one unexpanded hybrid-LB
+`vllm serve` pool per node, preserving each pool's nonzero global DP-rank
+offset, and require
+`backend.dp_launch_mode: per_node`. Direct `frontend.type: vllm` retains its
+existing single-server behavior. No NATS or etcd infrastructure is started for
+this frontend.
+
+For ROCm P/D deployments, `backend.connector: moriio` switches the same
+frontend to vLLM Router's ZMQ discovery mode. srtctl supplies
+`--kv-connector moriio`, owns the discovery port, and generates each direct
+`vllm serve` worker's role-aware `MoRIIOConnector` JSON from the realized Slurm
+node address and HTTP port. This mode requires one router on the head node, so
+set `frontend.enable_multiple_frontends: false`.
+
+Router's `/workers` response currently covers its static worker registry, not
+the MoRI ZMQ discovery registry. For dynamic MoRI discovery, srtctl therefore
+waits on a one-token `/v1/completions` probe instead. This validates that both
+roles have registered and that the complete Router-to-prefill-to-decode path is
+usable before the configured benchmark begins.
 
 ### trtllm_serve frontend
 

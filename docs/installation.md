@@ -51,6 +51,9 @@ If you are trying to deploy onto Grace (GH200, GB200, etc.), you need to use the
 make setup ARCH=aarch64  # or ARCH=x86_64
 ```
 
+Observe an existing job with `srtctl wait JOB_ID --log-file PATH`. It streams
+the shared log and returns the terminal job status, without cancelling jobs.
+
 The setup will:
 
 1. Download NATS, ETCD, uv, and the Tachometer scraper for your compute-node architecture
