@@ -1781,6 +1781,15 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # Offline artifact generation is explicit and never part of the job lifecycle.
+    from srtctl.dsight.cli import add_commands as add_dashboard_commands
+
+    add_dashboard_commands(
+        subparsers.add_parser(
+            "dsight", aliases=["dashboard"], help="Build and query an offline inference trace dashboard"
+        )
+    )
+
     def add_override_args(p):
         p.add_argument(
             "--set",
@@ -1991,6 +2000,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.command in ("dsight", "dashboard"):
+        from srtctl.dsight.cli import run as run_dashboard
+
+        raise SystemExit(run_dashboard(args))
 
     json_mode = bool(getattr(args, "json_output", False))
     mock_mode = bool(getattr(args, "mock_mode", False))

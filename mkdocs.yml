@@ -73,6 +73,7 @@ nav:
   - Operations:
       - Monitoring: monitoring.md
       - Component Performance Dashboard: component-dashboard.md
+      - DSight Trace Explorer: dsight.md
       - Router Post-Processing (ruter): ruter.md
       - SLURM FAQ: slurm-faq.md
   - Reference:

@@ -15,6 +15,7 @@ except ImportError:  # mcp 2.x renamed FastMCP to MCPServer and moved host/port 
 
     _V1 = False
 
+from srtctl.dsight.mcp import register as register_dsight
 from srtctl.mcp import job_tools
 from srtctl.mcp.spec_tools import (
     explain_field as explain_field_impl,
@@ -163,6 +164,9 @@ def list_jobs(user: str | None = None) -> dict[str, Any]:
 def cancel_job(job_id: str) -> dict[str, Any]:
     """scancel a job; srtctl stops every step it launched on the way out."""
     return job_tools.cancel_job(job_id)
+
+
+register_dsight(mcp)
 
 
 def main() -> None:

@@ -500,3 +500,18 @@ grep -E "Env:|Command:" outputs/<job_id>/logs/sweep_<job_id>.log
 - Use `srtctl apply -f` for scripting and CI pipelines
 - Always `dry-run` first for sweeps to check job count
 - Check `outputs/<job_id>/` for submitted configs and metadata
+
+### `srtctl dsight`
+
+Explicitly build or query the offline inference trace explorer. Generation is
+independent of the benchmark job workflow.
+
+```bash
+srtctl dsight build outputs/<job_id> --output reports/<job_id>
+srtctl dsight query reports/<job_id> summary
+srtctl dsight query reports/<job_id> requests --from 10 --to 20 --limit 10
+```
+
+The read-only MCP `query_trace` tool uses the generated dataset. See
+[DSight](dsight.md) for inputs, lifecycle semantics, Nsight imports, and the
+browser/Python APIs.

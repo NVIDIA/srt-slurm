@@ -29,8 +29,19 @@ description: Run srt-slurm (srtctl) inference benchmarks on a Slurm cluster. Use
 | `apply` flags: `--set`, `--serve-only`, `--tags`, `--json`, `--no-preflight` | `docs/cli.md` (srtctl apply) |
 | Sweeps and override files | `docs/sweeps.md`, `docs/overrides.md` |
 | What a job wrote and how to read it | `docs/monitoring.md` (Log Structure, benchmark.out) |
+| Build/query the offline client, worker and hardware timeline | `docs/dsight.md`; `srtctl dsight build` then `srtctl dsight query` or MCP `query_trace` |
 | Metrics and the per-run dashboard | `docs/component-dashboard.md` |
 
 ## MCP
 
 `srtctl-mcp` offers the schema tools (`schema_summary`, `explain_field`, `validate_config`, `resolve_config`, `get_config_reference`) anywhere, and the job tools (`submit_job`, `dry_run`, `job_status`, `job_logs`, `list_jobs`, `cancel_job`) when it runs on a login node inside the checkout. See `docs/README.md`.
+
+## Trace analysis
+
+Generate DSight explicitly from preserved artifacts with `srtctl dsight build`;
+it is not part of job execution. Read `docs/dsight.md` before interpreting its
+data. Start with `query_trace(kind="summary", dataset=...)` to check coverage,
+then query requests and lifecycle in a bounded time range. Worker operation
+spans are inclusive; frontend streaming is concurrent. Iteration/Nsight overlap
+is shared context, not request ownership. Use saved view links for human review.
+Never infer unrecorded queue/compute/KV timing from a residual.

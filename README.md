@@ -41,6 +41,7 @@ uv run srtctl skill --target cursor    # .cursor/rules/srtctl.mdc
 - [Monitoring](docs/monitoring.md) - Job logs and debugging
 - [Parameter Sweeps](docs/sweeps.md) - Grid searches
 - [Profiling](docs/profiling.md) - Torch/nsys profiling
+- [DSight trace explorer](docs/dsight.md) - explicitly build an offline client/worker/hardware timeline; query it through CLI or MCP
 - [Component Performance Dashboard](docs/component-dashboard.md) - the per-run HTML dashboard built from the tachometer parquet
 - [ruter](docs/ruter.md) - Dynamo router post-processing
 
