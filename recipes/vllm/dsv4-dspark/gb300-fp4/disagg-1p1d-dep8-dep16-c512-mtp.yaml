@@ -30,6 +30,7 @@ extra_mount:
 environment:
   # Mooncake prefix-block hashes must match across processes and nodes.
   PYTHONHASHSEED: "0"
+  WITH_NVIDIA_PEERMEM: "0"
 
 setup_script: vllm-container-deps-and-dynamo-wheel.sh
 
