@@ -495,13 +495,13 @@ class TestSidecarValidation:
     """Configuration contract for wheel-provided backend sidecars."""
 
     @staticmethod
-    def _config(*, frontend_type: str = "dynamo", backend=None):
+    def _config(*, frontend_type: str = "dynamo", backend=None, gpus_per_node: int = 1):
         from srtctl.core.schema import DynamoConfig, FrontendConfig, ModelConfig, ResourceConfig
 
         return SrtConfig(
             name="sidecar",
             model=ModelConfig(path="/model", container="/container.sqsh", precision="fp16"),
-            resources=ResourceConfig(gpu_type="h100", gpus_per_node=1, agg_nodes=1, agg_workers=1),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=gpus_per_node, agg_nodes=1, agg_workers=1),
             frontend=FrontendConfig(type=frontend_type),
             backend=backend or SGLangProtocol(),
             dynamo=DynamoConfig(wheel="1.5.0.dev20260828", sidecar=True),
@@ -526,6 +526,20 @@ class TestSidecarValidation:
 
         with pytest.raises(ValidationError, match="supports sglang, vllm, and trtllm backends only"):
             self._config(backend=MockerProtocol())
+
+    @pytest.mark.parametrize("dp_size", [1, 4])
+    def test_vllm_sidecar_rejects_per_gpu(self, dp_size: int) -> None:
+        """Reject a misleading launch layout before submission, even without DP."""
+        from marshmallow import ValidationError
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
+            vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": dp_size}),
+        )
+        with pytest.raises(ValidationError, match="sidecar mode requires engine.dp_launch_mode: per_node"):
+            self._config(backend=backend, gpus_per_node=dp_size)
 
 
 class TestSGLangProtocol:

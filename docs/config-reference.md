@@ -1192,7 +1192,32 @@ dynamo:
 
 The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
 
-SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. srtctl also adds `--incremental-streaming-output` to every SGLang sidecar engine (and logs that it did): the sidecar treats each gRPC chunk as a delta, and without the flag current SGLang builds stream the cumulative text per chunk, which shows up as repeated prefixes in responses and inflated token counts. Set `incremental-streaming-output` in the role's `args` yourself to override. vLLM automatically uses one managed process per node for data-parallel endpoints and exposes the complete DP group through the leader's sidecar. Multi-node tensor-parallel vLLM endpoints remain rejected until their `vllm-rs` launch path is validated. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from `roles.agg.args.max_seq_len`.
+SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. srtctl also adds `--incremental-streaming-output` to every SGLang sidecar engine (and logs that it did): the sidecar treats each gRPC chunk as a delta, and without the flag current SGLang builds stream the cumulative text per chunk, which shows up as repeated prefixes in responses and inflated token counts. Set `incremental-streaming-output` in the role's `args` yourself to override. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from `roles.agg.args.max_seq_len`.
+
+For multi-node vLLM data parallelism, srtctl launches one Rust gRPC frontend and one Dynamo sidecar on **every node** using hybrid load balancing. All nodes receive the global `--data-parallel-size`, while `--data-parallel-size-local` and `--data-parallel-start-rank` restrict each frontend to its colocated engines. For example, DP12 on three four-GPU nodes launches local DP4 with starting ranks 0, 4, and 8. Dynamo registers three endpoints, each covering its four local ranks. No node runs `--headless`, and readiness requires all three sidecars. vLLM sidecars require `engine.dp_launch_mode: per_node` (the default; `backend.dp_launch_mode` in schema 1); `per_gpu` is rejected during configuration validation, including for single-rank jobs.
+
+The multi-node DP command uses Python-supervised Rust frontends (`python3 -m vllm.entrypoints.cli.main serve` with `VLLM_USE_RUST_FRONTEND=1`). Python coordinates the shared DP rendezvous and starts `vllm-rs frontend` with each node's local engine count and starting rank; requests are handled by Rust. This is a current launcher limitation: `vllm-rs serve` expects to own the complete DP group and does not implement hybrid startup. Python supervision is not a fundamental requirement of the sidecar architecture. Single-node sidecars continue to use `vllm-rs serve`.
+
+Each Rust frontend has one API server; do not set `api-server-count` to another value or enable `grpc` (which selects the separate Python gRPC server) or `data-parallel-external-lb`.
+
+For a TP/PP replica spanning nodes (including TP+EP with `data-parallel-size: 1`),
+srtctl starts the Rust gRPC frontend and Dynamo sidecar **only on the leader**.
+Followers run native `vllm serve --headless`, without an API server or sidecar.
+All nodes share the leader address on the configured network interface and a
+per-endpoint rendezvous port, with derived `--nnodes`, `--node-rank`, and
+`--distributed-executor-backend mp`. TP × PP × PCP must equal the total allocated
+GPUs, distributed evenly across nodes. For example, TP8 on two four-GPU nodes is
+one Dynamo registration, not two. Recipe rendezvous overrides are replaced by
+these allocation-derived values; `api-server-count` is omitted on followers.
+With the default role setting `critical: true`, an unexpected exit on any node
+fails the job and stops all workers through the job-wide process monitor. Multiple cross-node DP replicas within one endpoint
+remain unsupported; use separate endpoints with DP=1 instead.
+
+This path requires the same Python-supervised Rust frontend `--grpc-port`
+integration described below. Native vLLM headless support alone is insufficient
+to provide the leader's sidecar transport.
+
+Hybrid sidecars require compatible changes in **both** projects: vLLM's Python `serve` command must support `--grpc-port` for its Rust frontend, the Rust Control service must report `ParallelismInfo.data_parallel_size_local`, and Dynamo's sidecar must register that local range using the reported global start rank. Stock vLLM 0.29.0 does not supply these interfaces. Pin a compatible image or source build; merely upgrading the Dynamo wheel is insufficient. To use a specific Rust binary in the multi-node path, set `VLLM_RUST_FRONTEND_PATH` in the recipe's worker environment. srtctl preserves that path and supplies the Rust frontend selection automatically.
 
 vLLM sidecar mode sets `VLLM_PLUGINS` to an empty value by default. This prevents image-installed plugins from replacing native engine output types that must match the fixed `vllm-rs` MessagePack contract. A recipe can explicitly set `VLLM_PLUGINS` in a role's `env` when every selected plugin is compatible with the sidecar protocol.
 
