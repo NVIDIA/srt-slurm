@@ -1,0 +1,2116 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/miles/">
+      
+      
+        <link rel="prev" href="../pools/">
+      
+      
+        <link rel="next" href="../accuracy/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Miles RL Post-Training - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#miles-rl-post-training" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Miles RL Post-Training
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../accuracy/" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-runs-where" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What runs where
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment-the-launcher-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment the launcher reads
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agentic-environments-and-sandboxes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agentic environments and sandboxes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Engine metrics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gotchas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gotchas
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-runs-where" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What runs where
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment-the-launcher-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment the launcher reads
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agentic-environments-and-sandboxes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agentic environments and sandboxes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Engine metrics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gotchas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gotchas
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/miles.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="miles-rl-post-training">Miles RL post-training<a class="headerlink" href="#miles-rl-post-training" title="Permanent link">&para;</a></h1>
+<p>srt-slurm launches a <a href="https://github.com/radixark/miles">Miles</a> training run as a services-only job: a <code>ray</code> service brings up the cluster, and a <code>custom</code> benchmark step runs the bundled launcher <code>benchmarks/rl/miles/launch.sh</code>, which hands the cluster to Miles's own launch script. Miles pairs SGLang rollout engines with a Megatron-LM (or FSDP) trainer under Ray and owns every GPU. srt-slurm owns everything around it: the SLURM allocation, the container and mounts, Ray bring-up with readiness, the launcher step, per-job logs, tachometer telemetry, status reporting, and teardown.</p>
+<p>Nothing in srt-slurm's core knows about Miles. The launcher is a script in the repo-root <code>benchmarks/rl/</code> folder, written against the environment every custom benchmark receives.</p>
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#what-runs-where">What runs where</a></li>
+<li><a href="#recipe">Recipe</a></li>
+<li><a href="#environment-the-launcher-reads">Environment the launcher reads</a></li>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#agentic-environments-and-sandboxes">Agentic environments and sandboxes</a></li>
+<li><a href="#gotchas">Gotchas</a></li>
+</ul>
+<h2 id="what-runs-where">What runs where<a class="headerlink" href="#what-runs-where" title="Permanent link">&para;</a></h2>
+<p>The benchmark step is only the launcher and the log tail of the Ray job. Everything RL happens inside that job, on the raylets the <code>ray</code> service started.</p>
+<div class="highlight"><pre><span></span><code>sbatch: N nodes, one task per node
+  1. services[train] (type: ray, nodes: N, placement: every worker node)
+       node 0      ray start --head --node-ip-address &lt;fabric ip&gt; --port 6379 --dashboard-host 0.0.0.0 --num-gpus G --block
+       node 1..N-1 ray start --address &lt;node0 ip&gt;:6379 --num-gpus G --block        (after the head answers /api/version)
+       gate        /nodes?view=summary lists N raylets ALIVE
+  2. exporters, tachometer (when enabled)
+  3. benchmark (type: custom) on node 0, same image and mounts, no GPUs of its own:
+       srtctl injects  SRT_SERVICE_TRAIN_IPS=&lt;node0 ip&gt;,...  SRT_SERVICE_TRAIN_NODE_COUNT=N  SRT_GPUS_PER_NODE=G
+       launch.sh sets  MILES_SCRIPT_EXTERNAL_RAY=1  MASTER_ADDR=&lt;node0 ip&gt;  RAY_ADDRESS=http://&lt;node0 ip&gt;:8265
+                       MILES_SCRIPT_NUM_NODES=N  MILES_SCRIPT_NUM_GPUS_PER_NODE=G
+       and execs       cd /root/miles &amp;&amp; python3 scripts/run_qwen3_dense.py      (every option comes from MILES_SCRIPT_* env)
+       Miles runs `ray job submit -- python3 train.py ...` and streams the job's stdout into benchmark.out
+  4. inside the Ray job (in the ray service's containers):
+       MegatronTrainRayActor x (nodes x GPUs)   the trainer ranks
+       CommandActor per engine                  each execs sglang.launch_server: the rollout engines
+       router                                   spreads /generate over the engines
+       RolloutExecutor                          samples prompts, generates, scores rewards: the rollout
+       loop: rollout -&gt; reward -&gt; GRPO step -&gt; update_weights into the engines -&gt; repeat
+  5. the launcher exits with the Ray job's status -&gt; postprocess -&gt; teardown: launcher, then the raylets (SIGTERM stops Ray cleanly)
+</code></pre></div>
+<p>Two consequences shape the recipe. The <code>ray</code> service carries the job's container, mounts and environment because that is where the trainer and engines actually run; the benchmark step is only a client of the dashboard port. And the Miles launcher runs <code>pkill -9 sglang</code> before it starts, which is harmless here because every SGLang engine is Miles's own and starts afterwards.</p>
+<h2 id="recipe">Recipe<a class="headerlink" href="#recipe" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="nt">schema</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">"qwen3-4b-grpo"</span>
+<span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="s">"qwen3-4b"</span><span class="p p-Indicator">,</span><span class="nt"> container</span><span class="p">:</span><span class="w"> </span><span class="s">"miles"</span><span class="p p-Indicator">,</span><span class="nt"> precision</span><span class="p">:</span><span class="w"> </span><span class="s">"bf16"</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> gpu_type</span><span class="p">:</span><span class="w"> </span><span class="s">"b200"</span><span class="p p-Indicator">,</span><span class="nt"> gpus_per_node</span><span class="p">:</span><span class="w"> </span><span class="nv">8</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">frontend</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">none</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">train</span><span class="w">                              </span><span class="c1"># the Ray cluster; owns the job's two nodes</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ray</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">preamble</span><span class="p">:</span><span class="w"> </span><span class="s">"cd</span><span class="nv"> </span><span class="s">/root/miles"</span>
+<span class="w">    </span><span class="nt">metrics</span><span class="p">:</span><span class="w">                                 </span><span class="c1"># both on the Ray head; see Engine metrics</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">miles</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">9090</span><span class="p p-Indicator">,</span><span class="nt"> nodes</span><span class="p">:</span><span class="w"> </span><span class="nv">first</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">engines</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">31000</span><span class="p p-Indicator">,</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="nv">/engine_metrics</span><span class="p p-Indicator">,</span><span class="nt"> nodes</span><span class="p">:</span><span class="w"> </span><span class="nv">first</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">custom</span>
+<span class="w">  </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/benchmarks/rl/miles/launch.sh</span>
+<span class="w">  </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">MILES_RECIPE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">scripts/run_qwen3_dense.py</span>
+<span class="w">    </span><span class="nt">MILES_SCRIPT_MODEL_NAME</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Qwen3-4B</span>
+<span class="w">    </span><span class="nt">MILES_SCRIPT_MODEL_DIR</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/data/models</span>
+<span class="w">    </span><span class="nt">MILES_SCRIPT_DATA_DIR</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/data/datasets</span>
+<span class="w">    </span><span class="nt">MILES_SCRIPT_OUTPUT_DIR</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/data/miles-runs/qwen3-4b-grpo</span>
+<span class="w">    </span><span class="nt">MILES_SCRIPT_ENABLE_EVAL</span><span class="p">:</span><span class="w"> </span><span class="s">"true"</span>
+<span class="w">    </span><span class="nt">MILES_SCRIPT_EXTRA_ARGS</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">&gt;-</span>
+<span class="w">      </span><span class="no">--num-rollout 20 --colocate --actor-num-nodes 2 --actor-num-gpus-per-node 8 --rollout-num-gpus-per-engine 2</span>
+<span class="w">      </span><span class="no">--sglang-router-port 31000 --use-prometheus --prometheus-port 9090 --prometheus-run-name qwen3-4b-grpo</span>
+<span class="nt">extra_mount</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"/data/models:/data/models"</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"/data/datasets:/data/datasets"</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"/data/miles-runs:/data/miles-runs"</span>
+<span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> NCCL_SOCKET_IFNAME</span><span class="p">:</span><span class="w"> </span><span class="nv">bond0</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">observability</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> tachometer</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> enabled</span><span class="p">:</span><span class="w"> </span><span class="nv">true</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</code></pre></div>
+<p><code>frontend.type: none</code> says there is no router and no worker-count health gate; the services' own probes are the only gate. <code>services[].nodes</code> on the ray service is the node count of the job: with no engine roles, the service that owns the nodes sets the allocation size. The directories Miles reads and writes are host paths, so they are mounted at the same path into every step with <code>extra_mount</code>; the raylets need them because the trainer and engines run there. The <code>metrics</code> list on the ray service is what puts Miles's own rewards and timers and the engines' KV usage into tachometer's parquet next to the GPU telemetry; see <a href="#engine-metrics">Engine metrics</a>.</p>
+<p><code>examples/miles/qwen3-4b-grpo.yaml</code> is a runnable version.</p>
+<h2 id="environment-the-launcher-reads">Environment the launcher reads<a class="headerlink" href="#environment-the-launcher-reads" title="Permanent link">&para;</a></h2>
+<p>Injected by srtctl for every custom benchmark command (see <a href="../config-reference/#custom">config reference, custom</a>):</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SRT_SERVICE_TRAIN_IPS</code>, <code>SRT_SERVICE_TRAIN_NODE_COUNT</code></td>
+<td>The ray service's nodes; the first IP is the head. <code>TRAIN</code> is the service name upper-cased</td>
+</tr>
+<tr>
+<td><code>SRT_GPUS_PER_NODE</code></td>
+<td><code>resources.gpus_per_node</code></td>
+</tr>
+</tbody>
+</table>
+<p>Set in <code>benchmark.env</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MILES_RECIPE</code></td>
+<td>required</td>
+<td>Launch script, relative to <code>MILES_ROOT</code> or absolute in the container</td>
+</tr>
+<tr>
+<td><code>MILES_RAY_SERVICE</code></td>
+<td><code>train</code></td>
+<td>Name of the <code>services[]</code> entry that is the Ray cluster</td>
+</tr>
+<tr>
+<td><code>MILES_ROOT</code></td>
+<td><code>/root/miles</code></td>
+<td>The Miles checkout in the container</td>
+</tr>
+<tr>
+<td><code>MILES_SUBCOMMAND</code></td>
+<td>none</td>
+<td>Positional for the multi-step launchers (<code>train</code>, <code>prepare</code>, <code>full-train</code>); the single-command recipes such as <code>run_qwen3_dense.py</code> take none</td>
+</tr>
+<tr>
+<td><code>MILES_RAY_PORT</code>, <code>MILES_RAY_DASHBOARD_PORT</code></td>
+<td>6379, 8265</td>
+<td>Must match the ray service's <code>options</code></td>
+</tr>
+<tr>
+<td><code>MILES_LAUNCH_DRY_RUN</code></td>
+<td>0</td>
+<td><code>1</code> prints the resolved environment and command and exits</td>
+</tr>
+<tr>
+<td><code>MILES_SCRIPT_*</code></td>
+<td></td>
+<td>Miles's own recipe options, passed through untouched. Every <code>ScriptArgs</code> field of a launch script is settable as <code>MILES_SCRIPT_&lt;FIELD&gt;</code>: <code>MODEL_NAME</code>, <code>MODEL_DIR</code>, <code>DATA_DIR</code>, <code>OUTPUT_DIR</code>, <code>ENABLE_EVAL</code>, <code>EXTRA_ARGS</code> (appended to <code>train.py</code>), <code>EXTRA_ENV_VARS</code> (JSON, reaches Ray's runtime env), <code>MEGATRON_PATH</code>, ...</td>
+</tr>
+</tbody>
+</table>
+<p>The launcher exports, unless already set, <code>MILES_SCRIPT_EXTERNAL_RAY=1</code>, <code>MASTER_ADDR</code>, <code>RAY_ADDRESS</code>, <code>MILES_SCRIPT_NUM_NODES</code> and <code>MILES_SCRIPT_NUM_GPUS_PER_NODE</code>, all derived from the ray service. It exits with the Ray job's status.</p>
+<p>Give <code>MILES_SCRIPT_OUTPUT_DIR</code> a stable shared path: Miles resumes from the last checkpoint there when the same recipe is resubmitted. Global <code>environment:</code> reaches every step, including the raylets, so raylet-spawned processes inherit it; put NCCL and GLOO interface names there.</p>
+<h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
+<p>The image is <code>radixark/miles</code> (about 43 GB as a squashfs). It pins patched SGLang, Megatron-LM and sgl-router branches; use it for the whole job. Import once and alias it in <code>srtslurm.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">ENROOT_CACHE_PATH</span><span class="o">=</span>/data/<span class="nv">$USER</span>/.cache/enroot<span class="w"> </span>enroot<span class="w"> </span>import<span class="w"> </span>-o<span class="w"> </span>/data/<span class="nv">$USER</span>/squash/miles-latest.sqsh<span class="w"> </span>docker://radixark/miles:latest
+</code></pre></div>
+<p>The recipe expects, on the shared filesystem, the HF weights, the converted Megatron checkpoint next to them, and the datasets:</p>
+<div class="highlight"><pre><span></span><code>hf<span class="w"> </span>download<span class="w"> </span>Qwen/Qwen3-4B<span class="w"> </span>--local-dir<span class="w"> </span>&lt;model_dir&gt;/Qwen3-4B
+hf<span class="w"> </span>download<span class="w"> </span>--repo-type<span class="w"> </span>dataset<span class="w"> </span>zhuzilin/dapo-math-17k<span class="w"> </span>--local-dir<span class="w"> </span>&lt;data_dir&gt;/dapo-math-17k
+hf<span class="w"> </span>download<span class="w"> </span>--repo-type<span class="w"> </span>dataset<span class="w"> </span>zhuzilin/aime-2024<span class="w"> </span>--local-dir<span class="w"> </span>&lt;data_dir&gt;/aime-2024
+
+<span class="c1"># once, on a GPU node, inside the image:</span>
+<span class="nb">cd</span><span class="w"> </span>/root/miles
+<span class="nb">read</span><span class="w"> </span>-ra<span class="w"> </span>MODEL_ARGS<span class="w"> </span><span class="o">&lt;&lt;&lt;</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>python3<span class="w"> </span>miles/utils/external_utils/model_args_utils.py<span class="w"> </span>qwen3-4B<span class="k">)</span><span class="s2">"</span>
+<span class="nv">PYTHONPATH</span><span class="o">=</span>/root/Megatron-LM<span class="w"> </span>python3<span class="w"> </span>tools/convert_hf_to_torch_dist.py<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MODEL_ARGS</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--hf-checkpoint<span class="w"> </span>&lt;model_dir&gt;/Qwen3-4B<span class="w"> </span>--save<span class="w"> </span>&lt;model_dir&gt;/Qwen3-4B_torch_dist
+</code></pre></div>
+<h2 id="agentic-environments-and-sandboxes">Agentic environments and sandboxes<a class="headerlink" href="#agentic-environments-and-sandboxes" title="Permanent link">&para;</a></h2>
+<p>The run above scores answers with a verifier inside the rollout executor. Miles's agentic recipes instead drive an environment: an OpenEnv, NeMo Gym or Verifiers server the agent loop talks to over HTTP, or a per-task sandbox on E2B, Modal, Daytona or a Kubernetes-hosted AgentENV, orchestrated through Harbor or HUD. srt-slurm needs no code for any of these. They are Miles connectors configured through environment, and three things in the recipe carry that environment.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">train</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ray</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="c1"># Credentials reach every process Miles spawns, because they inherit the raylet's</span>
+<span class="w">    </span><span class="c1"># environment. Keep them in a mode-600 file on the shared filesystem, not in the recipe.</span>
+<span class="w">    </span><span class="nt">preamble</span><span class="p">:</span><span class="w"> </span><span class="s">"set</span><span class="nv"> </span><span class="s">-a;</span><span class="nv"> </span><span class="s">.</span><span class="nv"> </span><span class="s">/data/secrets/sandbox.env;</span><span class="nv"> </span><span class="s">set</span><span class="nv"> </span><span class="s">+a;</span><span class="nv"> </span><span class="s">cd</span><span class="nv"> </span><span class="s">/root/miles"</span>
+<span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">custom</span>
+<span class="w">  </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/benchmarks/rl/miles/launch.sh</span>
+<span class="w">  </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">MILES_RECIPE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py</span>
+<span class="w">    </span><span class="nt">MILES_SUBCOMMAND</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">train</span><span class="w">                 </span><span class="c1"># the agentic launchers are multi-step; single-command recipes take none</span>
+<span class="w">    </span><span class="nt">MILES_SCRIPT_MODEL_NAME</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">...</span>
+<span class="w">    </span><span class="nt">MILES_SCRIPT_EXTRA_ENV_VARS</span><span class="p">:</span><span class="w"> </span><span class="s">'{"OPENENV_RUN_ID":</span><span class="nv"> </span><span class="s">"..."}'</span><span class="w">   </span><span class="c1"># anything a recipe wants in Ray's runtime env</span>
+</code></pre></div>
+<ul>
+<li><strong>Credentials</strong> (<code>E2B_API_KEY</code>, <code>MODAL_TOKEN_ID</code>, <code>DAYTONA_API_KEY</code>, an AgentENV token) go in the ray service <code>preamble</code> as a sourced file. Miles's own SLURM launcher does the same with a <code>DAYTONA_ENV_FILE</code>. Global <code>environment:</code> also works but puts the value in the recipe and in every log of the sbatch script.</li>
+<li><strong>An environment server you run yourself</strong> (OpenEnv, NeMo Gym, Verifiers) is a <code>services[]</code> entry with its own <code>container:</code>; its address reaches the launcher as <code>SRT_SERVICE_&lt;NAME&gt;_IPS</code>, and a few lines in a copy of <code>launch.sh</code> turn that into the URL the recipe expects.</li>
+<li><strong>Outbound network</strong> from the compute nodes to the provider is required; SaaS providers need internet, a Kubernetes AgentENV needs a route to its service.</li>
+</ul>
+<p>Whether a provider works from a SLURM cluster depends on which direction the traffic flows:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Traffic</th>
+<th>Works from a private compute fabric</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>In-process trials: the agent loop runs inside Miles's rollout executor and the sandbox only executes commands</td>
+<td>compute node to provider, outbound only</td>
+<td>Yes, with outbound network and a key</td>
+</tr>
+<tr>
+<td>Sandbox-hosted agent: a coding agent runs inside the sandbox and calls the policy through Miles's session server or router</td>
+<td>sandbox to a compute node's fabric IP, inbound</td>
+<td>Only if that endpoint is reachable from the sandbox: a route back from a Kubernetes AgentENV, or an ingress or tunnel for SaaS sandboxes. Miles's <code>--pin-rollout-manager-to-head</code> exists for the Kubernetes version of this</td>
+</tr>
+</tbody>
+</table>
+<p>Before calling a recipe ready, check that its connector's Python dependencies are in the image. Miles's Harbor connector imports <code>harbor</code>, which its own README installs separately, so it may not be in <code>radixark/miles:latest</code>; steps run read-only containers, so the fix is a derived squashfs with the connector installed, or a venv on the shared filesystem added to <code>PYTHONPATH</code> in the ray service <code>preamble</code>. Per-task sandboxes hosted on the SLURM cluster itself are a different matter: pyxis containers have no Docker daemon, so that needs a daemonless provider such as an enroot-based sandbox service or rootless podman, which nothing here provides yet.</p>
+<h2 id="engine-metrics">Engine metrics<a class="headerlink" href="#engine-metrics" title="Permanent link">&para;</a></h2>
+<p>Miles's telemetry surfaces are all fixed-port endpoints on the Ray head once the recipe pins them, so a <code>metrics</code> list on the <code>ray</code> service is the whole integration; tachometer scrapes them like any other service (see <a href="../services/#metrics">services.md</a>).</p>
+<ul>
+<li><strong>The engines, through the router.</strong> Miles picks its SGLang engines' ports at runtime, but its default router, the sgl-model-gateway, serves <code>GET /engine_metrics</code>: the metrics of every registered engine, each sample labeled <code>worker_addr</code>. Pin the router with <code>--sglang-router-port</code> and scrape that. Names arrive normalized by the router (<code>sglang_num_running_reqs</code> rather than <code>sglang:num_running_reqs</code>).</li>
+<li><strong>Miles's training collector.</strong> With <code>--use-prometheus</code> Miles runs a collector actor pinned to the driver node, the Ray head, that serves <code>miles_metric_*</code> gauges (rollout rewards, response lengths, actor and rollout timers, MFU) on <code>--prometheus-port</code>, 9090 by default, labeled <code>run_name</code>.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">train</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ray</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">metrics</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">miles</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">9090</span><span class="p p-Indicator">,</span><span class="nt"> nodes</span><span class="p">:</span><span class="w"> </span><span class="nv">first</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">                          </span><span class="c1"># miles_metric_*</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">engines</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">31000</span><span class="p p-Indicator">,</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="nv">/engine_metrics</span><span class="p p-Indicator">,</span><span class="nt"> nodes</span><span class="p">:</span><span class="w"> </span><span class="nv">first</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">  </span><span class="c1"># sglang_* per engine, worker_addr label</span>
+<span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">MILES_SCRIPT_EXTRA_ARGS</span><span class="p">:</span><span class="w"> </span><span class="s">"...</span><span class="nv"> </span><span class="s">--sglang-router-port</span><span class="nv"> </span><span class="s">31000</span><span class="nv"> </span><span class="s">--use-prometheus</span><span class="nv"> </span><span class="s">--prometheus-port</span><span class="nv"> </span><span class="s">9090</span><span class="nv"> </span><span class="s">--prometheus-run-name</span><span class="nv"> </span><span class="s">qwen3-4b-grpo"</span>
+</code></pre></div>
+<p><code>nodes: first</code> scrapes only the service's first node, the head; the rows land as endpoints <code>miles_&lt;head&gt;</code> and <code>engines_&lt;head&gt;</code> with <code>service=train</code>. Both endpoints appear a few minutes into the job, once Miles has started the router and the collector, so the scraper logs failures until then. On sa-b200 (job 15881, Qwen3-4B GSM8K smoke, four TP2 engines) the parquet held 83 <code>miles_metric_*</code> families and 71 <code>sglang_*</code> families per engine at one-second resolution; KV usage peaked at about a quarter of the pool per engine and dropped to zero during training steps.</p>
+<h2 id="gotchas">Gotchas<a class="headerlink" href="#gotchas" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Layout is Miles's to validate.</strong> <code>--actor-num-nodes</code>, <code>--rollout-num-gpus</code> and friends live in <code>MILES_SCRIPT_EXTRA_ARGS</code>; srt-slurm does not check them against the allocation, Miles does when the job starts. Colocated: actor nodes equal the ray service's <code>nodes</code>. Most shipped recipes hardcode <code>--colocate</code>, and a store-true flag cannot be negated from <code>extra_args</code>.</li>
+<li><strong>Health timeouts.</strong> The ray service allows ten minutes per node for the first <code>ray start</code>, which imports torch. Megatron checkpoint load happens inside the Miles job and is not gated by srt-slurm.</li>
+<li><strong>Fault tolerance is Miles's.</strong> The raylets are <code>critical</code>, so a raylet dying fails the run. Engine restarts inside Miles (<code>--use-fault-tolerance</code>) do not involve srt-slurm.</li>
+<li><strong>Benign NCCL warnings.</strong> <code>transport/p2p.cc NCCL WARN Cuda failure 1 'invalid argument'</code> during CUDA graph capture appeared in every successful run.</li>
+<li><strong>Live logs.</strong> <code>tail -F outputs/&lt;job&gt;/logs/{sweep_&lt;job&gt;.log,benchmark.out}</code>; the driver log carries the Ray job's stdout, engines and actors included. <code>perf N</code> lines are the rollout side of iteration N, <code>step N</code> the trainer's.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

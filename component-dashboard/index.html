@@ -1,0 +1,2714 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/component-dashboard/">
+      
+      
+        <link rel="prev" href="../monitoring/">
+      
+      
+        <link rel="next" href="../dsight/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Component Performance Dashboard - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#component-performance-dashboard" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Component Performance Dashboard
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../accuracy/" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start-nothing-to-turn-on" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start — nothing to turn on
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quick start — nothing to turn on">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#comparing-two-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparing two runs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-a-job-against-a-modified-checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running a job against a modified checkout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#if-the-job-hit-its-wall-clock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        If the job hit its wall clock
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-it-by-hand" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running it by hand
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capturing-the-inputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capturing the inputs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Capturing the inputs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#host-telemetry-what-the-metrics-stream-cannot-say" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host telemetry — what the metrics stream cannot say
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#which-tabs-a-run-can-populate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which tabs a run can populate
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#srcingestingestpy-building-the-bundle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        src/ingest/ingest.py — building the bundle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#srcvisualizationbuild_dynamo_bench_dashpy-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        src/visualization/build_dynamo_bench_dash.py — rendering
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="src/visualization/build_dynamo_bench_dash.py — rendering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#same-run-enforcement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Same-run enforcement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-three-dashboard-entities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The three dashboard entities
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The three dashboard entities">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-time-series-panels-srcvisualizationpanelspy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Time-series panels — src/visualization/panels.py
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-per-request-card-datartrequestsx_request_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Per-request card — DATA.rt.requests[&lt;x_request_id&gt;]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-per-session-view-datartsessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Per-session view — DATA.rt.sessions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provenance-and-re-syncing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provenance and re-syncing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start-nothing-to-turn-on" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start — nothing to turn on
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quick start — nothing to turn on">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#comparing-two-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparing two runs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-a-job-against-a-modified-checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running a job against a modified checkout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#if-the-job-hit-its-wall-clock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        If the job hit its wall clock
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-it-by-hand" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running it by hand
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capturing-the-inputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capturing the inputs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Capturing the inputs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#host-telemetry-what-the-metrics-stream-cannot-say" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host telemetry — what the metrics stream cannot say
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#which-tabs-a-run-can-populate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which tabs a run can populate
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#srcingestingestpy-building-the-bundle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        src/ingest/ingest.py — building the bundle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#srcvisualizationbuild_dynamo_bench_dashpy-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        src/visualization/build_dynamo_bench_dash.py — rendering
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="src/visualization/build_dynamo_bench_dash.py — rendering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#same-run-enforcement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Same-run enforcement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-three-dashboard-entities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The three dashboard entities
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The three dashboard entities">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-time-series-panels-srcvisualizationpanelspy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Time-series panels — src/visualization/panels.py
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-per-request-card-datartrequestsx_request_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Per-request card — DATA.rt.requests[&lt;x_request_id&gt;]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-per-session-view-datartsessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Per-session view — DATA.rt.sessions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provenance-and-re-syncing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provenance and re-syncing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/component-dashboard.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="component-performance-dashboard">Component Performance Dashboard<a class="headerlink" href="#component-performance-dashboard" title="Permanent link">&para;</a></h1>
+<p>A single self-contained HTML page with <strong>Overview / Frontend / Router / Engine /
+Session / Log analysis</strong> tabs, built offline from the artifacts an srt-slurm job
+already captures.</p>
+<p>It answers component questions the aggregate benchmark numbers cannot: where TTFT
+went (admission queue vs. routing vs. prefill vs. KV transfer), whether KV cache or
+in-flight batch was the ceiling, how evenly the router spread load, and whether the
+frontend event loop was stalling.</p>
+<p>Two pieces, vendored from the <code>dynamo-benchmark-perf-dashboard</code> repo:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Path</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>L2 ingest</strong></td>
+<td><code>src/ingest/</code></td>
+<td>RAW capture -&gt; five fixed intermediate schemas (a <em>bundle</em>)</td>
+</tr>
+<tr>
+<td><strong>L3 render</strong></td>
+<td><code>src/visualization/</code></td>
+<td>bundle -&gt; one self-contained <code>.html</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both are stdlib-only and are <strong>not</strong> part of the installed <code>srtctl</code> wheel. Run them
+from a repo checkout.</p>
+<hr />
+<h2 id="quick-start-nothing-to-turn-on">Quick start — nothing to turn on<a class="headerlink" href="#quick-start-nothing-to-turn-on" title="Permanent link">&para;</a></h2>
+<p><strong>Every job builds its own dashboard.</strong> There is no knob and nothing to remember:
+post-processing writes, into the run's log dir:</p>
+<div class="highlight"><pre><span></span><code>perf_dashboard.html          self-contained page (D3 inlined, no network needed)
+perf_dashboard.json          the page's DATA payload — same object the HTML embeds
+perf_dashboard_bundle/       the intermediate schemas, re-renderable in seconds
+</code></pre></div>
+<p><code>perf_dashboard.json</code> exists because the HTML is often unreadable where it lands — a
+headless cluster, a CI log, an S3 prefix. It is the machine-readable form of
+everything the page shows, so a run can be diffed against another, asserted on in a
+test, or simply read without a browser. It is built before the S3 sync, so all three
+artifacts ship with the rest of the log dir.</p>
+<p>Driven by <code>srtctl.analysis.perf_dashboard</code>, which is best-effort: a rendering failure
+is logged and never changes the outcome of a benchmark that already produced results.</p>
+<p>Nothing else is required. One <code>srtctl</code> submission collects the data, post-processes it
+and renders the page, in that order, inside the job.</p>
+<p>What <code>observability.enabled</code> changes is <strong>which tabs the page carries</strong>, not whether
+there is a page:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">observability</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">          </span><span class="c1"># adds the server-side capture legs — see the table below</span>
+</code></pre></div>
+<p>Without it the page is built from the client's own metrics export, the per-iteration
+worker logs and the frontend log: <strong>Frontend / Router / Engine / Log-analysis</strong>.
+Turning it on adds the scraped <code>/metrics</code> stream and the <code>SPAN_CLOSED</code> traces, and
+with them the <strong>Overview</strong> tab. Either way there is a dashboard, because the question
+it answers is asked <em>after</em> the run, when opting in is no longer possible.</p>
+<h3 id="comparing-two-runs">Comparing two runs<a class="headerlink" href="#comparing-two-runs" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>python3<span class="w"> </span>tools/dashboard_diff.py<span class="w"> </span>BASELINE/perf_dashboard.json<span class="w"> </span>COMPARED/perf_dashboard.json
+</code></pre></div>
+<p>Reports KPI deltas, tab-availability changes, per-panel movement ranked by magnitude,
+and population changes. Built for the ablation shape -- change one variable, run both,
+ask which signals responded -- which is also the honest test of whether a panel earns
+its place: a panel that does not move between a healthy run and a known-degraded one
+is not diagnostic.</p>
+<p>It compares medians, falling back to peaks when both medians are zero (sparse counter
+rates sit at zero through their idle windows), and labels which statistic each row
+used. Without that fallback an 8x concurrency change reported 30 panels as unchanged
+when only 8 genuinely were.</p>
+<p>It also prints a <strong>PROVENANCE</strong> section, which answers the question the rest of the
+report assumes: <em>were these two runs actually comparable?</em></p>
+<ul>
+<li><strong>Framework drift</strong> — the versions found inside the running workers, from
+  <code>fingerprint_*.json</code>. If baseline and compared ran different <code>tensorrt_llm</code> builds,
+  nothing else in the report means what it appears to. This is invisible otherwise:
+  both runs simply work.</li>
+<li><strong>CONFIG DELTA</strong> — every differing key of the resolved <code>config.yaml</code>, flattened to
+  dotted paths. For an ablation this should name exactly one setting, and the section
+  says outright whether the comparison is <code>SINGLE-VARIABLE</code> or how many settings
+  differ. A confound becomes something you see rather than something you argue about.</li>
+</ul>
+<p>Both degrade honestly: when either bundle lacks the provenance files the section says
+the changed variables are <strong>UNKNOWN</strong> rather than implying the runs matched.</p>
+<h3 id="running-a-job-against-a-modified-checkout">Running a job against a modified checkout<a class="headerlink" href="#running-a-job-against-a-modified-checkout" title="Permanent link">&para;</a></h3>
+<p>If you are testing dashboard changes, the compute node runs whatever <code>srtctl_root</code> in
+<code>srtslurm.yaml</code> points at -- not the tree you edited. Two things bite:</p>
+<ul>
+<li><strong><code>srtctl_root</code> is the only lever.</strong> Staging a second checkout and <code>cd</code>-ing into it
+  does not select it. Point <code>srtctl_root</code> at the new tree and confirm the job's own
+  <code>uv sync</code> line reports <code>srtctl==… (from file:///&lt;your tree&gt;)</code>.</li>
+<li><strong>The runtime state is gitignored, so a fresh checkout does not have it.</strong>
+  <code>srtslurm.yaml</code>, <code>configs/nats-server</code>, <code>configs/etcd</code>, <code>configs/etcdctl</code>,
+  <code>wheelhouse/dynamo</code> and <code>bin/uv</code> all live outside git. Copy or symlink them from a
+  working checkout, and do not <code>rsync --delete</code> over the result -- it removes exactly
+  those files, and the job then fails somewhere unrelated (a model path resolving
+  against the wrong root, for instance).</li>
+</ul>
+<h3 id="if-the-job-hit-its-wall-clock">If the job hit its wall clock<a class="headerlink" href="#if-the-job-hit-its-wall-clock" title="Permanent link">&para;</a></h3>
+<p>A SLURM <code>TIMEOUT</code> kills the job hard, so <strong>post-processing never runs and no dashboard is
+written</strong> — even though the capture itself completed. This matters because the runs most
+worth looking at are often the ones that ran out of time.</p>
+<p>Nothing is lost. Every raw input survives the kill, and the bundle rebuilds from the run
+directory in under a minute:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>/path/to/srt-slurm
+python3<span class="w"> </span>-m<span class="w"> </span>src.ingest.ingest<span class="w"> </span>--run-dir<span class="w"> </span>outputs/&lt;job_id&gt;/logs<span class="w"> </span>--out<span class="w"> </span>/tmp/&lt;job_id&gt;-bundle
+python3<span class="w"> </span>-m<span class="w"> </span>src.visualization.build_dynamo_bench_dash<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>/tmp/&lt;job_id&gt;-bundle<span class="w"> </span>/tmp/&lt;job_id&gt;.html<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--frontend-log<span class="w"> </span>outputs/&lt;job_id&gt;/logs/&lt;node&gt;_frontend_0.out
+</code></pre></div>
+<p>Verified on job 2753007 (TIMEOUT at 20:12): the tachometer parquet, <code>host_samples.jsonl</code>,
+<code>dynamo-request-trace</code>, all four <code>fingerprint_*.json</code> and <code>resource_snapshot.json</code> were
+intact, and the bundle rebuilt in <strong>53 s</strong> with <code>aiperf=True traces=True metrics=True
+request_trace=True</code>.</p>
+<blockquote>
+<p>Rebuild on a compute node, not the login node, for a full-length run. The login node's
+memory limit will OOM-kill a render whose <code>server_metrics_export.jsonl</code> is a few hundred
+MB (observed at exit 137 on a 243-request run), and its <code>/tmp</code> is a 2 GB tmpfs.</p>
+</blockquote>
+<h2 id="running-it-by-hand">Running it by hand<a class="headerlink" href="#running-it-by-hand" title="Permanent link">&para;</a></h2>
+<p>Against any past run — including one captured before this existed:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>/path/to/srt-slurm
+
+python3<span class="w"> </span>-m<span class="w"> </span>src.ingest.ingest<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--run-dir<span class="w"> </span>outputs/&lt;job_id&gt;/logs<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--out<span class="w">     </span>/tmp/&lt;job_id&gt;-bundle<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--worker<span class="w">  </span><span class="nv">prefill</span><span class="o">=</span>dep:4:2<span class="w"> </span>--worker<span class="w"> </span><span class="nv">decode</span><span class="o">=</span>tep:4:4
+
+python3<span class="w"> </span>-m<span class="w"> </span>src.visualization.build_dynamo_bench_dash<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>/tmp/&lt;job_id&gt;-bundle<span class="w">  </span>/tmp/&lt;job_id&gt;.html<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--frontend-log<span class="w"> </span>outputs/&lt;job_id&gt;/logs/&lt;node&gt;_frontend_0.out
+</code></pre></div>
+<p>Open the <code>.html</code> in a browser. D3 is inlined by default, so the page works with no
+network — copy it anywhere.</p>
+<hr />
+<h2 id="capturing-the-inputs">Capturing the inputs<a class="headerlink" href="#capturing-the-inputs" title="Permanent link">&para;</a></h2>
+<p>The dashboard reads whatever the run happens to have. Four of the eight legs below do
+not depend on <code>observability.enabled</code> at all; that knob is what adds the other four:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">observability</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<p>It expands (see <code>ObservabilityConfig</code> in <code>src/srtctl/core/schema.py</code>) into the legs
+marked with it below. Without it the Metrics leg falls back to the client's own
+export, and the page is built without the traces — so it keeps every time-series tab
+and loses Overview.</p>
+<table>
+<thead>
+<tr>
+<th>Leg</th>
+<th>Recipe requirement</th>
+<th>Artifact</th>
+<th>Bundle output</th>
+<th>Feeds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Metrics</strong></td>
+<td><code>observability.enabled</code> (Tachometer), else the client's own export</td>
+<td><code>&lt;log_dir&gt;/tachometer/raw/scrape/*.parquet</code>, else <code>&lt;log_dir&gt;/agentic/*/…/server_metrics_export.json(l)</code></td>
+<td><code>server_metrics_export.jsonl</code></td>
+<td>every time-series panel</td>
+</tr>
+<tr>
+<td><strong>Request trace</strong></td>
+<td><code>observability.enabled</code></td>
+<td><code>&lt;log_dir&gt;/dynamo-request-trace</code></td>
+<td><code>request_trace.jsonl</code></td>
+<td>per-request card, per-session view, the waterfall's KV-transfer band</td>
+</tr>
+<tr>
+<td><strong>Per-iteration</strong></td>
+<td><code>print_iter_log: true</code> in the engine config</td>
+<td><code>SPAN</code>-free lines in <code>&lt;log_dir&gt;/*_w*.out</code></td>
+<td><code>iter_bins.json</code></td>
+<td>batch composition, host/device step time</td>
+</tr>
+<tr>
+<td><strong>Traces</strong></td>
+<td><code>observability.enabled</code> <strong>and</strong> an AIPerf benchmark</td>
+<td><code>SPAN_CLOSED</code> lines in <code>&lt;log_dir&gt;/*.out</code></td>
+<td><code>tempo_traces/&lt;xid&gt;.json</code></td>
+<td>Overview, routing outcome on the card</td>
+</tr>
+<tr>
+<td><strong>Client</strong></td>
+<td>an AIPerf benchmark at export level <code>records</code> (default)</td>
+<td><code>&lt;log_dir&gt;/agentic/*/aiperf_artifacts/</code> or <code>artifacts/*/</code></td>
+<td><code>profile_export.jsonl</code></td>
+<td>Overview, warmup filtering</td>
+</tr>
+<tr>
+<td><strong>Engine config</strong></td>
+<td>TRT-LLM backend</td>
+<td><code>&lt;log_dir&gt;/trtllm_config_*.yaml</code></td>
+<td>copied verbatim</td>
+<td>in-flight-batch ceilings</td>
+</tr>
+<tr>
+<td><strong>Frontend log</strong></td>
+<td><em>nothing</em> — always written</td>
+<td><code>&lt;log_dir&gt;/&lt;node&gt;_frontend_&lt;i&gt;.out</code></td>
+<td><em>(read directly)</em></td>
+<td>Log analysis</td>
+</tr>
+<tr>
+<td><strong>Host telemetry</strong></td>
+<td><code>observability.enabled</code></td>
+<td><code>&lt;log_dir&gt;/host_samples.jsonl</code></td>
+<td><code>host_series.json</code></td>
+<td>host/process CPU, ctx switches, fd headroom</td>
+</tr>
+</tbody>
+</table>
+<h3 id="host-telemetry-what-the-metrics-stream-cannot-say">Host telemetry — what the metrics stream cannot say<a class="headerlink" href="#host-telemetry-what-the-metrics-stream-cannot-say" title="Permanent link">&para;</a></h3>
+<p><code>srtctl.analysis.host_sampler</code> runs in-process during the benchmark window, on the
+same <code>observability.enabled</code> opt-in, reading only <code>/proc</code>. It exists because every other leg describes what Dynamo
+and TRT-LLM <em>choose to publish</em>, and three failure modes live below that line:</p>
+<ul>
+<li><strong>Host CPU saturation / lock convoys.</strong> A frontend pinned at 100% of one core is
+  indistinguishable, in every published metric, from an idle one — both report low queue
+  depth and low in-flight. The discriminator is host CPU busy % together with
+  <strong>involuntary</strong> context switches per thread: a convoy is a thread descheduled against
+  its will, which no application-level counter expresses.</li>
+<li><strong>File-descriptor exhaustion.</strong> An accept loop out of descriptors logs nothing;
+  connections are refused before the application sees them. Open fds against
+  <code>RLIMIT_NOFILE</code> is the only available warning, and <code>fd_headroom_pct</code> is reported even
+  when comfortable — <em>"the peak was 2% of the limit"</em> is the answer that rules the
+  hypothesis out.</li>
+<li><strong>A load generator that has become the bottleneck.</strong> Client 100% / server 0% is the
+  whole diagnosis and is invisible from the server side by construction.</li>
+</ul>
+<p>The sampler stores <strong>cumulative</strong> jiffie counters; the ingest derives percentages by
+differencing, so the capture cadence is never baked into a stored number. Per-process
+CPU is percent of <strong>one</strong> core, so &gt;100 means genuinely more than one.</p>
+<p><strong>Scope limit, stated because it bounds every conclusion drawn from it:</strong> the sampler
+observes the node driving the sweep — the one hosting the frontend — and the Dynamo /
+AIPerf processes on it. It does <strong>not</strong> reach the worker nodes; that would cost an srun
+round-trip per sample, which is the expense the scraper's opt-in exists to avoid. Worker-
+side host health is not covered.</p>
+<h3 id="which-tabs-a-run-can-populate">Which tabs a run can populate<a class="headerlink" href="#which-tabs-a-run-can-populate" title="Permanent link">&para;</a></h3>
+<p>A tab is rendered only when its input exists. An empty Router tab would read as
+"this run had no queueing"; an absent one reads as "this run was not instrumented",
+which is the true statement — so the tab is dropped.</p>
+<table>
+<thead>
+<tr>
+<th>Benchmark type</th>
+<th style="text-align: center;">Overview</th>
+<th style="text-align: center;">Router / Engine / Frontend</th>
+<th style="text-align: center;">Log analysis</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mooncake-router</code>, <code>router</code>, <code>trace-replay</code> (AIPerf)</td>
+<td style="text-align: center;">yes</td>
+<td style="text-align: center;">yes</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td><code>sa-bench</code>, <code>sglang-bench</code></td>
+<td style="text-align: center;"><strong>no</strong></td>
+<td style="text-align: center;">yes</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td>any, with <code>observability.enabled: false</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">no</td>
+<td style="text-align: center;">yes</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Overview needs the client and trace legs joined on <code>x_request_id</code>.</strong> <code>sa-bench</code> runs
+vLLM's <code>benchmark_serving.py</code>, which writes aggregate <code>results_concurrency_*.json</code>
+only — there are no per-request records to join, so Overview is dropped. The
+Log-analysis tab exists exactly for this case: it reconstructs per-request TTFT and a
+shallow stage breakdown from the frontend log alone, and feeds the <em>same</em> renderer as
+the span-sourced Overview panel.</p>
+<blockquote>
+<p><strong><code>--export-level summary</code> silently removes the Overview tab.</strong> AIPerf writes
+<code>profile_export.jsonl</code> only at export level <code>records</code> or <code>raw</code>. <code>records</code> is the
+default, so the stock <code>bench.sh</code> invocations are fine — but a recipe that passes
+<code>--export-level summary</code> keeps <code>profile_export_aiperf.json</code> (which the rollup reads)
+and drops the per-request export, and the join key goes with it. AIPerf is also what
+sets the <code>X-Request-ID</code> header the Dynamo spans carry, which is what makes the client
+and trace legs joinable in the first place.</p>
+</blockquote>
+<hr />
+<h2 id="srcingestingestpy-building-the-bundle"><code>src/ingest/ingest.py</code> — building the bundle<a class="headerlink" href="#srcingestingestpy-building-the-bundle" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>python3<span class="w"> </span>-m<span class="w"> </span>src.ingest.ingest<span class="w"> </span>--run-dir<span class="w"> </span>&lt;log_dir&gt;<span class="w"> </span>--out<span class="w"> </span>&lt;bundle&gt;<span class="w"> </span><span class="o">[</span>flags<span class="o">]</span>
+</code></pre></div>
+<p>Produces:</p>
+<div class="highlight"><pre><span></span><code>&lt;bundle&gt;/profile_export.jsonl        client axis         (schema 1)
+&lt;bundle&gt;/server_metrics_export.jsonl metrics axis        (schema 2)
+&lt;bundle&gt;/tempo_traces/&lt;xid&gt;.json     traces axis         (schema 3)
+&lt;bundle&gt;/request_trace.jsonl         request-trace axis  (schema 4)
+&lt;bundle&gt;/iter_bins.json              per-iteration axis  (schema 5)
+&lt;bundle&gt;/trtllm_config_*.yaml        engine ceilings, copied verbatim
+&lt;bundle&gt;/profile_export_aiperf.json  client run summary: workload cache ceiling, validity
+&lt;bundle&gt;/config.yaml                 the RESOLVED recipe — what was configured
+&lt;bundle&gt;/fingerprint_*.json          per-worker ground truth: framework versions, GPU, CUDA
+&lt;bundle&gt;/resource_snapshot.json      the allocation the numbers came from
+&lt;bundle&gt;/benchmark_status.json       exit code, error lines, AIPerf phase census
+&lt;bundle&gt;/log_signals.json            log-only signals: counts, timestamps, samples
+&lt;bundle&gt;/run_lifecycle.json          time-to-ready, readiness gap, terminal cause
+&lt;bundle&gt;/host_series.json            host + per-process CPU, RSS, ctx switches, fds
+&lt;bundle&gt;/dashboard.yaml              generated sidecar (header labels + topology)
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--client</code></td>
+<td><code>aiperf</code></td>
+<td><code>none</code> to skip. The AIPerf export is already schema 1, so this is a passthrough</td>
+</tr>
+<tr>
+<td><code>--client-input</code></td>
+<td><code>agentic/*/aiperf_artifacts/…</code> then <code>artifacts/*/…</code></td>
+<td>both harness layouts are tried; AgentX nests one level deeper and shards by concurrency</td>
+</tr>
+<tr>
+<td><code>--traces</code></td>
+<td><code>spanlog</code></td>
+<td><code>none</code> to skip</td>
+</tr>
+<tr>
+<td><code>--span-logs</code></td>
+<td><code>*.out</code></td>
+<td>srt-slurm's worker/frontend log naming</td>
+</tr>
+<tr>
+<td><code>--request-trace</code></td>
+<td><code>dynamo</code></td>
+<td>parses <code>dynamo-request-trace</code>; the only source of KV-transfer cost and <code>session_id</code></td>
+</tr>
+<tr>
+<td><code>--iter-log</code></td>
+<td><code>trtllm</code></td>
+<td>parses <code>print_iter_log</code> lines from the worker logs; local-&gt;UTC offset is derived per run, not hardcoded</td>
+</tr>
+<tr>
+<td><em>(automatic)</em></td>
+<td>—</td>
+<td><code>trtllm_config_*.yaml</code> are copied from the run dir into the bundle, giving the Engine tab its real in-flight-batch ceilings instead of the <code>--max-batch-*</code> defaults</td>
+</tr>
+<tr>
+<td><em>(automatic)</em></td>
+<td>—</td>
+<td><code>profile_export_aiperf.json</code> — AIPerf's run summary. Carries <code>theoretical_prefix_cache_hit</code> (the ceiling the <em>workload</em> offered), <code>error_summary</code> / <code>was_cancelled</code> / <code>branch_stats</code> (run validity), and <code>effective_concurrency</code>. Its <strong>absence</strong> is a signal too: AIPerf writes it when a concurrency finishes, so a run killed by its wall clock has none</td>
+</tr>
+<tr>
+<td><em>(automatic)</em></td>
+<td>—</td>
+<td><code>config.yaml</code>, <code>fingerprint_*.json</code>, <code>resource_snapshot.json</code> — run provenance. Without these, two bundles can be compared for what <em>moved</em> but never for what <em>changed</em></td>
+</tr>
+<tr>
+<td><em>(automatic)</em></td>
+<td>—</td>
+<td><code>benchmark_status.json</code> — why an empty dashboard is empty: exit code, error lines, and AIPerf's per-phase completed/cancelled census. A run can exit non-zero with no error-marker line at all, and the census is then the only account of what happened</td>
+</tr>
+<tr>
+<td><em>(automatic)</em></td>
+<td>—</td>
+<td><code>log_signals.json</code> — signals whose only evidence is a log line and which have no metric behind them: worker crash, Dynamo recompile storm, OOM, KV-index desync, KV-transfer timeout, NCCL error, engine stall, etcd disconnect, client cancel. Counts + timestamps + 2 sample lines each, bounded regardless of log size. <strong>Zero counts are kept</strong> — "no crashes" is a statement; absence is not</td>
+</tr>
+<tr>
+<td><em>(automatic)</em></td>
+<td>—</td>
+<td><code>run_lifecycle.json</code> — time-to-ready, the readiness gap (frontend accepting before the router can place), and the run's terminal cause. On run 2752632 that was <strong>650 s of 28 held GPUs serving nothing</strong>, invisible on an x-axis starting at the first request</td>
+</tr>
+<tr>
+<td><em>(automatic)</em></td>
+<td>—</td>
+<td><code>host_series.json</code> — host CPU %, memory, per-process CPU / RSS / <strong>involuntary</strong> context switches / open fds, and fd headroom against <code>RLIMIT_NOFILE</code>. Requires the sampler (below); everything else in the bundle describes what Dynamo publishes, not the machine under it</td>
+</tr>
+<tr>
+<td><code>--worker</code></td>
+<td>—</td>
+<td>repeatable <code>ROLE=PARALLELISM:RANK:COUNT</code>, e.g. <code>prefill=dep:4:6</code></td>
+</tr>
+<tr>
+<td><code>--jobs</code></td>
+<td><code>4</code></td>
+<td>parallelism for the <code>SPAN_CLOSED</code> pre-grep</td>
+</tr>
+</tbody>
+</table>
+<p><code>--worker</code> fills in <code>dashboard.yaml</code>'s topology. It is worth passing: the renderer sums
+<code>rank x worker_count</code> for the <strong>tok/s/GPU</strong> denominator, and falls back to 1 GPU with a
+warning when it cannot work the count out.</p>
+<blockquote>
+<p>The trace leg pre-greps <code>SPAN_CLOSED</code> lines out of the worker logs in parallel before
+parsing, because <code>DYN_LOG=debug</code> logs are routinely multi-GB.</p>
+</blockquote>
+<h2 id="srcvisualizationbuild_dynamo_bench_dashpy-rendering"><code>src/visualization/build_dynamo_bench_dash.py</code> — rendering<a class="headerlink" href="#srcvisualizationbuild_dynamo_bench_dashpy-rendering" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>python3<span class="w"> </span>-m<span class="w"> </span>src.visualization.build_dynamo_bench_dash<span class="w"> </span>&lt;bundle&gt;<span class="w"> </span>&lt;out.html&gt;<span class="w"> </span><span class="o">[</span>flags<span class="o">]</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--frontend-log PATH</code></td>
+<td>—</td>
+<td>adds the Log-analysis tab</td>
+</tr>
+<tr>
+<td><code>--d3 PATH</code></td>
+<td>vendored <code>src/visualization/d3.v7.min.js</code></td>
+<td>inlined for a self-contained page</td>
+</tr>
+<tr>
+<td><code>--d3-cdn</code></td>
+<td>off</td>
+<td>load D3 from the CDN instead (smaller file, needs network to view)</td>
+</tr>
+<tr>
+<td><code>--max-batch-prefill / --max-batch-decode</code></td>
+<td><code>128</code> / <code>256</code></td>
+<td>in-flight-batch ceilings drawn on the Engine tab. <strong>Only used when the bundle has no <code>trtllm_config_*.yaml</code></strong> — ingest copies those in automatically, and the real values win. On AgentX run 2739690 the true decode ceiling is <code>1</code>, so the <code>256</code> default would misdraw that panel by 256x</td>
+</tr>
+<tr>
+<td><code>--gpus N</code></td>
+<td>from <code>dashboard.yaml</code></td>
+<td>tok/s/GPU denominator</td>
+</tr>
+<tr>
+<td><code>--dump-json PATH</code></td>
+<td>—</td>
+<td>also write the DATA payload as indented JSON (what the automatic build produces as <code>perf_dashboard.json</code>)</td>
+</tr>
+<tr>
+<td><code>--include-warmup</code></td>
+<td>off</td>
+<td>by default only the profiling phase is kept</td>
+</tr>
+</tbody>
+</table>
+<p>The bundle argument is optional — with only <code>--frontend-log</code>, you get a
+Log-analysis-only page for a run that had no observability at all:</p>
+<div class="highlight"><pre><span></span><code>python3<span class="w"> </span>-m<span class="w"> </span>src.visualization.build_dynamo_bench_dash<span class="w"> </span>/tmp/out.html<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--frontend-log<span class="w"> </span>outputs/&lt;job_id&gt;/logs/&lt;node&gt;_frontend_0.out
+</code></pre></div>
+<h3 id="same-run-enforcement">Same-run enforcement<a class="headerlink" href="#same-run-enforcement" title="Permanent link">&para;</a></h3>
+<p>Passing a <code>--frontend-log</code> from a different run than the bundle <strong>fails the build</strong>,
+naming both runs and the <code>x_request_id</code> overlap. It is not a warning: the result would
+be a page whose header and Overview describe one workload while the Log-analysis tab
+describes another, and a build-time warning is invisible to whoever opens the HTML.</p>
+<p>Where the artifacts do correspond, that same pivot transfers the bundle's
+warmup/phase filter onto the log source.</p>
+<hr />
+<h2 id="the-three-dashboard-entities">The three dashboard entities<a class="headerlink" href="#the-three-dashboard-entities" title="Permanent link">&para;</a></h2>
+<p>Everything the page draws is one of exactly three things. Nothing is bespoke to a run.</p>
+<h3 id="1-time-series-panels-srcvisualizationpanelspy">1. Time-series panels — <code>src/visualization/panels.py</code><a class="headerlink" href="#1-time-series-panels-srcvisualizationpanelspy" title="Permanent link">&para;</a></h3>
+<p>77 panels declared as data rows, evaluated by one generic function. Adding a signal
+means adding a dict; there is no per-panel rendering code, which is what stops a panel
+acquiring behaviour another panel lacks. Four kinds cover every catalogued signal:</p>
+<table>
+<thead>
+<tr>
+<th>kind</th>
+<th>arithmetic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gauge</code></td>
+<td>the sample as-is</td>
+</tr>
+<tr>
+<td><code>counter_rate</code></td>
+<td>successive differences / dt. A backwards step means the process restarted and is <strong>dropped</strong>, not drawn as a negative spike</td>
+</tr>
+<tr>
+<td><code>hist_mean</code></td>
+<td><code>Δ_sum / Δ_count</code> — the <strong>interval</strong> mean. The cumulative form flattens over a long run and hides late degradation</td>
+</tr>
+<tr>
+<td><code>ratio</code></td>
+<td><code>a / (a+b)</code> on interval deltas, for genuine partner counters only</td>
+</tr>
+</tbody>
+</table>
+<p>Two more panel kinds are computed rather than scraped (<code>kind: "derived"</code>), and are
+emitted in the same shape so the same renderer draws them: in-flight imbalance across
+ranks/workers, and batch composition.</p>
+<p>A panel whose series never moves is <strong>stated in words</strong>, not drawn. A flat line reads
+as a broken chart; "constant 0 for the whole run" is the finding.</p>
+<h3 id="2-per-request-card-datartrequestsx_request_id">2. Per-request card — <code>DATA.rt.requests[&lt;x_request_id&gt;]</code><a class="headerlink" href="#2-per-request-card-datartrequestsx_request_id" title="Permanent link">&para;</a></h3>
+<p>Four bands that sum to <code>total_ms</code> by construction: admission+routing, prefill compute,
+KV transfer, steady decode. Plus what the request <em>was</em> (<code>isl</code>, <code>osl</code>, <code>cached_tokens</code>,
+<code>kv_hit_rate</code>, <code>turn_index</code>, <code>prefix_reuse_ratio</code>) and where it went
+(<code>routing.worker_id</code>, <code>.dp_rank</code>, <code>.overlap_blocks</code>, <code>.router_ms</code>, <code>.admission_ms</code>).</p>
+<p><code>routing</code> is an <strong>outcome, not a rationale</strong>. The router's cost comparison lives on a
+free-text selector line carrying no <code>request_id</code>, so "which worker, with how much
+overlap" is joinable per request while "why it beat the alternatives" is not.</p>
+<p><code>routing.belief_error</code> compares the router's <code>overlap_blocks × block_size</code> against the
+engine's reported <code>cached_tokens</code>. They are the same quantity, so a divergence means
+the router is routing on a prefix the engine does not hold.</p>
+<h3 id="3-per-session-view-datartsessions">3. Per-session view — <code>DATA.rt.sessions</code><a class="headerlink" href="#3-per-session-view-datartsessions" title="Permanent link">&para;</a></h3>
+<p>One row per session, identical columns for every session and every run: turns,
+span/busy/<strong>idle</strong>, per-turn TTFT / KV-hit / prefix-reuse series, and which decode
+workers and prefill ranks it touched.</p>
+<p>Idle is broken out because a session can spend most of its wall-clock waiting on the
+harness rather than the server; a session-level latency figure that absorbs that is
+measuring think time.</p>
+<h2 id="known-limitations">Known limitations<a class="headerlink" href="#known-limitations" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Interpretive captions on the older panels</strong> were developed on an
+  admission/queue-bound reference run. The numbers are data-driven, but the framing
+  reads best on queue-bound runs. The declarative panels in <code>panels.py</code> do not have
+  this problem — their captions are fixed prose assembled from <code>why</code> / <code>source</code> /
+  <code>caveat</code> and never interpolate a run's values.</li>
+<li><strong>Router <em>rationale</em> is not recoverable.</strong> The selector line carrying logit, overlap
+  credit and prefill load scale has no <code>request_id</code>, so it cannot be joined per
+  request. Only the outcome is shown.</li>
+<li><strong><code>iter_bins.json</code> is rank 0 only</strong>, so it cannot show TP/EP-rank divergence; and
+  <code>iter</code> restarts per engine lifecycle, so it is not a usable x-axis.</li>
+<li><strong>Engine-side <code>dp_rank</code> is a replicated broadcast.</strong> Splitting an engine metric by
+  rank renders a flat family of lines that reads as "balanced" on an imbalanced run.
+  Per-rank truth is frontend-side only; a test enforces that no <code>trtllm_*</code> panel
+  splits by <code>dp_rank</code>.</li>
+<li><strong>Some queue gauges read a constant 0</strong> on a run that never queued. They are still
+  specified: queue depth is the strongest single TTFT predictor when it is not zero.</li>
+<li><strong>The KV-routing panels can describe a small slice of the traffic.</strong> Session affinity
+  pins a request to the worker already holding its conversation, and a pinned request
+  never reaches the KV scorer — on run 2751593 that was 248 of 274 decisions (90.5%).
+  The router tab states its own coverage from <code>ro.coverage</code>, but only when the
+  frontend-log leg is present; without it, no decision count exists and no coverage
+  claim is made.</li>
+<li><strong><code>meta.n = 0</code> does not mean the run served nothing.</strong> It counts <em>profiling</em>-phase
+  requests, and a run that hits its wall clock during warmup has none — reference run
+  2750618 has 118 client records, all <code>benchmark_phase: warmup</code>. Scrape-derived KPIs
+  (<code>tok_cache</code>, <code>kv_hit_true</code>) are still valid on such a run; the per-request and
+  per-session cards are the parts that need <code>meta.n &gt; 0</code>. <code>meta.phase_filter</code> states
+  which case you are looking at.</li>
+<li><strong>Worker fingerprints do not cover the frontend.</strong> They are written per worker, so a
+  frontend-only setting such as <code>DYN_TOKENIZER_CACHE</code> appears in no fingerprint. Its
+  record is <code>meta.provenance.config</code>, taken from the resolved <code>config.yaml</code> — a
+  configured value rather than an observation from inside the running process.</li>
+</ul>
+<h2 id="provenance-and-re-syncing">Provenance and re-syncing<a class="headerlink" href="#provenance-and-re-syncing" title="Permanent link">&para;</a></h2>
+<p>Vendored from <code>dynamo-benchmark-perf-dashboard</code> at commit
+<code>22f49fea243e43403690b38e70a8d4092dec4cc8</code>. Only what the component dashboard needs was
+copied; the upstream panel dashboard (<code>dashboard.py</code>, <code>template/</code>), the framework
+adapters (<code>src/common/</code>, <code>src/trtllm/</code>, <code>src/vllm/</code>), the capture layer (<code>src/capture/</code>
+— srt-slurm's Tachometer capture already implements that contract),
+and two unreachable processors (<code>agentperf</code> client, live <code>tempo</code> trace scrape) were
+deliberately left behind.</p>
+<p>Deltas applied on top of upstream, all of them layout/wiring:</p>
+<ol>
+<li><code>ingest.py</code> moved under <code>src/ingest/</code>, the renderer under <code>src/visualization/</code>.</li>
+<li>Client default glob <code>artifacts/*/profile_export.jsonl</code>; span-log default <code>*.out</code>.</li>
+<li>D3 inlined from the vendored sibling by default (<code>--d3-cdn</code> opts out).</li>
+<li><code>agentperf</code> / <code>tempo</code> registry entries dropped, with <code>get_processor</code> naming the
+   valid options when one is requested.</li>
+</ol>
+<p>Both directories are excluded from <code>ruff</code> and <code>ty</code> in <code>pyproject.toml</code> so the files stay
+byte-comparable with upstream; reformatting them would rewrite ~100 lines of deliberately
+dense style and destroy the diff. Comments inside them that cite <code>dashboard.py</code>,
+<code>render_fast.sh</code> or <code>src/common/*</code> are upstream provenance — those files are not here,
+but the reasoning they record still applies.</p>
+<p>Coverage lives in <code>tests/test_component_dashboard.py</code>, which pins the <em>seam</em>: the
+artifact layout srt-slurm writes must be what the vendored defaults look for.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

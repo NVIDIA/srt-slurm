@@ -1,0 +1,4021 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/architecture/">
+      
+      
+        <link rel="prev" href="../legacy-v1/">
+      
+      
+        <link rel="next" href="../sglang-router/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Architecture - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#srtctl-architecture-documentation" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Architecture
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../accuracy/" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#high-level-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        High-Level Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="High-Level Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-is-srtctl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is srtctl?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#problem-statement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem Statement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#architecture-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture Overview
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-philosophy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Philosophy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Design Philosophy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-single-source-of-truth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Single Source of Truth
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-frozen-dataclasses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Frozen Dataclasses
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-protocol-pattern-duck-typing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Protocol Pattern (Duck Typing)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-registry-pattern" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Registry Pattern
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-factory-classmethods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Factory Classmethods
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#system-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System Components
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="System Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cli-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CLI Layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#submitpy-job-submission" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        submit.py - Job Submission
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#do_sweeppy-sweeporchestrator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        do_sweep.py - SweepOrchestrator
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration Layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#schemapy-configuration-dataclasses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        schema.py - Configuration Dataclasses
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#runtimepy-runtimecontext" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        runtime.py - RuntimeContext
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend Layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Backend Layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#backendprotocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        BackendProtocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#authoring-surface-engine-and-roles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authoring surface: engine: and roles:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sglangprotocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SGLangProtocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trtllmprotocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TRTLLMProtocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#frontend-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontend Layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frontend Layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#frontendprotocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FrontendProtocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#infrastructure-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Infrastructure Layer
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture Layers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture Layers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#layer-diagram" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer Diagram
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow-diagrams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data Flow Diagrams
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Data Flow Diagrams">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#config-loading-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config Loading Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-submission-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Job Submission Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#worker-startup-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Worker Startup Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#health-check-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Health Check Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#process-architecture-on-slurm-cluster" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Process Architecture on SLURM Cluster
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Process Architecture on SLURM Cluster">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#physical-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical Layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#port-allocation-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Port Allocation Strategy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#process-relationships" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Process Relationships
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-abstractions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Abstractions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Key Abstractions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#runtimecontext" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RuntimeContext
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#endpoint-vs-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoint vs Process
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nodeportallocator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NodePortAllocator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#processregistry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ProcessRegistry
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#managedprocess" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ManagedProcess
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#extension-points" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extension Points
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Extension Points">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-to-add-a-new-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to Add a New Backend
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-to-add-a-new-frontend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to Add a New Frontend
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-to-add-a-new-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to Add a New Benchmark
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#module-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Module Dependencies
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Module Dependencies">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#import-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Import Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#circular-import-prevention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Circular Import Prevention
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#directory-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Directory Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#high-level-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        High-Level Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="High-Level Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-is-srtctl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is srtctl?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#problem-statement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem Statement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#architecture-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture Overview
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-philosophy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Philosophy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Design Philosophy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-single-source-of-truth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Single Source of Truth
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-frozen-dataclasses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Frozen Dataclasses
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-protocol-pattern-duck-typing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Protocol Pattern (Duck Typing)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-registry-pattern" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Registry Pattern
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-factory-classmethods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Factory Classmethods
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#system-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System Components
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="System Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cli-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CLI Layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#submitpy-job-submission" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        submit.py - Job Submission
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#do_sweeppy-sweeporchestrator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        do_sweep.py - SweepOrchestrator
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration Layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#schemapy-configuration-dataclasses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        schema.py - Configuration Dataclasses
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#runtimepy-runtimecontext" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        runtime.py - RuntimeContext
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend Layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Backend Layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#backendprotocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        BackendProtocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#authoring-surface-engine-and-roles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authoring surface: engine: and roles:
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sglangprotocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SGLangProtocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trtllmprotocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TRTLLMProtocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#frontend-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontend Layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frontend Layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#frontendprotocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FrontendProtocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#infrastructure-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Infrastructure Layer
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture Layers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture Layers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#layer-diagram" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer Diagram
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow-diagrams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data Flow Diagrams
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Data Flow Diagrams">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#config-loading-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config Loading Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-submission-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Job Submission Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#worker-startup-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Worker Startup Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#health-check-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Health Check Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#process-architecture-on-slurm-cluster" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Process Architecture on SLURM Cluster
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Process Architecture on SLURM Cluster">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#physical-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical Layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#port-allocation-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Port Allocation Strategy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#process-relationships" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Process Relationships
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-abstractions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Abstractions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Key Abstractions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#runtimecontext" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RuntimeContext
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#endpoint-vs-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoint vs Process
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nodeportallocator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NodePortAllocator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#processregistry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ProcessRegistry
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#managedprocess" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ManagedProcess
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#extension-points" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extension Points
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Extension Points">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-to-add-a-new-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to Add a New Backend
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-to-add-a-new-frontend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to Add a New Frontend
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-to-add-a-new-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to Add a New Benchmark
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#module-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Module Dependencies
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Module Dependencies">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#import-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Import Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#circular-import-prevention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Circular Import Prevention
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#directory-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Directory Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/architecture.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="srtctl-architecture-documentation">srtctl Architecture Documentation<a class="headerlink" href="#srtctl-architecture-documentation" title="Permanent link">&para;</a></h1>
+<p><strong>Version</strong>: 1.1
+<strong>Last Updated</strong>: 2026-01-27</p>
+<hr />
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ol>
+<li><a href="#high-level-overview">High-Level Overview</a></li>
+<li><a href="#design-philosophy">Design Philosophy</a></li>
+<li><a href="#system-components">System Components</a></li>
+<li><a href="#architecture-layers">Architecture Layers</a></li>
+<li><a href="#data-flow-diagrams">Data Flow Diagrams</a></li>
+<li><a href="#process-architecture-on-slurm-cluster">Process Architecture on SLURM Cluster</a></li>
+<li><a href="#key-abstractions">Key Abstractions</a></li>
+<li><a href="#extension-points">Extension Points</a></li>
+<li><a href="#module-dependencies">Module Dependencies</a></li>
+<li><a href="#directory-structure">Directory Structure</a></li>
+</ol>
+<hr />
+<h2 id="high-level-overview">High-Level Overview<a class="headerlink" href="#high-level-overview" title="Permanent link">&para;</a></h2>
+<h3 id="what-is-srtctl">What is srtctl?<a class="headerlink" href="#what-is-srtctl" title="Permanent link">&para;</a></h3>
+<p>srtctl (SLURM Runtime Control) is a Python-first orchestration framework for LLM inference benchmarks on SLURM clusters. It provides:</p>
+<ul>
+<li><strong>Configuration-driven deployment</strong>: YAML configs define model, resources, backends, and benchmarks</li>
+<li><strong>Multi-backend support</strong>: SGLang and TRTLLM with prefill/decode disaggregation</li>
+<li><strong>Automated orchestration</strong>: Handles infrastructure setup, worker spawning, health checks, and benchmarking</li>
+<li><strong>Container-based execution</strong>: Workers run inside containers with proper mounts and environment</li>
+</ul>
+<h3 id="problem-statement">Problem Statement<a class="headerlink" href="#problem-statement" title="Permanent link">&para;</a></h3>
+<p>Running distributed LLM inference workloads on SLURM clusters involves significant complexity:</p>
+<ol>
+<li><strong>Resource Allocation</strong>: Mapping GPU workers to nodes with proper tensor parallelism</li>
+<li><strong>Process Coordination</strong>: Starting services in the correct order with health checks</li>
+<li><strong>Configuration Management</strong>: Handling model paths, container images, and environment variables</li>
+<li><strong>Monitoring &amp; Cleanup</strong>: Tracking process health and graceful shutdown</li>
+</ol>
+<p>srtctl abstracts this complexity into a simple YAML interface while providing extensibility for different backends, frontends, and benchmarks.</p>
+<h3 id="architecture-overview">Architecture Overview<a class="headerlink" href="#architecture-overview" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>+------------------------------------------------------------------+
+|                         USER INTERFACE                            |
+|  srtctl apply -f config.yaml    |    srtctl dry-run -f config.yaml|
++------------------------------------------------------------------+
+                                |
+                                v
++------------------------------------------------------------------+
+|                        CLI LAYER                                  |
+|   submit.py (job submission)  |  interactive.py (TUI)            |
++------------------------------------------------------------------+
+                                |
+                                v
++------------------------------------------------------------------+
+|                    CONFIGURATION LAYER                            |
+|   schema.py (frozen dataclasses)  |  config.py (YAML loading)    |
++------------------------------------------------------------------+
+                                |
+                                v
++------------------------------------------------------------------+
+|                   ORCHESTRATION LAYER                             |
+|         SweepOrchestrator + Stage Mixins (Worker/Frontend/Bench)  |
++------------------------------------------------------------------+
+                |               |                |
+                v               v                v
++---------------+  +---------------+  +------------------+
+|  BACKEND      |  |   FRONTEND    |  |   BENCHMARK      |
+|  BackendProto |  |   FrontendProto|  |   BenchmarkRunner|
+|  (SGLang)     |  |   (Dynamo/SGL) |  |   (SA-Bench/MMLU)|
++---------------+  +---------------+  +------------------+
+                                |
+                                v
++------------------------------------------------------------------+
+|                    INFRASTRUCTURE LAYER                           |
+|   SLURM (srun)  |  Containers (Enroot)  |  NATS/etcd             |
++------------------------------------------------------------------+
+</code></pre></div>
+<hr />
+<h2 id="design-philosophy">Design Philosophy<a class="headerlink" href="#design-philosophy" title="Permanent link">&para;</a></h2>
+<h3 id="1-single-source-of-truth">1. Single Source of Truth<a class="headerlink" href="#1-single-source-of-truth" title="Permanent link">&para;</a></h3>
+<p>The <code>RuntimeContext</code> computes all paths and values <strong>once</strong> at startup. This eliminates:</p>
+<ul>
+<li>Scattered bash variable expansion</li>
+<li>Inconsistent path computation</li>
+<li>Configuration drift during execution</li>
+</ul>
+<div class="highlight"><pre><span></span><code><span class="c1"># All runtime values computed in one place</span>
+<span class="n">runtime</span> <span class="o">=</span> <span class="n">RuntimeContext</span><span class="o">.</span><span class="n">from_config</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">job_id</span><span class="p">)</span>
+<span class="n">runtime</span><span class="o">.</span><span class="n">log_dir</span>          <span class="c1"># /path/to/logs/12345/logs</span>
+<span class="n">runtime</span><span class="o">.</span><span class="n">head_node_ip</span>     <span class="c1"># 10.0.0.1</span>
+<span class="n">runtime</span><span class="o">.</span><span class="n">container_mounts</span> <span class="c1"># Dict[Path, Path]</span>
+</code></pre></div>
+<h3 id="2-frozen-dataclasses">2. Frozen Dataclasses<a class="headerlink" href="#2-frozen-dataclasses" title="Permanent link">&para;</a></h3>
+<p>All configuration objects are <strong>immutable</strong> after creation using <code>@dataclass(frozen=True)</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SrtConfig</span><span class="p">:</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">model</span><span class="p">:</span> <span class="n">ModelConfig</span>
+    <span class="n">resources</span><span class="p">:</span> <span class="n">ResourceConfig</span>
+    <span class="c1"># ... all fields immutable</span>
+</code></pre></div>
+<p>Benefits:</p>
+<ul>
+<li>Prevents accidental mutation</li>
+<li>Easier to reason about state</li>
+<li>Safe to pass around without defensive copying</li>
+<li>Thread-safe by default</li>
+</ul>
+<h3 id="3-protocol-pattern-duck-typing">3. Protocol Pattern (Duck Typing)<a class="headerlink" href="#3-protocol-pattern-duck-typing" title="Permanent link">&para;</a></h3>
+<p>Using <code>typing.Protocol</code> instead of ABC for interfaces enables duck typing without inheritance:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">BackendProtocol</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">build_worker_command</span><span class="p">(</span><span class="o">...</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span> <span class="o">...</span>
+
+<span class="c1"># SGLangProtocol is a frozen dataclass that implements this</span>
+<span class="c1"># No inheritance required - just implement the methods</span>
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SGLangProtocol</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">build_worker_command</span><span class="p">(</span><span class="o">...</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+        <span class="c1"># implementation</span>
+</code></pre></div>
+<h3 id="4-registry-pattern">4. Registry Pattern<a class="headerlink" href="#4-registry-pattern" title="Permanent link">&para;</a></h3>
+<p>Extensible component registration via decorators:</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@register_benchmark</span><span class="p">(</span><span class="s2">"sa-bench"</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SABenchRunner</span><span class="p">(</span><span class="n">BenchmarkRunner</span><span class="p">):</span>
+    <span class="o">...</span>
+
+<span class="c1"># Later: get_runner("sa-bench") returns instance</span>
+<span class="n">runner</span> <span class="o">=</span> <span class="n">get_runner</span><span class="p">(</span><span class="s2">"sa-bench"</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="5-factory-classmethods">5. Factory Classmethods<a class="headerlink" href="#5-factory-classmethods" title="Permanent link">&para;</a></h3>
+<p>Use <code>@classmethod</code> named <code>from_*</code> for construction:</p>
+<div class="highlight"><pre><span></span><code><span class="n">RuntimeContext</span><span class="o">.</span><span class="n">from_config</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">job_id</span><span class="p">)</span>
+<span class="n">Nodes</span><span class="o">.</span><span class="n">from_slurm</span><span class="p">(</span><span class="n">benchmark_on_separate_node</span><span class="p">)</span>
+<span class="n">SrtConfig</span><span class="o">.</span><span class="n">from_yaml</span><span class="p">(</span><span class="n">yaml_path</span><span class="p">)</span>
+</code></pre></div>
+<hr />
+<h2 id="system-components">System Components<a class="headerlink" href="#system-components" title="Permanent link">&para;</a></h2>
+<h3 id="cli-layer">CLI Layer<a class="headerlink" href="#cli-layer" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>src/srtctl/cli/
+|-- __init__.py
+|-- submit.py        # Main entry point: srtctl apply/dry-run
+|-- do_sweep.py      # SweepOrchestrator - runs inside SLURM job
+|-- setup_head.py    # Head node infrastructure (NATS, etcd)
+|-- interactive.py   # TUI for job management
+|-- mixins/
+    |-- worker_stage.py    # Backend worker startup
+    |-- frontend_stage.py  # Frontend/nginx startup
+    |-- benchmark_stage.py # Benchmark execution
+</code></pre></div>
+<h4 id="submitpy-job-submission">submit.py - Job Submission<a class="headerlink" href="#submitpy-job-submission" title="Permanent link">&para;</a></h4>
+<p>Entry point for <code>srtctl apply|dry-run -f config.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code>User runs: srtctl apply -f config.yaml
+                |
+                v
+    +---------------------------+
+    | 1. Parse CLI arguments    |
+    | 2. load_config(path)      |
+    | 3. Generate sbatch script |
+    | 4. Submit via sbatch      |
+    +---------------------------+
+                |
+                v
+    +---------------------------+
+    | SLURM allocates nodes     |
+    | Runs sbatch script        |
+    +---------------------------+
+</code></pre></div>
+<h4 id="do_sweeppy-sweeporchestrator">do_sweep.py - SweepOrchestrator<a class="headerlink" href="#do_sweeppy-sweeporchestrator" title="Permanent link">&para;</a></h4>
+<p>The main orchestration class that runs inside the SLURM job:</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SweepOrchestrator</span><span class="p">(</span><span class="n">WorkerStageMixin</span><span class="p">,</span> <span class="n">FrontendStageMixin</span><span class="p">,</span> <span class="n">BenchmarkStageMixin</span><span class="p">):</span>
+    <span class="n">config</span><span class="p">:</span> <span class="n">SrtConfig</span>
+    <span class="n">runtime</span><span class="p">:</span> <span class="n">RuntimeContext</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Run the complete benchmark sweep."""</span>
+        <span class="c1"># Stage 1: Start head infrastructure (NATS, etcd)</span>
+        <span class="c1">#   (skipped for frontend.type: vllm or trtllm_serve)</span>
+        <span class="c1"># Stage 2: Start backend workers</span>
+        <span class="c1"># Stage 3: Start frontends (no-op for frontend.type: vllm — worker owns the port)</span>
+        <span class="c1"># Stage 4: Run benchmark</span>
+        <span class="c1"># Cleanup</span>
+</code></pre></div>
+<h3 id="configuration-layer">Configuration Layer<a class="headerlink" href="#configuration-layer" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>src/srtctl/core/
+|-- schema.py       # Frozen dataclass definitions
+|-- config.py       # YAML loading with cluster defaults
+|-- formatting.py   # FormattablePath/String wrappers
+|-- runtime.py      # RuntimeContext - single source of truth
+</code></pre></div>
+<h4 id="schemapy-configuration-dataclasses">schema.py - Configuration Dataclasses<a class="headerlink" href="#schemapy-configuration-dataclasses" title="Permanent link">&para;</a></h4>
+<p>All configs are <strong>frozen dataclasses</strong> with marshmallow validation. The recipe a user writes is the <code>schema: 2</code> layout (<code>engine:</code>, <code>roles:</code>, <code>placement:</code>, <code>services:</code>, <code>dynamo.source:</code>); <code>load_config</code> normalizes it into these dataclasses before validation (see <a href="#config-loading-flow">Config Loading Flow</a>).</p>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Purpose</th>
+<th>Key Fields</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SrtConfig</code></td>
+<td>Main job config</td>
+<td>name, model, resources, backend, frontend, benchmark, services</td>
+</tr>
+<tr>
+<td><code>ModelConfig</code></td>
+<td>Model settings</td>
+<td>path, container, precision</td>
+</tr>
+<tr>
+<td><code>ResourceConfig</code></td>
+<td>GPU/node allocation</td>
+<td>gpu_type, gpus_per_node, plus the per-role node/worker/GPU counts filled from <code>roles:</code></td>
+</tr>
+<tr>
+<td><code>BackendConfig</code></td>
+<td>Polymorphic backend</td>
+<td>type, engine-wide knobs, plus the per-role args/env filled from <code>roles:</code></td>
+</tr>
+<tr>
+<td><code>FrontendConfig</code></td>
+<td>Router settings</td>
+<td>type, enable_multiple_frontends, nginx_raise_ulimit, args, env</td>
+</tr>
+<tr>
+<td><code>BenchmarkConfig</code></td>
+<td>Benchmark params</td>
+<td>type, isl, osl, concurrencies, sweep</td>
+</tr>
+<tr>
+<td><code>ProfilingConfig</code></td>
+<td>Profiling settings</td>
+<td>type (nsys/torch), phase configs</td>
+</tr>
+</tbody>
+</table>
+<h4 id="runtimepy-runtimecontext">runtime.py - RuntimeContext<a class="headerlink" href="#runtimepy-runtimecontext" title="Permanent link">&para;</a></h4>
+<p>The <strong>single source of truth</strong> for all runtime values:</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">RuntimeContext</span><span class="p">:</span>
+    <span class="n">job_id</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">run_name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">nodes</span><span class="p">:</span> <span class="n">Nodes</span>
+    <span class="n">head_node_ip</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">log_dir</span><span class="p">:</span> <span class="n">Path</span>
+    <span class="n">model_path</span><span class="p">:</span> <span class="n">Path</span>
+    <span class="n">container_image</span><span class="p">:</span> <span class="n">Path</span>
+    <span class="n">gpus_per_node</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">network_interface</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>
+    <span class="n">container_mounts</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="n">Path</span><span class="p">,</span> <span class="n">Path</span><span class="p">]</span>
+    <span class="n">srun_options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span>
+    <span class="n">environment</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span>
+    <span class="n">frontend_port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">8000</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_config</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">SrtConfig</span><span class="p">,</span> <span class="n">job_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RuntimeContext</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""All path computation happens here, once at startup."""</span>
+</code></pre></div>
+<h3 id="backend-layer">Backend Layer<a class="headerlink" href="#backend-layer" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>src/srtctl/backends/
+|-- __init__.py     # Exports BackendConfig, protocols
+|-- base.py         # BackendProtocol definition
+|-- sglang.py       # SGLangProtocol implementation
+|-- trtllm.py       # TRTLLMProtocol implementation
+</code></pre></div>
+<h4 id="backendprotocol">BackendProtocol<a class="headerlink" href="#backendprotocol" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">BackendProtocol</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span> <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_config_for_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mode</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span> <span class="o">...</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_environment_for_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mode</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span> <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">allocate_endpoints</span><span class="p">(</span><span class="o">...</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Endpoint</span><span class="p">]:</span> <span class="o">...</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">endpoints_to_processes</span><span class="p">(</span><span class="o">...</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Process</span><span class="p">]:</span> <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">build_worker_command</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">process</span><span class="p">,</span> <span class="n">endpoint_processes</span><span class="p">,</span> <span class="n">runtime</span><span class="p">,</span>
+        <span class="n">frontend_type</span><span class="p">,</span> <span class="n">nsys_prefix</span><span class="p">,</span> <span class="n">dump_config_path</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span> <span class="o">...</span>
+</code></pre></div>
+<h4 id="authoring-surface-engine-and-roles">Authoring surface: <code>engine:</code> and <code>roles:</code><a class="headerlink" href="#authoring-surface-engine-and-roles" title="Permanent link">&para;</a></h4>
+<p>The user-facing API for a backend is the 2.0 recipe, not the protocol dataclass. <code>engine:</code> names the engine (a string, or a mapping with engine-wide knobs such as vLLM <code>connector</code> and <code>dp_launch_mode</code>, or TRT-LLM <code>served_model_name</code>), and <code>roles:</code> holds everything that is per worker role:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">    </span><span class="nt">workers</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">    </span><span class="nt">gpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">            </span><span class="c1"># GPUs per worker</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w">               </span><span class="c1"># environment for this role's workers</span>
+<span class="w">      </span><span class="nt">PYTHONUNBUFFERED</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w">              </span><span class="c1"># engine CLI flags for this role</span>
+<span class="w">      </span><span class="nt">tensor-parallel-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+<span class="w">    </span><span class="nt">kv_events</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">    </span><span class="c1"># optional; the engine's KV events publisher</span>
+<span class="w">    </span><span class="c1"># extra_args: []   # TRT-LLM only: raw CLI args appended to the launch</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">colocate</span><span class="w">    </span><span class="c1"># share the prefill nodes' spare GPUs; gpus: is then required on both roles</span>
+<span class="w">    </span><span class="nt">workers</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">    </span><span class="nt">gpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">tensor-parallel-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+</code></pre></div>
+<p><code>srtctl.core.roles.expand_roles</code> (with <code>expand_engine</code>, <code>srtctl.core.placement.expand_placement</code>, and <code>srtctl.services.normalize</code>) rewrites this into the internal fields the runtime reads: the per-role node, worker, and GPU counts on <code>ResourceConfig</code>, and per-mode <code>args</code>, <code>env</code>, <code>extra_args</code>, and <code>kv_events</code> on the engine's protocol dataclass. <code>nodes: colocate</code> becomes the internal shared-node sentinel, and the loader rejects a colocated split that does not fit on the prefill nodes. Those internal fields have the same names as the v1 recipe layout and are documented in <a href="../legacy-v1/">legacy-v1.md</a>; <code>srtctl migrate</code> rewrites a v1 recipe into <code>roles:</code>.</p>
+<h4 id="sglangprotocol">SGLangProtocol<a class="headerlink" href="#sglangprotocol" title="Permanent link">&para;</a></h4>
+<p>Implements BackendProtocol for SGLang with P/D disaggregation. Its fields are the per-mode <code>env</code> and <code>args</code> from <code>roles.prefill</code>, <code>roles.decode</code>, and <code>roles.agg</code>, plus <code>kv_events</code>. <code>get_config_for_mode(mode)</code> and <code>get_environment_for_mode(mode)</code> hand them to the launch path.</p>
+<p><strong>Launch strategy</strong>: Per-process srun launching (one srun per worker process).</p>
+<h4 id="trtllmprotocol">TRTLLMProtocol<a class="headerlink" href="#trtllmprotocol" title="Permanent link">&para;</a></h4>
+<p>Implements BackendProtocol for TRTLLM with MPI-style launching. Its fields are the per-mode <code>env</code>, <code>args</code>, and <code>extra_args</code> from <code>roles.prefill</code> and <code>roles.decode</code>, plus the engine-wide <code>served_model_name</code> from <code>engine:</code>.</p>
+<p><strong>Launch strategy</strong>: MPI-style launching (one srun per endpoint with all nodes together). Uses <code>trtllm-llmapi-launch</code> for distributed launching.</p>
+<p><strong>Key differences from SGLang</strong>:
+- No aggregated mode support
+- Uses UUID-based EPLB shared memory naming (<code>TRTLLM_EPLB_SHM_NAME</code>)
+- MPI launch with <code>--mpi=pmix</code> and <code>--cpu-bind=verbose,none</code>
+- Configuration written to YAML file and passed via <code>--extra-engine-args</code></p>
+<h3 id="frontend-layer">Frontend Layer<a class="headerlink" href="#frontend-layer" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>src/srtctl/frontends/
+|-- __init__.py     # Exports FrontendProtocol
+|-- base.py         # FrontendProtocol definition
+|-- dynamo.py       # DynamoFrontend (NATS/etcd)
+|-- sglang.py       # SGLangFrontend (direct router)
+|-- trtllm_serve.py # TRTLLMServeFrontend (disagg TRT-LLM orchestrator)
+|-- vllm.py         # VLLMFrontend (direct aggregate vllm serve)
+</code></pre></div>
+<h4 id="frontendprotocol">FrontendProtocol<a class="headerlink" href="#frontendprotocol" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FrontendProtocol</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span> <span class="o">...</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">health_endpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span> <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">parse_health</span><span class="p">(</span><span class="n">response_json</span><span class="p">,</span> <span class="n">expected_prefill</span><span class="p">,</span> <span class="n">expected_decode</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">WorkerHealthResult</span><span class="p">:</span> <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">start_frontends</span><span class="p">(</span>
+        <span class="n">topology</span><span class="p">,</span> <span class="n">runtime</span><span class="p">,</span> <span class="n">config</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">backend_processes</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">ManagedProcess</span><span class="p">]:</span> <span class="o">...</span>
+</code></pre></div>
+<h3 id="infrastructure-layer">Infrastructure Layer<a class="headerlink" href="#infrastructure-layer" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>src/srtctl/core/
+|-- slurm.py        # SLURM utilities (srun, nodelist parsing)
+|-- processes.py    # Process lifecycle management
+|-- health.py       # HTTP health checks
+|-- topology.py     # Endpoint/Process allocation
+</code></pre></div>
+<hr />
+<h2 id="architecture-layers">Architecture Layers<a class="headerlink" href="#architecture-layers" title="Permanent link">&para;</a></h2>
+<h3 id="layer-diagram">Layer Diagram<a class="headerlink" href="#layer-diagram" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>+------------------------------------------------------------------+
+|                          CLI LAYER                                |
++------------------------------------------------------------------+
+| submit.py       | do_sweep.py    | interactive.py | setup_head.py|
+|                 |                |                |               |
+| - Parse args    | - Orchestrate  | - TUI mode     | - Start NATS |
+| - Load config   | - Stage mixins | - Job browser  | - Start etcd |
+| - Submit sbatch | - Run stages   |                |               |
++------------------------------------------------------------------+
+                                |
+                                | SrtConfig, RuntimeContext
+                                v
++------------------------------------------------------------------+
+|                      CONFIGURATION LAYER                          |
++------------------------------------------------------------------+
+| schema.py                    | config.py        | runtime.py     |
+|                              |                  |                 |
+| - SrtConfig (frozen)         | - load_config()  | - RuntimeContext|
+| - ModelConfig (frozen)       | - YAML parsing   | - from_config() |
+| - ResourceConfig (frozen)    | - Cluster defaults| - Path compute |
+| - BackendConfig (polymorphic)| - Validation     |                 |
++------------------------------------------------------------------+
+                                |
+                                | Endpoints, Processes
+                                v
++------------------------------------------------------------------+
+|                     ORCHESTRATION LAYER                           |
++------------------------------------------------------------------+
+| SweepOrchestrator                                                 |
+|   +-- WorkerStageMixin   (start_worker, start_all_workers)       |
+|   +-- FrontendStageMixin (start_nginx, start_frontend)           |
+|   +-- BenchmarkStageMixin (run_benchmark)                         |
+|                                                                   |
+| ProcessRegistry        | ManagedProcess     | Signal Handlers    |
+| - add_process()        | - name, popen      | - SIGTERM/SIGINT   |
+| - check_failures()     | - log_file, node   | - Graceful cleanup |
+| - cleanup()            | - terminate()      |                    |
++------------------------------------------------------------------+
+                                |
+                                | Commands, Health Checks
+                                v
++------------------------------------------------------------------+
+|                        BACKEND LAYER                              |
++------------------------------------------------------------------+
+| BackendProtocol                    | Implementations:             |
+| - get_srun_config()                | - SGLangProtocol             |
+| - allocate_endpoints()             |   (per-process srun)         |
+| - endpoints_to_processes()         | - TRTLLMProtocol             |
+| - build_worker_command()           |   (MPI-style srun)           |
++------------------------------------------------------------------+
+                                |
+                                v
++----------------------------------------------------------------------------------------------+
+|                                       FRONTEND LAYER                                         |
++----------------------------------------------------------------------------------------------+
+| FrontendProtocol          | DynamoFrontend | SGLangFrontend | TRTLLMServe  | VLLMFrontend    |
+| - start_frontends()       | srun process   | srun process   | srun process | (no process)    |
+| - parse_health()          | NATS/etcd      | direct workers | /health      | /health         |
+| - health_endpoint         | /health        | /workers       | /health      | agg leader node |
++----------------------------------------------------------------------------------------------+
+                                |
+                                v
++------------------------------------------------------------------+
+|                     INFRASTRUCTURE LAYER                          |
++------------------------------------------------------------------+
+| slurm.py                 | processes.py       | health.py        |
+| - start_srun_process()   | - ManagedProcess   | - wait_for_port()|
+| - get_slurm_nodelist()   | - ProcessRegistry  | - wait_for_model()|
+| - get_hostname_ip()      | - Signal handlers  | - Health parsers |
++------------------------------------------------------------------+
+</code></pre></div>
+<hr />
+<h2 id="data-flow-diagrams">Data Flow Diagrams<a class="headerlink" href="#data-flow-diagrams" title="Permanent link">&para;</a></h2>
+<h3 id="config-loading-flow">Config Loading Flow<a class="headerlink" href="#config-loading-flow" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>+------------+     +-------------+     +------------------+     +--------------+
+| YAML Config| --&gt; | load_config | --&gt; | expand_engine    | --&gt; | SrtConfig    |
+| (schema 2) |     +-------------+     | expand_roles     |     | (frozen DC)  |
++------------+                         | expand_placement |     +--------------+
+                                       | normalize        |            |
+                                       | services         |            |
+                                       +------------------+            |
+                                                                       v
++------------+     +------------------+     +----------------+
+| SLURM Env  | --&gt; | RuntimeContext   | &lt;-- | SrtConfig      |
+| (job_id,   |     | .from_config()   |     |                |
+| nodelist)  |     +------------------+     +----------------+
++------------+              |
+                            v
+               +-----------------------+
+               | RuntimeContext        |
+               | - job_id, run_name    |
+               | - nodes (head, worker)|
+               | - log_dir, model_path |
+               | - container_mounts    |
+               +-----------------------+
+                            |
+          +-----------------+-----------------+
+          |                 |                 |
+          v                 v                 v
+   +-------------+   +-------------+   +-------------+
+   | allocate_   |   | Backend.    |   | Frontend.   |
+   | endpoints() |   | build_cmd() |   | start()     |
+   +-------------+   +-------------+   +-------------+
+          |                 |                 |
+          v                 v                 v
+   +-------------+   +-------------+   +-------------+
+   | Endpoints   |   | Worker      |   | Router      |
+   | + Processes |   | Processes   |   | Processes   |
+   +-------------+   +-------------+   +-------------+
+</code></pre></div>
+<h3 id="job-submission-flow">Job Submission Flow<a class="headerlink" href="#job-submission-flow" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>User runs: srtctl apply -f config.yaml
+                |
+                v
++-----------------------------+
+| cli/submit.py::main()       |
+| 1. Parse CLI args           |
+| 2. load_config(path)        |
+| 3. submit_with_orchestrator |
++-----------------------------+
+                |
+                v
++-----------------------------+
+| submit_with_orchestrator()  |
+| 1. generate_sbatch_script() |
+| 2. Write to temp file       |
+| 3. sbatch script_path       |
+| 4. Copy config to outputs/  |
++-----------------------------+
+                |
+                v
++-----------------------------+
+| SLURM allocates nodes       |
+| Runs sbatch script          |
++-----------------------------+
+                |
+                v
++-----------------------------+
+| job_script_minimal.j2       |
+| 1. mkdir output dirs        |
+| 2. pip install srtctl       |
+| 3. python -m srtctl.cli.do_sweep |
++-----------------------------+
+                |
+                v
++-----------------------------+
+| cli/do_sweep.py::main()     |
+| 1. load_config()            |
+| 2. get_slurm_job_id()       |
+| 3. RuntimeContext.from_config() |
+| 4. SweepOrchestrator(config, runtime) |
+| 5. orchestrator.run()       |
++-----------------------------+
+</code></pre></div>
+<h3 id="worker-startup-flow">Worker Startup Flow<a class="headerlink" href="#worker-startup-flow" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>SweepOrchestrator.start_all_workers()
+                |
+                v
++------------------------------------+
+| For each Process in backend_processes: |
+|   1. Get endpoint_processes        |
+|   2. Build bash preamble           |
+|      - Custom setup script         |
+|      - Dynamo installation         |
+|   3. Build worker command          |
+|      - backend.build_worker_command()|
+|   4. Set environment variables     |
+|      - HEAD_NODE_IP                |
+|      - ETCD_ENDPOINTS              |
+|      - NATS_SERVER                 |
+|      - DYN_SYSTEM_PORT             |
+|      - CUDA_VISIBLE_DEVICES        |
+|   5. start_srun_process()          |
+|   6. Create ManagedProcess         |
++------------------------------------+
+                |
+                v
++------------------------------------+
+| start_srun_process()               |
+|   1. Build srun command            |
+|      --overlap                     |
+|      --nodes, --ntasks             |
+|      --nodelist                    |
+|      --output                      |
+|      --container-image             |
+|      --container-mounts            |
+|   2. Wrap in bash -c               |
+|      - Export env vars             |
+|      - Run preamble                |
+|      - Execute main command        |
+|   3. subprocess.Popen()            |
++------------------------------------+
+</code></pre></div>
+<h3 id="health-check-flow">Health Check Flow<a class="headerlink" href="#health-check-flow" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>SweepOrchestrator.run_benchmark()
+         |
+         v
+wait_for_model(host, port, n_prefill, n_decode, frontend_type)
+         |
+         +-----&gt; GET http://host:port/{health_endpoint}
+         |              |
+         |       +------+------+
+         |       |             |
+         |       v             v
+         |   /health       /workers
+         |   (dynamo)      (sglang)
+         |       |             |
+         |       v             v
+         |  check_dynamo   check_sglang
+         |  _health()      _router_health()
+         |       |             |
+         |       v             v
+         |   WorkerHealthResult
+         |   - ready: bool
+         |   - prefill_ready vs expected
+         |   - decode_ready vs expected
+         |
+         +&lt;--- Loop until ready or timeout
+</code></pre></div>
+<hr />
+<h2 id="process-architecture-on-slurm-cluster">Process Architecture on SLURM Cluster<a class="headerlink" href="#process-architecture-on-slurm-cluster" title="Permanent link">&para;</a></h2>
+<h3 id="physical-layout">Physical Layout<a class="headerlink" href="#physical-layout" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>+------------------------------------------------------------------+
+|                        SLURM JOB ALLOCATION                       |
++------------------------------------------------------------------+
+|                                                                    |
+|  HEAD NODE (node0)                                                 |
+|  +------------------------------------------------------------+   |
+|  | sbatch script (HOST)                                        |   |
+|  |   -&gt; python -m srtctl.cli.do_sweep (orchestrator)          |   |
+|  +------------------------------------------------------------+   |
+|  | srun container: setup_head.py                               |   |
+|  |   -&gt; NATS server (:4222)                                    |   |
+|  |   -&gt; etcd server (:2379)                                    |   |
+|  +------------------------------------------------------------+   |
+|  | srun container: nginx (if multiple frontends)               |   |
+|  |   -&gt; Load balancer (:8000)                                  |   |
+|  +------------------------------------------------------------+   |
+|  | srun container: frontend_0                                  |   |
+|  |   -&gt; dynamo.frontend or sglang_router (:8080)              |   |
+|  +------------------------------------------------------------+   |
+|                                                                    |
+|  WORKER NODE (node1) - Prefill                                    |
+|  +------------------------------------------------------------+   |
+|  | srun container: prefill_0                                   |   |
+|  |   -&gt; dynamo.sglang or sglang.launch_server                 |   |
+|  |   -&gt; GPUs 0-7 (TP=8)                                       |   |
+|  |   -&gt; HTTP port 30000                                        |   |
+|  |   -&gt; Bootstrap port 31000                                   |   |
+|  +------------------------------------------------------------+   |
+|                                                                    |
+|  WORKER NODE (node2) - Decode                                     |
+|  +------------------------------------------------------------+   |
+|  | srun container: decode_0 (GPUs 0-3)                         |   |
+|  |   -&gt; HTTP port 30000                                        |   |
+|  +------------------------------------------------------------+   |
+|  | srun container: decode_1 (GPUs 4-7)                         |   |
+|  |   -&gt; HTTP port 30001                                        |   |
+|  +------------------------------------------------------------+   |
+|                                                                    |
++------------------------------------------------------------------+
+</code></pre></div>
+<h3 id="port-allocation-strategy">Port Allocation Strategy<a class="headerlink" href="#port-allocation-strategy" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>+------------------+------------+----------------------------------+
+| Port Type        | Range      | Description                      |
++------------------+------------+----------------------------------+
+| HTTP ports       | 30000+     | Per-node, incremental            |
+| Bootstrap ports  | 31000+     | Per-node, prefill only           |
+| KV events ports  | 5550+      | Global, incremental              |
+| System ports     | 8081+      | Per-process, incremental         |
+| Frontend public  | 8000       | Public-facing (nginx or direct)  |
+| Frontend internal| 8080       | Behind nginx                     |
+| NATS             | 4222       | Message broker                   |
+| etcd             | 2379       | Key-value store                  |
++------------------+------------+----------------------------------+
+</code></pre></div>
+<h3 id="process-relationships">Process Relationships<a class="headerlink" href="#process-relationships" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>                    +------------------+
+                    |  ORCHESTRATOR    |
+                    | (do_sweep.py)    |
+                    | runs on HEAD     |
+                    +--------+---------+
+                             |
+           +-----------------+------------------+
+           |                 |                  |
+           v                 v                  v
++----------+----+   +--------+-------+   +------+--------+
+| HEAD INFRA    |   | WORKERS        |   | FRONTENDS     |
+| - NATS        |   | - prefill_0..N |   | - router_0..N |
+| - etcd        |   | - decode_0..N  |   | - nginx (opt) |
++---------------+   | - agg_0..N     |   +---------------+
+                    +----------------+
+                             |
+                             | NATS pub/sub
+                             | etcd registration
+                             v
+                    +----------------+
+                    | FRONTENDS      |
+                    | discover workers|
+                    | via NATS/etcd  |
+                    +----------------+
+</code></pre></div>
+<hr />
+<h2 id="key-abstractions">Key Abstractions<a class="headerlink" href="#key-abstractions" title="Permanent link">&para;</a></h2>
+<h3 id="runtimecontext">RuntimeContext<a class="headerlink" href="#runtimecontext" title="Permanent link">&para;</a></h3>
+<p>The <strong>single source of truth</strong> for all runtime values. Created once at job start:</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">RuntimeContext</span><span class="p">:</span>
+    <span class="c1"># Runtime identifiers</span>
+    <span class="n">job_id</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">run_name</span><span class="p">:</span> <span class="nb">str</span>
+
+    <span class="c1"># Node topology</span>
+    <span class="n">nodes</span><span class="p">:</span> <span class="n">Nodes</span>          <span class="c1"># head, bench, worker tuple</span>
+    <span class="n">head_node_ip</span><span class="p">:</span> <span class="nb">str</span>
+
+    <span class="c1"># Computed paths (all absolute)</span>
+    <span class="n">log_dir</span><span class="p">:</span> <span class="n">Path</span>
+    <span class="n">model_path</span><span class="p">:</span> <span class="n">Path</span>
+    <span class="n">container_image</span><span class="p">:</span> <span class="n">Path</span>
+
+    <span class="c1"># Resource configuration</span>
+    <span class="n">gpus_per_node</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">network_interface</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>
+
+    <span class="c1"># Container mounts: host_path -&gt; container_path</span>
+    <span class="n">container_mounts</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="n">Path</span><span class="p">,</span> <span class="n">Path</span><span class="p">]</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_config</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">SrtConfig</span><span class="p">,</span> <span class="n">job_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RuntimeContext</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""All path computation happens here, once at startup."""</span>
+</code></pre></div>
+<h3 id="endpoint-vs-process">Endpoint vs Process<a class="headerlink" href="#endpoint-vs-process" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>+---------------+       +---------------+
+|   ENDPOINT    |       |    PROCESS    |
++---------------+       +---------------+
+| Logical unit  |       | Physical unit |
+| May span nodes|  --&gt;  | Runs on 1 node|
+| Has mode/index|       | Has ports     |
++---------------+       +---------------+
+
+Example: TP=16 endpoint on 8-GPU nodes
++-----------------------------------+
+| Endpoint (prefill, index=0)       |
+| - nodes: (node1, node2)           |
+| - gpu_indices: {0..7}             |
++-----------------------------------+
+        |
+        +---&gt; Process (node1, rank=0, leader)
+        |        - http_port: 30000
+        |        - bootstrap_port: 31000
+        |
+        +---&gt; Process (node2, rank=1, follower)
+                 - http_port: 0 (not exposed)
+</code></pre></div>
+<h3 id="nodeportallocator">NodePortAllocator<a class="headerlink" href="#nodeportallocator" title="Permanent link">&para;</a></h3>
+<p>Manages per-node port assignments to avoid conflicts:</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">NodePortAllocator</span><span class="p">:</span>
+    <span class="n">base_http_port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">30000</span>
+    <span class="n">base_bootstrap_port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">31000</span>
+    <span class="n">base_kv_events_port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5550</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">next_http_port</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Get next available HTTP port for a node."""</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">next_bootstrap_port</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Get next available bootstrap port for a node."""</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">next_kv_events_port</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Get next available kv-events port (globally unique)."""</span>
+</code></pre></div>
+<h3 id="processregistry">ProcessRegistry<a class="headerlink" href="#processregistry" title="Permanent link">&para;</a></h3>
+<p>Lifecycle management for all spawned processes:</p>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ProcessRegistry</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">add_process</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">process</span><span class="p">:</span> <span class="n">ManagedProcess</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Add a process to the registry."""</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">check_failures</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Check if any critical process has failed."""</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Terminate all registered processes."""</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">print_failure_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tail_lines</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">50</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Print detailed failure info with log tails."""</span>
+</code></pre></div>
+<h3 id="managedprocess">ManagedProcess<a class="headerlink" href="#managedprocess" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">ManagedProcess</span><span class="p">:</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>                    <span class="c1"># e.g., "prefill_0", "decode_1"</span>
+    <span class="n">popen</span><span class="p">:</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span>
+    <span class="n">log_file</span><span class="p">:</span> <span class="n">Path</span> <span class="o">|</span> <span class="kc">None</span>
+    <span class="n">node</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>
+    <span class="n">critical</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>        <span class="c1"># Failure triggers cleanup</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_running</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span> <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">terminate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">10.0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Terminate gracefully, then kill if needed."""</span>
+</code></pre></div>
+<hr />
+<h2 id="extension-points">Extension Points<a class="headerlink" href="#extension-points" title="Permanent link">&para;</a></h2>
+<h3 id="how-to-add-a-new-backend">How to Add a New Backend<a class="headerlink" href="#how-to-add-a-new-backend" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Create backend module</strong> at <code>backends/mybackend.py</code>:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">marshmallow_dataclass</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span> <span class="k">as</span> <span class="n">marshmallow_dataclass</span>
+
+<span class="nd">@marshmallow_dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">MyBackendProtocol</span><span class="p">:</span>
+    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"mybackend"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"mybackend"</span>
+
+    <span class="c1"># Configuration fields</span>
+    <span class="n">my_option</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_config_for_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mode</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Return config dict for worker mode."""</span>
+        <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_environment_for_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mode</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Return env vars for worker mode."""</span>
+        <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">allocate_endpoints</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Endpoint</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Allocate logical endpoints to nodes."""</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">srtctl.core.topology</span><span class="w"> </span><span class="kn">import</span> <span class="n">allocate_endpoints</span>
+        <span class="k">return</span> <span class="n">allocate_endpoints</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">endpoints_to_processes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">endpoints</span><span class="p">,</span> <span class="n">base_sys_port</span><span class="o">=</span><span class="mi">8081</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Process</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Convert endpoints to physical processes."""</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">srtctl.core.topology</span><span class="w"> </span><span class="kn">import</span> <span class="n">endpoints_to_processes</span>
+        <span class="k">return</span> <span class="n">endpoints_to_processes</span><span class="p">(</span><span class="n">endpoints</span><span class="p">,</span> <span class="n">base_sys_port</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">build_worker_command</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">process</span><span class="p">,</span> <span class="n">endpoint_processes</span><span class="p">,</span> <span class="n">runtime</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Build command to start worker process."""</span>
+        <span class="n">cmd</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"python3"</span><span class="p">,</span> <span class="s2">"-m"</span><span class="p">,</span> <span class="s2">"mybackend.server"</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+        <span class="k">return</span> <span class="n">cmd</span>
+</code></pre></div>
+<ol>
+<li><strong>Register in <code>backends/__init__.py</code></strong>:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">.mybackend</span><span class="w"> </span><span class="kn">import</span> <span class="n">MyBackendProtocol</span>
+
+<span class="n">BackendConfig</span> <span class="o">=</span> <span class="n">SGLangProtocol</span> <span class="o">|</span> <span class="n">MyBackendProtocol</span>
+</code></pre></div>
+<ol>
+<li><strong>Update BackendConfigField in schema.py</strong> to handle polymorphic deserialization.</li>
+</ol>
+<h3 id="how-to-add-a-new-frontend">How to Add a New Frontend<a class="headerlink" href="#how-to-add-a-new-frontend" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Create frontend module</strong> at <code>frontends/myfrontend.py</code>:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">MyFrontend</span><span class="p">:</span>
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="s2">"myfrontend"</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">health_endpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="s2">"/health"</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">parse_health</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response_json</span><span class="p">,</span> <span class="n">expected_prefill</span><span class="p">,</span> <span class="n">expected_decode</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">WorkerHealthResult</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Parse health check response."""</span>
+        <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">start_frontends</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">topology</span><span class="p">,</span> <span class="n">runtime</span><span class="p">,</span> <span class="n">config</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">backend_processes</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">ManagedProcess</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Start frontend processes."""</span>
+        <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_frontend_args_list</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">args</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Convert args dict to CLI arguments."""</span>
+        <span class="o">...</span>
+</code></pre></div>
+<ol>
+<li><strong>Register in <code>frontends/base.py</code></strong>:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_frontend</span><span class="p">(</span><span class="n">frontend_type</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FrontendProtocol</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">frontend_type</span> <span class="o">==</span> <span class="s2">"myfrontend"</span><span class="p">:</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">srtctl.frontends.myfrontend</span><span class="w"> </span><span class="kn">import</span> <span class="n">MyFrontend</span>
+        <span class="k">return</span> <span class="n">MyFrontend</span><span class="p">()</span>
+    <span class="c1"># ... existing frontends</span>
+</code></pre></div>
+<h3 id="how-to-add-a-new-benchmark">How to Add a New Benchmark<a class="headerlink" href="#how-to-add-a-new-benchmark" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Create benchmark module</strong> at <code>benchmarks/mybench.py</code>:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">srtctl.benchmarks.base</span><span class="w"> </span><span class="kn">import</span> <span class="n">BenchmarkRunner</span><span class="p">,</span> <span class="n">register_benchmark</span>
+
+<span class="nd">@register_benchmark</span><span class="p">(</span><span class="s2">"mybench"</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">MyBenchRunner</span><span class="p">(</span><span class="n">BenchmarkRunner</span><span class="p">):</span>
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="s2">"My Benchmark"</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">script_path</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="s2">"/srtctl-benchmarks/mybench/run.sh"</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">validate_config</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">SrtConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Return list of validation errors (empty if valid)."""</span>
+        <span class="n">errors</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="n">config</span><span class="o">.</span><span class="n">benchmark</span><span class="o">.</span><span class="n">my_required_field</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">errors</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">"benchmark.my_required_field is required"</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">errors</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">build_command</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">SrtConfig</span><span class="p">,</span> <span class="n">runtime</span><span class="p">:</span> <span class="n">RuntimeContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Build benchmark command."""</span>
+        <span class="k">return</span> <span class="p">[</span>
+            <span class="s2">"python3"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">script_path</span><span class="p">,</span>
+            <span class="s2">"--host"</span><span class="p">,</span> <span class="n">runtime</span><span class="o">.</span><span class="n">nodes</span><span class="o">.</span><span class="n">head</span><span class="p">,</span>
+            <span class="s2">"--port"</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">runtime</span><span class="o">.</span><span class="n">frontend_port</span><span class="p">),</span>
+            <span class="c1"># ... other args</span>
+        <span class="p">]</span>
+</code></pre></div>
+<ol>
+<li>
+<p><strong>Add benchmark script</strong> at <code>benchmarks/scripts/mybench/run.sh</code></p>
+</li>
+<li>
+<p><strong>Import in <code>benchmarks/__init__.py</code></strong> to trigger registration:</p>
+</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">mybench</span>  <span class="c1"># noqa: F401</span>
+</code></pre></div>
+<hr />
+<h2 id="module-dependencies">Module Dependencies<a class="headerlink" href="#module-dependencies" title="Permanent link">&para;</a></h2>
+<h3 id="import-hierarchy">Import Hierarchy<a class="headerlink" href="#import-hierarchy" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>                    +-------------+
+                    |  __init__   |
+                    +------+------+
+                           |
+         +-----------------+------------------+
+         |                 |                  |
+    +----v----+      +-----v-----+      +-----v-----+
+    |   cli   |      |   core    |      | backends  |
+    +---------+      +-----------+      +-----------+
+         |                 |                  |
+         |           +-----+-----+            |
+         |           |           |            |
+    +----v----+ +----v----+ +----v----+  +----v----+
+    | do_sweep| | schema  | | runtime |  | sglang  |
+    +---------+ +---------+ +---------+  +---------+
+         |           |           |
+    +----v----+ +----v----+ +----v----+
+    | mixins  | | config  | | topology|
+    +---------+ +---------+ +---------+
+         |           |           |
+    +----v----+ +----v----+ +----v----+
+    |frontends| | health  | |processes|
+    +---------+ +---------+ +---------+
+         |           |           |
+    +----v----+ +----v----+ +----v----+
+    |benchmrks| | slurm   | |formatting|
+    +---------+ +---------+ +---------+
+</code></pre></div>
+<h3 id="circular-import-prevention">Circular Import Prevention<a class="headerlink" href="#circular-import-prevention" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>TYPE_CHECKING guard</strong> - Import type-only dependencies:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span>
+
+<span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">srtctl.core.runtime</span><span class="w"> </span><span class="kn">import</span> <span class="n">RuntimeContext</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">srtctl.core.schema</span><span class="w"> </span><span class="kn">import</span> <span class="n">SrtConfig</span>
+</code></pre></div>
+<ol>
+<li><strong>Lazy imports</strong> - Import at function call time:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_frontend</span><span class="p">(</span><span class="n">frontend_type</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FrontendProtocol</span><span class="p">:</span>
+    <span class="c1"># Import here to avoid circular imports</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">srtctl.frontends.dynamo</span><span class="w"> </span><span class="kn">import</span> <span class="n">DynamoFrontend</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">srtctl.frontends.sglang</span><span class="w"> </span><span class="kn">import</span> <span class="n">SGLangFrontend</span>
+    <span class="o">...</span>
+</code></pre></div>
+<ol>
+<li><strong>Forward references</strong> - Use string annotations:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">from_config</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="s2">"SrtConfig"</span><span class="p">,</span> <span class="n">job_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">"RuntimeContext"</span><span class="p">:</span>
+    <span class="o">...</span>
+</code></pre></div>
+<hr />
+<h2 id="directory-structure">Directory Structure<a class="headerlink" href="#directory-structure" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>src/srtctl/
+|-- __init__.py              # Package exports and version
+|-- logging_utils.py         # Logging configuration
+|
+|-- core/                    # Core infrastructure
+|   |-- __init__.py          # Core exports
+|   |-- config.py            # Config loading with cluster defaults
+|   |-- schema.py            # Frozen dataclass definitions
+|   |-- runtime.py           # RuntimeContext - single source of truth
+|   |-- topology.py          # Endpoint/Process allocation
+|   |-- processes.py         # Process lifecycle management
+|   |-- slurm.py             # SLURM utilities (srun, nodelist)
+|   |-- health.py            # HTTP health checks
+|   |-- formatting.py        # FormattablePath/String wrappers
+|   |-- sweep.py             # Parameter sweep generation
+|   |-- ip_utils/            # IP resolution utilities
+|       |-- __init__.py
+|       |-- get_node_ip.sh
+|
+|-- backends/                # Backend implementations
+|   |-- __init__.py          # Exports BackendConfig, protocols
+|   |-- base.py              # BackendProtocol definition
+|   |-- sglang.py            # SGLangProtocol implementation
+|   |-- trtllm.py            # TRTLLMProtocol implementation
+|
+|-- frontends/               # Frontend implementations
+|   |-- __init__.py          # Exports FrontendProtocol
+|   |-- base.py              # FrontendProtocol definition
+|   |-- dynamo.py            # DynamoFrontend (NATS/etcd)
+|   |-- sglang.py            # SGLangFrontend (direct router)
+|   |-- trtllm_serve.py      # TRTLLMServeFrontend (disagg orchestrator)
+|   |-- vllm.py              # VLLMFrontend (direct aggregate vllm serve)
+|
+|-- cli/                     # CLI entry points
+|   |-- __init__.py
+|   |-- submit.py            # srtctl apply/dry-run commands
+|   |-- do_sweep.py          # SweepOrchestrator
+|   |-- setup_head.py        # Head node infrastructure
+|   |-- interactive.py       # Interactive mode
+|   |-- mixins/              # Orchestrator stage mixins
+|       |-- __init__.py
+|       |-- worker_stage.py      # Backend worker startup
+|       |-- frontend_stage.py    # Frontend/nginx startup
+|       |-- benchmark_stage.py   # Benchmark execution
+|
+|-- benchmarks/              # Benchmark runners
+|   |-- __init__.py          # Registry and exports
+|   |-- base.py              # BenchmarkRunner ABC, register_benchmark
+|   |-- sa_bench.py          # SA-Bench throughput benchmark
+|   |-- aime.py              # AIME math accuracy benchmark
+|   |-- mmlu.py              # MMLU accuracy benchmark
+|   |-- gpqa.py              # GPQA benchmark
+|   |-- longbenchv2.py       # LongBench v2 benchmark
+|   |-- router.py            # Router benchmark
+|   |-- mooncake_router.py   # Mooncake router benchmark
+|   |-- profiling.py         # Profiling benchmark
+|   |-- scripts/             # Benchmark shell scripts
+|       |-- sa-bench/
+|           |-- bench.sh
+|           |-- benchmark_serving.py
+|           |-- ...
+|
+|-- templates/               # Jinja2 templates
+    |-- job_script_minimal.j2    # sbatch script template
+    |-- nginx.conf.j2            # nginx load balancer config
+</code></pre></div>
+<hr />
+<h2 id="summary">Summary<a class="headerlink" href="#summary" title="Permanent link">&para;</a></h2>
+<p>srtctl is a well-architected orchestration framework with:</p>
+<ul>
+<li><strong>Clean separation of concerns</strong>: Config, runtime, backend, frontend, benchmark layers</li>
+<li><strong>Strong typing</strong>: Frozen dataclasses with marshmallow validation</li>
+<li><strong>Extensibility</strong>: Protocol-based backends/frontends, decorator-based benchmark registration</li>
+<li><strong>Robust process management</strong>: Registry, monitoring, graceful cleanup</li>
+<li><strong>SLURM integration</strong>: Proper container mounts, srun launching, nodelist parsing</li>
+<li><strong>Modern Python</strong>: 3.10+ syntax, comprehensive type hints, clear module structure</li>
+</ul>
+<p>The codebase follows Python best practices and provides a solid foundation for orchestrating complex LLM inference workloads on SLURM clusters.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
