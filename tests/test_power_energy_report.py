@@ -991,6 +991,48 @@ def test_perf_per_watt_is_none_without_a_gpu_leg() -> None:
     assert report.total_tokens_per_second_per_gpu_watt is None
 
 
+def test_dcgm_sourced_cpu_power_is_flagged_as_rail_only(tmp_path: Path) -> None:
+    """DCGM field 1130 is the CPU rail, not the socket envelope; the report must say so."""
+    from srtctl.analysis.power_energy_report import DCGM_CPU_RAIL_ONLY_WARNING, load_cpu_samples
+
+    path = tmp_path / "cpu" / "samples.csv"
+    _write_cpu_csv(
+        path,
+        [
+            (2, 100.0, "node-a", "dcgm", "CPU0:cpuPowerUsageW", 0, 50.0, 50.0, 6.0, "", 50.0),
+            (2, 110.0, "node-a", "dcgm", "CPU0:cpuPowerUsageW", 0, 50.0, 50.0, 6.0, "", 50.0),
+        ],
+    )
+    dcgm = load_cpu_samples(path)
+    assert dcgm.sources == frozenset({"dcgm"})
+
+    report = build_concurrency_report(_window(), dcgm, None)
+
+    assert DCGM_CPU_RAIL_ONLY_WARNING in report.warnings
+    assert "1130" in DCGM_CPU_RAIL_ONLY_WARNING and "CPU rail only" in DCGM_CPU_RAIL_ONLY_WARNING
+    # The numbers themselves are unchanged: power_w is still field 1130.
+    assert report.cpu_total_joules == pytest.approx(500.0)  # 50 W x 10 s
+
+
+def test_acpi_sourced_cpu_power_is_not_flagged(tmp_path: Path) -> None:
+    from srtctl.analysis.power_energy_report import load_cpu_samples
+
+    path = tmp_path / "cpu" / "samples.csv"
+    _write_cpu_csv(
+        path,
+        [
+            (2, 100.0, "node-a", "acpi", "CPU0:cpuSidePowerUsageW", 0, 100.0, 50.0, 6.0, "", 100.0),
+            (2, 110.0, "node-a", "acpi", "CPU0:cpuSidePowerUsageW", 0, 100.0, 50.0, 6.0, "", 100.0),
+        ],
+    )
+    acpi = load_cpu_samples(path)
+    assert acpi.sources == frozenset({"acpi"})
+
+    report = build_concurrency_report(_window(), acpi, None)
+
+    assert not any("CPU rail only" in w for w in report.warnings)
+
+
 def test_render_and_json_carry_timing_and_perf_per_watt() -> None:
     from srtctl.analysis.power_energy_report import GpuSamples, ReportedTiming
 

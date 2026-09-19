@@ -26,10 +26,15 @@ Rail kinds
     Component rails. Reference breakdowns only; they are *not* additive to
     ``total`` (real traces show total ~93-104 W vs cpu_rail+soc ~53-58 W).
 ``dcgm``
-    Not an ACPI rail: DCGM field 1130 reports one already-aggregated value
-    per socket. Treated like ``total`` for ``power_w`` purposes. Whether it
-    equals the ACPI ``cpu_rail`` or the ``total`` envelope is unverified, so
-    DCGM rows leave every rail column blank.
+    Not an ACPI rail: the origin tag for DCGM-mode socket power. DCGM has no
+    CPU power backend of its own -- its sysmon module reads the same ACPI
+    hwmon channels by ``power1_oem_info`` label (NVIDIA/DCGM
+    ``modules/sysmon/DcgmSystemMonitor.cpp``), so each DCGM field *is* one
+    ACPI rail; see :data:`DCGM_FIELD_RAIL_KINDS`. Field 1130 is
+    ``CPU Power Socket N`` = ``cpu_rail``; no DCGM field reports the
+    ``Grace Power Socket N`` envelope (1131 is only its cap). DCGM-mode
+    ``power_w`` is therefore the CPU rail, roughly half the ACPI envelope,
+    and is not comparable with ACPI-mode ``power_w``.
 """
 
 from __future__ import annotations
@@ -39,6 +44,25 @@ import re
 TOTAL_KIND = "total"
 DCGM_KIND = "dcgm"
 OTHER_KIND = "other"
+
+# DCGM CPU-entity power fields and the ACPI rail each one reads. Verified
+# against NVIDIA/DCGM (DcgmSystemMonitor.cpp: label prefix -> file map;
+# DcgmModuleSysmon.cpp: field id -> getter). Keyed by field id so a producer
+# only ever names the field, never the label.
+DCGM_PRIMARY_FIELD_ID = 1130  # DCGM_FI_DEV_CPU_POWER_WATTS: the value filed as DCGM-mode power_w
+DCGM_FIELD_RAIL_KINDS: dict[int, str] = {
+    1130: "cpu_rail",  # DCGM_FI_DEV_CPU_POWER_WATTS       <- "CPU Power Socket N"   power1_average
+    1132: "soc",  # DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT <- "SysIO Power Socket N" power1_average
+}
+DCGM_FIELD_NAMES: dict[int, str] = {
+    1130: "DCGM_FI_DEV_CPU_POWER_WATTS",
+    1132: "DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT",
+}
+DCGM_FIELD_HWMON_LABELS: dict[int, str] = {
+    1130: "CPU Power Socket N",
+    1132: "SysIO Power Socket N",
+}
+DCGM_POWER_FIELD_IDS: tuple[int, ...] = tuple(sorted(DCGM_FIELD_RAIL_KINDS))
 
 # Component rails, in wide-CSV column order.
 COMPONENT_RAIL_KINDS: tuple[str, ...] = ("cpu_rail", "soc", "dram")
