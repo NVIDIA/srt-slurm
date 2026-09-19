@@ -345,6 +345,7 @@ class BenchmarkStageMixin:
     def _wait_for_service_ready(self, stop_event: threading.Event) -> bool:
         """Wait for frontend counts and any adapter-specific backend barrier."""
         from srtctl.core import health as health_utils
+        from srtctl.frontends import get_frontend
 
         if self.config.frontend.type == "none":
             # Services-only job: every service already passed its readiness probe in
@@ -356,6 +357,10 @@ class BenchmarkStageMixin:
         logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
 
         hc = self.config.health_check
+        frontend = get_frontend(self.config.frontend.type)
+        uses_dynamic_worker_discovery = bool(
+            getattr(frontend, "uses_dynamic_worker_discovery", lambda _backend: False)(self.config.backend)
+        )
         if not wait_for_model(
             host=self._public_api_node(),
             port=FRONTEND_PUBLIC_PORT,
@@ -365,13 +370,12 @@ class BenchmarkStageMixin:
             timeout=float(hc.max_attempts * hc.interval_seconds),
             report_every=60.0,
             frontend_type=self.config.frontend.type,
+            model_name=self.config.served_model_name,
+            dynamic_worker_discovery=uses_dynamic_worker_discovery,
             stop_event=stop_event,
         ):
             return False
 
-        from srtctl.frontends import get_frontend
-
-        frontend = get_frontend(self.config.frontend.type)
         backend_health_urls = frontend.get_backend_health_urls(
             self.config.backend,
             self.backend_processes,

@@ -347,6 +347,10 @@ class ClusterConfig:
     # recipe move between clusters of different GPU types without an edit.
     default_gpu_type: str | None = None
     network_interface: str | None = None
+    # GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES.
+    visible_devices_env: str = "CUDA_VISIBLE_DEVICES"
+    # Recipe exporter settings win. Explicit null disables the GPU default only.
+    default_gpu_exporter: "TelemetryExporterConfig | None" = field(default_factory=lambda: DEFAULT_DCGM_EXPORTER)
     use_gpus_per_node_directive: bool = True
     use_segment_sbatch_directive: bool = True
     use_exclusive_sbatch_directive: bool = False
@@ -1319,6 +1323,8 @@ class TachometerConfig:
     storage_subdir: str = "tachometer"
     extra_metadata: dict[str, str] = field(default_factory=dict)
     default_exporters: bool = True
+    # Resolved from srtslurm.yaml at load time; never read global config here.
+    default_gpu_exporter: TelemetryExporterConfig | None = field(default_factory=lambda: DEFAULT_DCGM_EXPORTER)
     dcgm_exporter: TelemetryExporterConfig | None = None
     node_exporter: TelemetryExporterConfig | None = None
     process_exporter: TelemetryExporterConfig | None = None
@@ -1327,10 +1333,10 @@ class TachometerConfig:
 
     @property
     def resolved_dcgm_exporter(self) -> TelemetryExporterConfig | None:
-        """User-configured DCGM exporter, else the built-in default."""
+        """Recipe exporter, else the resolved cluster default."""
         if self.dcgm_exporter is not None:
             return self.dcgm_exporter
-        return DEFAULT_DCGM_EXPORTER if self.default_exporters else None
+        return self.default_gpu_exporter if self.default_exporters else None
 
     @property
     def resolved_node_exporter(self) -> TelemetryExporterConfig | None:
@@ -2627,6 +2633,18 @@ class SrtConfig:
         if not isinstance(self.backend, VLLMProtocol):
             raise ValidationError(f"frontend.type: vllm-router requires backend.type: vllm; got {self.backend_type!r}")
         backend = self.backend
+
+        connector = getattr(backend, "connector", None)
+        if isinstance(connector, str) and connector.lower() == "moriio":
+            if self.frontend.enable_multiple_frontends:
+                raise ValidationError(
+                    "vLLM Router MoRI-IO discovery uses one registration endpoint; "
+                    "set frontend.enable_multiple_frontends: false"
+                )
+            if self.frontend.orchestrator_placement != "head":
+                raise ValidationError("vLLM Router MoRI-IO discovery requires frontend.orchestrator_placement: head")
+            if self.resources.num_agg:
+                raise ValidationError("vLLM Router MoRI-IO requires a prefill/decode topology")
 
         endpoint_gpu_counts: dict[Literal["prefill", "decode", "agg"], int] = {
             "prefill": self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
