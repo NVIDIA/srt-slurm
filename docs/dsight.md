@@ -1,23 +1,52 @@
 # DSight: offline inference trace explorer
 
 DSight aligns client requests, Dynamo lifecycle spans, worker metrics, hardware
-samples, and existing Nsight exports on one timeline. Generate it explicitly
-from a preserved run:
+samples, and existing Nsight exports on one timeline.
+
+## Generate on a cluster login node
+
+Run these commands manually on the login node after the run's artifacts have
+been preserved. Use a Bash shell with `uv` on `PATH`, Python 3.10 or newer, and
+a writable srt-slurm checkout that includes DSight. The run directory must be
+readable and the report's parent directory writable from that node.
+
+Replace the quoted placeholders with your paths. Absolute paths work from any
+checkout; relative paths resolve from your current working directory.
 
 ```bash
-uv run srtctl dsight build outputs/601843 --output reports/601843
+cd "<path_to_srt_slurm_checkout>"
+uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
+  --output "<path_to_report_directory>"
+
 # Skip OTel processing, even when trace files exist:
-uv run srtctl dsight build outputs/601843 --output reports/601843 --no-otel
+uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
+  --output "<path_to_report_directory>" --no-otel
+
 # Optional existing profiles and a known timezone for TRT-LLM iteration logs:
-uv run srtctl dsight build outputs/601843 --output reports/601843 \
-  --nsys-sqlite exported-sqlites/ --iteration-timezone America/Los_Angeles
+uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
+  --output "<path_to_report_directory>" \
+  --nsys-sqlite "<path_to_nsys_sqlite_exports>" \
+  --iteration-timezone "<iteration_log_timezone>"
 ```
 
-Open `reports/601843/index.html`. The HTML embeds its data and assets; it works
-offline, including from `file://`, in a modern browser with `DecompressionStream`
-support. Generation is **CLI-only**: DSight has no submission, benchmark, cleanup,
-or upload hook. It does not enable profiling, change recipes, launch GPU jobs,
-or export `.nsys-rep` files. `dashboard` is an alias for `dsight`.
+`uv run --no-dev` prepares the checkout's Python environment without development
+dependencies; its first invocation needs access to the required packages or a
+populated package cache. Choose the timezone recorded by the iteration logs,
+using an IANA timezone name; it is independent of the login node's timezone.
+The optional flags can be combined with `--no-otel`.
+
+Generation is CPU-only and requires no Slurm allocation, running deployment,
+GPU, container, or browser. It can also run on another machine with access to
+the same artifacts. Large captures can require substantial CPU, memory, and
+filesystem reads; follow your site's login-node resource limits and use a CPU
+job when needed.
+
+Open `<path_to_report_directory>/index.html` in a browser on your own machine,
+after copying or publishing the generated HTML. The HTML embeds its data and
+assets; it works offline, including from `file://`, in a modern browser with
+`DecompressionStream` support. Generation is **CLI-only**: DSight has no submission,
+benchmark, cleanup, or upload hook. It does not enable profiling, change recipes,
+launch GPU jobs, or export `.nsys-rep` files. `dashboard` is an alias for `dsight`.
 
 | Output | Purpose |
 | --- | --- |
@@ -33,7 +62,7 @@ the importer checks registered source files for changes during generation.
 ## Inputs
 
 Pass a run directory containing `logs/`, or the log directory itself. Multiple
-client exports require `--client /path/to/export.jsonl`; DSight does not silently
+client exports require `--client "<path_to_client_export>"`; DSight does not silently
 mix concurrency sweeps or duplicated exports.
 
 OTel is optional and is imported automatically when available. Use `--no-otel`
@@ -134,11 +163,11 @@ per-request assignment of shared batch time is applied.
 ## Agent, CLI and Python access
 
 ```bash
-srtctl dsight query reports/601843 summary
-srtctl dsight query reports/601843 requests --from 29 --to 34 --worker decode-0 --limit 20
-srtctl dsight query reports/601843 lifecycle --request <client-request-id>
-srtctl dsight query reports/601843 nsys --from 32 --to 33 --worker decode-0 --rank 0
-srtctl dsight query reports/601843 iterations --from 32 --to 33 --worker decode-0 --rank 0
+uv run --no-dev srtctl dsight query "<path_to_report_directory>" summary
+uv run --no-dev srtctl dsight query "<path_to_report_directory>" requests --from 29 --to 34 --worker decode-0 --limit 20
+uv run --no-dev srtctl dsight query "<path_to_report_directory>" lifecycle --request "<client_request_id>"
+uv run --no-dev srtctl dsight query "<path_to_report_directory>" nsys --from 32 --to 33 --worker decode-0 --rank 0
+uv run --no-dev srtctl dsight query "<path_to_report_directory>" iterations --from 32 --to 33 --worker decode-0 --rank 0
 ```
 
 Times are seconds relative to the exact string `meta.origin_ns`. List queries
@@ -155,7 +184,7 @@ returns the same model; `expandRequest()` keeps these requests unexpanded.
 ```python
 from srtctl.dsight.query import TraceDataset
 
-trace = TraceDataset.from_path("reports/601843")
+trace = TraceDataset.from_path("<path_to_report_directory>")
 rows = trace.query("requests", start=29, end=34, min_ttft_ms=1000, limit=20)
 detail = trace.query("lifecycle", request_id=rows["items"][0]["id"])
 ```
@@ -193,8 +222,8 @@ The optional browser checks use an already-running isolated Chrome DevTools
 port, a generated traced artifact, and no GPU:
 
 ```bash
-uv run --with websockets python tests/dsight_browser_check.py reports/601843/index.html \
-  --port 9338 --out /tmp/dsight-browser-check --request <joined-client-request-id>
+uv run --with websockets python tests/dsight_browser_check.py "<path_to_report_directory>/index.html" \
+  --port 9338 --out "<path_to_browser_check_output>" --request "<joined_client_request_id>"
 ```
 
 Check missing, empty, unjoined, disabled, and mixed OTel inputs with synthetic
@@ -202,5 +231,5 @@ source files (uses the same isolated Chrome port):
 
 ```bash
 uv run --with websockets python tests/dsight_optional_otel_check.py \
-  --port 9338 --out /tmp/dsight-optional-otel-check
+  --port 9338 --out "<path_to_browser_check_output>"
 ```

@@ -556,16 +556,27 @@ grep -E "Env:|Command:" outputs/<job_id>/logs/sweep_<job_id>.log
 ### `srtctl dsight`
 
 Explicitly build or query the offline inference trace explorer. Generation is
-independent of the benchmark job workflow.
+independent of the benchmark job workflow. Run manually in a Bash shell on a
+cluster login node with `uv` on `PATH`, Python 3.10+, a writable checkout that
+includes DSight, readable run artifacts, and a writable report parent directory.
+No Slurm allocation, GPU, running deployment, or container is required.
+
+Replace the quoted placeholders with your paths; relative paths resolve from
+the current working directory.
 
 ```bash
-srtctl dsight build outputs/<job_id> --output reports/<job_id>
+cd "<path_to_srt_slurm_checkout>"
+uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
+  --output "<path_to_report_directory>"
 # Optional: skip OTel processing and lifecycle breakdowns.
-srtctl dsight build outputs/<job_id> --output reports/<job_id> --no-otel
-srtctl dsight query reports/<job_id> summary
-srtctl dsight query reports/<job_id> requests --from 10 --to 20 --limit 10
+uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
+  --output "<path_to_report_directory>" --no-otel
+uv run --no-dev srtctl dsight query "<path_to_report_directory>" summary
+uv run --no-dev srtctl dsight query "<path_to_report_directory>" requests \
+  --from 10 --to 20 --limit 10
 ```
 
-The read-only MCP `query_trace` tool uses the generated dataset. See
-[DSight](dsight.md) for inputs, lifecycle semantics, Nsight imports, and the
-browser/Python APIs.
+Open the generated `<path_to_report_directory>/index.html` in a browser after
+copying or publishing it. The read-only MCP `query_trace` tool uses the generated
+dataset. See [DSight](dsight.md) for inputs, environment setup, lifecycle semantics,
+Nsight imports, and the browser/Python APIs.
