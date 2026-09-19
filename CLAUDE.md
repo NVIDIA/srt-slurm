@@ -48,6 +48,20 @@ Follow these patterns when extending the codebase:
 - **Single source of truth** - Create context objects (like `RuntimeContext`) that compute all derived paths/values once at startup rather than recomputing.
 - **testing** - when we make a new significant feature change, we should always add a new test
 
+## Design Rules
+
+Read these before adding a feature. Each rule names the existing pattern to reuse. The most common review finding in this repo is a new mechanism where one already exists.
+
+- **Names go in tables, never in branches.** A connector, vendor, router, exporter, or engine name is compared as a string in exactly one place: the table or registry that owns it (`_CONNECTOR_MAP` in `backends/vllm.py`, `@register_service`, `@register_benchmark`, `get_frontend`). Consumers read attributes of the row, not the name. If a change adds `if x == "<name>"` in two files, or repeats a `Literal["a", "b"]` across modules, it is a missing table row or a missing config field.
+- **Cluster differences live in `srtslurm.yaml`.** Anything that varies by cluster or hardware (NIC, visible-devices env var, default GPU exporter, sbatch directives, mounts, host setup) is a `ClusterConfig` field in `core/schema.py` following `network_interface` and the `default_*` blocks, read once into `RuntimeContext`. A vendor enum in Python is the wrong tool for this. Never call `load_cluster_config()` from a schema property or a stage: it is uncached and creates a second source of truth.
+- **One resolver per overridable setting.** A setting the recipe can set at engine level and override per role (`roles.<role>.args.connector`, DP size) has one accessor on the backend in the `get_config_for_mode` style, and every consumer uses it: command builder, process env, frontend, and schema validator. Two readers of the raw fields disagree the moment a role override appears.
+- **Frontends own readiness; backends own worker commands and ports.** `core/health.py` and the stage mixins contain no `frontend_type == "..."` checks and no `getattr(frontend, "hook", fallback)` probing. The frontend implements the protocol hook; if a hook is missing, add it to `FrontendProtocol`. A frontend asks a backend a question through a method (`backend.is_grpc_mode(mode)`), never by reading its fields by name.
+- **Every listener a process opens comes from the allocator.** Two processes can share a node in this repo (`nodes: colocate`, DP endpoints), so any port a worker binds (HTTP, bootstrap, side channel, handshake, notify, metrics) is allocated by `NodePortAllocator` and carried on `Process`. An upstream default port left in a generated config is a collision on the first colocated recipe. See Ports below.
+- **Modes are not types.** A new `frontend.type`, `services[].type`, or `engine.type` is for a different process with its own launch, health API, and registration model. A different CLI shape, transport, or discovery mode of the same binary is an override inside the existing class: `trtllm_serve` handles aggregate and disaggregated in one type, `sglang-router` picks http or grpc per mode. A new type string is checked in a dozen places (`FrontendType`, `get_frontend`, the schema pairing map, health expectations, telemetry targets, the backend command builder); count them before choosing.
+- **Check upstream before working around it.** When a change encodes an upstream behavior (what a health endpoint returns, which keys a connector reads, what a flag does), read the upstream source at the version the container ships and cite the commit in the PR. Do not add a probe, shim, or port-scan workaround for something upstream already handles.
+- **Reuse the machinery before adding a mechanism.** Services plus `placement` before a bespoke launcher, `roles.<role>.restart` before a wrapper loop, `host_setup` before a setup script that needs the host. The smallest diff that rides existing machinery beats a self-contained new module.
+- **A user-visible feature ships complete.** A `tests/` case (dry-run for visible config, mock orchestrator for behavior), a `docs/` page or section, an example recipe under `examples/`, and regenerated `docs/schema-reference.md`. In a stacked PR, a test lives in the layer that introduces the behavior it asserts.
+
 ## Key Concepts
 
 ### RuntimeContext
@@ -88,6 +102,22 @@ check_sglang_router_health(response_json, expected_prefill=2, expected_decode=4)
 ```
 
 For aggregated mode, pass `expected_prefill=0, expected_decode=num_agg`.
+
+### Frontends
+
+The frontend is the process that owns the public OpenAI port (`FRONTEND_PUBLIC_PORT`) and decides when the job is ready. `frontend.type` selects an implementation through `get_frontend()` in `src/srtctl/frontends/base.py`: `dynamo` (etcd/NATS discovery), `sglang-router` and `vllm-router` (static URL routers, both built on `StaticRouterFrontend`), `trtllm_serve` (direct aggregate or the disaggregated orchestrator), `sglang` and `vllm` (one direct worker owns the port), `none` (services-only, no gate).
+
+`FrontendProtocol` hooks: `health_endpoint` and `parse_health` (readiness), `get_backend_health_urls` (second gate: every advertised worker URL must answer 200 before traffic), `start_frontends` (launch on `topology.frontend_nodes`, one `ManagedProcess` per node with a `step_name`), `get_frontend_args_list` (`frontend.args` to CLI).
+
+`StaticRouterFrontend` (`frontends/static_router.py`) is the base for routers that take worker URLs on the command line. Subclasses set `executable`, `pd_flag`, `process_name` and override only what differs: `worker_scheme` (http or grpc per mode), `worker_bootstrap_port` (the P/D port advertised next to a prefill URL), `resolve_worker_host`, `get_managed_frontend_args` (arguments derived from the allocated topology; a conflicting user value raises instead of being overwritten), `build_bash_preamble`, `build_router_command`, `start_process` (test seam). `collect_workers` treats a positive `Process.http_port` as the definition of a routable worker.
+
+Readiness runs in `BenchmarkStageMixin._wait_for_service_ready`: `wait_for_model` polls `health_endpoint` for `health_check.max_attempts * interval_seconds` and hands the response to `parse_health` with counts from `_get_health_expectations`, then `get_backend_health_urls` are polled with `wait_for_http_endpoints`. Everything the frontend knows about readiness belongs in those hooks. The backend chooses the worker shape from `frontend_type` inside `build_worker_command` (Dynamo registration versus a direct server), so a new router mode usually touches the backend's command builder and one frontend override, nothing else.
+
+### Ports
+
+Every fixed port and base lives in `src/srtctl/ports.py` with a comment naming its owner. Per-process ports come from `NodePortAllocator` in `src/srtctl/core/topology.py`: per-node counters for what upstream binds on a known port (`next_http_port`, `next_bootstrap_port`, `next_dp_rpc_port`) and global counters for side channels (`next_kv_events_port`, `next_nixl_port`), with `_block(size)` variants when upstream adds a rank offset to a base (`VLLM_NIXL_SIDE_CHANNEL_PORT + dp_rank`). The backend's `endpoints_to_processes` stores them on `Process` (`sys_port`, `http_port`, `bootstrap_port`, `kv_events_port`, `nixl_port`, `dp_rpc_port`), and `get_process_environment` / `build_worker_command` turn them into env vars or flags.
+
+Rules that follow: a new listener gets a `Process` field, or reuses one with the same semantics, plus a block when upstream offsets by rank. A worker's own address is `get_hostname_ip(node, runtime.network_interface)`, not upstream's interface guess. Fixed scan bases such as `VLLM_PORT` exist only to keep co-located `get_open_port()` scans apart; if a connector allocates inside forked children, leave the base unset so the kernel assigns ports, do not add another base. Frontends bind `FRONTEND_PUBLIC_PORT` (8000), or `FRONTEND_INTERNAL_PORT` (8180) behind nginx when `enable_multiple_frontends` is set. Service ports are `ServiceKind` defaults overridden by `options`.
 
 ### Status Reporting
 
@@ -334,12 +364,18 @@ with patch.dict(os.environ, H100Rack.slurm_env()):
    - `allocate_endpoints()` - Logical worker allocation
    - `endpoints_to_processes()` - Physical process mapping
    - `build_worker_command(process, runtime)` - Command construction
+   - `get_process_environment(process)` - Per-process env derived from `Process` ports (side channels, scan bases)
 3. Export from `backends/__init__.py`
 4. Add polymorphic deserialization in `BackendConfigField` in `schema.py`
 
 **Current backends:**
 - **SGLang**: Per-process srun launching, supports prefill/decode/aggregated modes
 - **TRTLLM**: MPI-style launching (one srun per endpoint with all nodes), prefill/decode only
+- **vLLM**: Per-process srun launching, prefill/decode/aggregated, `per_node` DP; `frontend_type` selects Dynamo registration or a direct `vllm serve` server, and `_CONNECTOR_MAP` owns the KV connector table
+
+### Adding a Router Mode or a New Frontend Type
+
+Decide first whether it is a mode or a type (see Design Rules). A mode of an existing router (a discovery flag, another connector, a transport) is an override in the existing frontend class, keyed on a backend method that resolves the effective per-role setting, with `StaticRouterFrontend` left unchanged. A new type is a different process: add it to `FrontendType` and `get_frontend` in `frontends/base.py`, the backend pairing map in `SrtConfig._validate_static_router_frontend` or its own validator, `_get_health_expectations` if it reports counts differently, and the telemetry scrape targets in `core/telemetry.py`; then a `tests/test_<type>_frontend.py` using `start_process` as the seam, a `docs/<type>.md` page, and an `examples/` recipe.
 
 ### Adding a New Benchmark
 
