@@ -49,6 +49,14 @@ def _make_config(overrides: dict | None = None) -> SrtConfig:
     return SrtConfig.from_yaml(tmp_path)
 
 
+def test_cluster_gpu_visibility_is_visible(tmp_path, monkeypatch, capsys):
+    cluster_config = tmp_path / "srtslurm.yaml"
+    cluster_config.write_text(yaml.safe_dump({"visible_devices_env": "ROCR_VISIBLE_DEVICES"}))
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(cluster_config))
+    show_config_details(_make_config())
+    assert "GPU subset visibility variable: ROCR_VISIBLE_DEVICES" in capsys.readouterr().out
+
+
 class TestDryRunDynamoMetrics:
     @pytest.mark.parametrize(
         ("settings", "expected", "excluded"),
