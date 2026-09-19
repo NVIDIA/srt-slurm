@@ -141,6 +141,7 @@ def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, ena
     runtime = SimpleNamespace(
         log_dir=tmp_path,
         nodes=SimpleNamespace(infra="head", het_group_for=lambda node: None),
+        infra_node_ip="10.0.0.9",
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},

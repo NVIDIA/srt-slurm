@@ -104,6 +104,7 @@ _CONTAINER_ALIAS_SKIP_KEYS: frozenset[str] = frozenset(
         "sbatch_directives",
         "srun_options",
         "sglang_config",
+        "atom_config",
         "vllm_config",
         "trtllm_config",
         "mocker_config",
@@ -250,6 +251,12 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         resolved_path = model_paths[model_path]
         model["path"] = resolved_path
         logger.debug(f"Resolved model alias '{model_path}' -> '{resolved_path}'")
+
+    # Resolve the cluster GPU exporter once, before container aliases. Keep
+    # recipe overrides and the existing default_exporters opt-out authoritative.
+    if "default_gpu_exporter" in cluster_config:
+        tachometer = config.setdefault("observability", {}).setdefault("tachometer", {})
+        tachometer.setdefault("default_gpu_exporter", copy.deepcopy(cluster_config["default_gpu_exporter"]))
 
     # Resolve every container alias in one pass (model.container,
     # frontend.container_image / nginx_container, benchmark.container_image,

@@ -43,6 +43,8 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints
 
 from srtctl.backends import (
+    AtomProtocol,
+    AtomServerConfig,
     MockerProtocol,
     MockerServerConfig,
     SGLangProtocol,
@@ -79,6 +81,7 @@ GENERATED_NOTICE = (
 
 # backend.type value -> dataclass. Order is the documentation order.
 BACKEND_TYPES: tuple[tuple[str, type], ...] = (
+    ("atom", AtomProtocol),
     ("sglang", SGLangProtocol),
     ("trtllm", TRTLLMProtocol),
     ("vllm", VLLMProtocol),
@@ -103,7 +106,7 @@ _V2_TOP_LEVEL_ROWS = (
         type_label="str \\| mapping",
         default="required",
         description=(
-            "The engine type (`sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` "
+            "The engine type (`atom`, `sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` "
             "plus the engine-wide knobs listed under [Engine types](#engine-types)."
         ),
     ),
@@ -431,6 +434,10 @@ _V2_SERVICE_OPTION_FIELDS: dict[type, frozenset[str]] = {
     VLLMMooncakeKVStoreConfig: frozenset({"device_names_by_gpu"}),
 }
 
+# ATOM was added in v2; its normalized role fields are internal, not v1 API.
+INTERNAL_FIELDS = {AtomProtocol: _present(AtomProtocol, _backend_legacy_fields(ENGINE_CONFIG_KEY["atom"]))}
+INTERNAL_CLASSES = frozenset({AtomServerConfig})
+
 
 def _row(row: FieldDoc) -> str:
     return f"| `{row.key}` | {row.type_label} | {row.default} | {_cell(row.description)} |"
@@ -449,7 +456,7 @@ def _render_table(cls: type, *, only_legacy: bool = False) -> list[str]:
     legacy = _legacy_keys(cls)
     out = _table_header()
     for row in field_docs(cls):
-        if row.key in _V2_SERVICE_OPTION_FIELDS.get(cls, ()):
+        if row.key in _V2_SERVICE_OPTION_FIELDS.get(cls, ()) or row.key in INTERNAL_FIELDS.get(cls, {}):
             continue
         if (row.key in legacy) == only_legacy:
             out.append(_row(row))
@@ -576,7 +583,8 @@ def render_schema_reference() -> str:
     lines.append("")
     lines.extend(_render_authoring_surface())
 
-    nested = [cls for cls in _walk(SrtConfig, skip=_BACKEND_CLASSES) if cls not in LEGACY_CLASSES]
+    hidden_classes = LEGACY_CLASSES | INTERNAL_CLASSES
+    nested = [cls for cls in _walk(SrtConfig, skip=_BACKEND_CLASSES) if cls not in hidden_classes]
     if nested:
         lines.extend(["## Recipe sections", ""])
         for cls in nested:
@@ -599,7 +607,7 @@ def render_schema_reference() -> str:
         lines.extend(_render_table(cls))
         lines.append("")
         for extra in _walk(cls, skip=_BACKEND_CLASSES | set(nested)):
-            if extra not in engine_nested and extra not in LEGACY_CLASSES:
+            if extra not in engine_nested and extra not in hidden_classes:
                 engine_nested.append(extra)
     for cls in engine_nested:
         lines.extend(_render_class_section(cls, level=3))
@@ -657,7 +665,7 @@ def render_legacy_reference() -> str:
             lines.append(f"| `{prefix}.{key}` | {_cell(replacement)} |")
     backend_rows: dict[str, str] = {}
     for _, cls in BACKEND_TYPES:
-        for key, replacement in LEGACY_FIELDS[cls].items():
+        for key, replacement in LEGACY_FIELDS.get(cls, {}).items():
             backend_rows.setdefault(key, replacement)
     for key, replacement in backend_rows.items():
         lines.append(f"| `backend.{key}` | {_cell(replacement)} |")
@@ -704,6 +712,8 @@ def render_legacy_reference() -> str:
     )
     server_configs: list[type] = []
     for type_name, cls in BACKEND_TYPES:
+        if cls not in LEGACY_FIELDS:
+            continue
         lines.extend([f"### {cls.__name__}", "", f"`backend.type: {type_name}`", ""])
         lines.extend(_render_table(cls, only_legacy=True))
         lines.append("")

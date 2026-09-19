@@ -9,6 +9,7 @@ import shlex
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.frontends.static_router import StaticRouterFrontend
+from srtctl.ports import VLLM_DISCOVERY_PORT
 
 if TYPE_CHECKING:
     from srtctl.core.topology import Process
@@ -39,7 +40,18 @@ def routed_process_dp_size(backend: Any, process: Process) -> int:
 
 def node_local_data_parallel_size(backend: Any, backend_processes: list[Process]) -> int:
     """Return Router's single DP expansion factor for all advertised URLs."""
-    routed_sizes = {routed_process_dp_size(backend, process) for process in backend_processes if process.http_port > 0}
+    routable = [process for process in backend_processes if process.http_port > 0]
+    process_count_by_endpoint: dict[tuple[str, int], int] = {}
+    for process in routable:
+        endpoint = (process.endpoint_mode, process.endpoint_index)
+        process_count_by_endpoint[endpoint] = process_count_by_endpoint.get(endpoint, 0) + 1
+
+    # Hybrid-LB pools on later nodes have nonzero DP-rank offsets.
+    # Let vLLM route locally; Router expansion would restart ranks at zero.
+    if any(count > 1 for count in process_count_by_endpoint.values()):
+        return 1
+
+    routed_sizes = {routed_process_dp_size(backend, process) for process in routable}
     if len(routed_sizes) > 1:
         sizes = ", ".join(str(size) for size in sorted(routed_sizes))
         raise ValueError(f"vLLM Router requires one uniform node-local DP expansion factor; derived {sizes}")
@@ -118,7 +130,40 @@ class VLLMRouterFrontend(StaticRouterFrontend):
             managed_args.extend(["--worker-startup-timeout-secs", str(timeout_seconds)])
         return managed_args
 
+    def uses_dynamic_worker_discovery(self, backend: Any) -> bool:
+        """Use ZMQ registration for connector-managed P/D workers."""
+        return backend.uses_moriio()
+
+    def build_router_command(
+        self,
+        workers: list[Any],
+        host: str,
+        port: int,
+        *,
+        dynamic_discovery: bool = False,
+    ) -> list[str]:
+        """Add vLLM Router's MoRI-IO discovery contract when requested."""
+        command = super().build_router_command(
+            workers,
+            host,
+            port,
+            dynamic_discovery=dynamic_discovery,
+        )
+        if not dynamic_discovery:
+            return command
+
+        insertion = command.index("--host")
+        command[insertion:insertion] = [
+            "--kv-connector",
+            "moriio",
+            "--vllm-discovery-address",
+            f"0.0.0.0:{VLLM_DISCOVERY_PORT}",
+        ]
+        return command
+
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
-        """Advertise vLLM's NIXL side-channel port for P/D routing."""
-        del backend
+        """Advertise vLLM's NIXL side-channel port for static P/D routing."""
+        uses_moriio = getattr(backend, "uses_moriio", None)
+        if callable(uses_moriio) and uses_moriio() is True:
+            return None
         return process.nixl_port

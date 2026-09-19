@@ -462,6 +462,8 @@ def wait_for_model(
     timeout: float = 600.0,
     report_every: float = 60.0,
     frontend_type: str = "dynamo",
+    model_name: str | None = None,
+    dynamic_worker_discovery: bool = False,
     stop_event: threading.Event | None = None,
 ) -> bool:
     """Wait for model to be ready with expected worker counts.
@@ -486,8 +488,20 @@ def wait_for_model(
     from srtctl.frontends import get_frontend
 
     frontend = get_frontend(frontend_type)
+    use_vllm_router_generation_probe = frontend_type == "vllm-router" and dynamic_worker_discovery
+    if use_vllm_router_generation_probe and not model_name:
+        raise ValueError("model_name is required for vLLM Router dynamic-discovery health checks")
+
     health_url = f"http://{host}:{port}{frontend.health_endpoint}"
-    if frontend.health_endpoint == "/workers":
+    if use_vllm_router_generation_probe:
+        health_url = f"http://{host}:{port}/v1/completions"
+        logger.info(
+            "Polling %s every %.1fs with an end-to-end generation probe (%s frontend)",
+            health_url,
+            poll_interval,
+            frontend_type,
+        )
+    elif frontend.health_endpoint == "/workers":
         logger.info(
             "Polling %s every %.1fs for %d prefills and %d decodes (%s frontend)",
             health_url,
@@ -522,7 +536,22 @@ def wait_for_model(
 
         # Try to fetch health
         try:
-            response = requests.get(health_url, timeout=5.0)
+            if use_vllm_router_generation_probe:
+                response = requests.post(
+                    health_url,
+                    json={
+                        "model": model_name,
+                        "prompt": "srtctl readiness probe",
+                        "max_tokens": 1,
+                        "temperature": 0,
+                    },
+                    timeout=30.0,
+                )
+                if response.status_code == 200:
+                    logger.info("vLLM Router dynamic-discovery generation probe succeeded")
+                    return True
+            else:
+                response = requests.get(health_url, timeout=5.0)
             if response.status_code == 200:
                 # trtllm-serve /health may return an empty body; a 200 is sufficient
                 # (workers were gated by the frontend before the orchestrator started).

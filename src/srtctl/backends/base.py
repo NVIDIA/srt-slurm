@@ -27,6 +27,7 @@ class BackendType(str, Enum):
     TRTLLM = "trtllm"
     VLLM = "vllm"
     MOCKER = "mocker"
+    ATOM = "atom"
 
 
 @dataclass

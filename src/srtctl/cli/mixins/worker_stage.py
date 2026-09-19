@@ -11,6 +11,7 @@ import logging
 import shlex
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.backends.vllm import VLLMFailoverConfig, VLLMProtocol
@@ -140,6 +141,23 @@ class WorkerStageMixin:
 
         return " && ".join(parts)
 
+    def _visible_device_environment(self, process: "Process") -> dict[str, str]:
+        """Build a vendor-native device mask when the backend needs one."""
+        should_set_devices = getattr(self.backend, "should_set_visible_devices", lambda: True)
+        force_mask = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        # Failover engines must share the GMS sidecar's device list.
+        force_mask = force_mask or self.failover is not None
+        if not (force_mask or should_set_devices()) or len(process.gpu_indices) >= self.runtime.gpus_per_node:
+            return {}
+        return {self.runtime.visible_devices_env: process.cuda_visible_devices}
+
+    def _container_log_path(self, filename: str) -> Path:
+        """Return a worker-visible path under the runtime log mount."""
+        container_log_dir = self.runtime.container_mounts.get(self.runtime.log_dir)
+        if container_log_dir is None:
+            raise RuntimeError(f"Runtime log directory is not mounted in the container: {self.runtime.log_dir}")
+        return container_log_dir / filename
+
     def _apply_kvbm_endpoint_env(self, env_to_set: dict[str, str], endpoint_processes: list["Process"]) -> None:
         """Fill KVBM leader ZMQ settings for an endpoint.
 
@@ -213,6 +231,19 @@ class WorkerStageMixin:
             process.node_rank,
         )
 
+    def _apply_frontend_integration_env(self, env_to_set: dict[str, str], mode: str) -> None:
+        """Add backend/frontend integration defaults without overriding recipes."""
+        integration_environment = getattr(self.backend, "get_frontend_integration_environment", None)
+        if not callable(integration_environment):
+            return
+        integration_env = integration_environment(
+            mode,
+            self.config.frontend.type,
+            dict(getattr(self.config.frontend, "args", None) or {}),
+        )
+        for key, value in integration_env.items():
+            env_to_set.setdefault(key, value)
+
     def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
         """Start a single worker process (one srun per node, used by SGLang)."""
         mode = process.endpoint_mode
@@ -229,7 +260,7 @@ class WorkerStageMixin:
 
         # Log and config files
         worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}{suffix}.out"
-        config_dump = self.runtime.log_dir / f"{process.node}_config{suffix}.json"
+        config_dump = self._container_log_path(f"{process.node}_config{suffix}.json")
 
         # Profiling setup
         profiling = self.config.profiling
@@ -303,12 +334,8 @@ class WorkerStageMixin:
             formatted_value = value.format_map(SafeDict(template_vars))
             env_to_set[key] = formatted_value
 
-        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
-        force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
-        # Failover engines share their device list with the GMS sidecar (see start_gms_sidecar).
-        force_cvd = force_cvd or failover is not None
-        if (force_cvd or should_set_cvd(process)) and len(process.gpu_indices) < self.runtime.gpus_per_node:
-            env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
+        self._apply_frontend_integration_env(env_to_set, mode)
+        env_to_set.update(self._visible_device_environment(process))
 
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(self.backend.get_process_environment(process))
@@ -441,7 +468,7 @@ class WorkerStageMixin:
 
         # Log and config files (use leader node in name)
         worker_log = self.runtime.log_dir / f"{leader.node}_{mode}_w{index}.out"
-        config_dump = self.runtime.log_dir / f"{leader.node}_config.json"
+        config_dump = self._container_log_path(f"{leader.node}_config.json")
 
         # Profiling setup
         profiling = self.config.profiling
@@ -520,18 +547,21 @@ class WorkerStageMixin:
         ):
             env_to_set.setdefault("DYN_TRTLLM_KV_EVENT_HOSTS", ",".join(endpoint_nodes))
 
-        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
-        force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        self._apply_frontend_integration_env(env_to_set, mode)
+
+        should_set_devices = getattr(self.backend, "should_set_visible_devices", lambda: True)
+        force_mask = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
         node_gpu_setup = ""
-        if force_cvd or should_set_cvd(leader):
+        if force_mask or should_set_devices():
             if any(p.gpu_indices != leader.gpu_indices for p in endpoint_processes):
+                visible_devices_env = self.runtime.visible_devices_env
                 branches = " ".join(
-                    f"{shlex.quote(p.node)}) export CUDA_VISIBLE_DEVICES={shlex.quote(p.cuda_visible_devices)} ;;"
+                    f"{shlex.quote(p.node)}) export {visible_devices_env}={shlex.quote(p.cuda_visible_devices)} ;;"
                     for p in endpoint_processes
                 )
                 node_gpu_setup = f'case "$SLURMD_NODENAME" in {branches} *) exit 1 ;; esac'
-            elif len(leader.gpu_indices) < self.runtime.gpus_per_node:
-                env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
+            else:
+                env_to_set.update(self._visible_device_environment(leader))
 
         # Add mooncake worker env vars if configured (SGLang only). For MPI-style
         # endpoint launching we use the leader node's IP — mooncake's per-worker

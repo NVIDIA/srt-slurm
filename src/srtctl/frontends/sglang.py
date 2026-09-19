@@ -35,6 +35,8 @@ class SGLangRouterFrontend(StaticRouterFrontend):
     # Preserve the historical launch shape used by dry-run/topology callers
     # that construct the frontend before populating worker processes.
     allow_empty_workers: ClassVar[bool] = True
+    # Static registration expires if model loading outlasts the router startup window.
+    wait_for_workers_before_start: ClassVar[bool] = True
 
     def get_managed_frontend_args(
         self,
@@ -62,8 +64,7 @@ class SGLangRouterFrontend(StaticRouterFrontend):
         return "grpc" if backend.is_grpc_mode(mode) else "http"
 
     def resolve_worker_host(self, node: str, network_interface: str | None) -> str:
-        del network_interface
-        return get_hostname_ip(node)
+        return get_hostname_ip(node, network_interface)
 
     def start_process(self, **kwargs: Any) -> Any:
         return start_srun_process(**kwargs)
