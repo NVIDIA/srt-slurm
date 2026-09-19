@@ -1003,6 +1003,9 @@ def test_dcgm_sourced_cpu_power_is_flagged_as_rail_only(tmp_path: Path) -> None:
             (2, 110.0, "node-a", "dcgm", "CPU0:cpuPowerUsageW", 0, 50.0, 50.0, 6.0, "", 50.0),
         ],
     )
+    # Goes through the CSV loader on purpose: CpuSamples.sources is populated
+    # from the CSV's `source` column, and fixtures built directly with
+    # CpuSamples(...) leave it empty, which would never trigger the warning.
     dcgm = load_cpu_samples(path)
     assert dcgm.sources == frozenset({"dcgm"})
 

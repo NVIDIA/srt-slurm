@@ -354,6 +354,7 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
             _fake_value(0, cpu_power.CPU_POWER_FIELD_ID, 120.5),
             _fake_value(1, cpu_power.CPU_POWER_FIELD_ID, 130.0),
             _fake_value(0, 1132, 6.25),  # SysIO rail for socket 0 only
+            _fake_value(9, cpu_power.CPU_POWER_FIELD_ID, 999.0),  # entity we never enumerated: dropped
             _fake_value(0, 1100, 0.42),
             _fake_value(0, 1101, 0.30),
             _fake_value(0, 1103, 0.10),

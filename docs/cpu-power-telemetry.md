@@ -113,8 +113,14 @@ The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
   | 1130 `DCGM_FI_DEV_CPU_POWER_WATTS` | `CPU Power Socket N` | `cpu_rail` | `power_w` **and** `cpu_rail_w` |
   | 1132 `DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT` | `SysIO Power Socket N` | `soc` | `soc_w` |
   | 1131 `DCGM_FI_DEV_CPU_POWER_LIMIT_WATTS` | `Grace Power Socket N` (**cap** only) | — | — |
+  | 1133 `DCGM_FI_DEV_MODULE_POWER_UTIL_CURRENT` | `Module Power Socket N` | — (unverified; excluded) | — |
 
-  No DCGM field reports the `Grace Power Socket N` envelope's draw, so
+  No DCGM field reports the `Grace Power Socket N` envelope's draw. Field
+  1133 does read a usage file, but what "Module" spans on GB200/GB300
+  (Grace alone, or the Grace+Blackwell superchip) has not been measured on a
+  live node; it is excluded until `dcgmi dmon -e 1130,1131,1132,1133 -i
+  cpu:0` alongside `cat /sys/class/hwmon/*/device/power1_oem_info` settles
+  it. So
   **DCGM-mode `power_w` is the CPU rail, roughly half of ACPI-mode `power_w`**
   (about 53 W vs 100 W per socket on GB200 reference runs). The energy report
   attaches a "CPU rail only" warning to DCGM-sourced runs; do not compare their

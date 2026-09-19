@@ -103,6 +103,12 @@ def _parse_dcgm(families) -> list[CpuReading]:
     # socket -> field_id -> watts. An unlabelled sample (older exporter) is
     # field 1130; a labelled sample names the field. First value per
     # (socket, field) wins, as in the pivot.
+    #
+    # This parser is order-independent: it keys on (socket, field_id), so the
+    # exporter's "1130 first per socket" emission order buys nothing here.
+    # That order exists for *older* srtctl parsers, which took the first
+    # cpu_power_dcgm_watts sample per socket and ignored labels; keep it in
+    # the exporter for as long as old collectors may scrape new binaries.
     by_socket: dict[int, dict[int, float]] = {}
     for family in families:
         for sample in family.samples:

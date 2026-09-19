@@ -29,11 +29,11 @@ from typing import Any, NamedTuple
 
 from srtctl.core.power.cpu_rails import (
     COMPONENT_RAIL_KINDS,
-    DCGM_FIELD_HWMON_LABELS,
-    DCGM_FIELD_NAMES,
+    DCGM_FIELD_BY_ID,
     DCGM_FIELD_RAIL_KINDS,
     DCGM_KIND,
     DCGM_POWER_FIELD_IDS,
+    DCGM_POWER_FIELDS,
     DCGM_PRIMARY_FIELD_ID,
     RAIL_COLUMN_NAMES,
     TOTAL_KIND,
@@ -447,20 +447,20 @@ class DcgmCpuPowerReader(CpuPowerReader):
         return {
             "source": self.source_name,
             "field_id": CPU_POWER_FIELD_ID,
-            "field_name": DCGM_FIELD_NAMES[CPU_POWER_FIELD_ID],
+            "field_name": DCGM_FIELD_BY_ID[CPU_POWER_FIELD_ID].name,
             "semantics": (
                 "power_w is DCGM field 1130 = the ACPI 'CPU Power Socket N' rail (cpu_rail), not the socket "
                 "envelope; DCGM exposes no envelope field"
             ),
             "power_fields": [
                 {
-                    "field_id": field_id,
-                    "field_name": DCGM_FIELD_NAMES[field_id],
-                    "rail_kind": kind,
-                    "hwmon_label": DCGM_FIELD_HWMON_LABELS[field_id],
-                    "column": "power_w" if field_id == CPU_POWER_FIELD_ID else f"{kind}_w",
+                    "field_id": field.field_id,
+                    "field_name": field.name,
+                    "rail_kind": field.kind,
+                    "hwmon_label": field.hwmon_label,
+                    "column": "power_w" if field.field_id == CPU_POWER_FIELD_ID else f"{field.kind}_w",
                 }
-                for field_id, kind in DCGM_FIELD_RAIL_KINDS.items()
+                for field in DCGM_POWER_FIELDS
             ],
             "sensors": [{"name": sensor_name(DCGM_KIND, cpu_id), "cpu_entity_id": cpu_id} for cpu_id in self._cpu_ids],
             "total_method": "sum of field 1130 over available DCGM CPU entities",

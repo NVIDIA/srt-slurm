@@ -106,10 +106,13 @@ def test_dcgm_fields_map_onto_acpi_component_rails():
     """Per NVIDIA/DCGM sysmon: 1130 reads 'CPU Power Socket N', 1132 reads 'SysIO Power Socket N'."""
     assert cpu_rails.DCGM_PRIMARY_FIELD_ID == 1130
     assert cpu_rails.DCGM_FIELD_RAIL_KINDS == {1130: "cpu_rail", 1132: "soc"}
-    assert cpu_rails.DCGM_POWER_FIELD_IDS == (1130, 1132)
-    for field_id, kind in cpu_rails.DCGM_FIELD_RAIL_KINDS.items():
-        assert kind in COMPONENT_RAIL_KINDS
+    assert cpu_rails.DCGM_POWER_FIELD_IDS == (1130, 1132)  # 1130 first: legacy collectors read the first sample
+    assert cpu_rails.DCGM_PRIMARY_FIELD_ID in cpu_rails.DCGM_FIELD_BY_ID
+    for field in cpu_rails.DCGM_POWER_FIELDS:
+        assert field.kind in COMPONENT_RAIL_KINDS
+        assert field.name.startswith("DCGM_FI_DEV_")
         # The label DCGM matches on must classify to the same kind our ACPI reader assigns it.
-        label = cpu_rails.DCGM_FIELD_HWMON_LABELS[field_id].replace("N", "0")
-        assert classify_acpi_label(label) == (kind, 0)
-        assert field_id in cpu_rails.DCGM_FIELD_NAMES
+        assert classify_acpi_label(field.hwmon_label.replace("N", "0")) == (field.kind, 0)
+    # The envelope's cap (1131) and the unverified module field (1133) stay out.
+    assert 1131 not in cpu_rails.DCGM_FIELD_BY_ID
+    assert 1133 not in cpu_rails.DCGM_FIELD_BY_ID

@@ -40,29 +40,38 @@ Rail kinds
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 TOTAL_KIND = "total"
 DCGM_KIND = "dcgm"
 OTHER_KIND = "other"
 
+
 # DCGM CPU-entity power fields and the ACPI rail each one reads. Verified
 # against NVIDIA/DCGM (DcgmSystemMonitor.cpp: label prefix -> file map;
-# DcgmModuleSysmon.cpp: field id -> getter). Keyed by field id so a producer
-# only ever names the field, never the label.
-DCGM_PRIMARY_FIELD_ID = 1130  # DCGM_FI_DEV_CPU_POWER_WATTS: the value filed as DCGM-mode power_w
-DCGM_FIELD_RAIL_KINDS: dict[int, str] = {
-    1130: "cpu_rail",  # DCGM_FI_DEV_CPU_POWER_WATTS       <- "CPU Power Socket N"   power1_average
-    1132: "soc",  # DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT <- "SysIO Power Socket N" power1_average
-}
-DCGM_FIELD_NAMES: dict[int, str] = {
-    1130: "DCGM_FI_DEV_CPU_POWER_WATTS",
-    1132: "DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT",
-}
-DCGM_FIELD_HWMON_LABELS: dict[int, str] = {
-    1130: "CPU Power Socket N",
-    1132: "SysIO Power Socket N",
-}
-DCGM_POWER_FIELD_IDS: tuple[int, ...] = tuple(sorted(DCGM_FIELD_RAIL_KINDS))
+# DcgmModuleSysmon.cpp: field id -> getter). One record per field so the
+# name, the hwmon label and the rail kind cannot drift apart; producers only
+# ever name the field id, never the label.
+class DcgmPowerField(NamedTuple):
+    field_id: int
+    name: str
+    hwmon_label: str  # the ``power1_oem_info`` prefix DCGM's sysmon matches, with N = socket
+    kind: str  # the COMPONENT_RAIL_KINDS member that hwmon channel is
+
+
+DCGM_POWER_FIELDS: tuple[DcgmPowerField, ...] = (
+    DcgmPowerField(1130, "DCGM_FI_DEV_CPU_POWER_WATTS", "CPU Power Socket N", "cpu_rail"),
+    DcgmPowerField(1132, "DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT", "SysIO Power Socket N", "soc"),
+)
+# Deliberately NOT in the table: 1131 DCGM_FI_DEV_CPU_POWER_LIMIT_WATTS reads
+# ``power1_cap`` of "Grace Power Socket N" (the envelope's limit, not its
+# draw); 1133 DCGM_FI_DEV_MODULE_POWER_UTIL_CURRENT reads "Module Power
+# Socket N", whose scope on GB200/GB300 (Grace-only vs. Grace+Blackwell
+# superchip) is unverified on live hardware, so it is excluded until measured.
+DCGM_PRIMARY_FIELD_ID = 1130  # the value filed as DCGM-mode power_w
+DCGM_FIELD_BY_ID: dict[int, DcgmPowerField] = {field.field_id: field for field in DCGM_POWER_FIELDS}
+DCGM_FIELD_RAIL_KINDS: dict[int, str] = {field.field_id: field.kind for field in DCGM_POWER_FIELDS}
+DCGM_POWER_FIELD_IDS: tuple[int, ...] = tuple(field.field_id for field in DCGM_POWER_FIELDS)
 
 # Component rails, in wide-CSV column order.
 COMPONENT_RAIL_KINDS: tuple[str, ...] = ("cpu_rail", "soc", "dram")
