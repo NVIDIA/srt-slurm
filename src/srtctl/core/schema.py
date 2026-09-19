@@ -1527,10 +1527,13 @@ class CpuPowerExporterConfig:
     port: int = 9405
     source: str = "auto"
     """Power reading back-end passed through to the bundled Rust binary's own
-    ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries DCGM
-    first and falls back to ACPI when libdcgm.so is absent or reports no CPU
-    entities. Has no effect when the Python stdlib fallback exporter is used
-    instead of the binary -- that fallback is ACPI-only.
+    ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries ACPI
+    first (the only source with the socket envelope) and falls back to DCGM
+    when no ACPI power_meter hwmon sensors exist. DCGM mode reports field
+    1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope,
+    and the energy report flags such runs as "CPU rail only". Has no effect
+    when the Python stdlib fallback exporter is used instead of the binary --
+    that fallback is ACPI-only.
     """
 
     Schema: ClassVar[type[Schema]] = Schema

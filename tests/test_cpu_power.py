@@ -305,6 +305,8 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
         return [
             _fake_value(0, cpu_power.CPU_POWER_FIELD_ID, 120.5),
             _fake_value(1, cpu_power.CPU_POWER_FIELD_ID, 130.0),
+            _fake_value(0, 1132, 6.25),  # SysIO rail for socket 0 only
+            _fake_value(9, cpu_power.CPU_POWER_FIELD_ID, 999.0),  # entity we never enumerated: dropped
             _fake_value(0, 1100, 0.42),
             _fake_value(0, 1101, 0.30),
             _fake_value(0, 1103, 0.10),
@@ -336,7 +338,7 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
     utilization = reader.read_utilization()
     reader.close()
 
-    expected_fields = [cpu_power.CPU_POWER_FIELD_ID, *(field.field_id for field in CPU_UTILIZATION_FIELDS)]
+    expected_fields = [1130, 1132, *(field.field_id for field in CPU_UTILIZATION_FIELDS)]
     assert ("entity", 7, 0) in events
     assert ("entity", 7, 1) in events
     assert ("field_group", expected_fields) in events
@@ -344,7 +346,20 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
     assert ("update", True) in events
     assert ("latest", 0, expected_fields) in events
     assert events[-4:] == ["unwatch", "field_group_delete", "group_delete", "shutdown"]
-    assert watts == {"CPU0:cpuPowerUsageW": 120.5, "CPU1:cpuPowerUsageW": 130.0}
+    assert watts == {
+        "CPU0:cpuPowerUsageW": 120.5,
+        "CPU0:cpuRailPowerUsageW": 120.5,  # 1130 is the CPU rail read through DCGM
+        "CPU0:socPowerUsageW": 6.25,
+        "CPU1:cpuPowerUsageW": 130.0,
+        "CPU1:cpuRailPowerUsageW": 130.0,
+        "CPU1:socPowerUsageW": None,  # no 1132 sample for socket 1
+    }
+    samples = reader.socket_samples(watts)
+    assert [(s.socket_id, s.power_w, s.rails) for s in samples] == [
+        (0, 120.5, {"cpu_rail": 120.5, "soc": 6.25}),
+        (1, 130.0, {"cpu_rail": 130.0}),
+    ]
+    assert reader.aggregate_watts(watts) == 250.5  # sum of 1130 only; SysIO never joins the total
     assert utilization == {
         0: {"cpu_util_total": 0.42, "cpu_util_user": 0.30, "cpu_util_sys": 0.10},
         1: {"cpu_util_total": 0.05},
@@ -352,6 +367,11 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
     metadata = reader.metadata()
     assert [field["column"] for field in metadata["utilization_fields"]] == list(UTILIZATION_COLUMNS)
     assert metadata["utilization_fields"][0]["field_id"] == 1100
+    assert metadata["aggregate_scope"] == "cpu_rail_only"
+    assert [(f["field_id"], f["rail_kind"], f["column"]) for f in metadata["power_fields"]] == [
+        (1130, "cpu_rail", "power_w"),
+        (1132, "soc", "soc_w"),
+    ]
 
 
 def _fake_value(entity_id: int, field_id: int, dbl: float) -> object:

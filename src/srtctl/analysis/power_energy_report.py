@@ -41,8 +41,17 @@ import numpy as np
 
 from srtctl.core.cpu_power import UTILIZATION_COLUMNS as CPU_UTILIZATION_COLUMNS
 from srtctl.core.power.contract import MAX_SAMPLE_GAP_SECONDS, UTILIZATION_METRICS
+from srtctl.core.power.cpu_rails import DCGM_PRIMARY_FIELD_ID, legacy_rail_rank
 from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES as CPU_RAIL_COLUMN_NAMES
-from srtctl.core.power.cpu_rails import legacy_rail_rank
+
+# DCGM-mode CPU power is field 1130 = the ACPI "CPU Power Socket N" rail read
+# through DCGM, not the "Grace Power Socket N" envelope (DCGM has no field for
+# it). On the reference GB200 runs the rail is ~53 W/socket against a ~100 W
+# envelope, so a DCGM-mode CPU figure is not comparable with an ACPI-mode one.
+DCGM_CPU_RAIL_ONLY_WARNING = (
+    f"CPU power source is DCGM field {DCGM_PRIMARY_FIELD_ID} = CPU rail only (not the socket envelope; "
+    "roughly half of ACPI-mode CPU power): not comparable with ACPI-mode runs"
+)
 
 GPU_UTILIZATION_COLUMNS = tuple(metric.column for metric in UTILIZATION_METRICS)
 
@@ -449,6 +458,9 @@ class CpuSamples:
     per_socket: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]]
     per_node: dict[str, tuple[np.ndarray, np.ndarray]]
     per_socket_utilization: dict[tuple[str, int], UtilizationSeries] = field(default_factory=dict)
+    # Origins seen in the CSV's ``source`` column ("acpi" / "dcgm"); drives
+    # the DCGM rail-only warning. Empty for hand-built fixtures.
+    sources: frozenset[str] = frozenset()
 
 
 def load_cpu_samples(path: Path) -> CpuSamples:
@@ -496,10 +508,13 @@ def load_cpu_samples_from(handle: TextIO) -> CpuSamples:
     by_sensor: dict[tuple[str, int], dict[str, dict[float, float]]] = {}
     node_totals: dict[str, dict[float, float]] = {}
     utilization: dict[tuple[str, int], dict[str, list[tuple[float, float]]]] = {}
+    sources: set[str] = set()
     for row in reader:
         timestamp = float(row["timestamp_unix"])
         hostname = row["hostname"]
         socket_raw = row["socket_id"]
+        if row.get("source"):
+            sources.add(row["source"])
         if socket_raw != "":
             key = (hostname, int(socket_raw))
             sensor = "power_w" if wide else row["sensor"]
@@ -519,6 +534,7 @@ def load_cpu_samples_from(handle: TextIO) -> CpuSamples:
         per_socket=_sorted_series(per_socket_rows),
         per_node=_sorted_series(per_node_rows),
         per_socket_utilization=_sorted_utilization(utilization),
+        sources=frozenset(sources),
     )
 
 
@@ -867,6 +883,8 @@ def build_concurrency_report(
             for host, (times, watts) in sorted(cpu_samples.per_node.items())
         )
         cpu_total = sum(node.joules for node in cpu_per_node)
+        if "dcgm" in cpu_samples.sources:
+            warnings.append(DCGM_CPU_RAIL_ONLY_WARNING)
         cpu_utilization = _summarize_utilization(
             cpu_samples.per_socket_utilization,
             device_label="cpu/{host}/socket{index}",

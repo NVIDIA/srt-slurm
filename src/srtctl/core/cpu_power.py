@@ -29,15 +29,29 @@ from typing import Any, NamedTuple
 
 from srtctl.core.power.cpu_rails import (
     COMPONENT_RAIL_KINDS,
+    DCGM_FIELD_BY_ID,
+    DCGM_FIELD_RAIL_KINDS,
     DCGM_KIND,
+    DCGM_POWER_FIELD_IDS,
+    DCGM_POWER_FIELDS,
+    DCGM_PRIMARY_FIELD_ID,
     RAIL_COLUMN_NAMES,
     TOTAL_KIND,
     classify_acpi_label,
     sensor_name,
 )
-from srtctl.core.power.cpu_sample import CpuSample, RailReading, node_total_watts, pivot_socket_samples
+from srtctl.core.power.cpu_sample import (
+    CpuSample,
+    RailReading,
+    dcgm_rail_readings,
+    node_total_watts,
+    pivot_socket_samples,
+)
 
-CPU_POWER_FIELD_ID = 1130
+# Field 1130: the DCGM value filed as a DCGM-mode socket's power_w. Per the
+# DCGM sysmon source it is the ACPI "CPU Power Socket N" rail, not the socket
+# envelope (cpu_rails.DCGM_FIELD_RAIL_KINDS).
+CPU_POWER_FIELD_ID = DCGM_PRIMARY_FIELD_ID
 DCGM_PYTHON_BINDING_DIRS = (
     Path("/usr/share/datacenter-gpu-manager-4/bindings/python3"),
     Path("/usr/local/dcgm/bindings/python3"),
@@ -91,8 +105,8 @@ SAMPLES_HEADER = (
     "source",
     "sensor",  # the sensor that fed power_w (provenance only)
     "socket_id",
-    "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130
-    *RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI only, blank for DCGM
+    "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130 (= the CPU rail; DCGM has no envelope field)
+    *RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI: from hwmon; DCGM: cpu_rail_w=1130, soc_w=1132, dram_w blank
     "total_power_w",  # node aggregate: sum of power_w over sockets
     *UTILIZATION_COLUMNS,
 )
@@ -294,7 +308,13 @@ def _add_standard_dcgm_binding_path() -> Path | None:
 
 
 class DcgmCpuPowerReader(CpuPowerReader):
-    """Read per-Grace-CPU instantaneous power through DCGM field 1130."""
+    """Read per-Grace-CPU power through DCGM CPU-entity fields 1130 (CPU rail) and 1132 (SysIO).
+
+    DCGM's sysmon module reads the ACPI hwmon channels itself, so these are
+    the same rails the ACPI reader sees -- minus the socket envelope, which
+    DCGM does not expose. Field 1130 is filed as ``power_w`` (unchanged) and
+    also as ``cpu_rail_w``; 1132 as ``soc_w``.
+    """
 
     source_name = "dcgm"
 
@@ -313,7 +333,7 @@ class DcgmCpuPowerReader(CpuPowerReader):
         self._agent = dcgm_agent
         self._fields = dcgm_fields
         self._structs = dcgm_structs
-        self._field_ids = [CPU_POWER_FIELD_ID, *(field.field_id for field in CPU_UTILIZATION_FIELDS)]
+        self._field_ids = [*DCGM_POWER_FIELD_IDS, *(field.field_id for field in CPU_UTILIZATION_FIELDS)]
         self._last_utilization: dict[int, dict[str, float]] = {}
         try:
             self._handle = pydcgm.DcgmHandle(ipAddress=None)
@@ -360,7 +380,12 @@ class DcgmCpuPowerReader(CpuPowerReader):
             raise CpuPowerSourceUnavailable(f"cannot watch DCGM CPU power field: {exc}") from exc
 
     def read_watts(self) -> dict[str, float | None]:
-        readings = {sensor_name(DCGM_KIND, cpu_id): None for cpu_id in self._cpu_ids}
+        # One entry per (socket, DCGM power field); the sensor name carries the
+        # rail kind so classify_readings needs no lookups beyond the field table.
+        readings: dict[str, float | None] = {
+            sensor_name(kind, cpu_id): None for cpu_id in self._cpu_ids for kind in self._sensor_kinds()
+        }
+        power_fields: dict[int, dict[int, float]] = {}
         utilization: dict[int, dict[str, float]] = {}
         try:
             values = self._agent.dcgmEntitiesGetLatestValues(
@@ -379,38 +404,68 @@ class DcgmCpuPowerReader(CpuPowerReader):
             number = float(value.value.dbl)
             if not math.isfinite(number):
                 continue
-            if field_id == CPU_POWER_FIELD_ID:
-                key = sensor_name(DCGM_KIND, int(value.entityId))
-                if key in readings and number > 0:
-                    readings[key] = number
+            entity_id = int(value.entityId)
+            if entity_id not in self._cpu_ids:
+                continue
+            if field_id in DCGM_FIELD_RAIL_KINDS:
+                if number > 0:
+                    power_fields.setdefault(entity_id, {})[field_id] = number
                 continue
             column = _UTILIZATION_COLUMN_BY_FIELD_ID.get(field_id)
-            if column is not None and value.entityId in self._cpu_ids:
-                utilization.setdefault(int(value.entityId), {})[column] = number
+            if column is not None:
+                utilization.setdefault(entity_id, {})[column] = number
+        for entity_id, by_field in power_fields.items():
+            for reading in dcgm_rail_readings(entity_id, by_field):
+                readings[reading.sensor] = reading.watts
         self._last_utilization = utilization
         return readings
+
+    @staticmethod
+    def _sensor_kinds() -> tuple[str, ...]:
+        return (DCGM_KIND, *dict.fromkeys(DCGM_FIELD_RAIL_KINDS.values()))
 
     def read_utilization(self) -> dict[int, dict[str, float]]:
         return self._last_utilization
 
     def classify_readings(self, readings: dict[str, float | None]) -> list[RailReading]:
-        # One already-aggregated value per socket; no component rails. Whether
-        # field 1130 corresponds to the ACPI cpu_rail or the total envelope is
-        # unverified, so nothing here claims a rail kind beyond DCGM_KIND.
-        return [
-            RailReading(int(cpu_id), DCGM_KIND, name, watts)
-            for cpu_id in sorted(self._cpu_ids)
-            if (watts := readings.get(name := sensor_name(DCGM_KIND, cpu_id))) is not None
-        ]
+        # Rebuild the per-field view from the sensor names read_watts emitted,
+        # then classify through the shared table (cpu_sample.dcgm_rail_readings)
+        # so this reader and the scrape parser agree on what 1130/1132 are.
+        kind_to_field = {kind: field_id for field_id, kind in DCGM_FIELD_RAIL_KINDS.items()}
+        classified: list[RailReading] = []
+        for cpu_id in sorted(self._cpu_ids):
+            by_field: dict[int, float] = {}
+            primary = readings.get(sensor_name(DCGM_KIND, cpu_id))
+            if primary is not None:
+                by_field[DCGM_PRIMARY_FIELD_ID] = primary
+            for kind, field_id in kind_to_field.items():
+                watts = readings.get(sensor_name(kind, cpu_id))
+                if watts is not None:
+                    by_field.setdefault(field_id, watts)
+            classified.extend(dcgm_rail_readings(cpu_id, by_field))
+        return classified
 
     def metadata(self) -> dict[str, Any]:
         return {
             "source": self.source_name,
             "field_id": CPU_POWER_FIELD_ID,
-            "field_name": "DCGM_FI_DEV_CPU_POWER_UTIL_CURRENT",
-            "semantics": "instantaneous power usage in watts",
+            "field_name": DCGM_FIELD_BY_ID[CPU_POWER_FIELD_ID].name,
+            "semantics": (
+                "power_w is DCGM field 1130 = the ACPI 'CPU Power Socket N' rail (cpu_rail), not the socket "
+                "envelope; DCGM exposes no envelope field"
+            ),
+            "power_fields": [
+                {
+                    "field_id": field.field_id,
+                    "field_name": field.name,
+                    "rail_kind": field.kind,
+                    "hwmon_label": field.hwmon_label,
+                    "column": "power_w" if field.field_id == CPU_POWER_FIELD_ID else f"{field.kind}_w",
+                }
+                for field in DCGM_POWER_FIELDS
+            ],
             "sensors": [{"name": sensor_name(DCGM_KIND, cpu_id), "cpu_entity_id": cpu_id} for cpu_id in self._cpu_ids],
-            "total_method": "sum of available DCGM CPU entities",
+            "total_method": "sum of field 1130 over available DCGM CPU entities",
             "aggregate_scope": "cpu_rail_only",
             "utilization_fields": [
                 {"column": field.column, "field_id": field.field_id, "field_name": field.field_name}
