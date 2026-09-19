@@ -32,17 +32,15 @@ def expand_template(template: Any, values: dict[str, Any]) -> Any:
         result = template
         for key, value in values.items():
             placeholder = f"{{{key}}}"
-            # Handle list values specially - convert to comma-separated string or keep as list
-            if isinstance(value, list):
-                # For YAML lists, we want to keep them as lists, not convert to string
-                if placeholder in result and result == placeholder:
-                    # If the entire string is just the placeholder, replace with the list
-                    return value
-                else:
-                    # If it's embedded in a string, convert to comma-separated
-                    result = result.replace(placeholder, ",".join(str(v) for v in value))
-            else:
-                result = result.replace(placeholder, str(value))
+            if template == placeholder:
+                # An exact placeholder represents the value itself, so preserve its
+                # YAML type instead of coercing numbers and booleans to strings.
+                return copy.deepcopy(value)
+
+            # Embedded placeholders are necessarily part of a string. Keep the
+            # existing comma-separated representation for list values.
+            replacement = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+            result = result.replace(placeholder, replacement)
         return result
     else:
         return template
