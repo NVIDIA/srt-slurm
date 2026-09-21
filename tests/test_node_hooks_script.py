@@ -33,11 +33,18 @@ def test_command_line_values_override_environment():
     assert "from-env" not in result.stdout.splitlines()
 
 
-def test_pre_failure_stops_and_exits_nonzero_with_real_code():
-    result = run("pre", env={"HOOK_PRE_1": "exit 3", "HOOK_PRE_2": "echo should-not-run"})
-    assert result.returncode == 1
-    assert "HOOK_PRE_1 exited 3" in result.stdout
+@pytest.mark.parametrize("code", [1, 3, 127])
+def test_pre_failure_stops_and_exits_with_the_commands_own_code(code):
+    result = run("pre", env={"HOOK_PRE_1": f"exit {code}", "HOOK_PRE_2": "echo should-not-run"})
+    assert result.returncode == code
+    assert f"HOOK_PRE_1 exited {code}" in result.stdout
     assert "should-not-run" not in result.stdout
+
+
+def test_pre_lenient_mode_exits_zero_after_failures():
+    result = run("pre", "HOOK_PRE_STRICT=0", env={"HOOK_PRE_1": "exit 3", "HOOK_PRE_2": "exit 5"})
+    assert result.returncode == 0
+    assert "HOOK_PRE_1 exited 3" in result.stdout and "HOOK_PRE_2 exited 5" in result.stdout
 
 
 def test_pre_lenient_mode_continues():

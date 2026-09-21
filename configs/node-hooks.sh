@@ -23,8 +23,9 @@
 #
 # Other settings:
 #   HOOK_SNAPSHOT     1 (default) prints kernel, load, memory and GPU clocks after the commands
-#   HOOK_PRE_STRICT   1 (default) makes a failing pre command exit non-zero, so host_setup
-#                     fails the job (or warns with ignore_failure: true); 0 logs and continues
+#   HOOK_PRE_STRICT   1 (default) stops at the first failing pre command and exits with that
+#                     command's own status, so host_setup fails the job (or warns with
+#                     ignore_failure: true) and the log shows the real code; 0 logs and continues
 #
 # Post commands are always best effort: teardown must never mask the job's real exit code.
 set -uo pipefail
@@ -63,7 +64,7 @@ mapfile -t names < <(compgen -A variable "${prefix}" | grep -E "^${prefix}[0-9]+
 
 log "start $(date -Is)  job=${SLURM_JOB_ID:-?}  output=${SRTCTL_OUTPUT_DIR:-?}  commands=${#names[@]}"
 
-failed=0
+first_failure=0
 for name in "${names[@]}"; do
     cmd="${!name}"
     [ -n "${cmd}" ] || continue
@@ -72,7 +73,7 @@ for name in "${names[@]}"; do
     bash -c "${cmd}" || rc=$?
     [ "${rc}" = "0" ] && continue
     log "${name} exited ${rc}"
-    failed=1
+    [ "${first_failure}" = "0" ] && first_failure=${rc}
     if [ "${phase}" = "pre" ] && [ "${HOOK_PRE_STRICT}" = "1" ]; then
         break
     fi
@@ -81,7 +82,7 @@ done
 snapshot
 log "done $(date -Is)"
 
-if [ "${phase}" = "pre" ] && [ "${HOOK_PRE_STRICT}" = "1" ] && [ "${failed}" = "1" ]; then
-    exit 1
+if [ "${phase}" = "pre" ] && [ "${HOOK_PRE_STRICT}" = "1" ]; then
+    exit "${first_failure}"
 fi
 exit 0
