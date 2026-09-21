@@ -826,6 +826,16 @@ class BenchmarkStageMixin:
             # control their existing logical-worker URL discovery.
             if self.config.dynamo.sidecar or not dynamo_trtllm_metrics_disabled:
                 urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
+            if self.config.dynamo.sidecar and self.config.backend_type in {"vllm", "sglang"}:
+                # Native engine metrics do not include the Dynamo sidecar's
+                # runtime counters. vLLM DP launches a sidecar per node-local
+                # pool, including nonzero ranks; SGLang launches only on the
+                # leader of each model-parallel endpoint.
+                for process in self.backend_processes:
+                    has_sidecar = process.http_port > 0 if self.config.backend_type == "vllm" else process.is_leader
+                    if has_sidecar and process.sys_port > 0:
+                        host = get_hostname_ip(process.node, self.runtime.network_interface)
+                        urls.append(f"http://{url_host(host)}:{process.sys_port}/metrics")
         else:
             if self.config.frontend.type in {"vllm", "sglang", "vllm-router"}:
                 for process in self.backend_processes:
