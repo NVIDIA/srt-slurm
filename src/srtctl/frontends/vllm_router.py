@@ -8,6 +8,7 @@ from __future__ import annotations
 import shlex
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from srtctl.frontends.base import register_frontend
 from srtctl.frontends.static_router import StaticRouterFrontend
 
 if TYPE_CHECKING:
@@ -46,14 +47,93 @@ def node_local_data_parallel_size(backend: Any, backend_processes: list[Process]
     return next(iter(routed_sizes), 1)
 
 
+@register_frontend("vllm-router")
 class VLLMRouterFrontend(StaticRouterFrontend):
     """Route aggregate or P/D traffic to direct vLLM API servers."""
 
     type: ClassVar[str] = "vllm-router"
-    backend_type: ClassVar[str] = "vllm"
+    required_backend: ClassVar[str | None] = "vllm"
     executable: ClassVar[tuple[str, ...]] = ("vllm-router",)
     pd_flag: ClassVar[str] = "--vllm-pd-disaggregation"
     process_name: ClassVar[str] = "vllm_router"
+
+    def validate(self, config: Any) -> None:
+        """Router expands each advertised URL by one node-local DP factor, so the vLLM topology must be uniform.
+
+        Every routable worker must be an independently addressable ``vllm serve``
+        (``per_node`` DP), its GPU count must equal DP*TP*PP*PCP, and every pool
+        must derive the same ``--intra-node-data-parallel-size``.
+        """
+        backend = config.backend
+        resources = config.resources
+        endpoint_gpu_counts: dict[str, int] = {
+            "prefill": resources.gpus_per_prefill if resources.num_prefill else 0,
+            "decode": resources.gpus_per_decode if resources.num_decode else 0,
+            "agg": resources.gpus_per_agg if resources.num_agg else 0,
+        }
+        if backend.find_dp_modes() and backend.dp_launch_mode != "per_node":
+            raise ValueError(
+                "frontend.type: vllm-router with data-parallel-size requires "
+                "backend.dp_launch_mode: per_node; deprecated per_gpu processes are "
+                "Dynamo registrations, not independently routable vLLM API servers"
+            )
+
+        expansion_by_mode: dict[str, int] = {}
+        for mode, gpu_count in endpoint_gpu_counts.items():
+            if gpu_count <= 0:
+                continue
+            if not backend._is_dp_mode(mode):
+                expansion_by_mode[mode] = 1
+                continue
+            try:
+                configured_dp_size = backend._get_dp_size(mode)
+                dp_size = int(configured_dp_size) if configured_dp_size is not None else 1
+                if dp_size < 1:
+                    raise ValueError(
+                        f"vLLM {mode} data-parallel-size must be a positive integer; got {configured_dp_size!r}"
+                    )
+                replica_size = backend._get_model_parallel_size(mode)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(str(exc)) from exc
+
+            required_gpus = dp_size * replica_size
+            if required_gpus != gpu_count:
+                raise ValueError(
+                    f"vLLM Router {mode} parallelism requires DP*TP*PP*PCP="
+                    f"{dp_size}*{replica_size}={required_gpus} GPUs, "
+                    f"but resources allocate {gpu_count} GPUs per worker"
+                )
+
+            local_gpu_count = min(gpu_count, resources.gpus_per_node)
+            if replica_size > local_gpu_count:
+                expansion_by_mode[mode] = 1
+            else:
+                expansion_by_mode[mode] = backend._get_local_dp_size(mode, local_gpu_count)
+
+        expansions = set(expansion_by_mode.values())
+        if len(expansions) > 1:
+            detail = ", ".join(f"{mode}={size}" for mode, size in expansion_by_mode.items())
+            raise ValueError(
+                "vLLM Router has one --intra-node-data-parallel-size for all worker pools, "
+                f"but the allocated topology derives different expansion factors: {detail}"
+            )
+
+        frontend_args = config.frontend.args or {}
+        configured_expansion = frontend_args.get(
+            "intra-node-data-parallel-size", frontend_args.get("intra_node_data_parallel_size")
+        )
+        derived_expansion = next(iter(expansions), 1)
+        try:
+            configured_expansion_value = int(configured_expansion) if configured_expansion is not None else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"frontend.args.intra-node-data-parallel-size must be an integer; got {configured_expansion!r}"
+            ) from exc
+        if configured_expansion_value is not None and configured_expansion_value != derived_expansion:
+            raise ValueError(
+                "frontend.args.intra-node-data-parallel-size conflicts with the allocated vLLM topology: "
+                f"configured {configured_expansion}, derived {derived_expansion}"
+            )
 
     def build_bash_preamble(self, config: Any) -> str | None:
         """Run the recipe setup script in the vLLM Router container."""

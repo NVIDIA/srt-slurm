@@ -12,7 +12,15 @@ import pytest
 import yaml
 
 from srtctl.core.schema import ObservabilityConfig
-from srtctl.frontends import DynamoFrontend, SGLangFrontend, SGLangRouterFrontend, VLLMFrontend, get_frontend
+from srtctl.frontends import (
+    DynamoFrontend,
+    SGLangFrontend,
+    SGLangRouterFrontend,
+    VLLMFrontend,
+    get_frontend,
+    list_frontend_types,
+    register_frontend,
+)
 
 # ============================================================================
 # get_frontend() Tests
@@ -51,6 +59,82 @@ class TestGetFrontend:
 
         with pytest.raises(ValueError, match="Unknown frontend type"):
             get_frontend("invalid")
+
+
+class TestFrontendRegistry:
+    """frontend.type resolves through the registry and nowhere else."""
+
+    def test_registry_lists_every_frontend_type(self):
+        assert list_frontend_types() == [
+            "dynamo",
+            "none",
+            "sglang",
+            "sglang-router",
+            "trtllm_serve",
+            "vllm",
+            "vllm-router",
+        ]
+        for name in list_frontend_types():
+            if name == "none":
+                continue
+            frontend = get_frontend(name)
+            assert frontend.type == name
+            assert hasattr(frontend, "required_backend")
+            assert callable(frontend.validate)
+
+    def test_register_frontend_makes_a_type_resolvable(self, monkeypatch):
+        from srtctl.frontends import base
+
+        monkeypatch.setattr(base, "_FRONTENDS", dict(base._FRONTENDS))
+
+        @register_frontend("toy-router")
+        class ToyRouter:
+            required_backend = "vllm"
+
+            @property
+            def type(self) -> str:
+                return "toy-router"
+
+            def validate(self, config) -> None:
+                del config
+
+        assert isinstance(get_frontend("toy-router"), ToyRouter)
+        assert "toy-router" in list_frontend_types()
+
+    def test_schema_rejects_unknown_type_at_load(self):
+        from marshmallow import ValidationError
+
+        from srtctl.backends import SGLangProtocol
+        from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match="Unknown frontend.type 'toy-router'.*Available: dynamo, none"):
+            SrtConfig(
+                name="toy",
+                model={"path": "model", "container": "image", "precision": "fp8"},
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                frontend=FrontendConfig(type="toy-router", enable_multiple_frontends=False),
+                backend=SGLangProtocol(),
+            )
+
+    @pytest.mark.parametrize(
+        ("frontend_type", "required"),
+        [("sglang", "sglang"), ("sglang-router", "sglang"), ("vllm", "vllm"), ("vllm-router", "vllm")],
+    )
+    def test_schema_enforces_required_backend_generically(self, frontend_type, required):
+        from marshmallow import ValidationError
+
+        from srtctl.backends import TRTLLMProtocol
+        from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+        assert get_frontend(frontend_type).required_backend == required
+        with pytest.raises(ValidationError, match=f"frontend.type: {frontend_type} requires backend.type: {required}"):
+            SrtConfig(
+                name="pairing",
+                model={"path": "model", "container": "image", "precision": "fp8"},
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                frontend=FrontendConfig(type=frontend_type, enable_multiple_frontends=False),
+                backend=TRTLLMProtocol(),
+            )
 
 
 # ============================================================================

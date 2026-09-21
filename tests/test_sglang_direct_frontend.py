@@ -57,7 +57,7 @@ def test_direct_rejects_replicas_disagg_nginx_and_other_engines() -> None:
         )
     with pytest.raises(ValidationError, match="enable_multiple_frontends: false"):
         _load(_recipe(frontend={"type": "sglang", "enable_multiple_frontends": True}))
-    with pytest.raises(ValidationError, match="requires engine sglang"):
+    with pytest.raises(ValidationError, match="frontend.type: sglang requires backend.type: sglang"):
         _load(_recipe(engine="vllm"))
 
 

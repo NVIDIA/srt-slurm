@@ -10,7 +10,7 @@ Uses NATS/etcd for communication between frontend and backend workers.
 import logging
 import shlex
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import yaml
 
@@ -18,6 +18,7 @@ from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
+from srtctl.frontends.base import register_frontend
 from srtctl.services.implicit import discovery_env
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ ROUTER_POLICY_CONFIG_FILENAME = "router_policy_config.yaml"
 ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
 
 
+@register_frontend("dynamo")
 class DynamoFrontend:
     """Dynamo frontend implementation.
 
@@ -38,9 +40,16 @@ class DynamoFrontend:
     Health checks via /health endpoint.
     """
 
+    # Dynamo fronts every engine; the dynamo.* rules (sidecar, failover,
+    # worker_selection) are dynamo-config validations and stay in the schema.
+    required_backend: ClassVar[str | None] = None
+
     @property
     def type(self) -> str:
         return "dynamo"
+
+    def validate(self, config: Any) -> None:
+        del config
 
     @property
     def health_endpoint(self) -> str:

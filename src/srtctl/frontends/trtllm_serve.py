@@ -14,12 +14,13 @@ the context (prefill) and generation (decode) server URLs.
 import logging
 import shlex
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import yaml
 
 from srtctl.core.health import WorkerHealthResult, check_trtllm_serve_health, wait_for_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.frontends.base import register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@register_frontend("trtllm_serve")
 class TRTLLMServeFrontend:
     """Direct aggregate or disaggregated trtllm-serve frontend.
 
@@ -37,9 +39,23 @@ class TRTLLMServeFrontend:
     ser.yaml` on the head node. Health is exposed at /health in both modes.
     """
 
+    required_backend: ClassVar[str | None] = "trtllm"
+
     @property
     def type(self) -> str:
         return "trtllm_serve"
+
+    def validate(self, config: Any) -> None:
+        """One direct aggregate worker or one disaggregated orchestrator; either way one public endpoint."""
+        if config.frontend.enable_multiple_frontends:
+            raise ValueError(
+                "frontend.type: trtllm_serve uses one public endpoint; set frontend.enable_multiple_frontends: false"
+            )
+        if not config.resources.is_disaggregated and config.resources.num_agg != 1:
+            raise ValueError(
+                "frontend.type: trtllm_serve aggregate mode requires exactly one "
+                "aggregate worker (set resources.agg_workers: 1)"
+            )
 
     @property
     def health_endpoint(self) -> str:

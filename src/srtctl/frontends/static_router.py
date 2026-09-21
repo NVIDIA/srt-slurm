@@ -32,10 +32,14 @@ class RouterWorker:
 
 
 class StaticRouterFrontend:
-    """Base class for routers whose worker topology is supplied on the CLI."""
+    """Base class for routers whose worker topology is supplied on the CLI.
+
+    A subclass sets the class attributes, registers with ``@register_frontend``,
+    and overrides only the hooks whose behavior differs.
+    """
 
     type: ClassVar[str]
-    backend_type: ClassVar[str]
+    required_backend: ClassVar[str | None]
     executable: ClassVar[tuple[str, ...]]
     pd_flag: ClassVar[str]
     process_name: ClassVar[str]
@@ -45,6 +49,10 @@ class StaticRouterFrontend:
     @property
     def health_endpoint(self) -> str:
         return "/workers"
+
+    def validate(self, config: Any) -> None:
+        """Recipe-level rules beyond the backend pairing; none by default."""
+        del config
 
     def parse_health(
         self,
@@ -185,10 +193,11 @@ class StaticRouterFrontend:
         del stop_event  # Static routers return immediately after launch.
         from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
-        configured_backend = getattr(getattr(config, "backend", None), "type", self.backend_type)
-        if configured_backend != self.backend_type:
+        configured_backend = getattr(getattr(config, "backend", None), "type", self.required_backend)
+        if configured_backend != self.required_backend:
             raise ValueError(
-                f"frontend.type: {self.type} requires backend.type: {self.backend_type} (got {configured_backend!r})"
+                f"frontend.type: {self.type} requires backend.type: {self.required_backend} "
+                f"(got {configured_backend!r})"
             )
 
         workers = self.collect_workers(backend, backend_processes, runtime.network_interface)

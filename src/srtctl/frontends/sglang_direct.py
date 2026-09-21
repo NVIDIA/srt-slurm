@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.core.health import WorkerHealthResult
+from srtctl.frontends.base import register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@register_frontend("sglang")
 class SGLangFrontend:
     """Direct SGLang OpenAI server frontend.
 
@@ -32,9 +34,37 @@ class SGLangFrontend:
     port itself. Readiness is the worker's ``/health`` plus ``/v1/models``.
     """
 
+    required_backend: ClassVar[str | None] = "sglang"
+
     @property
     def type(self) -> str:
         return "sglang"
+
+    def validate(self, config: Any) -> None:
+        """One aggregate ``sglang.launch_server`` owns the public port.
+
+        Several replicas or a prefill/decode layout need ``sglang-router`` (or
+        ``dynamo``); a schema 2 recipe that still says ``sglang`` for those is an
+        old router recipe and is rejected rather than silently run unbalanced.
+        """
+        if config.frontend.enable_multiple_frontends:
+            raise ValueError(
+                "frontend.type: sglang binds sglang.launch_server directly; set frontend.enable_multiple_frontends: false"
+            )
+        if config.resources.is_disaggregated:
+            raise ValueError(
+                "frontend.type: sglang supports one aggregate worker only, not a prefill/decode layout. "
+                "The SGLang router is frontend.type: sglang-router (renamed in 2.0; `srtctl migrate` rewrites "
+                "schema 1 recipes)."
+            )
+        if config.resources.num_agg != 1:
+            raise ValueError(
+                f"frontend.type: sglang supports exactly one aggregate worker, got {config.resources.num_agg}. "
+                "sglang.launch_server owns the public port directly and there is no router to balance "
+                "replicas. Use frontend.type: sglang-router (the SGLang Model Gateway, renamed in 2.0) or dynamo."
+            )
+        if config.dynamo.sidecar:
+            raise ValueError("frontend.type: sglang does not support dynamo.sidecar; use frontend.type: dynamo")
 
     @property
     def health_endpoint(self) -> str:

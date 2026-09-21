@@ -2294,10 +2294,7 @@ class SrtConfig:
         self._validate_het_jobs()
         self._validate_colocated_decode()
         self._validate_dedicated_node_placement()
-        self._validate_trtllm_serve()
-        self._validate_vllm_frontend()
-        self._validate_sglang_direct_frontend()
-        self._validate_static_router_frontend()
+        self._validate_frontend()
         self._validate_dynamo_sidecar()
         self._validate_vllm_failover()
         self._validate_host_setup()
@@ -2529,176 +2526,33 @@ class SrtConfig:
                 "or DYN_ROUTER_POLICY_CONFIG in frontend.env/environment"
             )
 
-    def _validate_trtllm_serve(self):
-        """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
-        failing mid-job at the frontend stage.
+    def _validate_frontend(self) -> None:
+        """``frontend.type`` must be registered, pair with the backend, and pass its own rules.
 
-        The trtllm_serve frontend supports either one direct aggregate worker or a
-        single ``trtllm-serve disaggregated`` orchestrator. Both use the
-        single-frontend path (no nginx/multi-frontend).
+        The registry in ``srtctl.frontends`` is the only list of frontend types.
+        Each implementation carries ``required_backend`` and ``validate``, so this
+        schema does not know individual frontends. ``none`` is the services-only
+        job and is covered by ``_validate_services_only``.
         """
-        if self.frontend.type != "trtllm_serve":
+        if self.frontend.type == "none":
             return
-        if self.backend_type != "trtllm":
-            raise ValidationError(
-                f"frontend.type: trtllm_serve requires backend.type: trtllm; got {self.backend_type!r}"
-            )
-        if self.frontend.enable_multiple_frontends:
-            raise ValidationError(
-                "frontend.type: trtllm_serve uses one public endpoint; set frontend.enable_multiple_frontends: false"
-            )
-        if not self.resources.is_disaggregated and self.resources.num_agg != 1:
-            raise ValidationError(
-                "frontend.type: trtllm_serve aggregate mode requires exactly one "
-                "aggregate worker (set resources.agg_workers: 1)"
-            )
+        from srtctl.frontends import get_frontend, list_frontend_types
 
-    def _validate_vllm_frontend(self):
-        """Catch direct-vLLM frontend misconfigurations at load time.
-
-        Direct vLLM means the aggregate `vllm serve` worker owns the OpenAI port
-        itself. It is not a disaggregated router and does not support the nginx
-        multi-frontend path.
-        """
-        if self.frontend.type != "vllm":
-            return
-        if self.backend_type != "vllm":
-            raise ValidationError(f"frontend.type: vllm requires backend.type: vllm; got {self.backend_type!r}")
-        if self.frontend.enable_multiple_frontends:
-            raise ValidationError(
-                "frontend.type: vllm binds vllm serve directly; set frontend.enable_multiple_frontends: false"
-            )
-        if self.resources.is_disaggregated:
-            raise ValidationError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
-        if self.resources.num_agg != 1:
-            raise ValidationError(
-                f"frontend.type: vllm supports exactly one aggregate worker, got {self.resources.num_agg}. "
-                "vllm serve owns the public port directly and there is no router to load-balance "
-                "replicas, so extra workers would either idle or collide on the port. "
-                "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
-                "worker across nodes with resources.agg_nodes."
-            )
-
-    def _validate_sglang_direct_frontend(self):
-        """Catch direct-SGLang frontend misconfigurations at load time.
-
-        ``frontend.type: sglang`` means the one aggregate ``sglang.launch_server``
-        owns the public port itself. Several replicas or a prefill/decode layout
-        need ``sglang-router`` (or ``dynamo``); a schema 2 recipe that still says
-        ``sglang`` for those is an old router recipe and is rejected rather than
-        silently run unbalanced.
-        """
-        if self.frontend.type != "sglang":
-            return
-        if self.backend_type != "sglang":
-            raise ValidationError(f"frontend.type: sglang requires engine sglang; got {self.backend_type!r}")
-        if self.frontend.enable_multiple_frontends:
-            raise ValidationError(
-                "frontend.type: sglang binds sglang.launch_server directly; set frontend.enable_multiple_frontends: false"
-            )
-        if self.resources.is_disaggregated:
-            raise ValidationError(
-                "frontend.type: sglang supports one aggregate worker only, not a prefill/decode layout. "
-                "The SGLang router is frontend.type: sglang-router (renamed in 2.0; `srtctl migrate` rewrites "
-                "schema 1 recipes)."
-            )
-        if self.resources.num_agg != 1:
-            raise ValidationError(
-                f"frontend.type: sglang supports exactly one aggregate worker, got {self.resources.num_agg}. "
-                "sglang.launch_server owns the public port directly and there is no router to balance "
-                "replicas. Use frontend.type: sglang-router (the SGLang Model Gateway, renamed in 2.0) or dynamo."
-            )
-        if self.dynamo.sidecar:
-            raise ValidationError("frontend.type: sglang does not support dynamo.sidecar; use frontend.type: dynamo")
-
-    def _validate_static_router_frontend(self):
-        """Validate static-router/backend pairings and vLLM DP ownership."""
-        required_backend = {"sglang-router": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
-        if required_backend is None:
-            return
-        if self.backend_type != required_backend:
-            raise ValidationError(
-                f"frontend.type: {self.frontend.type} requires backend.type: {required_backend}; "
-                f"got {self.backend_type!r}"
-            )
-
-        if self.frontend.type != "vllm-router":
-            return
-        if not isinstance(self.backend, VLLMProtocol):
-            raise ValidationError(f"frontend.type: vllm-router requires backend.type: vllm; got {self.backend_type!r}")
-        backend = self.backend
-
-        endpoint_gpu_counts: dict[Literal["prefill", "decode", "agg"], int] = {
-            "prefill": self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
-            "decode": self.resources.gpus_per_decode if self.resources.num_decode else 0,
-            "agg": self.resources.gpus_per_agg if self.resources.num_agg else 0,
-        }
-        if backend.find_dp_modes() and backend.dp_launch_mode != "per_node":
-            raise ValidationError(
-                "frontend.type: vllm-router with data-parallel-size requires "
-                "backend.dp_launch_mode: per_node; deprecated per_gpu processes are "
-                "Dynamo registrations, not independently routable vLLM API servers"
-            )
-
-        expansion_by_mode: dict[str, int] = {}
-        for mode, gpu_count in endpoint_gpu_counts.items():
-            if gpu_count <= 0:
-                continue
-            if not backend._is_dp_mode(mode):
-                expansion_by_mode[mode] = 1
-                continue
-            try:
-                configured_dp_size = backend._get_dp_size(mode)
-                dp_size = int(configured_dp_size) if configured_dp_size is not None else 1
-                if dp_size < 1:
-                    raise ValueError(
-                        f"vLLM {mode} data-parallel-size must be a positive integer; got {configured_dp_size!r}"
-                    )
-                replica_size = backend._get_model_parallel_size(mode)
-            except (TypeError, ValueError) as exc:
-                raise ValidationError(str(exc)) from exc
-
-            required_gpus = dp_size * replica_size
-            if required_gpus != gpu_count:
-                raise ValidationError(
-                    f"vLLM Router {mode} parallelism requires DP*TP*PP*PCP="
-                    f"{dp_size}*{replica_size}={required_gpus} GPUs, "
-                    f"but resources allocate {gpu_count} GPUs per worker"
-                )
-
-            local_gpu_count = min(gpu_count, self.resources.gpus_per_node)
-            if replica_size > local_gpu_count:
-                expansion_by_mode[mode] = 1
-            else:
-                try:
-                    expansion_by_mode[mode] = backend._get_local_dp_size(mode, local_gpu_count)
-                except ValueError as exc:
-                    raise ValidationError(str(exc)) from exc
-
-        expansions = set(expansion_by_mode.values())
-        if len(expansions) > 1:
-            detail = ", ".join(f"{mode}={size}" for mode, size in expansion_by_mode.items())
-            raise ValidationError(
-                "vLLM Router has one --intra-node-data-parallel-size for all worker pools, "
-                f"but the allocated topology derives different expansion factors: {detail}"
-            )
-
-        configured_expansion = (self.frontend.args or {}).get(
-            "intra-node-data-parallel-size",
-            (self.frontend.args or {}).get("intra_node_data_parallel_size"),
-        )
-        derived_expansion = next(iter(expansions), 1)
         try:
-            configured_expansion_value = int(configured_expansion) if configured_expansion is not None else None
-        except (TypeError, ValueError) as exc:
+            frontend = get_frontend(self.frontend.type)
+        except ValueError:
             raise ValidationError(
-                f"frontend.args.intra-node-data-parallel-size must be an integer; got {configured_expansion!r}"
-            ) from exc
-        if configured_expansion_value is not None and configured_expansion_value != derived_expansion:
+                f"Unknown frontend.type {self.frontend.type!r}. Available: {', '.join(list_frontend_types())}"
+            ) from None
+        required = frontend.required_backend
+        if required is not None and self.backend_type != required:
             raise ValidationError(
-                "frontend.args.intra-node-data-parallel-size conflicts with the allocated vLLM topology: "
-                f"configured {configured_expansion}, derived {derived_expansion}"
+                f"frontend.type: {self.frontend.type} requires backend.type: {required}; got {self.backend_type!r}"
             )
+        try:
+            frontend.validate(self)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.

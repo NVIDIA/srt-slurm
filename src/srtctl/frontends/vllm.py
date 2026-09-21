@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.core.health import WorkerHealthResult
+from srtctl.frontends.base import register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@register_frontend("vllm")
 class VLLMFrontend:
     """Direct vLLM OpenAI server frontend.
 
@@ -33,9 +35,28 @@ class VLLMFrontend:
     as Dynamo, since nothing here load-balances between endpoints.
     """
 
+    required_backend: ClassVar[str | None] = "vllm"
+
     @property
     def type(self) -> str:
         return "vllm"
+
+    def validate(self, config: Any) -> None:
+        """The one aggregate ``vllm serve`` owns the public port: no nginx fan-out, no P/D, one worker."""
+        if config.frontend.enable_multiple_frontends:
+            raise ValueError(
+                "frontend.type: vllm binds vllm serve directly; set frontend.enable_multiple_frontends: false"
+            )
+        if config.resources.is_disaggregated:
+            raise ValueError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
+        if config.resources.num_agg != 1:
+            raise ValueError(
+                f"frontend.type: vllm supports exactly one aggregate worker, got {config.resources.num_agg}. "
+                "vllm serve owns the public port directly and there is no router to load-balance "
+                "replicas, so extra workers would either idle or collide on the port. "
+                "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
+                "worker across nodes with resources.agg_nodes."
+            )
 
     @property
     def health_endpoint(self) -> str:
