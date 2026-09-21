@@ -77,7 +77,7 @@ class WorkerStageMixin:
         )
         if local_config is not None:
             filename, payload = local_config
-            environment["MOONCAKE_CONFIG_PATH"] = f"/logs/{filename}"
+            environment["MOONCAKE_CONFIG_PATH"] = str(self.runtime.container_log_dir / filename)
             logger.info(
                 "Mooncake process config: node=%s physical_gpus=%s device_name=%s path=%s",
                 process.node,
@@ -229,7 +229,7 @@ class WorkerStageMixin:
 
         # Log and config files
         worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}{suffix}.out"
-        config_dump = self.runtime.log_dir / f"{process.node}_config{suffix}.json"
+        config_dump = self.runtime.container_log_dir / f"{process.node}_config{suffix}.json"
 
         # Profiling setup
         profiling = self.config.profiling
@@ -239,7 +239,10 @@ class WorkerStageMixin:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys and profiling_selects_process:
             gpu_label = process.cuda_visible_devices.replace(",", "-")
-            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}{suffix}_profile_gpu{gpu_label}"
+            nsys_output = (
+                f"{self.runtime.container_log_dir}/profiles/{mode}/"
+                f"{process.node}_{mode}_w{index}{suffix}_profile_gpu{gpu_label}"
+            )
             nsys_prefix = profiling.get_nsys_prefix(
                 nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
             )
@@ -329,7 +332,7 @@ class WorkerStageMixin:
 
         # Add profiling environment variables last.
         if profiling.enabled and profiling_selects_process:
-            profile_dir = str(self.runtime.log_dir / "profiles")
+            profile_dir = str(self.runtime.container_log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
@@ -349,7 +352,7 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}{suffix}.json")
+        fp_cmd = generate_capture_script(f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}{suffix}.json")
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
@@ -441,7 +444,7 @@ class WorkerStageMixin:
 
         # Log and config files (use leader node in name)
         worker_log = self.runtime.log_dir / f"{leader.node}_{mode}_w{index}.out"
-        config_dump = self.runtime.log_dir / f"{leader.node}_config.json"
+        config_dump = self.runtime.container_log_dir / f"{leader.node}_config.json"
 
         # Profiling setup
         profiling = self.config.profiling
@@ -450,7 +453,10 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys and profiling_selects_process:
-            nsys_output = f"/logs/profiles/{mode}/{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}"
+            nsys_output = (
+                f"{self.runtime.container_log_dir}/profiles/{mode}/"
+                f"{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}"
+            )
             nsys_prefix = profiling.get_nsys_prefix(
                 nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
             )
@@ -545,7 +551,7 @@ class WorkerStageMixin:
 
         # Add profiling environment variables after the worker environment.
         if profiling.enabled and profiling_selects_process:
-            profile_dir = str(self.runtime.log_dir / "profiles")
+            profile_dir = str(self.runtime.container_log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
@@ -565,7 +571,7 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        fp_cmd = generate_capture_script(f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}.json")
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"

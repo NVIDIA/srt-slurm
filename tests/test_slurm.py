@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
+from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import ObservabilityConfig, ResourceConfig
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
 
@@ -200,6 +202,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         environment={},
         container_image=Path("/container.sqsh"),
         container_mounts={},
+        container_log_dir=Path("/logs"),
         srun_options=[],
     )
     process = SimpleNamespace(
@@ -261,6 +264,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         environment={},
         container_image=Path("/container.sqsh"),
         container_mounts={},
+        container_log_dir=Path("/logs"),
         srun_options=[],
     )
     process = SimpleNamespace(
@@ -273,6 +277,79 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         het_group=None,
     )
     return mixin, process
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_worker_config_dump_uses_container_log_mount(tmp_path: Path, launch_method: str) -> None:
+    """Backend config dumps must use a path visible inside the worker container."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    ):
+        if launch_method == "start_worker":
+            mixin.start_worker(process, [process])
+        else:
+            mixin.start_endpoint_worker([process])
+
+    assert mixin.backend.build_worker_command.call_args.kwargs["dump_config_path"] == Path("/logs/node-a_config.json")
+
+
+def test_runtime_container_log_dir_follows_the_log_mount(tmp_path: Path) -> None:
+    """The container-side log directory is the log mount, /logs by default."""
+
+    def runtime(mounts: dict[Path, Path]) -> RuntimeContext:
+        return RuntimeContext(
+            job_id="12345",
+            run_name="test-run",
+            nodes=Nodes(head="node0", bench="node0", infra="node0", worker=("node1",)),
+            head_node_ip="10.0.0.1",
+            infra_node_ip="10.0.0.1",
+            log_dir=tmp_path,
+            model_path=Path("/models/test"),
+            container_image=Path("/img.sqsh"),
+            gpus_per_node=8,
+            network_interface=None,
+            container_mounts=mounts,
+            environment={},
+        )
+
+    assert Path(CONTAINER_LOG_DIR) == Path("/logs")
+    assert runtime({tmp_path: Path("/logs")}).container_log_dir == Path("/logs")
+    assert runtime({tmp_path: Path("/run/logs")}).container_log_dir == Path("/run/logs")
+    assert runtime({}).container_log_dir == Path(CONTAINER_LOG_DIR)
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_worker_container_paths_follow_a_remapped_log_mount(tmp_path: Path, launch_method: str) -> None:
+    """Config dump, profiler dir, and fingerprint paths all derive from runtime.container_log_dir."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin.runtime.container_log_dir = Path("/run/logs")
+    mixin.config.profiling = SimpleNamespace(
+        enabled=True,
+        is_nsys=False,
+        is_nsys_time=False,
+        type="torch",
+        get_env_vars=lambda mode, profile_dir: {"SGLANG_TORCH_PROFILER_DIR": f"{profile_dir}/{mode}"},
+    )
+    with (
+        patch(
+            "srtctl.cli.mixins.worker_stage.generate_capture_script",
+            side_effect=lambda path: f"fingerprint {path}",
+        ) as capture,
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()) as srun,
+    ):
+        if launch_method == "start_worker":
+            mixin.start_worker(process, [process])
+        else:
+            mixin.start_endpoint_worker([process])
+
+    dump_path = mixin.backend.build_worker_command.call_args.kwargs["dump_config_path"]
+    assert dump_path == Path("/run/logs/node-a_config.json")
+    assert srun.call_args.kwargs["env_to_set"]["SGLANG_TORCH_PROFILER_DIR"] == "/run/logs/profiles/prefill"
+    assert capture.call_args.args[0] == "/run/logs/fingerprint_prefill_w0.json"
+    # srtctl still creates the profile directory on the host side of the mount.
+    assert (tmp_path / "profiles" / "prefill").is_dir()
 
 
 def test_worker_stage_injects_remap_root_for_dynamo_install(tmp_path: Path) -> None:
@@ -602,6 +679,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         environment={},
         container_image=Path("/container.sqsh"),
         container_mounts={},
+        container_log_dir=Path("/logs"),
         srun_options=[],
     )
     process = SimpleNamespace(

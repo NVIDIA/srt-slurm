@@ -22,7 +22,6 @@ from srtctl.core.ip_utils import url_host
 from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.observability_nsys import benchmark_nsys_env
 from srtctl.core.power.contract import (
-    CONTAINER_LOG_DIR,
     MEASUREMENT_WINDOW_DIR_ENV,
     WINDOWS_DIRNAME,
 )
@@ -672,9 +671,9 @@ class BenchmarkStageMixin:
         if not p.enabled:
             return env
 
-        # Inside the container, the host log directory is mounted to /logs. Use the container path so profiling
-        # artifacts persist back to the host log directory across nodes.
-        profiles_dir_in_container = "/logs/profiles"
+        # The benchmark runs inside the container, so point it at the log mount rather than the host path;
+        # profiling artifacts then persist back to the host log directory across nodes.
+        profiles_dir_in_container = str(self.runtime.container_log_dir / "profiles")
 
         # Profiling type (nsys, torch)
         env["PROFILE_TYPE"] = p.type
@@ -791,7 +790,8 @@ class BenchmarkStageMixin:
         telemetry = self.config.telemetry
         if not telemetry.enabled:
             return {}
-        return {MEASUREMENT_WINDOW_DIR_ENV: f"{CONTAINER_LOG_DIR}/{telemetry.storage_subdir}/{WINDOWS_DIRNAME}"}
+        windows_dir = self.runtime.container_log_dir / telemetry.storage_subdir / WINDOWS_DIRNAME
+        return {MEASUREMENT_WINDOW_DIR_ENV: str(windows_dir)}
 
     def _get_aiperf_server_metrics_env(
         self,

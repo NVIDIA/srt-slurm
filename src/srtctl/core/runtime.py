@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 from .config import get_srtslurm_setting
@@ -363,6 +364,19 @@ class RuntimeContext:
     # Full Dynamo configuration for native sidecar launch settings.
     dynamo: "DynamoConfig | None" = None
 
+    @property
+    def container_log_dir(self) -> Path:
+        """``log_dir`` as processes inside the container see it.
+
+        ``from_config`` mounts the run's log directory at ``CONTAINER_LOG_DIR``;
+        this follows that mount so a remapped log mount needs no other change.
+        Every path handed to a containerized process (config dumps, profiler
+        output, fingerprints, benchmark artifacts) is built from this, never
+        from the host ``log_dir``, which is not visible in the container on
+        every cluster.
+        """
+        return self.container_mounts.get(self.log_dir, Path(CONTAINER_LOG_DIR))
+
     @classmethod
     def from_config(
         cls,
@@ -446,7 +460,7 @@ class RuntimeContext:
 
         # Build container mounts
         container_mounts: dict[Path, Path] = {
-            log_dir: Path("/logs"),
+            log_dir: Path(CONTAINER_LOG_DIR),
         }
         # Only mount local model paths - HF models are downloaded at runtime
         if not is_hf_model:
