@@ -1869,6 +1869,13 @@ def _serialize_node_install(install_cmd: str) -> str:
     hash-pinned source install nests on the /configs cache lock inside a
     subshell. Distinct FDs keep the two node-local and cross-node locks
     independent and refactor-proof even if that inner subshell is removed.
+
+
+    Since steps of one job that run the same image on a node share one Pyxis
+    container (core/slurm.py::shared_container_name), the lock and sentinel are
+    shared by the worker and frontend steps on that node: the flock serialises
+    them and the sentinel makes the second one skip an install the first
+    finished (both run config.dynamo.get_install_commands()).
     """
     # Resolve the env dir at runtime; fall back to $HOME (also container-private)
     # if python3 is somehow unavailable before the install runs.
