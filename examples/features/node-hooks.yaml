@@ -1,0 +1,69 @@
+# Pre-run and post-run commands on every node's bare host, configured from the recipe.
+#
+#   pre  -> host_setup.commands  runs before any worker starts
+#   post -> host_setup.teardown  runs after workers stop, on success, failure and cancel
+#
+# configs/node-hooks.sh runs HOOK_PRE_<n> and then HOOK_POST_<n> in ascending <n>. Any
+# shell string works. Set them under `environment:` (the job script exports them, so the
+# host sruns inherit them) or add or override one per phase with KEY=VALUE arguments on
+# the hook command line. Output lands in logs/host_setup_<node>.out and
+# logs/host_teardown_<node>.out.
+#
+#   srtctl dry-run -f examples/features/node-hooks.yaml   # renders both command lists
+#   srtctl apply   -f examples/features/node-hooks.yaml
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-node-hooks"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+environment:
+  HOOK_PRE_1: "sudo -n nvidia-smi -lmc 2619,2619"
+  HOOK_PRE_2: "sync; echo 3 | sudo -n tee /proc/sys/vm/drop_caches"
+  HOOK_PRE_3: "nvidia-smi --query-gpu=index,ecc.errors.uncorrected.volatile.total --format=csv"
+  HOOK_POST_1: "sudo -n nvidia-smi -rmc"
+  HOOK_POST_2: "dmesg --level=err,warn --since '1 hour ago' | tail -n 50"
+  HOOK_POST_3: "ls -la ${SRTCTL_OUTPUT_DIR}/logs | tail -n 20"
+
+host_setup:
+  nodes: workers
+  timeout_seconds: 120
+  ignore_failure: true
+  commands:
+    - "bash ${SRTCTL_SOURCE_DIR}/configs/node-hooks.sh pre"
+  teardown:
+    - "bash ${SRTCTL_SOURCE_DIR}/configs/node-hooks.sh post HOOK_SNAPSHOT=0"
+
+frontend:
+  type: sglang-router
+  enable_multiple_frontends: false
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"
