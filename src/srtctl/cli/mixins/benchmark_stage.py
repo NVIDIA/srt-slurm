@@ -20,6 +20,7 @@ from srtctl.core.fingerprint import format_identity_verification, verify_identit
 from srtctl.core.health import wait_for_model
 from srtctl.core.ip_utils import url_host
 from srtctl.core.lockfile import collect_worker_fingerprints
+from srtctl.core.log_stream import LogOutputStreamer
 from srtctl.core.observability_nsys import benchmark_nsys_env
 from srtctl.core.power.contract import (
     CONTAINER_LOG_DIR,
@@ -620,14 +621,21 @@ class BenchmarkStageMixin:
         # how the local srun client stopped before telemetry finalizes.
         self.benchmark_child_reaped = False
         self.benchmark_child_allows_window_mutation = False
+        output_stream = LogOutputStreamer(log_file) if self.config.benchmark.stream_output is True else None
         try:
+            if output_stream is not None:
+                logger.info("Starting benchmark output streaming to stdout")
             while proc.poll() is None:
                 if stop_event.is_set():
                     logger.info("Stop requested, terminating benchmark")
                     return 1
+                if output_stream is not None:
+                    output_stream.poll()
                 time.sleep(1)
             self.benchmark_child_reaped = True
             self.benchmark_child_allows_window_mutation = True
+            if output_stream is not None:
+                output_stream.poll()
             exit_code = proc.returncode or 0
             if (
                 getattr(self.config, "observability_nsys_enabled", False) is True
@@ -657,6 +665,9 @@ class BenchmarkStageMixin:
                 proc.wait()
                 self.benchmark_child_reaped = True
                 self.benchmark_child_allows_window_mutation = True
+            if output_stream is not None:
+                output_stream.poll(final=True)
+                logger.info("End of streamed benchmark logs")
             if host_sampler is not None:
                 host_sampler.stop()
 

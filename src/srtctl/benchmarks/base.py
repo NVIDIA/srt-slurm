@@ -26,6 +26,7 @@ SCRIPTS_DIR = Path(__file__).parent / "scripts"
 SHARED_BENCHMARK_FIELDS: frozenset[str] = frozenset(
     {
         "type",
+        "stream_output",
         "client_placement",
         "client_dedicated_node",
         "colocate_with_frontend",

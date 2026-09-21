@@ -755,7 +755,17 @@ Compare with `frontend.type: dynamo` + `engine: vllm`, which keeps Dynamo as the
 
 Benchmark configuration. The `type` field determines which benchmark runner is used and what additional fields are available.
 
-**Per-type fields.** Every type accepts the shared fields (`placement`, `colocate_with_frontend`, `aiperf_package`, `aiperf_args`, and `concurrencies`, which power telemetry reads for its measurement windows whatever the type) plus the fields its runner reads:
+Set `benchmark.stream_output: true` to mirror `benchmark.out` to the orchestrator's
+stdout while the benchmark runs (default: `false`). This works with custom and
+built-in benchmark clients and preserves the complete log file and client exit
+status. For a one-off run, use `srtctl apply -f recipe.yaml --set benchmark.stream_output=true`.
+The output appears in the Slurm job log; CI must follow that log to display it
+live. `apply` still submits asynchronously. Streaming forwards bytes as they
+reach the log, so clients must flush their output (for Python clients, set
+`PYTHONUNBUFFERED: "1"` in their environment). Manual/serve-only jobs have no
+benchmark client to stream, and separate post-eval logs are not included.
+
+**Per-type fields.** Every type accepts the shared fields (`placement`, `colocate_with_frontend`, `stream_output`, `aiperf_package`, `aiperf_args`, and `concurrencies`, which power telemetry reads for its measurement windows whatever the type) plus the fields its runner reads:
 
 | `type` | Fields |
 | --- | --- |

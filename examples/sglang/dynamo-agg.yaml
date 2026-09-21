@@ -48,6 +48,8 @@ roles:
 
 benchmark:
   type: "sa-bench"
+  # Mirror benchmark.out to the Slurm job log while the client runs.
+  stream_output: true
   isl: 128
   osl: 128
   concurrencies: "4x8"

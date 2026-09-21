@@ -845,6 +845,8 @@ class BenchmarkConfig:
     """Benchmark configuration."""
 
     type: str = "manual"
+    # Mirror benchmark.out to the orchestrator's stdout while the client runs; keep the log file.
+    stream_output: bool = False
     isl: int | None = None
     osl: int | None = None
     concurrencies: list[int] | str | None = None

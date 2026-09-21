@@ -156,6 +156,7 @@ Benchmark configuration.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `type` | str | `'manual'` |  |
+| `stream_output` | bool | `False` | Mirror benchmark.out to the orchestrator's stdout while the client runs; keep the log file. |
 | `isl` | int \| None | `None` |  |
 | `osl` | int \| None | `None` |  |
 | `concurrencies` | list[int] \| str \| None | `None` |  |
