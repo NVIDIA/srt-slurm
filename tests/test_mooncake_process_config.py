@@ -67,7 +67,7 @@ def test_shared_hca_deduplicated():
 def test_rendered_configs_match_worker_environment(tmp_path):
     workers = [process([0, 1]), process([2, 3]), process([2, 3], node="n1")]
     b = backend(["h0", "h1", "h2", "h3"])
-    runtime = SimpleNamespace(log_dir=tmp_path, infra_node_ip="infra", gpus_per_node=4)
+    runtime = SimpleNamespace(log_dir=tmp_path, container_log_dir=Path("/logs"), infra_node_ip="infra", gpus_per_node=4)
     context = SimpleNamespace(config=SimpleNamespace(backend=b), backend=b, runtime=runtime, backend_processes=workers)
     SweepOrchestrator._write_mooncake_store_config(context)
     assert sorted(p.name for p in tmp_path.iterdir()) == [

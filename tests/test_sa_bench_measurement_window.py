@@ -67,6 +67,7 @@ def _benchmark_harness(tmp_path, *, enabled=True):
     harness.runtime = MagicMock()
     harness.runtime.log_dir = tmp_path
     harness.runtime.container_mounts = {tmp_path: Path("/logs")}
+    harness.runtime.container_log_dir = Path("/logs")
     return harness
 
 
