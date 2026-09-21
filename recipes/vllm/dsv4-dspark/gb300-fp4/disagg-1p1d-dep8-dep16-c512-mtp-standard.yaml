@@ -204,18 +204,18 @@ roles:
       enable-ep-weight-filter: true
       max-model-len: 1048576
       max-num-seqs: 64
-      max-num-batched-tokens: 448
+      max-num-batched-tokens: 384
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","mode":0}'
-      max-cudagraph-capture-size: 448
+      max-cudagraph-capture-size: 384
       gpu-memory-utilization: 0.90
       stream-interval: 10
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
-      speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic","rejection_sample_method":"standard"}'
+      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"standard"}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
       numa-bind-nodes: [0, 0, 1, 1]
