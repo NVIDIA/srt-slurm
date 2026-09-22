@@ -142,7 +142,7 @@ roles:
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      gpu-memory-utilization: 0.90
+      gpu-memory-utilization: 0.95
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
@@ -206,7 +206,7 @@ roles:
       block-size: 256
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224,231,238,245,252,259,266,273,280,287,294,301,308,315,322,329,336,343,350,357,364,371,378,385,392,399,406,413,420,427,434,441,448],"mode":0}'
       max-cudagraph-capture-size: 448
-      gpu-memory-utilization: 0.90
+      gpu-memory-utilization: 0.95
       stream-interval: 10
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
