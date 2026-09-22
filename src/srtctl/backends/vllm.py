@@ -37,10 +37,13 @@ from srtctl.ports import (
     KVBM_ZMQ_PORTS,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
+    MORIIO_HANDSHAKE_PORTS,
+    MORIIO_NOTIFY_PORTS,
     NIXL_PORTS,
     SIDECAR_GRPC_PORTS,
     SYS_PORTS,
     VLLM_DATA_PARALLEL_RPC_PORT,
+    VLLM_DISCOVERY_PORT,
     VLLM_MASTER_PORT_BASE,
     VLLM_MASTER_PORT_STRIDE,
     VLLM_SCAN_PORTS,
@@ -348,8 +351,9 @@ class VLLMProtocol:
     # Use an environment mask instead of the engine's --device-ids option.
     set_visible_devices: bool = False
 
-    # Default KV connector: "nixl", "lmcache", "kvbm", or a raw JSON string for --kv-transfer-config.
+    # Default KV connector: "nixl", "lmcache", "kvbm", "moriio", or a raw JSON string for --kv-transfer-config.
     # Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode resolves it.
+    # "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
 
@@ -543,21 +547,58 @@ class VLLMProtocol:
     def discovers_workers(self) -> bool:
         """Whether the prefill/decode workers register with the router over its discovery endpoint.
 
-        True when either role runs a discovery connector; the router then learns
-        its workers by registration instead of from URLs on its command line.
+        True when either role runs a discovery connector (MoRI-IO); the router then learns
+        its workers by registration instead of from URLs on its command line, and the
+        vLLM Router's ``validate`` requires both roles to agree.
         """
         return any(row is not None and row.discovery for row in map(self.kv_connector_for_mode, ("prefill", "decode")))
 
-    def kv_transfer_config(self, mode: WorkerMode) -> str | None:
+    def kv_transfer_config(
+        self, mode: WorkerMode, process: Process | None = None, runtime: RuntimeContext | None = None
+    ) -> str | None:
         """``--kv-transfer-config`` JSON for a worker mode, or None when the mode has no connector.
 
         Table connectors expand to their preset for the mode; a raw JSON string
-        from the recipe passes through unchanged.
+        from the recipe passes through unchanged. A discovery connector also needs
+        the realized topology (``process`` and ``runtime``) for its
+        ``kv_connector_extra_config``: the router's address and discovery port,
+        this worker's HTTP port and routable IP, and the handshake and notify
+        listeners the allocator reserved for it.
         """
         connector = self.connector_for_mode(mode)
         if not connector or connector.lower() in ("null", "none"):
             return None
-        return _connector_to_kv_transfer_config(connector, mode)
+        row = kv_connector_row(connector)
+        if row is None or not row.discovery:
+            return _connector_to_kv_transfer_config(connector, mode)
+        if process is None or runtime is None:
+            raise ValueError(
+                f"connector {connector!r} registers workers with the vLLM Router and needs the worker topology; "
+                "it is only available with frontend.type: vllm-router"
+            )
+        payload = row.transfer_config(mode)
+        payload["kv_connector_extra_config"] = self._discovery_extra_config(process, runtime)
+        return json.dumps(payload)
+
+    def _discovery_extra_config(self, process: Process, runtime: RuntimeContext) -> dict[str, Any]:
+        """MoRI-IO's ``kv_connector_extra_config`` (the keys ``moriio_common.py`` reads, vllm-project/vllm 9679173788)."""
+        from srtctl.core.slurm import get_hostname_ip
+
+        if process.moriio_handshake_port is None or process.moriio_notify_port is None:
+            raise ValueError(
+                f"{process.endpoint_mode} worker on {process.node} has no MoRI-IO listeners; "
+                "the topology was built without a discovery connector"
+            )
+        return {
+            "proxy_ip": runtime.head_node_ip,
+            "proxy_ping_port": str(VLLM_DISCOVERY_PORT),
+            "http_port": str(process.http_port),
+            # Upstream falls back to its own interface guess, which is the wrong NIC on multi-homed nodes.
+            "host_ip": get_hostname_ip(process.node, runtime.network_interface),
+            "handshake_port": str(process.moriio_handshake_port),
+            "notify_port": str(process.moriio_notify_port),
+            "read_mode": True,
+        }
 
     def get_process_environment(self, process: Process) -> dict[str, str]:
         """Get process-specific environment variables for vLLM workers.
@@ -571,13 +612,19 @@ class VLLMProtocol:
         - VLLM_PORT: private base for vLLM's get_open_port() scans, unique per
           process so co-located workers don't race for the same rendezvous port
           (see the notes on VLLM_PORT_BASE in srtctl.ports)
+
+        A discovery-connector worker (MoRI-IO) gets neither: its listeners are in
+        its ``--kv-transfer-config`` and it has no scan range (see
+        ``_with_connector_ports``).
         """
         from srtctl.core.slurm import get_hostname_ip
 
         env: dict[str, str] = {}
         if process.kv_events_port is not None:
             env["DYN_VLLM_KV_EVENT_PORT"] = str(process.kv_events_port)
-        if process.nixl_port is not None:
+        row = self.kv_connector_for_mode(process.endpoint_mode)
+        discovery = row is not None and row.discovery
+        if process.nixl_port is not None and not discovery:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
             env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
         # Unique per-process VLLM_PORT base to avoid EADDRINUSE rendezvous races
@@ -939,7 +986,8 @@ class VLLMProtocol:
         For direct vLLM aggregate jobs, `vllm serve` manages local DP ranks from
         one process, so keep the standard one-process-per-node topology.
         For standard TP mode, creates one process per node. Every process then
-        gets its private ``VLLM_PORT`` scan range from the allocator.
+        gets the listeners its KV connector needs from the allocator (see
+        ``_with_connector_ports``).
         """
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
         from srtctl.frontends import get_frontend
@@ -962,7 +1010,27 @@ class VLLMProtocol:
             processes = self._dp_per_node_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
         else:
             processes = self._dp_per_gpu_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
-        return [replace(process, vllm_scan_port=allocator.next(VLLM_SCAN_PORTS)) for process in processes]
+        return [self._with_connector_ports(process, allocator) for process in processes]
+
+    def _with_connector_ports(self, process: Process, allocator: NodePortAllocator) -> Process:
+        """Allocate the per-process listeners the mode's KV connector needs.
+
+        A discovery connector (MoRI-IO) binds handshake and notify blocks
+        (upstream adds the local DP and TP rank to the base it is given) and opens
+        its other listeners inside the TP child processes, which inherit
+        ``VLLM_PORT``; a fixed scan base there hands several ranks the same
+        unbound port, so such a worker gets no scan range and vLLM takes
+        ephemeral ports from the kernel. Every other worker gets its private
+        ``get_open_port()`` scan range.
+        """
+        row = self.kv_connector_for_mode(process.endpoint_mode)
+        if row is not None and row.discovery:
+            return replace(
+                process,
+                moriio_handshake_port=allocator.next(MORIIO_HANDSHAKE_PORTS, size=len(process.gpu_indices)),
+                moriio_notify_port=allocator.next(MORIIO_NOTIFY_PORTS, size=len(process.gpu_indices)),
+            )
+        return replace(process, vllm_scan_port=allocator.next(VLLM_SCAN_PORTS))
 
     def _dp_per_gpu_endpoints_to_processes(
         self,
@@ -1213,7 +1281,7 @@ class VLLMProtocol:
             # A prefill/decode worker gets its KV connector; an aggregate worker has none.
             config.pop("connector", None)
             if mode in {"prefill", "decode"}:
-                kv_transfer_config = self.kv_transfer_config(mode)
+                kv_transfer_config = self.kv_transfer_config(mode, process, runtime)
                 if kv_transfer_config is not None:
                     config.setdefault("kv-transfer-config", kv_transfer_config)
 
@@ -1342,7 +1410,7 @@ class VLLMProtocol:
         # KV connector → --kv-transfer-config (dynamo 1.0.0+: --connector was removed).
         # Pop from config so it doesn't get added again by _config_to_cli_args.
         config.pop("connector", None)
-        kv_transfer_cfg = self.kv_transfer_config(mode)
+        kv_transfer_cfg = self.kv_transfer_config(mode, process, runtime)
         if kv_transfer_cfg is not None:
             cmd.extend(["--kv-transfer-config", kv_transfer_cfg])
 
@@ -1678,9 +1746,10 @@ class KVConnector:
 
     ``kv_role`` None means the role follows the worker mode (prefill produces,
     decode consumes). ``discovery`` marks a connector whose workers find each
-    other through the router's discovery endpoint instead of being listed on the
-    router command line (AMD's MoRI-IO behind the vLLM Router); the frontend
-    asks ``VLLMProtocol.discovers_workers`` and drops the URLs.
+    other through the vLLM Router's ZMQ discovery endpoint instead of being
+    listed on the router command line; ``VLLMProtocol.kv_transfer_config`` adds
+    the realized topology to its ``kv_connector_extra_config`` and the allocator
+    reserves its handshake and notify listeners per process.
     """
 
     kv_connector: str
@@ -1689,7 +1758,7 @@ class KVConnector:
     discovery: bool = False
 
     def transfer_config(self, mode: WorkerMode) -> dict[str, Any]:
-        """The ``--kv-transfer-config`` payload for a worker mode."""
+        """The ``--kv-transfer-config`` payload for a worker mode, before any topology-derived extras."""
         payload: dict[str, Any] = {"kv_connector": self.kv_connector}
         if self.module_path is not None:
             payload["kv_connector_module_path"] = self.module_path
@@ -1702,6 +1771,8 @@ _CONNECTOR_MAP: dict[str, KVConnector] = {
     "nixl": KVConnector("NixlConnector"),
     "lmcache": KVConnector("LMCacheConnectorV1"),
     "kvbm": KVConnector("DynamoConnector", module_path="kvbm.vllm_integration.connector"),
+    # AMD MoRI-IO (ROCm): prefill produces and decode consumes KV; workers register with the vLLM Router.
+    "moriio": KVConnector("MoRIIOConnector", kv_role=None, discovery=True),
 }
 
 

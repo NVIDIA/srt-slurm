@@ -54,10 +54,11 @@ def test_raw_json_passes_through_and_has_no_table_row():
     assert backend.kv_connector_for_mode("prefill") is None
 
 
-def test_no_table_connector_discovers_workers():
-    """Every current row lists its workers on the router command line; discovery is the seam for connectors that do not."""
-    assert all(not row.discovery for row in _CONNECTOR_MAP.values())
+def test_only_the_discovery_row_discovers_workers():
+    """Rows list their workers on the router command line unless they say otherwise; today that is only MoRI-IO."""
+    assert {name for name, row in _CONNECTOR_MAP.items() if row.discovery} == {"moriio"}
     assert VLLMProtocol().discovers_workers() is False
+    assert VLLMProtocol(connector="moriio").discovers_workers() is True
 
 
 def test_a_mode_dependent_role_follows_the_worker_mode():

@@ -8,8 +8,10 @@ from __future__ import annotations
 import shlex
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from srtctl.core.health import WorkerHealthResult, probe_http_ok
 from srtctl.frontends.base import logical_health_expectations, register_frontend
-from srtctl.frontends.static_router import StaticRouterFrontend
+from srtctl.frontends.static_router import RouterWorker, StaticRouterFrontend
+from srtctl.ports import VLLM_DISCOVERY_PORT
 
 if TYPE_CHECKING:
     from srtctl.core.topology import Process
@@ -137,6 +139,82 @@ class VLLMRouterFrontend(StaticRouterFrontend):
                 f"configured {configured_expansion}, derived {derived_expansion}"
             )
 
+        if backend.discovers_workers():
+            self._validate_discovery(config)
+
+    def _validate_discovery(self, config: Any) -> None:
+        """Rules for a discovery connector (MoRI-IO): both roles on it, one router on the head node, a P/D topology.
+
+        Workers register with the one ZMQ endpoint the router binds and are told
+        the head node's address, so nginx fan-out and any other router placement
+        would advertise a listener that does not exist.
+        """
+        backend = config.backend
+        rows = {mode: backend.kv_connector_for_mode(mode) for mode in ("prefill", "decode")}
+        if any(row is None or not row.discovery for row in rows.values()):
+            names = ", ".join(f"{mode}={backend.connector_for_mode(mode)!r}" for mode in rows)
+            raise ValueError(
+                "a discovery connector must be set on both prefill and decode so the roles find each other "
+                f"through the Router; got {names}"
+            )
+        if config.resources.num_agg:
+            raise ValueError(
+                "a discovery connector requires a prefill/decode topology; aggregate workers transfer no KV"
+            )
+        if config.frontend.enable_multiple_frontends:
+            raise ValueError(
+                "vLLM Router discovery uses one registration endpoint; set frontend.enable_multiple_frontends: false"
+            )
+        if config.frontend.orchestrator_placement != "head":
+            raise ValueError(
+                "vLLM Router discovery advertises the head node to every worker; "
+                "set frontend.orchestrator_placement: head"
+            )
+
+    def build_router_command(self, workers: list[RouterWorker], host: str, port: int, backend: Any) -> list[str]:
+        """Add the Router's discovery contract when the workers register instead of being listed.
+
+        vllm-project/router ``RouterArgs``: ``--kv-connector`` names the transfer
+        connector the P/D pair runs and ``--vllm-discovery-address`` binds the ZMQ
+        endpoint workers register with; it listens on every interface of the router node.
+        """
+        command = super().build_router_command(workers, host, port, backend)
+        if not self.discovers_workers(backend):
+            return command
+        insertion = command.index("--host")
+        command[insertion:insertion] = [
+            "--kv-connector",
+            str(backend.connector_for_mode("prefill")).lower(),
+            "--vllm-discovery-address",
+            f"0.0.0.0:{VLLM_DISCOVERY_PORT}",
+        ]
+        return command
+
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
+    ) -> WorkerHealthResult:
+        """Discovery mode polls the Router's ``/health``; static mode counts its ``/workers`` registry.
+
+        Why the two differ: in discovery mode the Router keeps registered workers
+        in a separate ``ServiceRegistry`` but still serves ``/workers`` and
+        ``/get_server_info`` from the static list built from ``--prefill`` and
+        ``--decode`` URLs, which is empty because none were given. The only place
+        the discovery registry shows is ``/health``, which answers 503 "Waiting
+        for discovered workers" until one prefill and one decode have registered
+        (vllm-project/router 43140bc8e2, ``VllmPDRouter::health`` through
+        ``discovery_is_ready``). That is weaker than the count-based gate the
+        static path gets: with several workers per role, ``/health`` turns 200
+        after the first of each, and the per-worker ``/health`` gate that follows
+        proves the workers are up, not that the Router knows them all. The proper
+        fix is upstream, in ``src/routers/router_manager.rs``: have ``/workers``
+        merge the discovery registry with the same ``worker_type`` and ``stats``
+        it reports for static workers. Once that ships, delete this override and
+        the count-based ``/workers`` probe covers both modes.
+        """
+        if self.discovers_workers(config.backend):
+            return probe_http_ok(host, port, "/health", "vLLM Router reports a registered prefill and decode worker")
+        return super().probe_ready(host, port, expected_prefill, expected_decode, config)
+
     def build_bash_preamble(self, config: Any) -> str | None:
         """Run the recipe setup script in the vLLM Router container."""
         setup_script = getattr(config, "setup_script", None)
@@ -211,8 +289,15 @@ class VLLMRouterFrontend(StaticRouterFrontend):
         return process.nixl_port
 
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
-        """Router's /workers lists one entry per DP rank it expands each advertised URL into."""
+        """Router's /workers lists one entry per DP rank it expands each advertised URL into.
+
+        In discovery mode readiness is the Router's ``/health``, which needs one
+        registered prefill and one registered decode; the logical counts only
+        describe the topology in the log.
+        """
         logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
+        if self.discovers_workers(config.backend):
+            return logical_prefill, logical_decode, f"{worker_desc}, registering with the Router over ZMQ discovery"
         if processes is None:
             return logical_prefill, logical_decode, worker_desc
         n_prefill = sum(

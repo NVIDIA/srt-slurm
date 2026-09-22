@@ -723,6 +723,8 @@ consumer derives one port from another.
 | nccl                  | 17500  | 1      | global   | SGLang servers                          |
 | dist_init             | 8300   | 1      | per node | SGLang multi-node endpoints (leader)    |
 | vllm_scan             | 20000  | 50     | global   | vLLM get_open_port() scan range         |
+| moriio_handshake      | 40000  | 1      | global   | vLLM MoRI-IO workers (peer handshake)   |
+| moriio_notify         | 41000  | 1      | global   | vLLM MoRI-IO workers (block per rank)   |
 | trtllm_dist_init      | 29500  | 1      | global   | TRT-LLM endpoints (leader's MASTER_PORT)|
 +-----------------------+--------+--------+----------+----------------------------------------+
 | Frontend public 8000, internal 8180 (behind nginx); etcd 2379, NATS 4222: fixed constants |

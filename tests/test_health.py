@@ -521,6 +521,28 @@ class TestFrontendProbes:
         with pytest.raises(requests.exceptions.RequestException):
             get_frontend("dynamo").probe_ready("router", 8000, 1, 1, _config())
 
+    def test_vllm_router_discovery_mode_is_ready_on_the_routers_health(self, monkeypatch):
+        """With a discovery connector the Router's /health, 503 until both roles registered, is the gate."""
+        from srtctl.backends import VLLMProtocol
+        from srtctl.core import health
+        from srtctl.frontends import get_frontend
+
+        seen: list[str] = []
+        statuses = iter([503, 200])
+
+        def fake_get(url, timeout):
+            seen.append(url)
+            return _http(next(statuses))
+
+        monkeypatch.setattr(health.requests, "get", fake_get)
+        config = _config(backend=VLLMProtocol(connector="moriio"))
+        router = get_frontend("vllm-router")
+        waiting = router.probe_ready("router", 8000, 1, 1, config)
+        ready = router.probe_ready("router", 8000, 1, 1, config)
+        assert seen == ["http://router:8000/health", "http://router:8000/health"]
+        assert waiting.ready is False and "HTTP 503" in waiting.message
+        assert ready.ready is True
+
     def test_the_probe_receives_the_recipe(self, monkeypatch):
         """A frontend whose readiness contract depends on the recipe gets it; the loop passes it through unchanged."""
         from srtctl.core import health

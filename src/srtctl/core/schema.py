@@ -2316,6 +2316,7 @@ class SrtConfig:
         self._validate_frontend()
         self._validate_dynamo_sidecar()
         self._validate_vllm_failover()
+        self._validate_vllm_discovery_connector()
         self._validate_host_setup()
         self._validate_benchmark_type()
         self._validate_services_only()
@@ -2446,6 +2447,22 @@ class SrtConfig:
                 "host_setup.teardown is set without host_setup.commands; "
                 "teardown will still run after the job, which is only what you want "
                 "if something outside this recipe set the node state"
+            )
+
+    def _validate_vllm_discovery_connector(self) -> None:
+        """A discovery connector (vLLM MoRI-IO) needs the router that runs its registration endpoint.
+
+        Workers learn each other's transfer addresses from the vLLM Router's ZMQ
+        discovery listener, which no other frontend runs. The Router's own rules
+        (both roles on the connector, one router on the head node, a P/D
+        topology) live in ``VLLMRouterFrontend.validate``.
+        """
+        if not isinstance(self.backend, VLLMProtocol) or not self.backend.discovers_workers():
+            return
+        if self.frontend.type != "vllm-router":
+            raise ValidationError(
+                "a discovery connector (engine.connector: moriio) registers workers with the vLLM Router; "
+                f"it requires frontend.type: vllm-router (got {self.frontend.type!r})"
             )
 
     def _validate_vllm_failover(self) -> None:

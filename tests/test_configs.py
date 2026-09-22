@@ -72,6 +72,7 @@ class TestConfigLoading:
             "examples/vllm/dynamo-disagg.yaml",
             "examples/vllm/vllm-router-agg.yaml",
             "examples/vllm/vllm-router-disagg.yaml",
+            "examples/vllm/vllm-router-moriio-disagg.yaml",
             "examples/vllm/vllm-direct-agg.yaml",
             "examples/trtllm/dynamo-agg.yaml",
             "examples/trtllm/dynamo-disagg.yaml",
@@ -3011,6 +3012,128 @@ class TestVLLMDataParallelMode:
         assert cmd[cmd.index("--device-ids") + 1] == "0,1,2,3"
         assert "--request-plane" not in cmd
         assert "dynamo.vllm" not in cmd
+
+    def test_vllm_router_can_use_environment_device_binding(self):
+        """Stable vLLM builds can avoid the newer --device-ids CLI."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            set_visible_devices=True,
+            vllm_config=VLLMServerConfig(decode={"tensor-parallel-size": 4}),
+        )
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=30123,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 8000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type="vllm-router",
+            )
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert "--device-ids" not in cmd
+        assert backend.should_set_visible_devices()
+
+    @pytest.mark.parametrize(
+        ("mode", "role"),
+        [("prefill", "kv_producer"), ("decode", "kv_consumer")],
+    )
+    def test_vllm_router_moriio_worker_uses_realized_slurm_topology(self, mode, role):
+        """A MoRI-IO worker's connector config names the Router, its own address, and its allocated listeners."""
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            connector="moriio",
+            vllm_config=VLLMServerConfig(**{mode: {"tensor-parallel-size": 1}}),
+        )
+        process = Process(
+            node=f"{mode}-node",
+            gpu_indices=frozenset({0}),
+            sys_port=8081,
+            http_port=6100,
+            endpoint_mode=mode,
+            endpoint_index=0,
+            nixl_port=5400,
+            moriio_handshake_port=40000,
+            moriio_notify_port=41000,
+        )
+        runtime = SimpleNamespace(
+            model_path=Path("Qwen/Qwen3-0.6B"),
+            is_hf_model=True,
+            frontend_port=8000,
+            head_node_ip="10.20.30.40",
+            network_interface="ib0",
+        )
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.20.30.41") as resolve:
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type="vllm-router",
+            )
+
+        assert (f"{mode}-node", "ib0") in [call.args for call in resolve.call_args_list]
+        kv_config = json.loads(cmd[cmd.index("--kv-transfer-config") + 1])
+        assert kv_config == {
+            "kv_connector": "MoRIIOConnector",
+            "kv_role": role,
+            "kv_connector_extra_config": {
+                "proxy_ip": "10.20.30.40",
+                "proxy_ping_port": "36367",
+                "http_port": "6100",
+                "host_ip": "10.20.30.41",
+                "handshake_port": "40000",
+                "notify_port": "41000",
+                "read_mode": True,
+            },
+        }
+        env = backend.get_process_environment(process)
+        assert "VLLM_NIXL_SIDE_CHANNEL_PORT" not in env
+        assert "VLLM_PORT" not in env
+
+    def test_vllm_router_moriio_worker_needs_its_allocated_listeners(self):
+        """A discovery worker built without the allocator's listeners is refused rather than given upstream defaults."""
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from srtctl.backends import VLLMProtocol
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(connector="moriio")
+        process = Process("prefill-node", frozenset({0}), 8081, 6100, "prefill", 0)
+        runtime = SimpleNamespace(
+            model_path=Path("/model"),
+            is_hf_model=False,
+            frontend_port=8000,
+            head_node_ip="10.0.0.1",
+            network_interface=None,
+        )
+
+        with pytest.raises(ValueError, match="no MoRI-IO listeners"):
+            backend.build_worker_command(process, [process], runtime, frontend_type="vllm-router")
 
     def test_direct_vllm_command_supports_vllm_rs_binary(self):
         """Direct vLLM can launch a managed-engine Rust frontend."""

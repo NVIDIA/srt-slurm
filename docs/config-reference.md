@@ -772,6 +772,8 @@ Compare with `frontend.type: dynamo` + `engine: vllm`, which keeps Dynamo as the
 
 `type: vllm-router` launches the official vLLM Router in front of direct `vllm serve` workers. It supports aggregate replicas and disaggregated P/D topologies without Dynamo or NATS/etcd. See [vLLM Router](vllm-router.md) for complete topology examples and the division of responsibility between the upstream vLLM backend topology and Router adapter.
 
+`engine.connector: moriio` (AMD MoRI-IO on ROCm) switches the same frontend to the Router's discovery mode. srtctl launches one Router on the head node with `--kv-connector moriio --vllm-discovery-address 0.0.0.0:36367` and no worker URLs, gives every prefill and decode worker a role-aware `MoRIIOConnector` `--kv-transfer-config` that carries the Router's address, the worker's own routable IP and HTTP port, and the handshake and notify listeners the port allocator reserved for it, and waits on the Router's `/health`, which answers 503 until a prefill and a decode have registered. Both roles must run the connector, the topology must be prefill/decode, and `frontend.enable_multiple_frontends` must be `false`. See [MoRI-IO discovery](vllm-router.md#mori-io-discovery).
+
 ---
 
 ## benchmark

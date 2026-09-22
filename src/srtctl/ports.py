@@ -48,6 +48,14 @@ MOONCAKE_METRICS_PORT = 8702
 
 # vLLM backend ports.
 VLLM_NIXL_PORT_BASE = 5400
+# vLLM Router discovery endpoint (frontend.type: vllm-router with a discovery
+# connector): the one ZMQ listener on the router node that MoRI-IO workers
+# register their HTTP and transfer addresses with (--vllm-discovery-address).
+VLLM_DISCOVERY_PORT = 36367
+# MoRI-IO adds rank offsets to both bases. Keep these blocks below Linux's
+# default ephemeral range (32768-60999), used by its other bind(0) listeners.
+VLLM_MORIIO_HANDSHAKE_PORT_BASE = 26000
+VLLM_MORIIO_NOTIFY_PORT_BASE = 27000
 VLLM_DATA_PARALLEL_RPC_PORT = 8400
 VLLM_PORT_BASE = 20000
 VLLM_PORT_STRIDE = 50
@@ -103,4 +111,7 @@ SIDECAR_GRPC_PORTS = PortKind("sidecar_grpc", DYNAMO_SIDECAR_GRPC_PORT)
 NCCL_PORTS = PortKind("nccl", SGLANG_NCCL_PORT_BASE)
 DIST_INIT_PORTS = PortKind("dist_init", SGLANG_DIST_INIT_PORT_BASE, per_node=True)
 VLLM_SCAN_PORTS = PortKind("vllm_scan", VLLM_PORT_BASE, VLLM_PORT_STRIDE)
+# vLLM discovery-connector (MoRI-IO) workers: one port per local rank in each block.
+MORIIO_HANDSHAKE_PORTS = PortKind("moriio_handshake", VLLM_MORIIO_HANDSHAKE_PORT_BASE)
+MORIIO_NOTIFY_PORTS = PortKind("moriio_notify", VLLM_MORIIO_NOTIFY_PORT_BASE)
 TRTLLM_DIST_INIT_PORTS = PortKind("trtllm_dist_init", TRTLLM_DIST_INIT_PORT_BASE)

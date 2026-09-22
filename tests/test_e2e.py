@@ -30,7 +30,7 @@ def test_interactive_discovers_curated_examples():
 
     assert SGLANG_ROUTER_DISAGG in examples
     assert MOCKER_EXAMPLE in examples
-    assert len(TOPOLOGY_EXAMPLES) == 14
+    assert len(TOPOLOGY_EXAMPLES) == 15
 
 
 # =============================================================================

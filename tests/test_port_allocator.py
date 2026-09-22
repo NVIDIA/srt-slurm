@@ -20,6 +20,8 @@ from srtctl.ports import (
     DIST_INIT_PORTS,
     HTTP_PORTS,
     KV_EVENTS_PORTS,
+    MORIIO_HANDSHAKE_PORTS,
+    MORIIO_NOTIFY_PORTS,
     NCCL_PORTS,
     NIXL_PORTS,
     SIDECAR_GRPC_PORTS,
@@ -80,6 +82,8 @@ class TestNodePortAllocator:
             NCCL_PORTS,
             DIST_INIT_PORTS,
             VLLM_SCAN_PORTS,
+            MORIIO_HANDSHAKE_PORTS,
+            MORIIO_NOTIFY_PORTS,
             TRTLLM_DIST_INIT_PORTS,
             SIDECAR_GRPC_PORTS,
         ]
@@ -135,6 +139,8 @@ def test_example_topologies_bind_no_port_twice(recipe: Path):
             "sidecar_grpc": process.sidecar_grpc_port,
             "nccl": process.nccl_port,
             "vllm_scan": process.vllm_scan_port,
+            "moriio_handshake": process.moriio_handshake_port,
+            "moriio_notify": process.moriio_notify_port,
             "trtllm_dist_init": process.trtllm_dist_init_port,
         }
         for kind, port in ports.items():
@@ -144,7 +150,15 @@ def test_example_topologies_bind_no_port_twice(recipe: Path):
     assert not duplicates, f"{recipe}: ports bound twice on one node: {duplicates}"
 
     # Global kinds: one value per process across the whole job.
-    for kind in ("sys_port", "kv_events_port", "nccl_port", "vllm_scan_port", "trtllm_dist_init_port"):
+    for kind in (
+        "sys_port",
+        "kv_events_port",
+        "nccl_port",
+        "vllm_scan_port",
+        "moriio_handshake_port",
+        "moriio_notify_port",
+        "trtllm_dist_init_port",
+    ):
         values = [getattr(process, kind) for process in processes if getattr(process, kind) is not None]
         assert len(values) == len(set(values)), f"{recipe}: {kind} repeats across the job"
 

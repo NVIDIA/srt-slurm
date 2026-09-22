@@ -7,7 +7,7 @@ Small, runnable starting points, one per frontend and topology. Every example se
 | Backend | Dynamo frontend | Native router | Router-free direct |
 | --- | --- | --- | --- |
 | SGLang | `sglang/dynamo-agg.yaml`, `sglang/dynamo-disagg.yaml` | `sglang/sglang-router-agg.yaml`, `sglang/sglang-router-disagg.yaml` | `sglang/sglang-direct-agg.yaml` |
-| vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml` | `vllm/vllm-direct-agg.yaml` |
+| vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml`, `vllm/vllm-router-moriio-disagg.yaml` (ROCm, MoRI-IO discovery) | `vllm/vllm-direct-agg.yaml` |
 | TRT-LLM | `trtllm/dynamo-agg.yaml`, `trtllm/dynamo-disagg.yaml` | `trtllm/trtllm-serve-disagg.yaml` | `trtllm/trtllm-serve-agg.yaml` |
 | Mocker | `mocker/dynamo-agg.yaml` | | |
 

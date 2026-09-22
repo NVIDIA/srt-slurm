@@ -1,0 +1,69 @@
+# vLLM disaggregated prefill/decode behind the official vLLM Router, with KV
+# moving over AMD's MoRI-IO connector (ROCm).
+#
+# `connector: moriio` puts the Router in discovery mode: it is launched with
+# `--vllm-pd-disaggregation --kv-connector moriio --vllm-discovery-address
+# 0.0.0.0:36367` and no worker URLs. Each `vllm serve` worker gets a role-aware
+# `MoRIIOConnector` --kv-transfer-config that names the Router's address, the
+# worker's own routable IP and HTTP port, and the handshake and notify ports the
+# allocator reserved for it, then registers itself over ZMQ. Readiness is the
+# Router's /health, which answers 503 until a prefill and a decode registered.
+#
+# One TP1 prefill and one TP1 decode worker share a node (`nodes: colocate`),
+# which is exactly where upstream's fixed default listener ports would collide.
+# Both roles must run the connector and the Router must be the single frontend
+# on the head node. Point `model.container` at a ROCm vLLM image that ships
+# MoRI-IO; aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml.
+
+schema: 2
+name: "qwen3-0.6b-vllm-router-moriio-disagg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "mi300x"
+  gpus_per_node: 8
+frontend:
+  type: vllm-router
+  enable_multiple_frontends: false
+  args:
+    policy: "consistent_hash"
+
+engine:
+  type: vllm
+  connector: moriio
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+  decode:
+    nodes: colocate
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

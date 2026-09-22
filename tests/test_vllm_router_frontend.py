@@ -17,6 +17,7 @@ from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 from srtctl.frontends import VLLMRouterFrontend, get_frontend
 from srtctl.frontends.static_router import RouterWorker
 from srtctl.frontends.vllm_router import node_local_data_parallel_size, routed_process_dp_size
+from srtctl.ports import VLLM_DISCOVERY_PORT
 
 
 def _runtime() -> SimpleNamespace:
@@ -72,6 +73,89 @@ def test_vllm_router_pd_command_uses_nixl_bootstrap_ports() -> None:
     ]
 
 
+def test_discovery_connector_router_registers_workers_instead_of_listing_them() -> None:
+    """With MoRI-IO the Router runs in discovery mode: connector and ZMQ address flags, no worker URLs."""
+    backend = VLLMProtocol(connector="moriio")
+    command = VLLMRouterFrontend().build_router_command(
+        [
+            RouterWorker("prefill", "http://10.0.0.1:6100"),
+            RouterWorker("decode", "http://10.0.0.2:6100"),
+        ],
+        "0.0.0.0",
+        8000,
+        backend,
+    )
+
+    assert command[:2] == ["vllm-router", "--vllm-pd-disaggregation"]
+    assert "--prefill" not in command and "--decode" not in command
+    assert command[command.index("--kv-connector") + 1] == "moriio"
+    assert command[command.index("--vllm-discovery-address") + 1] == f"0.0.0.0:{VLLM_DISCOVERY_PORT}"
+    assert command[-4:] == ["--host", "0.0.0.0", "--port", "8000"]
+
+
+def test_discovered_workers_advertise_no_nixl_bootstrap_port() -> None:
+    process = Process("p0", frozenset({0}), 7500, 6100, "prefill", 0, nixl_port=5400)
+    frontend = VLLMRouterFrontend()
+
+    assert frontend.worker_bootstrap_port(VLLMProtocol(), process) == 5400
+    assert frontend.worker_bootstrap_port(VLLMProtocol(connector="moriio"), process) is None
+
+
+@pytest.mark.parametrize(
+    ("recipe", "message"),
+    [
+        ({"roles": {"decode": {"connector": "nixl"}}}, "both prefill and decode"),
+        ({"frontend": {"enable_multiple_frontends": True}}, "enable_multiple_frontends: false"),
+        ({"frontend": {"orchestrator_placement": "last_decode"}}, "orchestrator_placement: head"),
+        ({"frontend": {"type": "dynamo"}}, "requires frontend.type: vllm-router"),
+    ],
+)
+def test_discovery_connector_recipe_rules(recipe: dict, message: str) -> None:
+    """One Router on the head node, both roles on the connector, and only the vLLM Router can run it."""
+    frontend = {"type": "vllm-router", "enable_multiple_frontends": False, **recipe.get("frontend", {})}
+    decode_args = {"tensor-parallel-size": 1, **recipe.get("roles", {}).get("decode", {})}
+    with pytest.raises(ValidationError, match=message):
+        SrtConfig(
+            name="moriio",
+            model={"path": "model", "container": "image", "precision": "bf16"},
+            resources=ResourceConfig(
+                gpu_type="mi300x",
+                gpus_per_node=8,
+                prefill_nodes=1,
+                prefill_workers=1,
+                decode_nodes=1,
+                decode_workers=1,
+            ),
+            frontend=FrontendConfig(**frontend),
+            backend=VLLMProtocol(
+                connector="moriio",
+                vllm_config=VLLMServerConfig(prefill={"tensor-parallel-size": 1}, decode=decode_args),
+            ),
+        )
+
+
+def test_discovery_connector_recipe_loads_and_allocates_listeners() -> None:
+    """The example MoRI-IO recipe passes validation and every worker gets its own handshake and notify ports."""
+    config = SrtConfig.from_yaml(Path("examples/vllm/vllm-router-moriio-disagg.yaml"))
+    endpoints = config.backend.allocate_endpoints(
+        num_prefill=1,
+        num_decode=1,
+        num_agg=0,
+        gpus_per_prefill=1,
+        gpus_per_decode=1,
+        gpus_per_agg=0,
+        gpus_per_node=8,
+        available_nodes=["node0", "node1"],
+    )
+    processes = config.backend.endpoints_to_processes(
+        endpoints, port_allocator=NodePortAllocator(), frontend_type="vllm-router"
+    )
+
+    assert config.backend.discovers_workers() is True
+    assert len({p.moriio_handshake_port for p in processes}) == 2
+    assert len({p.moriio_notify_port for p in processes}) == 2
+
+
 def test_a_discovering_router_lists_no_worker_urls_and_no_bootstrap_port() -> None:
     """A router whose workers register with it gets the P/D flag but neither --prefill nor --decode."""
 
@@ -83,7 +167,9 @@ def test_a_discovering_router_lists_no_worker_urls_and_no_bootstrap_port() -> No
     command = DiscoveringRouter().build_router_command(workers, "0.0.0.0", 8000, VLLMProtocol())
     process = Process("p0", frozenset({0}), 7500, 6100, "prefill", 0, nixl_port=5400)
 
-    assert command == ["vllm-router", "--vllm-pd-disaggregation", "--host", "0.0.0.0", "--port", "8000"]
+    assert command[:2] == ["vllm-router", "--vllm-pd-disaggregation"]
+    assert "--prefill" not in command and "--decode" not in command
+    assert command[-4:] == ["--host", "0.0.0.0", "--port", "8000"]
     assert DiscoveringRouter().worker_bootstrap_port(VLLMProtocol(), process) is None
     assert VLLMRouterFrontend().worker_bootstrap_port(VLLMProtocol(), process) == 5400
 
