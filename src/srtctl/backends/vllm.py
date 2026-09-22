@@ -14,6 +14,7 @@ import builtins
 import json
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass as stdlib_dataclass
 from dataclasses import field, replace
 from pathlib import Path
 from typing import (
@@ -347,8 +348,8 @@ class VLLMProtocol:
     # Legacy device binding for vLLM builds without --device-ids.
     set_cuda_visible_devices: bool = False
 
-    # Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config.
-    # Can be overridden per role by setting "connector" in roles.<role>.args.
+    # Default KV connector: "nixl", "lmcache", "kvbm", or a raw JSON string for --kv-transfer-config.
+    # Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode resolves it.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
 
@@ -529,6 +530,34 @@ class VLLMProtocol:
             environment = {}
 
         return environment
+
+    def connector_for_mode(self, mode: WorkerMode) -> str | None:
+        """The KV connector a worker mode runs: ``roles.<mode>.args.connector``, else ``engine.connector``."""
+        mode_connector = self.get_config_for_mode(mode).get("connector")
+        return mode_connector if mode_connector is not None else self.connector
+
+    def kv_connector_for_mode(self, mode: WorkerMode) -> KVConnector | None:
+        """The connector table row for a mode; None for no connector or a raw JSON ``--kv-transfer-config``."""
+        return kv_connector_row(self.connector_for_mode(mode))
+
+    def discovers_workers(self) -> bool:
+        """Whether the prefill/decode workers register with the router over its discovery endpoint.
+
+        True when either role runs a discovery connector; the router then learns
+        its workers by registration instead of from URLs on its command line.
+        """
+        return any(row is not None and row.discovery for row in map(self.kv_connector_for_mode, ("prefill", "decode")))
+
+    def kv_transfer_config(self, mode: WorkerMode) -> str | None:
+        """``--kv-transfer-config`` JSON for a worker mode, or None when the mode has no connector.
+
+        Table connectors expand to their preset for the mode; a raw JSON string
+        from the recipe passes through unchanged.
+        """
+        connector = self.connector_for_mode(mode)
+        if not connector or connector.lower() in ("null", "none"):
+            return None
+        return _connector_to_kv_transfer_config(connector, mode)
 
     def get_process_environment(self, process: Process) -> dict[str, str]:
         """Get process-specific environment variables for vLLM workers.
@@ -1187,10 +1216,11 @@ class VLLMProtocol:
             config.setdefault("served-model-name", served_model_name)
 
             # A prefill/decode worker gets its KV connector; an aggregate worker has none.
-            mode_connector = config.pop("connector", None)
-            connector = mode_connector if mode_connector is not None else self.connector
-            if mode in {"prefill", "decode"} and connector and connector not in ("null", "none", None):
-                config.setdefault("kv-transfer-config", _connector_to_kv_transfer_config(connector))
+            config.pop("connector", None)
+            if mode in {"prefill", "decode"}:
+                kv_transfer_config = self.kv_transfer_config(mode)
+                if kv_transfer_config is not None:
+                    config.setdefault("kv-transfer-config", kv_transfer_config)
 
             node_rank = endpoint_nodes.index(process.node)
             # The worker that is itself the public endpoint may run the alternate
@@ -1314,14 +1344,11 @@ class VLLMProtocol:
         if mode in ("prefill", "decode"):
             cmd.extend(["--disaggregation-mode", mode])
 
-        # KV connector → --kv-transfer-config (dynamo 1.0.0+: --connector was removed)
-        # Check for mode-specific override first, then fall back to default.
+        # KV connector → --kv-transfer-config (dynamo 1.0.0+: --connector was removed).
         # Pop from config so it doesn't get added again by _config_to_cli_args.
-        mode_connector = config.pop("connector", None)
-        connector = mode_connector if mode_connector is not None else self.connector
-
-        if connector and connector not in ("null", "none", None):
-            kv_transfer_cfg = _connector_to_kv_transfer_config(connector)
+        config.pop("connector", None)
+        kv_transfer_cfg = self.kv_transfer_config(mode)
+        if kv_transfer_cfg is not None:
             cmd.extend(["--kv-transfer-config", kv_transfer_cfg])
 
         # Under failover the worker stage pins CUDA_VISIBLE_DEVICES instead: the
@@ -1609,11 +1636,11 @@ class VLLMProtocol:
             if hybrid_lb:
                 command.extend(["--data-parallel-start-rank", str(process.node_rank), "--data-parallel-hybrid-lb"])
 
-        mode_connector = config.pop("connector", None)
-        connector = mode_connector if mode_connector is not None else self.connector
+        config.pop("connector", None)
         has_explicit_kv = "kv-transfer-config" in config or "kv_transfer_config" in config
-        if connector and connector not in ("null", "none", None) and not has_explicit_kv:
-            command.extend(["--kv-transfer-config", _connector_to_kv_transfer_config(connector)])
+        kv_transfer_cfg = None if has_explicit_kv else self.kv_transfer_config(mode)
+        if kv_transfer_cfg is not None:
+            command.extend(["--kv-transfer-config", kv_transfer_cfg])
 
         kv_cfg = self.get_kv_events_config_for_mode(mode)
         if kv_cfg and process.kv_events_port is not None:
@@ -1650,28 +1677,56 @@ class VLLMProtocol:
         )
 
 
-_CONNECTOR_MAP: dict[str, dict[str, str]] = {
-    "nixl": {"kv_connector": "NixlConnector", "kv_role": "kv_both"},
-    "lmcache": {"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"},
-    "kvbm": {
-        "kv_connector": "DynamoConnector",
-        "kv_connector_module_path": "kvbm.vllm_integration.connector",
-        "kv_role": "kv_both",
-    },
+@stdlib_dataclass(frozen=True)
+class KVConnector:
+    """One row of the KV connector table: the vLLM connector class and how srtctl wires it.
+
+    ``kv_role`` None means the role follows the worker mode (prefill produces,
+    decode consumes). ``discovery`` marks a connector whose workers find each
+    other through the router's discovery endpoint instead of being listed on the
+    router command line (AMD's MoRI-IO behind the vLLM Router); the frontend
+    asks ``VLLMProtocol.discovers_workers`` and drops the URLs.
+    """
+
+    kv_connector: str
+    kv_role: str | None = "kv_both"
+    module_path: str | None = None
+    discovery: bool = False
+
+    def transfer_config(self, mode: WorkerMode) -> dict[str, Any]:
+        """The ``--kv-transfer-config`` payload for a worker mode."""
+        payload: dict[str, Any] = {"kv_connector": self.kv_connector}
+        if self.module_path is not None:
+            payload["kv_connector_module_path"] = self.module_path
+        payload["kv_role"] = self.kv_role or ("kv_producer" if mode == "prefill" else "kv_consumer")
+        return payload
+
+
+# Connector shorthands a recipe may name in engine.connector or roles.<role>.args.connector.
+_CONNECTOR_MAP: dict[str, KVConnector] = {
+    "nixl": KVConnector("NixlConnector"),
+    "lmcache": KVConnector("LMCacheConnectorV1"),
+    "kvbm": KVConnector("DynamoConnector", module_path="kvbm.vllm_integration.connector"),
 }
 
 
-def _connector_to_kv_transfer_config(connector: str) -> str:
+def kv_connector_row(connector: str | None) -> KVConnector | None:
+    """The table row for a connector shorthand; None for no connector or a raw JSON string."""
+    if not connector:
+        return None
+    return _CONNECTOR_MAP.get(connector.lower())
+
+
+def _connector_to_kv_transfer_config(connector: str, mode: WorkerMode) -> str:
     """Translate a connector shorthand to a --kv-transfer-config JSON string.
 
-    Known shorthands (e.g. "nixl", "lmcache") are expanded to the full JSON
-    config expected by vLLM.  Anything else is passed through as-is (assumed
-    to already be a valid JSON string).
+    Table connectors expand to their preset for ``mode``; anything else passes
+    through as the JSON string the recipe wrote.
     """
-    preset = _CONNECTOR_MAP.get(connector.lower())
-    if preset is not None:
-        return json.dumps(preset)
-    return connector
+    row = kv_connector_row(connector)
+    if row is None:
+        return connector
+    return json.dumps(row.transfer_config(mode))
 
 
 def _config_to_cli_args(config: dict[str, Any]) -> list[str]:

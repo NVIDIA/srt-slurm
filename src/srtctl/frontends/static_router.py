@@ -95,7 +95,9 @@ class StaticRouterFrontend:
     ) -> WorkerHealthResult:
         return check_static_router_health(response_json, expected_prefill, expected_decode)
 
-    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
+    ) -> WorkerHealthResult:
         """One GET of the router's worker registry, parsed against the expected counts."""
         return probe_json_health(host, port, self.health_endpoint, self.parse_health, expected_prefill, expected_decode)
 
@@ -194,7 +196,15 @@ class StaticRouterFrontend:
         """Return extra direct readiness requirements, if any."""
         return []
 
-    def build_router_command(self, workers: list[RouterWorker], host: str, port: int) -> list[str]:
+    def discovers_workers(self, backend: Any) -> bool:
+        """Whether the router learns its workers by registration instead of from its command line.
+
+        A discovering router gets no ``--prefill``/``--decode`` URLs; the subclass
+        adds its discovery flags. Static routers never discover.
+        """
+        return False
+
+    def build_router_command(self, workers: list[RouterWorker], host: str, port: int, backend: Any) -> list[str]:
         """Build the router CLI for aggregate or prefill/decode topologies."""
         aggregate = [worker for worker in workers if worker.mode == "agg"]
         prefills = [worker for worker in workers if worker.mode == "prefill"]
@@ -207,12 +217,13 @@ class StaticRouterFrontend:
             if not prefills or not decodes:
                 raise ValueError("Disaggregated static router topology requires prefill and decode workers")
             cmd.append(self.pd_flag)
-            for worker in prefills:
-                cmd.extend(["--prefill", worker.url])
-                if worker.bootstrap_port is not None:
-                    cmd.append(str(worker.bootstrap_port))
-            for worker in decodes:
-                cmd.extend(["--decode", worker.url])
+            if not self.discovers_workers(backend):
+                for worker in prefills:
+                    cmd.extend(["--prefill", worker.url])
+                    if worker.bootstrap_port is not None:
+                        cmd.append(str(worker.bootstrap_port))
+                for worker in decodes:
+                    cmd.extend(["--decode", worker.url])
         else:
             if not aggregate:
                 if self.allow_empty_workers:
@@ -247,7 +258,7 @@ class StaticRouterFrontend:
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):
             router_log = runtime.log_dir / f"{node}_{self.log_label or self.type}_{idx}.out"
-            cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port)
+            cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port, backend)
             cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
             logger.info("Starting %s %d on %s: %s", self.type, idx, node, shlex.join(cmd))

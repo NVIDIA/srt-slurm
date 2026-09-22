@@ -81,7 +81,9 @@ class TRTLLMServeFrontend:
         """A trtllm-serve worker reports /health on its own OpenAI port."""
         return process.http_port
 
-    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
+    ) -> WorkerHealthResult:
         """A 200 from /health is ready: the body may be empty, and every worker was gated before the orchestrator started."""
         return probe_http_ok(host, port, "/health", f"trtllm-serve frontend healthy at http://{host}:{port}/health")
 

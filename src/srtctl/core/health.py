@@ -19,6 +19,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import requests
 
@@ -481,6 +482,8 @@ def wait_for_model(
     report_every: float = 60.0,
     frontend_type: str = "dynamo",
     stop_event: threading.Event | None = None,
+    *,
+    config: Any,
 ) -> bool:
     """Wait for the public endpoint to report every expected worker.
 
@@ -488,7 +491,8 @@ def wait_for_model(
     probe. ``frontend.probe_ready`` performs one readiness check (a JSON worker
     count, a bare 200, the direct server's ``/health`` plus ``/v1/models``) and
     returns a ``WorkerHealthResult``; a ``requests.RequestException`` means the
-    endpoint is not up yet and is retried.
+    endpoint is not up yet and is retried. ``config`` is the recipe the frontend
+    reads when its readiness contract depends on it.
 
     Args:
         host: Model server hostname or IP
@@ -533,7 +537,7 @@ def wait_for_model(
             return False
 
         try:
-            result = frontend.probe_ready(host, port, n_prefill, n_decode)
+            result = frontend.probe_ready(host, port, n_prefill, n_decode, config)
             if result.ready:
                 logger.info(result.message)
                 return True

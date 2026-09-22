@@ -71,7 +71,9 @@ class SGLangFrontend:
     def worker_ready_port(self, process: Process) -> int:
         return process.sys_port
 
-    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
+    ) -> WorkerHealthResult:
         """The worker's own /health, then /v1/models must list the model."""
         return probe_direct_server(host, port)
 

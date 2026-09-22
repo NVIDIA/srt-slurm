@@ -200,8 +200,14 @@ class VLLMRouterFrontend(StaticRouterFrontend):
             managed_args.extend(["--worker-startup-timeout-secs", str(timeout_seconds)])
         return managed_args
 
+    def discovers_workers(self, backend: Any) -> bool:
+        """Discovery mode when the P/D connector registers workers with the Router instead of being listed."""
+        return backend.discovers_workers()
+
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
-        """Advertise vLLM's NIXL side-channel port for P/D routing."""
+        """Advertise vLLM's NIXL side-channel port for static P/D routing; discovered workers bring their own."""
+        if self.discovers_workers(backend):
+            return None
         return process.nixl_port
 
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:

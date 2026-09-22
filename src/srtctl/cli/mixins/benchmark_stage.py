@@ -275,6 +275,7 @@ class BenchmarkStageMixin:
             report_every=60.0,
             frontend_type=self.config.frontend.type,
             stop_event=stop_event,
+            config=self.config,
         ):
             return False
 

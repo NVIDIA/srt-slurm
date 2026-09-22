@@ -51,7 +51,9 @@ class DynamicFrontend:
         """Count the registered workers in the frontend's health body; each implementation knows its format."""
         raise NotImplementedError(f"{type(self).__name__} must parse its own registration count")
 
-    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
+    ) -> WorkerHealthResult:
         """One GET of the registration endpoint, parsed against the expected counts."""
         return probe_json_health(host, port, self.health_endpoint, self.parse_health, expected_prefill, expected_decode)
 

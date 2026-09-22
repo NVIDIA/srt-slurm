@@ -133,12 +133,16 @@ class FrontendProtocol(Protocol):
         """
         ...
 
-    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> "WorkerHealthResult":
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
+    ) -> "WorkerHealthResult":
         """One readiness probe against the public endpoint at ``host:port``.
 
         Raise ``requests.RequestException`` while the endpoint is unreachable;
         ``wait_for_model`` retries until its timeout. Anything else that is not
-        ready comes back as a result whose message explains why.
+        ready comes back as a result whose message explains why. ``config`` is
+        the recipe, for frontends whose readiness contract depends on it (the
+        vLLM Router in discovery mode).
         """
         ...
 

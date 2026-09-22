@@ -444,6 +444,15 @@ def _http(status: int, body=None):
     return response
 
 
+def _config(backend=None):
+    """The recipe a probe may read: only the backend matters, and only the vLLM Router reads it (discovery mode)."""
+    from types import SimpleNamespace
+
+    from srtctl.backends import VLLMProtocol
+
+    return SimpleNamespace(backend=backend if backend is not None else VLLMProtocol())
+
+
 class TestFrontendProbes:
     """Each frontend owns one readiness probe; the loop only retries and logs."""
 
@@ -452,7 +461,7 @@ class TestFrontendProbes:
         from srtctl.frontends import get_frontend
 
         monkeypatch.setattr(health.requests, "get", lambda url, timeout: _http(200))
-        result = get_frontend("trtllm_serve").probe_ready("router", 8000, 1, 1)
+        result = get_frontend("trtllm_serve").probe_ready("router", 8000, 1, 1, _config())
         assert result.ready is True
         assert "router:8000/health" in result.message
 
@@ -462,7 +471,7 @@ class TestFrontendProbes:
 
         monkeypatch.setattr(health.requests, "get", lambda url, timeout: _http(503))
         for frontend_type in ("dynamo", "sglang-router", "vllm-router", "trtllm_serve", "vllm", "sglang"):
-            result = get_frontend(frontend_type).probe_ready("router", 8000, 1, 1)
+            result = get_frontend(frontend_type).probe_ready("router", 8000, 1, 1, _config())
             assert result.ready is False, frontend_type
             assert "HTTP 503" in result.message, frontend_type
 
@@ -477,7 +486,7 @@ class TestFrontendProbes:
             return _http(200, {"stats": {"prefill_count": 1, "decode_count": 2, "regular_count": 0}, "workers": []})
 
         monkeypatch.setattr(health.requests, "get", fake_get)
-        result = get_frontend("sglang-router").probe_ready("router", 8000, 1, 2)
+        result = get_frontend("sglang-router").probe_ready("router", 8000, 1, 2, _config())
         assert seen["url"] == "http://router:8000/workers"
         assert result.prefill_ready == 1
         assert result.decode_ready == 2
@@ -492,10 +501,10 @@ class TestFrontendProbes:
         }
         monkeypatch.setattr(health.requests, "get", lambda url, timeout: bodies[url])
         for frontend_type in ("vllm", "sglang"):
-            assert get_frontend(frontend_type).probe_ready("worker", 8000, 0, 1).ready is True
+            assert get_frontend(frontend_type).probe_ready("worker", 8000, 0, 1, _config()).ready is True
 
         bodies["http://worker:8000/v1/models"] = _http(200, {"data": []})
-        result = get_frontend("vllm").probe_ready("worker", 8000, 0, 1)
+        result = get_frontend("vllm").probe_ready("worker", 8000, 0, 1, _config())
         assert result.ready is False
         assert "no models" in result.message
 
@@ -510,7 +519,24 @@ class TestFrontendProbes:
 
         monkeypatch.setattr(health.requests, "get", refuse)
         with pytest.raises(requests.exceptions.RequestException):
-            get_frontend("dynamo").probe_ready("router", 8000, 1, 1)
+            get_frontend("dynamo").probe_ready("router", 8000, 1, 1, _config())
+
+    def test_the_probe_receives_the_recipe(self, monkeypatch):
+        """A frontend whose readiness contract depends on the recipe gets it; the loop passes it through unchanged."""
+        from srtctl.core import health
+        from srtctl.frontends import get_frontend
+
+        seen: list[object] = []
+
+        class RecipeAwareRouter(type(get_frontend("vllm-router"))):
+            def probe_ready(self, host, port, expected_prefill, expected_decode, config):
+                seen.append(config)
+                return super().probe_ready(host, port, expected_prefill, expected_decode, config)
+
+        monkeypatch.setattr(health.requests, "get", lambda url, timeout: _http(503))
+        config = _config()
+        RecipeAwareRouter().probe_ready("router", 8000, 1, 1, config)
+        assert seen == [config]
 
 
 class TestWaitForModel:
@@ -521,7 +547,7 @@ class TestWaitForModel:
 
         calls = iter(probes)
 
-        def probe_ready(host, port, expected_prefill, expected_decode):
+        def probe_ready(host, port, expected_prefill, expected_decode, config):
             outcome = next(calls)
             if isinstance(outcome, Exception):
                 raise outcome
@@ -541,7 +567,10 @@ class TestWaitForModel:
                 WorkerHealthResult(ready=True, message="2/2 workers"),
             ],
         )
-        assert wait_for_model("router", 8000, 1, 1, poll_interval=0.001, timeout=5, frontend_type="stub") is True
+        assert (
+            wait_for_model("router", 8000, 1, 1, poll_interval=0.001, timeout=5, frontend_type="stub", config=_config())
+            is True
+        )
 
     def test_returns_false_on_timeout_while_the_endpoint_refuses(self, monkeypatch):
         import itertools
@@ -551,7 +580,12 @@ class TestWaitForModel:
         from srtctl.core.health import wait_for_model
 
         self._stub(monkeypatch, itertools.repeat(requests.exceptions.ConnectionError("refused")))
-        assert wait_for_model("router", 8000, 1, 1, poll_interval=0.001, timeout=0.05, frontend_type="stub") is False
+        assert (
+            wait_for_model(
+                "router", 8000, 1, 1, poll_interval=0.001, timeout=0.05, frontend_type="stub", config=_config()
+            )
+            is False
+        )
 
     def test_stop_event_aborts(self, monkeypatch):
         import itertools
@@ -563,6 +597,16 @@ class TestWaitForModel:
         stop = threading.Event()
         stop.set()
         assert (
-            wait_for_model("router", 8000, 1, 1, poll_interval=0.001, timeout=5, frontend_type="stub", stop_event=stop)
+            wait_for_model(
+                "router",
+                8000,
+                1,
+                1,
+                poll_interval=0.001,
+                timeout=5,
+                frontend_type="stub",
+                stop_event=stop,
+                config=_config(),
+            )
             is False
         )

@@ -43,6 +43,7 @@ def test_static_router_aggregate_command_advertises_all_bases(frontend_type: str
         ],
         "0.0.0.0",
         8000,
+        VLLMProtocol(),
     )
 
     assert command[command.index("--worker-urls") + 1 : -4] == [
@@ -61,6 +62,7 @@ def test_vllm_router_pd_command_uses_nixl_bootstrap_ports() -> None:
         ],
         "0.0.0.0",
         8000,
+        VLLMProtocol(),
     )
 
     assert command[:2] == ["vllm-router", "--vllm-pd-disaggregation"]
@@ -68,6 +70,22 @@ def test_vllm_router_pd_command_uses_nixl_bootstrap_ports() -> None:
         "http://10.0.0.1:6100",
         "5400",
     ]
+
+
+def test_a_discovering_router_lists_no_worker_urls_and_no_bootstrap_port() -> None:
+    """A router whose workers register with it gets the P/D flag but neither --prefill nor --decode."""
+
+    class DiscoveringRouter(VLLMRouterFrontend):
+        def discovers_workers(self, backend: object) -> bool:
+            return True
+
+    workers = [RouterWorker("prefill", "http://10.0.0.1:6100", 5400), RouterWorker("decode", "http://10.0.0.2:6100")]
+    command = DiscoveringRouter().build_router_command(workers, "0.0.0.0", 8000, VLLMProtocol())
+    process = Process("p0", frozenset({0}), 7500, 6100, "prefill", 0, nixl_port=5400)
+
+    assert command == ["vllm-router", "--vllm-pd-disaggregation", "--host", "0.0.0.0", "--port", "8000"]
+    assert DiscoveringRouter().worker_bootstrap_port(VLLMProtocol(), process) is None
+    assert VLLMRouterFrontend().worker_bootstrap_port(VLLMProtocol(), process) == 5400
 
 
 def test_collect_workers_uses_positive_http_ports_and_configured_interface() -> None:
@@ -79,7 +97,7 @@ def test_collect_workers_uses_positive_http_ports_and_configured_interface() -> 
     ]
 
     with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=["10.0.0.1", "10.0.0.2"]) as resolve:
-        workers = frontend.collect_workers(MagicMock(), processes, "ib0")
+        workers = frontend.collect_workers(VLLMProtocol(), processes, "ib0")
 
     assert workers == [
         RouterWorker("prefill", "http://10.0.0.1:6100", 5400),
