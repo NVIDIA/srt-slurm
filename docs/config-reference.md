@@ -277,6 +277,12 @@ Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. Everything that is per
 
 The v1 spelling of this (`backend.type` plus the engine-wide keys under `backend:`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
+For TRT-LLM, leaving `engine.numa_memory_bind` unset prefixes prefill and decode
+worker commands with `numactl -m 0,1` when `resources.gpu_type` is exactly
+`gb200`, `gb300`, or `VRNVL72` (case-sensitive). Aggregated workers do not get
+this prefix by default. Set `numa_memory_bind: true` or `false` to force it on
+or off for every worker mode, regardless of GPU type.
+
 ### vLLM DP launch mode
 
 vLLM data-parallel endpoints use one process per node by default. srtslurm derives whether each TP/PP replica is node-local or spans multiple nodes:

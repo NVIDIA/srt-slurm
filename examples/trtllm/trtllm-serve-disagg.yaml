@@ -20,6 +20,8 @@ model:
   precision: "bf16"
 
 resources:
+  # On VRNVL72, set gpu_type: "VRNVL72" and gpus_per_node for your cluster;
+  # prefill/decode workers then use numactl -m 0,1 by default.
   gpu_type: "h100"
   gpus_per_node: 8
 frontend:

@@ -4118,18 +4118,20 @@ class TestHuggingFaceModelSupport:
         idx = cmd.index("--model-path")
         assert cmd[idx + 1] == "/model"
 
-    def test_trtllm_numa_memory_bind_none_follows_gpu_type_default(self):
-        """numa_memory_bind=None (default) auto-enables numactl only for gb200/gb300."""
+    @pytest.mark.parametrize("gpu_type", ["h100", "gb200", "gb300", "VRNVL72"])
+    @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
+    def test_trtllm_numa_memory_bind_none_follows_gpu_type_default(self, gpu_type, mode):
+        """Default memory binding applies only to supported prefill/decode workers."""
         from pathlib import Path
         from unittest.mock import patch
 
         from srtctl.backends import TRTLLMProtocol
 
         backend = TRTLLMProtocol()
-        process = self._make_process(mode="prefill")
+        process = self._make_process(mode=mode)
         runtime = self._make_runtime(is_hf=False)
         runtime.log_dir = Path("/tmp/test-logs")
-        runtime.gpu_type = "h100"
+        runtime.gpu_type = gpu_type
 
         with (
             patch("pathlib.Path.write_text"),
@@ -4137,19 +4139,13 @@ class TestHuggingFaceModelSupport:
         ):
             cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
 
-        assert "numactl" not in cmd
-
-        runtime.gpu_type = "gb200"
-        with (
-            patch("pathlib.Path.write_text"),
-            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
-        ):
-            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
-
-        assert cmd[:3] == ["numactl", "-m", "0,1"]
+        if gpu_type != "h100" and mode != "agg":
+            assert cmd[:3] == ["numactl", "-m", "0,1"]
+        else:
+            assert "numactl" not in cmd
 
     def test_trtllm_numa_memory_bind_true_forces_numactl(self):
-        """numa_memory_bind=True forces numactl even on non-gb200/gb300 GPUs."""
+        """numa_memory_bind=True forces numactl even without default memory binding."""
         from pathlib import Path
         from unittest.mock import patch
 
@@ -4169,8 +4165,9 @@ class TestHuggingFaceModelSupport:
 
         assert cmd[:3] == ["numactl", "-m", "0,1"]
 
-    def test_trtllm_numa_memory_bind_false_disables_numactl(self):
-        """numa_memory_bind=False disables numactl even on gb200/gb300."""
+    @pytest.mark.parametrize("gpu_type", ["gb200", "gb300", "VRNVL72"])
+    def test_trtllm_numa_memory_bind_false_disables_numactl(self, gpu_type):
+        """numa_memory_bind=False disables even the default GPU memory binding."""
         from pathlib import Path
         from unittest.mock import patch
 
@@ -4180,7 +4177,7 @@ class TestHuggingFaceModelSupport:
         process = self._make_process(mode="prefill")
         runtime = self._make_runtime(is_hf=False)
         runtime.log_dir = Path("/tmp/test-logs")
-        runtime.gpu_type = "gb300"
+        runtime.gpu_type = gpu_type
 
         with (
             patch("pathlib.Path.write_text"),
@@ -4190,7 +4187,8 @@ class TestHuggingFaceModelSupport:
 
         assert "numactl" not in cmd
 
-    def test_trtllm_numa_memory_bind_true_applies_to_agg_mode(self):
+    @pytest.mark.parametrize("gpu_type", ["h100", "VRNVL72"])
+    def test_trtllm_numa_memory_bind_true_applies_to_agg_mode(self, gpu_type):
         """numa_memory_bind=True also wraps aggregated-mode workers with numactl."""
         from pathlib import Path
         from unittest.mock import patch
@@ -4201,7 +4199,7 @@ class TestHuggingFaceModelSupport:
         process = self._make_process(mode="agg")
         runtime = self._make_runtime(is_hf=False)
         runtime.log_dir = Path("/tmp/test-logs")
-        runtime.gpu_type = "h100"
+        runtime.gpu_type = gpu_type
 
         with (
             patch("pathlib.Path.write_text"),
