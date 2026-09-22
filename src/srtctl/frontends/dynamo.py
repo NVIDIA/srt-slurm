@@ -105,12 +105,10 @@ class DynamoFrontend(DynamicFrontend):
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
         """Every rank runs the Dynamo system status server (health, metrics) on its system port."""
-        del runtime
         return process.sys_port if process.sys_port > 0 else None
 
     def worker_endpoint_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
         """One endpoint per logical worker: the leader's system port, or the native engine's port behind a sidecar."""
-        del runtime
         if not process.is_leader:
             return None
         port = process.http_port if config.dynamo.sidecar else process.sys_port
@@ -118,7 +116,6 @@ class DynamoFrontend(DynamicFrontend):
 
     def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
         """Iteration-triggered captures are controlled per rank on the system port."""
-        del config, runtime
         return process.sys_port if process.sys_port > 0 else None
 
     def profiling_control_is_leader_only(self, config: Any) -> bool:

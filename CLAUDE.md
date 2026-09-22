@@ -47,6 +47,7 @@ Follow these patterns when extending the codebase:
 - **TypedDict for external data** - Use `TypedDict` for typing dicts from JSON/external sources where you can't control the structure.
 - **Single source of truth** - Create context objects (like `RuntimeContext`) that compute all derived paths/values once at startup rather than recomputing.
 - **testing** - when we make a new significant feature change, we should always add a new test
+- **Unused parameters stay untouched** - A hook that ignores an argument just ignores it. Ruff's unused-argument rules are off, so `del name` lines add nothing but noise.
 
 ## Design Rules
 

@@ -44,7 +44,6 @@ class SGLangFrontend:
 
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """The one ``sglang.launch_server`` is the endpoint, so it binds the public port."""
-        del mode
         return "public"
 
     metrics_path: ClassVar[str] = "/metrics"
@@ -56,16 +55,13 @@ class SGLangFrontend:
         return None
 
     def worker_endpoint_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
-        del config
         return runtime.frontend_port if process.is_leader else None
 
     def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
         """The leader's server on the public port carries the control routes; followers have none."""
-        del config
         return runtime.frontend_port if process.is_leader else None
 
     def profiling_control_is_leader_only(self, config: Any) -> bool:
-        del config
         return False
 
     def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
@@ -76,11 +72,9 @@ class SGLangFrontend:
 
     def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
         """The worker's own /health, then /v1/models must list the model."""
-        del expected_prefill, expected_decode
         return probe_direct_server(host, port)
 
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
-        del processes
         return logical_health_expectations(config)
 
     def validate(self, config: Any) -> None:
@@ -134,7 +128,6 @@ class SGLangFrontend:
         backend_processes: list[Process],
         network_interface: str | None = None,
     ) -> list[str]:
-        del backend, backend_processes, network_interface
         return []
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
@@ -157,7 +150,6 @@ class SGLangFrontend:
         backend_processes: list[Process],
         stop_event: threading.Event | None = None,
     ) -> list[ManagedProcess]:
-        del runtime, backend, backend_processes, stop_event
         if config.backend.type != "sglang":
             raise ValueError(f"frontend.type: sglang requires engine sglang (got {config.backend.type!r})")
         if topology.uses_nginx or len(topology.frontend_nodes) != 1:

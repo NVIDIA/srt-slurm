@@ -50,7 +50,6 @@ class SGLangRouterFrontend(StaticRouterFrontend):
         is given (``PrometheusConfig`` is ``None`` otherwise), and tachometer is on
         by default, so srtctl always asks for it on every interface.
         """
-        del backend, backend_processes
         frontend_args = config.frontend.args or {}
         normalized = {str(key).replace("_", "-") for key in frontend_args}
         managed: list[str] = []
@@ -64,7 +63,6 @@ class SGLangRouterFrontend(StaticRouterFrontend):
         return "grpc" if backend.is_grpc_mode(mode) else "http"
 
     def resolve_worker_host(self, node: str, network_interface: str | None) -> str:
-        del network_interface
         return get_hostname_ip(node)
 
     def start_process(self, **kwargs: Any) -> Any:

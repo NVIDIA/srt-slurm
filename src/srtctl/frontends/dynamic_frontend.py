@@ -56,16 +56,13 @@ class DynamicFrontend:
 
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
         """One registration per logical worker unless the implementation knows better."""
-        del processes
         return logical_health_expectations(config)
 
     def validate(self, config: Any) -> None:
         """Recipe-level rules beyond the backend pairing; none by default."""
-        del config
 
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """A registered worker never binds the public port; the frontend owns it."""
-        del mode
         return "allocated"
 
     def get_backend_health_urls(
@@ -75,12 +72,10 @@ class DynamicFrontend:
         network_interface: str | None = None,
     ) -> list[str]:
         """Registration is the readiness gate; there is no per-worker URL to poll first."""
-        del backend, backend_processes, network_interface
         return []
 
     def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
         """The frontend process is the endpoint, never a worker."""
-        del processes
         return []
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:

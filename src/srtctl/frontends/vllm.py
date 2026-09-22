@@ -45,7 +45,6 @@ class VLLMFrontend:
 
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """The one ``vllm serve`` is the endpoint, so it binds the public port in every mode it runs."""
-        del mode
         return "public"
 
     metrics_path: ClassVar[str] = "/metrics"
@@ -57,16 +56,13 @@ class VLLMFrontend:
         return None
 
     def worker_endpoint_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
-        del config
         return runtime.frontend_port if process.is_leader else None
 
     def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
         """One control server for the whole worker, on the public port."""
-        del process, config
         return runtime.frontend_port
 
     def profiling_control_is_leader_only(self, config: Any) -> bool:
-        del config
         return True
 
     def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
@@ -77,11 +73,9 @@ class VLLMFrontend:
 
     def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
         """The worker's own /health, then /v1/models must list the model."""
-        del expected_prefill, expected_decode
         return probe_direct_server(host, port)
 
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
-        del processes
         return logical_health_expectations(config)
 
     def validate(self, config: Any) -> None:
@@ -126,7 +120,6 @@ class VLLMFrontend:
         backend_processes: list[Process],
         network_interface: str | None = None,
     ) -> list[str]:
-        del backend, backend_processes, network_interface
         return []
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:

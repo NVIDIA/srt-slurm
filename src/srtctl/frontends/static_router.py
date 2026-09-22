@@ -56,38 +56,31 @@ class StaticRouterFrontend:
 
     def validate(self, config: Any) -> None:
         """Recipe-level rules beyond the backend pairing; none by default."""
-        del config
 
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """A routed worker binds its own allocated port; the router owns the public one."""
-        del mode
         return "allocated"
 
     metrics_path: ClassVar[str] = "/metrics"
 
     def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
         """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing."""
-        del runtime
         if process.is_leader and process.http_port > 0:
             return process.http_port
         return None
 
     def worker_endpoint_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
-        del config, runtime
         if process.is_leader and process.http_port > 0:
             return process.http_port
         return None
 
     def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
-        del config, runtime
         return process.http_port if process.http_port > 0 else None
 
     def profiling_control_is_leader_only(self, config: Any) -> bool:
-        del config
         return False
 
     def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
-        del processes
         return []
 
     def worker_ready_port(self, process: Process) -> int:
@@ -107,7 +100,6 @@ class StaticRouterFrontend:
 
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
         """The registry lists one entry per logical worker unless the router expands them."""
-        del processes
         return logical_health_expectations(config)
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
@@ -135,17 +127,14 @@ class StaticRouterFrontend:
         backend_processes: list[Process],
     ) -> list[str]:
         """Return adapter-managed CLI arguments derived from srtctl config."""
-        del config, backend, backend_processes
         return []
 
     def worker_scheme(self, backend: Any, mode: str) -> str:
         """Return the protocol used to reach one worker endpoint."""
-        del backend, mode
         return "http"
 
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
         """Return the optional P/D bootstrap port advertised for a worker."""
-        del backend
         return process.bootstrap_port
 
     def resolve_worker_host(self, node: str, network_interface: str | None) -> str:
@@ -158,7 +147,6 @@ class StaticRouterFrontend:
 
     def build_bash_preamble(self, config: Any) -> str | None:
         """Return adapter-specific shell setup to run before the router."""
-        del config
         return None
 
     def collect_workers(
@@ -195,7 +183,6 @@ class StaticRouterFrontend:
         network_interface: str | None = None,
     ) -> list[str]:
         """Return extra direct readiness requirements, if any."""
-        del backend, backend_processes, network_interface
         return []
 
     def build_router_command(self, workers: list[RouterWorker], host: str, port: int) -> list[str]:
@@ -238,7 +225,6 @@ class StaticRouterFrontend:
         backend_processes: list[Process],
         stop_event: threading.Event | None = None,
     ) -> list[ManagedProcess]:
-        del stop_event  # Static routers return immediately after launch.
         from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
         configured_backend = getattr(getattr(config, "backend", None), "type", self.required_backend)
