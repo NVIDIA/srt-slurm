@@ -11,7 +11,7 @@ Frontend types handle:
 """
 
 import threading
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 if TYPE_CHECKING:
     from srtctl.core.health import WorkerHealthResult
@@ -45,9 +45,31 @@ class FrontendProtocol(Protocol):
     #: ``SrtConfig._validate_frontend`` enforces it at config load.
     required_backend: ClassVar[str | None]
 
+    #: How this frontend's workers are launched. ``dynamo`` workers are
+    #: ``dynamo.<engine>`` processes that register with the Dynamo runtime;
+    #: ``direct`` workers are the engine's own OpenAI server (``vllm serve``,
+    #: ``sglang.launch_server``, ``trtllm-serve``). Backends read this instead
+    #: of comparing frontend names.
+    worker_launch: ClassVar[Literal["dynamo", "direct"]]
+
+    #: The router expands each advertised URL into its node-local hybrid-LB DP
+    #: ranks (vLLM Router). The vLLM backend launches one hybrid-LB API per node
+    #: for such a frontend and refuses the deprecated per_gpu layout.
+    expands_node_local_dp: ClassVar[bool]
+
     @property
     def type(self) -> str:
         """Frontend type identifier (e.g., 'dynamo', 'sglang')."""
+        ...
+
+    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
+        """Which port a direct worker of ``mode`` binds.
+
+        ``public``: the worker is the endpoint itself and binds
+        ``runtime.frontend_port``. ``allocated``: a router fronts it and it binds
+        its own ``Process.http_port``. Dynamo workers serve no HTTP API and never
+        consult this.
+        """
         ...
 
     def validate(self, config: Any) -> None:

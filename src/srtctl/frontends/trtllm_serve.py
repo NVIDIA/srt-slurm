@@ -14,7 +14,7 @@ the context (prefill) and generation (decode) server URLs.
 import logging
 import shlex
 import threading
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import yaml
 
@@ -40,10 +40,16 @@ class TRTLLMServeFrontend:
     """
 
     required_backend: ClassVar[str | None] = "trtllm"
+    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
+    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def type(self) -> str:
         return "trtllm_serve"
+
+    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
+        """The aggregate worker is the endpoint; P/D workers sit behind the disaggregated orchestrator."""
+        return "public" if mode == "agg" else "allocated"
 
     def validate(self, config: Any) -> None:
         """One direct aggregate worker or one disaggregated orchestrator; either way one public endpoint."""

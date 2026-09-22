@@ -1151,8 +1151,9 @@ class ProfilingConfig:
 
         Args:
             output_file: Path for nsys output file (without extension)
-            frontend_type: Frontend type (e.g., "dynamo", "sglang"). When set to "dynamo"
-                with a non-trtllm backend, adds --trace-fork-before-exec=true.
+            frontend_type: Frontend type (e.g., "dynamo", "sglang"). For a frontend whose
+                workers are Dynamo processes (``worker_launch == "dynamo"``) with a
+                non-trtllm backend, adds --trace-fork-before-exec=true.
             backend_type: Backend type (e.g., "trtllm", "sglang"). When set to "trtllm",
                 uses TRTLLM-specific nsys flags (ucx traces, --kill none, --wait all).
 
@@ -1167,7 +1168,10 @@ class ProfilingConfig:
 
         trace_fork_before_exec = self.trace_fork_before_exec
         if trace_fork_before_exec is None:
-            trace_fork_before_exec = frontend_type == "dynamo"
+            # Dynamo workers fork the engine after exec; direct servers do not.
+            from srtctl.frontends import get_frontend
+
+            trace_fork_before_exec = frontend_type is not None and get_frontend(frontend_type).worker_launch == "dynamo"
 
         # Time-based capture for non-TRTLLM backends (vllm, sglang).
         if self.is_nsys_time:

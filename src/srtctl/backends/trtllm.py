@@ -296,12 +296,16 @@ class TRTLLMProtocol:
     ) -> list[str]:
         """Build the command to start a TRTLLM worker process."""
 
+        from srtctl.frontends import get_frontend
+
         mode = process.endpoint_mode
         config = self.get_config_for_mode(mode)
+        # The frontend owns the worker shape; nothing below compares frontend names.
+        frontend = get_frontend(frontend_type)
 
         sidecar_config = get_dynamo_sidecar_config(runtime)
         if sidecar_config is not None:
-            if frontend_type != "dynamo":
+            if frontend.worker_launch != "dynamo":
                 raise ValueError("TensorRT-LLM sidecar mode requires frontend.type: dynamo")
             if mode != "agg":
                 raise ValueError("TensorRT-LLM sidecar mode supports aggregated workers only")
@@ -342,8 +346,8 @@ class TRTLLMProtocol:
         # worker is also the public frontend, so it binds runtime.frontend_port.
         # There is no Dynamo request plane and no --disaggregation-mode: a disagg
         # worker is prefill or decode purely by which list it appears in in ser.yaml.
-        if frontend_type == "trtllm_serve":
-            http_port = runtime.frontend_port if mode == "agg" else process.http_port
+        if frontend.worker_launch == "direct":
+            http_port = runtime.frontend_port if frontend.worker_api_port(mode) == "public" else process.http_port
             cmd = base_prefix + [
                 "trtllm-serve",
                 model_arg,

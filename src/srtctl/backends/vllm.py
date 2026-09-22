@@ -907,8 +907,11 @@ class VLLMProtocol:
         For standard TP mode, creates one process per node.
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
+        from srtctl.frontends import get_frontend
 
-        if frontend_type == "vllm":
+        if get_frontend(frontend_type).worker_api_port("agg") == "public":
+            # The worker is the public endpoint: one `vllm serve` per node owns
+            # its local DP ranks, so the standard topology applies.
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         # Check if any endpoint uses DP mode
@@ -1123,9 +1126,16 @@ class VLLMProtocol:
             profiling: Profiling config; drives --profiler-config for iteration-based nsys
         """
         from srtctl.core.slurm import get_hostname_ip
+        from srtctl.frontends import get_frontend
 
         mode = process.endpoint_mode
         config = self.get_config_for_mode(mode)
+        # The frontend owns the worker shape: Dynamo registration versus a direct
+        # server, which port that server binds, and whether a router expands
+        # node-local DP pools. Nothing below compares frontend names.
+        frontend = get_frontend(frontend_type)
+        direct_workers = frontend.worker_launch == "direct"
+        binds_public_port = frontend.worker_api_port(mode) == "public"
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
@@ -1133,7 +1143,7 @@ class VLLMProtocol:
 
         # Native vLLM rendezvous must use the configured interface, including
         # native engines behind a Dynamo sidecar.
-        if frontend_type in {"vllm", "vllm-router"} or get_dynamo_sidecar_config(runtime) is not None:
+        if direct_workers or get_dynamo_sidecar_config(runtime) is not None:
             leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
         else:
             leader_ip = get_hostname_ip(endpoint_nodes[0])
@@ -1162,7 +1172,7 @@ class VLLMProtocol:
 
         sidecar_config = get_dynamo_sidecar_config(runtime)
         if sidecar_config is not None:
-            if frontend_type != "dynamo":
+            if frontend.worker_launch != "dynamo":
                 raise ValueError("vLLM sidecar mode requires frontend.type: dynamo")
             process_ip = get_hostname_ip(process.node, getattr(runtime, "network_interface", None))
             return self._build_sidecar_command(
@@ -1177,23 +1187,23 @@ class VLLMProtocol:
                 sidecar_config=sidecar_config,
             )
 
-        if frontend_type in {"vllm", "vllm-router"}:
-            if frontend_type == "vllm" and mode != "agg":
-                raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
+        if direct_workers:
+            if binds_public_port and mode != "agg":
+                raise ValueError(f"frontend.type: {frontend.type} supports aggregate vLLM jobs only")
 
             overridden = pop_vllm_orchestration_flags(config)
             config.setdefault("served-model-name", served_model_name)
 
-            if frontend_type == "vllm":
-                config.pop("connector", None)
-            else:
-                mode_connector = config.pop("connector", None)
-                connector = mode_connector if mode_connector is not None else self.connector
-                if mode in {"prefill", "decode"} and connector and connector not in ("null", "none", None):
-                    config.setdefault("kv-transfer-config", _connector_to_kv_transfer_config(connector))
+            # A prefill/decode worker gets its KV connector; an aggregate worker has none.
+            mode_connector = config.pop("connector", None)
+            connector = mode_connector if mode_connector is not None else self.connector
+            if mode in {"prefill", "decode"} and connector and connector not in ("null", "none", None):
+                config.setdefault("kv-transfer-config", _connector_to_kv_transfer_config(connector))
 
             node_rank = endpoint_nodes.index(process.node)
-            serve_binary = self.vllm_serve_binary if frontend_type == "vllm" else "vllm"
+            # The worker that is itself the public endpoint may run the alternate
+            # OpenAI frontend binary (vllm-rs); routed workers run vllm.
+            serve_binary = self.vllm_serve_binary if binds_public_port else "vllm"
             cmd.extend([serve_binary, "serve", model_arg])
             # Collected as the command is built so the override report below can
             # name the value srtslurm actually passed for each flag it took over.
@@ -1203,20 +1213,20 @@ class VLLMProtocol:
             local_gpu_count = len(process.gpu_indices)
             spans_nodes = replica_size > local_gpu_count
             is_router_local_dp = (
-                frontend_type == "vllm-router"
+                frontend.expands_node_local_dp
                 and is_multi_node
                 and is_dp_mode
                 and self.dp_launch_mode == "per_node"
                 and not spans_nodes
             )
 
-            if frontend_type == "vllm-router" and is_dp_mode and self.dp_launch_mode != "per_node":
+            if frontend.expands_node_local_dp and is_dp_mode and self.dp_launch_mode != "per_node":
                 raise ValueError(
-                    "frontend.type: vllm-router with data-parallel-size requires backend.dp_launch_mode: per_node"
+                    f"frontend.type: {frontend.type} with data-parallel-size requires backend.dp_launch_mode: per_node"
                 )
 
             if node_rank == 0 or is_router_local_dp:
-                api_port = runtime.frontend_port if frontend_type == "vllm" else process.http_port
+                api_port = runtime.frontend_port if binds_public_port else process.http_port
                 cmd.extend(["--host", "0.0.0.0", "--port", str(api_port)])
                 srtslurm_owned["host"] = "0.0.0.0"
                 srtslurm_owned["port"] = str(api_port)
@@ -1261,7 +1271,7 @@ class VLLMProtocol:
                 srtslurm_owned["master-addr"] = leader_ip
                 srtslurm_owned["nnodes"] = str(len(endpoint_nodes))
                 srtslurm_owned["node-rank"] = str(node_rank)
-                if frontend_type == "vllm-router" and is_dp_mode:
+                if frontend.expands_node_local_dp and is_dp_mode:
                     for key in list(config):
                         if normalize_vllm_config_key(key) in {
                             "data-parallel-address",

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.health import WorkerHealthResult
 from srtctl.frontends.base import register_frontend
@@ -35,10 +35,17 @@ class SGLangFrontend:
     """
 
     required_backend: ClassVar[str | None] = "sglang"
+    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
+    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def type(self) -> str:
         return "sglang"
+
+    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
+        """The one ``sglang.launch_server`` is the endpoint, so it binds the public port."""
+        del mode
+        return "public"
 
     def validate(self, config: Any) -> None:
         """One aggregate ``sglang.launch_server`` owns the public port.

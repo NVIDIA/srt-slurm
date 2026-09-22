@@ -311,12 +311,15 @@ class SGLangProtocol:
             dump_config_path: Path to dump config JSON
         """
         from srtctl.core.slurm import get_hostname_ip
+        from srtctl.frontends import get_frontend
 
         mode = process.endpoint_mode
+        # The frontend owns the worker shape; nothing below compares frontend names.
+        frontend = get_frontend(frontend_type)
 
         sidecar_config = get_dynamo_sidecar_config(runtime)
         if sidecar_config is not None:
-            if frontend_type != "dynamo":
+            if frontend.worker_launch != "dynamo":
                 raise ValueError("SGLang sidecar mode requires frontend.type: dynamo")
             return self._build_sidecar_command(
                 process=process,
@@ -348,8 +351,8 @@ class SGLangProtocol:
         leader_ip = get_hostname_ip(endpoint_nodes[0])
         dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
-        # Choose Python module based on frontend type
-        use_sglang = frontend_type in ("sglang", "sglang-router")
+        # Direct frontends run the native server; Dynamo frontends run the registering worker.
+        use_sglang = frontend.worker_launch == "direct"
         python_module = "sglang.launch_server" if use_sglang else "dynamo.sglang"
 
         # Get served model name from config
@@ -378,9 +381,9 @@ class SGLangProtocol:
         )
 
         # Always pass --port when using sglang.launch_server or dynamo.sglang.
-        # Direct mode (frontend.type: sglang): the single aggregate worker is the
-        # public endpoint, so it binds the frontend port instead of its own.
-        api_port = runtime.frontend_port if frontend_type == "sglang" and mode == "agg" else process.http_port
+        # A worker that is itself the public endpoint (frontend.type: sglang)
+        # binds the frontend port instead of its own.
+        api_port = runtime.frontend_port if frontend.worker_api_port(mode) == "public" else process.http_port
         cmd.extend(["--port", str(api_port)])
         cmd.extend(["--nccl-port", str(nccl_port)])
 

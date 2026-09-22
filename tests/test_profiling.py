@@ -77,10 +77,10 @@ class TestProfilingConfig:
         assert "profile" in prefix
         assert "/output/test" in prefix
 
-        # Dynamo frontend requires trace-fork-before-exec, sglangrouter does not.
+        # Dynamo frontend requires trace-fork-before-exec, sglang-router does not.
         prefix_dynamo = profiling.get_nsys_prefix("/output/test", frontend_type="dynamo")
         assert "--trace-fork-before-exec=true" in prefix_dynamo
-        prefix_router = profiling.get_nsys_prefix("/output/test", frontend_type="sglangrouter")
+        prefix_router = profiling.get_nsys_prefix("/output/test", frontend_type="sglang-router")
         assert "--trace-fork-before-exec=true" not in prefix_router
 
     def test_nsys_profiling_with_extra_args(self):
@@ -194,8 +194,8 @@ class TestProfilingConfig:
         # Output file is the last token (-o <output>).
         assert prefix[-1] == "/out/w0"
 
-        # sglangrouter / non-dynamo frontend omits the fork flag.
-        prefix_router = profiling.get_nsys_prefix("/out/w0", frontend_type="sglangrouter", backend_type="vllm")
+        # sglang-router / non-dynamo frontend omits the fork flag.
+        prefix_router = profiling.get_nsys_prefix("/out/w0", frontend_type="sglang-router", backend_type="vllm")
         assert "--trace-fork-before-exec=true" not in prefix_router
 
     def test_nsys_binary_override(self, monkeypatch):

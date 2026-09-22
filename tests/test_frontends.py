@@ -82,6 +82,26 @@ class TestFrontendRegistry:
             assert hasattr(frontend, "required_backend")
             assert callable(frontend.validate)
 
+    @pytest.mark.parametrize(
+        ("frontend_type", "launch", "agg_port", "pd_port", "expands"),
+        [
+            ("dynamo", "dynamo", "allocated", "allocated", False),
+            ("sglang", "direct", "public", "public", False),
+            ("sglang-router", "direct", "allocated", "allocated", False),
+            ("trtllm_serve", "direct", "public", "allocated", False),
+            ("vllm", "direct", "public", "public", False),
+            ("vllm-router", "direct", "allocated", "allocated", True),
+        ],
+    )
+    def test_worker_shape_contract(self, frontend_type, launch, agg_port, pd_port, expands):
+        """Backends read these instead of comparing frontend names."""
+        frontend = get_frontend(frontend_type)
+        assert frontend.worker_launch == launch
+        assert frontend.worker_api_port("agg") == agg_port
+        assert frontend.worker_api_port("prefill") == pd_port
+        assert frontend.worker_api_port("decode") == pd_port
+        assert frontend.expands_node_local_dp is expands
+
     def test_register_frontend_makes_a_type_resolvable(self, monkeypatch):
         from srtctl.frontends import base
 
@@ -90,6 +110,8 @@ class TestFrontendRegistry:
         @register_frontend("toy-router")
         class ToyRouter:
             required_backend = "vllm"
+            worker_launch = "direct"
+            expands_node_local_dp = False
 
             @property
             def type(self) -> str:
@@ -97,6 +119,10 @@ class TestFrontendRegistry:
 
             def validate(self, config) -> None:
                 del config
+
+            def worker_api_port(self, mode: str) -> str:
+                del mode
+                return "allocated"
 
         assert isinstance(get_frontend("toy-router"), ToyRouter)
         assert "toy-router" in list_frontend_types()

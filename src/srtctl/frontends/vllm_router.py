@@ -53,6 +53,8 @@ class VLLMRouterFrontend(StaticRouterFrontend):
 
     type: ClassVar[str] = "vllm-router"
     required_backend: ClassVar[str | None] = "vllm"
+    # Router expands each node-local hybrid-LB pool into its DP ranks itself.
+    expands_node_local_dp: ClassVar[bool] = True
     executable: ClassVar[tuple[str, ...]] = ("vllm-router",)
     pd_flag: ClassVar[str] = "--vllm-pd-disaggregation"
     process_name: ClassVar[str] = "vllm_router"

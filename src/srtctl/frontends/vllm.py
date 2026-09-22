@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.health import WorkerHealthResult
 from srtctl.frontends.base import register_frontend
@@ -36,10 +36,17 @@ class VLLMFrontend:
     """
 
     required_backend: ClassVar[str | None] = "vllm"
+    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
+    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def type(self) -> str:
         return "vllm"
+
+    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
+        """The one ``vllm serve`` is the endpoint, so it binds the public port in every mode it runs."""
+        del mode
+        return "public"
 
     def validate(self, config: Any) -> None:
         """The one aggregate ``vllm serve`` owns the public port: no nginx fan-out, no P/D, one worker."""

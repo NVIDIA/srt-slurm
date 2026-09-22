@@ -9,7 +9,7 @@ import logging
 import shlex
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.health import WorkerHealthResult, check_static_router_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
@@ -45,6 +45,9 @@ class StaticRouterFrontend:
     process_name: ClassVar[str]
     log_label: ClassVar[str | None] = None
     allow_empty_workers: ClassVar[bool] = False
+    # Workers are the engines' own servers, each on its allocated HTTP port.
+    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
+    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def health_endpoint(self) -> str:
@@ -53,6 +56,11 @@ class StaticRouterFrontend:
     def validate(self, config: Any) -> None:
         """Recipe-level rules beyond the backend pairing; none by default."""
         del config
+
+    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
+        """A routed worker binds its own allocated port; the router owns the public one."""
+        del mode
+        return "allocated"
 
     def parse_health(
         self,

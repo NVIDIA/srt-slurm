@@ -10,7 +10,7 @@ Uses NATS/etcd for communication between frontend and backend workers.
 import logging
 import shlex
 import threading
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import yaml
 
@@ -43,6 +43,8 @@ class DynamoFrontend:
     # Dynamo fronts every engine; the dynamo.* rules (sidecar, failover,
     # worker_selection) are dynamo-config validations and stay in the schema.
     required_backend: ClassVar[str | None] = None
+    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "dynamo"
+    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def type(self) -> str:
@@ -50,6 +52,11 @@ class DynamoFrontend:
 
     def validate(self, config: Any) -> None:
         del config
+
+    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
+        """Dynamo workers register over the request plane; they bind no OpenAI port."""
+        del mode
+        return "allocated"
 
     @property
     def health_endpoint(self) -> str:
