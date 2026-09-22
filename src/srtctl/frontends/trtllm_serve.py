@@ -20,7 +20,12 @@ import yaml
 
 from srtctl.core.health import WorkerHealthResult, probe_http_ok, wait_for_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
-from srtctl.frontends.base import frontend_args_to_cli, logical_health_expectations, register_frontend
+from srtctl.frontends.base import (
+    frontend_args_to_cli,
+    logical_health_expectations,
+    numactl_prefix,
+    register_frontend,
+)
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -220,6 +225,7 @@ class TRTLLMServeFrontend:
 
         cmd = ["trtllm-serve", "disaggregated", "--config", container_ser_path]
         cmd.extend(frontend_args_to_cli(config.frontend.args))
+        cmd = numactl_prefix(config) + cmd
         logger.info("Orchestrator command: %s", shlex.join(cmd))
 
         env_to_set: dict[str, str] = {}

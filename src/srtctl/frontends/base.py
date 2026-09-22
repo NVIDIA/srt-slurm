@@ -207,6 +207,13 @@ def frontend_args_to_cli(args: dict[str, Any] | None) -> list[str]:
     return result
 
 
+def numactl_prefix(config: Any) -> list[str]:
+    """``["numactl", "--cpunodebind=0", "--membind=0"]`` when ``frontend.numa_bind`` is set, else ``[]``."""
+    if getattr(config.frontend, "numa_bind", False):
+        return ["numactl", "--cpunodebind=0", "--membind=0"]
+    return []
+
+
 def logical_health_expectations(config: Any) -> tuple[int, int, str]:
     """Expected counts in logical workers: aggregate workers count as decode."""
     r = config.resources

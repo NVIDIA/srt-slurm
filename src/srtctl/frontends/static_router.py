@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.health import WorkerHealthResult, check_static_router_health, probe_json_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
-from srtctl.frontends.base import logical_health_expectations
+from srtctl.frontends.base import logical_health_expectations, numactl_prefix
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -250,6 +250,7 @@ class StaticRouterFrontend:
             cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port)
             cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
+            cmd = numactl_prefix(config) + cmd
             logger.info("Starting %s %d on %s: %s", self.type, idx, node, shlex.join(cmd))
 
             container_image = getattr(config.frontend, "container_image", None) or str(runtime.container_image)

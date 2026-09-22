@@ -2132,6 +2132,10 @@ class FrontendConfig:
         env: Environment variables for frontend processes
         container_image: Optional router-specific image. Static routers use the
             model/backend image when omitted.
+        numa_bind: Prefix the frontend process command with
+            ``numactl --cpunodebind=0 --membind=0``. Off by default. Has no
+            effect on direct frontends (``sglang``, ``vllm``, aggregate
+            ``trtllm_serve``) that launch no separate frontend process.
     """
 
     type: str = "dynamo"
@@ -2146,6 +2150,7 @@ class FrontendConfig:
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
     container_image: str | None = None
+    numa_bind: bool = False
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router

@@ -19,7 +19,7 @@ from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
-from srtctl.frontends.base import logical_health_expectations, register_frontend
+from srtctl.frontends.base import logical_health_expectations, numactl_prefix, register_frontend
 from srtctl.frontends.dynamic_frontend import DynamicFrontend
 from srtctl.services.config import ServiceConfig
 from srtctl.services.implicit import (
@@ -235,6 +235,8 @@ class DynamoFrontend(DynamicFrontend):
                     frontend=True,
                 )
                 logger.info("Observability: nsys on frontend %d and all worker ranks", idx)
+
+            cmd = numactl_prefix(config) + cmd
 
             env_to_set = {
                 **discovery_env(config, runtime),

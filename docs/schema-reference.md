@@ -128,6 +128,7 @@ Frontend/router configuration.
 | `args` | dict[str, Any] \| None | `None` | CLI arguments passed to the frontend/router process |
 | `env` | dict[str, str] \| None | `None` | Environment variables for frontend processes |
 | `container_image` | str \| None | `None` | Optional router-specific image. Static routers use the model/backend image when omitted. |
+| `numa_bind` | bool | `False` | Prefix the frontend process command with ``numactl --cpunodebind=0 --membind=0``. Off by default. Has no effect on direct frontends (``sglang``, ``vllm``, aggregate ``trtllm_serve``) that launch no separate frontend process. |
 | `ctx_router` | dict[str, Any] \| None | `None` | trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends. |
 | `gen_router` | dict[str, Any] \| None | `None` | generation_servers.router |
 | `server_config_extra` | dict[str, Any] \| None | `None` | extra top-level ser.yaml keys |

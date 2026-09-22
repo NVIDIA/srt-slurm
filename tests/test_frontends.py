@@ -422,6 +422,7 @@ class MockFrontendConfig:
     type: str = "sglang"
     args: dict | None = None
     env: dict | None = None
+    numa_bind: bool = False
 
 
 @dataclass
@@ -726,6 +727,88 @@ class TestFrontendEnvHandling:
         assert "--policy" in cmd
         assert "cache_aware" in cmd
         assert "--verbose" in cmd
+
+
+class TestNumaBind:
+    """frontend.numa_bind prefixes the frontend process command with numactl."""
+
+    @patch("srtctl.frontends.sglang.start_srun_process")
+    @patch("srtctl.frontends.sglang.get_hostname_ip")
+    def test_static_router_prefixed_when_enabled(self, mock_get_ip, mock_srun):
+        mock_get_ip.return_value = "10.0.0.1"
+        mock_srun.return_value = MagicMock()
+
+        frontend = SGLangRouterFrontend()
+        topology = MockTopology(frontend_nodes=["node0"])
+        config = MockConfig(
+            frontend=MockFrontendConfig(numa_bind=True),
+            resources=MockResourceConfig(num_agg=1),
+        )
+        backend = MagicMock()
+        backend.is_grpc_mode.return_value = False
+        runtime = MagicMock()
+        runtime.log_dir = MagicMock()
+        runtime.log_dir.__truediv__ = lambda self, x: f"/logs/{x}"
+        runtime.container_image = "/container.sqsh"
+        runtime.container_mounts = {}
+        processes = [MockProcess(node="node1", endpoint_mode="agg", http_port=30000)]
+
+        frontend.start_frontends(topology, runtime, config, backend, processes)
+
+        cmd = mock_srun.call_args.kwargs["command"]
+        assert cmd[:3] == ["numactl", "--cpunodebind=0", "--membind=0"]
+
+    @patch("srtctl.frontends.sglang.start_srun_process")
+    @patch("srtctl.frontends.sglang.get_hostname_ip")
+    def test_static_router_not_prefixed_by_default(self, mock_get_ip, mock_srun):
+        mock_get_ip.return_value = "10.0.0.1"
+        mock_srun.return_value = MagicMock()
+
+        frontend = SGLangRouterFrontend()
+        topology = MockTopology(frontend_nodes=["node0"])
+        config = MockConfig(
+            frontend=MockFrontendConfig(),
+            resources=MockResourceConfig(num_agg=1),
+        )
+        backend = MagicMock()
+        backend.is_grpc_mode.return_value = False
+        runtime = MagicMock()
+        runtime.log_dir = MagicMock()
+        runtime.log_dir.__truediv__ = lambda self, x: f"/logs/{x}"
+        runtime.container_image = "/container.sqsh"
+        runtime.container_mounts = {}
+        processes = [MockProcess(node="node1", endpoint_mode="agg", http_port=30000)]
+
+        frontend.start_frontends(topology, runtime, config, backend, processes)
+
+        cmd = mock_srun.call_args.kwargs["command"]
+        assert "numactl" not in cmd
+
+    def test_dynamo_frontend_prefixed_when_enabled(self):
+        frontend = DynamoFrontend()
+        topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+        runtime = SimpleNamespace(
+            log_dir=Path("/logs"),
+            nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
+            container_image=Path("/container.sqsh"),
+            container_mounts={},
+            environment={},
+        )
+        config = SimpleNamespace(
+            frontend=SimpleNamespace(args=None, env=None, worker_selection=None, numa_bind=True),
+            observability=ObservabilityConfig(),
+            dynamo=SimpleNamespace(
+                install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None
+            ),
+            setup_script=None,
+        )
+        with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
+            mock_srun.return_value = MagicMock()
+            frontend.start_frontends(topology, runtime, config, MagicMock(), [])
+
+        cmd = mock_srun.call_args.kwargs["command"]
+        assert cmd[:3] == ["numactl", "--cpunodebind=0", "--membind=0"]
+        assert "dynamo.frontend" in cmd
 
 
 # ============================================================================
