@@ -146,4 +146,6 @@ benchmark:
   random_range_ratio: 1.0
   num_prompts_mult: 10
   num_warmup_mult: 1
+  custom_tokenizer: sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer
+  use_chat_template: true
   reuse_http_connections: true
