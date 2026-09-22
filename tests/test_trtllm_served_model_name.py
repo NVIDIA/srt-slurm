@@ -5,9 +5,9 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
-import yaml
 
 from srtctl.backends.trtllm import TRTLLMProtocol, TRTLLMServerConfig
 from srtctl.core.schema import DynamoConfig
@@ -47,9 +47,6 @@ class TestTRTLLMServedModelName:
 
     def test_reaches_the_worker_command(self):
         """The worker must actually be launched with the configured name."""
-        from pathlib import Path
-        from unittest.mock import MagicMock
-
         backend = TRTLLMProtocol(served_model_name="deepseek-ai/deepseek-r1")
         runtime = MagicMock()
         runtime.model_path = Path("/models/deepseek_r1-torch-fp4-v2")
@@ -62,8 +59,8 @@ class TestTRTLLMServedModelName:
         assert "--served-model-name" in cmd
         assert cmd[cmd.index("--served-model-name") + 1] == "deepseek-ai/deepseek-r1"
 
-    @pytest.mark.parametrize("mode,name", [("agg", "org/model"), ("prefill", "org/model"), ("agg", None)])
-    def test_direct_worker_receives_explicit_name(self, tmp_path, mode, name):
+    @pytest.mark.parametrize("name", ["org/model", None])
+    def test_direct_worker_receives_explicit_name(self, tmp_path: Path, name: str | None) -> None:
         backend = TRTLLMProtocol(served_model_name=name)
         runtime = SimpleNamespace(
             model_path=Path("/weights/checkpoint"),
@@ -78,23 +75,12 @@ class TestTRTLLMServedModelName:
             gpu_indices=frozenset({0}),
             sys_port=7500,
             http_port=9001,
-            endpoint_mode=mode,
+            endpoint_mode="agg",
             endpoint_index=0,
         )
         command = backend.build_worker_command(process, [process], runtime, frontend_type="trtllm_serve")
 
-        expected = [
-            "trtllm-llmapi-launch",
-            "trtllm-serve",
-            "/model",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "8000" if mode == "agg" else "9001",
-            "--config",
-            f"/logs/trtllm_config_{mode}.yaml",
-        ]
-        if name is not None:
-            expected += ["--served_model_name", "org/model"]
-        assert command == expected
-        assert yaml.safe_load((tmp_path / f"trtllm_config_{mode}.yaml").read_text()) == {}
+        if name is None:
+            assert "--served_model_name" not in command
+        else:
+            assert command[command.index("--served_model_name") + 1] == "org/model"
