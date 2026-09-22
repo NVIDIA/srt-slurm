@@ -41,19 +41,13 @@ services:
   - name: etcd
     type: etcd
     placement:
-      node: infra
-  - name: nats
-    type: nats
-    placement:
-      node: infra
-    options:
-      max_payload_mb: 32
+      node: dedicated
   - name: mooncake-master
     type: mooncake-master
     options:
       store_config:
         metadata_server: "P2PHANDSHAKE"
-        global_segment_size: "180GB"
+        global_segment_size: "140GB"
         local_buffer_size: "4GB"
         protocol: "rdma"
         device_name: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"
@@ -62,9 +56,12 @@ services:
 environment:
   # Mooncake prefix-block hashes must match across processes and nodes.
   PYTHONHASHSEED: "0"
+  WITH_NVIDIA_PEERMEM: "0"
 
 frontend:
   type: dynamo
+  placement:
+    node: dedicated
   enable_multiple_frontends: false
   env:
     ETCD_LEASE_TTL: '120'
@@ -100,10 +97,12 @@ roles:
       VLLM_ENGINE_READY_TIMEOUT_S: "3600"
       VLLM_RPC_TIMEOUT: "600000"
       VLLM_LOG_STATS_INTERVAL: "1"
+      VLLM_FLOAT32_MATMUL_PRECISION: "high"
       VLLM_V2_WARMUP_MAX_NUM_SEQS: "20"
       VLLM_SERVER_DEV_MODE: "1"
       VLLM_USE_V2_MODEL_RUNNER: "1"
       VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+      VLLM_MOONCAKE_STORE_SEND_THREADS: "8"
       VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
       UCX_MEMTYPE_CACHE: "n"
       UCX_NET_DEVICES: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1"
@@ -115,16 +114,19 @@ roles:
       VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
       VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
       VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
-      VLLM_CONNECTOR_PREFETCH_DEPTH: "8"
+      VLLM_CONNECTOR_PREFETCH_DEPTH: "0"
       VLLM_DSV4_MEGA_FP8_COMBINE: "1"
-      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep4-dep8-c256-{job_id}"
+      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep4-prefill-c256-{job_id}"
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_SLICE_SIZE: "1048576"
+      MC_WORKERS_PER_CTX: "4"
       MC_STORE_CLIENT_METRIC: "1"
       MC_STORE_CLIENT_METRIC_INTERVAL: "5"
       MC_TE_METRIC: "0"
     args:
       kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"lookup_async":true,"enable_cross_layers_blocks":false,"enable_offload":false}}]}}'
       served-model-name: "DeepSeek-V4-Pro-0813"
+      safetensors-load-strategy: "lazy"
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 1
       pipeline-parallel-size: 1
@@ -135,17 +137,16 @@ roles:
       enable-ep-weight-filter: true
       max-model-len: 1048576
       max-num-seqs: 64
-      max-num-batched-tokens: 8192
+      max-num-batched-tokens: 16384
       long-prefill-token-threshold: 1024
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      max-cudagraph-capture-size: 256
-      gpu-memory-utilization: 0.92
+      gpu-memory-utilization: 0.90
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
-      speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
+      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
       numa-bind-nodes: [0, 0, 1, 1]
@@ -161,7 +162,8 @@ roles:
       VLLM_ENGINE_READY_TIMEOUT_S: "3600"
       VLLM_RPC_TIMEOUT: "600000"
       VLLM_LOG_STATS_INTERVAL: "1"
-      VLLM_V2_WARMUP_MAX_NUM_SEQS: "20"
+      VLLM_FLOAT32_MATMUL_PRECISION: "high"
+      VLLM_V2_WARMUP_MAX_NUM_SEQS: "64"
       VLLM_SERVER_DEV_MODE: "1"
       VLLM_USE_V2_MODEL_RUNNER: "1"
       VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
@@ -174,10 +176,12 @@ roles:
       NCCL_NVLS_ENABLE: "1"
       NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"
       VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
-      VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
+      VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "0"
       VLLM_DSV4_MEGA_FP8_COMBINE: "1"
-      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep4-dep8-c256-{job_id}"
+      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep8-decode-c256-{job_id}"
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_SLICE_SIZE: "1048576"
+      MC_WORKERS_PER_CTX: "4"
       MC_STORE_CLIENT_METRIC: "1"
       MC_STORE_CLIENT_METRIC_INTERVAL: "5"
       MC_TE_METRIC: "0"
@@ -185,6 +189,7 @@ roles:
     args:
       kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"load_async":true,"lookup_async":false,"enable_lookup":false,"enable_cross_layers_blocks":false,"enable_offload":false}}]}}'
       served-model-name: "DeepSeek-V4-Pro-0813"
+      safetensors-load-strategy: "lazy"
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 1
       pipeline-parallel-size: 1
@@ -194,27 +199,28 @@ roles:
       enable-expert-parallel: true
       enable-ep-weight-filter: true
       max-model-len: 1048576
-      max-num-seqs: 256
-      max-num-batched-tokens: 1024
+      max-num-seqs: 64
+      max-num-batched-tokens: 448
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","mode":0}'
-      max-cudagraph-capture-size: 1024
-      gpu-memory-utilization: 0.92
-      stream-interval: 32
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224,231,238,245,252,259,266,273,280,287,294,301,308,315,322,329,336,343,350,357,364,371,378,385,392,399,406,413,420,427,434,441,448],"mode":0}'
+      max-cudagraph-capture-size: 448
+      gpu-memory-utilization: 0.90
+      stream-interval: 10
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
-      speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
+      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
       numa-bind-nodes: [0, 0, 1, 1]
 sbatch_directives:
-  cpus-per-task: "72"
+  mem: "0"
 
 srun_options:
   container-remap-root: ""
+  cpu-bind: "none"
 
 benchmark:
   type: custom

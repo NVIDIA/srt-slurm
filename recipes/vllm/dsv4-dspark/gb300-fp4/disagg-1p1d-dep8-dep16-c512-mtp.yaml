@@ -107,6 +107,7 @@ roles:
       VLLM_ENGINE_READY_TIMEOUT_S: "3600"
       VLLM_RPC_TIMEOUT: "600000"
       VLLM_LOG_STATS_INTERVAL: "1"
+      VLLM_FLOAT32_MATMUL_PRECISION: "high"
       VLLM_V2_WARMUP_MAX_NUM_SEQS: "20"
       VLLM_SERVER_DEV_MODE: "1"
       VLLM_USE_V2_MODEL_RUNNER: "1"
@@ -127,6 +128,8 @@ roles:
       VLLM_DSV4_MEGA_FP8_COMBINE: "1"
       DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep8-prefill-c256-{job_id}"
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_SLICE_SIZE: "1048576"
+      MC_WORKERS_PER_CTX: "4"
       MC_STORE_CLIENT_METRIC: "1"
       MC_STORE_CLIENT_METRIC_INTERVAL: "5"
       MC_TE_METRIC: "0"
@@ -169,6 +172,7 @@ roles:
       VLLM_ENGINE_READY_TIMEOUT_S: "3600"
       VLLM_RPC_TIMEOUT: "600000"
       VLLM_LOG_STATS_INTERVAL: "1"
+      VLLM_FLOAT32_MATMUL_PRECISION: "high"
       VLLM_V2_WARMUP_MAX_NUM_SEQS: "32"
       VLLM_SERVER_DEV_MODE: "1"
       VLLM_USE_V2_MODEL_RUNNER: "1"
@@ -186,6 +190,8 @@ roles:
       VLLM_DSV4_MEGA_FP8_COMBINE: "1"
       DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep16-decode-c256-{job_id}"
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_SLICE_SIZE: "1048576"
+      MC_WORKERS_PER_CTX: "4"
       MC_STORE_CLIENT_METRIC: "1"
       MC_STORE_CLIENT_METRIC_INTERVAL: "5"
       MC_TE_METRIC: "0"
@@ -221,7 +227,6 @@ roles:
       numa-bind-nodes: [0, 0, 1, 1]
 
 sbatch_directives:
-  cpus-per-task: "144"
   mem: "0"
 
 srun_options:
