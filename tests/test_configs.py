@@ -4211,28 +4211,48 @@ class TestHuggingFaceModelSupport:
 
         assert cmd[:3] == ["numactl", "-m", "0,1"]
 
-    def test_trtllm_numa_cpu_bind_wraps_decode_command_with_taskset(self):
-        """numa_cpu_bind=True wraps decode commands with configs/numa_cpu_bind.sh."""
+    @pytest.mark.parametrize(
+        ("memory_bind", "gpu_type", "mode", "bind_memory", "frontend_type"),
+        [
+            (None, "gb200", "decode", True, "dynamo"),
+            (None, "gb300", "prefill", True, "trtllm_serve"),
+            (None, "h100", "decode", False, "dynamo"),
+            (None, "gb200", "agg", False, "dynamo"),
+            (True, "h100", "agg", True, "trtllm_serve"),
+            (False, "gb200", "decode", False, "dynamo"),
+        ],
+    )
+    def test_trtllm_numa_cpu_bind_selects_memory_policy(self, memory_bind, gpu_type, mode, bind_memory, frontend_type):
+        """Resolve memory policy once; no inner numactl may override the wrapper."""
         from pathlib import Path
         from unittest.mock import patch
 
         from srtctl.backends import TRTLLMProtocol
 
-        backend = TRTLLMProtocol(numa_cpu_bind=True)
-        process = self._make_process(mode="decode")
+        backend = TRTLLMProtocol(numa_cpu_bind=True, numa_memory_bind=memory_bind)
+        process = self._make_process(mode=mode)
         runtime = self._make_runtime(is_hf=False)
         runtime.log_dir = Path("/tmp/test-logs")
-        runtime.gpu_type = "gb200"
+        runtime.gpu_type = gpu_type
 
         with (
             patch("pathlib.Path.write_text"),
             patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
         ):
-            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type=frontend_type,
+                nsys_prefix=["nsys", "profile"],
+            )
 
-        # the wrapped command follows the script invocation, unmodified
-        assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
-        assert cmd[2:6] == ["numactl", "-m", "0,1", "trtllm-llmapi-launch"]
+        prefix = ["bash", "/configs/numa_cpu_bind.sh"]
+        if bind_memory:
+            prefix.append("--bind-memory")
+        prefix.extend(["nsys", "profile", "trtllm-llmapi-launch"])
+        assert cmd[: len(prefix)] == prefix
+        assert "numactl" not in cmd
 
         env = backend.get_environment_for_mode("decode")
         assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"

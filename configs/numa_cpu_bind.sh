@@ -8,6 +8,8 @@ set -euo pipefail
 # secondary threads spawned by Python/UCX/MPI/TRT-LLM inherit the mask too —
 # TRT-LLM's own internal affinity logic only pins the leader thread, leaving
 # the rest to land cross-socket.
+# With --bind-memory, also restrict allocations to the GPU's NUMA node.
+# Local memory exhaustion can fail allocations; existing/shared pages are not migrated.
 #
 # CPU range is discovered at runtime from the physical GPU this task owns,
 # rather than a static SLURM_LOCALID -> cpu_range table. A static table
@@ -18,6 +20,12 @@ set -euo pipefail
 # CPUs. Resolving via the actual GPU (CUDA_VISIBLE_DEVICES[LOCALID] when
 # set, else LOCALID itself for a full-node endpoint) sidesteps that.
 : "${SLURM_LOCALID:?SLURM_LOCALID is required}"
+
+bind_memory=false
+if [[ "${1:-}" == "--bind-memory" ]]; then
+    shift
+    bind_memory=true
+fi
 
 if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     IFS=',' read -ra visible_gpus <<< "${CUDA_VISIBLE_DEVICES}"
@@ -40,12 +48,21 @@ sysfs_addr="$(printf '%04x:%s' "0x${domain}" "${rest}" | tr '[:upper:]' '[:lower
 
 numa_node="$(cat "/sys/bus/pci/devices/${sysfs_addr}/numa_node" 2>/dev/null || echo -1)"
 
-if [[ "${numa_node}" -lt 0 ]]; then
-    echo "numa_cpu_bind.sh: GPU ${physical_gpu} (${sysfs_addr}) reports no NUMA affinity (numa_node=${numa_node}); running unbound" >&2
+if [[ ! "${numa_node}" =~ ^[0-9]+$ ]]; then
+    if [[ "${bind_memory}" == true ]]; then
+        echo "numa_cpu_bind.sh: cannot bind memory: GPU ${physical_gpu} (${sysfs_addr}) has no valid NUMA node (${numa_node})" >&2
+        exit 2
+    fi
+    echo "numa_cpu_bind.sh: GPU ${physical_gpu} (${sysfs_addr}) reports no NUMA affinity (numa_node=${numa_node}); running without CPU binding" >&2
     exec "$@"
 fi
 
 cpu_list="$(cat "/sys/devices/system/node/node${numa_node}/cpulist")"
 
-echo "numa_cpu_bind.sh: SLURM_LOCALID=${SLURM_LOCALID} gpu=${physical_gpu} (${sysfs_addr}) numa_node=${numa_node} bound to cpus=${cpu_list}" >&2
-exec taskset -c "${cpu_list}" "$@"
+memory_prefix=()
+if [[ "${bind_memory}" == true ]]; then
+    memory_prefix=(numactl --membind="${numa_node}")
+fi
+
+echo "numa_cpu_bind.sh: SLURM_LOCALID=${SLURM_LOCALID} gpu=${physical_gpu} (${sysfs_addr}) numa_node=${numa_node} bound to cpus=${cpu_list} memory_policy=${memory_prefix[*]:-inherited}" >&2
+exec "${memory_prefix[@]}" taskset -c "${cpu_list}" "$@"
