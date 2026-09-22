@@ -20,7 +20,6 @@ from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
-from srtctl.ports import DYN_SYSTEM_PORT_BASE, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, TRTLLM_DIST_INIT_PORT_BASE
 from srtctl.services.implicit import discovery_env
 
 if TYPE_CHECKING:
@@ -159,15 +158,11 @@ class WorkerStageMixin:
             leader_host = get_hostname_ip(leader.node, self.runtime.network_interface)
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_HOST", leader_host)
 
-        if leader.kv_events_port is None:
+        if leader.kvbm_zmq_port is None:
             return
 
-        port_offset = max(0, leader.kv_events_port - KV_EVENTS_PORT_BASE)
-        pub_port = KVBM_ZMQ_PORT_BASE + (port_offset * 2)
-        ack_port = pub_port + 1
-        if ack_port <= 65535:
-            env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(pub_port))
-            env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(ack_port))
+        env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(leader.kvbm_zmq_port))
+        env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(leader.kvbm_zmq_port + 1))
 
     def _get_worker_environment_for_mode(self, mode: str) -> dict[str, str]:
         """Return mode environment with engine-specific defaults the recipe can override."""
@@ -506,13 +501,11 @@ class WorkerStageMixin:
         # Add config environment variables
         env_to_set.update(self.runtime.environment)
 
-        if self.backend.type == "trtllm":
+        if self.backend.type == "trtllm" and leader.trtllm_dist_init_port is not None:
             # Enroot may infer rank 0 from the sorted step nodelist, which
             # differs from our rank order for workers sharing a partial node.
             env_to_set.setdefault("MASTER_ADDR", get_hostname_ip(leader.node, self.runtime.network_interface))
-            env_to_set.setdefault(
-                "MASTER_PORT", str(TRTLLM_DIST_INIT_PORT_BASE + leader.sys_port - DYN_SYSTEM_PORT_BASE)
-            )
+            env_to_set.setdefault("MASTER_PORT", str(leader.trtllm_dist_init_port))
 
         # Native TRT-LLM KV-event subscribers need routable publisher hosts for
         # multi-node endpoints.  Dynamo can otherwise fall back to

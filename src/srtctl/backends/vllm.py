@@ -14,7 +14,7 @@ import builtins
 import json
 import logging
 from collections.abc import Sequence
-from dataclasses import field
+from dataclasses import field, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -28,14 +28,21 @@ from marshmallow_dataclass import dataclass
 
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
+    BOOTSTRAP_PORTS,
+    DP_RPC_PORTS,
     DYN_SYSTEM_PORT_BASE,
+    HTTP_PORTS,
+    KV_EVENTS_PORTS,
+    KVBM_ZMQ_PORTS,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
+    NIXL_PORTS,
+    SIDECAR_GRPC_PORTS,
+    SYS_PORTS,
     VLLM_DATA_PARALLEL_RPC_PORT,
     VLLM_MASTER_PORT_BASE,
     VLLM_MASTER_PORT_STRIDE,
-    VLLM_PORT_BASE,
-    VLLM_PORT_STRIDE,
+    VLLM_SCAN_PORTS,
 )
 
 if TYPE_CHECKING:
@@ -548,9 +555,10 @@ class VLLMProtocol:
         # when endpoints are co-located on a node. E.g. PD 4xDEP2+1xDEP8 on
         # 4xGB200 nodes: each prefill endpoint is DEP2 (uses 2 of the 4 GPUs), so
         # two endpoints share one physical node and would otherwise scan
-        # overlapping get_open_port() ranges.
-        proc_index = max(process.sys_port - DYN_SYSTEM_PORT_BASE, 0)
-        env["VLLM_PORT"] = str(VLLM_PORT_BASE + proc_index * VLLM_PORT_STRIDE)
+        # overlapping get_open_port() ranges. The allocator spaces the ranges a
+        # full stride apart.
+        if process.vllm_scan_port is not None:
+            env["VLLM_PORT"] = str(process.vllm_scan_port)
         return env
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
@@ -904,142 +912,128 @@ class VLLMProtocol:
         Dynamo DP+EP mode uses the configured per-GPU or per-node process layout.
         For direct vLLM aggregate jobs, `vllm serve` manages local DP ranks from
         one process, so keep the standard one-process-per-node topology.
-        For standard TP mode, creates one process per node.
+        For standard TP mode, creates one process per node. Every process then
+        gets its private ``VLLM_PORT`` scan range from the allocator.
         """
-        from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
+        from srtctl.core.topology import endpoints_to_processes, port_allocator_for
         from srtctl.frontends import get_frontend
 
+        allocator = port_allocator_for(port_allocator, base_sys_port)
         if get_frontend(frontend_type).worker_api_port("agg") == "public":
             # The worker is the public endpoint: one `vllm serve` per node owns
             # its local DP ranks, so the standard topology applies.
-            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
-
-        # Check if any endpoint uses DP mode
-        has_dp_mode = any(self._is_dp_mode(ep.mode) for ep in endpoints)
-
-        if not has_dp_mode:
+            processes = endpoints_to_processes(endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar)
+        elif not any(self._is_dp_mode(ep.mode) for ep in endpoints):
             # Standard TP mode: one process per node, or one per engine of the
             # worker under backend.failover (engine 0 plus its shadows).
-            return endpoints_to_processes(
+            processes = endpoints_to_processes(
                 endpoints,
-                base_sys_port=base_sys_port,
-                port_allocator=port_allocator,
+                port_allocator=allocator,
                 engines_per_process=self.engines_per_process,
+                sidecar_grpc=dynamo_sidecar,
             )
+        elif self.dp_launch_mode == "per_node":
+            processes = self._dp_per_node_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
+        else:
+            processes = self._dp_per_gpu_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
+        return [replace(process, vllm_scan_port=allocator.next(VLLM_SCAN_PORTS)) for process in processes]
 
-        if self.dp_launch_mode == "per_node":
-            return self._dp_per_node_endpoints_to_processes(
-                endpoints,
-                base_sys_port=base_sys_port,
-                port_allocator=port_allocator,
-            )
+    def _dp_per_gpu_endpoints_to_processes(
+        self,
+        endpoints: list[Endpoint],
+        allocator: NodePortAllocator,
+        *,
+        sidecar_grpc: bool,
+    ) -> list[Process]:
+        """DP+EP mode with one process per DP rank (TP x PP GPUs each)."""
+        from srtctl.core.topology import Process
 
-        # DP+EP mode: one process per DP rank (TP×PP GPUs each)
         processes: list[Process] = []
-        current_sys_port = base_sys_port
-        if port_allocator is None:
-            port_allocator = NodePortAllocator()
-
         for endpoint in endpoints:
             if not self._is_dp_mode(endpoint.mode):
-                # Non-DP endpoints get standard processing
-                # (This shouldn't happen in practice since all modes should be consistent)
+                # Non-DP endpoints get standard processing (all modes are normally consistent).
                 for node_rank, node in enumerate(endpoint.nodes):
                     is_leader = node_rank == 0
-                    http_port = port_allocator.next_http_port(node) if is_leader else 0
-                    bootstrap_port = (
-                        port_allocator.next_bootstrap_port(node) if endpoint.mode == "prefill" and is_leader else None
-                    )
-                    kv_events_port = port_allocator.next_kv_events_port()
-                    nixl_port = port_allocator.next_nixl_port()
-
                     processes.append(
                         Process(
                             node=node,
                             gpu_indices=endpoint.gpu_indices,
-                            sys_port=current_sys_port,
-                            http_port=http_port,
+                            sys_port=allocator.next(SYS_PORTS),
+                            http_port=allocator.next(HTTP_PORTS, node) if is_leader else 0,
                             endpoint_mode=endpoint.mode,
                             endpoint_index=endpoint.index,
                             node_rank=node_rank,
-                            bootstrap_port=bootstrap_port,
-                            kv_events_port=kv_events_port,
-                            nixl_port=nixl_port,
+                            bootstrap_port=(
+                                allocator.next(BOOTSTRAP_PORTS, node)
+                                if endpoint.mode == "prefill" and is_leader
+                                else None
+                            ),
+                            kv_events_port=allocator.next(KV_EVENTS_PORTS),
+                            nixl_port=allocator.next(NIXL_PORTS),
+                            kvbm_zmq_port=allocator.next(KVBM_ZMQ_PORTS),
+                            sidecar_grpc_port=allocator.next(SIDECAR_GRPC_PORTS) if sidecar_grpc else None,
                         )
                     )
-                    current_sys_port += 1
-            else:
-                # DP+EP mode: one process per DP rank. With TP=1 this is one GPU;
-                # with TP>1 the process owns the TP×PP GPUs for that rank.
-                dp_rank = 0
-                dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
-                dp_size = self._get_dp_size(endpoint.mode) or (
-                    endpoint.total_gpus // self._gpus_per_dp_rank(endpoint.mode)
-                )
-                self._validate_dp_world_size(endpoint.mode, dp_size, endpoint.total_gpus)
-                rank_gpu_groups = self._dp_rank_gpu_groups(endpoint.mode, endpoint.gpu_indices)
-                # vLLM internally computes: actual_port = base + data_parallel_rank
-                # so all DP ranks in the endpoint share the same base port.
-                nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
-                for _node_rank, node in enumerate(endpoint.nodes):
-                    for rank_gpus in rank_gpu_groups:
-                        is_leader = dp_rank == 0
-                        http_port = port_allocator.next_http_port(node) if is_leader else 0
-                        bootstrap_port = (
-                            port_allocator.next_bootstrap_port(node)
-                            if endpoint.mode == "prefill" and is_leader
-                            else None
-                        )
-                        kv_events_port = port_allocator.next_kv_events_port()
-                        nixl_port = nixl_base_port
+                continue
 
-                        processes.append(
-                            Process(
-                                node=node,
-                                gpu_indices=rank_gpus,
-                                sys_port=current_sys_port,
-                                http_port=http_port,
-                                endpoint_mode=endpoint.mode,
-                                endpoint_index=endpoint.index,
-                                node_rank=dp_rank,  # dp_rank stored in node_rank for now
-                                bootstrap_port=bootstrap_port,
-                                kv_events_port=kv_events_port,
-                                nixl_port=nixl_port,
-                                dp_rpc_port=dp_rpc_port,
-                            )
+            # One process per DP rank. With TP=1 this is one GPU; with TP>1 the
+            # process owns the TP x PP GPUs for that rank.
+            dp_rank = 0
+            dp_rpc_port = allocator.next(DP_RPC_PORTS, endpoint.leader_node)
+            dp_size = self._get_dp_size(endpoint.mode) or (endpoint.total_gpus // self._gpus_per_dp_rank(endpoint.mode))
+            self._validate_dp_world_size(endpoint.mode, dp_size, endpoint.total_gpus)
+            rank_gpu_groups = self._dp_rank_gpu_groups(endpoint.mode, endpoint.gpu_indices)
+            # vLLM computes actual_port = base + data_parallel_rank, so every DP
+            # rank of the endpoint shares one reserved block.
+            nixl_base_port = allocator.next(NIXL_PORTS, size=dp_size)
+            for node in endpoint.nodes:
+                for rank_gpus in rank_gpu_groups:
+                    is_leader = dp_rank == 0
+                    processes.append(
+                        Process(
+                            node=node,
+                            gpu_indices=rank_gpus,
+                            sys_port=allocator.next(SYS_PORTS),
+                            http_port=allocator.next(HTTP_PORTS, node) if is_leader else 0,
+                            endpoint_mode=endpoint.mode,
+                            endpoint_index=endpoint.index,
+                            node_rank=dp_rank,  # dp_rank stored in node_rank for now
+                            bootstrap_port=(
+                                allocator.next(BOOTSTRAP_PORTS, node)
+                                if endpoint.mode == "prefill" and is_leader
+                                else None
+                            ),
+                            kv_events_port=allocator.next(KV_EVENTS_PORTS),
+                            nixl_port=nixl_base_port,
+                            dp_rpc_port=dp_rpc_port,
+                            kvbm_zmq_port=allocator.next(KVBM_ZMQ_PORTS),
+                            sidecar_grpc_port=allocator.next(SIDECAR_GRPC_PORTS) if sidecar_grpc else None,
                         )
-                        current_sys_port += 1
-                        dp_rank += 1
+                    )
+                    dp_rank += 1
 
         return processes
 
     def _dp_per_node_endpoints_to_processes(
         self,
         endpoints: list[Endpoint],
-        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
-        port_allocator: NodePortAllocator | None = None,
+        allocator: NodePortAllocator,
+        *,
+        sidecar_grpc: bool,
     ) -> list[Process]:
         """Convert DP endpoints to one process per node.
 
-        ``--data-parallel-size-local`` is GPUs-on-node / (TP × PP × PCP), not the GPU
+        ``--data-parallel-size-local`` is GPUs-on-node / (TP x PP x PCP), not the GPU
         count. Start ranks advance by that local DP size.
         """
-        from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
+        from srtctl.core.topology import Process, endpoints_to_processes
 
         processes: list[Process] = []
-        current_sys_port = base_sys_port
-        if port_allocator is None:
-            port_allocator = NodePortAllocator()
-
         for endpoint in endpoints:
             if not self._is_dp_mode(endpoint.mode):
-                non_dp = endpoints_to_processes(
-                    [endpoint],
-                    base_sys_port=current_sys_port,
-                    port_allocator=port_allocator,
+                processes.extend(
+                    endpoints_to_processes([endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc)
                 )
-                processes.extend(non_dp)
-                current_sys_port += len(non_dp)
                 continue
 
             dp_size, replica_size = self._validate_endpoint_parallelism(endpoint)
@@ -1060,13 +1054,9 @@ class VLLMProtocol:
                         f"{endpoint.mode} requires {nodes_per_dp_rank} nodes per DP rank and "
                         f"{dp_size * nodes_per_dp_rank} nodes total, but the endpoint has {len(endpoint.nodes)}"
                     )
-                multinode_processes = endpoints_to_processes(
-                    [endpoint],
-                    base_sys_port=current_sys_port,
-                    port_allocator=port_allocator,
+                processes.extend(
+                    endpoints_to_processes([endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc)
                 )
-                processes.extend(multinode_processes)
-                current_sys_port += len(multinode_processes)
                 continue
 
             if local_gpu_count % replica_size != 0:
@@ -1076,8 +1066,8 @@ class VLLMProtocol:
                 )
 
             local_dp_size = self._get_local_dp_size(endpoint.mode, local_gpu_count)
-            dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
-            nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
+            dp_rpc_port = allocator.next(DP_RPC_PORTS, endpoint.leader_node)
+            nixl_base_port = allocator.next(NIXL_PORTS, size=dp_size)
             dp_start_rank = 0
 
             for node in endpoint.nodes:
@@ -1085,21 +1075,21 @@ class VLLMProtocol:
                     Process(
                         node=node,
                         gpu_indices=endpoint.gpu_indices,
-                        sys_port=current_sys_port,
-                        http_port=port_allocator.next_http_port(node),
+                        sys_port=allocator.next(SYS_PORTS),
+                        http_port=allocator.next(HTTP_PORTS, node),
                         endpoint_mode=endpoint.mode,
                         endpoint_index=endpoint.index,
                         node_rank=dp_start_rank,
-                        bootstrap_port=(
-                            port_allocator.next_bootstrap_port(node) if endpoint.mode == "prefill" else None
-                        ),
-                        kv_events_port=port_allocator.next_kv_events_port_block(local_dp_size),
+                        bootstrap_port=(allocator.next(BOOTSTRAP_PORTS, node) if endpoint.mode == "prefill" else None),
+                        # One KV-event publisher per local DP rank: reserve the block.
+                        kv_events_port=allocator.next(KV_EVENTS_PORTS, size=local_dp_size),
                         nixl_port=nixl_base_port,
                         dp_rpc_port=dp_rpc_port,
                         het_group=endpoint.het_group,
+                        kvbm_zmq_port=allocator.next(KVBM_ZMQ_PORTS),
+                        sidecar_grpc_port=allocator.next(SIDECAR_GRPC_PORTS) if sidecar_grpc else None,
                     )
                 )
-                current_sys_port += 1
                 dp_start_rank += local_dp_size
 
         return processes
@@ -1517,7 +1507,7 @@ class VLLMProtocol:
             _pop_flags(config, frozenset({"master-port", "grpc"}))
             if headless:
                 pop_vllm_api_server_flags(config)
-        grpc_port = sidecar_grpc_port(sidecar_config.sidecar_port, process)
+        grpc_port = sidecar_grpc_port(process)
 
         for key in (
             "model",
@@ -1566,9 +1556,9 @@ class VLLMProtocol:
             # Use the leader's reserved vLLM port range for this endpoint.
             # worker_stage unsets VLLM_PORT for multi-node groups, leaving this
             # port free for rendezvous, including colocated P/D endpoints.
-            master_port = VLLM_PORT_BASE + (leader.sys_port - DYN_SYSTEM_PORT_BASE) * VLLM_PORT_STRIDE
-            if not 1 <= master_port <= 65535:
-                raise ValueError(f"vLLM rendezvous port out of range: {master_port}")
+            master_port = leader.vllm_scan_port
+            if master_port is None:
+                raise ValueError("multi-node vLLM replica needs the leader's allocated vLLM port range")
             command.extend(
                 [
                     "--distributed-executor-backend",

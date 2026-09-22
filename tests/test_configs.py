@@ -660,29 +660,27 @@ class TestSGLangProtocol:
         assert config.is_grpc_mode("decode") is True
         assert config.is_grpc_mode("agg") is False
 
-    def test_worker_command_assigns_deterministic_nccl_port(self):
-        """Each SGLang server gets a unique rendezvous port from its sys port."""
+    def test_worker_command_passes_the_allocated_nccl_port(self):
+        """Each SGLang server gets its own rendezvous port from the allocator; co-located servers never share one."""
         from unittest.mock import MagicMock, patch
 
-        from srtctl.core.topology import Process
+        from srtctl.core.topology import Endpoint, NodePortAllocator
 
-        process = Process(
-            node="node0",
-            gpu_indices=frozenset({5}),
-            sys_port=7505,
-            http_port=6105,
-            endpoint_mode="agg",
-            endpoint_index=5,
-            node_rank=5,
-        )
+        backend = SGLangProtocol()
+        endpoints = [
+            Endpoint(mode="agg", index=index, nodes=("node0",), gpu_indices=frozenset({index}), gpus_per_node=8)
+            for index in range(2)
+        ]
+        processes = backend.endpoints_to_processes(endpoints, port_allocator=NodePortAllocator())
+        assert [process.nccl_port for process in processes] == [SGLANG_NCCL_PORT_BASE, SGLANG_NCCL_PORT_BASE + 1]
+
         runtime = MagicMock()
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
-
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-            command = SGLangProtocol().build_worker_command(process, [process], runtime)
+            command = backend.build_worker_command(processes[1], [processes[1]], runtime)
 
-        assert command[command.index("--nccl-port") + 1] == str(SGLANG_NCCL_PORT_BASE + 5)
+        assert command[command.index("--nccl-port") + 1] == str(SGLANG_NCCL_PORT_BASE + 1)
 
 
 class TestServedModelName:

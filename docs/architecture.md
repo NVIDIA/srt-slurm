@@ -690,19 +690,30 @@ wait_for_model(host, port, n_prefill, n_decode, frontend_type)
 
 ### Port Allocation Strategy
 
+Fixed ports are constants in `srtctl/ports.py`. Every port a worker process binds is
+a `PortKind` in the same module and is handed out by `NodePortAllocator.next(kind,
+node, size)` once, in `endpoints_to_processes`; the value rides on `Process` and no
+consumer derives one port from another.
+
 ```
-+------------------+------------+----------------------------------+
-| Port Type        | Range      | Description                      |
-+------------------+------------+----------------------------------+
-| HTTP ports       | 30000+     | Per-node, incremental            |
-| Bootstrap ports  | 31000+     | Per-node, prefill only           |
-| KV events ports  | 5550+      | Global, incremental              |
-| System ports     | 8081+      | Per-process, incremental         |
-| Frontend public  | 8000       | Public-facing (nginx or direct)  |
-| Frontend internal| 8080       | Behind nginx                     |
-| NATS             | 4222       | Message broker                   |
-| etcd             | 2379       | Key-value store                  |
-+------------------+------------+----------------------------------+
++-----------------------+--------+--------+----------+----------------------------------------+
+| PortKind              | Base   | Stride | Counter  | Bound by                               |
++-----------------------+--------+--------+----------+----------------------------------------+
+| sys                   | 7500   | 1      | global   | every process (DYN_SYSTEM_PORT)         |
+| http                  | 6100   | 32     | per node | endpoint leaders (a router connects)    |
+| bootstrap             | 7200   | 1      | per node | prefill endpoints                       |
+| kv_events             | 5200   | 1      | global   | every process (block per local DP size) |
+| nixl                  | 5400   | 1      | global   | every process (block per DP size)       |
+| dp_rpc                | 8400   | 1      | per node | vLLM DP endpoints                       |
+| kvbm_zmq              | 5600   | 2      | global   | KVBM leaders (pub, ack = pub + 1)       |
+| sidecar_grpc          | 50051  | 1      | global   | Dynamo sidecars (base: sidecar_port)    |
+| nccl                  | 17500  | 1      | global   | SGLang servers                          |
+| dist_init             | 8300   | 1      | per node | SGLang multi-node endpoints (leader)    |
+| vllm_scan             | 20000  | 50     | global   | vLLM get_open_port() scan range         |
+| trtllm_dist_init      | 29500  | 1      | global   | TRT-LLM endpoints (leader's MASTER_PORT)|
++-----------------------+--------+--------+----------+----------------------------------------+
+| Frontend public 8000, internal 8180 (behind nginx); etcd 2379, NATS 4222: fixed constants |
++-----------------------------------------------------------------------------------------+
 ```
 
 ### Process Relationships

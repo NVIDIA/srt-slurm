@@ -6,8 +6,6 @@
 import shlex
 from typing import TYPE_CHECKING
 
-from srtctl.ports import DYN_SYSTEM_PORT_BASE
-
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import DynamoConfig
@@ -22,12 +20,18 @@ def get_dynamo_sidecar_config(runtime: "RuntimeContext") -> "DynamoConfig | None
     return dynamo
 
 
-def sidecar_grpc_port(base_port: int, process: "Process") -> int:
-    """Return a deterministic gRPC port that stays unique for co-located workers."""
-    port = base_port + max(process.sys_port - DYN_SYSTEM_PORT_BASE, 0)
-    if not 1 <= port <= 65535:
-        raise ValueError(f"sidecar_port must resolve between 1 and 65535, got {port}")
-    return port
+def sidecar_grpc_port(process: "Process") -> int:
+    """The gRPC port allocated for this process's sidecar.
+
+    ``endpoints_to_processes(..., dynamo_sidecar=True)`` allocates one per process
+    from ``dynamo.sidecar_port`` upward, so co-located workers never collide.
+    """
+    if process.sidecar_grpc_port is None:
+        raise ValueError(
+            f"process {process.node} rank {process.node_rank} has no sidecar gRPC port; "
+            "the topology was built without dynamo_sidecar=True"
+        )
+    return process.sidecar_grpc_port
 
 
 def build_sidecar_launch_command(

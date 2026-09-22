@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Centralized default ports used by srt-slurm runtime components."""
+"""Centralized default ports used by srt-slurm runtime components.
+
+Fixed ports are plain constants. Per-process ports are ``PortKind`` ranges at
+the bottom of this module, handed out by ``srtctl.core.topology.NodePortAllocator``.
+"""
+
+from dataclasses import dataclass
 
 # Shared infrastructure services.
 ETCD_CLIENT_PORT = 2379
@@ -59,3 +65,42 @@ KVBM_ZMQ_PORT_BASE = 5600
 # submission API) on the head. Ray's own defaults; options.port / dashboard_port move them.
 RAY_GCS_PORT = 6379
 RAY_DASHBOARD_PORT = 8265
+
+# Dynamo sidecar gRPC listener next to a native engine (dynamo.sidecar_port).
+DYNAMO_SIDECAR_GRPC_PORT = 50051
+
+
+@dataclass(frozen=True)
+class PortKind:
+    """One kind of listener a worker process binds, allocated by ``NodePortAllocator``.
+
+    ``base`` is the first port handed out, ``stride`` the distance between
+    consecutive allocations (more than one when the engine scans or offsets a
+    range of its own from the port it is given), and ``per_node`` whether the
+    counter restarts on every node (the port is only bound there) or runs
+    across the whole job (a side channel that peers on other nodes address).
+    Every per-process port is allocated once in ``endpoints_to_processes`` and
+    carried on ``Process``; nothing derives a port from another port.
+    """
+
+    name: str
+    base: int
+    stride: int = 1
+    per_node: bool = False
+
+
+# Bound on every worker process.
+SYS_PORTS = PortKind("sys", DYN_SYSTEM_PORT_BASE)
+HTTP_PORTS = PortKind("http", SGLANG_HTTP_PORT_BASE, SGLANG_HTTP_PORT_STRIDE, per_node=True)
+BOOTSTRAP_PORTS = PortKind("bootstrap", SGLANG_BOOTSTRAP_PORT_BASE, per_node=True)
+KV_EVENTS_PORTS = PortKind("kv_events", KV_EVENTS_PORT_BASE)
+NIXL_PORTS = PortKind("nixl", VLLM_NIXL_PORT_BASE)
+DP_RPC_PORTS = PortKind("dp_rpc", VLLM_DATA_PARALLEL_RPC_PORT, per_node=True)
+# KVBM leader ZMQ pair: pub at the port, ack at the port + 1.
+KVBM_ZMQ_PORTS = PortKind("kvbm_zmq", KVBM_ZMQ_PORT_BASE, 2)
+SIDECAR_GRPC_PORTS = PortKind("sidecar_grpc", DYNAMO_SIDECAR_GRPC_PORT)
+# Engine-specific: the backend allocates these for its own processes.
+NCCL_PORTS = PortKind("nccl", SGLANG_NCCL_PORT_BASE)
+DIST_INIT_PORTS = PortKind("dist_init", SGLANG_DIST_INIT_PORT_BASE, per_node=True)
+VLLM_SCAN_PORTS = PortKind("vllm_scan", VLLM_PORT_BASE, VLLM_PORT_STRIDE)
+TRTLLM_DIST_INIT_PORTS = PortKind("trtllm_dist_init", TRTLLM_DIST_INIT_PORT_BASE)

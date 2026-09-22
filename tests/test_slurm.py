@@ -213,6 +213,8 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        trtllm_dist_init_port=29500,
+        sidecar_grpc_port=50051,
     )
 
     with (
@@ -275,6 +277,8 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        trtllm_dist_init_port=29500,
+        sidecar_grpc_port=50051,
     )
     return mixin, process
 
@@ -690,6 +694,8 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        trtllm_dist_init_port=29500,
+        sidecar_grpc_port=50051,
     )
     peer_process = SimpleNamespace(node="node-b")
 
@@ -708,7 +714,6 @@ def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int) -> None:
     import os
 
     from srtctl.backends.trtllm import TRTLLMProtocol
-    from srtctl.core.topology import endpoints_to_processes
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.runtime.gpus_per_node = 4
@@ -730,7 +735,7 @@ def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int) -> None:
         gpus_per_node=4,
         available_nodes=("node0", "node1", "node2"),
     )
-    processes = endpoints_to_processes([endpoints[worker]])
+    processes = TRTLLMProtocol().endpoints_to_processes([endpoints[worker]])
     with (
         patch.dict("os.environ", {"SLURM_NTASKS_PER_NODE": "4"}),
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
@@ -769,7 +774,6 @@ def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int) -> None:
 @pytest.mark.parametrize("override", [False, True])
 def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: Path, override: bool) -> None:
     from srtctl.backends.trtllm import TRTLLMProtocol
-    from srtctl.core.topology import endpoints_to_processes
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.backend.type = "trtllm"
@@ -785,7 +789,7 @@ def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: 
         gpus_per_node=4,
         available_nodes=("node0",),
     )
-    processes = endpoints_to_processes(endpoints)
+    processes = TRTLLMProtocol().endpoints_to_processes(endpoints)
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
         patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.1"),

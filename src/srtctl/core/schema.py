@@ -49,6 +49,7 @@ from srtctl.core.formatting import (
 # Leaf module (stdlib-only imports), so this cannot cycle back into schema.
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
+from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
 from srtctl.services.config import ServiceConfig
 
 logger = logging.getLogger(__name__)
@@ -1928,7 +1929,7 @@ class DynamoConfig:
     request_plane: str = "tcp"
     event_plane: str | None = None
     sidecar: bool = False
-    sidecar_port: int = 50051
+    sidecar_port: int = DYNAMO_SIDECAR_GRPC_PORT
     sidecar_binary: str | None = None
     sidecar_startup_timeout: int = 3600
     sidecar_context_length: int | None = None

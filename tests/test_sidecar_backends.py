@@ -34,6 +34,9 @@ def _process(
     sys_port: int = 7500,
     kv_events_port: int | None = None,
 ) -> Process:
+    # Stand-in for what endpoints_to_processes(dynamo_sidecar=True) allocates:
+    # one sidecar gRPC port and one NCCL port per process, in process order.
+    ordinal = sys_port - 7500
     return Process(
         node=node,
         gpu_indices=frozenset(range(4)),
@@ -44,6 +47,9 @@ def _process(
         node_rank=node_rank,
         bootstrap_port=7200 if mode == "prefill" else None,
         kv_events_port=kv_events_port,
+        sidecar_grpc_port=50051 + ordinal,
+        nccl_port=17500 + ordinal,
+        dist_init_port=8300,
     )
 
 

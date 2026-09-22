@@ -243,7 +243,7 @@ class TestWorkerCommandUsesStagedPath:
     def test_sidecar_worker_ignores_dynamo_publishing_options(
         self, tmp_path, publish_metrics, publish_events_and_metrics
     ):
-        process = replace(self._proc(), endpoint_mode="agg")
+        process = replace(self._proc(), endpoint_mode="agg", sidecar_grpc_port=50051)
         runtime = self._runtime_mock(tmp_path, "/model")
         runtime.dynamo = DynamoConfig(sidecar=True)
         baseline = TRTLLMProtocol(publish_metrics=False, publish_events_and_metrics=False)

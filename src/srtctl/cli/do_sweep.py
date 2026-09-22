@@ -50,6 +50,7 @@ from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_
 from srtctl.logging_utils import setup_logging
 from srtctl.ports import (
     FRONTEND_PUBLIC_PORT,
+    SIDECAR_GRPC_PORTS,
 )
 from srtctl.services.implicit import uses_discovery_plane
 
@@ -123,7 +124,7 @@ class SweepOrchestrator(
         Port defaults come from ``srtctl.ports`` and are allocated
         deterministically within a job.
         """
-        allocator = NodePortAllocator()
+        allocator = NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: self.config.dynamo.sidecar_port})
         return self.backend.endpoints_to_processes(
             self.endpoints,
             port_allocator=allocator,

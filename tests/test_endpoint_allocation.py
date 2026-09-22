@@ -438,17 +438,21 @@ class TestDefaultPorts:
     """Tests for centralized default port values."""
 
     def test_allocator_uses_centralized_defaults(self):
+        from srtctl.ports import BOOTSTRAP_PORTS, HTTP_PORTS, KV_EVENTS_PORTS, NIXL_PORTS
+
         allocator = NodePortAllocator()
-        assert allocator.base_http_port == SGLANG_HTTP_PORT_BASE
-        assert allocator.base_bootstrap_port == SGLANG_BOOTSTRAP_PORT_BASE
-        assert allocator.base_kv_events_port == KV_EVENTS_PORT_BASE
-        assert allocator.base_nixl_port == VLLM_NIXL_PORT_BASE
+        assert allocator.next(HTTP_PORTS, "node0") == SGLANG_HTTP_PORT_BASE
+        assert allocator.next(BOOTSTRAP_PORTS, "node0") == SGLANG_BOOTSTRAP_PORT_BASE
+        assert allocator.next(KV_EVENTS_PORTS) == KV_EVENTS_PORT_BASE
+        assert allocator.next(NIXL_PORTS) == VLLM_NIXL_PORT_BASE
 
     def test_http_ports_use_centralized_stride(self):
+        from srtctl.ports import HTTP_PORTS
+
         allocator = NodePortAllocator()
-        assert allocator.next_http_port("node0") == SGLANG_HTTP_PORT_BASE
-        assert allocator.next_http_port("node0") == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
-        assert allocator.next_http_port("node1") == SGLANG_HTTP_PORT_BASE
+        assert allocator.next(HTTP_PORTS, "node0") == SGLANG_HTTP_PORT_BASE
+        assert allocator.next(HTTP_PORTS, "node0") == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
+        assert allocator.next(HTTP_PORTS, "node1") == SGLANG_HTTP_PORT_BASE
 
     def test_endpoints_to_processes_uses_default_sys_port(self):
         endpoints = allocate_endpoints(

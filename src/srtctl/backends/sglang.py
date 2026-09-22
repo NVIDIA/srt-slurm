@@ -11,7 +11,7 @@ import builtins
 import json
 import logging
 from collections.abc import Sequence
-from dataclasses import field
+from dataclasses import field, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -25,11 +25,11 @@ from marshmallow_dataclass import dataclass
 
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
+    DIST_INIT_PORTS,
     DYN_SYSTEM_PORT_BASE,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
-    SGLANG_DIST_INIT_PORT_BASE,
-    SGLANG_NCCL_PORT_BASE,
+    NCCL_PORTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,26 @@ if TYPE_CHECKING:
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
+
+
+def _dist_init_port(process: "Process") -> int:
+    """The endpoint's dist-init port, allocated on the leader node by ``endpoints_to_processes``."""
+    if process.dist_init_port is None:
+        raise ValueError(
+            f"process {process.node} rank {process.node_rank} has no dist-init port; "
+            "build the topology with SGLangProtocol.endpoints_to_processes"
+        )
+    return process.dist_init_port
+
+
+def _nccl_port(process: "Process") -> int:
+    """The server's NCCL rendezvous port, allocated by ``endpoints_to_processes``."""
+    if process.nccl_port is None:
+        raise ValueError(
+            f"process {process.node} rank {process.node_rank} has no NCCL port; "
+            "build the topology with SGLangProtocol.endpoints_to_processes"
+        )
+    return process.nccl_port
 
 
 @dataclass(frozen=True)
@@ -284,10 +304,26 @@ class SGLangProtocol:
         frontend_type: str = "dynamo",
         dynamo_sidecar: bool = False,
     ) -> list["Process"]:
-        """Convert endpoints to processes."""
-        from srtctl.core.topology import endpoints_to_processes
+        """Convert endpoints to processes, each with its NCCL rendezvous port and its endpoint's dist-init port."""
+        from srtctl.core.topology import endpoints_to_processes, port_allocator_for
 
-        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+        allocator = port_allocator_for(port_allocator, base_sys_port)
+        processes = endpoints_to_processes(endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar)
+        # dist-init is bound by the endpoint's leader; every process of the
+        # endpoint names the same port, allocated per leader node so two
+        # endpoints led from one node do not collide.
+        dist_init_ports = {
+            (endpoint.mode, endpoint.index): allocator.next(DIST_INIT_PORTS, endpoint.nodes[0])
+            for endpoint in endpoints
+        }
+        return [
+            replace(
+                process,
+                nccl_port=allocator.next(NCCL_PORTS),
+                dist_init_port=dist_init_ports[(process.endpoint_mode, process.endpoint_index)],
+            )
+            for process in processes
+        ]
 
     def build_worker_command(
         self,
@@ -337,11 +373,10 @@ class SGLangProtocol:
         config.pop("served-model-name", None)
         config.pop("served_model_name", None)
         # SGLang's dynamic default probes a free TCP port. On a node that
-        # launches several workers concurrently, those probes can race. Use a
-        # unique port derived from the topology-assigned system-status port.
+        # launches several workers concurrently, those probes can race, so the
+        # allocator assigns each server its own port.
         config.pop("nccl-port", None)
         config.pop("nccl_port", None)
-        nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
@@ -349,7 +384,6 @@ class SGLangProtocol:
 
         # Get leader IP for distributed init
         leader_ip = get_hostname_ip(endpoint_nodes[0])
-        dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
         # Direct frontends run the native server; Dynamo frontends run the registering worker.
         use_sglang = frontend.worker_launch == "direct"
@@ -385,7 +419,8 @@ class SGLangProtocol:
         # binds the frontend port instead of its own.
         api_port = runtime.frontend_port if frontend.worker_api_port(mode) == "public" else process.http_port
         cmd.extend(["--port", str(api_port)])
-        cmd.extend(["--nccl-port", str(nccl_port)])
+        if process.nccl_port is not None:
+            cmd.extend(["--nccl-port", str(process.nccl_port)])
 
         if use_sglang:
             # sglang.launch_server serves Prometheus /metrics on its HTTP port only
@@ -417,7 +452,7 @@ class SGLangProtocol:
             cmd.extend(
                 [
                     "--dist-init-addr",
-                    f"{leader_ip}:{dist_init_port}",
+                    f"{leader_ip}:{_dist_init_port(process)}",
                     "--nnodes",
                     str(len(endpoint_nodes)),
                     "--node-rank",
@@ -478,8 +513,7 @@ class SGLangProtocol:
         node_rank = endpoint_nodes.index(process.node)
         is_leader = node_rank == 0
         leader_ip = get_hostname_ip(endpoint_nodes[0])
-        grpc_port = sidecar_grpc_port(sidecar_config.sidecar_port, process)
-        nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
+        grpc_port = sidecar_grpc_port(process)
 
         served_model_name = self.get_served_model_name(runtime.model_path.name)
         model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
@@ -498,7 +532,7 @@ class SGLangProtocol:
                 "--port",
                 str(process.http_port),
                 "--nccl-port",
-                str(nccl_port),
+                str(_nccl_port(process)),
             ]
         )
 
@@ -510,7 +544,7 @@ class SGLangProtocol:
             engine.extend(
                 [
                     "--dist-init-addr",
-                    f"{leader_ip}:{SGLANG_DIST_INIT_PORT_BASE}",
+                    f"{leader_ip}:{_dist_init_port(process)}",
                     "--nnodes",
                     str(len(endpoint_nodes)),
                     "--node-rank",
