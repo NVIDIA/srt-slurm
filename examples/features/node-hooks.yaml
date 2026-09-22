@@ -3,11 +3,11 @@
 #   pre  -> host_setup.commands  runs before any worker starts
 #   post -> host_setup.teardown  runs after workers stop, on success, failure and cancel
 #
-# configs/node-hooks.sh runs HOOK_PRE_<n> and then HOOK_POST_<n> in ascending <n>. Any
-# shell string works. Set them under `environment:` (the job script exports them, so the
-# host sruns inherit them) or add or override one per phase with KEY=VALUE arguments on
-# the hook command line. Output lands in logs/host_setup_<node>.out and
-# logs/host_teardown_<node>.out.
+# configs/node-hooks.sh runs the lines of HOOK_PRE, then later HOOK_POST, top to bottom;
+# blank lines and # comments are skipped. Any shell string works. Set them as YAML block
+# scalars under `environment:` (the job script exports them, so the host sruns inherit them).
+# Other HOOK_* settings can be overridden per phase with KEY=VALUE arguments on the hook
+# command line. Output lands in logs/host_setup_<node>.out and logs/host_teardown_<node>.out.
 #
 #   srtctl dry-run -f examples/features/node-hooks.yaml   # renders both command lists
 #   srtctl apply   -f examples/features/node-hooks.yaml
@@ -30,12 +30,15 @@ resources:
   gpus_per_node: 8
 
 environment:
-  HOOK_PRE_1: "sudo -n nvidia-smi -lmc 2619,2619"
-  HOOK_PRE_2: "sync; echo 3 | sudo -n tee /proc/sys/vm/drop_caches"
-  HOOK_PRE_3: "nvidia-smi --query-gpu=index,ecc.errors.uncorrected.volatile.total --format=csv"
-  HOOK_POST_1: "sudo -n nvidia-smi -rmc"
-  HOOK_POST_2: "dmesg --level=err,warn --since '1 hour ago' | tail -n 50"
-  HOOK_POST_3: "ls -la ${SRTCTL_OUTPUT_DIR}/logs | tail -n 20"
+  HOOK_PRE: |
+    # lock memory clock, drop the page cache, record ECC state before the run
+    sudo -n nvidia-smi -lmc 2619,2619
+    sync; echo 3 | sudo -n tee /proc/sys/vm/drop_caches
+    nvidia-smi --query-gpu=index,ecc.errors.uncorrected.volatile.total --format=csv
+  HOOK_POST: |
+    sudo -n nvidia-smi -rmc
+    dmesg --level=err,warn --since '1 hour ago' | tail -n 50
+    ls -la ${SRTCTL_OUTPUT_DIR}/logs | tail -n 20
 
 host_setup:
   nodes: workers

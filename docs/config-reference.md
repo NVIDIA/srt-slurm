@@ -1934,7 +1934,7 @@ host_setup:
 - `teardown` runs from the job's cleanup path, so it fires on failure and cancellation too, and never changes the job's exit code.
 - Set cluster-wide via `default_host_setup` in `srtslurm.yaml`; that's the right home when *the cluster's machines* need this, rather than one recipe. See [Cluster Config Fields](#cluster-config-fields).
 - `srtctl dry-run -f config.yaml` renders the commands, their scope, and which file they came from.
-- For more than a couple of commands, or when you want each one logged with its exit code, point both lists at `configs/node-hooks.sh` and list the commands as `HOOK_PRE_<n>` / `HOOK_POST_<n>` values under `environment:`. The job script exports those, so the host sruns inherit them. See [examples/features/node-hooks.yaml](../examples/features/node-hooks.yaml).
+- For more than a couple of commands, or when you want each one logged with its exit code, point both lists at `configs/node-hooks.sh` and write the commands one per line in `HOOK_PRE` / `HOOK_POST` block scalars under `environment:`. The job script exports those, so the host sruns inherit them. See [examples/features/node-hooks.yaml](../examples/features/node-hooks.yaml).
 
 ---
 

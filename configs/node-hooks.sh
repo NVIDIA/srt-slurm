@@ -9,17 +9,20 @@
 #     commands: ["bash ${SRTCTL_SOURCE_DIR}/configs/node-hooks.sh pre"]
 #     teardown: ["bash ${SRTCTL_SOURCE_DIR}/configs/node-hooks.sh post"]
 #
-# The commands themselves come from numbered HOOK_PRE_<n> and HOOK_POST_<n> variables,
-# run in ascending <n>. Set them under the recipe's `environment:` block (the job script
-# exports them, so every host srun inherits them) or pass KEY=VALUE arguments after the
-# phase, which win over the environment:
+# The commands come from HOOK_PRE and HOOK_POST, one command per line, run top to bottom.
+# Blank lines and lines starting with # are skipped. Set them as YAML block scalars under the
+# recipe's `environment:` block (the job script exports them, so every host srun inherits
+# them) or pass KEY=VALUE arguments after the phase, which win over the environment:
 #
 #   environment:
-#     HOOK_PRE_1:  "sudo -n nvidia-smi -lmc 2619,2619"
-#     HOOK_PRE_2:  "sync; echo 3 | sudo -n tee /proc/sys/vm/drop_caches"
-#     HOOK_POST_1: "sudo -n nvidia-smi -rmc"
+#     HOOK_PRE: |
+#       sudo -n nvidia-smi -lmc 2619,2619
+#       sync; echo 3 | sudo -n tee /proc/sys/vm/drop_caches
+#     HOOK_POST: |
+#       sudo -n nvidia-smi -rmc
 #
-#   node-hooks.sh pre HOOK_PRE_3="echo extra >> ${SRTCTL_OUTPUT_DIR}/logs/hooks.log"
+#   node-hooks.sh post HOOK_SNAPSHOT=0
+#
 #
 # Other settings:
 #   HOOK_SNAPSHOT     1 (default) prints kernel, load, memory and GPU clocks after the commands
@@ -59,20 +62,24 @@ snapshot() {
     fi
 }
 
-prefix="HOOK_$(echo "${phase}" | tr '[:lower:]' '[:upper:]')_"
-mapfile -t names < <(compgen -A variable "${prefix}" | grep -E "^${prefix}[0-9]+$" | sort -t_ -k3,3n)
+block_var="HOOK_$(echo "${phase}" | tr '[:lower:]' '[:upper:]')"
+cmds=()
+while IFS= read -r line; do
+    [[ "${line}" =~ ^[[:space:]]*(#|$) ]] && continue
+    cmds+=("${line}")
+done <<< "${!block_var:-}"
 
-log "start $(date -Is)  job=${SLURM_JOB_ID:-?}  output=${SRTCTL_OUTPUT_DIR:-?}  commands=${#names[@]}"
+log "start $(date -Is)  job=${SLURM_JOB_ID:-?}  output=${SRTCTL_OUTPUT_DIR:-?}  commands=${#cmds[@]}"
 
 first_failure=0
-for name in "${names[@]}"; do
-    cmd="${!name}"
-    [ -n "${cmd}" ] || continue
-    log "${name}: ${cmd}"
+n=0
+for cmd in "${cmds[@]}"; do
+    n=$((n + 1))
+    log "[${n}/${#cmds[@]}] ${cmd}"
     rc=0
     bash -c "${cmd}" || rc=$?
     [ "${rc}" = "0" ] && continue
-    log "${name} exited ${rc}"
+    log "[${n}/${#cmds[@]}] exited ${rc}"
     [ "${first_failure}" = "0" ] && first_failure=${rc}
     if [ "${phase}" = "pre" ] && [ "${HOOK_PRE_STRICT}" = "1" ]; then
         break

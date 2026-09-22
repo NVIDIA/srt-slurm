@@ -19,15 +19,17 @@ def test_rejects_unknown_phase():
     assert "usage:" in result.stderr
 
 
-def test_runs_numbered_commands_in_numeric_order():
-    result = run("pre", env={"HOOK_PRE_10": "echo tenth", "HOOK_PRE_2": "echo second", "HOOK_PRE_1": "echo first"})
+def test_runs_block_lines_in_order_skipping_blanks_and_comments():
+    block = "echo first\n\n  # a comment\necho second\necho third\n"
+    result = run("pre", env={"HOOK_PRE": block})
     assert result.returncode == 0
-    lines = [line for line in result.stdout.splitlines() if line in {"first", "second", "tenth"}]
-    assert lines == ["first", "second", "tenth"]
+    lines = [line for line in result.stdout.splitlines() if line in {"first", "second", "third"}]
+    assert lines == ["first", "second", "third"]
+    assert "commands=3" in result.stdout
 
 
 def test_command_line_values_override_environment():
-    result = run("pre", "HOOK_PRE_1=echo from-arg", env={"HOOK_PRE_1": "echo from-env"})
+    result = run("pre", "HOOK_PRE=echo from-arg", env={"HOOK_PRE": "echo from-env"})
     assert result.returncode == 0
     assert "from-arg" in result.stdout
     assert "from-env" not in result.stdout.splitlines()
@@ -35,28 +37,28 @@ def test_command_line_values_override_environment():
 
 @pytest.mark.parametrize("code", [1, 3, 127])
 def test_pre_failure_stops_and_exits_with_the_commands_own_code(code):
-    result = run("pre", env={"HOOK_PRE_1": f"exit {code}", "HOOK_PRE_2": "echo should-not-run"})
+    result = run("pre", env={"HOOK_PRE": f"exit {code}\necho should-not-run"})
     assert result.returncode == code
-    assert f"HOOK_PRE_1 exited {code}" in result.stdout
+    assert f"[1/2] exited {code}" in result.stdout
     assert "should-not-run" not in result.stdout
 
 
 def test_pre_lenient_mode_exits_zero_after_failures():
-    result = run("pre", "HOOK_PRE_STRICT=0", env={"HOOK_PRE_1": "exit 3", "HOOK_PRE_2": "exit 5"})
+    result = run("pre", "HOOK_PRE_STRICT=0", env={"HOOK_PRE": "exit 3\nexit 5"})
     assert result.returncode == 0
-    assert "HOOK_PRE_1 exited 3" in result.stdout and "HOOK_PRE_2 exited 5" in result.stdout
+    assert "[1/2] exited 3" in result.stdout and "[2/2] exited 5" in result.stdout
 
 
 def test_pre_lenient_mode_continues():
-    result = run("pre", "HOOK_PRE_STRICT=0", env={"HOOK_PRE_1": "false", "HOOK_PRE_2": "echo continues"})
+    result = run("pre", "HOOK_PRE_STRICT=0", env={"HOOK_PRE": "false\necho continues"})
     assert result.returncode == 0
     assert "continues" in result.stdout
 
 
 def test_post_failure_never_changes_exit_code():
-    result = run("post", env={"HOOK_POST_1": "false", "HOOK_POST_2": "echo still-runs"})
+    result = run("post", env={"HOOK_POST": "false\necho still-runs"})
     assert result.returncode == 0
-    assert "HOOK_POST_1 exited 1" in result.stdout
+    assert "[1/2] exited 1" in result.stdout
     assert "still-runs" in result.stdout
 
 
