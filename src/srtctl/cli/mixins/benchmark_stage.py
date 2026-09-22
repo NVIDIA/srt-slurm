@@ -49,107 +49,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _vllm_data_parallel_size(config: "SrtConfig", mode: str) -> int:
-    """Return vLLM data parallel size for a mode, defaulting to one."""
-    backend = config.backend
-    if getattr(backend, "type", None) != "vllm":
-        return 1
-
-    vllm_config = getattr(backend, "vllm_config", None)
-    mode_config = getattr(vllm_config, mode, None) if vllm_config else None
-    if not mode_config:
-        # Special case: no vllm_config at all defaulting to 1 then
-        return 1
-
-    return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
-
-
-def _vllm_health_entries(
-    config: "SrtConfig",
-    mode: str,
-    logical_workers: int,
-    backend_processes: list["Process"] | None,
-) -> int:
-    """Return expected Dynamo generate registrations for a vLLM worker mode."""
-    dp_size = _vllm_data_parallel_size(config, mode)
-    dp_launch_mode = getattr(config.backend, "dp_launch_mode", "per_node")
-    if dp_size > 1 and dp_launch_mode == "per_node":
-        if backend_processes is None:
-            raise ValueError("backend_processes are required for per-node DP health expectations")
-        endpoint_mode = "agg" if mode == "aggregated" else mode
-        mode_processes = [process for process in backend_processes if process.endpoint_mode == endpoint_mode]
-        if not mode_processes:
-            return 0
-
-        vllm_config = getattr(config.backend, "vllm_config", None)
-        mode_config = getattr(vllm_config, mode, None) if vllm_config else None
-        mode_config = mode_config or {}
-        tp_size = int(mode_config.get("tensor-parallel-size") or mode_config.get("tensor_parallel_size") or 1)
-        pp_size = int(mode_config.get("pipeline-parallel-size") or mode_config.get("pipeline_parallel_size") or 1)
-        gpu_indices = getattr(mode_processes[0], "gpu_indices", None)
-        if gpu_indices is None:
-            # Compatibility for callers that provide only registration-count
-            # process stubs. Real launch processes always carry GPU indices.
-            return len(mode_processes)
-        local_gpu_count = len(gpu_indices)
-        spans_nodes = tp_size * pp_size > local_gpu_count
-        if spans_nodes:
-            return logical_workers
-        return len(mode_processes)
-
-    return logical_workers * dp_size
-
-
 def _get_health_expectations(
     config: "SrtConfig", backend_processes: list["Process"] | None = None
 ) -> tuple[int, int, str, int]:
-    """Compute expected health counts in the units reported by the frontend.
+    """Expected health counts in the units the frontend reports, a description, and their sum.
 
-    Dynamo's /health endpoint reports registered generate instances. For vLLM
-    DP workers, per-GPU launch registers one entry per DP rank, while per-node
-    launch registers one entry per node-local process. vLLM Router expands
-    each advertised base URL into its node-local DP ranks.
+    The frontend knows what its readiness endpoint counts (Dynamo generate
+    registrations, Router-expanded DP ranks, logical workers); see
+    ``FrontendProtocol.health_expectations``.
     """
-    r = config.resources
-
-    if r.num_agg > 0:
-        logical_prefill = 0
-        logical_decode = r.num_agg
-        worker_desc = f"{r.num_agg} agg"
-    else:
-        logical_prefill = r.num_prefill
-        logical_decode = r.num_decode
-        worker_desc = f"{r.num_prefill}P + {r.num_decode}D"
-
-    if config.frontend.type == "dynamo" and getattr(config.backend, "type", None) == "vllm":
-        if r.num_agg > 0:
-            n_prefill = 0
-            n_decode = _vllm_health_entries(config, "aggregated", logical_decode, backend_processes)
-        else:
-            n_prefill = _vllm_health_entries(config, "prefill", logical_prefill, backend_processes)
-            n_decode = _vllm_health_entries(config, "decode", logical_decode, backend_processes)
-
-        count_desc = f"{n_prefill}P + {n_decode}D Dynamo generate instances; logical workers: {worker_desc}"
-        return n_prefill, n_decode, count_desc, n_prefill + n_decode
-
-    if config.frontend.type == "vllm-router" and backend_processes is not None:
-        from srtctl.frontends.vllm_router import routed_process_dp_size
-
-        n_prefill = sum(
-            routed_process_dp_size(config.backend, process)
-            for process in backend_processes
-            if process.endpoint_mode == "prefill" and process.http_port > 0
-        )
-        n_decode = sum(
-            routed_process_dp_size(config.backend, process)
-            for process in backend_processes
-            if process.endpoint_mode in {"decode", "agg"} and process.http_port > 0
-        )
-        count_desc = f"{n_prefill}P + {n_decode}D Router workers; logical workers: {worker_desc}"
-        return n_prefill, n_decode, count_desc, n_prefill + n_decode
-
-    count_desc = worker_desc
-    return logical_prefill, logical_decode, count_desc, logical_prefill + logical_decode
+    frontend = get_frontend(config.frontend.type)
+    n_prefill, n_decode, count_desc = frontend.health_expectations(config, backend_processes)
+    return n_prefill, n_decode, count_desc, n_prefill + n_decode
 
 
 SERVER_READY_FILENAME = "server_ready.json"

@@ -113,6 +113,26 @@ class FrontendProtocol(Protocol):
         """Port polled for a worker's own ``/health`` during sequential endpoint start."""
         ...
 
+    def health_expectations(self, config: Any, processes: list["Process"] | None) -> tuple[int, int, str]:
+        """Expected ``(prefill, decode)`` counts in the units this frontend's readiness reports, plus a description.
+
+        Aggregate workers count as decode. Dynamo counts registered generate
+        instances (one per vLLM DP rank or node-local process), vLLM Router
+        counts the ranks it expands each advertised URL into, every other
+        frontend counts logical workers. ``processes`` is ``None`` before the
+        topology is known; implementations fall back to logical counts then.
+        """
+        ...
+
+    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> "WorkerHealthResult":
+        """One readiness probe against the public endpoint at ``host:port``.
+
+        Raise ``requests.RequestException`` while the endpoint is unreachable;
+        ``wait_for_model`` retries until its timeout. Anything else that is not
+        ready comes back as a result whose message explains why.
+        """
+        ...
+
     def validate(self, config: Any) -> None:
         """Recipe-level rules for this frontend.
 
@@ -173,6 +193,14 @@ class FrontendProtocol(Protocol):
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert frontend args dict to CLI argument list."""
         ...
+
+
+def logical_health_expectations(config: Any) -> tuple[int, int, str]:
+    """Expected counts in logical workers: aggregate workers count as decode."""
+    r = config.resources
+    if r.num_agg > 0:
+        return 0, r.num_agg, f"{r.num_agg} agg"
+    return r.num_prefill, r.num_decode, f"{r.num_prefill}P + {r.num_decode}D"
 
 
 def agg_leader_nodes(processes: list["Process"]) -> list[str]:

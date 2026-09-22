@@ -11,8 +11,9 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from srtctl.core.health import WorkerHealthResult, check_static_router_health
+from srtctl.core.health import WorkerHealthResult, check_static_router_health, probe_json_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.frontends.base import logical_health_expectations
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -99,6 +100,15 @@ class StaticRouterFrontend:
         expected_decode: int,
     ) -> WorkerHealthResult:
         return check_static_router_health(response_json, expected_prefill, expected_decode)
+
+    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
+        """One GET of the router's worker registry, parsed against the expected counts."""
+        return probe_json_health(host, port, self.health_endpoint, self.parse_health, expected_prefill, expected_decode)
+
+    def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
+        """The registry lists one entry per logical worker unless the router expands them."""
+        del processes
+        return logical_health_expectations(config)
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert config values to CLI arguments, preserving repeated values."""

@@ -14,8 +14,8 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from srtctl.core.health import WorkerHealthResult
-from srtctl.frontends.base import agg_leader_nodes, register_frontend
+from srtctl.core.health import WorkerHealthResult, probe_direct_server
+from srtctl.frontends.base import agg_leader_nodes, logical_health_expectations, register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -74,6 +74,15 @@ class VLLMFrontend:
 
     def worker_ready_port(self, process: Process) -> int:
         return process.sys_port
+
+    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
+        """The worker's own /health, then /v1/models must list the model."""
+        del expected_prefill, expected_decode
+        return probe_direct_server(host, port)
+
+    def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
+        del processes
+        return logical_health_expectations(config)
 
     def validate(self, config: Any) -> None:
         """The one aggregate ``vllm serve`` owns the public port: no nginx fan-out, no P/D, one worker."""

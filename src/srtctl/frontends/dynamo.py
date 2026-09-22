@@ -18,7 +18,7 @@ from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
-from srtctl.frontends.base import register_frontend
+from srtctl.frontends.base import logical_health_expectations, register_frontend
 from srtctl.frontends.dynamic_frontend import DynamicFrontend
 from srtctl.services.implicit import discovery_env
 
@@ -31,6 +31,62 @@ logger = logging.getLogger(__name__)
 
 ROUTER_POLICY_CONFIG_FILENAME = "router_policy_config.yaml"
 ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
+
+
+def vllm_data_parallel_size(config: Any, mode: str) -> int:
+    """Return vLLM data parallel size for a mode, defaulting to one."""
+    backend = config.backend
+    if getattr(backend, "type", None) != "vllm":
+        return 1
+
+    vllm_config = getattr(backend, "vllm_config", None)
+    mode_config = getattr(vllm_config, mode, None) if vllm_config else None
+    if not mode_config:
+        # Special case: no vllm_config at all defaulting to 1 then
+        return 1
+
+    return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
+
+
+def vllm_health_entries(
+    config: Any,
+    mode: str,
+    logical_workers: int,
+    backend_processes: list["Process"] | None,
+) -> int:
+    """Return expected Dynamo generate registrations for a vLLM worker mode.
+
+    Per-GPU DP launch registers one entry per DP rank; per-node launch registers
+    one entry per node-local process, or one per logical worker when a replica
+    spans nodes.
+    """
+    dp_size = vllm_data_parallel_size(config, mode)
+    dp_launch_mode = getattr(config.backend, "dp_launch_mode", "per_node")
+    if dp_size > 1 and dp_launch_mode == "per_node":
+        if backend_processes is None:
+            raise ValueError("backend_processes are required for per-node DP health expectations")
+        endpoint_mode = "agg" if mode == "aggregated" else mode
+        mode_processes = [process for process in backend_processes if process.endpoint_mode == endpoint_mode]
+        if not mode_processes:
+            return 0
+
+        vllm_config = getattr(config.backend, "vllm_config", None)
+        mode_config = getattr(vllm_config, mode, None) if vllm_config else None
+        mode_config = mode_config or {}
+        tp_size = int(mode_config.get("tensor-parallel-size") or mode_config.get("tensor_parallel_size") or 1)
+        pp_size = int(mode_config.get("pipeline-parallel-size") or mode_config.get("pipeline_parallel_size") or 1)
+        gpu_indices = getattr(mode_processes[0], "gpu_indices", None)
+        if gpu_indices is None:
+            # Compatibility for callers that provide only registration-count
+            # process stubs. Real launch processes always carry GPU indices.
+            return len(mode_processes)
+        local_gpu_count = len(gpu_indices)
+        spans_nodes = tp_size * pp_size > local_gpu_count
+        if spans_nodes:
+            return logical_workers
+        return len(mode_processes)
+
+    return logical_workers * dp_size
 
 
 @register_frontend("dynamo")
@@ -81,6 +137,28 @@ class DynamoFrontend(DynamicFrontend):
     ) -> WorkerHealthResult:
         """Parse dynamo /health endpoint response."""
         return check_dynamo_health(response_json, expected_prefill, expected_decode)
+
+    def health_expectations(self, config: Any, processes: list["Process"] | None) -> tuple[int, int, str]:
+        """Dynamo's /health counts registered generate instances.
+
+        A vLLM worker registers one per DP rank (per_gpu launch) or one per
+        node-local process (per_node launch); every other engine registers one per
+        logical worker.
+        """
+        logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
+        if getattr(config.backend, "type", None) != "vllm":
+            return logical_prefill, logical_decode, worker_desc
+        if config.resources.num_agg > 0:
+            n_prefill = 0
+            n_decode = vllm_health_entries(config, "aggregated", logical_decode, processes)
+        else:
+            n_prefill = vllm_health_entries(config, "prefill", logical_prefill, processes)
+            n_decode = vllm_health_entries(config, "decode", logical_decode, processes)
+        return (
+            n_prefill,
+            n_decode,
+            f"{n_prefill}P + {n_decode}D Dynamo generate instances; logical workers: {worker_desc}",
+        )
 
     def start_frontends(
         self,

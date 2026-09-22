@@ -18,9 +18,9 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import yaml
 
-from srtctl.core.health import WorkerHealthResult, check_trtllm_serve_health, wait_for_health
+from srtctl.core.health import WorkerHealthResult, check_trtllm_serve_health, probe_http_ok, wait_for_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
-from srtctl.frontends.base import register_frontend
+from srtctl.frontends.base import logical_health_expectations, register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -83,6 +83,17 @@ class TRTLLMServeFrontend:
     def worker_ready_port(self, process: "Process") -> int:
         """A trtllm-serve worker reports /health on its own OpenAI port."""
         return process.http_port
+
+    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
+        """A 200 from /health is ready: the body may be empty, and every worker was gated before the orchestrator started."""
+        del expected_prefill, expected_decode
+        return probe_http_ok(
+            host, port, self.health_endpoint, f"trtllm-serve frontend healthy at http://{host}:{port}/health"
+        )
+
+    def health_expectations(self, config: Any, processes: list["Process"] | None) -> tuple[int, int, str]:
+        del processes
+        return logical_health_expectations(config)
 
     def validate(self, config: Any) -> None:
         """One direct aggregate worker or one disaggregated orchestrator; either way one public endpoint."""

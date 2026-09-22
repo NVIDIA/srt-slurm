@@ -8,7 +8,7 @@ from __future__ import annotations
 import shlex
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from srtctl.frontends.base import register_frontend
+from srtctl.frontends.base import logical_health_expectations, register_frontend
 from srtctl.frontends.static_router import StaticRouterFrontend
 
 if TYPE_CHECKING:
@@ -204,6 +204,23 @@ class VLLMRouterFrontend(StaticRouterFrontend):
         """Advertise vLLM's NIXL side-channel port for P/D routing."""
         del backend
         return process.nixl_port
+
+    def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
+        """Router's /workers lists one entry per DP rank it expands each advertised URL into."""
+        logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
+        if processes is None:
+            return logical_prefill, logical_decode, worker_desc
+        n_prefill = sum(
+            routed_process_dp_size(config.backend, process)
+            for process in processes
+            if process.endpoint_mode == "prefill" and process.http_port > 0
+        )
+        n_decode = sum(
+            routed_process_dp_size(config.backend, process)
+            for process in processes
+            if process.endpoint_mode in {"decode", "agg"} and process.http_port > 0
+        )
+        return n_prefill, n_decode, f"{n_prefill}P + {n_decode}D Router workers; logical workers: {worker_desc}"
 
     def worker_metrics_port(self, process: Process, runtime: Any) -> int | None:
         """Every node-local hybrid-LB pool has its own API and /metrics; a positive http_port marks one."""

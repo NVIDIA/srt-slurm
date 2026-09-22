@@ -17,6 +17,7 @@ import logging
 import socket
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import requests
@@ -204,8 +205,8 @@ def check_trtllm_serve_health(
     be empty). The trtllm_serve frontend already gates each worker for readiness before
     starting the orchestrator, so a 200 here means the stack is ready.
 
-    Note: wait_for_model() short-circuits to ready on the 200 for trtllm_serve and does
-    not call this, so this exists mainly as the FrontendProtocol.parse_health hook.
+    Note: TRTLLMServeFrontend.probe_ready treats the 200 as ready without parsing a
+    body, so this exists mainly as the FrontendProtocol.parse_health hook.
     """
     return WorkerHealthResult(
         ready=True,
@@ -253,6 +254,47 @@ def check_vllm_health(
             ready=False,
             message=f"vLLM /health is up but /v1/models check failed: {e}",
         )
+
+
+def probe_json_health(
+    host: str,
+    port: int,
+    endpoint: str,
+    parse: Callable[[dict, int, int], WorkerHealthResult],
+    expected_prefill: int,
+    expected_decode: int,
+) -> WorkerHealthResult:
+    """GET ``host:port/endpoint`` and hand a 200 JSON body to ``parse``.
+
+    The default ``probe_ready`` for frontends whose health endpoint reports worker
+    counts as JSON (Dynamo ``/health``, the static routers' ``/workers``). A
+    non-200 status is not ready; connection errors propagate for the caller to retry.
+    """
+    response = requests.get(f"http://{host}:{port}{endpoint}", timeout=5.0)
+    if response.status_code != 200:
+        return WorkerHealthResult(ready=False, message=f"{endpoint} returned HTTP {response.status_code}")
+    return parse(response.json(), expected_prefill, expected_decode)
+
+
+def probe_http_ok(host: str, port: int, endpoint: str, ready_message: str) -> WorkerHealthResult:
+    """GET ``host:port/endpoint``; a 200 is ready, whatever the body. Connection errors propagate."""
+    response = requests.get(f"http://{host}:{port}{endpoint}", timeout=5.0)
+    if response.status_code != 200:
+        return WorkerHealthResult(ready=False, message=f"{endpoint} returned HTTP {response.status_code}")
+    return WorkerHealthResult(ready=True, message=ready_message)
+
+
+def probe_direct_server(host: str, port: int) -> WorkerHealthResult:
+    """Readiness of a direct OpenAI server: ``/health`` must be 200, then ``/v1/models`` must list a model.
+
+    The ``probe_ready`` of the frontends whose one worker is the public endpoint
+    (direct vLLM and SGLang). Connection errors on ``/health`` propagate.
+    """
+    health_url = f"http://{host}:{port}/health"
+    response = requests.get(health_url, timeout=5.0)
+    if response.status_code != 200:
+        return WorkerHealthResult(ready=False, message=f"/health returned HTTP {response.status_code}")
+    return check_vllm_health(host, port, health_url)
 
 
 def wait_for_port(
@@ -464,10 +506,13 @@ def wait_for_model(
     frontend_type: str = "dynamo",
     stop_event: threading.Event | None = None,
 ) -> bool:
-    """Wait for model to be ready with expected worker counts.
+    """Wait for the public endpoint to report every expected worker.
 
-    This is the pure Python replacement for the bash wait_for_model function.
-    It polls the appropriate health endpoint and validates worker counts.
+    The loop owns timing, abort, and progress logging; the frontend owns the
+    probe. ``frontend.probe_ready`` performs one readiness check (a JSON worker
+    count, a bare 200, the direct server's ``/health`` plus ``/v1/models``) and
+    returns a ``WorkerHealthResult``; a ``requests.RequestException`` means the
+    endpoint is not up yet and is retried.
 
     Args:
         host: Model server hostname or IP
@@ -477,7 +522,7 @@ def wait_for_model(
         poll_interval: Seconds between health checks
         timeout: Maximum wait time in seconds
         report_every: Log progress every N seconds
-        frontend_type: Frontend adapter used to select and parse health
+        frontend_type: Frontend whose probe_ready decides readiness
         stop_event: Optional threading.Event to abort waiting
 
     Returns:
@@ -486,24 +531,16 @@ def wait_for_model(
     from srtctl.frontends import get_frontend
 
     frontend = get_frontend(frontend_type)
-    health_url = f"http://{host}:{port}{frontend.health_endpoint}"
-    if frontend.health_endpoint == "/workers":
-        logger.info(
-            "Polling %s every %.1fs for %d prefills and %d decodes (%s frontend)",
-            health_url,
-            poll_interval,
-            n_prefill,
-            n_decode,
-            frontend_type,
-        )
-    else:
-        logger.info(
-            "Polling %s every %.1fs for %d prefills and %d decodes",
-            health_url,
-            poll_interval,
-            n_prefill,
-            n_decode,
-        )
+    logger.info(
+        "Polling http://%s:%d%s every %.1fs for %d prefills and %d decodes (%s frontend)",
+        host,
+        port,
+        frontend.health_endpoint,
+        poll_interval,
+        n_prefill,
+        n_decode,
+        frontend_type,
+    )
 
     start_time = time.time()
     last_report_time = start_time
@@ -520,39 +557,15 @@ def wait_for_model(
             logger.error("Model did not get healthy in %.0f seconds", timeout)
             return False
 
-        # Try to fetch health
         try:
-            response = requests.get(health_url, timeout=5.0)
-            if response.status_code == 200:
-                # trtllm-serve /health may return an empty body; a 200 is sufficient
-                # (workers were gated by the frontend before the orchestrator started).
-                if frontend_type == "trtllm_serve":
-                    logger.info("trtllm-serve frontend healthy at %s", health_url)
-                    return True
-                if frontend_type in ("vllm", "sglang"):
-                    # Direct modes: the worker's own /health + /v1/models.
-                    result = check_vllm_health(host, port, health_url)
-                    if result.ready:
-                        logger.info(result.message)
-                        return True
-                    if time.time() - last_report_time >= report_every:
-                        logger.info(result.message)
-                        last_report_time = time.time()
-                    time.sleep(poll_interval)
-                    continue
-
-                response_json = response.json()
-
-                result = frontend.parse_health(response_json, n_prefill, n_decode)
-
-                if result.ready:
-                    logger.info(result.message)
-                    return True
-
-                # Report progress periodically
-                if time.time() - last_report_time >= report_every:
-                    logger.info(result.message)
-                    last_report_time = time.time()
+            result = frontend.probe_ready(host, port, n_prefill, n_decode)
+            if result.ready:
+                logger.info(result.message)
+                return True
+            # Report progress periodically
+            if time.time() - last_report_time >= report_every:
+                logger.info(result.message)
+                last_report_time = time.time()
 
         except requests.exceptions.RequestException as e:
             # Report connection errors periodically

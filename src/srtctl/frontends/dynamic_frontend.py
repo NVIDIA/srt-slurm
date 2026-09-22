@@ -25,6 +25,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+from srtctl.core.health import WorkerHealthResult, probe_json_health
+from srtctl.frontends.base import logical_health_expectations
+
 if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
@@ -42,6 +45,19 @@ class DynamicFrontend:
     def health_endpoint(self) -> str:
         """The frontend reports its registered workers here; ``parse_health`` counts them."""
         return "/health"
+
+    def parse_health(self, response_json: dict, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
+        """Count the registered workers in the frontend's health body; each implementation knows its format."""
+        raise NotImplementedError(f"{type(self).__name__} must parse its own registration count")
+
+    def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
+        """One GET of the registration endpoint, parsed against the expected counts."""
+        return probe_json_health(host, port, self.health_endpoint, self.parse_health, expected_prefill, expected_decode)
+
+    def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
+        """One registration per logical worker unless the implementation knows better."""
+        del processes
+        return logical_health_expectations(config)
 
     def validate(self, config: Any) -> None:
         """Recipe-level rules beyond the backend pairing; none by default."""
