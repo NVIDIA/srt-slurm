@@ -27,6 +27,9 @@ frontend:
 engine:
   type: trtllm
   served_model_name: "Qwen/Qwen3-0.6B"
+  # Optional CPU affinity and memory preference on each GPU's NUMA node:
+  # numa_cpu_bind: true
+  # numa_memory_bind: true
 roles:
   agg:
     nodes: 1
