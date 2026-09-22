@@ -129,8 +129,9 @@ class TRTLLMProtocol:
     sequential_node_start: int = 0
 
     # Whether to prefix the trtllm worker command with `numactl -m 0,1`.
-    # None (default) enables it only for gb200/gb300/VRNVL72 prefill and decode
-    # workers. True/False forces numactl on/off regardless of gpu_type or mode.
+    # None (default) enables it only for gb200/gb300/vrnvl72 prefill and decode
+    # workers (case-insensitive GPU type). True/False forces numactl on/off
+    # regardless of gpu_type or mode.
     numa_memory_bind: bool | None = None
 
     # Optional stricter NUMA CPU affinity for the worker process, in addition
@@ -347,7 +348,8 @@ class TRTLLMProtocol:
         model_arg = runtime.worker_model_arg
 
         if self.numa_memory_bind is None:
-            use_numactl = runtime.gpu_type in ("gb200", "gb300", "VRNVL72") and mode in ("prefill", "decode")
+            gpu_type = (runtime.gpu_type or "").lower()
+            use_numactl = gpu_type in ("gb200", "gb300", "vrnvl72") and mode in ("prefill", "decode")
         else:
             use_numactl = self.numa_memory_bind
         numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []

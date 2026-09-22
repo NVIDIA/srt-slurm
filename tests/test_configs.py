@@ -4118,9 +4118,24 @@ class TestHuggingFaceModelSupport:
         idx = cmd.index("--model-path")
         assert cmd[idx + 1] == "/model"
 
-    @pytest.mark.parametrize("gpu_type", ["h100", "gb200", "gb300", "VRNVL72"])
+    @pytest.mark.parametrize(
+        ("gpu_type", "default_bind"),
+        [
+            (None, False),
+            ("", False),
+            ("h100", False),
+            ("H100", False),
+            ("gb200", True),
+            ("GB200", True),
+            ("gb300", True),
+            ("GB300", True),
+            ("vrnvl72", True),
+            ("VRNVL72", True),
+            ("VrNvL72", True),
+        ],
+    )
     @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
-    def test_trtllm_numa_memory_bind_none_follows_gpu_type_default(self, gpu_type, mode):
+    def test_trtllm_numa_memory_bind_none_follows_gpu_type_default(self, gpu_type, default_bind, mode):
         """Default memory binding applies only to supported prefill/decode workers."""
         from pathlib import Path
         from unittest.mock import patch
@@ -4139,7 +4154,7 @@ class TestHuggingFaceModelSupport:
         ):
             cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
 
-        if gpu_type != "h100" and mode != "agg":
+        if default_bind and mode != "agg":
             assert cmd[:3] == ["numactl", "-m", "0,1"]
         else:
             assert "numactl" not in cmd
