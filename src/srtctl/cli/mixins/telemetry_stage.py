@@ -543,12 +543,12 @@ class TelemetryStageMixin:
         return self._resolve_bundled_binary(binary_path)
 
     def _frontend_metrics_port(self) -> int | None:
-        """Frontends whose Prometheus listener is not the routing port: the SGLang Model Gateway."""
-        if self.config.frontend.type == "sglang-router":
-            from srtctl.frontends.sglang import router_metrics_port
+        """Port of a frontend Prometheus listener separate from the routing port, if the frontend runs one."""
+        from srtctl.frontends import FRONTEND_NONE, get_frontend
 
-            return router_metrics_port(self.config.frontend.args)
-        return None
+        if self.config.frontend.type == FRONTEND_NONE:
+            return None
+        return get_frontend(self.config.frontend.type).frontend_metrics_port(self.config.frontend.args)
 
     def _service_metrics_targets(self) -> list[ServiceMetricsTarget]:
         """One tachometer target per node for every service that serves metrics.

@@ -2858,9 +2858,7 @@ class SrtConfig:
                         f"profiling.{phase_name}.worker_rank={phase_config.worker_rank} is not a physical "
                         f"process rank for this worker layout; valid ranks: {ranks}"
                     )
-                if (
-                    self.frontend.type == "vllm" or (self.frontend.type == "dynamo" and self.dynamo.sidecar)
-                ) and phase_config.worker_rank != 0:
+                if phase_config.worker_rank != 0 and self._frontend_profiling_control_is_leader_only():
                     raise ValidationError(
                         f"profiling.{phase_name}.worker_rank={phase_config.worker_rank} has no independent "
                         "control endpoint; direct vLLM and Dynamo sidecar profiling must select rank 0"
@@ -2951,9 +2949,19 @@ class SrtConfig:
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
             raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
 
+    def _frontend_profiling_control_is_leader_only(self) -> bool:
+        """Whether the frontend's workers expose one profiler control server per logical endpoint."""
+        if self.frontend.type == "none":
+            return False
+        from srtctl.frontends import get_frontend
+
+        return get_frontend(self.frontend.type).profiling_control_is_leader_only(self)
+
     def _dynamo_system_ports(self) -> set[int]:
         """System-status ports that backend launches actually bind on worker nodes."""
-        if self.frontend.type != "dynamo":
+        from srtctl.frontends import get_frontend
+
+        if self.frontend.type == "none" or get_frontend(self.frontend.type).worker_launch != "dynamo":
             return set()
 
         resources = self.resources

@@ -26,10 +26,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.health import WorkerHealthResult, probe_json_health
-from srtctl.frontends.base import logical_health_expectations
+from srtctl.frontends.base import frontend_args_to_cli, logical_health_expectations
 
 if TYPE_CHECKING:
     from srtctl.core.topology import Process
+    from srtctl.services.implicit import EffectiveService
 
 
 class DynamicFrontend:
@@ -78,14 +79,14 @@ class DynamicFrontend:
         """The frontend process is the endpoint, never a worker."""
         return []
 
+    def implied_services(self, config: Any) -> list[EffectiveService]:
+        """The discovery plane the frontend needs; none unless the implementation brings one."""
+        return []
+
+    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
+        """Metrics share the routing port unless the implementation runs a separate listener."""
+        return None
+
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert ``frontend.args`` to CLI flags, keys verbatim."""
-        if not args:
-            return []
-        result: list[str] = []
-        for key, value in args.items():
-            if value is True:
-                result.append(f"--{key}")
-            elif value is not False and value is not None:
-                result.extend([f"--{key}", str(value)])
-        return result
+        return frontend_args_to_cli(args)

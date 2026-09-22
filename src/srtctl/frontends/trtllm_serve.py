@@ -18,14 +18,15 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import yaml
 
-from srtctl.core.health import WorkerHealthResult, check_trtllm_serve_health, probe_http_ok, wait_for_health
+from srtctl.core.health import WorkerHealthResult, probe_http_ok, wait_for_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
-from srtctl.frontends.base import logical_health_expectations, register_frontend
+from srtctl.frontends.base import frontend_args_to_cli, logical_health_expectations, register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
+    from srtctl.services.implicit import EffectiveService
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +83,7 @@ class TRTLLMServeFrontend:
 
     def probe_ready(self, host: str, port: int, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
         """A 200 from /health is ready: the body may be empty, and every worker was gated before the orchestrator started."""
-        return probe_http_ok(
-            host, port, self.health_endpoint, f"trtllm-serve frontend healthy at http://{host}:{port}/health"
-        )
+        return probe_http_ok(host, port, "/health", f"trtllm-serve frontend healthy at http://{host}:{port}/health")
 
     def health_expectations(self, config: Any, processes: list["Process"] | None) -> tuple[int, int, str]:
         return logical_health_expectations(config)
@@ -101,19 +100,6 @@ class TRTLLMServeFrontend:
                 "aggregate worker (set resources.agg_workers: 1)"
             )
 
-    @property
-    def health_endpoint(self) -> str:
-        return "/health"
-
-    def parse_health(
-        self,
-        response_json: dict,
-        expected_prefill: int,
-        expected_decode: int,
-    ) -> WorkerHealthResult:
-        """Parse trtllm-serve /health response (200 => ready)."""
-        return check_trtllm_serve_health(response_json, expected_prefill, expected_decode)
-
     def get_backend_health_urls(
         self,
         backend: Any,
@@ -122,17 +108,11 @@ class TRTLLMServeFrontend:
     ) -> list[str]:
         return []
 
-    def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
-        """Convert frontend args dict to CLI arguments."""
-        if not args:
-            return []
-        result = []
-        for key, value in args.items():
-            if value is True:
-                result.append(f"--{key}")
-            elif value is not False and value is not None:
-                result.extend([f"--{key}", str(value)])
-        return result
+    def implied_services(self, config: Any) -> list["EffectiveService"]:
+        return []
+
+    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
+        return None
 
     @staticmethod
     def _build_ser(config: Any, prefill_urls: list[str], decode_urls: list[str], port: int) -> dict[str, Any]:
@@ -239,7 +219,7 @@ class TRTLLMServeFrontend:
         container_ser_path = "/logs/ser.yaml"
 
         cmd = ["trtllm-serve", "disaggregated", "--config", container_ser_path]
-        cmd.extend(self.get_frontend_args_list(config.frontend.args))
+        cmd.extend(frontend_args_to_cli(config.frontend.args))
         logger.info("Orchestrator command: %s", shlex.join(cmd))
 
         env_to_set: dict[str, str] = {}

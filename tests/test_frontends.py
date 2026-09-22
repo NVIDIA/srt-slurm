@@ -268,10 +268,30 @@ class TestFrontendProperties:
         frontend = SGLangRouterFrontend()
         assert frontend.health_endpoint == "/workers"
 
-    def test_vllm_health_endpoint(self):
-        """VLLMFrontend uses /health endpoint."""
-        frontend = VLLMFrontend()
-        assert frontend.health_endpoint == "/health"
+    def test_frontend_metrics_port_and_implied_services(self):
+        """Only the SGLang gateway runs a separate metrics listener; only Dynamo brings a discovery plane."""
+        from types import SimpleNamespace
+
+        from srtctl.ports import SGLANG_ROUTER_METRICS_PORT
+
+        gateway = SGLangRouterFrontend()
+        assert gateway.frontend_metrics_port(None) == SGLANG_ROUTER_METRICS_PORT
+        assert gateway.frontend_metrics_port({"prometheus-port": 31000}) == 31000
+        for frontend_type in ("dynamo", "vllm", "sglang", "trtllm_serve", "vllm-router"):
+            assert get_frontend(frontend_type).frontend_metrics_port({"prometheus-port": 31000}) is None
+
+        dynamo_config = SimpleNamespace(
+            frontend=SimpleNamespace(type="dynamo"),
+            dynamo=SimpleNamespace(request_plane="nats", event_plane="zmq"),
+            infra=SimpleNamespace(etcd_nats_dedicated_node=False, nats_max_payload_mb=None),
+        )
+        implied = get_frontend("dynamo").implied_services(dynamo_config)
+        assert [(entry.service.name, entry.service.type, entry.reason) for entry in implied] == [
+            ("etcd", "etcd", "frontend.type dynamo"),
+            ("nats", "nats", "dynamo.request_plane nats"),
+        ]
+        for frontend_type in ("vllm", "sglang", "sglang-router", "trtllm_serve", "vllm-router"):
+            assert get_frontend(frontend_type).implied_services(dynamo_config) == []
 
 
 # ============================================================================

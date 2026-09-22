@@ -92,17 +92,15 @@ endpoints = allocate_endpoints(
 
 ### Health Checks
 
-Two patterns for checking worker readiness:
+Readiness is the frontend's: `probe_ready(host, port, expected_prefill, expected_decode)` performs one check against the public endpoint and returns a `WorkerHealthResult`, raising `requests.RequestException` while the endpoint is down. `wait_for_model` in `core/health.py` owns only timing, abort, and progress logging. The three probe shapes live in `core/health.py`:
 
 ```python
-# Dynamo backend
-check_dynamo_health(response_json, expected_prefill=2, expected_decode=4)
-
-# SGLang router
-check_sglang_router_health(response_json, expected_prefill=2, expected_decode=4)
+probe_json_health(host, port, "/workers", parse, n_prefill, n_decode)  # a JSON worker count through parse (Dynamo /health, router /workers)
+probe_http_ok(host, port, "/health", "ready message")                   # a bare 200 (trtllm-serve)
+probe_direct_server(host, port)                                          # /health, then /v1/models must list a model (direct vllm, sglang)
 ```
 
-For aggregated mode, pass `expected_prefill=0, expected_decode=num_agg`.
+Expected counts come from the frontend too: `health_expectations(config, processes)` returns `(prefill, decode, description)` in the units its endpoint reports. Aggregate workers count as decode; Dynamo counts vLLM DP registrations, vLLM Router counts the ranks it expands each URL into, everything else counts logical workers.
 
 ### Frontends
 

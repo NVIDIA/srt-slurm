@@ -20,7 +20,15 @@ from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
 from srtctl.frontends.base import logical_health_expectations, register_frontend
 from srtctl.frontends.dynamic_frontend import DynamicFrontend
-from srtctl.services.implicit import discovery_env
+from srtctl.services.config import ServiceConfig
+from srtctl.services.implicit import (
+    ETCD_SERVICE_NAME,
+    NATS_SERVICE_NAME,
+    EffectiveService,
+    discovery_env,
+    infra_placement,
+    nats_implied_reasons,
+)
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -125,6 +133,35 @@ class DynamoFrontend(DynamicFrontend):
     def worker_ready_port(self, process: "Process") -> int:
         """DYN_SYSTEM_PORT: the per-worker axum server reports /health once registered."""
         return process.sys_port
+
+    def implied_services(self, config: Any) -> list[EffectiveService]:
+        """The discovery plane: etcd always, NATS only when a Dynamo plane rides on it.
+
+        The default request plane is tcp and KV events go over direct ZMQ, so a
+        plain Dynamo job runs etcd alone; a recipe declares a ``nats`` service to
+        force one anyway.
+        """
+        placement = infra_placement(config)
+        implied = [
+            EffectiveService(
+                ServiceConfig(name=ETCD_SERVICE_NAME, type="etcd", placement=placement),
+                implicit=True,
+                reason="frontend.type dynamo",
+            )
+        ]
+        nats_reasons = nats_implied_reasons(config)
+        if nats_reasons:
+            nats_options = {}
+            if config.infra.nats_max_payload_mb is not None:
+                nats_options["max_payload_mb"] = config.infra.nats_max_payload_mb
+            implied.append(
+                EffectiveService(
+                    ServiceConfig(name=NATS_SERVICE_NAME, type="nats", placement=placement, options=nats_options),
+                    implicit=True,
+                    reason=", ".join(nats_reasons),
+                )
+            )
+        return implied
 
     def parse_health(
         self,

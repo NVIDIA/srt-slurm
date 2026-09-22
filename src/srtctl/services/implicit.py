@@ -42,7 +42,8 @@ class EffectiveService:
     reason: str = ""
 
 
-def _infra_placement(config: SrtConfig) -> ServicePlacementConfig:
+def infra_placement(config: SrtConfig) -> ServicePlacementConfig:
+    """Where the discovery plane and other infra services run: the infra node, or a dedicated one."""
     return ServicePlacementConfig(node="dedicated" if config.infra.etcd_nats_dedicated_node else "infra")
 
 
@@ -82,30 +83,13 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
     """Services the rest of the recipe asks for without naming them."""
     implied: list[EffectiveService] = []
 
-    if config.frontend.type == "dynamo":
-        placement = _infra_placement(config)
-        implied.append(
-            EffectiveService(
-                ServiceConfig(name=ETCD_SERVICE_NAME, type="etcd", placement=placement),
-                implicit=True,
-                reason="frontend.type dynamo",
-            )
-        )
-        # NATS is only a dependency when a plane actually rides on it. The default
-        # request plane is tcp and KV events go over direct ZMQ, so a plain Dynamo
-        # job runs etcd alone; declare a `nats` service to force one anyway.
-        nats_reasons = nats_implied_reasons(config)
-        if nats_reasons:
-            nats_options = {}
-            if config.infra.nats_max_payload_mb is not None:
-                nats_options["max_payload_mb"] = config.infra.nats_max_payload_mb
-            implied.append(
-                EffectiveService(
-                    ServiceConfig(name=NATS_SERVICE_NAME, type="nats", placement=placement, options=nats_options),
-                    implicit=True,
-                    reason=", ".join(nats_reasons),
-                )
-            )
+    # The frontend brings its own discovery plane (Dynamo: etcd, and NATS when a
+    # plane rides on it); a services-only job has no frontend. Imported lazily:
+    # the frontend implementations import this module.
+    from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+    if config.frontend.type != FRONTEND_NONE:
+        implied.extend(get_frontend(config.frontend.type).implied_services(config))
 
     if getattr(config.backend, "failover", None) is not None:
         # The kind's defaults are the placement: every worker node, one instance per worker.
@@ -129,7 +113,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     type="mooncake-master",
                     container=mooncake_cfg.container,
                     args=list(mooncake_cfg.master_extra_args or []),
-                    placement=_infra_placement(config),
+                    placement=infra_placement(config),
                     options=options,
                 ),
                 implicit=True,

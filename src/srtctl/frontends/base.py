@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Base types and protocols for frontend configurations.
+The frontend protocol and registry.
 
-Frontend types handle:
-- Starting router/frontend processes
-- Health checking with appropriate endpoints
-- Building CLI arguments from config
+A frontend owns everything the rest of srtctl needs to know about the router
+(or the direct server that stands in for one): which backend it pairs with,
+its recipe rules, how its workers are launched and which ports they bind,
+which rank serves metrics or an endpoint, how readiness is probed and counted,
+the services it implies, and how its process starts.
 """
 
 import threading
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
+    from srtctl.services.implicit import EffectiveService
 
 # ``frontend.type: none`` is a services-only job: no router process, no OpenAI
 # endpoint, no worker-count health gate (see SrtConfig._validate_services_only).
@@ -29,11 +31,18 @@ FRONTEND_NONE = "none"
 class FrontendProtocol(Protocol):
     """Protocol that all frontend implementations must implement.
 
-    Each frontend is responsible for:
-    1. Starting router/frontend processes on designated nodes
-    2. Providing health check endpoint and response parsing
-    3. Building CLI arguments from config
-    4. Its own recipe-level rules (``required_backend``, ``validate``)
+    Each frontend answers, for the rest of srtctl:
+    1. Which backend it pairs with and what its recipe rules are
+       (``required_backend``, ``validate``)
+    2. How its workers are launched and which port each binds
+       (``worker_launch``, ``worker_api_port``, ``expands_node_local_dp``)
+    3. Which rank serves metrics, an endpoint, or profiler control, and where
+       (``worker_metrics_port``, ``worker_endpoint_port``, ``profiling_control_port``,
+       ``direct_endpoint_nodes``, ``worker_ready_port``, ``metrics_path``)
+    4. How readiness is probed and counted (``probe_ready``, ``health_expectations``,
+       ``get_backend_health_urls``)
+    5. What it brings along (``implied_services``, ``frontend_metrics_port``)
+    6. How its process starts (``start_frontends``)
 
     An implementation registers with ``@register_frontend("<type>")``; the
     recipe's ``frontend.type`` is resolved through that registry and nowhere
@@ -142,18 +151,12 @@ class FrontendProtocol(Protocol):
         """
         ...
 
-    @property
-    def health_endpoint(self) -> str:
-        """HTTP endpoint for health checks (e.g., '/health', '/workers')."""
+    def implied_services(self, config: Any) -> list["EffectiveService"]:
+        """Services this frontend needs that the recipe did not name (Dynamo: its discovery plane)."""
         ...
 
-    def parse_health(
-        self,
-        response_json: dict,
-        expected_prefill: int,
-        expected_decode: int,
-    ) -> "WorkerHealthResult":
-        """Parse health check response and return worker status."""
+    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
+        """Port of a Prometheus listener separate from the routing port, or ``None`` when metrics share it."""
         ...
 
     def get_backend_health_urls(
@@ -190,9 +193,18 @@ class FrontendProtocol(Protocol):
         """
         ...
 
-    def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
-        """Convert frontend args dict to CLI argument list."""
-        ...
+
+def frontend_args_to_cli(args: dict[str, Any] | None) -> list[str]:
+    """``frontend.args`` as CLI flags with keys verbatim: ``True`` is a bare flag, ``False``/``None`` are dropped."""
+    if not args:
+        return []
+    result: list[str] = []
+    for key, value in args.items():
+        if value is True:
+            result.append(f"--{key}")
+        elif value is not False and value is not None:
+            result.extend([f"--{key}", str(value)])
+    return result
 
 
 def logical_health_expectations(config: Any) -> tuple[int, int, str]:

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
+    from srtctl.services.implicit import EffectiveService
 
 logger = logging.getLogger(__name__)
 
@@ -103,25 +104,6 @@ class SGLangFrontend:
         if config.dynamo.sidecar:
             raise ValueError("frontend.type: sglang does not support dynamo.sidecar; use frontend.type: dynamo")
 
-    @property
-    def health_endpoint(self) -> str:
-        return "/health"
-
-    def parse_health(
-        self,
-        response_json: dict,
-        expected_prefill: int,
-        expected_decode: int,
-    ) -> WorkerHealthResult:
-        return WorkerHealthResult(
-            ready=True,
-            message="SGLang OpenAI server healthy",
-            prefill_ready=expected_prefill,
-            prefill_expected=expected_prefill,
-            decode_ready=expected_decode,
-            decode_expected=expected_decode,
-        )
-
     def get_backend_health_urls(
         self,
         backend: Any,
@@ -130,16 +112,11 @@ class SGLangFrontend:
     ) -> list[str]:
         return []
 
-    def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
-        if not args:
-            return []
-        result = []
-        for key, value in args.items():
-            if value is True:
-                result.append(f"--{key}")
-            elif value is not False and value is not None:
-                result.extend([f"--{key}", str(value)])
-        return result
+    def implied_services(self, config: Any) -> list[EffectiveService]:
+        return []
+
+    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
+        return None
 
     def start_frontends(
         self,

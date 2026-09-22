@@ -97,9 +97,9 @@ The `RuntimeContext` computes all paths and values **once** at startup. This eli
 ```python
 # All runtime values computed in one place
 runtime = RuntimeContext.from_config(config, job_id)
-runtime.log_dir          # /path/to/logs/12345/logs
-runtime.head_node_ip     # 10.0.0.1
-runtime.container_mounts # Dict[Path, Path]
+runtime.log_dir  # /path/to/logs/12345/logs
+runtime.head_node_ip  # 10.0.0.1
+runtime.container_mounts  # Dict[Path, Path]
 ```
 
 ### 2. Frozen Dataclasses
@@ -144,8 +144,8 @@ Extensible component registration via decorators:
 
 ```python
 @register_benchmark("sa-bench")
-class SABenchRunner(BenchmarkRunner):
-    ...
+class SABenchRunner(BenchmarkRunner): ...
+
 
 # Later: get_runner("sa-bench") returns instance
 runner = get_runner("sa-bench")
@@ -360,18 +360,34 @@ src/srtctl/frontends/
 
 #### FrontendProtocol
 
+Implementations register with `@register_frontend("<type>")` and are imported from the
+package `__init__`; `frontend.type` resolves through that registry. Two bases carry the
+shared behavior: `StaticRouterFrontend` (worker URLs on the CLI) and `DynamicFrontend`
+(workers register themselves). The protocol is the set of questions the rest of srtctl asks:
+
 ```python
 class FrontendProtocol(Protocol):
-    @property
-    def type(self) -> str: ...
+    type: str
+    required_backend: str | None  # pairing, checked at config load
+    worker_launch: Literal["dynamo", "direct"]  # backends read this, never the name
+    expands_node_local_dp: bool
+    metrics_path: str
 
-    @property
-    def health_endpoint(self) -> str: ...
-
-    def parse_health(response_json, expected_prefill, expected_decode) -> WorkerHealthResult: ...
-
+    def validate(self, config) -> None: ...  # recipe rules (raise ValueError)
+    def worker_api_port(self, mode) -> Literal["public", "allocated"]: ...
+    def worker_metrics_port(self, process, runtime) -> int | None: ...
+    def worker_endpoint_port(self, process, config, runtime) -> int | None: ...
+    def profiling_control_port(self, process, config, runtime) -> int | None: ...
+    def profiling_control_is_leader_only(self, config) -> bool: ...
+    def direct_endpoint_nodes(self, processes) -> list[str]: ...
+    def worker_ready_port(self, process) -> int: ...
+    def health_expectations(self, config, processes) -> tuple[int, int, str]: ...
+    def probe_ready(self, host, port, expected_prefill, expected_decode) -> WorkerHealthResult: ...
+    def implied_services(self, config) -> list[EffectiveService]: ...
+    def frontend_metrics_port(self, frontend_args) -> int | None: ...
+    def get_backend_health_urls(self, backend, backend_processes, network_interface) -> list[str]: ...
     def start_frontends(
-        topology, runtime, config, backend, backend_processes
+        self, topology, runtime, config, backend, backend_processes, stop_event
     ) -> list[ManagedProcess]: ...
 ```
 
@@ -447,10 +463,10 @@ src/srtctl/core/
 +----------------------------------------------------------------------------------------------+
 |                                       FRONTEND LAYER                                         |
 +----------------------------------------------------------------------------------------------+
-| FrontendProtocol          | DynamoFrontend | SGLangFrontend | TRTLLMServe  | VLLMFrontend    |
+| FrontendProtocol          | DynamoFrontend | SGLangRouter   | TRTLLMServe  | VLLMFrontend    |
 | - start_frontends()       | srun process   | srun process   | srun process | (no process)    |
-| - parse_health()          | NATS/etcd      | direct workers | /health      | /health         |
-| - health_endpoint         | /health        | /workers       | /health      | agg leader node |
+| - probe_ready()           | /health JSON   | /workers JSON  | bare 200     | /health+models  |
+| - worker_launch           | dynamo         | direct         | direct       | direct          |
 +----------------------------------------------------------------------------------------------+
                                 |
                                 v
@@ -604,26 +620,24 @@ SweepOrchestrator.run_benchmark()
          |
          v
 wait_for_model(host, port, n_prefill, n_decode, frontend_type)
+         |          counts from frontend.health_expectations(config, processes)
          |
-         +-----> GET http://host:port/{health_endpoint}
+         +-----> frontend.probe_ready(host, port, n_prefill, n_decode)
          |              |
-         |       +------+------+
-         |       |             |
-         |       v             v
-         |   /health       /workers
-         |   (dynamo)      (sglang)
-         |       |             |
-         |       v             v
-         |  check_dynamo   check_sglang
-         |  _health()      _router_health()
-         |       |             |
-         |       v             v
-         |   WorkerHealthResult
+         |       +------+-----------+----------------+
+         |       |                  |                |
+         |       v                  v                v
+         |  probe_json_health   probe_http_ok   probe_direct_server
+         |  (dynamo /health,    (trtllm-serve   (direct vllm, sglang:
+         |   routers /workers)   bare 200)       /health + /v1/models)
+         |       |                  |                |
+         |       v                  v                v
+         |   WorkerHealthResult (RequestException while the endpoint is down)
          |   - ready: bool
          |   - prefill_ready vs expected
          |   - decode_ready vs expected
          |
-         +<--- Loop until ready or timeout
+         +<--- Loop until ready or timeout (the loop owns timing, abort, logging)
 ```
 
 ---
@@ -736,7 +750,7 @@ class RuntimeContext:
     run_name: str
 
     # Node topology
-    nodes: Nodes          # head, bench, worker tuple
+    nodes: Nodes  # head, bench, worker tuple
     head_node_ip: str
 
     # Computed paths (all absolute)
@@ -827,11 +841,11 @@ class ProcessRegistry:
 ```python
 @dataclass
 class ManagedProcess:
-    name: str                    # e.g., "prefill_0", "decode_1"
+    name: str  # e.g., "prefill_0", "decode_1"
     popen: subprocess.Popen
     log_file: Path | None
     node: str | None
-    critical: bool = True        # Failure triggers cleanup
+    critical: bool = True  # Failure triggers cleanup
 
     @property
     def is_running(self) -> bool: ...
@@ -895,40 +909,38 @@ BackendConfig = SGLangProtocol | MyBackendProtocol
 
 ### How to Add a New Frontend
 
-1. **Create frontend module** at `frontends/myfrontend.py`:
+Decide first whether it is a new process or a mode of an existing router (a discovery
+flag, another connector); a mode is an override in the existing class.
+
+1. **Create frontend module** at `frontends/myrouter.py`, subclassing the base that matches
+   how it learns about workers, and register it:
 
 ```python
-class MyFrontend:
-    @property
-    def type(self) -> str:
-        return "myfrontend"
+from srtctl.frontends.base import register_frontend
+from srtctl.frontends.static_router import StaticRouterFrontend  # or DynamicFrontend
 
-    @property
-    def health_endpoint(self) -> str:
-        return "/health"
 
-    def parse_health(self, response_json, expected_prefill, expected_decode) -> WorkerHealthResult:
-        """Parse health check response."""
-        ...
+@register_frontend("myrouter")
+class MyRouterFrontend(StaticRouterFrontend):
+    type = "myrouter"
+    required_backend = "vllm"
+    executable = ("myrouter",)
+    pd_flag = "--pd"
+    process_name = "myrouter"
 
-    def start_frontends(self, topology, runtime, config, backend, backend_processes) -> list[ManagedProcess]:
-        """Start frontend processes."""
-        ...
+    def validate(self, config) -> None:
+        """Recipe rules; raise ValueError with the user-facing message."""
 
-    def get_frontend_args_list(self, args: dict | None) -> list[str]:
-        """Convert args dict to CLI arguments."""
-        ...
+    # Override only the hooks whose answer differs from the base:
+    # worker_bootstrap_port, build_router_command, probe_ready, health_expectations,
+    # worker_metrics_port, worker_endpoint_port, frontend_metrics_port, implied_services.
 ```
 
-2. **Register in `frontends/base.py`**:
+2. **Import it from `frontends/__init__.py`**. That is the registration; the schema,
+   backends, telemetry, benchmark stage, and readiness loop need no edits.
 
-```python
-def get_frontend(frontend_type: str) -> FrontendProtocol:
-    if frontend_type == "myfrontend":
-        from srtctl.frontends.myfrontend import MyFrontend
-        return MyFrontend()
-    # ... existing frontends
-```
+3. Add `tests/test_myrouter_frontend.py` (use `start_process` as the launch seam), a
+   `docs/myrouter.md` page, and an `examples/` recipe.
 
 ### How to Add a New Benchmark
 
@@ -936,6 +948,7 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
 
 ```python
 from srtctl.benchmarks.base import BenchmarkRunner, register_benchmark
+
 
 @register_benchmark("mybench")
 class MyBenchRunner(BenchmarkRunner):
@@ -957,9 +970,12 @@ class MyBenchRunner(BenchmarkRunner):
     def build_command(self, config: SrtConfig, runtime: RuntimeContext) -> list[str]:
         """Build benchmark command."""
         return [
-            "python3", self.script_path,
-            "--host", runtime.nodes.head,
-            "--port", str(runtime.frontend_port),
+            "python3",
+            self.script_path,
+            "--host",
+            runtime.nodes.head,
+            "--port",
+            str(runtime.frontend_port),
             # ... other args
         ]
 ```
@@ -1023,18 +1039,17 @@ if TYPE_CHECKING:
 2. **Lazy imports** - Import at function call time:
 
 ```python
-def get_frontend(frontend_type: str) -> FrontendProtocol:
-    # Import here to avoid circular imports
-    from srtctl.frontends.dynamo import DynamoFrontend
-    from srtctl.frontends.sglang import SGLangFrontend
+def _validate_frontend(self) -> None:
+    # Import here to avoid circular imports: frontends import core.schema.
+    from srtctl.frontends import get_frontend, list_frontend_types
+
     ...
 ```
 
 3. **Forward references** - Use string annotations:
 
 ```python
-def from_config(cls, config: "SrtConfig", job_id: str) -> "RuntimeContext":
-    ...
+def from_config(cls, config: "SrtConfig", job_id: str) -> "RuntimeContext": ...
 ```
 
 ---

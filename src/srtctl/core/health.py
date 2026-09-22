@@ -194,30 +194,6 @@ def check_dynamo_health(
 # ============================================================================
 
 
-def check_trtllm_serve_health(
-    response_json: dict,
-    expected_prefill: int,
-    expected_decode: int,
-) -> WorkerHealthResult:
-    """Check trtllm-serve disaggregated health.
-
-    trtllm-serve's /health returns HTTP 200 once the orchestrator is up (the body may
-    be empty). The trtllm_serve frontend already gates each worker for readiness before
-    starting the orchestrator, so a 200 here means the stack is ready.
-
-    Note: TRTLLMServeFrontend.probe_ready treats the 200 as ready without parsing a
-    body, so this exists mainly as the FrontendProtocol.parse_health hook.
-    """
-    return WorkerHealthResult(
-        ready=True,
-        message="trtllm-serve orchestrator healthy",
-        prefill_ready=expected_prefill,
-        prefill_expected=expected_prefill,
-        decode_ready=expected_decode,
-        decode_expected=expected_decode,
-    )
-
-
 def check_vllm_health(
     host: str,
     port: int,
@@ -532,14 +508,13 @@ def wait_for_model(
 
     frontend = get_frontend(frontend_type)
     logger.info(
-        "Polling http://%s:%d%s every %.1fs for %d prefills and %d decodes (%s frontend)",
+        "Polling %s readiness at http://%s:%d every %.1fs for %d prefills and %d decodes",
+        frontend_type,
         host,
         port,
-        frontend.health_endpoint,
         poll_interval,
         n_prefill,
         n_decode,
-        frontend_type,
     )
 
     start_time = time.time()

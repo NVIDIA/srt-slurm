@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
+    from srtctl.services.implicit import EffectiveService
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,14 @@ class StaticRouterFrontend:
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
         """The registry lists one entry per logical worker unless the router expands them."""
         return logical_health_expectations(config)
+
+    def implied_services(self, config: Any) -> list[EffectiveService]:
+        """A static router needs no discovery plane."""
+        return []
+
+    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
+        """Metrics share the routing port unless the router runs a separate listener."""
+        return None
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert config values to CLI arguments, preserving repeated values."""

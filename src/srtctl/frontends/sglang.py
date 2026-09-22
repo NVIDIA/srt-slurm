@@ -38,6 +38,10 @@ class SGLangRouterFrontend(StaticRouterFrontend):
     # that construct the frontend before populating worker processes.
     allow_empty_workers: ClassVar[bool] = True
 
+    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
+        """The gateway serves Prometheus on its own listener, not on the routing port."""
+        return router_metrics_port(frontend_args)
+
     def get_managed_frontend_args(
         self,
         config: Any,
