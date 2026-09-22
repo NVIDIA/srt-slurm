@@ -102,6 +102,50 @@ class TestFrontendRegistry:
         assert frontend.worker_api_port("decode") == pd_port
         assert frontend.expands_node_local_dp is expands
 
+    @pytest.mark.parametrize(
+        ("frontend_type", "metrics_path", "metrics", "endpoint", "direct_nodes", "ready"),
+        [
+            # metrics/endpoint: ports for (agg leader, agg follower, routed decode pool, prefill leader)
+            ("dynamo", "/metrics", (7500, 7501, 7501, 7502), (7500, None, None, 7502), [], 7500),
+            ("vllm", "/metrics", (8000, None, None, None), (8000, None, None, 8000), ["n0"], 7500),
+            ("sglang", "/metrics", (8000, None, None, None), (8000, None, None, 8000), ["n0"], 7500),
+            ("sglang-router", "/metrics", (6100, None, None, 6100), (6100, None, None, 6100), [], 7500),
+            ("vllm-router", "/metrics", (6100, None, 6132, 6100), (6100, None, 6132, 6100), [], 7500),
+            ("trtllm_serve", "/prometheus/metrics", (None, None, 6132, 6100), (8000, None, None, 6100), [], 6100),
+        ],
+    )
+    def test_worker_port_contract(self, frontend_type, metrics_path, metrics, endpoint, direct_nodes, ready):
+        """Telemetry, the benchmark env, and sequential start read these instead of comparing names."""
+        from srtctl.core.topology import Process
+
+        agg_leader = Process("n0", frozenset({0}), 7500, 6100, "agg", 0, node_rank=0)
+        agg_follower = Process("n1", frozenset({0}), 7501, 0, "agg", 0, node_rank=1)
+        routed_pool = Process("n1", frozenset({0}), 7501, 6132, "decode", 0, node_rank=1)
+        prefill_leader = Process("n2", frozenset({0}), 7502, 6100, "prefill", 0, node_rank=0)
+        processes = [agg_leader, agg_follower, routed_pool, prefill_leader]
+        runtime = SimpleNamespace(frontend_port=8000, network_interface=None)
+        config = SimpleNamespace(dynamo=SimpleNamespace(sidecar=False))
+
+        frontend = get_frontend(frontend_type)
+        assert frontend.metrics_path == metrics_path
+        assert tuple(frontend.worker_metrics_port(p, runtime) for p in processes) == metrics
+        assert tuple(frontend.worker_endpoint_port(p, config, runtime) for p in processes) == endpoint
+        assert frontend.direct_endpoint_nodes(processes) == direct_nodes
+        assert frontend.worker_ready_port(agg_leader) == ready
+        assert isinstance(frontend.profiling_control_is_leader_only(config), bool)
+
+    def test_dynamo_sidecar_moves_the_endpoint_to_the_engine_port(self):
+        from srtctl.core.topology import Process
+
+        leader = Process("n0", frozenset({0}), 7500, 6100, "agg", 0, node_rank=0)
+        runtime = SimpleNamespace(frontend_port=8000, network_interface=None)
+        dynamo = get_frontend("dynamo")
+        assert (
+            dynamo.worker_endpoint_port(leader, SimpleNamespace(dynamo=SimpleNamespace(sidecar=True)), runtime) == 6100
+        )
+        assert dynamo.profiling_control_is_leader_only(SimpleNamespace(dynamo=SimpleNamespace(sidecar=True))) is True
+        assert dynamo.profiling_control_is_leader_only(SimpleNamespace(dynamo=SimpleNamespace(sidecar=False))) is False
+
     def test_register_frontend_makes_a_type_resolvable(self, monkeypatch):
         from srtctl.frontends import base
 

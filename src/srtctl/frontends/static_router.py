@@ -62,6 +62,36 @@ class StaticRouterFrontend:
         del mode
         return "allocated"
 
+    metrics_path: ClassVar[str] = "/metrics"
+
+    def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
+        """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing."""
+        del runtime
+        if process.is_leader and process.http_port > 0:
+            return process.http_port
+        return None
+
+    def worker_endpoint_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        del config, runtime
+        if process.is_leader and process.http_port > 0:
+            return process.http_port
+        return None
+
+    def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        del config, runtime
+        return process.http_port if process.http_port > 0 else None
+
+    def profiling_control_is_leader_only(self, config: Any) -> bool:
+        del config
+        return False
+
+    def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
+        del processes
+        return []
+
+    def worker_ready_port(self, process: Process) -> int:
+        return process.sys_port
+
     def parse_health(
         self,
         response_json: dict,

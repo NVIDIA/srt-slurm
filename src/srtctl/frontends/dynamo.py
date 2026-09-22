@@ -58,6 +58,38 @@ class DynamoFrontend:
         del mode
         return "allocated"
 
+    metrics_path: ClassVar[str] = "/metrics"
+
+    def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
+        """Every rank runs the Dynamo system status server (health, metrics) on its system port."""
+        del runtime
+        return process.sys_port if process.sys_port > 0 else None
+
+    def worker_endpoint_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
+        """One endpoint per logical worker: the leader's system port, or the native engine's port behind a sidecar."""
+        del runtime
+        if not process.is_leader:
+            return None
+        port = process.http_port if config.dynamo.sidecar else process.sys_port
+        return port if port > 0 else None
+
+    def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
+        """Iteration-triggered captures are controlled per rank on the system port."""
+        del config, runtime
+        return process.sys_port if process.sys_port > 0 else None
+
+    def profiling_control_is_leader_only(self, config: Any) -> bool:
+        """A Dynamo sidecar exposes one control server per logical endpoint, on its leader."""
+        return bool(config.dynamo.sidecar)
+
+    def direct_endpoint_nodes(self, processes: list["Process"]) -> list[str]:
+        del processes
+        return []
+
+    def worker_ready_port(self, process: "Process") -> int:
+        """DYN_SYSTEM_PORT: the per-worker axum server reports /health once registered."""
+        return process.sys_port
+
     @property
     def health_endpoint(self) -> str:
         return "/health"

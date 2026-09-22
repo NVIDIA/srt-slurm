@@ -643,12 +643,13 @@ class WorkerStageMixin:
         and exposes GET /health → 200 {"status":"ready"} once the model is loaded and the
         NATS/TCP request endpoint is registered.
         """
-        health_cfg = self.config.health_check
-        frontend_type = self.config.frontend.type
+        from srtctl.frontends import get_frontend
 
-        # dynamo.trtllm: DYN_SYSTEM_PORT is set to sys_port in start_endpoint_worker,
-        # which enables the per-worker axum HTTP server on that same port.
-        port = leader.http_port if frontend_type == "trtllm_serve" else leader.sys_port
+        health_cfg = self.config.health_check
+        # The frontend knows which port a worker reports its own health on:
+        # trtllm-serve's OpenAI port, or DYN_SYSTEM_PORT (set to sys_port in
+        # start_endpoint_worker) where the Dynamo runtime serves /health.
+        port = get_frontend(self.config.frontend.type).worker_ready_port(leader)
 
         logger.info(
             "Sequential node start: waiting for worker %s:%d to be ready",

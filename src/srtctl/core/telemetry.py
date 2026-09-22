@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 from srtctl.core.ip_utils import url_host
 from srtctl.core.slurm import get_hostname_ip
-from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -103,9 +102,12 @@ def generate_tachometer_config(
     its own listener (``frontend_metrics_port``, ``--prometheus-port``), not on
     the routing port.
     """
-    # trtllm-serve (worker and disagg orchestrator alike) exposes Prometheus
-    # text at /prometheus/metrics; every other frontend/backend uses /metrics.
-    metrics_path = "/prometheus/metrics" if frontend_type == "trtllm_serve" else "/metrics"
+    from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+    # The frontend says which rank serves metrics on which port and at what path;
+    # a services-only job has no frontend and no worker processes.
+    frontend = None if frontend_type == FRONTEND_NONE else get_frontend(frontend_type)
+    metrics_path = frontend.metrics_path if frontend is not None else "/metrics"
     endpoints: list[TelemetryEndpoint] = []
     # Per-GPU worker labels, attached to DCGM targets so GPU rows carry the rank that owns the GPU.
     gpu_metadata_by_node: dict[str, dict[str, dict[str, str]]] = {}
@@ -118,31 +120,15 @@ def generate_tachometer_config(
             }
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
-        # Every rank is a target (vLLM agg followers excepted below): follower
-        # metadata columns keep rows distinguishable, and rank coverage is
-        # exactly what the physical-process client list provides for vLLM DP.
-        if frontend_type in ("vllm", "sglang") and process.endpoint_mode == "agg" and not process.is_leader:
-            continue
-        if frontend_type == "vllm-router" and process.http_port <= 0:
-            continue
-        if frontend_type == "trtllm_serve" and (process.endpoint_mode == "agg" or process.http_port <= 0):
-            # trtllm-serve workers bind only the leader's OpenAI http_port;
-            # follower ranks serve nothing. Aggregate mode is out of scope
-            # (the one agg worker binds the public frontend port instead of
-            # process.http_port).
-            continue
-        if frontend_type == "sglang-router" and (not process.is_leader or process.http_port <= 0):
-            # Native sglang.launch_server: only the leader rank of a worker binds
-            # the HTTP server that carries /metrics.
+        # Every rank that serves metrics is a target: follower metadata columns
+        # keep rows distinguishable, and rank coverage is exactly what the
+        # physical-process client list provides for vLLM DP. Which ranks serve
+        # (Dynamo: every rank on its system port; native servers: the leader or
+        # each routable pool on its HTTP port) is the frontend's call.
+        port = frontend.worker_metrics_port(process, runtime) if frontend is not None else None
+        if port is None:
             continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        if frontend_type in ("vllm", "sglang") and process.endpoint_mode == "agg":
-            # Direct modes: the aggregate leader binds the public port itself.
-            port = FRONTEND_PUBLIC_PORT
-        elif frontend_type in ("vllm-router", "trtllm_serve", "sglang-router"):
-            port = process.http_port
-        else:
-            port = process.sys_port
         url = f"http://{url_host(node_ip)}:{port}{metrics_path}"
         node_metadata = {
             "hostname": process.node,
@@ -161,19 +147,13 @@ def generate_tachometer_config(
             )
         )
 
-    # A services-only job has no frontend process, so nothing listens on the frontend port.
-    frontend_nodes = [] if frontend_type == "none" else list(frontend_topology.frontend_nodes)
-    if frontend_type in ("vllm", "sglang"):
-        # Direct vLLM / SGLang have no separate frontend process. The public endpoint is
-        # the aggregate leader, which may differ from the Slurm/orchestrator
-        # head recorded in FrontendTopology.
-        agg_leader_nodes = [
-            process.node
-            for process in sorted(processes, key=lambda p: (p.endpoint_index, p.node_rank, p.node))
-            if process.endpoint_mode == "agg" and process.is_leader
-        ]
-        if agg_leader_nodes:
-            frontend_nodes = list(dict.fromkeys(agg_leader_nodes))
+    # A services-only job has no frontend process, so nothing listens on the
+    # frontend port. A frontend whose worker is itself the endpoint (direct vLLM
+    # or SGLang) has no separate process either: the endpoint is the aggregate
+    # leader's node, which may differ from the orchestrator head in FrontendTopology.
+    frontend_nodes: list[str] = []
+    if frontend is not None:
+        frontend_nodes = frontend.direct_endpoint_nodes(processes) or list(frontend_topology.frontend_nodes)
 
     for frontend_index, node in enumerate(frontend_nodes):
         node_ip = get_hostname_ip(node, runtime.network_interface)

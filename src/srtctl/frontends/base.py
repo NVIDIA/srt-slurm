@@ -72,6 +72,47 @@ class FrontendProtocol(Protocol):
         """
         ...
 
+    #: Path where this frontend's workers and router serve Prometheus metrics.
+    metrics_path: ClassVar[str]
+
+    def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
+        """Port on ``process.node`` serving Prometheus metrics at ``metrics_path`` for this rank.
+
+        ``None`` when the rank serves none: a follower of a native multi-node
+        server, or a layout the frontend does not scrape. Every rank of a Dynamo
+        worker serves its own system port; this is the telemetry view.
+        """
+        ...
+
+    def worker_endpoint_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
+        """Port a benchmark addresses this worker's HTTP endpoint on, one per logical worker.
+
+        ``None`` for a rank that is not addressable on its own (followers behind
+        a leader). Feeds the ``PREFILL_IPS``-style benchmark env and custom
+        benchmarks' metrics URLs.
+        """
+        ...
+
+    def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
+        """Port carrying this rank's profiler control routes for iteration-triggered captures, or ``None``."""
+        ...
+
+    def profiling_control_is_leader_only(self, config: Any) -> bool:
+        """Whether one control server per logical endpoint, on its leader, fronts every rank."""
+        ...
+
+    def direct_endpoint_nodes(self, processes: list["Process"]) -> list[str]:
+        """Nodes whose worker is itself the public endpoint, in topology order.
+
+        Empty when a router process owns the public port; then the frontend
+        topology's nodes are the endpoint.
+        """
+        ...
+
+    def worker_ready_port(self, process: "Process") -> int:
+        """Port polled for a worker's own ``/health`` during sequential endpoint start."""
+        ...
+
     def validate(self, config: Any) -> None:
         """Recipe-level rules for this frontend.
 
@@ -132,6 +173,16 @@ class FrontendProtocol(Protocol):
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert frontend args dict to CLI argument list."""
         ...
+
+
+def agg_leader_nodes(processes: list["Process"]) -> list[str]:
+    """Nodes of the aggregate workers' leader ranks, in topology order, without repeats.
+
+    For a frontend whose one aggregate worker is the public endpoint, these are
+    the endpoint nodes.
+    """
+    ordered = sorted(processes, key=lambda p: (p.endpoint_index, p.node_rank, p.node))
+    return list(dict.fromkeys(p.node for p in ordered if p.endpoint_mode == "agg" and p.is_leader))
 
 
 _FRONTENDS: dict[str, type] = {}

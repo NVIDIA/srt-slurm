@@ -1098,6 +1098,8 @@ class TestTachometerConfigGeneration:
         runtime.job_id = "12345"
         runtime.run_name = "test_12345"
         runtime.network_interface = "eth0"
+        # The direct worker binds the public frontend port itself.
+        runtime.frontend_port = 8000
         processes = [
             Process(
                 node="node-a",

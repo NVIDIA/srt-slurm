@@ -28,6 +28,7 @@ from srtctl.core.power.contract import (
 from srtctl.core.processes import terminate_and_reap
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
+from srtctl.frontends import FRONTEND_NONE, get_frontend
 from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
 from srtctl.runtime_scripts.nsys_window import finish as finish_nsys_windows
 
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
     from srtctl.core.topology import Endpoint, Process
+    from srtctl.frontends import FrontendProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -208,15 +210,19 @@ class BenchmarkStageMixin:
             self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.orchestrator_placement"
         )
 
+    @property
+    def frontend(self) -> "FrontendProtocol | None":
+        """The frontend implementation for ``frontend.type``; ``None`` for a services-only job."""
+        if self.config.frontend.type == FRONTEND_NONE:
+            return None
+        return get_frontend(self.config.frontend.type)
+
     def _public_api_node(self) -> str:
         """Node hosting the public OpenAI HTTP endpoint clients should probe."""
-        if self.config.frontend.type in ("vllm", "sglang") and self.config.resources.num_agg > 0:
-            agg_leaders = sorted(
-                (p for p in self.backend_processes if p.endpoint_mode == "agg" and p.is_leader),
-                key=lambda p: p.endpoint_index,
-            )
-            if len(agg_leaders) == 1:
-                return agg_leaders[0].node
+        frontend = self.frontend
+        direct_nodes = frontend.direct_endpoint_nodes(self.backend_processes) if frontend is not None else []
+        if len(direct_nodes) == 1:
+            return direct_nodes[0]
         return self._orchestrator_node()
 
     def _benchmark_node(self) -> str:
@@ -245,17 +251,13 @@ class BenchmarkStageMixin:
         vLLM exposes aggregate metrics on the public frontend port, while
         other frontends expose them on the worker HTTP port.
         """
+        frontend = self.frontend
+        if frontend is None:
+            return []
         endpoints: list[tuple[str, str, int]] = []
         for process in self.backend_processes:
-            if self.config.frontend.type != "vllm-router" and not process.is_leader:
-                continue
-            if self.config.frontend.type == "dynamo" and not self.config.dynamo.sidecar:
-                port = process.sys_port
-            elif self.config.frontend.type in ("vllm", "sglang"):
-                port = self.runtime.frontend_port
-            else:
-                port = process.http_port
-            if port <= 0:
+            port = frontend.worker_endpoint_port(process, self.config, self.runtime)
+            if port is None:
                 continue
             host = get_hostname_ip(process.node, self.runtime.network_interface)
             endpoints.append((process.endpoint_mode, host, port))
@@ -273,6 +275,10 @@ class BenchmarkStageMixin:
         if not profiling.is_nsys or profiling.is_nsys_time or self.config.backend_type == "trtllm":
             return self._logical_worker_endpoints()
 
+        frontend = self.frontend
+        if frontend is None:
+            return []
+        leader_only_control = frontend.profiling_control_is_leader_only(self.config)
         endpoints: list[tuple[str, str, int]] = []
         selected_modes: set[str] = set()
         for process in self.backend_processes:
@@ -286,9 +292,6 @@ class BenchmarkStageMixin:
             ):
                 continue
 
-            leader_only_control = self.config.frontend.type == "vllm" or (
-                self.config.frontend.type == "dynamo" and self.config.dynamo.sidecar
-            )
             if leader_only_control and not process.is_leader:
                 # The direct-vLLM server and a Dynamo sidecar expose one
                 # control server per logical endpoint, on its leader only.
@@ -303,13 +306,8 @@ class BenchmarkStageMixin:
                     f"worker_rank={worker_rank}"
                 )
 
-            if self.config.frontend.type == "dynamo":
-                port = process.sys_port
-            elif self.config.frontend.type == "vllm":
-                port = self.runtime.frontend_port
-            else:
-                port = process.http_port
-            if port <= 0:
+            port = frontend.profiling_control_port(process, self.config, self.runtime)
+            if port is None:
                 # Native distributed servers expose one HTTP control endpoint
                 # for multiple physical processes. Wrap every process, but send
                 # only the routable leader endpoint to the benchmark.
@@ -367,8 +365,6 @@ class BenchmarkStageMixin:
             stop_event=stop_event,
         ):
             return False
-
-        from srtctl.frontends import get_frontend
 
         frontend = get_frontend(self.config.frontend.type)
         backend_health_urls = frontend.get_backend_health_urls(
@@ -807,18 +803,20 @@ class BenchmarkStageMixin:
         ranks are not advertised as separate engines.
         """
         urls: list[str] = []
+        frontend = self.frontend
+        if frontend is None:
+            # Services-only job: no workers serve engine metrics.
+            return {}
+        is_trtllm = self.config.backend_type == "trtllm"
         dynamo_trtllm_metrics_disabled = (
-            self.config.frontend.type == "dynamo"
-            and self.config.backend_type == "trtllm"
+            frontend.worker_launch == "dynamo"
+            and is_trtllm
             and not (
                 (not self.config.dynamo.sidecar and getattr(self.config.backend, "dynamo_metrics_flags", ()))
                 or getattr(self.config.backend, "publish_events_and_metrics", False)
             )
         )
-        # trtllm-serve serves Prometheus at /prometheus/metrics on the worker
-        # OpenAI port (GET /metrics there is JSON iteration stats, not
-        # exposition text); every other frontend serves it at /metrics.
-        metrics_path = "/prometheus/metrics" if self.config.frontend.type == "trtllm_serve" else "/metrics"
+        metrics_path = frontend.metrics_path
         if logical_workers_only:
             if logical_endpoints is None:
                 logical_endpoints = self._logical_worker_endpoints()
@@ -826,51 +824,36 @@ class BenchmarkStageMixin:
             # control their existing logical-worker URL discovery.
             if self.config.dynamo.sidecar or not dynamo_trtllm_metrics_disabled:
                 urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
-        else:
-            if self.config.frontend.type in {"vllm", "sglang", "vllm-router"}:
-                for process in self.backend_processes:
-                    if (
-                        self.config.frontend.type in {"vllm", "sglang"}
-                        and process.endpoint_mode == "agg"
-                        and process.is_leader
-                    ):
-                        host = get_hostname_ip(process.node, self.runtime.network_interface)
-                        urls.append(f"http://{host}:{FRONTEND_PUBLIC_PORT}/metrics")
-                    elif self.config.frontend.type == "vllm-router" and process.http_port > 0:
-                        host = get_hostname_ip(process.node, self.runtime.network_interface)
-                        urls.append(f"http://{host}:{process.http_port}/metrics")
-                if urls:
-                    return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
-
-            # trtllm-serve workers bind only their OpenAI http_port (leaders) —
-            # the DYN_SYSTEM_PORT sys-port endpoints are never created in this
-            # mode, so advertising them would point the client at dead ports.
-            # trtllm-serve mounts the Prometheus route only when the engine
-            # runs with return_perf_metrics (expand_trtllm_serve_defaults sets
-            # it on every trtllm_serve recipe; an explicit false opts out), so
-            # gate each worker on its own effective engine config --
-            # publish_events_and_metrics is a dynamo.trtllm flag that never
-            # reaches a trtllm-serve worker.
-            if self.config.frontend.type == "trtllm_serve":
-                for process in self.backend_processes:
-                    if process.endpoint_mode == "agg" or process.http_port <= 0:
-                        continue
-                    engine_config = self.config.backend.get_config_for_mode(process.endpoint_mode)
-                    if not engine_config.get("return_perf_metrics"):
-                        continue
-                    host = get_hostname_ip(process.node, self.runtime.network_interface)
-                    urls.append(f"http://{host}:{process.http_port}{metrics_path}")
-            # Dynamo TRT-LLM engine metrics require either the metrics-only
-            # flag (the default) or the legacy combined flag (also enabled by
-            # observability). Retain the existing sidecar gate because sidecars
-            # do not receive --publish-metrics. An explicit legacy False disables
-            # both flags. Runtime-only metrics may still exist with publication disabled,
-            # but must not be advertised as an engine-metrics capture.
-            elif not dynamo_trtllm_metrics_disabled:
-                for process in self.backend_processes:
-                    if process.sys_port > 0:
-                        host = get_hostname_ip(process.node, self.runtime.network_interface)
-                        urls.append(f"http://{host}:{process.sys_port}/metrics")
+        elif frontend.worker_launch == "direct":
+            # Every rank the frontend says serves metrics. trtllm-serve mounts its
+            # Prometheus route only when the engine runs with return_perf_metrics
+            # (expand_trtllm_serve_defaults sets it on every trtllm_serve recipe;
+            # an explicit false opts out), so gate each worker on its own engine
+            # config -- publish_events_and_metrics is a dynamo.trtllm flag that
+            # never reaches a trtllm-serve worker.
+            for process in self.backend_processes:
+                port = frontend.worker_metrics_port(process, self.runtime)
+                if port is None:
+                    continue
+                if is_trtllm and not self.config.backend.get_config_for_mode(process.endpoint_mode).get(
+                    "return_perf_metrics"
+                ):
+                    continue
+                host = get_hostname_ip(process.node, self.runtime.network_interface)
+                urls.append(f"http://{host}:{port}{metrics_path}")
+        # Dynamo TRT-LLM engine metrics require either the metrics-only
+        # flag (the default) or the legacy combined flag (also enabled by
+        # observability). Retain the existing sidecar gate because sidecars
+        # do not receive --publish-metrics. An explicit legacy False disables
+        # both flags. Runtime-only metrics may still exist with publication disabled,
+        # but must not be advertised as an engine-metrics capture.
+        elif not dynamo_trtllm_metrics_disabled:
+            for process in self.backend_processes:
+                port = frontend.worker_metrics_port(process, self.runtime)
+                if port is None:
+                    continue
+                host = get_hostname_ip(process.node, self.runtime.network_interface)
+                urls.append(f"http://{host}:{port}{metrics_path}")
 
         # Add KVBM metrics endpoints for prefill processes with DYN_KVBM_METRICS_PORT
         prefill_env = getattr(self.config.backend, "prefill_environment", {})

@@ -16,7 +16,7 @@ import threading
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.health import WorkerHealthResult
-from srtctl.frontends.base import register_frontend
+from srtctl.frontends.base import agg_leader_nodes, register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -46,6 +46,33 @@ class SGLangFrontend:
         """The one ``sglang.launch_server`` is the endpoint, so it binds the public port."""
         del mode
         return "public"
+
+    metrics_path: ClassVar[str] = "/metrics"
+
+    def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
+        """The aggregate leader binds the public port; its followers serve nothing."""
+        if process.endpoint_mode == "agg" and process.is_leader:
+            return runtime.frontend_port
+        return None
+
+    def worker_endpoint_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        del config
+        return runtime.frontend_port if process.is_leader else None
+
+    def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        """The leader's server on the public port carries the control routes; followers have none."""
+        del config
+        return runtime.frontend_port if process.is_leader else None
+
+    def profiling_control_is_leader_only(self, config: Any) -> bool:
+        del config
+        return False
+
+    def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
+        return agg_leader_nodes(processes)
+
+    def worker_ready_port(self, process: Process) -> int:
+        return process.sys_port
 
     def validate(self, config: Any) -> None:
         """One aggregate ``sglang.launch_server`` owns the public port.

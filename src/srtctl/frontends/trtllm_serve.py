@@ -51,6 +51,39 @@ class TRTLLMServeFrontend:
         """The aggregate worker is the endpoint; P/D workers sit behind the disaggregated orchestrator."""
         return "public" if mode == "agg" else "allocated"
 
+    # trtllm-serve (worker and disaggregated orchestrator alike) serves Prometheus
+    # text at /prometheus/metrics; GET /metrics on a worker is JSON iteration stats.
+    metrics_path: ClassVar[str] = "/prometheus/metrics"
+
+    def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
+        """P/D leaders serve Prometheus on their OpenAI port; followers bind nothing. Aggregate is out of scope."""
+        del runtime
+        if process.endpoint_mode == "agg" or process.http_port <= 0:
+            return None
+        return process.http_port
+
+    def worker_endpoint_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
+        del config
+        if not process.is_leader:
+            return None
+        port = runtime.frontend_port if self.worker_api_port(process.endpoint_mode) == "public" else process.http_port
+        return port if port > 0 else None
+
+    def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
+        return self.worker_endpoint_port(process, config, runtime)
+
+    def profiling_control_is_leader_only(self, config: Any) -> bool:
+        del config
+        return False
+
+    def direct_endpoint_nodes(self, processes: list["Process"]) -> list[str]:
+        del processes
+        return []
+
+    def worker_ready_port(self, process: "Process") -> int:
+        """A trtllm-serve worker reports /health on its own OpenAI port."""
+        return process.http_port
+
     def validate(self, config: Any) -> None:
         """One direct aggregate worker or one disaggregated orchestrator; either way one public endpoint."""
         if config.frontend.enable_multiple_frontends:

@@ -204,3 +204,13 @@ class VLLMRouterFrontend(StaticRouterFrontend):
         """Advertise vLLM's NIXL side-channel port for P/D routing."""
         del backend
         return process.nixl_port
+
+    def worker_metrics_port(self, process: Process, runtime: Any) -> int | None:
+        """Every node-local hybrid-LB pool has its own API and /metrics; a positive http_port marks one."""
+        del runtime
+        return process.http_port if process.http_port > 0 else None
+
+    def worker_endpoint_port(self, process: Process, config: Any, runtime: Any) -> int | None:
+        """Router-facing pools are addressable whether or not they are the endpoint's leader rank."""
+        del config, runtime
+        return process.http_port if process.http_port > 0 else None
