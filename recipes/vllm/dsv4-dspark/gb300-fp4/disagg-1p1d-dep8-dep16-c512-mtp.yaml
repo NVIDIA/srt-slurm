@@ -2,10 +2,10 @@
 # Runtime and performance arguments follow the current DEP8/DEP16 GB300 P/D
 # recipes; throughput-only synthetic MTP acceptance is injected at launch.
 schema: 2
-name: "svf-vllm-disagg-gb300-1p1d-dep8-dep16-c256-mtp-agentic"
+name: "svf-vllm-disagg-gb300-1p1d-dep8-dep16-c512-mtp-agentic"
 
 # GB300 AgentX MTP3 topology: one DEP8 prefill worker feeds one
-# DEP16 decode worker at concurrency 256. Decode consumes P/D KV through NIXL
+# DEP16 decode worker at concurrency 512. Decode consumes P/D KV through NIXL
 # and MooncakeStore but skips Mooncake prefix lookup to avoid CPU overhead.
 
 model:
@@ -126,7 +126,7 @@ roles:
       VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
       VLLM_CONNECTOR_PREFETCH_DEPTH: "0"
       VLLM_DSV4_MEGA_FP8_COMBINE: "1"
-      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep8-prefill-c256-{job_id}"
+      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep8-prefill-c512-{job_id}"
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
       MC_SLICE_SIZE: "1048576"
       MC_WORKERS_PER_CTX: "4"
@@ -146,7 +146,7 @@ roles:
       enable-expert-parallel: true
       enable-ep-weight-filter: true
       max-model-len: 1048576
-      max-num-seqs: 64
+      max-num-seqs: 128
       max-num-batched-tokens: 16384
       long-prefill-token-threshold: 1024
       trust-remote-code: true
@@ -173,7 +173,7 @@ roles:
       VLLM_RPC_TIMEOUT: "600000"
       VLLM_LOG_STATS_INTERVAL: "1"
       VLLM_FLOAT32_MATMUL_PRECISION: "high"
-      VLLM_V2_WARMUP_MAX_NUM_SEQS: "32"
+      VLLM_V2_WARMUP_MAX_NUM_SEQS: "64"
       VLLM_SERVER_DEV_MODE: "1"
       VLLM_USE_V2_MODEL_RUNNER: "1"
       VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
@@ -188,7 +188,7 @@ roles:
       NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"
       VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "0"
       VLLM_DSV4_MEGA_FP8_COMBINE: "1"
-      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep16-decode-c256-{job_id}"
+      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-1p1d-dep16-decode-c512-{job_id}"
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
       MC_SLICE_SIZE: "1048576"
       MC_WORKERS_PER_CTX: "4"
@@ -197,6 +197,7 @@ roles:
       MC_TE_METRIC: "0"
 
     args:
+      router-mode: least-loaded 
       kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"load_async":true,"lookup_async":false,"enable_lookup":false,"enable_cross_layers_blocks":false,"enable_offload":false}}]}}'
       served-model-name: "DeepSeek-V4-Pro-0813"
       safetensors-load-strategy: "lazy"
@@ -209,15 +210,15 @@ roles:
       enable-expert-parallel: true
       enable-ep-weight-filter: true
       max-model-len: 1048576
-      max-num-seqs: 32
-      max-num-batched-tokens: 224
+      max-num-seqs: 64
+      max-num-batched-tokens: 448
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224],"mode":0}'
-      max-cudagraph-capture-size: 224
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224,231,238,245,252,259,266,273,280,287,294,301,308,315,322,329,336,343,350,357,364,371,378,385,392,399,406,413,420,427,434,441,448],"mode":0}'
+      max-cudagraph-capture-size: 448
       gpu-memory-utilization: 0.90
-      stream-interval: 10
+      stream-interval: 1
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
@@ -252,7 +253,7 @@ benchmark:
       "$AIPERF_VENV/bin/pip" install -q --upgrade pip
       "$AIPERF_VENV/bin/pip" install -q "aiperf @ $AIPERF_REF" "datasets>=4.7.0" "huggingface_hub[cli]>=0.25.0"
     fi
-    ARTIFACT_DIR="/logs/agentic/conc_256/aiperf_artifacts"
+    ARTIFACT_DIR="/logs/agentic/conc_512/aiperf_artifacts"
     mkdir -p "$ARTIFACT_DIR"
     "$AIPERF_VENV/bin/aiperf" profile --scenario inferencex-agentx-mvp \
       --url "http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT" \
@@ -265,5 +266,5 @@ benchmark:
       --warmup-grace-period 1800 --num-dataset-entries 393 \
       --slice-duration 1.0 --stats-interval 30 --use-server-token-count \
       --no-gpu-telemetry --random-seed 42 --failed-request-threshold 0.1 \
-      --benchmark-duration 3600 --concurrency 256 \
+      --benchmark-duration 3600 --concurrency 512 \
       --output-artifact-dir "$ARTIFACT_DIR"
