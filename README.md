@@ -1,6 +1,6 @@
 # srtctl
 
-Command-line tool for distributed LLM inference benchmarks on SLURM clusters using TensorRT LLM, SGLang and vLLM. Replace complex shell scripts and 50+ CLI flags with a declarative `schema: 2` YAML recipe: `engine:` names the engine, `roles:` describes each worker role, and `services:` covers everything launched next to the workers.
+Command-line tool for distributed LLM inference benchmarks on SLURM clusters using SGLang, vLLM, TensorRT LLM and AMD's ATOM. Replace complex shell scripts and 50+ CLI flags with a declarative `schema: 2` YAML recipe: `engine:` names the engine, `roles:` describes each worker role, and `services:` covers everything launched next to the workers.
 
 ## Quick Start
 

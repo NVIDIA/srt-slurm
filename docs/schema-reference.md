@@ -13,7 +13,7 @@ Top-level keys of a recipe YAML.
 | `name` | str | required |  |
 | `model` | [ModelConfig](#modelconfig) | required |  |
 | `resources` | [ResourceConfig](#resourceconfig) | required |  |
-| `engine` | str \| mapping | required | The engine type (`sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
+| `engine` | str \| mapping | required | The engine type (`atom`, `sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
 | `roles` | mapping of role -> [Role](#roles) | required | One block per worker role (`prefill`, `decode`, `agg`): topology, env, and engine args. |
 | `schema` | int | `2` | Recipe schema version. Write `schema: 2` for this layout. |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` |  |
@@ -44,7 +44,7 @@ Three vocabularies are specific to the 2.0 layout. They are normalized into the 
 
 ### engine
 
-`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `sglang`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
 
 ### roles
 
@@ -571,6 +571,18 @@ Ready when the service's log file contains a line matching the regular expressio
 ## Engine types
 
 `engine.type` selects one of the following; the remaining `engine` keys are that type's knobs.
+
+### AtomProtocol
+
+`engine.type: atom`
+
+Launch ``atom.entrypoints.openai_server`` on ROCm workers.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `type` | one of `'atom'` | `'atom'` |  |
+| `connector` | one of `'mooncake'` | `'mooncake'` |  |
+| `mooncake_protocol` | one of `'rdma'`, `'tcp'` \| None | `None` |  |
 
 ### SGLangProtocol
 

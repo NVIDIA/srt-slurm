@@ -62,3 +62,9 @@ for p in sorted(Path('examples').rglob('*.yaml')):
     print(validate_config_file(p) or f'ok {p}')
 "
 ```
+
+### ATOM and AToMesh
+
+[`atom/atomesh-disagg.yaml`](atom/atomesh-disagg.yaml) launches native ATOM prefill
+and decode workers with the AToMesh router. Each logical worker fits on one node;
+the cluster configuration selects ROCm device visibility.

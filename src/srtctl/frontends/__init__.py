@@ -17,6 +17,7 @@ Supported frontend types:
 - vllm-router: Official vLLM Router with static aggregate or P/D workers
 """
 
+from srtctl.frontends.atomesh import AtomeshFrontend
 from srtctl.frontends.base import (
     FRONTEND_NONE,
     FrontendProtocol,
@@ -34,6 +35,7 @@ from srtctl.frontends.vllm_router import VLLMRouterFrontend
 
 __all__ = [
     "FRONTEND_NONE",
+    "AtomeshFrontend",
     "DynamicFrontend",
     "DynamoFrontend",
     "FrontendProtocol",

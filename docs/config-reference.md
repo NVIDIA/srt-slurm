@@ -43,6 +43,19 @@ This page is the prose guide: what each block means, how the pieces interact, an
 
 ## Overview
 
+### ATOM with AToMesh
+
+Use `engine: atom` with `frontend.type: atomesh` to launch native
+`atom.entrypoints.openai_server` workers and the official AToMesh router. Both
+aggregate workers and prefill/decode topologies use static HTTP endpoints;
+disaggregated workers receive topology-owned Mooncake handshake ports.
+
+Engine flags belong under `roles.prefill.args`, `roles.decode.args`, or
+`roles.agg.args` (schema v2).
+srt-slurm owns the model path, HTTP port, tensor parallel size, and KV-transfer
+contract, so recipes cannot override those arguments. See the complete
+[ATOM/AToMesh recipe](../examples/atom/atomesh-disagg.yaml).
+
 ```yaml
 schema: 2                      # Required: recipe layout version
 name: "my-benchmark"           # Required: job name

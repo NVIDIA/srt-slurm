@@ -1,0 +1,32 @@
+# Native ATOM prefill/decode on separate Slurm nodes behind AToMesh.
+# Configure visible_devices_env: ROCR_VISIBLE_DEVICES in the cluster srtslurm.yaml.
+# The container must include both atom.entrypoints.openai_server and atomesh.
+schema: 2
+name: qwen3-0.6b-atomesh-disagg
+model:
+  path: hf:Qwen/Qwen3-0.6B
+  container: rocm/atom:latest
+  precision: bf16
+resources:
+  gpu_type: mi300x
+  gpus_per_node: 8
+engine:
+  type: atom
+  mooncake_protocol: tcp
+frontend:
+  type: atomesh
+  enable_multiple_frontends: false
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+  decode:
+    nodes: 1
+    workers: 1
+    gpus: 1
+benchmark:
+  type: sa-bench
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

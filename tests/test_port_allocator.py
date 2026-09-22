@@ -31,7 +31,7 @@ from srtctl.ports import (
     PortKind,
 )
 
-TOPOLOGY_EXAMPLE_DIRS = ("examples/sglang", "examples/vllm", "examples/trtllm", "examples/mocker")
+TOPOLOGY_EXAMPLE_DIRS = ("examples/atom", "examples/sglang", "examples/vllm", "examples/trtllm", "examples/mocker")
 
 
 class TestNodePortAllocator:

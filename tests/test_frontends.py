@@ -67,6 +67,7 @@ class TestFrontendRegistry:
 
     def test_registry_lists_every_frontend_type(self):
         assert list_frontend_types() == [
+            "atomesh",
             "dynamo",
             "none",
             "sglang",
@@ -206,7 +207,7 @@ class TestFrontendRegistry:
         from srtctl.backends import SGLangProtocol
         from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
 
-        with pytest.raises(ValidationError, match="Unknown frontend.type 'toy-router'.*Available: dynamo, none"):
+        with pytest.raises(ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, none"):
             SrtConfig(
                 name="toy",
                 model={"path": "model", "container": "image", "precision": "fp8"},
