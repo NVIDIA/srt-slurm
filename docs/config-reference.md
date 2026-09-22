@@ -259,6 +259,11 @@ engine:
   served_model_name: "Qwen/Qwen3-0.6B"
 ```
 
+For `trtllm_serve`, an explicit `served_model_name` is passed to the worker's
+`--served_model_name` option so the server and benchmark/eval clients use the same
+API model name. Leave it unset to retain the server's default. This is a server
+option, not a key in `roles.*.args` (the engine YAML).
+
 ```yaml
 engine:
   type: mocker

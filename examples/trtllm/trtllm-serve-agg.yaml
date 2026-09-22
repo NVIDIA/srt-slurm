@@ -26,6 +26,7 @@ frontend:
 
 engine:
   type: trtllm
+  # Also sets trtllm-serve's API model name; no duplicate extra_args flag is needed.
   served_model_name: "Qwen/Qwen3-0.6B"
 roles:
   agg:
