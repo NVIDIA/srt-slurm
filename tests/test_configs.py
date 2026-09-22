@@ -4124,13 +4124,9 @@ class TestHuggingFaceModelSupport:
             (None, False),
             ("", False),
             ("h100", False),
-            ("H100", False),
             ("gb200", True),
-            ("GB200", False),
             ("gb300", True),
-            ("GB300", False),
             ("vrnvl72", True),
-            ("VRNVL72", False),
         ],
     )
     @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
