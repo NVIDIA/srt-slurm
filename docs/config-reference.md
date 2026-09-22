@@ -289,15 +289,18 @@ engine:
 ```
 
 The launcher resolves the GPU through `CUDA_VISIBLE_DEVICES` and
-`SLURM_LOCALID`, applies its CPU mask, and sets `numactl --preferred=<node>`
-before starting the worker. The memory preference permits fallback and does
-not migrate existing or shared pages. The container must provide `numactl`.
+`SLURM_LOCALID`, applies its CPU mask, and sets `numactl --membind=<node>`
+before starting the worker. Allocations governed by this policy cannot fall
+back to another node. Insufficient local memory can cause allocation failure
+or OOM, even when another node has free memory. Existing or shared pages are
+not migrated. The container must provide `numactl`.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
 When omitted, memory binding is enabled only for GB200/GB300 prefill and decode
 workers. Without CPU binding, enabled memory binding retains `numactl -m 0,1`.
-If the GPU has no known NUMA affinity, the launcher skips CPU binding and
-retains that `0,1` memory policy when requested.
+With both bindings enabled, the launcher fails if the GPU's NUMA affinity
+cannot be resolved or the memory policy cannot be applied. CPU-only mode
+retains its unbound launch when GPU NUMA affinity is unknown.
 
 ### vLLM DP launch mode
 

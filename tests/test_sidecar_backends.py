@@ -345,7 +345,7 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, local_memo
 
     script = command[2]
     assert "trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /model" in script
-    assert ("bash /configs/numa_cpu_bind.sh --preferred-memory" in script) is local_memory
+    assert ("bash /configs/numa_cpu_bind.sh --bind-memory" in script) is local_memory
     assert "numactl" not in script
     assert "--grpc --host 127.0.0.1 --port 50051" in script
     assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path /model" in script

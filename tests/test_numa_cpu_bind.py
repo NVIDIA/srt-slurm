@@ -13,16 +13,25 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    ("node", "prefer_memory", "expected_memory", "expected_cpus"),
+    ("node", "bind_memory", "expected_memory", "expected_cpus", "expected_exit"),
     [
-        ("0", True, "preferred:0", "0-3"),
-        ("1", True, "preferred:1", "4-7"),
-        ("-1", True, "bind:0,1", None),
-        ("1", False, None, "4-7"),
+        ("0", True, "bind:0", "0-3", 0),
+        ("1", True, "bind:1", "4-7", 0),
+        ("-1", True, None, None, 2),
+        ("missing", True, None, None, 2),
+        ("invalid", True, None, None, 2),
+        ("denied", True, None, None, 42),
+        ("1", False, None, "4-7", 0),
+        ("-1", False, None, None, 0),
     ],
 )
 def test_worker_inherits_resolved_numa_policy(
-    tmp_path: Path, node: str, prefer_memory: bool, expected_memory: str | None, expected_cpus: str | None
+    tmp_path: Path,
+    node: str,
+    bind_memory: bool,
+    expected_memory: str | None,
+    expected_cpus: str | None,
+    expected_exit: int,
 ) -> None:
     # Execute each wrapper in order: a later numactl would overwrite the
     # observed policy, as it does in a real launch. No host NUMA calls run.
@@ -39,18 +48,20 @@ if name == "nvidia-smi":
     print("00000000:AB:00.0")
 elif name == "cat":
     node = os.environ["TEST_NUMA_NODE"]
+    if node == "missing":
+        sys.exit(1)
+    if node == "denied":
+        node = "1"
     if args == ["/sys/bus/pci/devices/0000:ab:00.0/numa_node"]:
         print(node)
     else:
         assert args == [f"/sys/devices/system/node/node{node}/cpulist"]
         print({"0": "0-3", "1": "4-7"}[node])
 elif name == "numactl":
-    if args[0].startswith("--preferred="):
-        os.environ["TEST_MEMORY_POLICY"] = "preferred:" + args.pop(0).split("=", 1)[1]
-    else:
-        assert args[:2] == ["-m", "0,1"]
-        os.environ["TEST_MEMORY_POLICY"] = "bind:" + args[1]
-        args = args[2:]
+    assert args[0].startswith("--membind=")
+    if os.environ["TEST_NUMA_NODE"] == "denied":
+        sys.exit(42)
+    os.environ["TEST_MEMORY_POLICY"] = "bind:" + args.pop(0).split("=", 1)[1]
     os.execvp(args[0], args)
 elif name == "taskset":
     assert args[0] == "-c"
@@ -86,11 +97,17 @@ else:
     env.pop("TEST_MEMORY_POLICY", None)
     env.pop("TEST_CPU_MASK", None)
     result = subprocess.run(
-        ["bash", str(script), *(["--preferred-memory"] if prefer_memory else []), *worker],
+        ["bash", str(script), *(["--bind-memory"] if bind_memory else []), *worker],
         env=env,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
         timeout=10,
     )
-    assert json.loads(result.stdout) == [expected_memory, expected_cpus, arguments]
+    assert result.returncode == expected_exit, result.stderr
+    if expected_exit:
+        assert result.stdout == ""  # The worker must not run after a binding failure.
+        if expected_exit == 2:
+            assert "cannot bind memory" in result.stderr
+    else:
+        assert json.loads(result.stdout) == [expected_memory, expected_cpus, arguments]

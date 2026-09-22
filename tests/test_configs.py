@@ -4212,7 +4212,7 @@ class TestHuggingFaceModelSupport:
         assert cmd[:3] == ["numactl", "-m", "0,1"]
 
     @pytest.mark.parametrize(
-        ("memory_bind", "gpu_type", "mode", "prefer_memory", "frontend_type"),
+        ("memory_bind", "gpu_type", "mode", "bind_memory", "frontend_type"),
         [
             (None, "gb200", "decode", True, "dynamo"),
             (None, "gb300", "prefill", True, "trtllm_serve"),
@@ -4222,9 +4222,7 @@ class TestHuggingFaceModelSupport:
             (False, "gb200", "decode", False, "dynamo"),
         ],
     )
-    def test_trtllm_numa_cpu_bind_selects_memory_policy(
-        self, memory_bind, gpu_type, mode, prefer_memory, frontend_type
-    ):
+    def test_trtllm_numa_cpu_bind_selects_memory_policy(self, memory_bind, gpu_type, mode, bind_memory, frontend_type):
         """Resolve memory policy once; no inner numactl may override the wrapper."""
         from pathlib import Path
         from unittest.mock import patch
@@ -4250,8 +4248,8 @@ class TestHuggingFaceModelSupport:
             )
 
         prefix = ["bash", "/configs/numa_cpu_bind.sh"]
-        if prefer_memory:
-            prefix.append("--preferred-memory")
+        if bind_memory:
+            prefix.append("--bind-memory")
         prefix.extend(["nsys", "profile", "trtllm-llmapi-launch"])
         assert cmd[: len(prefix)] == prefix
         assert "numactl" not in cmd
