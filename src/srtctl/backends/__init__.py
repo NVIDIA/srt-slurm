@@ -11,9 +11,9 @@ Supported backends:
 
 from .base import BackendProtocol, BackendType, SrunConfig
 from .mocker import MockerProtocol, MockerServerConfig
-from .sglang import SGLangProtocol, SGLangServerConfig
+from .sglang import MooncakeKVStoreConfig, SGLangProtocol, SGLangServerConfig
 from .trtllm import TRTLLMProtocol, TRTLLMServerConfig
-from .vllm import VLLMProtocol, VLLMServerConfig
+from .vllm import VLLMFailoverConfig, VLLMMooncakeKVStoreConfig, VLLMProtocol, VLLMServerConfig
 
 # Union type for all backend configs
 BackendConfig = SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
@@ -27,6 +27,7 @@ __all__ = [
     "MockerProtocol",
     "MockerServerConfig",
     # SGLang
+    "MooncakeKVStoreConfig",
     "SGLangProtocol",
     "SGLangServerConfig",
     "SrunConfig",
@@ -34,6 +35,8 @@ __all__ = [
     "TRTLLMProtocol",
     "TRTLLMServerConfig",
     # vLLM
+    "VLLMFailoverConfig",
+    "VLLMMooncakeKVStoreConfig",
     "VLLMProtocol",
     "VLLMServerConfig",
 ]

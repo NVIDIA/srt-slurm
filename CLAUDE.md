@@ -57,6 +57,7 @@ Read these before adding a feature. Each rule names the existing pattern to reus
 - **Cluster differences live in `srtslurm.yaml`.** Anything that varies by cluster or hardware (NIC, visible-devices env var, default GPU exporter, sbatch directives, mounts, host setup) is a `ClusterConfig` field in `core/schema.py` following `network_interface` and the `default_*` blocks, read once into `RuntimeContext`. A vendor enum in Python is the wrong tool for this. Never call `load_cluster_config()` from a schema property or a stage: it is uncached and creates a second source of truth.
 - **One resolver per overridable setting.** A setting the recipe can set at engine level and override per role (`roles.<role>.args.connector`, DP size) has one accessor on the backend in the `get_config_for_mode` style, and every consumer uses it: command builder, process env, frontend, and schema validator. Two readers of the raw fields disagree the moment a role override appears.
 - **Frontends own readiness; backends own worker commands and ports.** `core/health.py` and the stage mixins contain no `frontend_type == "..."` checks and no `getattr(frontend, "hook", fallback)` probing. The frontend implements the protocol hook; if a hook is missing, add it to `FrontendProtocol`. A frontend asks a backend a question through a method (`backend.is_grpc_mode(mode)`), never by reading its fields by name.
+- **Backends answer through `BackendProtocol`, never through `getattr`.** The stage mixins, schema validators, services, and dry-run ask `backend.mooncake_kv_store`, `backend.failover`, `backend.get_environment_for_mode(mode)`, `backend.get_srun_config().sequential_node_start`; a backend without the feature returns `None` or `{}`. `getattr(backend, "x", default)` and `hasattr(backend, "f")` do not appear in `src/`: they pass on every backend, so a typo or a rename fails silently at runtime. Logic that is genuinely one engine's narrows with `isinstance(backend, VLLMProtocol)` and reads typed fields. When a consumer needs a new answer, add the member to `BackendProtocol` and implement it on every backend, including the neutral default.
 - **Every listener a process opens comes from the allocator.** Two processes can share a node in this repo (`nodes: colocate`, DP endpoints), so any port a worker binds (HTTP, bootstrap, side channel, handshake, notify, metrics) is allocated by `NodePortAllocator` and carried on `Process`. An upstream default port left in a generated config is a collision on the first colocated recipe. See Ports below.
 - **Modes are not types.** A new `frontend.type`, `services[].type`, or `engine.type` is for a different process with its own launch, health API, and registration model. A different CLI shape, transport, or discovery mode of the same binary is an override inside the existing class: `trtllm_serve` handles aggregate and disaggregated in one type, `sglang-router` picks http or grpc per mode. A new frontend type is one registered module; the only remaining name checks are for Dynamo- and sglang-router-specific features (request tracing, the gateway's own metrics listener, `slow_down`).
 - **Check upstream before working around it.** When a change encodes an upstream behavior (what a health endpoint returns, which keys a connector reads, what a flag does), read the upstream source at the version the container ships and cite the commit in the PR. Do not add a probe, shim, or port-scan workaround for something upstream already handles.
@@ -360,14 +361,18 @@ with patch.dict(os.environ, H100Rack.slurm_env()):
 ### Adding a New Backend
 
 1. Create `backends/mybackend.py` with a dataclass implementing `BackendProtocol`
-2. Implement required methods:
-   - `get_srun_config()` - MPI settings and launch strategy
+2. Implement every member of `BackendProtocol` (`backends/base.py`), including the ones your engine answers with a neutral default:
+   - `get_srun_config()` - MPI settings and launch strategy (`launch_per_endpoint`, `sequential_node_start`)
    - `get_config_for_mode(mode)` - Mode-specific configuration
    - `get_environment_for_mode(mode)` - Environment variables
    - `allocate_endpoints()` - Logical worker allocation
-   - `endpoints_to_processes()` - Physical process mapping
+   - `endpoints_to_processes()` - Physical process mapping; every port through `NodePortAllocator`
    - `build_worker_command(process, runtime)` - Command construction
    - `get_process_environment(process)` - Per-process env derived from `Process` ports (side channels, scan bases)
+   - `mooncake_kv_store` / `get_mooncake_worker_env(...)` - the Mooncake block and its worker env; `None` / `{}` without one
+   - `failover` / `get_failover_environment(...)` - shadow engine recovery; `None` / `{}` without it
+   - `should_set_cuda_visible_devices(process)` - `True` unless the engine takes its devices on the command line
+   - `get_served_model_name(default)`
 3. Export from `backends/__init__.py`
 4. Add polymorphic deserialization in `BackendConfigField` in `schema.py`
 

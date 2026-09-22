@@ -36,6 +36,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
 
+from srtctl.backends import VLLMMooncakeKVStoreConfig, VLLMProtocol
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -295,7 +296,7 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(Panel("\n".join(rows), title="TRT-LLM Engine Statistics", border_style="cyan"))
 
     if config.frontend.type == "vllm":
-        from srtctl.backends.vllm import VLLMProtocol, find_vllm_orchestration_recipe_flags
+        from srtctl.backends.vllm import find_vllm_orchestration_recipe_flags
 
         if isinstance(config.backend, VLLMProtocol):
             orchestration_flags = find_vllm_orchestration_recipe_flags(config.backend)
@@ -402,12 +403,11 @@ def show_config_details(config: SrtConfig) -> None:
     has_env = bool(config.environment or dynamo_environment)
     backend = config.backend
     mode_envs: list[tuple[str, dict[str, str]]] = []
-    for mode_name, attr in [
-        ("prefill", "prefill_environment"),
-        ("decode", "decode_environment"),
-        ("aggregated", "aggregated_environment"),
+    for mode_name, env in [
+        ("prefill", backend.prefill_environment),
+        ("decode", backend.decode_environment),
+        ("aggregated", backend.aggregated_environment),
     ]:
-        env = getattr(backend, attr, {})
         if env:
             has_env = True
             mode_envs.append((mode_name, dict(env)))
@@ -415,7 +415,7 @@ def show_config_details(config: SrtConfig) -> None:
         has_env = True
         mode_envs.append(("benchmark", dict(config.benchmark.env)))
 
-    mooncake_cfg = getattr(backend, "mooncake_kv_store", None)
+    mooncake_cfg = backend.mooncake_kv_store
     if mooncake_cfg is not None and mooncake_cfg.env:
         has_env = True
         mode_envs.append(("mooncake", dict(mooncake_cfg.env)))
@@ -441,7 +441,7 @@ def show_config_details(config: SrtConfig) -> None:
         console.print("[dim]No custom environment variables configured.[/]")
 
     # --- Shadow engine recovery (engine.failover, vLLM + Dynamo GPU Memory Service) ---
-    failover = getattr(config.backend, "failover", None)
+    failover = config.backend.failover
     if failover is not None:
         from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, failover_root
 
@@ -750,14 +750,13 @@ def show_config_details(config: SrtConfig) -> None:
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
-            device_map = getattr(mooncake_cfg, "device_names_by_gpu", [])
-            if device_map:
-                details.add_row("mooncake", "device_names_by_gpu", str(device_map))
+            if isinstance(mooncake_cfg, VLLMMooncakeKVStoreConfig) and mooncake_cfg.device_names_by_gpu:
+                details.add_row("mooncake", "device_names_by_gpu", str(mooncake_cfg.device_names_by_gpu))
                 details.add_row("mooncake", "process config", "/logs/mooncake_store_config_gpu<physical-ids>.json")
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
-            if hasattr(backend, "build_mooncake_store_config"):
+            if isinstance(backend, VLLMProtocol):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON
                 # so operators can sanity-check protocol/device_name/sizes

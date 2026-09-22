@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from srtctl.backends.trtllm import TRTLLMProtocol
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
 from srtctl.core.ip_utils import url_host
@@ -718,13 +719,13 @@ class BenchmarkStageMixin:
         if frontend is None:
             # Services-only job: no workers serve engine metrics.
             return {}
+        backend = self.config.backend
         is_trtllm = self.config.backend_type == "trtllm"
         dynamo_trtllm_metrics_disabled = (
             frontend.worker_launch == "dynamo"
-            and is_trtllm
+            and isinstance(backend, TRTLLMProtocol)
             and not (
-                (not self.config.dynamo.sidecar and getattr(self.config.backend, "dynamo_metrics_flags", ()))
-                or getattr(self.config.backend, "publish_events_and_metrics", False)
+                (not self.config.dynamo.sidecar and backend.dynamo_metrics_flags) or backend.publish_events_and_metrics
             )
         )
         metrics_path = frontend.metrics_path
@@ -767,8 +768,8 @@ class BenchmarkStageMixin:
                 urls.append(f"http://{host}:{port}{metrics_path}")
 
         # Add KVBM metrics endpoints for prefill processes with DYN_KVBM_METRICS_PORT
-        prefill_env = getattr(self.config.backend, "prefill_environment", {})
-        agg_env = getattr(self.config.backend, "aggregated_environment", {})
+        prefill_env = backend.get_environment_for_mode("prefill")
+        agg_env = backend.get_environment_for_mode("agg")
         kvbm_port = prefill_env.get("DYN_KVBM_METRICS_PORT") or agg_env.get("DYN_KVBM_METRICS_PORT")
         if kvbm_port:
             for process in self.backend_processes:

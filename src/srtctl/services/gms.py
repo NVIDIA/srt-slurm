@@ -109,7 +109,7 @@ class GMSService(ServiceKind):
     default_readiness_timeout = 120
 
     def validate(self, service: ServiceConfig, config: SrtConfig) -> None:
-        if getattr(config.backend, "failover", None) is None:
+        if config.backend.failover is None:
             raise ValidationError(
                 f"services[{service.name}] (type gms) requires engine.failover, which is what the engines "
                 "load their weights through"

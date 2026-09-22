@@ -181,12 +181,14 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     backend.get_environment_for_mode.return_value = {}
     backend.get_process_environment.return_value = {}
     backend.type = "vllm"
+    backend.failover = None
+    backend.mooncake_kv_store = None
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
         setup_script="setup.sh",
         frontend=SimpleNamespace(type="sglang"),
-        dynamo=SimpleNamespace(install=False, request_plane="nats", event_plane="zmq"),
+        dynamo=SimpleNamespace(install=False, sidecar=False, request_plane="nats", event_plane="zmq"),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
@@ -240,6 +242,8 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
     backend.build_worker_command.return_value = ["python3", "-m", "worker"]
     backend.get_environment_for_mode.return_value = {}
     backend.get_process_environment.return_value = {}
+    backend.failover = None
+    backend.mooncake_kv_store = None
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
@@ -247,6 +251,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         frontend=SimpleNamespace(type=frontend_type),
         dynamo=SimpleNamespace(
             install=dynamo_install,
+            sidecar=False,
             get_install_commands=lambda: "echo install-dynamo",
             request_plane="nats",
             event_plane="zmq",
@@ -662,12 +667,14 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
     backend.build_worker_command.return_value = ["python3", "-m", "worker"]
     backend.get_environment_for_mode.return_value = {}
     backend.get_process_environment.return_value = {}
+    backend.failover = None
+    backend.mooncake_kv_store = None
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
         setup_script=None,
         frontend=SimpleNamespace(type="sglang"),
-        dynamo=SimpleNamespace(install=False, request_plane="nats", event_plane=None),
+        dynamo=SimpleNamespace(install=False, sidecar=False, request_plane="nats", event_plane=None),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),

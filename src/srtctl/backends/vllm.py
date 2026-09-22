@@ -859,6 +859,8 @@ class VLLMProtocol:
         after a relaunch); every other engine imports them read-only. The lock file
         is per worker, so only that worker's engines contend for it.
         """
+        if self.failover is None:
+            return {}
         worker_dir = self.failover_worker_dir(job_id, process)
         return {
             "ENGINE_ID": str(process.engine_id),

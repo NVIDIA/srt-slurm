@@ -1337,9 +1337,12 @@ class TestWorkerEnvironmentTemplating:
             mock_backend = MagicMock()
             mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
             mock_backend.build_worker_command.return_value = ["echo", "test"]
+            mock_backend.failover = None
+            mock_backend.mooncake_kv_store = None
 
             with patch.object(worker_stage, "config") as mock_config:
                 mock_config.backend = mock_backend
+                mock_config.dynamo = config.dynamo
                 mock_config.profiling = config.profiling
 
                 with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:
@@ -1455,9 +1458,12 @@ class TestWorkerEnvironmentTemplating:
             mock_backend = MagicMock()
             mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
             mock_backend.build_worker_command.return_value = ["echo", "test"]
+            mock_backend.failover = None
+            mock_backend.mooncake_kv_store = None
 
             with patch.object(worker_stage, "config") as mock_config:
                 mock_config.backend = mock_backend
+                mock_config.dynamo = config.dynamo
                 mock_config.profiling = config.profiling
 
                 with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:

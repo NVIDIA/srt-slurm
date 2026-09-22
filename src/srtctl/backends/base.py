@@ -15,6 +15,8 @@ from srtctl.ports import DYN_SYSTEM_PORT_BASE
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from srtctl.backends.sglang import MooncakeKVStoreConfig
+    from srtctl.backends.vllm import VLLMFailoverConfig, VLLMMooncakeKVStoreConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
@@ -39,12 +41,16 @@ class SrunConfig:
         launch_per_endpoint: If True, launch one srun per endpoint (all nodes together).
                             If False, launch one srun per process (per node).
         cpu_bind: CPU binding mode (e.g., "verbose,none" for TRTLLM). None to omit.
+        sequential_node_start: With launch_per_endpoint, how many endpoints that share a
+                               leader node start at once, each batch gated on readiness.
+                               0 starts every endpoint in parallel.
     """
 
     mpi: str | None = None
     oversubscribe: bool = False
     launch_per_endpoint: bool = False
     cpu_bind: str | None = None
+    sequential_node_start: int = 0
 
 
 class BackendProtocol(Protocol):
@@ -60,6 +66,39 @@ class BackendProtocol(Protocol):
     @property
     def type(self) -> str:
         """Backend type identifier."""
+        ...
+
+    @property
+    def mooncake_kv_store(self) -> "MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | None":
+        """The recipe's Mooncake KV store block, or None when the engine has none.
+
+        Set, it implies the mooncake-master service and the MOONCAKE_* worker
+        environment from get_mooncake_worker_env.
+        """
+        ...
+
+    @property
+    def failover(self) -> "VLLMFailoverConfig | None":
+        """Shadow engine recovery, or None when the engine has none.
+
+        Set, it implies the gms service and the per-worker environment from
+        get_failover_environment.
+        """
+        ...
+
+    @property
+    def prefill_environment(self) -> dict[str, str]:
+        """Environment the recipe declares for prefill workers (roles.prefill.env), before engine defaults."""
+        ...
+
+    @property
+    def decode_environment(self) -> dict[str, str]:
+        """Environment the recipe declares for decode workers (roles.decode.env), before engine defaults."""
+        ...
+
+    @property
+    def aggregated_environment(self) -> dict[str, str]:
+        """Environment the recipe declares for aggregated workers (roles.agg.env), before engine defaults."""
         ...
 
     def get_srun_config(self) -> SrunConfig:
@@ -128,6 +167,22 @@ class BackendProtocol(Protocol):
 
         Returns:
             Dict of environment variable names to values.
+        """
+        ...
+
+    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+        """MOONCAKE_* environment for a worker; empty when mooncake_kv_store is None."""
+        ...
+
+    def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
+        """Shadow engine recovery environment for a worker; empty when failover is None."""
+        ...
+
+    def should_set_cuda_visible_devices(self, process: "Process") -> bool:
+        """Whether the worker stage pins this process to its GPUs with CUDA_VISIBLE_DEVICES.
+
+        True for engines that read the environment; an engine that takes its
+        devices on the command line answers False.
         """
         ...
 

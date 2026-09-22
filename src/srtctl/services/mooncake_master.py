@@ -59,5 +59,5 @@ class MooncakeMasterService(ServiceKind):
         return mooncake_master_command(service.args)
 
     def container_fallback(self, config: SrtConfig) -> str | None:
-        mooncake_cfg = getattr(config.backend, "mooncake_kv_store", None)
-        return getattr(mooncake_cfg, "container", None)
+        mooncake_cfg = config.backend.mooncake_kv_store
+        return mooncake_cfg.container if mooncake_cfg is not None else None

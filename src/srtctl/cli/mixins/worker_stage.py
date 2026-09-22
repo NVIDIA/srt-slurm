@@ -92,9 +92,8 @@ class WorkerStageMixin:
 
     @property
     def failover(self) -> "VLLMFailoverConfig | None":
-        """``backend.failover`` when this is a vLLM job with shadow engine recovery, else None."""
-        backend = self.backend
-        return backend.failover if isinstance(backend, VLLMProtocol) else None
+        """``backend.failover`` when the engine runs shadow engine recovery, else None."""
+        return self.backend.failover
 
     @property
     def backend_processes(self) -> list["Process"]:
@@ -167,11 +166,11 @@ class WorkerStageMixin:
     def _get_worker_environment_for_mode(self, mode: str) -> dict[str, str]:
         """Return mode environment with engine-specific defaults the recipe can override."""
         environment = self.backend.get_environment_for_mode(mode)
-        if getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm":
+        if self.config.dynamo.sidecar and self.backend.type == "vllm":
             # Installed plugins may replace native engine output types and
             # break the fixed Rust/Python MessagePack contract used by vllm-rs.
             environment.setdefault("VLLM_PLUGINS", "")
-        if getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "sglang":
+        if self.config.dynamo.sidecar and self.backend.type == "sglang":
             # The sidecar talks to SGLang's native gRPC server, a prebuilt Rust extension. In
             # images that run SGLang from a source checkout (the nightlies), the extension
             # loader's default "auto" mode ignores the bundled .so and tries to rebuild it
@@ -301,8 +300,8 @@ class WorkerStageMixin:
             formatted_value = value.format_map(SafeDict(template_vars))
             env_to_set[key] = formatted_value
 
-        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
-        force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        should_set_cvd = self.backend.should_set_cuda_visible_devices
+        force_cvd = self.config.dynamo.sidecar and self.backend.type == "vllm"
         # Failover engines share their device list with the GMS sidecar (see start_gms_sidecar).
         force_cvd = force_cvd or failover is not None
         if (force_cvd or should_set_cvd(process)) and len(process.gpu_indices) < self.runtime.gpus_per_node:
@@ -313,10 +312,10 @@ class WorkerStageMixin:
         if failover is not None:
             env_to_set.update(self.backend.get_failover_environment(process, self.runtime.job_id))
 
-        # Add mooncake worker env vars if configured (SGLang only). Resolve the
-        # worker's own IP so MOONCAKE_LOCAL_HOSTNAME is correct for multi-node
-        # peer-to-peer transfers (defaulting to "localhost" silently breaks them).
-        if hasattr(self.backend, "get_mooncake_worker_env"):
+        # Add mooncake worker env vars if configured. Resolve the worker's own IP
+        # so MOONCAKE_LOCAL_HOSTNAME is correct for multi-node peer-to-peer
+        # transfers (defaulting to "localhost" silently breaks them).
+        if self.backend.mooncake_kv_store is not None:
             # A MOONCAKE_LOCAL_HOSTNAME already in the worker env (roles.*.env) pins a NIC; otherwise the node IP.
             local_hostname = env_to_set.get("MOONCAKE_LOCAL_HOSTNAME") or get_hostname_ip(
                 process.node, self.runtime.network_interface
@@ -519,8 +518,8 @@ class WorkerStageMixin:
         ):
             env_to_set.setdefault("DYN_TRTLLM_KV_EVENT_HOSTS", ",".join(endpoint_nodes))
 
-        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
-        force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        should_set_cvd = self.backend.should_set_cuda_visible_devices
+        force_cvd = self.config.dynamo.sidecar and self.backend.type == "vllm"
         node_gpu_setup = ""
         if force_cvd or should_set_cvd(leader):
             if any(p.gpu_indices != leader.gpu_indices for p in endpoint_processes):
@@ -532,11 +531,11 @@ class WorkerStageMixin:
             elif len(leader.gpu_indices) < self.runtime.gpus_per_node:
                 env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
-        # Add mooncake worker env vars if configured (SGLang only). For MPI-style
-        # endpoint launching we use the leader node's IP — mooncake's per-worker
-        # hostname is fundamentally per-process, but TRTLLM-style launching uses
-        # one srun for the whole endpoint, so leader IP is the best we can do.
-        if hasattr(self.backend, "get_mooncake_worker_env"):
+        # Add mooncake worker env vars if configured. For MPI-style endpoint
+        # launching we use the leader node's IP: mooncake's per-worker hostname
+        # is fundamentally per-process, but TRTLLM-style launching uses one srun
+        # for the whole endpoint, so leader IP is the best we can do.
+        if self.backend.mooncake_kv_store is not None:
             local_hostname = env_to_set.get("MOONCAKE_LOCAL_HOSTNAME") or get_hostname_ip(
                 leader.node, self.runtime.network_interface
             )
@@ -584,7 +583,7 @@ class WorkerStageMixin:
 
         # Get srun config from backend
         srun_config = self.backend.get_srun_config()
-        if self.backend.type == "trtllm" and getattr(self.config.dynamo, "sidecar", False) is True:
+        if self.backend.type == "trtllm" and self.config.dynamo.sidecar:
             # The sidecar runs only on rank zero. Make any follower-rank exit
             # terminate the full endpoint step instead of leaving rank zero up.
             srun_options["kill-on-bad-exit"] = "1"
@@ -674,7 +673,7 @@ class WorkerStageMixin:
 
         if launch_per_endpoint:
             # MPI-style: one srun per endpoint (TRTLLM)
-            concurrency = int(getattr(self.backend, "sequential_node_start", 0))
+            concurrency = srun_config.sequential_node_start
             if concurrency:
                 # Group endpoints by leader node; start in batches within each node
                 # so that model loading on a shared node doesn't cause resource contention.

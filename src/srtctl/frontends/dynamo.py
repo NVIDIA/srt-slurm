@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import yaml
 
+from srtctl.backends.vllm import VLLMProtocol
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
@@ -41,18 +42,24 @@ ROUTER_POLICY_CONFIG_FILENAME = "router_policy_config.yaml"
 ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
 
 
+def _vllm_mode_config(backend: VLLMProtocol, mode: str) -> dict[str, Any]:
+    """The recipe's vLLM args for a health mode name (prefill, decode, aggregated)."""
+    if backend.vllm_config is None:
+        return {}
+    by_mode = {
+        "prefill": backend.vllm_config.prefill,
+        "decode": backend.vllm_config.decode,
+        "aggregated": backend.vllm_config.aggregated,
+    }
+    return by_mode.get(mode) or {}
+
+
 def vllm_data_parallel_size(config: Any, mode: str) -> int:
     """Return vLLM data parallel size for a mode, defaulting to one."""
     backend = config.backend
-    if getattr(backend, "type", None) != "vllm":
+    if not isinstance(backend, VLLMProtocol):
         return 1
-
-    vllm_config = getattr(backend, "vllm_config", None)
-    mode_config = getattr(vllm_config, mode, None) if vllm_config else None
-    if not mode_config:
-        # Special case: no vllm_config at all defaulting to 1 then
-        return 1
-
+    mode_config = _vllm_mode_config(backend, mode)
     return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
 
 
@@ -68,9 +75,11 @@ def vllm_health_entries(
     one entry per node-local process, or one per logical worker when a replica
     spans nodes.
     """
+    backend = config.backend
+    if not isinstance(backend, VLLMProtocol):
+        return logical_workers
     dp_size = vllm_data_parallel_size(config, mode)
-    dp_launch_mode = getattr(config.backend, "dp_launch_mode", "per_node")
-    if dp_size > 1 and dp_launch_mode == "per_node":
+    if dp_size > 1 and backend.dp_launch_mode == "per_node":
         if backend_processes is None:
             raise ValueError("backend_processes are required for per-node DP health expectations")
         endpoint_mode = "agg" if mode == "aggregated" else mode
@@ -78,17 +87,10 @@ def vllm_health_entries(
         if not mode_processes:
             return 0
 
-        vllm_config = getattr(config.backend, "vllm_config", None)
-        mode_config = getattr(vllm_config, mode, None) if vllm_config else None
-        mode_config = mode_config or {}
+        mode_config = _vllm_mode_config(backend, mode)
         tp_size = int(mode_config.get("tensor-parallel-size") or mode_config.get("tensor_parallel_size") or 1)
         pp_size = int(mode_config.get("pipeline-parallel-size") or mode_config.get("pipeline_parallel_size") or 1)
-        gpu_indices = getattr(mode_processes[0], "gpu_indices", None)
-        if gpu_indices is None:
-            # Compatibility for callers that provide only registration-count
-            # process stubs. Real launch processes always carry GPU indices.
-            return len(mode_processes)
-        local_gpu_count = len(gpu_indices)
+        local_gpu_count = len(mode_processes[0].gpu_indices)
         spans_nodes = tp_size * pp_size > local_gpu_count
         if spans_nodes:
             return logical_workers
@@ -180,7 +182,7 @@ class DynamoFrontend(DynamicFrontend):
         logical worker.
         """
         logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
-        if getattr(config.backend, "type", None) != "vllm":
+        if not isinstance(config.backend, VLLMProtocol):
             return logical_prefill, logical_decode, worker_desc
         if config.resources.num_agg > 0:
             n_prefill = 0

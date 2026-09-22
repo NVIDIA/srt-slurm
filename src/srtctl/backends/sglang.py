@@ -166,6 +166,17 @@ class SGLangProtocol:
 
         return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
 
+    @property
+    def failover(self) -> None:
+        """SGLang has no shadow engine recovery."""
+        return None
+
+    def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
+        return {}
+
+    def should_set_cuda_visible_devices(self, process: "Process") -> bool:
+        return True
+
     def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
         """Get merged config dict for a worker mode."""
         if not self.sglang_config:

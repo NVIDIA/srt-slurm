@@ -178,7 +178,27 @@ class TRTLLMProtocol:
             oversubscribe=True,
             launch_per_endpoint=True,
             cpu_bind="verbose,none",
+            sequential_node_start=self.sequential_node_start,
         )
+
+    @property
+    def mooncake_kv_store(self) -> None:
+        """TRT-LLM has no Mooncake KV store block."""
+        return None
+
+    @property
+    def failover(self) -> None:
+        """TRT-LLM has no shadow engine recovery."""
+        return None
+
+    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+        return {}
+
+    def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
+        return {}
+
+    def should_set_cuda_visible_devices(self, process: "Process") -> bool:
+        return True
 
     def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
         if not self.trtllm_config:

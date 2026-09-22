@@ -259,6 +259,11 @@ class TestCustomBenchmarkRunner:
         def get_config_for_mode(mode):
             return dict(engine_sections.get("aggregated" if mode == "agg" else mode, {}))
 
+        mode_environments = {"prefill": prefill_environment or {}, "agg": aggregated_environment or {}}
+
+        def get_environment_for_mode(mode):
+            return dict(mode_environments.get(mode, {}))
+
         if backend_type == "trtllm":
             backend = TRTLLMProtocol(
                 publish_metrics=publish_metrics,
@@ -275,6 +280,7 @@ class TestCustomBenchmarkRunner:
                 prefill_environment=prefill_environment or {},
                 aggregated_environment=aggregated_environment or {},
                 get_config_for_mode=get_config_for_mode,
+                get_environment_for_mode=get_environment_for_mode,
             )
 
         stage = Stage()

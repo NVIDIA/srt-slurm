@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
 
@@ -91,21 +92,20 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
     if config.frontend.type != FRONTEND_NONE:
         implied.extend(get_frontend(config.frontend.type).implied_services(config))
 
-    if getattr(config.backend, "failover", None) is not None:
+    if config.backend.failover is not None:
         # The kind's defaults are the placement: every worker node, one instance per worker.
         implied.append(
             EffectiveService(ServiceConfig(name=GMS_SERVICE_NAME, type="gms"), implicit=True, reason="engine.failover")
         )
 
-    mooncake_cfg = getattr(config.backend, "mooncake_kv_store", None)
+    mooncake_cfg = config.backend.mooncake_kv_store
     if mooncake_cfg is not None:
         options = {}
-        store_config = getattr(mooncake_cfg, "store_config", None)
-        if store_config:
-            options["store_config"] = dict(store_config)
-        devices = getattr(mooncake_cfg, "device_names_by_gpu", None)
-        if devices:
-            options["device_names_by_gpu"] = list(devices)
+        if isinstance(mooncake_cfg, VLLMMooncakeKVStoreConfig):
+            if mooncake_cfg.store_config:
+                options["store_config"] = dict(mooncake_cfg.store_config)
+            if mooncake_cfg.device_names_by_gpu:
+                options["device_names_by_gpu"] = list(mooncake_cfg.device_names_by_gpu)
         implied.append(
             EffectiveService(
                 ServiceConfig(
