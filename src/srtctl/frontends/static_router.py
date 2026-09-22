@@ -11,7 +11,12 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from srtctl.core.health import WorkerHealthResult, check_static_router_health, probe_json_health
+from srtctl.core.health import (
+    WorkerHealthResult,
+    check_static_router_health,
+    probe_json_health,
+    wait_for_http_endpoints,
+)
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends.base import logical_health_expectations, numactl_prefix
 
@@ -47,6 +52,9 @@ class StaticRouterFrontend:
     process_name: ClassVar[str]
     log_label: ClassVar[str | None] = None
     allow_empty_workers: ClassVar[bool] = False
+    # Probe every advertised HTTP worker for 200 before launching the router. A router whose
+    # static registration expires when model loading outlasts its startup window sets this.
+    wait_for_workers_before_start: ClassVar[bool] = False
     # Workers are the engines' own servers, each on its allocated HTTP port.
     worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
     expands_node_local_dp: ClassVar[bool] = False
@@ -255,6 +263,26 @@ class StaticRouterFrontend:
             )
 
         workers = self.collect_workers(backend, backend_processes, runtime.network_interface)
+        if self.wait_for_workers_before_start and config.health_check is not None:
+            health_urls = [
+                f"{worker.url.rstrip('/')}/health"
+                for worker in workers
+                if worker.url.startswith(("http://", "https://"))
+            ]
+            if health_urls:
+                logger.info(
+                    "Waiting for %d advertised backend endpoints before starting %s", len(health_urls), self.type
+                )
+                health_check = config.health_check
+                if not wait_for_http_endpoints(
+                    health_urls,
+                    poll_interval=float(health_check.interval_seconds),
+                    timeout=float(health_check.max_attempts * health_check.interval_seconds),
+                    report_every=60.0,
+                    stop_event=stop_event,
+                ):
+                    raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
+
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):
             router_log = runtime.log_dir / f"{node}_{self.log_label or self.type}_{idx}.out"
@@ -278,6 +306,7 @@ class StaticRouterFrontend:
                 bash_preamble=self.build_bash_preamble(config),
                 het_group=runtime.nodes.het_group_for(node),
                 step_name=step_name,
+                srun_options=runtime.srun_options,
             )
             processes.append(
                 ManagedProcess(

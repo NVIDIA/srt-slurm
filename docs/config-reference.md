@@ -134,6 +134,8 @@ The `srtslurm.yaml` file can contain the following fields:
 | `gpus_per_node`                 | int    | Default GPUs per node (applied to recipes that omit `resources.gpus_per_node`) |
 | `default_gpu_type`              | string | Default `resources.gpu_type` for recipes that omit it |
 | `network_interface`             | string | Network interface for NCCL                            |
+| `visible_devices_env`           | string | Worker GPU-subset mask; defaults to `CUDA_VISIBLE_DEVICES` |
+| `default_gpu_exporter`          | dict/null | Cluster GPU exporter; defaults to DCGM, explicit null disables it |
 | `srtctl_root`                   | string | Root directory for srtctl                             |
 | `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
 | `model_paths`                   | dict   | Model path aliases                                    |
@@ -241,6 +243,22 @@ model:
 
 ## engine
 
+GPU scheduling uses upstream's existing cluster settings. For eight-GPU
+allocations on GRES-only clusters, set `use_gpus_per_node_directive: false`
+and `default_sbatch_directives: {gres: "gpu:8"}`.
+
+### GPU visibility on AMD
+
+Set `visible_devices_env: ROCR_VISIBLE_DEVICES` in the cluster profile for ROCm
+workers. GPU subsets then use only that mask, without applying a second mask to
+already-renumbered devices. Set `default_gpu_exporter: null` to disable the
+NVIDIA GPU exporter, or configure an exporter image, port, and command once for
+the cluster. Other telemetry is unchanged; an explicit recipe exporter wins.
+
+For vLLM builds without `--device-ids`, set `engine.set_visible_devices: true`.
+This is one explicit boolean, not automatic vLLM version detection. The default
+is false: vLLM binds devices with `--device-ids`. There is no CUDA-named alias.
+
 `engine:` names the inference engine that builds every worker role's command. A bare string is the common form; a mapping carries the engine-wide knobs, the fields that are not per role:
 
 ```yaml
@@ -271,7 +289,7 @@ Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. Everything that is per
 | Engine | Engine-wide knobs |
 | --- | --- |
 | `sglang-router` | none beyond `type` |
-| `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_cuda_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes` |
+| `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes` |
 | `trtllm` | `served_model_name`, `publish_metrics`, `publish_events_and_metrics`, `sequential_node_start`, `numa_memory_bind`, `numa_cpu_bind` |
 | `mocker` | the simulation parameters: `engine_type`, `speedup_ratio`, `decode_speedup_ratio`, `num_gpu_blocks_override`, `max_num_seqs`, `max_num_batched_tokens`, `block_size`, `data_parallel_size`, ... |
 

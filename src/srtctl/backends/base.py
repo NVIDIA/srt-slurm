@@ -178,11 +178,12 @@ class BackendProtocol(Protocol):
         """Shadow engine recovery environment for a worker; empty when failover is None."""
         ...
 
-    def should_set_cuda_visible_devices(self, process: "Process") -> bool:
-        """Whether the worker stage pins this process to its GPUs with CUDA_VISIBLE_DEVICES.
+    def should_set_visible_devices(self) -> bool:
+        """Whether the worker stage pins each process to its GPUs with the cluster's device mask.
 
-        True for engines that read the environment; an engine that takes its
-        devices on the command line answers False.
+        The variable is the cluster's ``visible_devices_env`` (CUDA_VISIBLE_DEVICES,
+        ROCR_VISIBLE_DEVICES). True for engines that read the environment; an
+        engine that takes its devices on the command line answers False.
         """
         ...
 

@@ -167,6 +167,7 @@ def test_router_launch_uses_router_image_env_setup_and_captured_log() -> None:
         container_mounts={"/host": "/container"},
         environment={"GLOBAL": "value", "ROUTER_LOG": "info"},
         network_interface="ib0",
+        srun_options={},
         nodes=SimpleNamespace(het_group_for=lambda _node: 1),
     )
     config = SimpleNamespace(

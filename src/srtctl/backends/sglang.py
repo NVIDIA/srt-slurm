@@ -174,7 +174,7 @@ class SGLangProtocol:
     def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
         return {}
 
-    def should_set_cuda_visible_devices(self, process: "Process") -> bool:
+    def should_set_visible_devices(self) -> bool:
         return True
 
     def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:

@@ -371,7 +371,7 @@ with patch.dict(os.environ, H100Rack.slurm_env()):
    - `get_process_environment(process)` - Per-process env derived from `Process` ports (side channels, scan bases)
    - `mooncake_kv_store` / `get_mooncake_worker_env(...)` - the Mooncake block and its worker env; `None` / `{}` without one
    - `failover` / `get_failover_environment(...)` - shadow engine recovery; `None` / `{}` without it
-   - `should_set_cuda_visible_devices(process)` - `True` unless the engine takes its devices on the command line
+   - `should_set_visible_devices()` - `True` unless the engine takes its devices on the command line; the variable is the cluster's `visible_devices_env`
    - `get_served_model_name(default)`
 3. Export from `backends/__init__.py`
 4. Add polymorphic deserialization in `BackendConfigField` in `schema.py`

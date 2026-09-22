@@ -393,6 +393,7 @@ Native Tachometer collection for an observability-enabled run.
 | `storage_subdir` | str | `'tachometer'` |  |
 | `extra_metadata` | dict[str, str] | `{}` |  |
 | `default_exporters` | bool | `True` |  |
+| `default_gpu_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `<lambda>()` | Resolved from srtslurm.yaml at load time; never read global config here. |
 | `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 | `node_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 | `process_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
@@ -607,7 +608,7 @@ vLLM protocol - implements BackendProtocol.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `type` | one of `'vllm'` | `'vllm'` |  |
-| `set_cuda_visible_devices` | bool | `False` | Legacy device binding for vLLM builds without --device-ids. |
+| `set_visible_devices` | bool | `False` | Use an environment mask instead of the engine's --device-ids option. |
 | `connector` | str \| None | `'nixl'` | Default KV connector: "nixl", "lmcache", "kvbm", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode resolves it. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed). |
 | `failover` | [VLLMFailoverConfig](#vllmfailoverconfig) \| None | `None` | Shadow engine recovery: when set, every worker runs shadow_engines standby engines on its GPUs next to an implied `gms` service that owns the weights. Dynamo frontend only. |
 | `allow_prefill_decode_colocation` | bool | `False` | Allow prefill and decode workers to share one node when the combined GPU request fits within gpus_per_node. Defaults off to preserve existing P/D node separation. |
@@ -662,6 +663,8 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `gpus_per_node` | int \| None | `None` |  |
 | `default_gpu_type` | str \| None | `None` | Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one recipe move between clusters of different GPU types without an edit. |
 | `network_interface` | str \| None | `None` |  |
+| `visible_devices_env` | str | `'CUDA_VISIBLE_DEVICES'` | GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES. |
+| `default_gpu_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `<lambda>()` | Recipe exporter settings win. Explicit null disables the GPU default only. |
 | `use_gpus_per_node_directive` | bool | `True` |  |
 | `use_segment_sbatch_directive` | bool | `True` |  |
 | `use_exclusive_sbatch_directive` | bool | `False` |  |

@@ -221,7 +221,7 @@ services:
     assert kw["nodelist"] == ["node0"]
     assert kw["command"] == ["python3", "-m", "router", "--node", "node0", "--infra", "10.0.0.10"]
     assert kw["container_image"] == "/job.sqsh"
-    assert kw["env_to_set"]["ETCD_ENDPOINTS"] == "http://node0:2379"
+    assert kw["env_to_set"]["ETCD_ENDPOINTS"] == "http://10.0.0.10:2379"
     assert "NATS_SERVER" not in kw["env_to_set"]  # tcp request plane, direct-ZMQ events: no NATS runs
     assert kw["env_to_set"]["LOG_LEVEL"] == "debug"
     assert kw["bash_preamble"] is None

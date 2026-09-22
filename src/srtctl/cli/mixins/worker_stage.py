@@ -138,6 +138,21 @@ class WorkerStageMixin:
 
         return " && ".join(parts)
 
+    def _visible_device_environment(self, process: "Process") -> dict[str, str]:
+        """The cluster's GPU mask for a process that owns part of its node, when something must read it.
+
+        The engine asks for the mask through the protocol. The Dynamo vLLM sidecar
+        and failover engines get it regardless: the sidecar and the GMS service must
+        see the same device list as the engine (see start_gms_sidecar). A process
+        that owns the whole node needs no mask.
+        """
+        force_mask = (self.config.dynamo.sidecar and self.backend.type == "vllm") or self.failover is not None
+        if not (force_mask or self.backend.should_set_visible_devices()):
+            return {}
+        if len(process.gpu_indices) >= self.runtime.gpus_per_node:
+            return {}
+        return {self.runtime.visible_devices_env: process.cuda_visible_devices}
+
     def _apply_kvbm_endpoint_env(self, env_to_set: dict[str, str], endpoint_processes: list["Process"]) -> None:
         """Fill KVBM leader ZMQ settings for an endpoint.
 
@@ -300,12 +315,7 @@ class WorkerStageMixin:
             formatted_value = value.format_map(SafeDict(template_vars))
             env_to_set[key] = formatted_value
 
-        should_set_cvd = self.backend.should_set_cuda_visible_devices
-        force_cvd = self.config.dynamo.sidecar and self.backend.type == "vllm"
-        # Failover engines share their device list with the GMS sidecar (see start_gms_sidecar).
-        force_cvd = force_cvd or failover is not None
-        if (force_cvd or should_set_cvd(process)) and len(process.gpu_indices) < self.runtime.gpus_per_node:
-            env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
+        env_to_set.update(self._visible_device_environment(process))
 
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(self.backend.get_process_environment(process))
@@ -518,18 +528,19 @@ class WorkerStageMixin:
         ):
             env_to_set.setdefault("DYN_TRTLLM_KV_EVENT_HOSTS", ",".join(endpoint_nodes))
 
-        should_set_cvd = self.backend.should_set_cuda_visible_devices
-        force_cvd = self.config.dynamo.sidecar and self.backend.type == "vllm"
+        force_mask = self.config.dynamo.sidecar and self.backend.type == "vllm"
         node_gpu_setup = ""
-        if force_cvd or should_set_cvd(leader):
+        if force_mask or self.backend.should_set_visible_devices():
             if any(p.gpu_indices != leader.gpu_indices for p in endpoint_processes):
+                # One srun covers every node of the endpoint, so the mask is chosen per node at exec time.
+                mask_env = self.runtime.visible_devices_env
                 branches = " ".join(
-                    f"{shlex.quote(p.node)}) export CUDA_VISIBLE_DEVICES={shlex.quote(p.cuda_visible_devices)} ;;"
+                    f"{shlex.quote(p.node)}) export {mask_env}={shlex.quote(p.cuda_visible_devices)} ;;"
                     for p in endpoint_processes
                 )
                 node_gpu_setup = f'case "$SLURMD_NODENAME" in {branches} *) exit 1 ;; esac'
-            elif len(leader.gpu_indices) < self.runtime.gpus_per_node:
-                env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
+            else:
+                env_to_set.update(self._visible_device_environment(leader))
 
         # Add mooncake worker env vars if configured. For MPI-style endpoint
         # launching we use the leader node's IP: mooncake's per-worker hostname

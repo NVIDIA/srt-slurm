@@ -343,6 +343,7 @@ class RuntimeContext:
     # HuggingFace model support - True if model.path was "hf:model/name"
     is_hf_model: bool = False
     gpu_type: str | None = None
+    visible_devices_env: str = "CUDA_VISIBLE_DEVICES"
 
     # Container mounts: host_path -> container_path
     container_mounts: dict[Path, Path] = field(default_factory=dict)
@@ -407,9 +408,12 @@ class RuntimeContext:
         # Compute run_name
         run_name = f"{config.name}_{job_id}"
 
-        # Resolve node IPs
-        head_node_ip = get_hostname_ip(nodes.head)
-        infra_node_ip = get_hostname_ip(nodes.infra)
+        # Resolve node IPs on the cluster-selected fabric. Some systems expose
+        # a public default route and a separate private control/data plane; the
+        # latter is what containers on peer Slurm nodes can reliably reach.
+        network_interface = get_srtslurm_setting("network_interface", "eth0")
+        head_node_ip = get_hostname_ip(nodes.head, network_interface)
+        infra_node_ip = get_hostname_ip(nodes.infra, network_interface)
 
         # Compute log directory using FormattablePath or default logic
         # Check for SRTCTL_OUTPUT_DIR from sbatch script first (ensures consistency)
@@ -546,6 +550,7 @@ class RuntimeContext:
         environment = config.dynamo.get_wheel_environment()
         environment.update(config.environment)
 
+        visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
         temp_context = cls(
             job_id=job_id,
             run_name=run_name,
@@ -557,7 +562,8 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            network_interface=network_interface,
+            visible_devices_env=visible_devices_env,
             container_mounts={},
             srun_options=dict(config.srun_options),
             environment=environment,
@@ -583,7 +589,8 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            network_interface=network_interface,
+            visible_devices_env=visible_devices_env,
             container_mounts=container_mounts,
             srun_options=dict(config.srun_options),
             environment=environment,

@@ -98,7 +98,7 @@ def _runtime(tmp_path: Path, workers: tuple[str, ...] = ("node1",)) -> RuntimeCo
         container_image=Path("/vllm-runtime.sqsh"),
         gpus_per_node=8,
         network_interface="eth0",
-        container_mounts={},
+        container_mounts={tmp_path: Path("/logs")},
         environment={},
     )
 
@@ -430,6 +430,8 @@ def test_worker_stage_launches_only_engines(tmp_path: Path) -> None:
     assert e0["env_to_set"]["DYN_SYSTEM_PORT"] != e1["env_to_set"]["DYN_SYSTEM_PORT"]
     assert e0["env_to_set"]["VLLM_NIXL_SIDE_CHANNEL_PORT"] != e1["env_to_set"]["VLLM_NIXL_SIDE_CHANNEL_PORT"]
     assert e1["output"] == str(tmp_path / "node1_agg_w0_e1.out")
+    assert e0["command"][e0["command"].index("--dump-config-to") + 1] == "/logs/node1_config.json"
+    assert e1["command"][e1["command"].index("--dump-config-to") + 1] == "/logs/node1_config_e1.json"
     assert calls["agg_1_node1"]["env_to_set"]["GMS_SOCKET_DIR"] == "/dev/shm/srtctl-15600/agg_1"
     assert procs["agg_0_node1_e1"].step_name == "agg_0_node1_e1"
     assert procs["agg_0_node1"].shutdown_tier == 0

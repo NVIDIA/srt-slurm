@@ -37,6 +37,9 @@ class SGLangRouterFrontend(StaticRouterFrontend):
     # Preserve the historical launch shape used by dry-run/topology callers
     # that construct the frontend before populating worker processes.
     allow_empty_workers: ClassVar[bool] = True
+    # The gateway drops a static worker that does not answer within its startup window, and a
+    # large model can load for longer than that, so every worker is probed before the router starts.
+    wait_for_workers_before_start: ClassVar[bool] = True
 
     def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
         """The gateway serves Prometheus on its own listener, not on the routing port."""
@@ -67,7 +70,7 @@ class SGLangRouterFrontend(StaticRouterFrontend):
         return "grpc" if backend.is_grpc_mode(mode) else "http"
 
     def resolve_worker_host(self, node: str, network_interface: str | None) -> str:
-        return get_hostname_ip(node)
+        return get_hostname_ip(node, network_interface)
 
     def start_process(self, **kwargs: Any) -> Any:
         return start_srun_process(**kwargs)

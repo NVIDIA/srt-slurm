@@ -228,11 +228,11 @@ def discovery_env(config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
     """
     env = {
         "ETCD_ENDPOINTS": _declared_external(config, ETCD_SERVICE_NAME)
-        or f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}"
+        or f"http://{runtime.infra_node_ip}:{ETCD_CLIENT_PORT}"
     }
     if runs_nats(config):
         env["NATS_SERVER"] = (
-            _declared_external(config, NATS_SERVICE_NAME) or f"nats://{runtime.nodes.infra}:{NATS_PORT}"
+            _declared_external(config, NATS_SERVICE_NAME) or f"nats://{runtime.infra_node_ip}:{NATS_PORT}"
         )
     return env
 

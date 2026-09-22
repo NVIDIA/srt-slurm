@@ -251,6 +251,9 @@ def show_config_details(config: SrtConfig) -> None:
     environment variables (global and backend per-mode) so users can verify their
     config is correct before submitting.
     """
+    visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
+    console.print(f"GPU subset visibility variable: {visible_devices_env}")
+
     if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
         from srtctl.backends.trtllm import TRTLLMProtocol
 
