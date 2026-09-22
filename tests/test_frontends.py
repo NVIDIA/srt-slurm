@@ -146,6 +146,34 @@ class TestFrontendRegistry:
         assert dynamo.profiling_control_is_leader_only(SimpleNamespace(dynamo=SimpleNamespace(sidecar=True))) is True
         assert dynamo.profiling_control_is_leader_only(SimpleNamespace(dynamo=SimpleNamespace(sidecar=False))) is False
 
+    def test_dynamic_frontend_base_carries_the_registration_defaults(self, monkeypatch):
+        """Dynamo is a DynamicFrontend; a future registration-based frontend inherits the same defaults."""
+        from srtctl.frontends import DynamicFrontend, base
+
+        assert isinstance(get_frontend("dynamo"), DynamicFrontend)
+        monkeypatch.setattr(base, "_FRONTENDS", dict(base._FRONTENDS))
+
+        @register_frontend("toy-discovery")
+        class ToyDiscovery(DynamicFrontend):
+            type = "toy-discovery"
+            worker_launch = "direct"
+
+        toy = get_frontend("toy-discovery")
+        assert isinstance(toy, ToyDiscovery)
+        assert toy.required_backend is None
+        assert toy.health_endpoint == "/health"
+        assert toy.metrics_path == "/metrics"
+        assert toy.expands_node_local_dp is False
+        assert toy.worker_api_port("prefill") == "allocated"
+        assert toy.get_backend_health_urls(None, [], None) == []
+        assert toy.direct_endpoint_nodes([]) == []
+        assert toy.get_frontend_args_list({"router_mode": "kv", "flag": True, "off": False}) == [
+            "--router_mode",
+            "kv",
+            "--flag",
+        ]
+        toy.validate(SimpleNamespace())
+
     def test_register_frontend_makes_a_type_resolvable(self, monkeypatch):
         from srtctl.frontends import base
 

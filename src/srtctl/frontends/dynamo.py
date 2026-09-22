@@ -19,6 +19,7 @@ from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
 from srtctl.frontends.base import register_frontend
+from srtctl.frontends.dynamic_frontend import DynamicFrontend
 from srtctl.services.implicit import discovery_env
 
 if TYPE_CHECKING:
@@ -33,32 +34,18 @@ ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
 
 
 @register_frontend("dynamo")
-class DynamoFrontend:
+class DynamoFrontend(DynamicFrontend):
     """Dynamo frontend implementation.
 
     Uses dynamo.frontend module with NATS/etcd for worker discovery.
-    Health checks via /health endpoint.
+    Health checks via /health endpoint. The dynamo.* recipe rules (sidecar,
+    failover, worker_selection) are dynamo-config validations and stay in the
+    schema.
     """
 
-    # Dynamo fronts every engine; the dynamo.* rules (sidecar, failover,
-    # worker_selection) are dynamo-config validations and stay in the schema.
-    required_backend: ClassVar[str | None] = None
+    type: ClassVar[str] = "dynamo"
+    # dynamo.<engine> workers register over the request plane; they bind no OpenAI port.
     worker_launch: ClassVar[Literal["dynamo", "direct"]] = "dynamo"
-    expands_node_local_dp: ClassVar[bool] = False
-
-    @property
-    def type(self) -> str:
-        return "dynamo"
-
-    def validate(self, config: Any) -> None:
-        del config
-
-    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
-        """Dynamo workers register over the request plane; they bind no OpenAI port."""
-        del mode
-        return "allocated"
-
-    metrics_path: ClassVar[str] = "/metrics"
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
         """Every rank runs the Dynamo system status server (health, metrics) on its system port."""
@@ -82,17 +69,9 @@ class DynamoFrontend:
         """A Dynamo sidecar exposes one control server per logical endpoint, on its leader."""
         return bool(config.dynamo.sidecar)
 
-    def direct_endpoint_nodes(self, processes: list["Process"]) -> list[str]:
-        del processes
-        return []
-
     def worker_ready_port(self, process: "Process") -> int:
         """DYN_SYSTEM_PORT: the per-worker axum server reports /health once registered."""
         return process.sys_port
-
-    @property
-    def health_endpoint(self) -> str:
-        return "/health"
 
     def parse_health(
         self,
@@ -102,27 +81,6 @@ class DynamoFrontend:
     ) -> WorkerHealthResult:
         """Parse dynamo /health endpoint response."""
         return check_dynamo_health(response_json, expected_prefill, expected_decode)
-
-    def get_backend_health_urls(
-        self,
-        backend: Any,
-        backend_processes: list["Process"],
-        network_interface: str | None = None,
-    ) -> list[str]:
-        del backend, backend_processes, network_interface
-        return []
-
-    def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
-        """Convert frontend args dict to CLI arguments."""
-        if not args:
-            return []
-        result = []
-        for key, value in args.items():
-            if value is True:
-                result.append(f"--{key}")
-            elif value is not False and value is not None:
-                result.extend([f"--{key}", str(value)])
-        return result
 
     def start_frontends(
         self,

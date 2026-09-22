@@ -24,6 +24,7 @@ from srtctl.frontends.base import (
     list_frontend_types,
     register_frontend,
 )
+from srtctl.frontends.dynamic_frontend import DynamicFrontend
 from srtctl.frontends.dynamo import DynamoFrontend
 from srtctl.frontends.sglang import SGLangRouterFrontend
 from srtctl.frontends.sglang_direct import SGLangFrontend
@@ -33,6 +34,7 @@ from srtctl.frontends.vllm_router import VLLMRouterFrontend
 
 __all__ = [
     "FRONTEND_NONE",
+    "DynamicFrontend",
     "DynamoFrontend",
     "FrontendProtocol",
     "SGLangFrontend",
