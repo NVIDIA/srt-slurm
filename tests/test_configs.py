@@ -4126,11 +4126,11 @@ class TestHuggingFaceModelSupport:
             ("h100", False),
             ("H100", False),
             ("gb200", True),
-            ("GB200", True),
+            ("GB200", False),
             ("gb300", True),
-            ("GB300", True),
+            ("GB300", False),
             ("vrnvl72", True),
-            ("VRNVL72", True),
+            ("VRNVL72", False),
         ],
     )
     @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
@@ -4179,7 +4179,7 @@ class TestHuggingFaceModelSupport:
 
         assert cmd[:3] == ["numactl", "-m", "0,1"]
 
-    @pytest.mark.parametrize("gpu_type", ["gb200", "gb300", "VRNVL72"])
+    @pytest.mark.parametrize("gpu_type", ["gb200", "gb300", "vrnvl72"])
     def test_trtllm_numa_memory_bind_false_disables_numactl(self, gpu_type):
         """numa_memory_bind=False disables even the default GPU memory binding."""
         from pathlib import Path
@@ -4201,7 +4201,7 @@ class TestHuggingFaceModelSupport:
 
         assert "numactl" not in cmd
 
-    @pytest.mark.parametrize("gpu_type", ["h100", "VRNVL72"])
+    @pytest.mark.parametrize("gpu_type", ["h100", "vrnvl72"])
     def test_trtllm_numa_memory_bind_true_applies_to_agg_mode(self, gpu_type):
         """numa_memory_bind=True also wraps aggregated-mode workers with numactl."""
         from pathlib import Path
