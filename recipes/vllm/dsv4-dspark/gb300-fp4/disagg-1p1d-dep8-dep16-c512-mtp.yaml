@@ -10,7 +10,7 @@ name: "svf-vllm-disagg-gb300-1p1d-dep8-dep16-c512-mtp-agentic"
 
 model:
   path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/DeepSeek-V4-Pro-0813"
-  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-nightly-dev-arm64-cu13.0.1-591bb95.sqsh"
+  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-gb300-arm64-dspark-patches-20260923-1.sqsh"
   precision: "fp4"
 
 identity:
@@ -94,7 +94,7 @@ frontend:
 engine:
   type: vllm
   connector:
-  dp_launch_mode: per_gpu
+  dp_launch_mode: per_node
 roles:
   prefill:
     nodes: 2
@@ -159,7 +159,7 @@ roles:
       speculative-config: '{"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
-      numa-bind-nodes: [0, 0, 1, 1, 0, 0, 1, 1]
+      numa-bind-nodes: [0, 0, 1, 1]
   decode:
     nodes: 4
     workers: 1
@@ -225,7 +225,7 @@ roles:
       speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
-      numa-bind-nodes: [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1]
+      numa-bind-nodes: [0, 0, 1, 1]
 
 sbatch_directives:
   mem: "0"
