@@ -1,0 +1,202 @@
+schema: 2
+name: "svf-vllm-agg-gb300-tp4-c8-mtp-agentic"
+
+# GB300 AgentX aggregate topology: one TP4 worker occupies one four-GPU node
+# and serves both prefill and decode at concurrency 8. Size max-num-seqs at
+# 4x concurrency and expand the K=6 CUDA-graph envelope to match.
+
+model:
+  path: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/DeepSeek-V4-Pro-0813"
+  container: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/vllm-openai-nightly-dev-arm64-cu13.0.1-591bb95.sqsh"
+  precision: "fp4"
+
+identity:
+  model:
+    repo: "deepseek-ai/DeepSeek-V4-Pro-0813"
+  container:
+    image: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/vllm-openai-nightly-dev-arm64-cu13.0.1-591bb95.sqsh"
+  frameworks:
+    dynamo: "1.5.0"
+
+dynamo:
+  install: false
+
+extra_mount:
+  - "/lustre:/lustre"
+  - "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels:/dynamo_wheels"
+environment:
+  DYNAMO_WHEEL_DIRS: "/srtctl-wheels"
+  # Mooncake prefix-block hashes must match across processes and nodes.
+  PYTHONHASHSEED: "0"
+  WITH_NVIDIA_PEERMEM: "0"
+  ETCD_LEASE_TTL: "7200"
+
+setup_script: vllm-container-deps-and-dynamo-wheel.sh
+
+slurm:
+  time_limit: "4:00:00"
+
+health_check:
+  max_attempts: 2160
+  interval_seconds: 10
+
+resources:
+  gpu_type: "gb300"
+  gpus_per_node: 4
+services:
+  - name: etcd
+    type: etcd
+    placement:
+      node: infra
+  - name: nats
+    type: nats
+    placement:
+      node: infra
+    options:
+      max_payload_mb: 32
+  - name: mooncake-master
+    type: mooncake-master
+    options:
+      store_config:
+        metadata_server: "P2PHANDSHAKE"
+        global_segment_size: "140GB"
+        local_buffer_size: "4GB"
+        protocol: "rdma"
+        device_name: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"
+        mode: "embedded"
+        enable_offload: false
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  env:
+    ETCD_LEASE_TTL: '120'
+    DYN_ROUTER_TEMPERATURE: '0'
+    DYN_ROUTER_QUEUE_THRESHOLD: None
+    DYN_TOKENIZER_CACHE: '1'
+    DYN_TOKENIZER_CACHE_BYTES: '8000000000'
+    DYN_TOKENIZER: fastokens
+    DYN_TCP_REQUEST_TIMEOUT: '30'
+    DYN_REQUEST_PLANE: tcp
+    DYN_FRONTEND_ENABLE_KV_EVENTS: '0'
+    DYN_LOGGING_JSONL: 'false'
+    OTEL_EXPORT_ENABLED: 'false'
+  args:
+    router-mode: kv
+    router-session-affinity-ttl-secs: '14400'
+    active-decode-blocks-threshold: None
+    active-prefill-tokens-threshold: None
+    active-prefill-tokens-threshold-frac: None
+engine:
+  type: vllm
+  connector:
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 4
+
+    env:
+      HF_HUB_CACHE: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache"
+      HUGGINGFACE_HUB_CACHE: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache"
+      TRANSFORMERS_CACHE: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache"
+      VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+      VLLM_RPC_TIMEOUT: "600000"
+      VLLM_LOG_STATS_INTERVAL: "1"
+      VLLM_FLOAT32_MATMUL_PRECISION: "high"
+      VLLM_V2_WARMUP_MAX_NUM_SEQS: "32"
+      TILELANG_CLEANUP_TEMP_FILES: "1"
+      VLLM_USE_NCCL_SYMM_MEM: "0"
+      TORCH_SYMMMEM: "NVSHMEM"
+      NCCL_CUMEM_ENABLE: "1"
+      NCCL_MNNVL_ENABLE: "1"
+      NCCL_NVLS_ENABLE: "1"
+      VLLM_SERVER_DEV_MODE: "1"
+      VLLM_USE_V2_MODEL_RUNNER: "1"
+      VLLM_USE_RUST_FRONTEND: "1"
+      VLLM_ALLREDUCE_USE_FLASHINFER: "1"
+      VLLM_FLASHINFER_ALLREDUCE_BACKEND: "auto"
+      VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+      VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
+      VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
+      VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+      VLLM_DSV4_MEGA_FP8_COMBINE: "1"
+      VLLM_SPARSE_INDEXER_MAX_LOGITS_MB: "1024"
+      VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+      UCX_MEMTYPE_CACHE: "n"
+      UCX_NET_DEVICES: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1"
+      UCX_TLS: "rc,cuda_copy"
+      NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"
+      NCCL_P2P_LEVEL: "NVL"
+      MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_SLICE_SIZE: "1048576"
+      MC_WORKERS_PER_CTX: "4"
+      MC_STORE_CLIENT_METRIC: "1"
+      MC_STORE_CLIENT_METRIC_INTERVAL: "5"
+      MC_TE_METRIC: "0"
+      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-agg-tp4-c8-mtp-{job_id}"
+    args:
+      served-model-name: "DeepSeek-V4-Pro-0813"
+      safetensors-load-strategy: "lazy"
+      kv-cache-dtype: "fp8"
+      tensor-parallel-size: 4
+      pipeline-parallel-size: 1
+      enable-cumem-allocator: true
+      disable-custom-all-reduce: true
+      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
+      max-model-len: 1048576
+      max-num-seqs: 32
+      max-num-batched-tokens: 8192
+      trust-remote-code: true
+      no-enable-flashinfer-autotune: true
+      block-size: 256
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224],"mode":0}'
+      max-cudagraph-capture-size: 224
+      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
+      moe-backend: "deep_gemm_amxf4_mega_moe"
+      gpu-memory-utilization: 0.90
+      stream-interval: 32
+      no-disable-hybrid-kv-cache-manager: true
+      tokenizer-mode: "deepseek_v4"
+      numa-bind: true
+      numa-bind-nodes: [0, 0, 1, 1]
+
+sbatch_directives:
+  mem: "0"
+
+srun_options:
+  container-remap-root: ""
+  cpu-bind: "none"
+
+benchmark:
+  type: custom
+  env:
+    AIPERF_REF: file:///lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/agentx-harness
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
+    AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/aiperf_mmap_cache
+    AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
+    AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
+    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: '0'
+    HF_HUB_CACHE: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache"
+  command: |
+    set -euo pipefail
+    AIPERF_VENV="${TMPDIR:-/tmp}/agentx-aiperf-${SLURM_JOB_ID:-$$}"
+    if [ ! -x "$AIPERF_VENV/bin/aiperf" ]; then
+      python3 -m venv "$AIPERF_VENV"
+      "$AIPERF_VENV/bin/pip" install -q --upgrade pip
+      "$AIPERF_VENV/bin/pip" install -q "aiperf @ $AIPERF_REF" "datasets>=4.7.0" "huggingface_hub[cli]>=0.25.0"
+    fi
+    ARTIFACT_DIR="/logs/agentic/conc_8/aiperf_artifacts"
+    mkdir -p "$ARTIFACT_DIR"
+    "$AIPERF_VENV/bin/aiperf" profile --scenario inferencex-agentx-mvp \
+      --url "http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT" \
+      --endpoint /v1/chat/completions --endpoint-type chat --streaming \
+      -m DeepSeek-V4-Pro-0813 --tokenizer-trust-remote-code \
+      --tokenizer /model \
+      --public-dataset semianalysis_cc_traces_weka_062126 \
+      --trajectory-start-min-ratio 0.25 --trajectory-start-max-ratio 0.75 \
+      --trace-idle-gap-cap-seconds 300 --warmup-requests-per-lane 10 \
+      --warmup-grace-period 1800 --num-dataset-entries 393 \
+      --slice-duration 1.0 --stats-interval 30 --use-server-token-count \
+      --no-gpu-telemetry --random-seed 42 --failed-request-threshold 0.1 \
+      --benchmark-duration 3600 --concurrency 8 \
+      --output-artifact-dir "$ARTIFACT_DIR"
