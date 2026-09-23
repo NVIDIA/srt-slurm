@@ -252,6 +252,9 @@ def test_missing_optional_sources_still_build_a_client_dashboard(artifacts, tmp_
     html = Path(result["html"]).read_text()
     assert "__TRACE_DATA_GZIP_BASE64__" not in html
     assert '<script src="' not in html
+    assert '<link rel="stylesheet" href="' not in html
+    assert "DSightMetricCharts" in html
+    assert "Copyright (c) 2022 Leon Sorokin" in html
 
 
 @pytest.mark.parametrize("mode", ["missing", "empty", "unjoined", "unsupported", "disabled"])

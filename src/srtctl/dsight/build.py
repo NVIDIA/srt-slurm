@@ -20,6 +20,27 @@ from .importer import Importer
 from .query import TraceDataset
 
 
+def render_html(compressed: bytes) -> str:
+    """Render preserved normalized data with the packaged, fully offline viewer."""
+    assets = files("srtctl.dsight").joinpath("assets")
+    html = assets.joinpath("explorer.html").read_text(encoding="utf-8")
+    html = html.replace("__TRACE_DATA_GZIP_BASE64__", base64.b64encode(compressed).decode())
+    for name in ("uPlot.min.css", "metric-charts.css"):
+        stylesheet = assets.joinpath(name).read_text(encoding="utf-8")
+        if "</style" in stylesheet.lower():
+            raise ValueError("Packaged CSS contains an unsafe style terminator")
+        html = html.replace(f'<link rel="stylesheet" href="{name}">', "<style>\n" + stylesheet + "\n</style>")
+    for name in ("uPlot.iife.min.js", "metric-charts.js", "explorer.js"):
+        javascript = assets.joinpath(name).read_text(encoding="utf-8")
+        if "</script" in javascript.lower():
+            raise ValueError("Packaged JavaScript contains an unsafe script terminator")
+        if name == "uPlot.iife.min.js":
+            license_text = assets.joinpath("uPlot.LICENSE").read_text(encoding="utf-8")
+            javascript = "/*\n" + license_text + "\n*/\n" + javascript
+        html = html.replace(f'<script src="{name}"></script>', "<script>\n" + javascript + "\n</script>")
+    return html
+
+
 def build_dashboard(logs: Path, output: Path, **options: Any) -> dict[str, Any]:
     """Read preserved artifacts only. No Slurm, profiler, or network operations."""
     if output.is_symlink():
@@ -38,13 +59,7 @@ def build_dashboard(logs: Path, output: Path, **options: Any) -> dict[str, Any]:
     dataset = TraceDataset(data)
     payload = json.dumps(data, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
     compressed = gzip.compress(payload, compresslevel=6, mtime=0)
-    assets = files("srtctl.dsight").joinpath("assets")
-    javascript = assets.joinpath("explorer.js").read_text(encoding="utf-8")
-    if "</script" in javascript.lower():
-        raise ValueError("Packaged JavaScript contains an unsafe script terminator")
-    html = assets.joinpath("explorer.html").read_text(encoding="utf-8")
-    html = html.replace("__TRACE_DATA_GZIP_BASE64__", base64.b64encode(compressed).decode())
-    html = html.replace('<script src="explorer.js"></script>', "<script>\n" + javascript + "\n</script>")
+    html = render_html(compressed)
     manifest = {
         "generator": "srtctl-trace",
         **dataset.query("summary"),
