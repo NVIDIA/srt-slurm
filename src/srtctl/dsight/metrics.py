@@ -17,26 +17,23 @@ import pyarrow.parquet as pq
 import tomli as tomllib
 from pyarrow import ipc
 
+from .engines import MetricDefinition, engine_metrics
+
 if TYPE_CHECKING:
     from .importer import Importer
 
 METRICS = {
-    "gpu_util": ("GPU utilization", "%"),
-    "DCGM_FI_DEV_GPU_UTIL": ("GPU utilization", "%"),
-    "FI_DEV_FB_USED": ("GPU memory used", "MiB"),
-    "trtllm_num_requests_running": ("Running requests", "requests"),
-    "trtllm_num_requests_waiting": ("Waiting requests", "requests"),
-    "trtllm_kv_cache_utilization": ("KV cache utilization", "ratio"),
-    "sglang:num_running_reqs": ("Running requests", "requests"),
-    "sglang:num_queue_reqs": ("Waiting requests", "requests"),
-    "sglang:token_usage": ("KV cache utilization", "ratio"),
-    "dynamo_component_inflight_requests": ("Worker in flight", "requests"),
-    "dynamo_frontend_inflight_requests": ("Frontend in flight", "requests"),
-    "dynamo_frontend_queued_requests": ("Frontend queued", "requests"),
-    "dynamo_frontend_router_queue_pending_requests": ("Router pending", "requests"),
-    "dynamo_work_handler_queue_depth": ("Handler queue", "requests"),
-    "load1": ("Host load (1 min)", "load"),
-    "memory_MemAvailable_bytes": ("Host available memory", "bytes"),
+    "gpu_util": MetricDefinition("GPU utilization", "%"),
+    "DCGM_FI_DEV_GPU_UTIL": MetricDefinition("GPU utilization", "%"),
+    "FI_DEV_FB_USED": MetricDefinition("GPU memory used", "MiB"),
+    **engine_metrics(),
+    "dynamo_component_inflight_requests": MetricDefinition("Worker in flight", "requests"),
+    "dynamo_frontend_inflight_requests": MetricDefinition("Frontend in flight", "requests"),
+    "dynamo_frontend_queued_requests": MetricDefinition("Frontend queued", "requests"),
+    "dynamo_frontend_router_queue_pending_requests": MetricDefinition("Router pending", "requests"),
+    "dynamo_work_handler_queue_depth": MetricDefinition("Handler queue", "requests"),
+    "load1": MetricDefinition("Host load (1 min)", "load"),
+    "memory_MemAvailable_bytes": MetricDefinition("Host available memory", "bytes"),
 }
 
 
@@ -225,8 +222,8 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                     series_by_key[key] = {
                         "id": len(series_by_key),
                         "name": name,
-                        "label": METRICS[name][0],
-                        "unit": METRICS[name][1],
+                        "label": METRICS[name].label,
+                        "unit": METRICS[name].unit,
                         "raw_name": row["metric_name"],
                         "endpoint": row["scraper_endpoint"],
                         "host": host,
