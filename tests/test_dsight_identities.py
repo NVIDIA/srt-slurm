@@ -57,11 +57,11 @@ def test_dynamo_identities_join_without_engine_local_ids(tmp_path, style):
     for b in request["worker_bindings"]:
         assert not b["ambiguous"] and b["evidence"][1] == 1
         assert "client_id" not in b and "disagg_id" not in b
-        assert data["sources"][b["evidence"][0]]["path"].endswith(f'{b["host"]}_{b["role"]}_w0.out')
+        assert data["sources"][b["evidence"][0]]["path"].endswith(f"{b['host']}_{b['role']}_w0.out")
     assert request["lifecycle"]["available"]
     assert not request["lifecycle"]["issues"]
     assert data["audit"]["joined_spans"] == 14
-    assert all(s["worker"] == f'{s["role"]}-0' for s in request["spans"] if s["role"] != "frontend")
+    assert all(s["worker"] == f"{s['role']}-0" for s in request["spans"] if s["role"] != "frontend")
     assert TraceDataset(data).query("requests", worker="decode-0")["total"] == 1
 
 
@@ -177,11 +177,17 @@ def test_unique_host_fallback_requires_a_recorded_otel_host(tmp_path, recorded_h
         assert all("unique recorded host" in s["worker_basis"] for s in request["spans"] if s["role"] != "frontend")
 
 
-@pytest.mark.parametrize("field,value", [
-    ("dynamo.instance.id", "wrong-host"), ("dynamo.operation.role", "frontend"),
-    ("dynamo.process.epoch", ""), ("dynamo.process.epoch", 123),
-    ("dynamo.request.id", "not-a-uuid"), ("dynamo.request.id", "33333333-3333-4333-8333-333333333333"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("dynamo.instance.id", "wrong-host"),
+        ("dynamo.operation.role", "frontend"),
+        ("dynamo.process.epoch", ""),
+        ("dynamo.process.epoch", 123),
+        ("dynamo.request.id", "not-a-uuid"),
+        ("dynamo.request.id", "33333333-3333-4333-8333-333333333333"),
+    ],
+)
 def test_unusable_worker_identity_is_not_a_binding(tmp_path, field, value):
     logs, _ = dynamo_run(tmp_path)
     for p in logs.glob("*_w*.out"):
@@ -195,8 +201,12 @@ def test_unusable_worker_identity_is_not_a_binding(tmp_path, field, value):
 
 def test_malformed_or_unrelated_json_is_ignored_and_span_context_can_supply_ids(tmp_path):
     logs, _ = dynamo_run(tmp_path)
-    prefix = '\n'.join(['{bad x_request_id json', '[]', '{"spans": null, "x_request_id": false}',
-                        '{"x_request_id": ["not-an-id"], "dynamo.request.id": {}}'])+'\n'
+    prefix = (
+        "{bad x_request_id json\n"
+        "[]\n"
+        '{"spans": null, "x_request_id": false}\n'
+        '{"x_request_id": ["not-an-id"], "dynamo.request.id": {}}\n'
+    )
     path = logs / "front_frontend_0.out"
     path.write_text(prefix + encode({"x_request_id": CLIENT, "dynamo.request.id": SERVER}, "nested"))
     data = Importer(logs).run()

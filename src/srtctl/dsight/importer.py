@@ -23,6 +23,7 @@ from .identities import canonical_role, frontend_identity, worker_identity
 from .model import SCHEMA, lifecycle
 from .nsys import read_profiles
 
+
 def epoch_ns(s: str) -> int:
     s = s.replace("Z", "+00:00")
     d = dt.datetime.fromisoformat(s)
@@ -400,14 +401,19 @@ class Importer:
             )
             with p.open(errors="replace", newline="\n") as stream:
                 for line, s in enumerate(stream, 1):
-                    if "dynamo.request.id" in s and (binding := worker_identity(s)):
-                        if binding.server_id in self.by_server and binding.host == host and binding.role == role:
-                            bind(
-                                self.by_server[binding.server_id],
-                                {**asdict(binding), "worker": wid, "evidence": [self.source(p, "worker_log"), line]},
-                                "request, host, role and process recorded in worker log",
-                            )
-                            self.worker_epochs[(host, role)].add(binding.process)
+                    if (
+                        "dynamo.request.id" in s
+                        and (binding := worker_identity(s))
+                        and binding.server_id in self.by_server
+                        and binding.host == host
+                        and binding.role == role
+                    ):
+                        bind(
+                            self.by_server[binding.server_id],
+                            {**asdict(binding), "worker": wid, "evidence": [self.source(p, "worker_log"), line]},
+                            "request, host, role and process recorded in worker log",
+                        )
+                        self.worker_epochs[(host, role)].add(binding.process)
                     record = parse_engine_log(s)
                     if record is None:
                         continue
@@ -436,7 +442,10 @@ class Importer:
                     process = {
                         sp["process"]
                         for sp in r["spans"]
-                        if sp["host_recorded"] and sp["host"] == host and sp["role"] == role and sp["process"]
+                        if sp["host_recorded"]
+                        and sp["host"] == host
+                        and sp["role"] == role
+                        and sp["process"]
                         and (sp["request"] == identity.server_id or (not sp["request"] and len(r["server_ids"]) == 1))
                     }
                     entry = {
@@ -485,14 +494,18 @@ class Importer:
                 candidates = {
                     e["worker"]
                     for e in request["worker_bindings"]
-                    if span["host_recorded"] and e["host"] == span["host"] and e["role"] == span["role"]
-                    and e["process"] is not None and e["process"] == span["process"]
+                    if span["host_recorded"]
+                    and e["host"] == span["host"]
+                    and e["role"] == span["role"]
+                    and e["process"] is not None
+                    and e["process"] == span["process"]
                     and (not span["request"] or e["server_id"] == span["request"])
                 }
                 basis = "recorded request and process binding"
                 if not candidates and span["host_recorded"] and span["role"] != "frontend":
                     candidates = {
-                        w["id"] for w in self.workers.values()
+                        w["id"]
+                        for w in self.workers.values()
                         if w["host"] == span["host"] and w["role"] == span["role"]
                     }
                     basis = "unique recorded host and role; no request/process binding"

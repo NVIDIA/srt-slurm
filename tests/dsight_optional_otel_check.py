@@ -93,7 +93,16 @@ async def run(output: Path, port: int) -> None:
         await call("Runtime.enable")
         await call("Network.enable")
         await call("Emulation.setDeviceMetricsOverride", width=1600, height=1100, deviceScaleFactor=1, mobile=False)
-        for mode in ("mixed", "missing", "empty", "unjoined", "disabled", "client-only", "worker-bindings", "ambiguous-workers"):
+        for mode in (
+            "mixed",
+            "missing",
+            "empty",
+            "unjoined",
+            "disabled",
+            "client-only",
+            "worker-bindings",
+            "ambiguous-workers",
+        ):
             bindings_only = mode in ("worker-bindings", "ambiguous-workers")
             logs, sqlites = (dynamo_run if bindings_only else write_run)(inputs / mode)
             if mode == "ambiguous-workers":
@@ -170,7 +179,9 @@ async def run(output: Path, port: int) -> None:
             assert abs(state["from"] - 1) < 1e-5 and abs(state["to"] - 3) < 1e-5, state
             if mode != "client-only":
                 assert len(await js("traceExplorer.queryMetrics()")) == 2
-                assert (await js("traceExplorer.queryIterations({from:0,to:10})"))["total"] == (0 if bindings_only else 2)
+                assert (await js("traceExplorer.queryIterations({from:0,to:10})"))["total"] == (
+                    0 if bindings_only else 2
+                )
                 assert (await js("traceExplorer.inspectNsys({worker:'decode-0',rank:0,from:2,to:3})"))["total"] == 2
                 await click("[data-tab=request]")
             else:
@@ -200,7 +211,9 @@ async def run(output: Path, port: int) -> None:
                 assert not await js("document.querySelector('#coverageNotice').innerText.includes('OTel')")
             await js("document.querySelector('#tracks').scrollTop=0")
             if bindings_only:
-                await js("document.querySelector('#inspectorBody').scrollTop=document.querySelector('#inspectorBody').scrollHeight")
+                await js(
+                    "document.querySelector('#inspectorBody').scrollTop=document.querySelector('#inspectorBody').scrollHeight"
+                )
             shot = await call("Page.captureScreenshot", format="png", captureBeyondViewport=False)
             (output / f"{mode}.png").write_bytes(base64.b64decode(shot["data"]))
             results.append(

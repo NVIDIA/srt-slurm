@@ -13,7 +13,7 @@ from typing import Any
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 _TEXT_FIELDS = re.compile(
-    r'(?<![\w.])(x_request_id|request_id|dynamo\.(?:request\.id|instance\.id|operation\.role|process\.epoch))='
+    r"(?<![\w.])(x_request_id|request_id|dynamo\.(?:request\.id|instance\.id|operation\.role|process\.epoch))="
     r'("(?:[^"\\]|\\.)*"|[^\s,}\]]+)'
 )
 
@@ -27,7 +27,9 @@ def _log_fields(line: str) -> dict[str, Any]:
     line = _ANSI.sub("", line).strip()
     if not line.startswith("{"):
         try:
-            return {key: json.loads(value) if value.startswith('"') else value for key, value in _TEXT_FIELDS.findall(line)}
+            return {
+                key: json.loads(value) if value.startswith('"') else value for key, value in _TEXT_FIELDS.findall(line)
+            }
         except json.JSONDecodeError:
             return {}
     try:
@@ -73,10 +75,14 @@ def worker_identity(line: str) -> WorkerIdentity | None:
         for key in ("dynamo.request.id", "dynamo.instance.id", "dynamo.operation.role", "dynamo.process.epoch")
     )
     if (
-        isinstance(server, str) and _UUID.fullmatch(server)
-        and isinstance(host, str) and host
-        and isinstance(role, str) and role
-        and isinstance(process, str) and process
+        isinstance(server, str)
+        and _UUID.fullmatch(server)
+        and isinstance(host, str)
+        and host
+        and isinstance(role, str)
+        and role
+        and isinstance(process, str)
+        and process
     ):
         return WorkerIdentity(server, host, canonical_role(role), process)
     return None
