@@ -9,6 +9,8 @@ import re
 import sqlite3
 from typing import TYPE_CHECKING, Any
 
+from .engines import select_nvtx
+
 if TYPE_CHECKING:
     from .importer import Importer
 
@@ -134,28 +136,7 @@ def read_profiles(run: Importer) -> None:
                 timed += 1
                 # Keep the engine iteration/scheduler/forward context and frontend stages.
                 # Tiny operator annotations remain in the original report, not this HTML.
-                interesting = (name or "").startswith(
-                    (
-                        "[Executor]",
-                        "preprocess.",
-                        "route.",
-                        "router.",
-                        "tokenize",
-                        "detokenize",
-                        "_schedule",
-                        "_forward_step",
-                        "_prepare_inputs",
-                        "_fetch_new_requests",
-                        "prepare_resources",
-                        "LLM.generate_async",
-                        "RpcWorker.submit",
-                        "kv_router.",
-                        "transport.",
-                        "compute_",
-                        "scheduler.",
-                    )
-                )
-                if not interesting or (name == "detokenize" and b - a < 100_000):
+                if not select_nvtx(name or "", b - a):
                     continue
                 if kept >= run.max_profile_events:
                     truncated = True

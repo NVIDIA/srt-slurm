@@ -488,17 +488,109 @@ def test_per_process_and_shadow_engine_reports_map_to_the_agg_worker_and_keep_sc
     assert dataset.query("nsys", worker="agg-0", start=2, end=3)["total"] == 2
 
 
-def test_sglang_engine_gauges_are_imported(artifacts):
+@pytest.mark.parametrize(
+    ("name", "label", "unit"),
+    [
+        ("trtllm_num_requests_running", "Running requests", "requests"),
+        ("trtllm_num_requests_waiting", "Waiting requests", "requests"),
+        ("trtllm_kv_cache_utilization", "KV cache utilization", "ratio"),
+        ("sglang:num_running_reqs", "Running requests", "requests"),
+        ("sglang:num_queue_reqs", "Waiting requests", "requests"),
+        ("sglang:token_usage", "KV cache utilization", "ratio"),
+    ],
+)
+def test_engine_gauges_are_imported(artifacts, name, label, unit):
     logs, _ = artifacts
     path = logs / "tachometer/local/final.parquet"
     rows = pq.read_table(path).to_pylist()
     for row in rows:
-        row["metric_name"] = 'sglang:num_running_reqs{model_name="test"}'
+        row["metric_name"] = f'{name}{{model_name="test"}}'
         row["worker_role"] = "agg"
+    rows.append({**rows[0], "metric_name": f"{name}_unknown", "metric_value": 1000.0})
     pq.write_table(pa.Table.from_pylist(rows), path)
     data = TraceDataset(Importer(logs).run())
-    result = data.query("metrics", rank=0)
+    result = data.query("metrics", rank=0, points=True)
     assert result["total"] == 1
-    assert result["items"][0]["name"] == "sglang:num_running_reqs"
-    assert result["items"][0]["label"] == "Running requests"
-    assert result["items"][0]["worker"] == "agg-0"
+    series = result["items"][0]
+    assert (series["name"], series["label"], series["unit"]) == (name, label, unit)
+    assert series["worker"] == "agg-0"
+    assert series["labels"]["metric.model_name"] == "test"
+    assert series["samples"] == 3
+    assert [point[1] for point in series["points"]] == [1.0, 3.0, 8.0]
+
+
+@pytest.mark.parametrize("timezone", [None, "UTC"])
+def test_iteration_and_identity_on_one_line_preserve_ranks_window_and_provenance(artifacts, timezone):
+    logs, _ = artifacts
+    worker_log = logs / "decode-host_decode_w0.out"
+    iteration = (
+        "[TRT-LLM] iter = 42, global_rank = 4, rank = 0, num_scheduled_requests = 2, "
+        "kv_cache_util = 0.25, host_step_time = 1e-3ms, prev_device_step_time = 2.5E+1ms, "
+        "timestamp = "
+    )
+    identity = f" Engine ID map: request_id={SERVER} trtllm_client_id=8 disagg_request_id=101"
+    worker_log.write_text(
+        iteration + "2026-09-17 10:58:34" + identity + "\n"
+        + iteration + "2026-09-17 10:58:10" + identity.replace("client_id=8", "client_id=9") + "\n"
+    )
+    data = Importer(logs, iteration_timezone=timezone).run()
+    rows = [row for row in data["iterations"] if row["worker"] == "decode-0"]
+    maps = [entry for entry in data["requests"][0]["engine"] if entry["worker"] == "decode-0"]
+    # With no timezone there is no basis to clip either line. With UTC the
+    # out-of-window iteration excludes its whole line, including the ID map.
+    assert len(rows) == len(maps) == (1 if timezone else 2)
+    source = next(source["id"] for source in data["sources"] if source["path"] == str(worker_log))
+    assert rows[0] == {
+        "worker": "decode-0",
+        "iteration": 42,
+        "global_rank": 4,
+        "rank": 0,
+        "batch_requests": 2,
+        "kv_cache_util": 0.25,
+        "host_step_ms": 0.001,
+        "previous_device_step_ms": 25.0,
+        "local_time": "2026-09-17 10:58:34",
+        "start": 3.0 if timezone else None,
+        "end": 4.0 if timezone else None,
+        "evidence": [source, 1],
+    }
+    assert maps[0] == {
+        "worker": "decode-0",
+        "host": "decode-host",
+        "role": "decode",
+        "client_id": "8",
+        "disagg_id": "101",
+        "server_id": SERVER,
+        "process": "epoch-decode",
+        "evidence": [source, 1],
+        "identity_ambiguous": False,
+    }
+
+
+def test_nvtx_selection_preserves_shared_annotations_and_detokenize_threshold(artifacts):
+    logs, sqlites = artifacts
+    path = next(sqlites.iterdir())
+    events = [
+        (1_000_000_000, 1_000_099_999, "detokenize"),
+        (1_100_000_000, 1_100_100_000, "detokenize"),
+        (1_200_000_000, 1_200_000_001, "detokenize.batch"),
+        (1_300_000_000, 1_300_100_000, "transport.send"),
+        (1_400_000_000, 1_400_100_000, "kv_router.choose"),
+        (1_500_000_000, 1_500_100_000, "compute_logits"),
+        (1_600_000_000, 1_600_100_000, "attention_layer_3"),
+        (1_700_000_000, 1_700_100_000, None),
+    ]
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM NVTX_EVENTS")
+        conn.executemany("INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, NULL, 17)", events)
+    profile = Importer(logs, sqlites).run()["profiles"][0]
+    assert profile["names"] == ["detokenize", "detokenize.batch", "transport.send", "kv_router.choose", "compute_logits"]
+    assert [event[:2] for event in profile["events"]] == [
+        [1.1, 1.1001],
+        [1.2, 1.200000001],
+        [1.3, 1.3001],
+        [1.4, 1.4001],
+        [1.5, 1.5001],
+    ]
+    assert profile["timed_ranges_scanned"] == len(events)
+    assert not profile["truncated"]

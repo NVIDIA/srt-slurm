@@ -12,11 +12,13 @@ import datetime as dt
 import json
 import math
 import re
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from .clients import AgentPerfAdapter
+from .engines import parse_engine_log
 from .model import SCHEMA, lifecycle
 from .nsys import read_profiles
 
@@ -359,10 +361,6 @@ class Importer:
                 self.audit["associated_router_selections"] += 1
 
     def engine(self) -> None:
-        pattern = re.compile(r"Engine ID map: request_id=(\S+) trtllm_client_id=(\S+) disagg_request_id=(\S+)")
-        iteration = re.compile(
-            r"iter = (\d+).*?global_rank = (\d+).*?rank = (\d+).*?num_scheduled_requests = (\d+).*?kv_cache_util = ([\d.]+).*?host_step_time = ([\d.eE+-]+)ms.*?prev_device_step_time = ([\d.eE+-]+)ms.*?timestamp = ([\d-]+ [\d:]+)"
-        )
         id_owners = collections.defaultdict(set)
         for p in sorted(self.logs.glob("*_w*.out")):
             # Failover shadow engines log as <host>_<role>_w<i>_e<k>.out for the same worker.
@@ -388,8 +386,11 @@ class Importer:
             )
             with p.open(errors="replace", newline="\n") as stream:
                 for line, s in enumerate(stream, 1):
-                    if "iter =" in s and (it := iteration.search(s)):
-                        time = dt.datetime.fromisoformat(it[8])
+                    record = parse_engine_log(s)
+                    if record is None:
+                        continue
+                    if it := record.iteration:
+                        time = dt.datetime.fromisoformat(it.local_time)
                         anchored = (
                             self.t(int(time.replace(tzinfo=self.iteration_zone).timestamp()) * 10**9)
                             if self.iteration_zone
@@ -400,23 +401,16 @@ class Importer:
                         self.iterations.append(
                             {
                                 "worker": wid,
-                                "iteration": int(it[1]),
-                                "global_rank": int(it[2]),
-                                "rank": int(it[3]),
-                                "batch_requests": int(it[4]),
-                                "kv_cache_util": float(it[5]),
-                                "host_step_ms": float(it[6]),
-                                "previous_device_step_ms": float(it[7]),
-                                "local_time": it[8],
+                                **asdict(it),
                                 "start": anchored,
                                 "end": anchored + 1 if anchored is not None else None,
                                 "evidence": [self.source(p, "worker_log"), line],
                             }
                         )
-                    m = pattern.search(s)
-                    if not m or m[1] not in self.by_server:
+                    identity = record.identity
+                    if identity is None or identity.server_id not in self.by_server:
                         continue
-                    r = self.by_server[m[1]]
+                    r = self.by_server[identity.server_id]
                     process = {
                         sp["process"]
                         for sp in r["spans"]
@@ -426,9 +420,9 @@ class Importer:
                         "worker": wid,
                         "host": host,
                         "role": role,
-                        "client_id": m[2],
-                        "disagg_id": m[3],
-                        "server_id": m[1],
+                        "client_id": identity.client_id,
+                        "disagg_id": identity.disagg_id,
+                        "server_id": identity.server_id,
                         "process": next(iter(process)) if len(process) == 1 else None,
                         "evidence": [self.source(p, "worker_log"), line],
                     }
@@ -436,7 +430,7 @@ class Importer:
                     if stamp:
                         entry["observed_at"] = self.t(epoch_ns(stamp[0]))
                     r["engine"].append(entry)
-                    id_owners[(wid, entry["process"], m[2])].add(m[1])
+                    id_owners[(wid, entry["process"], identity.client_id)].add(identity.server_id)
         self.audit["ambiguous_engine_ids"] = sum(len(v) > 1 for v in id_owners.values())
         self.audit["clients_with_both_engine_maps"] = sum(
             {e["role"] for e in r["engine"]} >= {"prefill", "decode"} for r in self.requests
