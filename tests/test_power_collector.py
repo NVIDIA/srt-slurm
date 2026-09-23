@@ -1479,6 +1479,53 @@ class TestShutdown:
         }
         assert slots_by_host["node-b"] | missed_slow_slots == set(range(final_slot + 1))
 
+    def test_collector_crash_still_pins_every_survivor_to_one_bracket_slot(self, tmp_path, exporters, monkeypatch):
+        """A sibling crash must account for every slot crossed by an in-flight survivor."""
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", a.url), ("node-b", b.url)),
+            sample_interval_seconds=0.05,
+            request_timeout_seconds=0.5,
+        )
+        session.initialize()
+        real_poll = session._poll
+        slow_poll_started = threading.Event()
+        release_slow_poll = threading.Event()
+
+        def poll(endpoint, scrape_seq):
+            if endpoint.hostname == "node-b" and scrape_seq == 2:
+                slow_poll_started.set()
+                release_slow_poll.wait(3.0)
+            if endpoint.hostname == "node-a" and scrape_seq == 6:
+                raise RuntimeError("simulated collector crash on node-a")
+            return real_poll(endpoint, scrape_seq)
+
+        monkeypatch.setattr(session, "_poll", poll)
+        assert session.start_and_wait_for_readiness() is True
+        assert slow_poll_started.wait(1.0)
+        assert session._stop.wait(1.0), "node-a's crash should stop collection"
+        with session._state_lock:
+            shutdown_bracket = session._shutdown_bracket
+        assert shutdown_bracket is not None, "a crash-initiated stop must arm the shared bracket"
+        crash_bracket = shutdown_bracket[0]
+
+        release_slow_poll.set()
+        outcome = session.stop_and_finalize()
+
+        assert Reason.COLLECTOR_EXCEPTION in outcome.reason_codes
+        rows, _ = read_samples(session.samples_path)
+        slow_slots = {row.scrape_seq for row in rows if row.hostname == "node-b"}
+        missed_slow_slots = {
+            scrape_seq
+            for item in _manifest(session)["missed_sample_ranges"]
+            if item["hostname"] == "node-b"
+            for scrape_seq in range(item["first_scrape_seq"], item["last_scrape_seq"] + 1)
+        }
+        assert max(slow_slots) == crash_bracket
+        assert slow_slots | missed_slow_slots == set(range(crash_bracket + 1))
+
     def test_manifest_records_disk_derived_counts(self, tmp_path, exporters):
         a = exporters(_body("a"))
         b = exporters(_body("b"))

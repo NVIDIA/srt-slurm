@@ -522,24 +522,21 @@ class PowerTelemetrySession:
             with self._state_lock:
                 shutdown_bracket = self._shutdown_bracket
             if shutdown_bracket is None:
-                bracket_scrape_seq = scrape_seq
-                bracket_scheduled_at_unix = time.time()
-            else:
-                bracket_scrape_seq, bracket_scheduled_at_unix = shutdown_bracket
-                if scrape_seq < bracket_scrape_seq:
-                    self._record_missed_sample_range(
-                        hostname=endpoint.hostname,
-                        first_scrape_seq=scrape_seq,
-                        last_scrape_seq=bracket_scrape_seq - 1,
-                        first_scheduled_at_unix=(started_unix + (scrape_seq - initial_scrape_seq) * interval),
-                        last_scheduled_at_unix=(
-                            started_unix + (bracket_scrape_seq - 1 - initial_scrape_seq) * interval
-                        ),
-                        reason_codes=(Reason.SAMPLE_SCHEDULE_OVERRUN,),
-                    )
-                elif scrape_seq > bracket_scrape_seq:
-                    # This endpoint already persisted the common bracket slot.
-                    return
+                # Every stop path must arm this first through _request_stop().
+                raise RuntimeError("collector stopped without a shutdown bracket")
+            bracket_scrape_seq, bracket_scheduled_at_unix = shutdown_bracket
+            if scrape_seq < bracket_scrape_seq:
+                self._record_missed_sample_range(
+                    hostname=endpoint.hostname,
+                    first_scrape_seq=scrape_seq,
+                    last_scrape_seq=bracket_scrape_seq - 1,
+                    first_scheduled_at_unix=(started_unix + (scrape_seq - initial_scrape_seq) * interval),
+                    last_scheduled_at_unix=(started_unix + (bracket_scrape_seq - 1 - initial_scrape_seq) * interval),
+                    reason_codes=(Reason.SAMPLE_SCHEDULE_OVERRUN,),
+                )
+            elif scrape_seq > bracket_scrape_seq:
+                # This endpoint already persisted the common bracket slot.
+                return
 
             result = self._poll(endpoint, bracket_scrape_seq)
             self._persist_endpoint_result(
@@ -550,7 +547,7 @@ class PowerTelemetrySession:
         except Exception:
             logger.exception("Power collector stopped for endpoint %s", endpoint.hostname)
             self.record_reason(Reason.COLLECTOR_EXCEPTION)
-            self._stop.set()
+            self._request_stop(time.monotonic())
 
     def _run_supervisor(self) -> None:
         """Watch exporter processes independently of endpoint request latency."""
@@ -561,7 +558,22 @@ class PowerTelemetrySession:
         except Exception:
             logger.exception("Power collector supervisor stopped")
             self.record_reason(Reason.COLLECTOR_EXCEPTION)
-            self._stop.set()
+            self._request_stop(time.monotonic())
+
+    def _request_stop(self, stopped_monotonic: float) -> None:
+        """Arm the shared shutdown bracket before stopping collector threads."""
+        with self._state_lock:
+            if self._collector_grid is not None and self._shutdown_bracket is None:
+                initial_scrape_seq, started_monotonic, started_unix = self._collector_grid
+                elapsed_slots = int(
+                    max(0.0, stopped_monotonic - started_monotonic) / self._settings.sample_interval_seconds
+                )
+                bracket_scrape_seq = initial_scrape_seq + elapsed_slots + 1
+                bracket_scheduled_at_unix = (
+                    started_unix + (bracket_scrape_seq - initial_scrape_seq) * self._settings.sample_interval_seconds
+                )
+                self._shutdown_bracket = (bracket_scrape_seq, bracket_scheduled_at_unix)
+        self._stop.set()
 
     def _any_exporter_exited(self) -> bool:
         with self._exporters_lock:
@@ -590,18 +602,7 @@ class PowerTelemetrySession:
         stopped_monotonic = time.monotonic()
         deadline = stopped_monotonic + self._settings.collector_join_timeout_seconds
         self._check_exporters()
-        with self._state_lock:
-            if self._collector_grid is not None and self._shutdown_bracket is None:
-                initial_scrape_seq, started_monotonic, started_unix = self._collector_grid
-                elapsed_slots = int(
-                    max(0.0, stopped_monotonic - started_monotonic) / self._settings.sample_interval_seconds
-                )
-                bracket_scrape_seq = initial_scrape_seq + elapsed_slots + 1
-                bracket_scheduled_at_unix = (
-                    started_unix + (bracket_scrape_seq - initial_scrape_seq) * self._settings.sample_interval_seconds
-                )
-                self._shutdown_bracket = (bracket_scrape_seq, bracket_scheduled_at_unix)
-        self._stop.set()
+        self._request_stop(stopped_monotonic)
 
         for thread in self._threads:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
