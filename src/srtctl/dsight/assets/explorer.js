@@ -536,7 +536,7 @@
   function iterationInspector() {
     const worker =
       state.iterationWorker ??
-      selected()?.engine.find((e) => e.role === "decode")?.worker ??
+      D.workers.find((w) => w.role === "decode" && selected()?.workers.includes(w.id))?.id ??
       D.workers[0]?.id;
     const rank = state.iterationRank,
       q = queryIterations({ worker, rank, limit: 50 });
@@ -1030,9 +1030,7 @@
     const r = selected();
     if (!r)
       return "<p>Select a request to follow its frontend, prefill, and decode path.</p>";
-    const pathWorkers = [
-        ...new Map(r.engine.map((e) => [e.worker, e])).values(),
-      ],
+    const pathWorkers = D.workers.filter((w) => r.workers.includes(w.id)),
       sp = findInterval(r, state.span),
       front = r.spans.find((s) => s.role === "frontend");
     let html = `<div class="help">Session ${esc(short(r.session))} / ${r.client_kind === "agentperf" ? "client" : r.depth ? "subagent" : "main agent"} / turn ${esc(r.turn)}</div><div class="request-id mono">${esc(r.id)}</div><div class="stats"><div class="stat">${fmt(r.ttft_ms)}<small>Client TTFT · ms</small></div><div class="stat">${fmt(r.end - r.start, 3)}<small>Request duration · s</small></div><div class="stat">${fmt(r.input_tokens, 0)}<small>Input tokens</small></div><div class="stat">${fmt(r.output_tokens, 0)}<small>Output tokens</small></div></div><div class="actions"><button id="fitRequest">Fit request</button><button id="fitTTFT" ${r.first === null ? "disabled" : ""}>Fit TTFT</button>${hasLifecycle(r) ? `<button id="expandTTFT" aria-expanded="${state.expandedRequests.has(r.id)}">${state.expandedRequests.has(r.id) ? "Collapse" : "Expand"} lifecycle</button>` : ""}</div>`;
@@ -1057,8 +1055,10 @@
           sp.to_boundary.evidence,
           "Interval end: " + sp.to_boundary.label,
         );
-    if (sp && sp.kind !== "progress")
+    if (sp && sp.kind !== "progress") {
+      if (sp.worker_basis) html += `<p class="help">Worker association: ${esc(sp.worker_basis)}.</p>`;
       html += evidence(sp.evidence, "Dynamo OTel span");
+    }
     if (hasLifecycle(r) && state.expandedRequests.has(r.id)) {
       html += `<h3>Progress milestones</h3><div class="stage-list">${lifecycleModel(
         r,
@@ -1090,12 +1090,12 @@
             .join("")}</div>`;
       }
       let hasPathNode = Boolean(front);
-      for (const role of ["prefill", "decode", "aggregated"]) {
+      for (const role of ["prefill", "decode", "agg"]) {
         const recorded = pathWorkers.filter((e) => e.role === role);
         if (recorded.length) {
           if (hasPathNode && role !== "prefill") html += '<div class="path-arrow">↓</div>';
           html += recorded
-            .map((e) => pathNode(e.worker, e.worker, e.host, true))
+            .map((w) => pathNode(w.id, w.id, w.host, true))
             .join("");
           hasPathNode = true;
         }
@@ -1113,12 +1113,16 @@
         '</dd><dt>Dynamo</dt><dd class="mono">' +
         r.server_ids.map(esc).join("<br>") +
         "</dd>";
+      for (const b of r.worker_bindings ?? [])
+        html += `<dt>${esc(b.worker)} binding</dt><dd>${b.ambiguous ? '<strong>Ambiguous</strong><br>' : ''}<span class="mono">${esc(b.process ?? "process not recorded")}</span><br>${esc(b.basis)}${r.server_ids.length > 1 ? `<br>Dynamo <span class="mono">${esc(b.server_id)}</span>` : ''}</dd>`;
       for (const e of r.engine)
-        html += `<dt>${esc(e.worker)}</dt><dd>engine client ${esc(e.client_id)}<br><span class="mono">disagg ${esc(e.disagg_id)}</span></dd>`;
+        html += `<dt>${esc(e.worker)} engine</dt><dd>engine client ${esc(e.client_id)}<br><span class="mono">disagg ${esc(e.disagg_id)}</span>${e.identity_ambiguous ? '<br>Process-local ID scope unresolved' : ''}</dd>`;
       html += '</dl>';
       if (r.engine.length)
         html += '<p class="help">Engine client IDs are process-local. Router DP rank is not assumed to match a Nsight process rank; rank selection shows shared activity.</p>';
     }
+    if ((r.worker_bindings ?? []).some((b) => b.ambiguous))
+      html += '<p class="warn">Conflicting worker bindings remain in the evidence and are omitted from the recorded request path.</p>';
     if (r.issues.length)
       html += `<p class="warn">${r.issues.map(esc).join("; ")}</p>`;
     return html;
@@ -1145,11 +1149,14 @@
   }
   function evidenceInspector() {
     const r = selected();
-    return `<h3>Join coverage</h3><dl class="facts"><dt>Client requests</dt><dd>${fmt(D.audit.client_requests, 0)}</dd><dt>Client → Dynamo</dt><dd>${fmt(D.audit.clients_with_server_identity, 0)}</dd>${D.audit.clients_with_lifecycle ? `<dt>With lifecycle</dt><dd>${fmt(D.audit.clients_with_lifecycle, 0)}</dd>` : ""}<dt>Both engine maps</dt><dd>${fmt(D.audit.clients_with_both_engine_maps, 0)}</dd><dt>Ambiguous engine IDs</dt><dd>${D.audit.ambiguous_engine_ids}</dd></dl><h3>Timing and coverage</h3><ul class="quality-list">${[...D.meta.warnings, ...D.meta.limitations].map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="help">No negative residual is relabeled as execution time. Clock anchors remain uncorrected; GPU metrics preserve host / GPU labels.</p>${
+    return `<h3>Join coverage</h3><dl class="facts"><dt>Client requests</dt><dd>${fmt(D.audit.client_requests, 0)}</dd><dt>Client → Dynamo</dt><dd>${fmt(D.audit.clients_with_server_identity, 0)}</dd>${D.audit.clients_with_lifecycle ? `<dt>With lifecycle</dt><dd>${fmt(D.audit.clients_with_lifecycle, 0)}</dd>` : ""}<dt>Worker bindings</dt><dd>${fmt(D.audit.worker_binding_rows ?? 0, 0)}</dd><dt>Ambiguous bindings</dt><dd>${fmt(D.audit.ambiguous_worker_bindings ?? 0, 0)}</dd><dt>Both engine maps</dt><dd>${fmt(D.audit.clients_with_both_engine_maps, 0)}</dd><dt>Ambiguous engine IDs</dt><dd>${D.audit.ambiguous_engine_ids}</dd></dl><h3>Timing and coverage</h3><ul class="quality-list">${[...D.meta.warnings, ...D.meta.limitations].map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="help">No negative residual is relabeled as execution time. Clock anchors remain uncorrected; GPU metrics preserve host / GPU labels.</p>${
       r
         ? evidence(r.evidence, "Client record") +
           r.bridge_evidence
             .map((e) => evidence(e, "Client → Dynamo"))
+            .join("") +
+          (r.worker_bindings ?? [])
+            .map((b) => evidence(b.evidence, `${b.worker} binding${b.ambiguous ? " (ambiguous)" : ""}`))
             .join("") +
           r.engine
             .map((e) =>
@@ -1655,7 +1662,7 @@
   if (D.meta.qualification?.passed)
     $("runSubtitle").textContent += " · capture qualified";
   const candidates = [...D.requests]
-    .filter((r) => r.spans.length && r.engine.length === 2 && r.first !== null)
+    .filter((r) => r.spans.length && r.workers.length && r.first !== null)
     .sort((a, b) => b.ttft_ms - a.ttft_ms);
   const preferred =
     candidates[Math.min(20, candidates.length - 1)] || D.requests[0];

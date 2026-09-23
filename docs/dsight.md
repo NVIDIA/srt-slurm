@@ -81,9 +81,9 @@ identity bridges are omitted.
 | AgentX / AIPerf | `profile_export.jsonl`, `agentic/*/[aiperf_artifacts/]profile_export.jsonl`, `artifacts/*/profile_export.jsonl` | Client timing, tokens and recorded session/agent identities |
 | Native AgentPerf | `requests.jsonl`, `agentperf/requests.jsonl`, `agentperf/*/requests.jsonl` | HTTP identity; companion phase-analysis JSONL supplies fully decoded timing where present |
 | AgentPerf manifest | `phase_manifest.jsonl` beside the export | Measured request starts in `[settling_end, actual_phase_end)` |
-| Frontend logs | `*_frontend_*.out` | Explicit client header → Dynamo UUID bridge |
-| Dynamo OTel | `otel/*/traces.jsonl`, OTLP JSON resource/scope spans | Original timestamps, parents, trace/request/process identities and route attributes |
-| Worker logs | `*_{prefill,decode,agg}_w*[_e<k>].out` | Engine ID maps, worker identity and iteration summaries |
+| Frontend logs | `*_frontend_*.out`, text or JSON | Explicit client header → Dynamo UUID bridge |
+| Dynamo OTel | `otel/traces.jsonl` or `otel/*/traces.jsonl`, OTLP JSON resource/scope spans | Original timestamps, parents, trace/request/process identities and route attributes |
+| Worker logs | `*_{prefill,decode,agg,aggregated}_w*[_e<k>].out` | Dynamo request/process bindings, engine ID maps and iteration summaries |
 | Tachometer | `tachometer/local`, or `--metrics <capture-leaf-or-file>` | Selected running/waiting/in-flight, KV, GPU and host gauges with recorded labels |
 | Nsight SQLite | `--nsys-sqlite <directory-or-file>` | Selected NVTX ranges and available frontend CPU samples, aligned by session UTC anchor |
 
@@ -95,6 +95,28 @@ conversation and conversation index. Timing and HTTP-identity references remain
 separate. Missing analysis records are labeled as liveness-log timing. AgentPerf
 sessions group phase/user/conversation; agent nesting is not inferred. Prompts,
 response text and SSE payloads are excluded from the normalized dataset.
+
+Frontend identity decoding accepts text, flat JSON, and tracing-subscriber JSON
+with `spans`, `span` and `fields` objects. The recorded `x_request_id` joins the
+client export to `dynamo.request.id` (or the legacy `request_id`). Duplicate
+observations retain the first source reference; distinct server attempts remain
+separate. A server UUID mapped to different client requests is rejected.
+
+Common Dynamo worker logs can bind a request to a worker without engine-local
+IDs. The request ID, recorded host, role and process epoch must be present, and
+the host/role must match the worker filename. `worker_bindings` records the
+Dynamo ID, worker, host, role, process, join basis and source/line; `engine`
+retains actual engine-local IDs. Repeated observations deduplicate by Dynamo ID,
+worker and process. Engine ID maps also supply worker bindings.
+
+OTel spans match bindings by recorded host, role and process, scoped to the
+Dynamo attempt when the span records one. Without a matching binding, a recorded
+host/role can identify a worker only when exactly one discovered worker matches;
+the span retains that association basis. Collector directory names and timing
+proximity do not establish ownership. Conflicting bindings remain visible under
+**Identity bridge** and **Evidence**, but are excluded from the confirmed request
+path and worker filters. Both flat and per-collector OTel files can coexist;
+identical spans deduplicate, while conflicting copies are rejected.
 
 For metrics, `final.parquet` supersedes compacted Parquet shards. An Arrow tail
 is also read, with identical samples deduplicated within complete series
@@ -223,7 +245,7 @@ against a specific source before claiming a cause.
 ## Development checks
 
 ```bash
-uv run pytest tests/test_dsight.py tests/test_dsight_agentperf.py
+uv run pytest tests/test_dsight.py tests/test_dsight_agentperf.py tests/test_dsight_identities.py
 uv run ty check src/srtctl/dsight
 node --check src/srtctl/dsight/assets/explorer.js
 ```
@@ -236,8 +258,9 @@ uv run --with websockets python tests/dsight_browser_check.py "<path_to_report_d
   --port 9338 --out "<path_to_browser_check_output>" --request "<joined_client_request_id>"
 ```
 
-Check missing, empty, unjoined, disabled, and mixed OTel inputs with synthetic
-source files (uses the same isolated Chrome port):
+Check missing, empty, unjoined, disabled and mixed OTel inputs, plus worker
+bindings and ambiguous paths, with synthetic source files (uses the same isolated
+Chrome port):
 
 ```bash
 uv run --with websockets python tests/dsight_optional_otel_check.py \

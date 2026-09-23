@@ -19,12 +19,9 @@ from zoneinfo import ZoneInfo
 
 from .clients import AgentPerfAdapter
 from .engines import parse_engine_log
+from .identities import canonical_role, frontend_identity, worker_identity
 from .model import SCHEMA, lifecycle
 from .nsys import read_profiles
-
-ANSI = re.compile(r"\x1b\[[0-9;]*m")
-UUID = r"[0-9a-fA-F-]{36}"
-
 
 def epoch_ns(s: str) -> int:
     s = s.replace("Z", "+00:00")
@@ -190,6 +187,7 @@ class Importer:
                 "server_ids": [],
                 "spans": [],
                 "engine": [],
+                "worker_bindings": [],
                 "raw_start_ns": str(m["request_start_ns"]),
                 "raw_end_ns": str(m["request_end_ns"]),
             }
@@ -222,18 +220,17 @@ class Importer:
             for line, s in enumerate(p.open(errors="replace", newline="\n"), 1):
                 if "x_request_id" not in s:
                     continue
-                s = ANSI.sub("", s)
-                x = re.search(r'x_request_id="([^"]+)"', s)
-                d = re.search(r"(?:dynamo\.request\.id|\brequest_id)=(" + UUID + r")", s)
-                if not x or not d or x[1] not in self.by_client:
+                identity = frontend_identity(s)
+                if identity is None or identity[0] not in self.by_client:
                     continue
-                r = self.by_client[x[1]]
-                if d[1] not in r["server_ids"]:
-                    r["server_ids"].append(d[1])
-                    self.bridge[d[1]] = [self.source(p, "frontend_log"), line]
-                if d[1] in self.by_server and self.by_server[d[1]]["id"] != r["id"]:
+                client_id, server_id = identity
+                r = self.by_client[client_id]
+                if server_id not in r["server_ids"]:
+                    r["server_ids"].append(server_id)
+                    self.bridge[server_id] = [self.source(p, "frontend_log"), line]
+                if server_id in self.by_server and self.by_server[server_id]["id"] != r["id"]:
                     raise ValueError("Ambiguous client/server bridge")
-                self.by_server[d[1]] = r
+                self.by_server[server_id] = r
         self.audit["clients_with_server_identity"] = sum(bool(r["server_ids"]) for r in self.requests)
         self.audit["multiple_server_attempts"] = sum(len(r["server_ids"]) > 1 for r in self.requests)
         for r in self.requests:
@@ -243,7 +240,8 @@ class Importer:
         spans: list[dict[str, Any]] = []
         trace_requests = collections.defaultdict(set)
         seen = {}
-        for p in sorted(self.logs.glob("otel/*/traces.jsonl")):
+        files = {p for pattern in ("otel/traces.jsonl", "otel/*/traces.jsonl") for p in self.logs.glob(pattern)}
+        for p in sorted(files):
             if not p.stat().st_size:
                 continue
             sid = self.source(p, "otel")
@@ -268,6 +266,8 @@ class Importer:
                                 span["startTimeUnixNano"],
                                 span["endTimeUnixNano"],
                                 span.get("parentSpanId"),
+                                a,
+                                service,
                             )
                             if key in seen:
                                 if seen[key] != signature:
@@ -282,6 +282,7 @@ class Importer:
                             role = a.get(
                                 "dynamo.operation.role", "frontend" if service == "dynamo-frontend" else "unknown"
                             )
+                            role = canonical_role(role)
                             host = a.get("dynamo.instance.id", p.parent.name)
                             epoch = a.get("dynamo.process.epoch")
                             if epoch:
@@ -296,6 +297,7 @@ class Importer:
                                     "end": end,
                                     "role": role,
                                     "host": host,
+                                    "host_recorded": bool(a.get("dynamo.instance.id")),
                                     "process": epoch,
                                     "request": rid,
                                     "operation": a.get("dynamo.operation.id"),
@@ -360,14 +362,26 @@ class Importer:
                 }
                 self.audit["associated_router_selections"] += 1
 
-    def engine(self) -> None:
+    def worker_logs(self) -> None:
         id_owners = collections.defaultdict(set)
+        bindings: set[tuple] = set()
+
+        def bind(request: dict[str, Any], entry: dict[str, Any], basis: str) -> None:
+            key = (entry["server_id"], entry["worker"], entry["process"])
+            if key not in bindings:
+                request["worker_bindings"].append(
+                    {k: entry[k] for k in ("worker", "host", "role", "server_id", "process", "evidence")}
+                    | {"basis": basis}
+                )
+                bindings.add(key)
+
         for p in sorted(self.logs.glob("*_w*.out")):
             # Failover shadow engines log as <host>_<role>_w<i>_e<k>.out for the same worker.
-            match = re.match(r"(.+)_(prefill|decode|agg)_w(\d+)(?:_e\d+)?\.out", p.name)
+            match = re.fullmatch(r"(.+)_(prefill|decode|agg|aggregated)_w(\d+)(?:_e\d+)?\.out", p.name)
             if not match:
                 continue
             host, role, index = match.groups()
+            role = canonical_role(role)
             wid = f"{role}-{index}"
             if wid in self.workers and self.workers[wid]["host"] != host:
                 raise ValueError(f"Ambiguous worker {wid}: multiple leaders in selected logs")
@@ -386,6 +400,14 @@ class Importer:
             )
             with p.open(errors="replace", newline="\n") as stream:
                 for line, s in enumerate(stream, 1):
+                    if "dynamo.request.id" in s and (binding := worker_identity(s)):
+                        if binding.server_id in self.by_server and binding.host == host and binding.role == role:
+                            bind(
+                                self.by_server[binding.server_id],
+                                {**asdict(binding), "worker": wid, "evidence": [self.source(p, "worker_log"), line]},
+                                "request, host, role and process recorded in worker log",
+                            )
+                            self.worker_epochs[(host, role)].add(binding.process)
                     record = parse_engine_log(s)
                     if record is None:
                         continue
@@ -414,7 +436,8 @@ class Importer:
                     process = {
                         sp["process"]
                         for sp in r["spans"]
-                        if sp["host"] == host and sp["role"] == role and sp["process"]
+                        if sp["host_recorded"] and sp["host"] == host and sp["role"] == role and sp["process"]
+                        and (sp["request"] == identity.server_id or (not sp["request"] and len(r["server_ids"]) == 1))
                     }
                     entry = {
                         "worker": wid,
@@ -430,6 +453,7 @@ class Importer:
                     if stamp:
                         entry["observed_at"] = self.t(epoch_ns(stamp[0]))
                     r["engine"].append(entry)
+                    bind(r, entry, "explicit engine request ID map in worker log")
                     id_owners[(wid, entry["process"], identity.client_id)].add(identity.server_id)
         self.audit["ambiguous_engine_ids"] = sum(len(v) > 1 for v in id_owners.values())
         self.audit["clients_with_both_engine_maps"] = sum(
@@ -442,20 +466,45 @@ class Importer:
                     entry["process"] is None
                     or len(id_owners[(entry["worker"], entry["process"], entry["client_id"])]) > 1
                 )
-            for span in r["spans"]:
+        for worker in self.workers.values():
+            worker["process_epochs"] = sorted(self.worker_epochs[(worker["host"], worker["role"])])
+        self.audit["iteration_rows"] = len(self.iterations)
+
+    def worker_links(self) -> None:
+        """Keep ownership separate from engine IDs; ambiguity never selects a worker."""
+        for request in self.requests:
+            owners: dict[tuple, set[str]] = collections.defaultdict(set)
+            for binding in request["worker_bindings"]:
+                key = (binding["server_id"], binding["host"], binding["role"], binding["process"])
+                owners[key].add(binding["worker"])
+            for binding in request["worker_bindings"]:
+                key = (binding["server_id"], binding["host"], binding["role"], binding["process"])
+                binding["ambiguous"] = len(owners[key]) > 1
+                self.audit["ambiguous_worker_bindings"] += binding["ambiguous"]
+            for span in request["spans"]:
                 candidates = {
                     e["worker"]
-                    for e in r["engine"]
-                    if e["host"] == span["host"]
-                    and e["role"] == span["role"]
-                    and e["process"] is not None
-                    and e["process"] == span["process"]
+                    for e in request["worker_bindings"]
+                    if span["host_recorded"] and e["host"] == span["host"] and e["role"] == span["role"]
+                    and e["process"] is not None and e["process"] == span["process"]
+                    and (not span["request"] or e["server_id"] == span["request"])
                 }
+                basis = "recorded request and process binding"
+                if not candidates and span["host_recorded"] and span["role"] != "frontend":
+                    candidates = {
+                        w["id"] for w in self.workers.values()
+                        if w["host"] == span["host"] and w["role"] == span["role"]
+                    }
+                    basis = "unique recorded host and role; no request/process binding"
                 span["worker"] = next(iter(candidates)) if len(candidates) == 1 else None
+                span["worker_basis"] = basis if len(candidates) == 1 else None
                 if len(candidates) > 1:
                     self.audit["ambiguous_span_workers"] += 1
-            r["workers"] = sorted({e["worker"] for e in r["engine"]})
-        self.audit["iteration_rows"] = len(self.iterations)
+            request["workers"] = sorted(
+                {b["worker"] for b in request["worker_bindings"] if not b["ambiguous"]}
+                | {s["worker"] for s in request["spans"] if s["worker"]}
+            )
+        self.audit["worker_binding_rows"] = sum(len(r["worker_bindings"]) for r in self.requests)
 
     def metrics(self) -> None:
         from .metrics import read_metrics
@@ -467,9 +516,10 @@ class Importer:
         self.frontend_bridge()
         if self.otel:
             self.lifecycle()
-        self.engine()
+        self.worker_logs()
         self.metrics()
         read_profiles(self)
+        self.worker_links()
         sessions = collections.defaultdict(list)
         for request in self.requests:
             sessions[request["session"]].append(request)
