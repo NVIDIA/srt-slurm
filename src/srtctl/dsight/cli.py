@@ -35,7 +35,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         "--phase", default="profiling", help="Client benchmark_phase to include; 'all' includes warmup explicitly"
     )
     build.add_argument(
-        "--iteration-timezone", help="IANA timezone of timezone-free iteration logs, e.g. America/Los_Angeles"
+        "--iteration-timezone", help="IANA timezone of iteration/batch logs without offsets, e.g. America/Los_Angeles"
     )
     build.add_argument(
         "--max-profile-events",

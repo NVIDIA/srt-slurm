@@ -67,6 +67,7 @@ async def run(output: Path, port: int) -> None:
             raise AssertionError("Explorer did not initialize")
 
         async def check_request(request_id, available):
+            await js("traceExplorer.setState({lifecycleView:'milestones'})")
             await js(f"traceExplorer.selectRequest({json.dumps(request_id)}, {{expand:true,fit:true}})")
             actual = await js(
                 "(()=>{const x=traceExplorer,s=x.getState(),r=x.getRequest(s.request),m=x.getLifecycle(s.request);"
