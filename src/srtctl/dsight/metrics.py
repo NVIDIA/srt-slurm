@@ -17,26 +17,24 @@ import pyarrow.parquet as pq
 import tomli as tomllib
 from pyarrow import ipc
 
+from .engines import MetricDefinition, engine_metrics
+from .sources import canonical_role
+
 if TYPE_CHECKING:
     from .importer import Importer
 
 METRICS = {
-    "gpu_util": ("GPU utilization", "%"),
-    "DCGM_FI_DEV_GPU_UTIL": ("GPU utilization", "%"),
-    "FI_DEV_FB_USED": ("GPU memory used", "MiB"),
-    "trtllm_num_requests_running": ("Running requests", "requests"),
-    "trtllm_num_requests_waiting": ("Waiting requests", "requests"),
-    "trtllm_kv_cache_utilization": ("KV cache utilization", "ratio"),
-    "sglang:num_running_reqs": ("Running requests", "requests"),
-    "sglang:num_queue_reqs": ("Waiting requests", "requests"),
-    "sglang:token_usage": ("KV cache utilization", "ratio"),
-    "dynamo_component_inflight_requests": ("Worker in flight", "requests"),
-    "dynamo_frontend_inflight_requests": ("Frontend in flight", "requests"),
-    "dynamo_frontend_queued_requests": ("Frontend queued", "requests"),
-    "dynamo_frontend_router_queue_pending_requests": ("Router pending", "requests"),
-    "dynamo_work_handler_queue_depth": ("Handler queue", "requests"),
-    "load1": ("Host load (1 min)", "load"),
-    "memory_MemAvailable_bytes": ("Host available memory", "bytes"),
+    "gpu_util": MetricDefinition("GPU utilization", "%", "hardware"),
+    "DCGM_FI_DEV_GPU_UTIL": MetricDefinition("GPU utilization", "%", "hardware"),
+    "FI_DEV_FB_USED": MetricDefinition("GPU memory used", "MiB", "hardware"),
+    "dynamo_component_inflight_requests": MetricDefinition("Worker in flight", "requests"),
+    "dynamo_frontend_inflight_requests": MetricDefinition("Frontend in flight", "requests", "frontend"),
+    "dynamo_frontend_queued_requests": MetricDefinition("Frontend queued", "requests", "frontend"),
+    "dynamo_frontend_router_queue_pending_requests": MetricDefinition("Router pending", "requests", "frontend"),
+    "dynamo_work_handler_queue_depth": MetricDefinition("Handler queue", "requests"),
+    "load1": MetricDefinition("Host load (1 min)", "load", "hardware"),
+    "memory_MemAvailable_bytes": MetricDefinition("Host available memory", "bytes", "hardware"),
+    **engine_metrics(),
 }
 
 
@@ -181,7 +179,7 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                 host = raw_host or endpoint.get("node_metadata", {}).get("hostname", "")
                 gpu = str(row.get("gpu")) if row.get("gpu") is not None else ""
                 extra = endpoint.get("gpu_metadata", {}).get(gpu, {})
-                role = row.get("worker_role") or extra.get("worker_role", "")
+                role = canonical_role(row.get("worker_role") or extra.get("worker_role", ""))
                 index = row.get("worker_index")
                 index = extra.get("worker_index", "") if index in (None, "") else index
                 worker = f"{role}-{index}" if role in ("prefill", "decode", "agg") and index != "" else None
@@ -225,8 +223,10 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                     series_by_key[key] = {
                         "id": len(series_by_key),
                         "name": name,
-                        "label": METRICS[name][0],
-                        "unit": METRICS[name][1],
+                        "label": METRICS[name].label,
+                        "unit": METRICS[name].unit,
+                        "group": METRICS[name].group,
+                        "description": METRICS[name].description,
                         "raw_name": row["metric_name"],
                         "endpoint": row["scraper_endpoint"],
                         "host": host,
@@ -258,6 +258,9 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                 run.audit["duplicate_metric_points"] += 1
         series["points"] = points
         series["source_ids"] = sorted(series["source_ids"])
+        if series["worker"] and series["worker"] != "frontend" and series["host"]:
+            role, index = series["worker"].rsplit("-", 1)
+            run.register_worker(series["worker"], series["host"], role, int(index))
         if series["worker"] in run.workers:
             run.workers[series["worker"]]["metrics"].append(series["id"])
     run.audit["metric_points"] = sum(len(s["points"]) for s in result)

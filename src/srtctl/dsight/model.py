@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .sources import canonical_role
+
 SCHEMA = "srtctl-trace/1"
 Record = dict[str, Any]
 
@@ -71,7 +73,7 @@ def lifecycle(request: Record) -> Record:
     """Produce one deterministic model for the browser, CLI, Python, and MCP.
 
     No timestamp proximity join or clock correction is performed. Multiple
-    attempts, repeated milestones, or non-monotonic clocks leave only the
+    attempts, repeated milestones, or invalid timestamps leave only the
     measured client split; raw activities remain available for inspection.
     Without supported OTel activities, no request breakdown is constructed.
     """
@@ -102,9 +104,20 @@ def lifecycle(request: Record) -> Record:
 
     milestones: list[Record] = []
     issues: list[str] = []
+    if any(s["end"] < s["start"] for s in activities):
+        issues.append("A recorded activity ends before it starts; clocks are not corrected")
+    for span in activities:
+        parent = keys.get((span["trace"], span.get("parent")))
+        if parent and (span["start"] < parent["start"] or span["end"] > parent["end"]):
+            issues.append("A recorded child is outside its parent; clocks are not corrected")
+            break
 
     def add(name: str, label: str, role: str | None = None, boundary: str = "end") -> None:
-        matches = [s for s in activities if s["name"] == name and (not role or s["role"] == role)]
+        matches = [
+            s
+            for s in activities
+            if s["name"] == name and (not role or canonical_role(s["role"]) == canonical_role(role))
+        ]
         if len(matches) > 1:
             issues.append(f"Repeated {role or ''} {name}: cannot infer one sequential attempt")
         elif matches:
@@ -123,11 +136,12 @@ def lifecycle(request: Record) -> Record:
             )
 
     add("request.preprocessing", "Preprocessing complete")
-    for role in ("prefill", "decode", "aggregated"):
+    for role in ("prefill", "decode", "agg"):
         routes = [
             s
             for s in activities
-            if s["name"] == "kv_router.select_worker" and s.get("routing_context", {}).get("phase", "").lower() == role
+            if s["name"] == "kv_router.select_worker"
+            and canonical_role(s.get("routing_context", {}).get("phase", "")) == role
         ]
         if len(routes) > 1:
             issues.append(f"Repeated {role} selection: cannot infer one sequential attempt")
@@ -154,10 +168,15 @@ def lifecycle(request: Record) -> Record:
     first = request["first"]
     if len(request["server_ids"]) > 1:
         issues.append("Multiple Dynamo request IDs: progress is not linearized across attempts")
+    # P/D routing and setup can overlap. Order measured boundaries by time,
+    # not by a presumed engine execution sequence; this asserts no causality.
+    milestones.sort(key=lambda item: (item["time"], item.get("trace", ""), item.get("span_id", ""), item["label"]))
     previous = request["start"]
-    for item in milestones:
-        if item["time"] < previous or first is None or item["time"] > first:
-            issues.append("Server milestones are outside client TTFT or not monotonic; clocks are not corrected")
+    if first is None:
+        issues.append("Client first-token timing is unavailable; no TTFT partition is inferred")
+    for item in milestones if first is not None else []:
+        if item["time"] < previous or item["time"] > first:
+            issues.append("Server milestones are outside client TTFT; clocks are not corrected")
             break
         previous = item["time"]
     if first is not None and not request["start"] <= first <= request["end"]:
