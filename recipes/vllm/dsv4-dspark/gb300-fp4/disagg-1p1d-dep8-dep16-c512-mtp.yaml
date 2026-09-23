@@ -10,7 +10,7 @@ name: "svf-vllm-disagg-gb300-1p1d-dep8-dep16-c512-mtp-agentic"
 
 model:
   path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/DeepSeek-V4-Pro-0813"
-  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-gb300-arm64-dspark-patches-20260923-2.sqsh"
+  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-nightly-dev-arm64-cu13.0.1-591bb95.sqsh"
   precision: "fp4"
 
 identity:
@@ -32,7 +32,7 @@ environment:
   PYTHONHASHSEED: "0"
   WITH_NVIDIA_PEERMEM: "0"
 
-setup_script: vllm-container-deps-and-dynamo-wheel.sh
+setup_script: vllm-container-deps-dynamo-wheel-and-fullgraph-patch.sh
 
 slurm:
   time_limit: "4:00:00"
