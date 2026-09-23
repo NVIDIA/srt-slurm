@@ -69,7 +69,7 @@ def _dataclass_default(item: dataclasses.Field) -> Any:
 # Local copies of srtctl.core.power.contract values so that loading a config
 # never imports the power package; equality is pinned by tests.
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
-_DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
+_DCGM_POWER_MAX_SAMPLE_INTERVAL_SECONDS = 3.0
 _CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
 
@@ -2959,12 +2959,12 @@ class SrtConfig:
                 raise ValidationError(f"telemetry.{name} must be finite and positive")
         if telemetry.collect_interval_ms <= 0:
             raise ValidationError("telemetry.collect_interval_ms must be positive")
-        if telemetry.collect_interval_ms > _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS * 1000:
+        if telemetry.collect_interval_ms > _DCGM_POWER_MAX_SAMPLE_INTERVAL_SECONDS * 1000:
             raise ValidationError(
                 f"telemetry.collect_interval_ms={telemetry.collect_interval_ms} exceeds the "
-                f"{_DCGM_POWER_MAX_SAMPLE_GAP_SECONDS}s max sample gap the power validator accepts; "
-                "every window would fail sample_gap_exceeded. Set it to the intended collector "
-                "period (e.g. 1000)."
+                f"{_DCGM_POWER_MAX_SAMPLE_INTERVAL_SECONDS}s maximum supported collector interval. "
+                "Set it to the intended collector period (e.g. 1000); coverage validation applies "
+                "a separate gap budget derived from this cadence and the request timeout."
             )
 
         if not _is_safe_relative_subpath(telemetry.storage_subdir):

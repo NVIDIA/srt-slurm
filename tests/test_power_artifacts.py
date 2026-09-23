@@ -751,6 +751,9 @@ class TestManifest:
         assert payload["max_scrape_duration_seconds"] is None
         assert payload["scrape_count"] == 0
         assert payload["sample_row_count"] == 0
+        assert payload["missed_sample_count"] == 0
+        assert payload["missed_sample_ranges"] == []
+        assert payload["missed_sample_ranges_truncated"] is False
         assert payload["expected_windows"] == [{"benchmark_type": "sa-bench", "concurrency": 4}]
         assert payload["expected_devices"] == [
             {
@@ -875,6 +878,8 @@ class TestMeasurementWindowArtifacts:
             expected_device_keys=set() if expected_device_keys is None else expected_device_keys,
             observed_devices=observed_devices,
             artifact_errors=errors,
+            sample_interval_seconds=1.0,
+            request_timeout_seconds=1.0,
         )
         return rows[0], errors
 
@@ -1089,6 +1094,8 @@ class TestMeasurementWindowArtifacts:
             expected_device_keys=set(),
             observed_devices=[],
             artifact_errors=errors,
+            sample_interval_seconds=1.0,
+            request_timeout_seconds=1.0,
         )
 
         assert rows[0].reason_codes == (Reason.MEASUREMENT_WINDOW_DUPLICATE,)

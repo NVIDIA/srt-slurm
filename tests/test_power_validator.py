@@ -14,7 +14,7 @@ from srtctl.cli.validate_power_artifacts import main
 from srtctl.core.power.contract import (
     ALL_REASON_CODES,
     MANIFEST_FILENAME,
-    MAX_SAMPLE_GAP_SECONDS,
+    MAX_CONFIGURED_SAMPLE_INTERVAL_SECONDS,
     SAMPLES_FILENAME,
     WINDOWS_DIRNAME,
     Reason,
@@ -134,6 +134,8 @@ def package(tmp_path):
             expected_device_keys={device.key for device in expected},
             observed_devices=observed,
             artifact_errors=manifest.artifact_errors,
+            sample_interval_seconds=manifest.sample_interval_seconds,
+            request_timeout_seconds=manifest.request_timeout_seconds,
         )
         manifest.mark_terminal(status=STATUS_COMPLETE, stopped_at_unix=END + 5, publication_valid=publication_valid)
         atomic_write_json(power_dir / MANIFEST_FILENAME, manifest.to_dict())
@@ -162,6 +164,112 @@ def _rows(expected, *, step=1.0, skip=()):
 
 def _validate(power_dir, log_dir, **kwargs):
     return validate_power_artifacts(power_dir=power_dir, result_root=log_dir, **kwargs)
+
+
+@pytest.fixture
+def missed_sample_manifest():
+    return {
+        "scrape_count": 4,
+        "missed_sample_count": 1,
+        "missed_sample_ranges_truncated": False,
+        "missed_sample_ranges": [
+            {
+                "hostname": "node-a",
+                "first_scrape_seq": 1,
+                "last_scrape_seq": 1,
+                "first_scheduled_at_unix": START - 1.0,
+                "last_scheduled_at_unix": START - 1.0,
+                "count": 1,
+                "reason_codes": [Reason.ENDPOINT_TIMEOUT],
+            }
+        ],
+        "reason_codes": [Reason.ENDPOINT_TIMEOUT],
+    }
+
+
+class TestMissedSampleEvidence:
+    def test_truncation_flag_without_count_or_ranges_is_partial_evidence(self):
+        failures = power_validator._check_missed_sample_ranges({"missed_sample_ranges_truncated": False})
+
+        assert failures == ["missed sample evidence is only partially present"]
+
+    def test_legacy_manifest_without_missed_sample_evidence_is_accepted(self):
+        assert power_validator._check_missed_sample_ranges({}) == []
+
+    @pytest.mark.parametrize(
+        ("mutate", "expected_failure"),
+        [
+            (lambda manifest: manifest.pop("missed_sample_ranges"), "only partially present"),
+            (lambda manifest: manifest.update(missed_sample_count=True), "not a non-negative integer"),
+            (lambda manifest: manifest.update(missed_sample_ranges="not-a-list"), "is not a list"),
+            (lambda manifest: manifest.update(missed_sample_ranges=[None]), "is not an object"),
+            (lambda manifest: manifest["missed_sample_ranges"][0].update(hostname=""), "hostname"),
+            (
+                lambda manifest: manifest["missed_sample_ranges"][0].update(first_scrape_seq=True),
+                "invalid scrape sequence range",
+            ),
+            (
+                lambda manifest: manifest["missed_sample_ranges"][0].update(first_scrape_seq=2, last_scrape_seq=1),
+                "invalid scrape sequence range",
+            ),
+            (lambda manifest: manifest["missed_sample_ranges"][0].update(count=2), ".count"),
+            (
+                lambda manifest: manifest["missed_sample_ranges"][0].update(last_scrape_seq=4, count=4),
+                "exceeds scrape_count",
+            ),
+            (
+                lambda manifest: manifest["missed_sample_ranges"][0].update(first_scheduled_at_unix=float("nan")),
+                "timestamps are not finite",
+            ),
+            (
+                lambda manifest: manifest["missed_sample_ranges"][0].update(
+                    first_scheduled_at_unix=2.0, last_scheduled_at_unix=1.0
+                ),
+                "timestamps are reversed",
+            ),
+            (lambda manifest: manifest["missed_sample_ranges"][0].update(reason_codes=[]), "reason_codes"),
+            (
+                lambda manifest: manifest["missed_sample_ranges"][0].update(reason_codes=["unknown"]),
+                "unknown values",
+            ),
+            (
+                lambda manifest: manifest["missed_sample_ranges"][0].update(
+                    reason_codes=[Reason.ENDPOINT_TIMEOUT, Reason.ENDPOINT_TIMEOUT]
+                ),
+                "contains duplicates",
+            ),
+            (lambda manifest: manifest.update(missed_sample_count=2), "ranges contain 1"),
+            (lambda manifest: manifest.update(reason_codes=[]), "absent from reason_codes"),
+            (
+                lambda manifest: manifest.update(missed_sample_ranges_truncated="yes"),
+                "is not a boolean",
+            ),
+            (
+                lambda manifest: manifest.update(missed_sample_ranges_truncated=True),
+                "does not exceed",
+            ),
+        ],
+    )
+    def test_malformed_evidence_is_rejected(self, missed_sample_manifest, mutate, expected_failure):
+        mutate(missed_sample_manifest)
+
+        failures = power_validator._check_missed_sample_ranges(missed_sample_manifest)
+
+        assert any(expected_failure in failure for failure in failures), failures
+
+    def test_overlapping_ranges_are_rejected(self, missed_sample_manifest):
+        duplicate = dict(missed_sample_manifest["missed_sample_ranges"][0])
+        missed_sample_manifest["missed_sample_ranges"].append(duplicate)
+        missed_sample_manifest["missed_sample_count"] = 2
+
+        failures = power_validator._check_missed_sample_ranges(missed_sample_manifest)
+
+        assert any("overlap" in failure for failure in failures)
+
+    def test_older_complete_evidence_does_not_require_the_truncation_flag(self, missed_sample_manifest):
+        missed_sample_manifest.pop("missed_sample_ranges_truncated")
+
+        assert power_validator._check_missed_sample_ranges(missed_sample_manifest) == []
 
 
 class TestRetainedPackage:
@@ -271,7 +379,7 @@ class TestIndependenceFromTheManifestBooleans:
 
     def test_gap_beyond_the_threshold_is_rejected(self, package):
         expected = build_expected_devices(_processes())
-        log_dir, power_dir = package(rows=_rows(expected, step=4.0))
+        log_dir, power_dir = package(rows=_rows(expected, step=6.0))
 
         report = _validate(power_dir, log_dir)
 
@@ -489,13 +597,15 @@ class TestWireContract:
             ("started_at_unix", None),
             ("stopped_at_unix", None),
             ("sample_interval_seconds", 0),
-            ("sample_interval_seconds", MAX_SAMPLE_GAP_SECONDS + 0.1),
+            ("sample_interval_seconds", MAX_CONFIGURED_SAMPLE_INTERVAL_SECONDS + 0.1),
             ("request_timeout_seconds", -1.0),
             ("max_scrape_duration_seconds", -0.1),
             ("max_scrape_duration_seconds", float("nan")),
             ("max_scrape_duration_seconds", {}),
             ("scrape_count", -1),
             ("sample_row_count", "many"),
+            ("missed_sample_count", -1),
+            ("missed_sample_ranges", "not-a-list"),
             ("publication_valid", None),
             ("publication_valid", "true"),
             ("publication_valid", 1),
@@ -526,6 +636,29 @@ class TestWireContract:
 
         assert report.ok is False
         assert any("precedes" in failure for failure in report.failures)
+
+    def test_truncated_missed_sample_details_preserve_the_exact_total(self, package):
+        log_dir, power_dir = package()
+        manifest = json.loads((power_dir / MANIFEST_FILENAME).read_text())
+        manifest["missed_sample_count"] = 2
+        manifest["missed_sample_ranges_truncated"] = True
+        manifest["missed_sample_ranges"] = [
+            {
+                "hostname": "node-a",
+                "first_scrape_seq": 1,
+                "last_scrape_seq": 1,
+                "first_scheduled_at_unix": START - 1.0,
+                "last_scheduled_at_unix": START - 1.0,
+                "count": 1,
+                "reason_codes": [Reason.ENDPOINT_TIMEOUT],
+            }
+        ]
+        manifest["reason_codes"] = [Reason.ENDPOINT_TIMEOUT]
+        atomic_write_json(power_dir / MANIFEST_FILENAME, manifest)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is True, report.failures
 
     @pytest.mark.parametrize(
         ("field", "value", "expected_failure"),
@@ -696,7 +829,7 @@ class TestEvidenceReconciliation:
 
     def test_a_missing_disk_derived_reason_is_rejected(self, package):
         expected = build_expected_devices(_processes())
-        log_dir, power_dir = package(rows=_rows(expected, step=4.0), publication_valid=False)
+        log_dir, power_dir = package(rows=_rows(expected, step=6.0), publication_valid=False)
 
         report = _validate(power_dir, log_dir)
 

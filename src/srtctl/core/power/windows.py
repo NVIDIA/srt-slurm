@@ -19,7 +19,9 @@ from pathlib import Path
 
 from srtctl.core.power.contract import (
     CLOCK_SOURCE,
-    MAX_SAMPLE_GAP_SECONDS,
+    MAX_LONG_SAMPLE_GAP_WINDOW_FRACTION,
+    MAX_TOLERATED_SAMPLE_GAP_SECONDS,
+    MAX_TOLERATED_SAMPLE_GAP_WINDOW_FRACTION,
     SCHEMA_VERSION,
     WINDOWS_DIRNAME,
     Reason,
@@ -65,6 +67,8 @@ def validate_expected_windows(
     expected_device_keys: set[DeviceKey],
     observed_devices: Sequence[ObservedDevice],
     artifact_errors: list[ArtifactError],
+    sample_interval_seconds: float,
+    request_timeout_seconds: float,
 ) -> list[WindowValidation]:
     """Emit exactly one validation row per expected window.
 
@@ -89,6 +93,8 @@ def validate_expected_windows(
             result_root=result_root,
             expected_device_keys=expected_device_keys,
             observed_devices=observed_devices,
+            sample_interval_seconds=sample_interval_seconds,
+            request_timeout_seconds=request_timeout_seconds,
         )
         for expected in expected_windows
     ]
@@ -267,6 +273,8 @@ def _validate_one(
     result_root: Path,
     expected_device_keys: set[DeviceKey],
     observed_devices: Sequence[ObservedDevice],
+    sample_interval_seconds: float,
+    request_timeout_seconds: float,
 ) -> WindowValidation:
     if window is None:
         reasons = [Reason.MEASUREMENT_WINDOW_DUPLICATE] if duplicated else [Reason.MEASUREMENT_WINDOW_MISSING]
@@ -290,7 +298,12 @@ def _validate_one(
             reasons.append(Reason.MEASUREMENT_WINDOW_MALFORMED)
         else:
             gaps, coverage_reasons = _check_coverage(
-                window.start_unix, window.end_unix, expected_device_keys, observed_devices
+                window.start_unix,
+                window.end_unix,
+                expected_device_keys,
+                observed_devices,
+                sample_interval_seconds=sample_interval_seconds,
+                request_timeout_seconds=request_timeout_seconds,
             )
             reasons.extend(coverage_reasons)
 
@@ -344,6 +357,9 @@ def _check_coverage(
     end: float,
     expected_device_keys: set[DeviceKey],
     observed_devices: Sequence[ObservedDevice],
+    *,
+    sample_interval_seconds: float,
+    request_timeout_seconds: float,
 ) -> tuple[dict[str, float], list[str]]:
     """Every expected device must bracket the window with small enough gaps."""
     by_key = {device.key: device for device in observed_devices}
@@ -363,12 +379,49 @@ def _check_coverage(
         if sequence is None:
             reasons.append(Reason.MEASUREMENT_WINDOW_NOT_BRACKETED)
             continue
-        largest = max((later - earlier for earlier, later in itertools.pairwise(sequence)), default=0.0)
+        intervals = list(itertools.pairwise(sequence))
+        largest = max((later - earlier for earlier, later in intervals), default=0.0)
         gaps[f"{device.hostname}/{device.gpu_uuids[0]}"] = largest
-        if largest > MAX_SAMPLE_GAP_SECONDS:
+        if not _sample_gaps_within_policy(
+            intervals,
+            start=start,
+            end=end,
+            sample_interval_seconds=sample_interval_seconds,
+            request_timeout_seconds=request_timeout_seconds,
+        ):
             reasons.append(Reason.SAMPLE_GAP_EXCEEDED)
 
     return gaps, reasons
+
+
+def _sample_gaps_within_policy(
+    intervals: Sequence[tuple[float, float]],
+    *,
+    start: float,
+    end: float,
+    sample_interval_seconds: float,
+    request_timeout_seconds: float,
+) -> bool:
+    """Allow bounded collection overruns without hiding sustained data loss."""
+    duration = end - start
+    # requests applies one timeout to connect and again to response reads. A
+    # single failed probe can therefore consume twice the configured timeout
+    # before the endpoint worker returns to its fixed schedule.
+    normal_gap_budget = sample_interval_seconds + 2 * request_timeout_seconds
+    allowed_largest_gap = min(
+        MAX_TOLERATED_SAMPLE_GAP_SECONDS,
+        max(normal_gap_budget, duration * MAX_TOLERATED_SAMPLE_GAP_WINDOW_FRACTION),
+    )
+    largest = max((later - earlier for earlier, later in intervals), default=0.0)
+    if largest > allowed_largest_gap:
+        return False
+
+    long_gap_seconds = sum(
+        max(0.0, min(later, end) - max(earlier, start))
+        for earlier, later in intervals
+        if later - earlier > normal_gap_budget
+    )
+    return long_gap_seconds <= duration * MAX_LONG_SAMPLE_GAP_WINDOW_FRACTION
 
 
 def _bracketing_sequence(times: Sequence[float], start: float, end: float) -> list[float] | None:
