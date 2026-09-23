@@ -3,6 +3,9 @@
 DSight aligns client requests, Dynamo lifecycle spans, worker metrics, hardware
 samples, and existing Nsight exports on one timeline.
 
+See the [data-flow guide](dsight-data-flow.md) for diagrams connecting each source
+file to its UI view, request-identity joins, and the limits of each source.
+
 ## Generate on a cluster login node
 
 Run these commands manually on the login node after the run's artifacts have
@@ -242,6 +245,9 @@ uv run --with websockets python tests/dsight_optional_otel_check.py \
 ```
 
 ## Extending engine evidence
+
+The [data-flow guide](dsight-data-flow.md#what-the-shared-engine-interface-contributes)
+shows where this interface sits between recorded evidence and the UI.
 
 `src/srtctl/dsight/engines.py` owns the engine dialect table: log decoders, NVTX
 prefixes and metric labels/units. TRT-LLM supplies all three; SGLang currently
