@@ -68,8 +68,10 @@ roles:
 ### Node-local data parallelism
 
 For DEP8 on two four-GPU nodes, upstream srt-slurm creates one hybrid-LB
-`vllm serve` process on each node. Router receives both base URLs and srtctl
-adds `--intra-node-data-parallel-size 4`, exposing all eight DP ranks.
+`vllm serve` process on each node. Router receives both base URLs as two
+node-local pools. srtctl does not apply `--intra-node-data-parallel-size` to
+this multi-node endpoint because the second pool owns global ranks 4 through
+7; vLLM's node-local hybrid load balancer selects among those ranks.
 
 ```yaml
 resources:
@@ -137,10 +139,11 @@ roles:
       data-parallel-size: 4
 ```
 
-Router has one global `--intra-node-data-parallel-size`, so every advertised
-P/D base must represent the same number of local DP ranks. srtctl derives and
-validates that value; do not set it manually unless it exactly matches the
-allocated topology.
+Router has one global `--intra-node-data-parallel-size`, so srtctl uses it only
+when every logical endpoint has one advertised base URL. Multi-node hybrid-LB
+endpoints remain unexpanded node-local pools because each later pool starts at
+a nonzero global DP rank. Do not set the option manually unless it exactly
+matches the allocated topology.
 
 ### MoRI-IO discovery
 
