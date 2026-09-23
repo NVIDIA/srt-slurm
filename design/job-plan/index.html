@@ -1,0 +1,2205 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/design/job-plan/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Job plan: pods, kinds, and a graph under the recipe - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#job-plan-pods-kinds-and-a-graph-under-the-recipe" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Job plan: pods, kinds, and a graph under the recipe
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../.." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../accuracy/" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#concept" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concept
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Surface
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#kinds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Kinds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine-guarantees" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Engine guarantees
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#executors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Executors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#miles-as-the-first-non-inference-workload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Miles as the first non-inference workload
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#future-jobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Future jobs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deliberately-out" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deliberately out
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migration-on-main-after-407" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration on main after #407
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-decisions-and-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open decisions and defaults
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/design/job-plan.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="job-plan-pods-kinds-and-a-graph-under-the-recipe">Job plan: pods, kinds, and a graph under the recipe<a class="headerlink" href="#job-plan-pods-kinds-and-a-graph-under-the-recipe" title="Permanent link">&para;</a></h1>
+<p>Status: design sketch, 2026-09-15. Follows <code>sflow-engine.md</code> (DAG engine POC on <code>idhanani/sflow-engine-poc</code>) and <code>schema-v2-minimal.md</code>. Motivating case: launching Miles (radixark/miles, RL post-training on SGLang plus Megatron under Ray) from srt-slurm, and every other job that is not "engines behind one frontend with one client".</p>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>The recipe path on <code>main</code> is a fixed stage sequence over an inference topology, and each coupling below blocks a job that has no engines, no frontend, or more than one of either:</p>
+<ul>
+<li><code>SweepOrchestrator.run()</code> (<code>src/srtctl/cli/do_sweep.py:601</code>) always runs <code>start_frontend</code> (<code>:665</code>), and the benchmark stage returns 1 unless a frontend URL reports the expected worker counts (<code>src/srtctl/cli/mixins/benchmark_stage.py:238,302-308</code>). There is no <code>frontend.type: none</code> (<code>src/srtctl/frontends/base.py:23,110-129</code>).</li>
+<li>Topology is prefill, decode and agg only: <code>allocate_endpoints</code> (<code>src/srtctl/core/topology.py:279,449-467</code>), <code>ROLE_NAMES</code> (<code>src/srtctl/core/roles.py:66</code>), and <code>Nodes</code> reserving only the infra, frontend and bench singletons (<code>src/srtctl/core/runtime.py:143-152</code>). Every role must use the same engine (<code>roles.py:110</code>); there is no per-role model. The v1 role-count fields on <code>ResourceConfig</code> are read from 21 modules at 84 sites, so the assumption fans out everywhere.</li>
+<li>Services (<code>src/srtctl/services/config.py:178-249</code>) are already typed, placeable, probed and critical, but order by stage phase (<code>SERVICE_STARTS</code>, <code>config.py:34</code>) rather than by dependency, cannot reserve nodes, and have no GPU carve-out.</li>
+<li>No Ray, torchrun or generic multi-node step. The closest primitive is the TRT-LLM launch: one srun across N nodes with <code>ntasks</code> (<code>src/srtctl/cli/mixins/worker_stage.py:303,436-438</code>).</li>
+</ul>
+<p>The DAG engine POC showed the runtime hosts a task graph well (2.9k lines, 108 tests, two live runs) and also showed that a graph written by hand loses what makes recipes safe unattended: worker-count health, port and rank math, validated engine flags, telemetry and postprocess. The conclusion there was to keep the graph additive and grow it toward recipes. This document takes the next step: the graph becomes an internal representation that compilers emit, and the semantics stay in the compilers.</p>
+<h2 id="concept">Concept<a class="headerlink" href="#concept" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>  recipe (schema 2)          workload kinds             workflow fragments (optional, sflow shape)
+  roles / frontend / workload   miles, aiperf, ...        tasks + probes + depends_on
+        │                          │                             │
+        └──────── compilers: kinds render pod-shaped steps into one plan ────────┘
+                                   │
+                          plan.json  (pools, steps, probes, edges, terminal set)
+                                   │
+        engine: resolve node-derived refs, gate on edges and probes, launch, watch, tier teardown, event log
+                                   │
+             executors: srun inside an sbatch (today) | docker on one host | kubernetes
+</code></pre></div>
+<p>Three layers, each with one job:</p>
+<ul>
+<li><strong>Surface.</strong> Opinionated and short. Roles are controllers with a pod template that a kind fills from a few typed fields. Workloads are terminal tasks. Frontends and services are optional kinds. Ordering is <code>after</code> edges with kind defaults.</li>
+<li><strong>Plan.</strong> Data. Pools, pod-shaped steps, typed probes, edges, a terminal set. Serialized at submit time with node-derived values left as references. Printed by dry-run, diffed by golden tests, consumed by every executor.</li>
+<li><strong>Engine and executors.</strong> One lifecycle for every step. Executors map a step onto srun, docker or a Kubernetes object.</li>
+</ul>
+<h2 id="surface">Surface<a class="headerlink" href="#surface" title="Permanent link">&para;</a></h2>
+<p>A role is a controller plus a pod template. This is the LeaderWorkerSet and RayCluster shape rather than a bare PodSpec because engines and Ray span nodes and pods do not.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">&lt;name&gt;</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang | vllm | trtllm | mocker | ray | none</span><span class="w">   </span><span class="c1"># who renders the template; default: top-level engine</span>
+<span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prefill | decode | agg</span><span class="w">                        </span><span class="c1"># engine kinds only; defaulted by the conventional names</span>
+<span class="w">    </span><span class="nt">replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">                                         </span><span class="c1"># engine instances, or ray worker nodes</span>
+<span class="w">    </span><span class="nt">size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span><span class="w">                                             </span><span class="c1"># nodes per replica; 2 = one TP16 engine over two nodes</span>
+<span class="w">    </span><span class="nt">gpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">                                             </span><span class="c1"># per node of the replica; sugar for resources.gpu</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">                                            </span><span class="c1"># sugar: replicas * size on whole-node roles</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="w"> </span><span class="nv">...</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">                                       </span><span class="c1"># kind-typed flags, rendered into the main container</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="w"> </span><span class="nv">...</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="nv">...</span><span class="p p-Indicator">,</span><span class="nt"> container</span><span class="p">:</span><span class="w"> </span><span class="nv">...</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">                </span><span class="c1"># optional per-role override of the top-level model</span>
+<span class="w">    </span><span class="nt">placement</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> colocate_with</span><span class="p">:</span><span class="w"> </span><span class="nv">prefill</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">|</span><span class="err"> { dedicated: true } | { pool: &lt;name&gt; }</span>
+<span class="w">    </span><span class="nt">critical</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">    </span><span class="nt">after</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="nv">&lt;role or service names&gt;</span><span class="w"> </span><span class="p p-Indicator">]</span><span class="w">                  </span><span class="c1"># kind defaults apply when omitted</span>
+<span class="w">    </span><span class="nt">pod</span><span class="p">:</span><span class="w">                                                </span><span class="c1"># escape hatch, merged over what the kind rendered</span>
+<span class="w">      </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">...</span>
+<span class="w">      </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> cpu</span><span class="p">:</span><span class="w"> </span><span class="nv">32</span><span class="p p-Indicator">,</span><span class="nt"> memory</span><span class="p">:</span><span class="w"> </span><span class="nv">256Gi</span><span class="p p-Indicator">,</span><span class="nt"> shm</span><span class="p">:</span><span class="w"> </span><span class="nv">32Gi</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">      </span><span class="nt">volumes</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> host</span><span class="p">:</span><span class="w"> </span><span class="nv">/data</span><span class="p p-Indicator">,</span><span class="nt"> mount</span><span class="p">:</span><span class="w"> </span><span class="nv">/data</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="nt">initContainers</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">convert</span><span class="p p-Indicator">,</span><span class="nt"> image</span><span class="p">:</span><span class="w"> </span><span class="nv">miles</span><span class="p p-Indicator">,</span><span class="nt"> command</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="nv">...</span><span class="w"> </span><span class="p p-Indicator">]</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="nt">sidecars</span><span class="p">:</span><span class="w">       </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">kv-store</span><span class="p p-Indicator">,</span><span class="nt"> image</span><span class="p">:</span><span class="w"> </span><span class="nv">mooncake</span><span class="p p-Indicator">,</span><span class="nt"> command</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="nv">...</span><span class="w"> </span><span class="p p-Indicator">],</span><span class="nt"> ports</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">store</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">auto</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">]</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="nt">containers</span><span class="p">:</span><span class="w">     </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">engine</span><span class="p p-Indicator">,</span><span class="nt"> env</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> SGLANG_X</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span><span class="w"> </span><span class="p p-Indicator">},</span><span class="nt"> readinessProbe</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> httpGet</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="nv">/health</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">http</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="nt">restartPolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Never</span>
+<span class="w">      </span><span class="nt">slurm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> cpu_bind</span><span class="p">:</span><span class="w"> </span><span class="nv">none</span><span class="p p-Indicator">,</span><span class="nt"> mpi</span><span class="p">:</span><span class="w"> </span><span class="nv">pmix</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">              </span><span class="c1"># executor annotations, ignored by other executors</span>
+</code></pre></div>
+<p>Rules:</p>
+<ul>
+<li><code>kind</code> selects a role kind. Engine names, <code>ray</code>, or <code>none</code> for a bare pool. Engine roles take <code>mode</code>. Known names <code>prefill</code>, <code>decode</code>, <code>agg</code> default their mode and stay as short as today.</li>
+<li><code>frontend:</code> is optional. It is absent when no engine roles exist. <code>frontend.attach</code> defaults to every engine role.</li>
+<li><code>workload:</code> is the terminal task. Types: <code>aiperf</code>, <code>sa-bench</code>, <code>lm-eval</code>, <code>custom</code>, <code>manual</code>, <code>miles</code>, and so on. <code>workload.on</code> names the pool the client runs on. <code>workload.attach</code> names the pool whose published endpoints it consumes; the default is the frontend when one exists.</li>
+<li><code>services[]</code> keep today's shape and gain <code>after: [names]</code>. The three phases <code>infra</code>, <code>before_workers</code>, <code>after_frontend</code> map to canonical anchors so existing recipes are unchanged.</li>
+<li><code>container</code>, <code>model</code>, <code>env</code> exist at the top level and per role, service and workload.</li>
+<li>Named ports (<code>ports[].name</code>) are the endpoint references other kinds consume. With host networking on SLURM the allocator assigns the numbers.</li>
+<li>Sweeps and overrides address typed fields. Paths into <code>pod.containers[...]</code> are legal and never emitted by the migrator.</li>
+</ul>
+<p>Three recipes in this shape:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># 1. Inference benchmark, same length as today</span>
+<span class="nt">schema</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">qwen3-235b-dynamo-disagg</span>
+<span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="nv">/data/models/Qwen3-235B</span><span class="p p-Indicator">,</span><span class="nt"> container</span><span class="p">:</span><span class="w"> </span><span class="nv">sglang</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> nodes</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> workers</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> gpus</span><span class="p">:</span><span class="w"> </span><span class="nv">8</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span><span class="w">  </span><span class="p p-Indicator">{</span><span class="nt"> nodes</span><span class="p">:</span><span class="w"> </span><span class="nv">4</span><span class="p p-Indicator">,</span><span class="nt"> workers</span><span class="p">:</span><span class="w"> </span><span class="nv">4</span><span class="p p-Indicator">,</span><span class="nt"> gpus</span><span class="p">:</span><span class="w"> </span><span class="nv">8</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">frontend</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">dynamo</span><span class="p p-Indicator">,</span><span class="nt"> args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> router-mode</span><span class="p">:</span><span class="w"> </span><span class="nv">kv</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">workload</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">aiperf</span><span class="p p-Indicator">,</span><span class="nt"> isl</span><span class="p">:</span><span class="w"> </span><span class="nv">8192</span><span class="p p-Indicator">,</span><span class="nt"> osl</span><span class="p">:</span><span class="w"> </span><span class="nv">1024</span><span class="p p-Indicator">,</span><span class="nt"> concurrencies</span><span class="p">:</span><span class="w"> </span><span class="s">"64x128"</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">observability</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> tachometer</span><span class="p">:</span><span class="w"> </span><span class="nv">true</span><span class="w"> </span><span class="p p-Indicator">}</span>
+
+<span class="c1"># 2. Miles owns the GPUs (colocate or Miles-placed disaggregation)</span>
+<span class="nt">schema</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">qwen3-4b-grpo</span>
+<span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">miles</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">train</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ray</span>
+<span class="w">    </span><span class="nt">replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">pod</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> gpu</span><span class="p">:</span><span class="w"> </span><span class="nv">8</span><span class="p p-Indicator">,</span><span class="nt"> shm</span><span class="p">:</span><span class="w"> </span><span class="nv">64Gi</span><span class="w"> </span><span class="p p-Indicator">},</span><span class="nt"> volumes</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> host</span><span class="p">:</span><span class="w"> </span><span class="nv">/data</span><span class="p p-Indicator">,</span><span class="nt"> mount</span><span class="p">:</span><span class="w"> </span><span class="nv">/data</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">],</span><span class="nt"> env</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> NCCL_SOCKET_IFNAME</span><span class="p">:</span><span class="w"> </span><span class="nv">enP6p9s0</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">workload</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">miles</span>
+<span class="w">  </span><span class="nt">on</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">train</span>
+<span class="w">  </span><span class="nt">recipe</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">scripts/run_qwen3_dense.py</span>
+<span class="w">  </span><span class="nt">model_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Qwen3-4B</span>
+<span class="w">  </span><span class="nt">dirs</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> models</span><span class="p">:</span><span class="w"> </span><span class="nv">/data/models</span><span class="p p-Indicator">,</span><span class="nt"> datasets</span><span class="p">:</span><span class="w"> </span><span class="nv">/data/datasets</span><span class="p p-Indicator">,</span><span class="nt"> output</span><span class="p">:</span><span class="w"> </span><span class="nv">/data/miles-runs/qwen3-4b-grpo</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">layout</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> colocate</span><span class="p">:</span><span class="w"> </span><span class="nv">true</span><span class="p p-Indicator">,</span><span class="nt"> rollout_gpus_per_engine</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> enable-eval</span><span class="p">:</span><span class="w"> </span><span class="nv">false</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">extra_args</span><span class="p">:</span><span class="w"> </span><span class="s">"--num-rollout</span><span class="nv"> </span><span class="s">200"</span>
+<span class="w">  </span><span class="nt">env</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> WANDB_API_KEY</span><span class="p">:</span><span class="w"> </span><span class="s">"..."</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">observability</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> tachometer</span><span class="p">:</span><span class="w"> </span><span class="nv">true</span><span class="w"> </span><span class="p p-Indicator">}</span>
+
+<span class="c1"># 3. Miles attached to an srt-slurm rollout fleet (needs Miles #2513 and #2514)</span>
+<span class="nt">schema</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">qwen3-4b-grpo-ext</span>
+<span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">miles</span>
+<span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> path</span><span class="p">:</span><span class="w"> </span><span class="nv">/data/models/Qwen3-4B</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">rollout</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> mode</span><span class="p">:</span><span class="w"> </span><span class="nv">agg</span><span class="p p-Indicator">,</span><span class="nt"> nodes</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="nt"> workers</span><span class="p">:</span><span class="w"> </span><span class="nv">4</span><span class="p p-Indicator">,</span><span class="nt"> gpus</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> mem-fraction-static</span><span class="p">:</span><span class="w"> </span><span class="nv">0.7</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">train</span><span class="p">:</span><span class="w">   </span><span class="p p-Indicator">{</span><span class="nt"> kind</span><span class="p">:</span><span class="w"> </span><span class="nv">ray</span><span class="p p-Indicator">,</span><span class="nt"> replicas</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">workload</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">miles</span>
+<span class="w">  </span><span class="nt">on</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">train</span>
+<span class="w">  </span><span class="nt">attach</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rollout</span>
+<span class="w">  </span><span class="nt">recipe</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">scripts/run_qwen3_4b_fully_async.py</span>
+<span class="w">  </span><span class="nt">layout</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> colocate</span><span class="p">:</span><span class="w"> </span><span class="nv">false</span><span class="p p-Indicator">,</span><span class="nt"> actor_nodes</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="nt"> actor_gpus_per_node</span><span class="p">:</span><span class="w"> </span><span class="nv">8</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">mooncake-master</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">      </span><span class="c1"># only for update-weight-transfer-mode p2p</span>
+</code></pre></div>
+<h2 id="plan">Plan<a class="headerlink" href="#plan" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Pool</span><span class="p">:</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">nodes</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"rest"</span><span class="p">]</span>
+    <span class="n">whole_node</span><span class="p">:</span> <span class="nb">bool</span>                                   <span class="c1"># False: the GPU ledger slices CUDA_VISIBLE_DEVICES</span>
+
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Placement</span><span class="p">:</span>
+    <span class="n">pool</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">fanout</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"per_node"</span><span class="p">,</span> <span class="s2">"span"</span><span class="p">]</span>                <span class="c1"># one step per node, or one step across the pool</span>
+    <span class="n">ntasks_per_node</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
+    <span class="n">gpus</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>                            <span class="c1"># per instance, from the ledger</span>
+    <span class="n">node_index</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>                      <span class="c1"># pin to pool[node_index]</span>
+
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Container</span><span class="p">:</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">;</span> <span class="n">image</span><span class="p">:</span> <span class="nb">str</span><span class="p">;</span> <span class="n">command</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">];</span> <span class="n">args</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">env</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">];</span> <span class="n">mounts</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="n">Path</span><span class="p">,</span> <span class="n">Path</span><span class="p">]</span>
+    <span class="n">ports</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">PortRequest</span><span class="p">]</span>                      <span class="c1"># name -&gt; fixed or "auto"; filled per (node, step)</span>
+    <span class="n">resources</span><span class="p">:</span> <span class="n">Resources</span>                               <span class="c1"># cpu, memory, shm, gpu count</span>
+    <span class="n">readiness</span><span class="p">:</span> <span class="n">Probe</span> <span class="o">|</span> <span class="kc">None</span><span class="p">;</span> <span class="n">liveness</span><span class="p">:</span> <span class="n">Probe</span> <span class="o">|</span> <span class="kc">None</span>
+
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Step</span><span class="p">:</span>                                            <span class="c1"># pod-shaped</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">kind</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"service"</span><span class="p">,</span> <span class="s2">"task"</span><span class="p">]</span>
+    <span class="n">placement</span><span class="p">:</span> <span class="n">Placement</span>
+    <span class="n">init</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Container</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>                        <span class="c1"># run to completion, in order, before main</span>
+    <span class="n">main</span><span class="p">:</span> <span class="n">Container</span>
+    <span class="n">sidecars</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Container</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+    <span class="n">after_ready</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">];</span> <span class="n">after_done</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+    <span class="n">critical</span><span class="p">:</span> <span class="nb">bool</span><span class="p">;</span> <span class="n">shutdown_tier</span><span class="p">:</span> <span class="nb">int</span><span class="p">;</span> <span class="n">stop_signal</span><span class="p">:</span> <span class="nb">str</span><span class="p">;</span> <span class="n">terminate_timeout_s</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">timeout_s</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span>
+    <span class="n">annotations</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span>             <span class="c1"># executor-specific: {"slurm": {"mpi": "pmix"}}</span>
+
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Probe</span><span class="p">:</span>
+    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"tcp"</span><span class="p">,</span> <span class="s2">"http"</span><span class="p">,</span> <span class="s2">"log"</span><span class="p">,</span> <span class="s2">"exec"</span><span class="p">,</span> <span class="s2">"dynamo_health"</span><span class="p">,</span> <span class="s2">"sglang_router_health"</span><span class="p">,</span> <span class="s2">"ray_fleet"</span><span class="p">,</span> <span class="s2">"server_info"</span><span class="p">]</span>
+    <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">];</span> <span class="n">interval_s</span><span class="p">:</span> <span class="nb">int</span><span class="p">;</span> <span class="n">timeout_s</span><span class="p">:</span> <span class="nb">int</span><span class="p">;</span> <span class="n">failure_threshold</span><span class="p">:</span> <span class="nb">int</span>
+
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Plan</span><span class="p">:</span>
+    <span class="n">pools</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Pool</span><span class="p">,</span> <span class="o">...</span><span class="p">];</span> <span class="n">steps</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Step</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+    <span class="n">terminal</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>                          <span class="c1"># run ends when all complete; exit = worst exit code</span>
+    <span class="n">windows</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>                           <span class="c1"># measurement windows tasks may stamp</span>
+    <span class="n">provenance</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span>                         <span class="c1"># recipe hash, srtctl version, cluster, image digests</span>
+</code></pre></div>
+<p>Two-phase resolution as in the POC (<code>dag/engine.py:183</code> static, <code>:302</code> node-derived). Values that depend on the allocation stay as references in <code>plan.json</code>: <code>${pool.train[0].ip}</code>, <code>${endpoints(rollout, http)}</code>, <code>${step.ray-head.port.gcs}</code>. The engine resolves them inside the allocation once the nodelist is known.</p>
+<p>A pod on SLURM is approximate and the subset is documented: <code>init</code>, <code>main</code> and <code>sidecars</code> are <code>srun --overlap</code> steps on the same node, they share the host network and bind mounts, they do not share a PID namespace. <code>emptyDir</code> is a per-job node-local directory. <code>shm</code> is the host <code>/dev/shm</code>. Nothing in the current sidecars needs more.</p>
+<h2 id="kinds">Kinds<a class="headerlink" href="#kinds" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">RoleKind</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>            <span class="c1"># sglang, vllm, trtllm, mocker, ray, none</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">steps</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">role</span><span class="p">:</span> <span class="n">RoleSpec</span><span class="p">,</span> <span class="n">pool</span><span class="p">:</span> <span class="n">Pool</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">CompileContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Step</span><span class="p">]:</span> <span class="o">...</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">endpoints</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">steps</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Step</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="n">EndpointRef</span><span class="p">]]:</span> <span class="o">...</span>   <span class="c1"># "http", "bootstrap", "ray"</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">FrontendKind</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>        <span class="c1"># dynamo, sglang-router, vllm-router, trtllm_serve</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">steps</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fe</span><span class="p">:</span> <span class="n">FrontendSpec</span><span class="p">,</span> <span class="n">attached</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">RoleSpec</span><span class="p">],</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">CompileContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Step</span><span class="p">]:</span> <span class="o">...</span>   <span class="c1"># includes its semantic probe</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">ServiceKind</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>         <span class="c1"># exists today: services/registry.py:65</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">steps</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">svc</span><span class="p">:</span> <span class="n">ServiceSpec</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">CompileContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Step</span><span class="p">]:</span> <span class="o">...</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">WorkloadKind</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>        <span class="c1"># aiperf, sa-bench, lm-eval, custom, manual, miles</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">wl</span><span class="p">:</span> <span class="n">WorkloadSpec</span><span class="p">,</span> <span class="n">draft</span><span class="p">:</span> <span class="n">PlanDraft</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span> <span class="o">...</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">steps</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">wl</span><span class="p">:</span> <span class="n">WorkloadSpec</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">CompileContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Step</span><span class="p">]:</span> <span class="o">...</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">progress</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">line</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Event</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span> <span class="o">...</span>   <span class="c1"># optional log parser feeding status</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">CollectorKind</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>       <span class="c1"># tachometer, dcgm-exporter, node-exporter, cpu power</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">steps</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">obs</span><span class="p">:</span> <span class="n">ObservabilitySpec</span><span class="p">,</span> <span class="n">pools</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Pool</span><span class="p">],</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">CompileContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Step</span><span class="p">]:</span> <span class="o">...</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Probe</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">check</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">step</span><span class="p">:</span> <span class="n">ResolvedStep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ProbeResult</span><span class="p">:</span> <span class="o">...</span>
+</code></pre></div>
+<p><code>CompileContext</code> owns the GPU ledger, the port allocator, the container alias and mount resolvers, cluster defaults from <code>srtslurm.yaml</code> such as <code>network_interface</code>, and deferred references. Kinds never touch srun, nodes or ports directly. Existing code becomes kind bodies: <code>build_worker_command</code> on the engine backends, the frontend classes, the service kinds, the benchmark runners, and the telemetry launchers.</p>
+<p>Compile order: build pools from roles and placements; call role kinds; call the frontend kind with the attached roles; call service kinds; call collector kinds; call the workload kind with the draft plan so it can validate against pools and consume endpoints; add default edges (services before roles they serve, frontend after roles, workload after everything it attaches to and after collectors); set the terminal set; run validation; serialize.</p>
+<h2 id="engine-guarantees">Engine guarantees<a class="headerlink" href="#engine-guarantees" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Lifecycle per step.</strong> INITIATED, RUNNING, READY, COMPLETED, FAILED, CANCELLED. <code>after_ready</code> and <code>after_done</code> edges. Init containers gate the main container.</li>
+<li><strong>Async probes.</strong> A thread pool, not the scheduler thread. The POC's synchronous <code>http_post</code> stalled every other task for up to <code>each_check_timeout</code>.</li>
+<li><strong>One event log.</strong> <code>events.jsonl</code> in the run directory: every transition, probe result, window stamp and progress event. Status API, MCP job tools, ruter and the dashboard read it. Only the engine writes state, which removes the monitor-versus-engine attribution race from the POC.</li>
+<li><strong>Failure and teardown.</strong> <code>critical</code> fails the run. Tiers, step names and stop signals reuse the graceful shutdown from #407 (<code>src/srtctl/core/processes.py:89,326</code>). Default <code>restartPolicy: Never</code>; <code>OnFailure</code> with a bounded count only when a job asks.</li>
+<li><strong>Resources.</strong> GPU ledger per pool, choosing indices for NVLink and NUMA locality. Port allocator per node and step. Kubernetes gets counts, SLURM gets indices; the compiled step carries both.</li>
+<li><strong>Windows.</strong> A task stamps <code>window &lt;name&gt; start|end</code> into the event log through a small <code>srtctl-mark</code> command. Postprocess and power reports read windows from the log rather than from benchmark-specific stamps.</li>
+<li><strong>Terminal semantics.</strong> The run ends when every terminal step completes; exit code is the worst terminal exit; services are torn down by tier.</li>
+<li><strong>Dry-run is the plan.</strong> <code>srtctl dry-run</code> prints the serialized plan with placeholders. <code>srtctl plan show &lt;job&gt;</code> prints what ran. Mock swaps the executor for <code>FakePopen</code>.</li>
+</ul>
+<h2 id="executors">Executors<a class="headerlink" href="#executors" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Role or step</th>
+<th>Kubernetes object</th>
+<th>SLURM realization</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>engine, <code>size: 1</code></td>
+<td>Deployment, or a DynamoGraphDeployment service when the frontend is Dynamo</td>
+<td>one srun step per replica, GPU slice from the ledger</td>
+</tr>
+<tr>
+<td>engine, <code>size: n</code></td>
+<td>LeaderWorkerSet</td>
+<td>one spanning step with <code>ntasks</code> for MPI kinds, per-node steps with leader env otherwise</td>
+</tr>
+<tr>
+<td><code>ray</code></td>
+<td>RayCluster, head group plus worker group</td>
+<td>head step plus a spanning worker step, <code>ray_fleet</code> probe</td>
+</tr>
+<tr>
+<td>frontend</td>
+<td>Deployment plus Service</td>
+<td>one step, published <code>http</code> port</td>
+</tr>
+<tr>
+<td>service</td>
+<td>Deployment or StatefulSet</td>
+<td>one step per placement node</td>
+</tr>
+<tr>
+<td>collector</td>
+<td>DaemonSet</td>
+<td>per-node steps</td>
+</tr>
+<tr>
+<td>workload</td>
+<td>Job, or RayJob for Miles</td>
+<td>terminal task step</td>
+</tr>
+<tr>
+<td><code>init</code> containers</td>
+<td>init containers</td>
+<td>ordered pre-steps on the same nodes</td>
+</tr>
+<tr>
+<td><code>sidecars</code></td>
+<td>extra containers</td>
+<td>extra <code>srun --overlap</code> steps on the same node</td>
+</tr>
+</tbody>
+</table>
+<p>The Dynamo row is the strategic one: a Dynamo-fronted recipe compiles to a DynamoGraphDeployment on Kubernetes and to srun steps on SLURM from the same YAML, because DGD's <code>services.&lt;name&gt;.{replicas, resources, extraPodSpec}</code> is already this shape. The docker executor is the direct-host path with the same step model.</p>
+<h2 id="miles-as-the-first-non-inference-workload">Miles as the first non-inference workload<a class="headerlink" href="#miles-as-the-first-non-inference-workload" title="Permanent link">&para;</a></h2>
+<p>Facts that shape the kinds (all from radixark/miles <code>main</code> on 2026-09-15):</p>
+<ul>
+<li>A Miles job is a Ray cluster plus one driver. The launcher starts Ray and submits <code>train.py</code> (<code>miles/utils/external_utils/command_utils.py:163-257</code>). One placement group, PACK, sorted by node IP then GPU id; the actor takes the first bundles (<code>miles/ray/placement_group.py:92-105</code>). Engines are <code>python -m sglang.launch_server</code> subprocesses (<code>miles/backends/sglang_utils/sglang_engine.py:68</code>). Miles always launches its own router (<code>miles/ray/rollout/rollout_server.py:27</code>).</li>
+<li>Reference SLURM launcher: <code>examples/experimental/openenv/glm52_tbench2/launch_16node_slurm.sh</code>. Per-node <code>srun --overlap</code>, head <code>ray start --head --node-ip-address &lt;fabric ip&gt;</code>, workers <code>ray start --address &lt;head&gt;:6379 --block</code> with retry, then <code>MILES_SCRIPT_EXTERNAL_RAY=1 MASTER_ADDR=&lt;head_ip&gt; python3 &lt;recipe&gt; train --num-nodes N</code>. <code>MILES_SCRIPT_*</code> env vars and <code>--extra-args</code> are the documented tooling seam.</li>
+<li>Container <code>radixark/miles:latest</code> (47.6 GB, cu13) pins branch <code>sgl-project/sglang:sglang-miles</code> (58 commits, 139 files ahead of v0.5.19), <code>radixark/Megatron-LM:miles-main</code>, and a router fork. Rollout engines must come from this image unless plain broadcast weight sync without routing replay is acceptable, which is unverified.</li>
+<li><code>--rollout-external</code> raises <code>NotImplementedError</code> on main (<code>miles/ray/rollout/server_cell.py:151-155</code>). Open PRs #2513 (<code>--rollout-external-engine-addrs host:port ...</code>, topology from <code>/server_info</code>, <code>--rollout-external-router-pd</code>) and #2514 (static engine provider, e2e test with plain <code>sglang.launch_server</code>) restore it. PR #3236 adds an opaque single external endpoint with disk-delta weight publication.</li>
+<li><code>execute_train</code> runs <code>pkill -9 sglang; pkill -9 miles; pkill -9 redis</code> on the driver node before anything starts (<code>command_utils.py:186-199</code>).</li>
+</ul>
+<p>Kinds:</p>
+<ul>
+<li><strong><code>ray</code> role kind.</strong> Renders <code>ray-head</code> (service, pool node 0, <code>ray start --head --node-ip-address ${pool[0].ip} --port 6379 --num-gpus G --block</code>, readiness <code>tcp 6379</code> then <code>ray_fleet(nodes=N, gpus=N*G)</code> against the dashboard, critical, tier 3) and <code>ray-workers</code> (service, span over pool nodes 1..N-1, <code>ntasks_per_node 1</code>, <code>ray start --address ${pool[0].ip}:6379 --num-gpus G --block</code> in a retry loop, <code>after_ready: ray-head</code>, critical, tier 2). Both export <code>CUDA_VISIBLE_DEVICES</code> for the full node, carry the runtime mounts plus the workload's directories, and carry the workload env so raylet-spawned processes inherit it. Publishes endpoints <code>gcs</code> and <code>dashboard</code>.</li>
+<li><strong><code>miles</code> workload kind.</strong> Renders <code>miles-driver</code> (task, pool node 0 of <code>workload.on</code>, same image, <code>after_ready</code> on the ray steps, the attached engine steps and collectors, tier 0). Env: <code>MILES_SCRIPT_EXTERNAL_RAY=1</code>, <code>MASTER_ADDR=${pool.train[0].ip}</code>, <code>MILES_SCRIPT_MODEL_DIR</code>, <code>MILES_SCRIPT_DATA_DIR</code>, <code>MILES_SCRIPT_OUTPUT_DIR</code>. Command: <code>python3 &lt;miles_root&gt;/&lt;recipe&gt; &lt;subcommand&gt; --num-nodes N --num-gpus-per-node G --model-name X &lt;args&gt; --extra-args "&lt;extra_args&gt; &lt;layout flags&gt; [--rollout-external-engine-addrs ${endpoints(attach, http)} --rollout-num-gpus R --rollout-num-gpus-per-engine T]" --extra-env-vars '&lt;env as json&gt;'</code>. Terminal. Progress parser: <code>rollout N: {...}</code> lines to status events.</li>
+<li><strong>Validation in the workload kind.</strong> Colocate requires <code>actor_nodes == pool.nodes</code>. Disaggregated requires actor GPUs plus rollout GPUs plus eval GPUs to fit the pool and rollout GPUs divisible by GPUs per engine. Store-true flags cannot be negated, so <code>colocate: false</code> is refused when the recipe hardcodes <code>--colocate</code>. <code>attach</code> requires an engine role and no frontend; a frontend is allowed with a warning since Miles ignores it. <code>workload.on</code> must not intersect <code>attach</code>, which keeps Miles's <code>pkill -9 sglang</code> away from the engines.</li>
+</ul>
+<p>Compiled plan for recipe 2 and the delta for recipe 3:</p>
+<div class="highlight"><pre><span></span><code>pools   train    nodes 2, whole                                      (recipe 3: train nodes 1, rollout nodes 1 sliced 4 x 2)
+steps   ray-head       service  train[0]     tcp 6379, ray_fleet(2, 16)                      critical  tier 3
+        ray-workers    service  train[1:]    span, ntasks_per_node 1, after_ready ray-head   critical  tier 2
+        dcgm-exporter  service  train per_node                                                          tier 1
+        tachometer     service  train[0]                                                                tier 1
+        miles-driver   task     train[0]     after_ready ray-head, ray-workers, tachometer              tier 0
+        rollout-0..3   service  rollout[0]   gpus 2, http /server_info, publishes http       (recipe 3)  tier 2
+terminal  miles-driver
+</code></pre></div>
+<p>Gotchas for the first live run: GPU visibility inside <code>--overlap</code> steps on GRES partitions, <code>/dev/shm</code> size under enroot for the Ray object store, SIGTERM to the named ray steps producing <code>ray stop</code> rather than a SIGKILL of the raylet, health timeouts long enough for Megatron checkpoint load, and <code>dirs.output</code> on a stable shared path so a resubmitted recipe resumes.</p>
+<h2 id="future-jobs">Future jobs<a class="headerlink" href="#future-jobs" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Job</th>
+<th>Pools</th>
+<th>Steps</th>
+<th>Probes and windows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dynamo disagg benchmark</td>
+<td>infra, workers, client</td>
+<td>etcd, one step per worker process, frontend, exporters, bench task</td>
+<td><code>dynamo_health</code> with expected counts, bench stamps warmup and measure windows</td>
+</tr>
+<tr>
+<td>Miles, Miles-placed GPUs</td>
+<td>train</td>
+<td>ray head, ray workers, driver</td>
+<td><code>ray_fleet</code></td>
+</tr>
+<tr>
+<td>Miles attached to a fleet</td>
+<td>train, rollout</td>
+<td>engines, ray, driver</td>
+<td><code>server_info</code> per engine</td>
+</tr>
+<tr>
+<td>Policy plus reward plus judge with sandboxes</td>
+<td>one pool per model, sandbox</td>
+<td>three frontends, sandbox service, harness task</td>
+<td>per-frontend health</td>
+</tr>
+<tr>
+<td>Router A/B on one fleet</td>
+<td>workers, client</td>
+<td>two routers, bench tasks chained with <code>after_done</code></td>
+<td>health per router</td>
+</tr>
+<tr>
+<td>Build then serve</td>
+<td>any</td>
+<td>build task, services <code>after_done</code> the build</td>
+<td>log probe</td>
+</tr>
+<tr>
+<td>Chaos</td>
+<td>workers</td>
+<td>a kill task at time T, <code>critical: false</code> on the victim</td>
+<td>liveness probe on the fleet</td>
+</tr>
+<tr>
+<td>Mocker or AISim</td>
+<td>cpu</td>
+<td>mocker services, bench task</td>
+<td>http</td>
+</tr>
+<tr>
+<td>Power study</td>
+<td>workers</td>
+<td>collectors and windows</td>
+<td>windows</td>
+</tr>
+<tr>
+<td>Same recipe on Kubernetes or one host</td>
+<td>unchanged</td>
+<td>unchanged</td>
+<td>executor differs</td>
+</tr>
+</tbody>
+</table>
+<h2 id="deliberately-out">Deliberately out<a class="headerlink" href="#deliberately-out" title="Permanent link">&para;</a></h2>
+<p>Replicas of tasks, retries beyond a bounded <code>OnFailure</code>, artifact storage and upload, a Jinja expression language for recipes, GPU sharing between steps on the same device, shared PID namespaces between co-located steps. Recipes keep <code>--set</code> and the fixed placeholder set. Only the optional workflow compiler speaks <code>${{ }}</code>, and only for fragments that attach to a recipe by step name.</p>
+<h2 id="migration-on-main-after-407">Migration on <code>main</code> after #407<a class="headerlink" href="#migration-on-main-after-407" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Extract the plan and engine</strong> from the POC into <code>src/srtctl/plan/</code>: <code>DagEngine</code>, <code>TaskState</code>, the probes and the ledger (<code>dag/engine.py:446-777</code>, <code>dag/plan.py</code>, <code>dag/probes.py</code>). Leave the sflow schema, loader and expressions as the optional workflow compiler.</li>
+<li><strong>Services first.</strong> <code>ServiceConfig</code> is already a step: placement, readiness, <code>critical</code>, <code>start</code> becomes edges. This runs the engine against production traffic with no behavior change.</li>
+<li><strong>Golden plans.</strong> Serialize the plan for the examples and the InferenceMAX recipes before step 4 and diff after. Plan equality is behavior equality, and it is the guard the 2.0 refactor lacked.</li>
+<li><strong>Roles, frontend, workload.</strong> Stage mixins become kind bodies. The health gate becomes the frontend kind's probe. The benchmark becomes the terminal task. <code>run()</code> collapses to compile then execute. Open the role map, add <code>kind</code>, <code>mode</code>, <code>size</code>, <code>pod</code>, per-role <code>model</code> and <code>engine</code>, and <code>frontend.type: none</code>. The <code>ResourceConfig</code> role fields become a shim populated only by v1 recipes and the migrator.</li>
+<li><strong>Collectors and windows.</strong> Tachometer and exporters as collector kinds, windows as events, postprocess reading the event log. Power telemetry unfreezes here.</li>
+<li><strong>Workload kinds.</strong> <code>ray</code> role kind and <code>miles</code> workload kind. Validate on sa-b200: the Miles quick start on one node in colocate, two nodes disaggregated with a fully-async script, then a two-value sweep over <code>extra_args</code>.</li>
+<li><strong>Executors.</strong> Put <code>start_srun_process</code> (<code>src/srtctl/core/slurm.py:184</code>) behind an executor protocol; docker and Kubernetes follow, Kubernetes emitting DGD for Dynamo-fronted recipes.</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>Size</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Plan IR, engine extraction, event log, async probes</td>
+<td>medium</td>
+</tr>
+<tr>
+<td>Services as steps, edges replacing phases</td>
+<td>small</td>
+</tr>
+<tr>
+<td>Golden plan harness</td>
+<td>small</td>
+</tr>
+<tr>
+<td>Open roles, pod template, kind protocols, orchestrator collapse</td>
+<td>large</td>
+</tr>
+<tr>
+<td>Collectors and windows</td>
+<td>medium</td>
+</tr>
+<tr>
+<td><code>ray</code> and <code>miles</code> kinds, example, docs, tests</td>
+<td>small</td>
+</tr>
+<tr>
+<td>Executor protocol, docker, Kubernetes</td>
+<td>medium, then large</td>
+</tr>
+</tbody>
+</table>
+<h2 id="open-decisions-and-defaults">Open decisions and defaults<a class="headerlink" href="#open-decisions-and-defaults" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Pools are named by recipes but populated only by kinds. Default: yes.</li>
+<li>A multi-node engine is one spanning step for MPI-shaped kinds and per-node steps with a leader otherwise; the kind decides. Default: kind decides.</li>
+<li>Workload env is delivered twice on purpose for Ray: on the ray steps so spawned processes inherit it, and through <code>--extra-env-vars</code> so Ray's runtime env agrees. Default: both.</li>
+<li>The driver runs as its own task step, never inside the head's shell. Default: own step.</li>
+<li><code>nodes:</code> stays as sugar so SLURM users never have to think in replicas for whole-node roles, and dry-run always prints the node map. Default: keep.</li>
+<li>Vocabulary cost: replicas, sidecars and probes on a SLURM tool. Accepted, because the same users deploy Dynamo on Kubernetes and the roadmap already wants that executor.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

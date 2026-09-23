@@ -1,0 +1,2113 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/shadow-engine-recovery/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Shadow Engine Recovery (vLLM) - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#shadow-engine-recovery-vllm" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Shadow Engine Recovery (vLLM)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../accuracy/" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-no-dra" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why no DRA
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-srtslurm-owns-vs-what-you-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What srtslurm Owns vs What You Set
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sizing-gpu-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sizing GPU Memory
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-a-failover" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing a Failover
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/shadow-engine-recovery.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="shadow-engine-recovery-vllm">Shadow Engine Recovery (vLLM)<a class="headerlink" href="#shadow-engine-recovery-vllm" title="Permanent link">&para;</a></h1>
+<p><a href="https://developer.nvidia.com/blog/restore-llm-inference-capacity-in-seconds-with-shadow-engine-recovery-in-nvidia-dynamo/">Shadow engine recovery</a> keeps a fully initialized standby <code>dynamo.vllm</code> engine parked on the same GPUs as the serving engine. Dynamo's GPU Memory Service (GMS) owns the model weights in a process of its own, so the standby maps the one copy already in HBM instead of loading another. When the serving engine dies, the standby takes over in seconds instead of the minutes a cold restart costs; the dead engine is relaunched in place and becomes the new standby.</p>
+<p><code>engine.failover</code> turns this on for a vLLM recipe behind the Dynamo frontend. It implies a <code>gms</code> service, one instance per worker, and launches the extra engines with the environment Dynamo's Kubernetes operator would give them. <code>roles.&lt;role&gt;.restart</code> relaunches an engine that exits.</p>
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#why-no-dra">Why no DRA</a></li>
+<li><a href="#quick-start">Quick Start</a></li>
+<li><a href="#what-runs">What Runs</a></li>
+<li><a href="#what-srtslurm-owns-vs-what-you-set">What srtslurm Owns vs What You Set</a></li>
+<li><a href="#configuration-reference">Configuration Reference</a></li>
+<li><a href="#sizing-gpu-memory">Sizing GPU Memory</a></li>
+<li><a href="#testing-a-failover">Testing a Failover</a></li>
+<li><a href="#validation">Validation</a></li>
+<li><a href="#limitations">Limitations</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+</ul>
+<hr />
+<h2 id="why-no-dra">Why no DRA<a class="headerlink" href="#why-no-dra" title="Permanent link">&para;</a></h2>
+<p>The blog lists Dynamic Resource Allocation (Kubernetes 1.34 with the NVIDIA GPU DRA driver) as a requirement. That requirement is about Kubernetes, not about the feature: a pod's containers each get their own GPU allocation, and the default device plugin cannot hand the same GPU to the GMS sidecar and to two engine containers at once. DRA can.</p>
+<p>On SLURM the whole node is allocated to the job and every step on it sees the same <code>/dev/nvidia*</code>. The three steps of one worker share its GPUs by setting the same <code>CUDA_VISIBLE_DEVICES</code>. Everything else the feature needs is a process property: the GMS server's CUDA VMM allocations are reference counted and survive any engine's exit as long as one mapping remains, the election is a POSIX <code>flock</code> on a file, and the relaunch is a supervisor watching step exits. None of that knows about Kubernetes.</p>
+<p>The two things Kubernetes gives for free that srtslurm provides through existing machinery are a directory all containers of a worker share on the node (an <code>emptyDir</code> there; a node-local host path here) and the "restart the failed container" policy (the pod's <code>restartPolicy: Always</code>; <code>roles.&lt;role&gt;.restart</code> here).</p>
+<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="nt">schema</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="nt">model</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.2</span><span class="w">    </span><span class="c1"># ships gpu_memory_service</span>
+<span class="nt">dynamo</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">install</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="nt">frontend</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamo</span>
+<span class="nt">engine</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">vllm</span>
+<span class="w">  </span><span class="nt">failover</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{}</span><span class="w">                    </span><span class="c1"># defaults: one shadow, /dev/shm</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">agg</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">    </span><span class="nt">workers</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">gpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">    </span><span class="nt">restart</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">policy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always</span><span class="w">              </span><span class="c1"># relaunch an exited engine in place as the new shadow</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">tensor-parallel-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">      </span><span class="nt">gpu-memory-utilization</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.4</span><span class="w">   </span><span class="c1"># leave room for the shadow, see Sizing GPU Memory</span>
+</code></pre></div>
+<p><code>examples/features/vllm-failover.yaml</code> is the runnable version. <code>srtctl dry-run -f &lt;recipe&gt;</code> prints a "Shadow Engine Recovery" panel with the layout and lists the <code>gms</code> service under Services before you submit.</p>
+<p>The container must ship the <code>gpu_memory_service</code> package. The <code>ai-dynamo</code> PyPI wheel does not include it, so the <code>dynamo.source: pypi</code> path does not work here; the <code>nvcr.io/nvidia/ai-dynamo/vllm-runtime</code> images from 1.4 on do, with <code>dynamo.install: false</code>.</p>
+<h2 id="what-runs">What Runs<a class="headerlink" href="#what-runs" title="Permanent link">&para;</a></h2>
+<p>Per worker and node, in this order:</p>
+<div class="highlight"><pre><span></span><code>node im-b200-c021                                        /dev/shm/srtctl-&lt;job&gt;/agg_0/
+                                                          +- gms_&lt;GPU-UUID&gt;_weights.sock
+  step service_gms_agg_0_&lt;node&gt;    gms service (per worker) +- gms_&lt;GPU-UUID&gt;_kv_cache.sock
+    python3 -m gpu_memory_service --device 0  ------------&gt; +- failover.lock
+    (one server per GPU of the worker)                         ^          ^
+                                                                |          |
+  step agg_0_&lt;node&gt;                engine 0  ENGINE_ID=0 -------+  flock --+   holds the lock: serving
+    python3 -m dynamo.vllm ... --load-format gms --gms-shadow-mode                      (registered)
+                                                                |          |
+  step agg_0_&lt;node&gt;_e1             engine 1  ENGINE_ID=1 -------+  flock --+   waiting: parked shadow
+    python3 -m dynamo.vllm ... --load-format gms --gms-shadow-mode                      (not registered)
+</code></pre></div>
+<ul>
+<li><strong>The gms service</strong> (<code>service_gms_&lt;role&gt;_&lt;index&gt;_&lt;node&gt;</code>). A <a href="../services/">service</a> implied by <code>engine.failover</code>, <code>type: gms</code>, <code>placement.per: worker</code>: one instance per worker on every worker node, in the <code>before_workers</code> phase, in the job container, with the worker's <code>CUDA_VISIBLE_DEVICES</code>. It starts one <code>gpu_memory_service</code> server per GPU of the worker, each binding a <code>weights</code> and a <code>kv_cache</code> socket in the worker's directory, and prints <code>GMS ready:</code> once every socket exists; the service stage waits for that line before moving on. Critical (a worker without its weight server cannot recover), stopped after the engines at cleanup (shutdown tier 1), when it removes the directory. Declare it by name to change its container or its readiness timeout.</li>
+<li><strong>Engine 0</strong> (<code>&lt;role&gt;_&lt;index&gt;_&lt;node&gt;</code>). <code>ENGINE_ID=0</code> loads the weights from disk into GMS, or imports them read-only when they are already there after a relaunch. Every other engine imports read-only, so no two engines ever hold GMS's write lock at once.</li>
+<li><strong>Shadow engines</strong> (<code>&lt;role&gt;_&lt;index&gt;_&lt;node&gt;_e&lt;k&gt;</code>). Same command, same GPUs, own ports (<code>DYN_SYSTEM_PORT</code>, KV events, NIXL side channel, <code>VLLM_PORT</code>). Each engine initializes fully (weights mapped, CUDA graphs captured, communicators up), sleeps, and blocks on <code>failover.lock</code>. The one that acquires it wakes, materializes its KV cache and registers with the frontend. The frontend health gate counts registered instances, so shadows do not count toward the expected worker total.</li>
+<li><strong>Relaunch</strong> (<code>roles.&lt;role&gt;.restart</code>). The worker supervisor's unit is one engine of a worker, so when the serving engine dies only its step is relaunched, with the role's backoff and <code>max_restarts</code>, its log rotated to <code>&lt;log&gt;.out.&lt;n&gt;</code>, and the event recorded in <code>worker_restarts.json</code> and the lockfile; the engine that just took over is left alone. The relaunched engine loads through GMS (fast) and parks as the new shadow; the supervisor's readiness probe passes once it is parked, because Dynamo reports a standby healthy on purpose. Without a restart policy an exited engine's step simply ends and <code>roles.&lt;role&gt;.critical</code> decides whether the run continues (the shadow still takes over either way).</li>
+</ul>
+<p>Multi-node workers get the same treatment per node; every engine of a multi-node worker gets its own <code>--master-port</code> (<code>29500 + 100 * ENGINE_ID</code>) so their <code>torch.distributed</code> stores do not collide. Only single-node workers have been run so far.</p>
+<p>Why the gms service is per worker rather than per node: GMS names its sockets after the NVML UUID of "device k" while the engine picks device k by CUDA index. With a subset <code>CUDA_VISIBLE_DEVICES</code> those disagree (NVML ignores it), so a node-level server would hand the worker on GPU 1 the socket of GPU 0. In the worker's own device view both sides name the same socket. This is what <code>placement.per: worker</code> exists for; see <a href="../services/#placement">services.md</a>.</p>
+<h2 id="what-srtslurm-owns-vs-what-you-set">What srtslurm Owns vs What You Set<a class="headerlink" href="#what-srtslurm-owns-vs-what-you-set" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>Owner</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the <code>gms</code> service</td>
+<td>srtslurm</td>
+<td>implied by <code>engine.failover</code>; declare <code>services: [{name: gms, type: gms, ...}]</code> to change its container or readiness timeout</td>
+</tr>
+<tr>
+<td><code>--load-format gms --gms-shadow-mode</code></td>
+<td>srtslurm</td>
+<td>added to every engine; a <code>load-format</code> in <code>roles.&lt;role&gt;.args</code> must be <code>gms</code> or absent</td>
+</tr>
+<tr>
+<td><code>ENGINE_ID</code>, <code>GMS_SOCKET_DIR</code>, <code>FAILOVER_LOCK_PATH</code>, <code>DYN_VLLM_GMS_SHADOW_MODE</code>, <code>DYN_SYSTEM_STARTING_HEALTH_STATUS</code></td>
+<td>srtslurm</td>
+<td>per engine, the same names the Dynamo operator injects</td>
+</tr>
+<tr>
+<td><code>CUDA_VISIBLE_DEVICES</code></td>
+<td>srtslurm</td>
+<td>pinned on the engines and the gms instance (no <code>--device-ids</code>), so "device k" is the same GPU for all of them</td>
+</tr>
+<tr>
+<td>ports</td>
+<td>srtslurm</td>
+<td>every engine is its own <code>Process</code> with its own ports, from the usual allocators</td>
+</tr>
+<tr>
+<td><code>--master-port</code> (multi-node)</td>
+<td>srtslurm</td>
+<td><code>29500 + 100 * ENGINE_ID</code>; a <code>master-port</code> in <code>args</code> moves the base</td>
+</tr>
+<tr>
+<td><code>gpu-memory-utilization</code></td>
+<td>you</td>
+<td>see <a href="#sizing-gpu-memory">Sizing GPU Memory</a></td>
+</tr>
+<tr>
+<td>the container</td>
+<td>you</td>
+<td>must ship <code>gpu_memory_service</code>; <code>dynamo.install: false</code></td>
+</tr>
+<tr>
+<td><code>roles.&lt;role&gt;.restart</code></td>
+<td>you</td>
+<td>relaunches an exited engine as the new shadow; <code>roles.&lt;role&gt;.critical</code> applies once its <code>max_restarts</code> are spent, or from the start without a policy</td>
+</tr>
+</tbody>
+</table>
+<h2 id="configuration-reference">Configuration Reference<a class="headerlink" href="#configuration-reference" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">vllm</span>
+<span class="w">  </span><span class="nt">failover</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">shadow_engines</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span><span class="w">                  </span><span class="c1"># standby engines per worker</span>
+<span class="w">    </span><span class="nt">shared_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/dev/shm</span><span class="w">               </span><span class="c1"># node-local host path every container on the node sees</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">agg</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">restart</span><span class="p">:</span><span class="w">                           </span><span class="c1"># see docs/config-reference.md, section "restart"</span>
+<span class="w">      </span><span class="nt">policy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always</span>
+<span class="w">      </span><span class="nt">backoff_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
+<span class="nt">services</span><span class="p">:</span><span class="w">                              </span><span class="c1"># optional: only to change the implied gms service</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gms</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gms</span>
+<span class="w">    </span><span class="nt">readiness</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">log</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="s">"GMS</span><span class="nv"> </span><span class="s">ready:"</span><span class="p p-Indicator">}</span>
+<span class="w">      </span><span class="nt">timeout_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">300</span><span class="w">             </span><span class="c1"># also bounds the servers' own startup</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>shadow_engines</code></td>
+<td><code>1</code></td>
+<td>Standby engines per worker. Each one costs its CUDA context, captured graphs and communicator buffers in HBM while parked, and no weights.</td>
+</tr>
+<tr>
+<td><code>shared_dir</code></td>
+<td><code>/dev/shm</code></td>
+<td>Where <code>srtctl-&lt;job_id&gt;/&lt;role&gt;_&lt;index&gt;/</code> (sockets and lock file) is created. It must be the same directory in every container on the node and it must be node-local: enroot bind-mounts the host's <code>/dev/shm</code> into every container, while <code>/tmp</code> is a fresh tmpfs per container and a Unix socket cannot be shared through the cluster filesystem.</td>
+</tr>
+</tbody>
+</table>
+<p>Validation refuses <code>engine.failover</code> without <code>frontend.type: dynamo</code> (the election lives in <code>dynamo.vllm</code>; a static router would also list the parked shadows), with <code>dynamo.sidecar: true</code>, with <code>data-parallel-size</code> on any role, or with a <code>load-format</code> other than <code>gms</code>. It warns when Dynamo is pip-installed at job start, because that path cannot supply <code>gpu_memory_service</code>. A declared <code>gms</code> service is refused without <code>engine.failover</code> or with <code>placement.per: node</code>.</p>
+<h2 id="sizing-gpu-memory">Sizing GPU Memory<a class="headerlink" href="#sizing-gpu-memory" title="Permanent link">&para;</a></h2>
+<p>Two engines share each GPU. The weights are counted once (GMS owns them; both engines map the same physical pages). Everything else is per engine:</p>
+<ul>
+<li>the serving engine holds its KV cache, sized from <code>gpu-memory-utilization</code> as usual;</li>
+<li>a parked shadow holds its CUDA context, captured CUDA graphs and NCCL/NIXL buffers, typically one to a few GB, and no KV cache (it reserves the address range and materializes it on promotion).</li>
+</ul>
+<p>So <code>gpu-memory-utilization</code> must leave the shadow's standing cost free. The shadow's own profiling run accounts for the active engine being present, so a value that works is one where <code>weights + active KV cache + one shadow's context and graphs</code> fits. Start conservatively (the example uses 0.4 for a small model), read both engines' logs for <code>[GMS] Scratch-KV engaged</code> and the KV cache sizes, and raise it from there. A shadow that OOMs during its warm-up exits; with a restart policy it is relaunched until <code>max_restarts</code> is spent, then the role's <code>critical</code> flag decides.</p>
+<h2 id="testing-a-failover">Testing a Failover<a class="headerlink" href="#testing-a-failover" title="Permanent link">&para;</a></h2>
+<p>Kill the engine process, not its step. <code>scancel --signal=KILL &lt;job&gt;.&lt;step&gt;</code> ends the step, and the supervisor (or, without a policy, the process monitor) treats that as the worker exit it is. What the blog measures is a process crash, and the engines run in the host PID namespace, so from the login node:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># which engine is serving: the lock file names the holder</span>
+srun<span class="w"> </span>--jobid<span class="w"> </span>&lt;job&gt;<span class="w"> </span>--overlap<span class="w"> </span>-w<span class="w"> </span>&lt;node&gt;<span class="w"> </span>-N1<span class="w"> </span>cat<span class="w"> </span>/dev/shm/srtctl-&lt;job&gt;/agg_0/failover.lock<span class="w">   </span><span class="c1"># engine-0</span>
+
+<span class="c1"># SIGKILL that engine (the dynamo.vllm parent and its EngineCore children)</span>
+srun<span class="w"> </span>--jobid<span class="w"> </span>&lt;job&gt;<span class="w"> </span>--overlap<span class="w"> </span>-w<span class="w"> </span>&lt;node&gt;<span class="w"> </span>-N1<span class="w"> </span>bash<span class="w"> </span>-c<span class="w"> </span><span class="s1">'</span>
+<span class="s1">  for pid in $(pgrep -f "^python3 -m dynamo.vllm"); do</span>
+<span class="s1">    env=$(tr "\0" "\n" &lt; /proc/$pid/environ 2&gt;/dev/null) || continue</span>
+<span class="s1">    if echo "$env" | grep -qx "ENGINE_ID=0" &amp;&amp;</span>
+<span class="s1">       echo "$env" | grep -qx "FAILOVER_LOCK_PATH=/dev/shm/srtctl-'</span><span class="s2">"</span><span class="nv">$SLURM_JOB_ID</span><span class="s2">"</span><span class="s1">'/agg_0/failover.lock"; then</span>
+<span class="s1">      echo "killing $pid"; kill -9 $pid $(pgrep -P $pid)</span>
+<span class="s1">    fi</span>
+<span class="s1">  done'</span>
+</code></pre></div>
+<p>Then watch:</p>
+<ul>
+<li>the shadow's log (<code>&lt;node&gt;_agg_w0_e1.out</code>): <code>[Shadow] Lock acquired, waking engine</code>, then <code>[Shadow] Engine awake, registering with discovery</code> and <code>failover_state engine=1 -&gt; active</code>;</li>
+<li>the frontend's <code>/health</code>: the dead instance id disappears and a new one takes its place;</li>
+<li>the sweep log: <code>Worker agg_0_&lt;node&gt; exited with code 137; relaunching agg_0 in 5s (restart 1/3)</code>, then <code>Relaunched agg_0 as agg_0_&lt;node&gt;_r1</code>;</li>
+<li>engine 0's new log (<code>&lt;node&gt;_agg_w0.out</code>; the crash log moved to <code>&lt;node&gt;_agg_w0.out.1</code>): <code>Connected with rw_or_ro lock (granted=ro)</code> and <code>Read mode: imported 1.18 GiB</code> (weights imported from GMS, no load from disk), then <code>[Shadow] Engine sleeping, startup probe now passing, waiting for lock</code>. The roles have swapped.</li>
+</ul>
+<p>The lock file now reads <code>engine-1</code>. Kill again and it swaps back. The step logs are written by <code>srun</code>, which buffers, so read timings from the timestamps inside the lines rather than from when they appear in the file.</p>
+<h2 id="validation">Validation<a class="headerlink" href="#validation" title="Permanent link">&para;</a></h2>
+<p>Validated on sa-b200 (one B200 node, two TP1 Qwen3-0.6B workers with one shadow each, <code>examples/features/vllm-failover.yaml</code>, <code>nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.2</code>: Dynamo 1.4.2, vLLM 0.26.0, GMS 0.9.0), job 16074 on 2026-09-17. Times are from the timestamps inside the step logs.</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Observed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GMS start to <code>GMS ready:</code> (both sockets bound)</td>
+<td>9 s</td>
+</tr>
+<tr>
+<td>Engine 0 start to serving: weights loaded from disk into GMS, <code>init engine</code> 34 s (13.5 s compile), lock taken, KV cache (69 GiB) materialized, registered</td>
+<td>1 min 40 s</td>
+</tr>
+<tr>
+<td>Shadow start to parked: weights imported from GMS, <code>init engine</code> 34 s, <code>Scratch-KV engaged</code> (0.5 GiB physical), sleeping on the lock</td>
+<td>1 min 40 s (started 2 s after engine 0)</td>
+</tr>
+<tr>
+<td>SIGKILL of the serving engine to the shadow holding the lock</td>
+<td>0.1 to 0.2 s (the lock is polled every 100 ms)</td>
+</tr>
+<tr>
+<td>Lock held to awake: weights remapped (60 allocations, 1.18 GiB), KV cache reallocated (28 allocations, 69.23 GiB)</td>
+<td>0.27 s (<code>It took 0.273367 seconds to wake up tags {'weights', 'kv_cache'}</code>)</td>
+</tr>
+<tr>
+<td>Awake to registered: the frontend logs <code>added model</code></td>
+<td>0.05 s</td>
+</tr>
+<tr>
+<td>SIGKILL to the frontend routing to the shadow</td>
+<td>about 0.5 s; the test script saw <code>/health</code> with the new instance id at 7.5 s and 11.7 s in two runs, at its own poll granularity</td>
+</tr>
+<tr>
+<td>Frontend drops the dead instance's event publisher (lease expiry)</td>
+<td>10 s after the kill</td>
+</tr>
+<tr>
+<td>Killed engine relaunched in place: <code>Connected with rw_or_ro lock (granted=ro)</code>, <code>Read mode: imported 1.18 GiB</code> in 1 s (no load from disk), <code>init engine</code> 21.9 s, parked</td>
+<td>49 s after the kill (in-step relaunch, compile cache warm)</td>
+</tr>
+<tr>
+<td>Completions before, during (against the survivor), and after</td>
+<td>all answered</td>
+</tr>
+</tbody>
+</table>
+<p><code>nvidia-smi</code> during the run: 78.5 GiB used of 183 GiB per GPU, of which each engine process holds 2.7 GiB (CUDA context, graphs, communicators) and the rest is the GMS-owned weights plus the serving engine's KV cache. The weights appear under neither process.</p>
+<p>A second cutover on the same job, killing engine 1 so the relaunched engine 0 (which had imported the weights read-only) took the lock back, behaved the same way.</p>
+<p>Job 16086 (same recipe plus <code>roles.agg.restart: {policy: always, backoff_seconds: 5}</code>, on a build that merges this branch with <code>roles.&lt;role&gt;.restart</code>) is the layout as merged: the <code>gms</code> service launched <code>service_gms_agg_0_&lt;node&gt;</code> and <code>service_gms_agg_1_&lt;node&gt;</code> (each ready 9 s after its start) before the engines, and the supervisor tracked four units (<code>agg_0</code>, <code>agg_0_e1</code>, <code>agg_1</code>, <code>agg_1_e1</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Observed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SIGKILL of engine 0 to the shadow active and registered</td>
+<td>0.4 s (lock 08:12:34.96, active 08:12:35.35)</td>
+</tr>
+<tr>
+<td>Supervisor notices the exit (monitor tick) and schedules the relaunch</td>
+<td>5 s after the exit: <code>Worker agg_0_&lt;node&gt; exited with code 137; relaunching agg_0 in 5s (restart 1/3)</code></td>
+</tr>
+<tr>
+<td>Relaunched as <code>agg_0_&lt;node&gt;_r1</code>; the shadow's step untouched</td>
+<td>11 s later (5 s backoff plus the srun)</td>
+</tr>
+<tr>
+<td>Relaunched engine imports the weights from GMS (<code>granted=ro</code>, <code>imported 1.18 GiB</code>), <code>init engine</code> 34 s (13.5 s compile: a new step is a new container, so the compile cache is cold), parked</td>
+<td>95 s after the kill; <code>worker_restarts.json</code>: <code>outcome: ready, ready_seconds: 90.7</code>, crash log rotated to <code>&lt;node&gt;_agg_w0.out.1</code></td>
+</tr>
+<tr>
+<td>Reverse cutover (kill engine 1; the relaunched engine 0 takes the lock; the supervisor relaunches engine 1 as <code>agg_0_&lt;node&gt;_e1_r1</code>)</td>
+<td>same shape, both engines back</td>
+</tr>
+</tbody>
+</table>
+<p>A relaunched engine pays the compile again because each srun step is a fresh container. Mounting a persistent <code>TORCHINDUCTOR_CACHE_DIR</code> / <code>VLLM_CACHE_ROOT</code> through <code>container_mounts</code> brings the relaunch close to the in-step number above.</p>
+<h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
+<ul>
+<li>vLLM only, behind the Dynamo frontend. SGLang and TRT-LLM have GMS weight-loading integrations but no shadow election in their Dynamo workers yet.</li>
+<li>No <code>data-parallel-size</code>. Each DP rank would need its own GMS session and lock.</li>
+<li>Multi-node workers are launched with the right ports but have not been run.</li>
+<li>Process failures only. A node or GPU failure still ends the run (SLURM has no spare in the allocation).</li>
+<li>The gms service is critical and not relaunched. If it dies, the engines keep their mappings and serve, but a relaunched engine cannot import the weights, so the run fails on the next engine exit rather than limping on.</li>
+<li>A promoted shadow starts with an empty KV cache (the current Dynamo preview does not carry it), so TTFT bumps briefly after a cutover.</li>
+<li>Tachometer scrapes every engine's <code>DYN_SYSTEM_PORT</code>, shadows included; a parked shadow reports healthy and no traffic.</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>services[gms] exited with code 1 on &lt;node&gt; before its readiness probe passed</code> and the log says <code>No module named gpu_memory_service</code></td>
+<td>the container has no GMS</td>
+<td>use a <code>vllm-runtime</code> image with <code>dynamo.install: false</code></td>
+</tr>
+<tr>
+<td><code>GMS startup timed out: 0 of 2 sockets</code> while the servers are running</td>
+<td>the servers bound their sockets somewhere the wrapper cannot see, or <code>shared_dir</code> is not writable</td>
+<td>check the service log's <code>Socket path:</code> lines; keep <code>shared_dir</code> on <code>/dev/shm</code></td>
+</tr>
+<tr>
+<td>engines log <code>connection refused</code> on <code>gms_*.sock</code></td>
+<td><code>shared_dir</code> is not shared between the containers (a per-container <code>/tmp</code>)</td>
+<td>use <code>/dev/shm</code> or another host bind mount that enroot gives every container</td>
+</tr>
+<tr>
+<td>both engines serve at once (two instances per worker in <code>/health</code>)</td>
+<td>the lock directory was removed or recreated while engines ran, so they lock different inodes</td>
+<td>do not touch <code>srtctl-&lt;job&gt;/</code> during a run; a relaunched engine reopens the same path, which is fine as long as the file stays</td>
+</tr>
+<tr>
+<td>a shadow is relaunched every backoff with a CUDA OOM</td>
+<td>not enough free HBM for its context and graphs next to the active engine's KV cache</td>
+<td>lower <code>gpu-memory-utilization</code></td>
+</tr>
+<tr>
+<td><code>--gms-shadow-mode requires --load-format gms</code></td>
+<td>a <code>load-format</code> in <code>args</code> other than <code>gms</code></td>
+<td>remove it; validation catches this before submit</td>
+</tr>
+<tr>
+<td>the shadow took over but the dead engine never came back</td>
+<td>no <code>roles.&lt;role&gt;.restart</code> policy</td>
+<td>add one; without it the step ends and <code>critical</code> decides</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

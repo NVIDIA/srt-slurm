@@ -1,0 +1,2697 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/profiling/">
+      
+      
+        <link rel="prev" href="../accuracy/">
+      
+      
+        <link rel="next" href="../power-telemetry/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Profiling - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#profiling" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Profiling
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../accuracy/" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#observability-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Observability capture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#profiling-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Profiling Modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Options
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration Options">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#top-level-profiling-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Top-level profiling section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#constraints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constraints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How It Works
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="How It Works">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#normal-mode-type-none" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Normal Mode (type: none)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#profiling-mode-type-torch-or-nsys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Profiling Mode (type: torch or nsys)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nsys-specific-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        nsys-specific behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#example-configurations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example Configurations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Example Configurations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#torch-profiler-recommended-for-python-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Torch Profiler (Recommended for Python analysis)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nsight-systems-recommended-for-gpu-kernel-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nsight Systems (Recommended for GPU kernel analysis)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output Files
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Output Files">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#viewing-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Viewing Results
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#validation-errors-about-profiling-sections" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation errors about profiling sections
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#empty-profile-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Empty profile output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#profile-too-shortlong" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Profile too short/long
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#observability-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Observability capture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#profiling-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Profiling Modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Options
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration Options">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#top-level-profiling-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Top-level profiling section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#constraints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constraints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How It Works
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="How It Works">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#normal-mode-type-none" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Normal Mode (type: none)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#profiling-mode-type-torch-or-nsys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Profiling Mode (type: torch or nsys)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nsys-specific-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        nsys-specific behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#example-configurations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example Configurations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Example Configurations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#torch-profiler-recommended-for-python-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Torch Profiler (Recommended for Python analysis)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nsight-systems-recommended-for-gpu-kernel-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nsight Systems (Recommended for GPU kernel analysis)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output Files
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Output Files">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#viewing-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Viewing Results
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#validation-errors-about-profiling-sections" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation errors about profiling sections
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#empty-profile-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Empty profile output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#profile-too-shortlong" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Profile too short/long
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/profiling.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="profiling">Profiling<a class="headerlink" href="#profiling" title="Permanent link">&para;</a></h1>
+<p>srtctl supports two profiling backends for performance analysis: <strong>Torch Profiler</strong> and <strong>NVIDIA Nsight Systems (nsys)</strong>.</p>
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#observability-capture">Observability capture</a></li>
+<li><a href="#quick-start">Quick Start</a></li>
+<li><a href="#profiling-modes">Profiling Modes</a></li>
+<li><a href="#configuration-options">Configuration Options</a></li>
+<li><a href="#top-level-profiling-section">Top-level profiling section</a></li>
+<li><a href="#parameters">Parameters</a></li>
+<li><a href="#constraints">Constraints</a></li>
+<li><a href="#how-it-works">How It Works</a></li>
+<li><a href="#example-configurations">Example Configurations</a></li>
+<li><a href="#output-files">Output Files</a></li>
+<li><a href="#viewing-results">Viewing Results</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+</ul>
+<hr />
+<h2 id="observability-capture">Observability capture<a class="headerlink" href="#observability-capture" title="Permanent link">&para;</a></h2>
+<p>To capture the serving timeline alongside metrics and request traces, add:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">observability</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<p>This starts Nsight Systems on <strong>every launched worker process, every TRT-LLM MPI
+rank, and every Dynamo frontend</strong>. Every profiler session records both NVTX
+ranges and CPU samples by default.
+The preset does not collect CUDA API or GPU kernel events. Use the explicit
+<code>profiling</code> modes below for those domains.</p>
+<p>By default, capture starts <strong>after warmup</strong> and stops <strong>when the measured
+workload finishes</strong>. There is no delay or fixed end time to estimate. The
+benchmark waits for every frontend and worker rank to acknowledge start before
+sending measured traffic, and waits for report export at stop. Applications
+remain running between capture windows. Each concurrency in a sweep gets a
+separate report.</p>
+<p>Optional settings are:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">observability</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">  </span><span class="nt">nsys</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">    </span><span class="nt">capture_window</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">measured_workload</span><span class="w">  </span><span class="c1"># default: after warmup through workload completion</span>
+<span class="w">    </span><span class="nt">report_timeout_secs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1800</span><span class="w">          </span><span class="c1"># control/report-finalization budget, not capture length</span>
+<span class="w">    </span><span class="c1"># nvtx_injection_path: /opt/nsys/target-linux-sbsa/libToolsInjection64.so</span>
+<span class="w">    </span><span class="nt">cpu_sampling</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">system-wide</span><span class="w">          </span><span class="c1"># process-tree | none</span>
+</code></pre></div>
+<p>Set <code>capture_window: including_startup</code> to include initialization and warmup:
+collection then begins at each process launch and stops at teardown.</p>
+<p><strong>NVTX tracing and CPU sampling are separate.</strong>
+<a href="https://nvidia.github.io/NVTX/python/annotation_types.html#ranges">NVTX ranges</a>
+are named start/end annotations emitted by instrumented application code. They
+show when an operation ran and its elapsed duration; that duration can include
+waiting, so a long range alone does not prove the CPU was busy.
+<a href="https://docs.nvidia.com/nsight-systems/UserGuide/#cpu-profiling-on-linux">CPU sampling</a>
+periodically records instruction pointers and call stacks, helping identify
+functions that consume CPU time without requiring an NVTX range around each
+function. Both appear in the Nsight report.</p>
+<p>Every frontend and worker session collects CPU samples with the scope set by
+<code>nsys.cpu_sampling</code>. The default <code>system-wide</code> records every process on the
+node into each session's report. <code>process-tree</code> limits a report to the
+launched application and its children, but Nsight refuses it on engines with
+many threads ("Not enough resources are available to collect the requested CPU
+IP sampling"; SGLang workers hit this), leaving NVTX-only reports. <code>none</code>
+disables CPU sampling and keeps NVTX ranges. Each MPI rank has its own session.</p>
+<p><strong>Benchmark boundaries.</strong> SA-Bench starts capture after its warmup and initial
+probe, then stops after the measured requests finish, outside its timing
+measurement. SGLang-Bench runs with <code>--warmup-requests 0</code>, so the entire client
+invocation is captured. Trace-replay and mooncake-router start capture after
+their separate warmup command and stop when the measured AIPerf command exits;
+client initialization and final artifact writing can be included. Additional
+AIPerf warmup flags are rejected in <code>measured_workload</code> mode because that
+warmup would otherwise happen inside the capture. Other bundled runners currently require
+<code>capture_window: including_startup</code> or <code>nsys.enabled: false</code>.</p>
+<p><strong>Custom benchmarks and manual serving.</strong> srtctl cannot infer an external
+client's internal warmup boundary. Custom clients receive the control script,
+directory, and timeout through <code>SRT_NSYS_CONTROL_SCRIPT</code>,
+<code>SRT_NSYS_CONTROL_DIR</code>, and <code>SRT_NSYS_CONTROL_TIMEOUT</code>. Invoke the hooks at the
+actual phase boundaries (the script is a no-op when the preset is disabled):</p>
+<div class="highlight"><pre><span></span><code>run_warmup
+python3<span class="w"> </span>/srtctl-runtime/nsys_window.py<span class="w"> </span>start
+run_measured_workload
+python3<span class="w"> </span>/srtctl-runtime/nsys_window.py<span class="w"> </span>stop
+</code></pre></div>
+<p>For manual serving, run these commands inside a container sharing the run's
+<code>/logs</code> and <code>/srtctl-runtime</code> mounts and set
+<code>SRT_NSYS_CONTROL_DIR=/logs/profiles/.control</code>. Repeat the pair for additional
+windows. A custom benchmark that finishes without a completed window fails
+validation. If it exits with an active window, srtctl attempts to export that
+report and fails validation because the stop boundary was missing. Use
+<code>capture_window: including_startup</code> when the external client cannot provide hooks.</p>
+<p>An enabled top-level <code>profiling</code> mode (<code>torch</code>, <code>nsys</code>, or <code>nsys-time</code>) takes
+precedence and disables this automatic preset, including automatic frontend
+capture. <code>profiling.type: none</code> leaves the preset active. With
+<code>observability.enabled: false</code>, <code>nsys.enabled</code> has no effect.</p>
+<p><strong>Container requirements.</strong> The serving image must include <code>nsys</code> (or mount it
+and set <code>SRTCTL_NSYS_BIN</code> on the submitting/orchestrating host) and Python 3.
+<code>measured_workload</code> uses Nsight's interactive <code>launch</code>/<code>start</code>/<code>stop</code>/<code>shutdown</code>
+commands and a shared writable <code>/logs</code> mount. <code>including_startup</code> additionally
+needs Bash, <code>setsid</code>, <code>pgrep</code>, <code>pkill</code>, and <code>timeout</code>. The preset sets
+<code>DYN_ENABLE_RUST_NVTX=1</code> and <code>DYN_NVTX=1</code> on every target. The Rust runtime ranges
+(<code>preprocess.*</code>, <code>route.*</code>, <code>detokenize</code>, <code>transport.*</code>) exist only in a Dynamo
+wheel built with the <code>nvtx</code> Cargo feature; a wheel without it still yields CPU
+samples but no Rust ranges. The Python ranges need the <code>nvtx</code> package in the
+image. On TRT-LLM workers the preset also sets <code>TLLM_LLMAPI_ENABLE_NVTX=1</code> and
+<code>TLLM_PROFILE_LOG_RANKS=all</code>. On SGLang workers it sets
+<code>SGLANG_ENABLE_NVTX_SCHEDULER=1</code> (SGLang 0.5.x from June 2026 onward), which
+emits the scheduler-loop stages from the spawned scheduler process and needs the
+<code>nvtx</code> package importable there. Add <code>SGLANG_ENABLE_NVTX_OPERATIONS=1</code> to the
+worker environment for the batch-overlap operation ranges. Set
+<code>nvtx_injection_path</code> only when the image needs an explicit NVTX injection
+library; it must be an absolute <strong>container</strong> path compatible with that nsys
+installation. CPU sampling uses a 26,000,000 sampling period and 32 samples
+per backtrace and requires the host's perf permissions. Run
+<code>nsys status --environment</code> in the serving environment to verify CPU sampling
+is supported. Engines that annotate a hot loop (SGLang's scheduler emits about a
+thousand <code>scheduler.*</code> ranges per second per process) can exceed Nsight's NVTX
+buffer; the report then carries the diagnostic "Not all NVTX events might have
+been collected", which <code>srtctl dsight</code> surfaces under the report's collection
+notes. Range counts from such a report are lower bounds.</p>
+<p><strong>Reports and shutdown.</strong> Files for <code>measured_workload</code> are under the run's
+<code>logs/profiles/</code> directory:</p>
+<ul>
+<li><code>frontend/&lt;node&gt;_frontend_&lt;index&gt;_window001.nsys-rep</code></li>
+<li><code>&lt;mode&gt;/&lt;node&gt;_&lt;mode&gt;_w&lt;index&gt;_profile_rank&lt;rank&gt;_window001.nsys-rep</code> for MPI workers</li>
+<li><code>&lt;mode&gt;/&lt;node&gt;_&lt;mode&gt;_w&lt;index&gt;_profile_gpu&lt;devices&gt;_window001.nsys-rep</code> for other workers</li>
+</ul>
+<p>Later windows use <code>_window002</code>, etc. Shadow engines include their <code>_e&lt;id&gt;</code>
+suffix after the worker index so reports do not overwrite each other.
+<code>including_startup</code> omits the window suffix.
+Shared control requests and acknowledgments are kept in <code>profiles/.control/</code>.
+A start/stop failure or missing rank fails the benchmark, rather than allowing
+an unprofiled workload to appear successful.</p>
+<p>If teardown interrupts an active capture, each wrapper stops it and waits for
+all reports in its MPI step before terminating applications. This also bounds
+<code>including_startup</code> capture when no benchmark end hook is used. Leave room in
+the job time limit for report export and application shutdown (up to the configured
+report budget plus 150 seconds); allocation timeouts and forced cancellation
+can interrupt export. Inspect the <code>.nsys-rep</code> contents before calling a profiling
+run successful: an existing file alone does not prove NVTX ranges or CPU samples
+were collected. <code>srtctl dry-run</code> shows the effective window, opt-out, or
+explicit-profiling precedence.</p>
+<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<p>Add a <code>profiling</code> section to your job YAML:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># For disaggregated mode (roles.prefill + roles.decode)</span>
+<span class="nt">profiling</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"torch"</span><span class="w"> </span><span class="c1"># or "nsys"</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">start_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">    </span><span class="nt">stop_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">start_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">    </span><span class="nt">stop_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+<span class="c1"># For aggregated mode (roles.agg)</span>
+<span class="c1"># profiling:</span>
+<span class="c1">#   type: "torch"</span>
+<span class="c1">#   aggregated:</span>
+<span class="c1">#     start_step: 0</span>
+<span class="c1">#     stop_step: 50</span>
+</code></pre></div>
+<h2 id="profiling-modes">Profiling Modes<a class="headerlink" href="#profiling-modes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Description</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>none</code></td>
+<td>No explicit profiling; the observability preset may still apply</td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>torch</code></td>
+<td>PyTorch Profiler. Good for Python-level and CUDA kernel analysis</td>
+<td><code>/logs/profiles/{mode}/</code> (Chrome trace format)</td>
+</tr>
+<tr>
+<td><code>nsys</code></td>
+<td>NVIDIA Nsight Systems. Low-overhead GPU profiling</td>
+<td><code>/logs/profiles/{mode}/</code> (<code>*.nsys-rep</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="configuration-options">Configuration Options<a class="headerlink" href="#configuration-options" title="Permanent link">&para;</a></h2>
+<h3 id="top-level-profiling-section">Top-level <code>profiling</code> section<a class="headerlink" href="#top-level-profiling-section" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nt">profiling</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"torch"</span><span class="w"> </span><span class="c1"># Required: "none", "torch", or "nsys"</span>
+
+<span class="w">  </span><span class="c1"># nsys / nsys-time command settings</span>
+<span class="w">  </span><span class="nt">nsys_trace</span><span class="p">:</span><span class="w"> </span><span class="s">"cuda,nvtx"</span>
+<span class="w">  </span><span class="nt">trace_fork_before_exec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">  </span><span class="nt">capture_range_end</span><span class="p">:</span><span class="w"> </span><span class="s">"stop"</span>
+<span class="w">  </span><span class="nt">nsys_library_paths</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"/usr/local/cuda/compat"</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">extra_nsys_args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
+
+<span class="w">  </span><span class="c1"># Disaggregated mode: must set both prefill and decode sections</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">start_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w"> </span><span class="c1"># Step to start profiling for prefill workers</span>
+<span class="w">    </span><span class="nt">stop_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span><span class="w"> </span><span class="c1"># Step to stop profiling for prefill workers</span>
+<span class="w">    </span><span class="nt">capture_scope</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">selected</span><span class="w"> </span><span class="c1"># Opt in to targeting; "all" is the default</span>
+<span class="w">    </span><span class="nt">worker_index</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w"> </span><span class="c1"># Logical prefill worker to capture</span>
+<span class="w">    </span><span class="nt">worker_rank</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w"> </span><span class="c1"># Physical process rank within that worker</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">start_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w"> </span><span class="c1"># Step to start profiling for decode workers</span>
+<span class="w">    </span><span class="nt">stop_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span><span class="w"> </span><span class="c1"># Step to stop profiling for decode workers</span>
+<span class="w">    </span><span class="nt">capture_scope</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">selected</span>
+<span class="w">    </span><span class="nt">worker_index</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">    </span><span class="nt">worker_rank</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+
+
+<span class="w">  </span><span class="c1"># Aggregated mode: must set aggregated section (and must NOT set prefill/decode)</span>
+<span class="w">  </span><span class="c1"># aggregated:</span>
+<span class="w">  </span><span class="c1">#   start_step: 0   # Step to start profiling for aggregated workers</span>
+<span class="w">  </span><span class="c1">#   stop_step: 50   # Step to stop profiling for aggregated workers</span>
+</code></pre></div>
+<h3 id="parameters">Parameters<a class="headerlink" href="#parameters" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Description</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prefill.start_step</code></td>
+<td>Step number to begin prefill profiling</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>prefill.stop_step</code></td>
+<td>Step number to end prefill profiling</td>
+<td><code>50</code></td>
+</tr>
+<tr>
+<td><code>decode.start_step</code></td>
+<td>Step number to begin decode profiling</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>decode.stop_step</code></td>
+<td>Step number to end decode profiling</td>
+<td><code>50</code></td>
+</tr>
+<tr>
+<td><code>aggregated.start_step</code></td>
+<td>Step number to begin aggregated profiling</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>aggregated.stop_step</code></td>
+<td>Step number to end aggregated profiling</td>
+<td><code>50</code></td>
+</tr>
+<tr>
+<td><code>*.capture_scope</code></td>
+<td>Capture one selected process or all physical processes</td>
+<td><code>all</code></td>
+</tr>
+<tr>
+<td><code>*.worker_index</code></td>
+<td>Logical worker selected for iteration-based nsys</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>*.worker_rank</code></td>
+<td>Physical process rank selected within that worker</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>nsys_trace</code></td>
+<td>Non-TRT-LLM Nsight activity domains</td>
+<td><code>cuda,nvtx</code></td>
+</tr>
+<tr>
+<td><code>trace_fork_before_exec</code></td>
+<td>Override non-TRT-LLM child-process tracing; unset uses the Dynamo default</td>
+<td>unset</td>
+</tr>
+<tr>
+<td><code>capture_range_end</code></td>
+<td>Non-TRT-LLM action after a CUDA profiler range ends</td>
+<td><code>stop</code></td>
+</tr>
+<tr>
+<td><code>nsys_library_paths</code></td>
+<td>Paths prepended to the worker <code>LD_LIBRARY_PATH</code></td>
+<td>unset</td>
+</tr>
+<tr>
+<td><code>extra_nsys_args</code></td>
+<td>Additional <code>nsys profile</code> arguments</td>
+<td>unset</td>
+</tr>
+</tbody>
+</table>
+<p>For non-TRT-LLM workers, set <code>nsys_trace</code> to choose trace domains. Do not
+also pass <code>--trace</code> in <code>extra_nsys_args</code>: that emits duplicate options whose
+precedence depends on Nsight's argument parsing.</p>
+<h2 id="constraints">Constraints<a class="headerlink" href="#constraints" title="Permanent link">&para;</a></h2>
+<p>Profiling has specific requirements:</p>
+<ol>
+<li>
+<p><strong>Disaggregated mode</strong>: When profiling disaggregated workers, both <code>profiling.prefill</code> and <code>profiling.decode</code> must be set.</p>
+</li>
+<li>
+<p><strong>Aggregated mode</strong>: When profiling aggregated workers, <code>profiling.aggregated</code> must be set (and <code>profiling.prefill</code>/<code>profiling.decode</code> must not be set).</p>
+</li>
+</ol>
+<h2 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
+<h3 id="normal-mode-type-none">Normal Mode (<code>type: none</code>)<a class="headerlink" href="#normal-mode-type-none" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Uses <code>dynamo.sglang</code> module for serving</li>
+<li>Standard disaggregated inference path</li>
+</ul>
+<h3 id="profiling-mode-type-torch-or-nsys">Profiling Mode (<code>type: torch</code> or <code>nsys</code>)<a class="headerlink" href="#profiling-mode-type-torch-or-nsys" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Supported benchmark scripts receive the selected worker control endpoints
+  needed to control iteration-triggered profiling.</li>
+<li>For non-TRT-LLM <code>nsys</code>, each phase defaults to <code>capture_scope: all</code>,
+  preserving the all-worker wrapping behavior of existing recipes and sending
+  every usable control endpoint to the benchmark. Set <code>capture_scope: selected</code>
+  to opt in to targeting the process identified by <code>worker_index</code> and
+  <code>worker_rank</code>.</li>
+<li>A Dynamo worker is controlled through its <code>DYN_SYSTEM_PORT</code>, not through the
+  public OpenAI serving port.</li>
+<li>Direct SGLang uses its native <code>/start_profile</code> and <code>/stop_profile</code> endpoints.
+  In releases whose profile request model has no <code>start_step</code> field, the
+  capture starts when the request arrives and only <code>num_steps</code> is honored; a
+  nonzero configured <code>start_step</code> changes the capture length but not its start
+  time.
+  Dynamo-hosted vLLM and SGLang use
+  <code>/engine/control/start_profile</code> and <code>/engine/control/stop_profile</code> on each
+  selected worker's <code>DYN_SYSTEM_PORT</code>.</li>
+<li>A native Dynamo sidecar exposes its system control server only on the
+  endpoint leader. <code>capture_scope: all</code> still wraps all physical processes but
+  sends control once to that leader; <code>capture_scope: selected</code> must select rank
+  0 in sidecar mode. Direct vLLM has the same leader-only control constraint.</li>
+<li>TRT-LLM remains endpoint-wide: its executor consumes
+  <code>TLLM_PROFILE_START_STOP</code> and calls <code>cudaProfilerStart</code>/<code>cudaProfilerStop</code>
+  internally, without benchmark-side HTTP control.</li>
+</ul>
+<p><code>worker_rank</code> identifies a process in srtctl's physical topology. With vLLM
+<code>backend.dp_launch_mode: per_gpu</code>, this is the DP rank. With <code>per_node</code>, one
+wrapped process may own multiple local DP ranks; use <code>per_gpu</code> when a capture
+must produce a separate report for every DP rank. <code>worker_index</code> and
+<code>worker_rank</code> are ignored when <code>capture_scope: all</code>. For non-TRT-LLM <code>nsys</code>,
+validation warns if either ignored selector is nonzero; set
+<code>capture_scope: selected</code> to use those selectors. Default zero-valued selectors
+do not warn, so existing all-worker recipes remain unchanged.</p>
+<h3 id="nsys-specific-behavior">nsys-specific behavior<a class="headerlink" href="#nsys-specific-behavior" title="Permanent link">&para;</a></h3>
+<p>When using <code>nsys</code>, workers are wrapped with:</p>
+<div class="highlight"><pre><span></span><code>nsys<span class="w"> </span>profile<span class="w"> </span>-t<span class="w"> </span>cuda,nvtx<span class="w"> </span>--cuda-graph-trace<span class="o">=</span>node<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-c<span class="w"> </span>cudaProfilerApi<span class="w"> </span>--capture-range-end<span class="w"> </span>stop<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="o">[</span>extra_nsys_args...<span class="o">]</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-o<span class="w"> </span>/logs/profiles/<span class="o">{</span>mode<span class="o">}</span>/<span class="o">{</span>name<span class="o">}</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>python3<span class="w"> </span>-m<span class="w"> </span>sglang.launch_server<span class="w"> </span>...
+</code></pre></div>
+<p>You can configure the trace domains and range behavior directly, and pass any
+remaining arguments via <code>profiling.extra_nsys_args</code>. Explicit extra arguments
+are appended after the generated options and can therefore override an Nsight
+option when needed.</p>
+<p>For an Ubuntu image without the Nsight CLI, set:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">setup_script</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">install-nsys-cli.sh</span>
+</code></pre></div>
+<p>The bundled setup script installs the current <code>nsight-systems-cli</code> package on
+both x86_64 and Arm64 containers.</p>
+<h2 id="example-configurations">Example Configurations<a class="headerlink" href="#example-configurations" title="Permanent link">&para;</a></h2>
+<h3 id="torch-profiler-recommended-for-python-analysis">Torch Profiler (Recommended for Python analysis)<a class="headerlink" href="#torch-profiler-recommended-for-python-analysis" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nt">schema</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">"profiling-torch"</span>
+
+<span class="nt">model</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">"deepseek-r1"</span>
+<span class="w">  </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="s">"latest"</span>
+<span class="w">  </span><span class="nt">precision</span><span class="p">:</span><span class="w"> </span><span class="s">"fp8"</span>
+
+<span class="nt">resources</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">gpu_type</span><span class="p">:</span><span class="w"> </span><span class="s">"gb200"</span>
+<span class="w">  </span><span class="nt">gpus_per_node</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+
+<span class="nt">profiling</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"torch"</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">start_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">    </span><span class="nt">stop_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">start_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">    </span><span class="nt">stop_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+
+<span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">    </span><span class="nt">workers</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">kv-cache-dtype</span><span class="p">:</span><span class="w"> </span><span class="s">"fp8_e4m3"</span>
+<span class="w">      </span><span class="nt">tensor-parallel-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">    </span><span class="nt">workers</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">kv-cache-dtype</span><span class="p">:</span><span class="w"> </span><span class="s">"fp8_e4m3"</span>
+<span class="w">      </span><span class="nt">tensor-parallel-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+</code></pre></div>
+<h3 id="nsight-systems-recommended-for-gpu-kernel-analysis">Nsight Systems (Recommended for GPU kernel analysis)<a class="headerlink" href="#nsight-systems-recommended-for-gpu-kernel-analysis" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nt">profiling</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"nsys"</span>
+<span class="w">  </span><span class="nt">nsys_trace</span><span class="p">:</span><span class="w"> </span><span class="s">"cuda,nvtx"</span>
+<span class="w">  </span><span class="nt">trace_fork_before_exec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">  </span><span class="nt">capture_range_end</span><span class="p">:</span><span class="w"> </span><span class="s">"stop"</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">start_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<span class="w">    </span><span class="nt">stop_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
+<span class="w">    </span><span class="nt">capture_scope</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">all</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">start_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<span class="w">    </span><span class="nt">stop_step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
+<span class="w">    </span><span class="nt">capture_scope</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">all</span>
+</code></pre></div>
+<h2 id="output-files">Output Files<a class="headerlink" href="#output-files" title="Permanent link">&para;</a></h2>
+<p>After profiling completes, find results in the job's log directory:</p>
+<p>Torch profiler traces example:</p>
+<div class="highlight"><pre><span></span><code>logs/{job_id}_{workers}_{timestamp}/
+└── profiles/
+    ├── prefill/
+    │   └── *.json
+    └── decode/
+        └── *.json
+</code></pre></div>
+<p>Nsight Systems (nsys) reports example:</p>
+<div class="highlight"><pre><span></span><code>logs/{job_id}_{workers}_{timestamp}/
+├── profile_all.out         # Unified profiling script output
+└── profiles/
+    ├── prefill/            # Nsys reports (if type: nsys)
+    │   └── *.nsys-rep
+    └── decode/
+        └── *.nsys-rep
+</code></pre></div>
+<h3 id="viewing-results">Viewing Results<a class="headerlink" href="#viewing-results" title="Permanent link">&para;</a></h3>
+<p><strong>Torch Profiler traces:</strong></p>
+<ul>
+<li>Open in Chrome: <code>chrome://tracing</code></li>
+<li>Or use TensorBoard: <code>tensorboard --logdir=logs/.../profiles/</code></li>
+</ul>
+<p><strong>Nsight Systems reports:</strong></p>
+<ul>
+<li>Open with NVIDIA Nsight Systems GUI</li>
+<li>Or CLI: <code>nsys stats logs/.../profiles/decode/&lt;name&gt;.nsys-rep</code></li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<h3 id="validation-errors-about-profiling-sections">Validation errors about profiling sections<a class="headerlink" href="#validation-errors-about-profiling-sections" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Disaggregated mode requires both <code>profiling.prefill</code> and <code>profiling.decode</code> to be set.</li>
+<li>Aggregated mode requires <code>profiling.aggregated</code> to be set (and <code>profiling.prefill</code>/<code>profiling.decode</code> must not be set).</li>
+</ul>
+<h3 id="empty-profile-output">Empty profile output<a class="headerlink" href="#empty-profile-output" title="Permanent link">&para;</a></h3>
+<p>Ensure the benchmark workload is generating requests during the profiling window.</p>
+<h3 id="profile-too-shortlong">Profile too short/long<a class="headerlink" href="#profile-too-shortlong" title="Permanent link">&para;</a></h3>
+<p>Adjust <code>start_step</code> and <code>stop_step</code> to capture the desired range. A typical profiling run uses 30-100 steps.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2624 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/mooncake-kv-store/">
+      
+      
+        <link rel="prev" href="../vllm-router/">
+      
+      
+        <link rel="next" href="../services/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Mooncake KV Store - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#mooncake-kv-store" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Mooncake KV Store
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../accuracy/" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#per-process-vllm-device-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-process vLLM device selection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start-sglang" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start (SGLang)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start-vllm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start (vLLM)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-srtslurm-owns-vs-what-you-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What srtslurm Owns vs What You Set
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration Reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sglang" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SGLang
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vllm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vLLM
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#standalone-store-services" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Standalone Store Services
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#master-metrics-endpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Master Metrics Endpoint
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-configurations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Configurations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common Configurations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rdma-infiniband" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RDMA / InfiniBand
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TCP
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-master-container" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom Master Container
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#master-fails-to-start-within-120s" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Master fails to start within 120s
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workers-connect-but-transfers-stall" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workers connect but transfers stall
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#either-mooncake_master-or-mooncake_client-is-not-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "Either MOONCAKE_MASTER or MOONCAKE_CLIENT is not set"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validationerror-a-mooncake-master-service-is-configured-but-neither" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "ValidationError: a mooncake-master service is configured but neither..."
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#per-process-vllm-device-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-process vLLM device selection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start-sglang" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start (SGLang)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start-vllm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start (vLLM)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-srtslurm-owns-vs-what-you-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What srtslurm Owns vs What You Set
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration Reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sglang" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SGLang
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vllm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vLLM
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#standalone-store-services" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Standalone Store Services
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#master-metrics-endpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Master Metrics Endpoint
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-configurations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Configurations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common Configurations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rdma-infiniband" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RDMA / InfiniBand
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TCP
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-master-container" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom Master Container
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#master-fails-to-start-within-120s" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Master fails to start within 120s
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workers-connect-but-transfers-stall" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workers connect but transfers stall
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#either-mooncake_master-or-mooncake_client-is-not-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "Either MOONCAKE_MASTER or MOONCAKE_CLIENT is not set"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validationerror-a-mooncake-master-service-is-configured-but-neither" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "ValidationError: a mooncake-master service is configured but neither..."
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/mooncake-kv-store.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="mooncake-kv-store">Mooncake KV Store<a class="headerlink" href="#mooncake-kv-store" title="Permanent link">&para;</a></h1>
+<h2 id="per-process-vllm-device-selection">Per-process vLLM device selection<a class="headerlink" href="#per-process-vllm-device-selection" title="Permanent link">&para;</a></h2>
+<p>For nodes with a known physical-GPU-to-HCA mapping, opt in through the v2 <code>mooncake-master</code> service options:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">options</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">device_names_by_gpu</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">mlx5_0</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">mlx5_1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">mlx5_2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">mlx5_3</span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="nt">store_config</span><span class="p">:</span>
+<span class="w">        </span><span class="nt">metadata_server</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">P2PHANDSHAKE</span>
+<span class="w">        </span><span class="nt">global_segment_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">150GB</span>
+<span class="w">        </span><span class="nt">local_buffer_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4GB</span>
+<span class="w">        </span><span class="nt">protocol</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+</code></pre></div>
+<p>The same fields are supported under <code>engine.mooncake_kv_store</code> (or legacy <code>backend.mooncake_kv_store</code>), but do not combine that form with a declared <code>mooncake-master</code> service. <code>srtctl migrate</code> moves the legacy mapping into the service's <code>options.device_names_by_gpu</code> without changing its meaning.</p>
+<p>This mapping is indexed by <strong>physical GPU ID on each node</strong>, not by the CUDA ordinal inside a container. A process on GPU 2 receives <code>device_name: mlx5_2</code>; two TP2 processes on GPUs <code>[0,1]</code> and <code>[2,3]</code> receive disjoint device subsets. Only the configs needed by the allocated processes are generated in <code>/logs</code>, and each worker receives its own <code>MOONCAKE_CONFIG_PATH</code>. Other store settings, including segment capacity and the managed master address, are preserved. When the map is nonempty, it overrides <code>store_config.device_name</code> in each process-local JSON; the original shared configuration is not mutated. The map must cover every physical GPU on the node; repeated HCA names are allowed for machines where multiple GPUs share an HCA. Without the option, or with an empty list, the existing shared JSON behavior is unchanged. Config loading (including dry-run) rejects wrong-length maps and entries that are empty, contain whitespace, or contain a comma, before allocating nodes.</p>
+<p>This is <strong>process-local</strong>, not nested-rank-local: all TP ranks spawned inside one process still inherit its subset. A one-HCA-per-nested-rank policy requires separate connector support. This option does not patch vLLM, set private vLLM environment variables, or change store capacity. Use homogeneous mappings across nodes, and verify device locality on the target cluster. Restricting a process to its assigned HCAs can avoid unnecessary RDMA registration fanout; performance equivalence to other HCA policies must be measured, not assumed.</p>
+<p>First-class support for <a href="https://github.com/kvcache-ai/Mooncake">Mooncake</a> as the KV transfer backend for prefill-decode disaggregation. A <code>mooncake-master</code> entry under <code>services:</code> in an SGLang or vLLM recipe makes srtslurm launch and configure the mooncake master automatically and wire up worker env vars so peer-to-peer transfers work across multiple nodes.</p>
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#overview">Overview</a></li>
+<li><a href="#quick-start-sglang">Quick Start (SGLang)</a></li>
+<li><a href="#quick-start-vllm">Quick Start (vLLM)</a></li>
+<li><a href="#what-srtslurm-owns-vs-what-you-set">What srtslurm Owns vs What You Set</a></li>
+<li><a href="#configuration-reference">Configuration Reference</a></li>
+<li><a href="#standalone-store-services">Standalone Store Services</a></li>
+<li><a href="#master-metrics-endpoint">Master Metrics Endpoint</a></li>
+<li><a href="#validation">Validation</a></li>
+<li><a href="#common-configurations">Common Configurations</a></li>
+<li><a href="#rdma--infiniband">RDMA / InfiniBand</a></li>
+<li><a href="#tcp">TCP</a></li>
+<li><a href="#custom-master-container">Custom Master Container</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+</ul>
+<hr />
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>SGLang supports several KV transfer backends for prefill-decode disaggregation: <code>mooncake</code>, <code>nixl</code>, <code>ascend</code>, <code>mori</code>, and <code>fake</code>. Mooncake is the default and uses RDMA/TCP for high-throughput transfers backed by a central master process.</p>
+<p>Without first-class support, running mooncake with srtslurm meant:</p>
+<ol>
+<li>Launching <code>mooncake_master</code> somewhere yourself (no integration with the SLURM job)</li>
+<li>Setting <code>MOONCAKE_MASTER</code>, <code>MOONCAKE_PROTOCOL</code>, <code>MOONCAKE_DEVICE</code>, etc. as env vars on every prefill and decode worker manually</li>
+<li>Resolving each worker's own IP for <code>MOONCAKE_LOCAL_HOSTNAME</code> so multi-node transfers don't fall back to <code>localhost</code></li>
+<li>Adding <code>disaggregation-transfer-backend: mooncake</code> to the prefill and decode <code>args</code></li>
+</ol>
+<p>The <code>mooncake-master</code> service automates 1 and the srtslurm-owned parts of 2 and 3. The Mooncake tuning env (<code>MOONCAKE_PROTOCOL</code>, <code>MOONCAKE_DEVICE</code>, ...) goes in each role's <code>env</code>. You still set the SGLang flags in step 4 because they're SGLang's CLI surface, not srtslurm's, but srtslurm validates that you did.</p>
+<p>The master is a <a href="../services/#implicit-services">service</a> and the worker-side env lives on the roles. The v1 layout (<code>backend.mooncake_kv_store</code>) is documented in <a href="../legacy-v1/">legacy-v1.md</a>; <code>srtctl migrate</code> rewrites it.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mlx5_0</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">      </span><span class="nt">disaggregation-ib-device</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mlx5_0</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">      </span><span class="nt">disaggregation-ib-device</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvcr.io/nvidia/mooncake:latest</span><span class="w">   </span><span class="c1"># optional; default: job container</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w">                                     </span><span class="c1"># appended to mooncake_master</span>
+<span class="w">    </span><span class="c1"># options.store_config: ...                  # vLLM only; rendered into MOONCAKE_CONFIG_PATH</span>
+<span class="w">    </span><span class="c1"># placement.node: dedicated                  # share the reserved infra node with etcd/nats</span>
+<span class="w">    </span><span class="c1"># external: 10.0.0.5:8700                    # a master that already runs; nothing launches</span>
+</code></pre></div>
+<p><code>MOONCAKE_MASTER</code>, <code>MOONCAKE_TE_META_DATA_SERVER</code>, and <code>MOONCAKE_LOCAL_HOSTNAME</code> are stamped on every worker. A <code>MOONCAKE_LOCAL_HOSTNAME</code> in a role's <code>env</code> pins the NIC.</p>
+<h2 id="quick-start-sglang">Quick Start (SGLang)<a class="headerlink" href="#quick-start-sglang" title="Permanent link">&para;</a></h2>
+<p>Minimum config to run mooncake:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">      </span><span class="nt">disaggregation-ib-device</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">      </span><span class="nt">disaggregation-ib-device</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+</code></pre></div>
+<p>Even more minimal, just declare the master and let everything else default:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+</code></pre></div>
+<h2 id="quick-start-vllm">Quick Start (vLLM)<a class="headerlink" href="#quick-start-vllm" title="Permanent link">&para;</a></h2>
+<p>vLLM's <code>MooncakeStoreConnector</code> reads its configuration from a JSON file pointed to by <code>MOONCAKE_CONFIG_PATH</code> rather than directly from env vars, so the vLLM master entry takes an extra <code>options.store_config:</code> section that srtslurm renders into that JSON at job start:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">vllm</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w">                                  </span><span class="c1"># in-process Mooncake C++ knobs, per role</span>
+<span class="w">      </span><span class="nt">MC_ENABLE_DEST_DEVICE_AFFINITY</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">      </span><span class="nt">MC_STORE_CLIENT_METRIC</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">kv-transfer-config</span><span class="p">:</span><span class="w"> </span><span class="s">'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true}}]}}'</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MC_ENABLE_DEST_DEVICE_AFFINITY</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">      </span><span class="nt">MC_STORE_CLIENT_METRIC</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">kv-transfer-config</span><span class="p">:</span><span class="w"> </span><span class="s">'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true}}]}}'</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">options</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">store_config</span><span class="p">:</span><span class="w">                       </span><span class="c1"># rendered into the MOONCAKE_CONFIG_PATH JSON</span>
+<span class="w">        </span><span class="nt">metadata_server</span><span class="p">:</span><span class="w"> </span><span class="s">"P2PHANDSHAKE"</span>
+<span class="w">        </span><span class="nt">global_segment_size</span><span class="p">:</span><span class="w"> </span><span class="s">"100GB"</span>
+<span class="w">        </span><span class="nt">local_buffer_size</span><span class="p">:</span><span class="w"> </span><span class="s">"4GB"</span>
+<span class="w">        </span><span class="nt">protocol</span><span class="p">:</span><span class="w"> </span><span class="s">"rdma"</span>
+<span class="w">        </span><span class="nt">device_name</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+</code></pre></div>
+<p>Real-world production form: <code>MultiConnector</code> wraps <code>NixlConnector</code> (P2P transfer between prefill and decode) <strong>and</strong> <code>MooncakeStoreConnector</code> (shared store for cross-instance reuse), both with <code>kv_role: "kv_both"</code> so prefill and decode workers run identical connector stacks. srtslurm's validator accepts <code>MooncakeStoreConnector</code> standalone or wrapped in <code>MultiConnector</code>.</p>
+<p>srtslurm stamps <code>MOONCAKE_MASTER</code>, <code>MOONCAKE_TE_META_DATA_SERVER</code>, <code>MOONCAKE_LOCAL_HOSTNAME</code>, and <code>MOONCAKE_CONFIG_PATH</code> on every worker; you supply the rest. <code>master_server_address</code> in <code>store_config</code> is also auto-filled from the infra node IP and ignored if set by hand.</p>
+<p>The role <code>env:</code> maps are injected on the vLLM workers (not on the standalone <code>mooncake_master</code> daemon; the master gets the service entry's own <code>env</code>). Use them for in-process Mooncake C++ knobs like <code>MC_ENABLE_DEST_DEVICE_AFFINITY</code>, <code>MC_STORE_CLIENT_METRIC</code>, <code>MC_TE_METRIC</code>.</p>
+<h2 id="what-srtslurm-owns-vs-what-you-set">What srtslurm Owns vs What You Set<a class="headerlink" href="#what-srtslurm-owns-vs-what-you-set" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Owner</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Launching <code>mooncake_master</code></td>
+<td>srtslurm</td>
+<td>The <code>mooncake-master</code> service: runs on the infra node (same node as etcd/nats; <code>placement.node: dedicated</code> shares their reserved node) before workers, gated on RPC <code>8700</code>, HTTP metadata <code>8701</code>, and admin HTTP <code>8702</code>. Its log is <code>service_mooncake-master.out</code>.</td>
+</tr>
+<tr>
+<td><code>MOONCAKE_MASTER</code> env var on workers</td>
+<td>srtslurm</td>
+<td>Always computed as <code>&lt;infra_node_ip&gt;:8700</code>. User values in role <code>env</code> are overridden.</td>
+</tr>
+<tr>
+<td><code>MOONCAKE_TE_META_DATA_SERVER</code> env var</td>
+<td>srtslurm</td>
+<td>Always computed as <code>http://&lt;infra_node_ip&gt;:8701/metadata</code>.</td>
+</tr>
+<tr>
+<td><code>MOONCAKE_LOCAL_HOSTNAME</code> env var</td>
+<td>srtslurm</td>
+<td>Auto-resolved per-worker via <code>runtime.network_interface</code>. User can override in role <code>env</code> for custom NICs.</td>
+</tr>
+<tr>
+<td><code>MOONCAKE_CONFIG_PATH</code> (vLLM only)</td>
+<td>srtslurm</td>
+<td>Always points to the JSON file srtslurm renders from <code>options.store_config:</code>. Mounted under <code>/logs</code> in every worker.</td>
+</tr>
+<tr>
+<td><code>master_server_address</code> in <code>store_config</code> (vLLM)</td>
+<td>srtslurm</td>
+<td>Always overridden with <code>&lt;infra_node_ip&gt;:8700</code>. User values are ignored.</td>
+</tr>
+<tr>
+<td><code>MOONCAKE_PROTOCOL</code>, <code>MOONCAKE_DEVICE</code>, etc.</td>
+<td>User</td>
+<td>Set in <code>roles.prefill.env</code> and <code>roles.decode.env</code>.</td>
+</tr>
+<tr>
+<td><code>disaggregation-transfer-backend: mooncake</code></td>
+<td>User</td>
+<td>(SGLang only) Set in <code>roles.prefill.args</code> and <code>roles.decode.args</code>. srtslurm validates this is present.</td>
+</tr>
+<tr>
+<td><code>disaggregation-ib-device</code></td>
+<td>User</td>
+<td>(SGLang only) Set in <code>roles.prefill.args</code> and <code>roles.decode.args</code>. Format: <code>"mlx5_0,mlx5_1"</code> or JSON map.</td>
+</tr>
+<tr>
+<td><code>kv-transfer-config</code></td>
+<td>User</td>
+<td>(vLLM only) Set in <code>roles.prefill.args</code> and <code>roles.decode.args</code> to wire vLLM's <code>MooncakeStoreConnector</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="configuration-reference">Configuration Reference<a class="headerlink" href="#configuration-reference" title="Permanent link">&para;</a></h2>
+<h3 id="sglang">SGLang<a class="headerlink" href="#sglang" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w">                                        </span><span class="c1"># optional, per role</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mlx5_0</span>
+<span class="w">      </span><span class="nt">MOONCAKE_TE_META_DATA_SERVER</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">P2PHANDSHAKE</span>
+<span class="w">      </span><span class="c1"># SGLang-specific staging buffer knobs:</span>
+<span class="w">      </span><span class="nt">SGLANG_DISAGG_STAGING_BUFFER</span><span class="p">:</span><span class="w"> </span><span class="s">"true"</span>
+<span class="w">      </span><span class="nt">SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB</span><span class="p">:</span><span class="w"> </span><span class="s">"64"</span>
+<span class="w">      </span><span class="nt">SGLANG_DISAGG_STAGING_POOL_SIZE_MB</span><span class="p">:</span><span class="w"> </span><span class="s">"4096"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mlx5_0</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvcr.io/nvidia/mooncake:latest</span><span class="w">  </span><span class="c1"># optional, default: job container</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w">                                    </span><span class="c1"># optional, appended to mooncake_master</span>
+</code></pre></div>
+<h3 id="vllm">vLLM<a class="headerlink" href="#vllm" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">vllm</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w">                                 </span><span class="c1"># optional, in-process Mooncake C++ knobs on the vLLM workers</span>
+<span class="w">      </span><span class="nt">MC_ENABLE_DEST_DEVICE_AFFINITY</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">      </span><span class="nt">MC_STORE_CLIENT_METRIC</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span><span class="w">        </span><span class="c1"># default 1 (enabled)</span>
+<span class="w">      </span><span class="nt">MC_TE_METRIC</span><span class="p">:</span><span class="w"> </span><span class="s">"0"</span><span class="w">                  </span><span class="c1"># default 0 (disabled)</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">kv-transfer-config</span><span class="p">:</span><span class="w"> </span><span class="s">'{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MC_ENABLE_DEST_DEVICE_AFFINITY</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">kv-transfer-config</span><span class="p">:</span><span class="w"> </span><span class="s">'{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">...</span><span class="w">                       </span><span class="c1"># optional, default: job container</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w">                             </span><span class="c1"># optional, appended to mooncake_master</span>
+<span class="w">    </span><span class="nt">options</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">store_config</span><span class="p">:</span><span class="w">                      </span><span class="c1"># required for vLLM; rendered into MOONCAKE_CONFIG_PATH JSON</span>
+<span class="w">        </span><span class="nt">metadata_server</span><span class="p">:</span><span class="w"> </span><span class="s">"P2PHANDSHAKE"</span>
+<span class="w">        </span><span class="nt">global_segment_size</span><span class="p">:</span><span class="w"> </span><span class="s">"100GB"</span>
+<span class="w">        </span><span class="nt">local_buffer_size</span><span class="p">:</span><span class="w"> </span><span class="s">"4GB"</span>
+<span class="w">        </span><span class="nt">protocol</span><span class="p">:</span><span class="w"> </span><span class="s">"rdma"</span>
+<span class="w">        </span><span class="nt">device_name</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+</code></pre></div>
+<h3 id="fields">Fields<a class="headerlink" href="#fields" title="Permanent link">&para;</a></h3>
+<p>On the <code>mooncake-master</code> service entry (the generic service fields such as <code>placement</code>, <code>external</code>, and <code>readiness</code> are in <a href="../services/#configuration-reference">Services</a>):</p>
+<ul>
+<li><strong><code>container</code></strong> (<code>str</code>, optional): Container image used for the <code>mooncake_master</code> srun. Defaults to the job container if unset. Useful when mooncake needs a different runtime than your worker container.</li>
+<li><strong><code>args</code></strong> (<code>list[str]</code>, optional): Extra arguments appended to the standalone <code>mooncake_master</code> command. Use this for flags supported only by the Mooncake version in the selected container. Do not use it to override the RPC, HTTP metadata, or metrics ports because srtslurm configures worker endpoints and readiness checks from its own port values.</li>
+<li><strong><code>options.store_config</code></strong> (vLLM only, <code>dict[str, Any]</code>): Pass-through dict rendered as JSON into the file pointed to by <code>MOONCAKE_CONFIG_PATH</code>. Keys map 1:1 to vLLM's <code>MooncakeStoreConfig</code> dataclass, a mix of <code>str</code> (e.g. <code>protocol</code>), <code>int</code> (e.g. <code>port</code>), and human-readable size strings (e.g. <code>"4GB"</code>). srtslurm does not default these fields; values like <code>global_segment_size</code>, <code>protocol</code>, and <code>device_name</code> are hardware-specific and silently using a srtslurm-picked default is worse than failing loudly, so set them explicitly. <code>master_server_address</code> is auto-filled and any user value is ignored.</li>
+</ul>
+<p>On the roles:</p>
+<ul>
+<li><strong><code>roles.&lt;role&gt;.env</code></strong> (<code>dict[str, str]</code>, optional): Env vars injected on that role's workers.</li>
+<li>For <strong>SGLang</strong>, keys map directly to mooncake's environment variable names. See the <a href="https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/environ.py">SGLang server_args.py</a> and <a href="https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py">mooncake_store.py</a> for the full list.</li>
+<li>For <strong>vLLM</strong>, this is for in-process Mooncake C++ knobs (<code>MC_*</code>) read by the transfer engine / store client. vLLM's connector itself reads configuration from <code>MOONCAKE_CONFIG_PATH</code> (the JSON rendered from <code>options.store_config:</code>), not from these env vars.</li>
+<li>Setting <code>MOONCAKE_MASTER</code>, <code>MOONCAKE_TE_META_DATA_SERVER</code>, or <code>MOONCAKE_CONFIG_PATH</code> here is a no-op (srtslurm always wins).</li>
+</ul>
+<p>Mooncake <code>v0.3.11+</code> adds NoF SSD-tier eviction flags. Enable them only in recipes using a compatible Mooncake image:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--nof_eviction_high_watermark_ratio=0.9</span>
+</code></pre></div>
+<p>Older Mooncake versions do not recognize this option, so leave it out of those recipes. The existing <code>--eviction_high_watermark_ratio</code> controls memory eviction; the <code>--nof_...</code> option independently controls the NVMe-over-Fabrics SSD tier.</p>
+<h2 id="standalone-store-services">Standalone Store Services<a class="headerlink" href="#standalone-store-services" title="Permanent link">&para;</a></h2>
+<p>Mooncake can run the Store as a standalone process per node, so workers use embedded clients with <code>MOONCAKE_GLOBAL_SEGMENT_SIZE=0</code> while dedicated stores own the DRAM segments. In srtslurm that is a <code>services:</code> entry with <code>type: mooncake-store</code>: it starts after the master is healthy and before workers, gets <code>MOONCAKE_MASTER</code>, <code>MOONCAKE_TE_META_DATA_SERVER</code>, and <code>MOONCAKE_LOCAL_HOSTNAME</code> from the runtime, and defaults its container to the <code>mooncake-master</code> entry's <code>container</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">store</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-store</span>
+<span class="w">    </span><span class="nt">placement</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">node</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">workers</span><span class="w">          </span><span class="c1"># or prefill / decode for per-role segment sizes</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--port</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"8800"</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100gb</span>
+<span class="w">    </span><span class="nt">readiness</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8800</span>
+</code></pre></div>
+<p>The worker side stays in the roles' <code>env</code> (<code>roles.prefill.env</code> / <code>roles.decode.env</code>). See <a href="../services/#example-standalone-mooncake-stores">Services</a> for the full shape, per-role entries, and the co-location rules.</p>
+<h2 id="master-metrics-endpoint">Master Metrics Endpoint<a class="headerlink" href="#master-metrics-endpoint" title="Permanent link">&para;</a></h2>
+<p>The <code>mooncake_master</code> admin HTTP server is always exposed on port <code>8702</code> on the infra node and starts before workers do (srtslurm waits for it). It serves:</p>
+<ul>
+<li><code>GET /metrics</code>: Prometheus text format (master + transfer-engine counters)</li>
+<li><code>GET /metrics/summary</code>: human-readable summary</li>
+<li><code>GET /health</code>, <code>/role</code>, <code>/ha_status</code>, <code>/leader</code></li>
+<li><code>GET /query_key</code>: used by Dynamo's KV router shared-cache path</li>
+</ul>
+<p>To scrape from outside the cluster, point your collector at <code>http://&lt;infra_node_ip&gt;:8702/metrics</code>. The infra node IP is logged at job start.</p>
+<h2 id="validation">Validation<a class="headerlink" href="#validation" title="Permanent link">&para;</a></h2>
+<p>srtslurm rejects disaggregated recipes that declare a <code>mooncake-master</code> service without a matching <code>disaggregation-transfer-backend: mooncake</code> in <code>roles.prefill.args</code> or <code>roles.decode.args</code>. This catches the common mistake where the master process launches but workers fall back to default transport:</p>
+<div class="highlight"><pre><span></span><code>ValidationError: a mooncake-master service is configured but neither roles.prefill.args
+nor roles.decode.args has 'disaggregation-transfer-backend: mooncake'.
+Add it to both roles (and 'disaggregation-ib-device') so workers actually
+use the mooncake master srtslurm launches for you.
+</code></pre></div>
+<p>Both dash and underscore forms (<code>disaggregation-transfer-backend</code>, <code>disaggregation_transfer_backend</code>) are accepted. The vLLM check looks for a Mooncake connector in each role's <code>kv-transfer-config</code>.</p>
+<h2 id="common-configurations">Common Configurations<a class="headerlink" href="#common-configurations" title="Permanent link">&para;</a></h2>
+<h3 id="rdma-infiniband">RDMA / InfiniBand<a class="headerlink" href="#rdma-infiniband" title="Permanent link">&para;</a></h3>
+<p>The most common production setup:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">      </span><span class="nt">disaggregation-ib-device</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">      </span><span class="nt">disaggregation-ib-device</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+</code></pre></div>
+<p>For a per-GPU IB device map, pass JSON to <code>disaggregation-ib-device</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-ib-device</span><span class="p">:</span><span class="w"> </span><span class="s">'{"0":</span><span class="nv"> </span><span class="s">"mlx5_0",</span><span class="nv"> </span><span class="s">"1":</span><span class="nv"> </span><span class="s">"mlx5_1",</span><span class="nv"> </span><span class="s">"2":</span><span class="nv"> </span><span class="s">"mlx5_2",</span><span class="nv"> </span><span class="s">"3":</span><span class="nv"> </span><span class="s">"mlx5_3"}'</span>
+</code></pre></div>
+<h3 id="tcp">TCP<a class="headerlink" href="#tcp" title="Permanent link">&para;</a></h3>
+<p>For development / clusters without RDMA:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tcp</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tcp</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"4gb"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+</code></pre></div>
+<h3 id="custom-master-container">Custom Master Container<a class="headerlink" href="#custom-master-container" title="Permanent link">&para;</a></h3>
+<p>Pin a specific mooncake build for the master process:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvcr.io/nvidia/mooncake:24.10</span>
+</code></pre></div>
+<p>The workers continue to use the job's main container; only the master process uses the override.</p>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<h3 id="master-fails-to-start-within-120s">Master fails to start within 120s<a class="headerlink" href="#master-fails-to-start-within-120s" title="Permanent link">&para;</a></h3>
+<p>srtslurm waits up to 120 seconds for <code>mooncake_master</code> to bind on port 8700. If it times out, check:</p>
+<ul>
+<li><code>service_mooncake-master.out</code> in the run's log directory, which usually shows a binary-not-found or RDMA setup error</li>
+<li>Whether <code>mooncake_master</code> is on <code>$PATH</code> inside the master container. If you're using a custom container, verify it has the mooncake binaries installed.</li>
+<li>Whether port 8700 is already in use on the infra node from a previous failed run (rare, but can happen if cleanup was interrupted)</li>
+</ul>
+<h3 id="workers-connect-but-transfers-stall">Workers connect but transfers stall<a class="headerlink" href="#workers-connect-but-transfers-stall" title="Permanent link">&para;</a></h3>
+<p>Almost always a <code>MOONCAKE_LOCAL_HOSTNAME</code> resolution issue. srtslurm auto-resolves it via <code>runtime.network_interface</code>. Verify in the worker log's <code>Env:</code> line that each worker has its own node's IP, not <code>localhost</code> or another worker's IP.</p>
+<p>If your cluster uses a separate RDMA NIC from the primary interface, override it with the right IP. A <code>MOONCAKE_LOCAL_HOSTNAME</code> in a role's <code>env</code> applies to every worker of that role, so for true per-worker overrides you'd need to set <code>runtime.network_interface</code> cluster-wide via <code>srtslurm.yaml</code>.</p>
+<h3 id="either-mooncake_master-or-mooncake_client-is-not-set">"Either MOONCAKE_MASTER or MOONCAKE_CLIENT is not set"<a class="headerlink" href="#either-mooncake_master-or-mooncake_client-is-not-set" title="Permanent link">&para;</a></h3>
+<p>This error from SGLang means the worker started before <code>MOONCAKE_MASTER</code> was injected. Check that a <code>mooncake-master</code> service is declared in the recipe; the env var is only auto-set when that entry exists. Run <code>srtctl dry-run -f recipe.yaml</code> and look for <code>mooncake</code> in the env table.</p>
+<h3 id="validationerror-a-mooncake-master-service-is-configured-but-neither">"ValidationError: a mooncake-master service is configured but neither..."<a class="headerlink" href="#validationerror-a-mooncake-master-service-is-configured-but-neither" title="Permanent link">&para;</a></h3>
+<p>You declared a <code>mooncake-master</code> service but forgot <code>disaggregation-transfer-backend: mooncake</code> in <code>roles.prefill.args</code> and <code>roles.decode.args</code>. Add it to both roles; see <a href="#validation">Validation</a> above.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2665 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/accuracy/">
+      
+      
+        <link rel="prev" href="../miles/">
+      
+      
+        <link rel="next" href="../profiling/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Accuracy Benchmarks - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#accuracy-benchmarks" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Accuracy Benchmarks
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-scoring-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How Scoring Works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#aime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AIME
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="AIME">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#recipe-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe shape
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reasoning-mode-env-vars-server-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reasoning-mode env vars (server side)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-script-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the script does
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-answer-extraction-regex-not-currently-applied" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom answer-extraction regex (not currently applied)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mmlu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MMLU
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gpqa" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GPQA
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#longbench-v2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LongBench-V2
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="LongBench-V2">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#available-categories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Available Categories
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-full-evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: Full Evaluation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-quick-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: Quick Validation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#important-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Important Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lm-eval-inferencex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        lm-eval (InferenceX)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="lm-eval (InferenceX)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#eval_only-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        EVAL_ONLY mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concurrency
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#intricacies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Intricacies
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-scoring-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How Scoring Works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#aime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AIME
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="AIME">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#recipe-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe shape
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reasoning-mode-env-vars-server-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reasoning-mode env vars (server side)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-script-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the script does
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-answer-extraction-regex-not-currently-applied" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom answer-extraction regex (not currently applied)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mmlu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MMLU
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gpqa" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GPQA
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#longbench-v2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LongBench-V2
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="LongBench-V2">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#available-categories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Available Categories
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-full-evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: Full Evaluation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-quick-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: Quick Validation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#important-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Important Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lm-eval-inferencex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        lm-eval (InferenceX)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="lm-eval (InferenceX)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#eval_only-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        EVAL_ONLY mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concurrency
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#intricacies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Intricacies
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/accuracy.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="accuracy-benchmarks">Accuracy Benchmarks<a class="headerlink" href="#accuracy-benchmarks" title="Permanent link">&para;</a></h1>
+<p>In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include <code>mmlu</code>, <code>gpqa</code>, <code>longbenchv2</code>, <code>lm-eval</code>, and AIME (via the script under <code>configs/aime/</code>).</p>
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#how-scoring-works">How Scoring Works</a></li>
+<li><a href="#aime">AIME</a></li>
+<li><a href="#mmlu">MMLU</a></li>
+<li><a href="#gpqa">GPQA</a></li>
+<li><a href="#longbench-v2">LongBench-V2</a></li>
+<li><a href="#configuration">Configuration</a></li>
+<li><a href="#parameters">Parameters</a></li>
+<li><a href="#available-categories">Available Categories</a></li>
+<li><a href="#example-full-evaluation">Example: Full Evaluation</a></li>
+<li><a href="#example-quick-validation">Example: Quick Validation</a></li>
+<li><a href="#output">Output</a></li>
+<li><a href="#important-notes">Important Notes</a></li>
+<li><a href="#lm-eval-inferencex">lm-eval (InferenceX)</a></li>
+</ul>
+<hr />
+<p><strong>Note</strong>: The <code>context-length</code> argument in the config yaml needs to be larger than the <code>max_tokens</code> argument of accuracy benchmark.</p>
+<h2 id="how-scoring-works">How Scoring Works<a class="headerlink" href="#how-scoring-works" title="Permanent link">&para;</a></h2>
+<p>Accuracy benchmarks send a fixed dataset through the running OpenAI-compatible endpoint and compare each model
+response against the benchmark's expected answer. For AIME, NeMo Skills prompts the model to put the final answer in
+<code>\boxed{...}</code>, extracts that final boxed answer, and grades it with its math evaluator. There is no LLM judge in the
+default AIME path; the score is computed from exact/symbolic correctness.</p>
+<p>When <code>repeat</code> is greater than 1, the benchmark runs multiple sampled generations per problem. NeMo Skills summarizes
+metrics across those generations, which is useful for comparing pass@1-style deterministic accuracy and sampled
+accuracy on the same serving setup.</p>
+<h2 id="aime">AIME<a class="headerlink" href="#aime" title="Permanent link">&para;</a></h2>
+<p>AIME runs in the official <strong>NeMo Skills container</strong> (<code>nvcr.io/nvidia/eval-factory/nemo-skills:26.03</code>),
+side-by-side with the model server. There is no first-class <code>type: aime</code> runner —
+the eval logic lives in <code>configs/aime/run.sh</code> and recipes wire it up via
+<code>type: custom</code>.</p>
+<h3 id="recipe-shape">Recipe shape<a class="headerlink" href="#recipe-shape" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">custom</span>
+<span class="w">  </span><span class="nt">container_image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nemo-skills</span><span class="w">    </span><span class="c1"># alias defined in srtslurm.yaml `containers:`</span>
+<span class="w">                                  </span><span class="c1"># or the full nvcr.io URI for Pyxis auto-pull</span>
+<span class="w">  </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">OPENAI_API_KEY</span><span class="p">:</span><span class="w"> </span><span class="s">"EMPTY"</span><span class="w">       </span><span class="c1"># ns/litellm requires it set; value is unused</span>
+<span class="w">    </span><span class="nt">HF_TOKEN</span><span class="p">:</span><span class="w"> </span><span class="s">"${HF_TOKEN}"</span><span class="w">       </span><span class="c1"># for gated HF datasets via ns prepare_data</span>
+<span class="w">    </span><span class="c1"># Optional knob overrides — defaults match the upstream reasoning-eval reference:</span>
+<span class="w">    </span><span class="c1"># MODEL: "dspro"           # must match served-model-name in the roles' args</span>
+<span class="w">    </span><span class="c1"># DATASET: "aime25"        # aime24 | aime25 | aime26</span>
+<span class="w">    </span><span class="c1"># REPEAT: "16"             # pass@k samples per problem</span>
+<span class="w">    </span><span class="c1"># MAX_TOKENS: "400000"     # generous ceiling for reasoning traces</span>
+<span class="w">    </span><span class="c1"># NUM_THREADS: "512"       # client-side concurrency</span>
+<span class="w">    </span><span class="c1"># TEMPERATURE: "1.0"</span>
+<span class="w">    </span><span class="c1"># TOP_P: "1.0"</span>
+<span class="w">    </span><span class="c1"># SEED: "42"               # --starting_seed for reproducibility</span>
+<span class="w">  </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">    </span><span class="no">bash /configs/aime/run.sh</span>
+</code></pre></div>
+<p>Set the eval container alias in <code>srtslurm.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">containers</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">nemo-skills</span><span class="p">:</span><span class="w"> </span><span class="s">"/shared/containers/nvidia+eval-factory+nemo-skills+26.03.sqsh"</span>
+</code></pre></div>
+<p>Pre-cache the squashfs with: <code>enroot import 'docker://nvcr.io#nvidia/eval-factory/nemo-skills:26.03'</code>.</p>
+<h3 id="reasoning-mode-env-vars-server-side">Reasoning-mode env vars (server side)<a class="headerlink" href="#reasoning-mode-env-vars-server-side" title="Permanent link">&para;</a></h3>
+<p>For reasoning-capable models (DeepSeek-V4-Pro thinking, GPT-OSS, etc.) — without
+these the model emits non-reasoning answers and AIME pass@k drops ~30 points
+below what the model can do.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">SGLANG_ENABLE_THINKING</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">      </span><span class="nt">SGLANG_REASONING_EFFORT</span><span class="p">:</span><span class="w"> </span><span class="s">"max"</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">SGLANG_ENABLE_THINKING</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">      </span><span class="nt">SGLANG_REASONING_EFFORT</span><span class="p">:</span><span class="w"> </span><span class="s">"max"</span>
+</code></pre></div>
+<h3 id="what-the-script-does">What the script does<a class="headerlink" href="#what-the-script-does" title="Permanent link">&para;</a></h3>
+<ol>
+<li><code>ns prepare_data $DATASET</code> — fetches the dataset into the NeMo Skills install.</li>
+<li><code>ns eval ...</code> against <code>http://localhost:8000/v1</code> (the in-job dynamo frontend),
+   pass@k=<code>$REPEAT</code>, with the upstream reasoning-eval reference's tuning
+   defaults. NeMo Skills' default <code>\boxed{}</code> extractor scores the generations.</li>
+</ol>
+<p>Outputs land at <code>/logs/accuracy/&lt;dataset&gt;/eval-results/&lt;dataset&gt;/metrics.json</code>
+with pass@1, pass@N, and majority@N.</p>
+<h3 id="custom-answer-extraction-regex-not-currently-applied">Custom answer-extraction regex (not currently applied)<a class="headerlink" href="#custom-answer-extraction-regex-not-currently-applied" title="Permanent link">&para;</a></h3>
+<p>The SGLang team's reasoning-eval reference suggests broadening the answer extractor with these two <code>ns eval</code> overrides:</p>
+<div class="highlight"><pre><span></span><code>++eval_config.extract_from_boxed=False
+++eval_config.extract_regex=(?:\boxed\{|\*\*Answer\*\*[^0-9\-]{0,30}|(?i:final answer)[^0-9\-]{0,30}|(?i:answer)\s*(?:is|=|:)[^0-9\-]{0,30})(-?\d+)
+</code></pre></div>
+<p><code>run.sh</code> does <strong>not</strong> pass them. <code>ns eval</code> forwards Hydra <code>++overrides</code> to parallel
+<code>python -m nemo_skills.inference.generate</code> subprocesses through nemo-run, which
+constructs the inner command line <strong>unquoted</strong> — bash strips backslashes from
+the regex before Python <code>re.compile</code> sees it, the regex becomes invalid, and
+every generate subprocess crashes on import. Verified on cluster runs that
+produced empty output dirs and a false "Benchmark completed successfully".</p>
+<p>If you need a broader extractor for your model, post-process the cached
+<code>output-rs&lt;seed&gt;.jsonl</code> files with a Python script (raw-string regex, no shell
+layers).</p>
+<h2 id="mmlu">MMLU<a class="headerlink" href="#mmlu" title="Permanent link">&para;</a></h2>
+<p>For MMLU dataset, the benchmark section in yaml file can be modified in the following way:
+<div class="highlight"><pre><span></span><code>benchmark:
+<span class="w">  </span>type:<span class="w"> </span><span class="s2">"mmlu"</span>
+<span class="w">  </span>num_examples:<span class="w"> </span><span class="m">200</span><span class="w"> </span><span class="c1"># Number of examples to run</span>
+<span class="w">  </span>max_tokens:<span class="w"> </span><span class="m">2048</span><span class="w"> </span><span class="c1"># Max number of output tokens</span>
+<span class="w">  </span>repeat:<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="c1"># Number of repetition</span>
+<span class="w">  </span>num_threads:<span class="w"> </span><span class="m">512</span><span class="w"> </span><span class="c1"># Number of parallel threads for running benchmark</span>
+</code></pre></div></p>
+<p>Then launch the script as usual:
+<div class="highlight"><pre><span></span><code>srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>config.yaml
+</code></pre></div></p>
+<p>After finishing benchmarking, the <code>benchmark.out</code> will contain the results of accuracy:
+<div class="highlight"><pre><span></span><code>====================
+Repeat: 8, mean: 0.812
+Scores: ['0.790', '0.820', '0.800', '0.820', '0.820', '0.790', '0.820', '0.840']
+====================
+Writing report to /tmp/mmlu_deepseek-ai_DeepSeek-R1.html
+{'other': np.float64(0.9), 'other:std': np.float64(0.30000000000000004), 'score:std': np.float64(0.36660605559646725), 'stem': np.float64(0.8095238095238095), 'stem:std': np.float64(0.392676726249301), 'humanities': np.float64(0.7428571428571429), 'humanities:std': np.float64(0.4370588154508102), 'social_sciences': np.float64(0.9583333333333334), 'social_sciences:std': np.float64(0.19982631347136331), 'score': np.float64(0.84)}
+Writing results to /tmp/mmlu_deepseek-ai_DeepSeek-R1.json
+Total latency: 465.618 s
+Score: 0.840
+Results saved to: /logs/accuracy/mmlu_deepseek-ai_DeepSeek-R1.json
+MMLU evaluation complete
+</code></pre></div></p>
+<h2 id="gpqa">GPQA<a class="headerlink" href="#gpqa" title="Permanent link">&para;</a></h2>
+<p>For GPQA dataset, the benchmark section in yaml file can be modified in the following way:
+<div class="highlight"><pre><span></span><code>benchmark:
+<span class="w">  </span>type:<span class="w"> </span><span class="s2">"gpqa"</span>
+<span class="w">  </span>num_examples:<span class="w"> </span><span class="m">198</span><span class="w"> </span><span class="c1"># Number of examples to run</span>
+<span class="w">  </span>max_tokens:<span class="w"> </span><span class="m">65536</span><span class="w"> </span><span class="c1"># We need a larger output token number for GPQA</span>
+<span class="w">  </span>repeat:<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="c1"># Number of repetition</span>
+<span class="w">  </span>num_threads:<span class="w"> </span><span class="m">128</span><span class="w"> </span><span class="c1"># Number of parallel threads for running benchmark</span>
+</code></pre></div>
+The <code>context-length</code> argument here should be set to a value larger than <code>max_tokens</code>.</p>
+<h2 id="longbench-v2">LongBench-V2<a class="headerlink" href="#longbench-v2" title="Permanent link">&para;</a></h2>
+<p>LongBench-V2 is a long-context evaluation benchmark that tests model performance on extended context tasks. It's particularly useful for validating models with large context windows (128K+ tokens).</p>
+<h3 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"longbenchv2"</span>
+<span class="w">  </span><span class="nt">max_context_length</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">128000</span><span class="w">  </span><span class="c1"># Maximum context length (default: 128000)</span>
+<span class="w">  </span><span class="nt">num_threads</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16</span><span class="w">             </span><span class="c1"># Concurrent evaluation threads (default: 16)</span>
+<span class="w">  </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16384</span><span class="w">           </span><span class="c1"># Maximum output tokens (default: 16384)</span>
+<span class="w">  </span><span class="nt">num_examples</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span><span class="w">           </span><span class="c1"># Number of examples to run (default: all)</span>
+<span class="w">  </span><span class="nt">categories</span><span class="p">:</span><span class="w">                 </span><span class="c1"># Task categories to evaluate (default: all)</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"single_doc_qa"</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"multi_doc_qa"</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"summarization"</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"few_shot_learning"</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"code_completion"</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"synthetic"</span>
+</code></pre></div>
+<h3 id="parameters">Parameters<a class="headerlink" href="#parameters" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_context_length</code></td>
+<td>int</td>
+<td>128000</td>
+<td>Maximum context length for evaluation. Should not exceed model's trained context window.</td>
+</tr>
+<tr>
+<td><code>num_threads</code></td>
+<td>int</td>
+<td>16</td>
+<td>Number of concurrent threads for parallel evaluation. Increase for faster throughput on high-capacity endpoints.</td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td>int</td>
+<td>16384</td>
+<td>Maximum tokens for model output. Must be less than <code>context-length</code> in the roles' <code>args</code>.</td>
+</tr>
+<tr>
+<td><code>num_examples</code></td>
+<td>int</td>
+<td>all</td>
+<td>Limit the number of examples to evaluate. Useful for quick validation runs.</td>
+</tr>
+<tr>
+<td><code>categories</code></td>
+<td>list</td>
+<td>all</td>
+<td>Specific task categories to run. Omit to run all categories.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="available-categories">Available Categories<a class="headerlink" href="#available-categories" title="Permanent link">&para;</a></h3>
+<p>LongBench-V2 includes the following task categories:</p>
+<ul>
+<li><strong>single_doc_qa</strong>: Single document question answering</li>
+<li><strong>multi_doc_qa</strong>: Multi-document question answering</li>
+<li><strong>summarization</strong>: Long document summarization</li>
+<li><strong>few_shot_learning</strong>: Few-shot learning with long context</li>
+<li><strong>code_completion</strong>: Long-context code completion</li>
+<li><strong>synthetic</strong>: Synthetic long-context tasks (needle-in-haystack, etc.)</li>
+</ul>
+<h3 id="example-full-evaluation">Example: Full Evaluation<a class="headerlink" href="#example-full-evaluation" title="Permanent link">&para;</a></h3>
+<p>Run complete LongBench-V2 evaluation with all categories:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">schema</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">"longbench-v2-eval"</span>
+
+<span class="nt">model</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">"deepseek-r1"</span>
+<span class="w">  </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="s">"latest"</span>
+<span class="w">  </span><span class="nt">precision</span><span class="p">:</span><span class="w"> </span><span class="s">"fp8"</span>
+
+<span class="nt">resources</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">gpu_type</span><span class="p">:</span><span class="w"> </span><span class="s">"gb200"</span>
+<span class="w">  </span><span class="nt">gpus_per_node</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+
+<span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">workers</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">context-length</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">131072</span><span class="w">  </span><span class="c1"># Must exceed max_tokens</span>
+<span class="w">      </span><span class="nt">tensor-parallel-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+<span class="w">    </span><span class="nt">workers</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">context-length</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">131072</span>
+<span class="w">      </span><span class="nt">tensor-parallel-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+
+<span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"longbenchv2"</span>
+<span class="w">  </span><span class="nt">max_context_length</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">128000</span>
+<span class="w">  </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16384</span>
+<span class="w">  </span><span class="nt">num_threads</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">32</span>
+</code></pre></div>
+<h3 id="example-quick-validation">Example: Quick Validation<a class="headerlink" href="#example-quick-validation" title="Permanent link">&para;</a></h3>
+<p>Run a quick subset for validation:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"longbenchv2"</span>
+<span class="w">  </span><span class="nt">num_examples</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span><span class="w">           </span><span class="c1"># Limit to 50 examples</span>
+<span class="w">  </span><span class="nt">num_threads</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+<span class="w">  </span><span class="nt">categories</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"single_doc_qa"</span><span class="w">        </span><span class="c1"># Only run single-doc QA</span>
+</code></pre></div>
+<h3 id="output">Output<a class="headerlink" href="#output" title="Permanent link">&para;</a></h3>
+<p>After completion, results are saved to the logs directory:</p>
+<div class="highlight"><pre><span></span><code>/logs/accuracy/longbenchv2_&lt;model_name&gt;.json
+</code></pre></div>
+<p>The output includes per-category scores and aggregate metrics:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"deepseek-ai/DeepSeek-R1"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"scores"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"single_doc_qa"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.82</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"multi_doc_qa"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.78</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"summarization"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.85</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"few_shot_learning"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.76</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"code_completion"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.81</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"synthetic"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.92</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">"overall_score"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.82</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"total_examples"</span><span class="p">:</span><span class="w"> </span><span class="mi">500</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"total_latency_s"</span><span class="p">:</span><span class="w"> </span><span class="mf">1842.5</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="important-notes">Important Notes<a class="headerlink" href="#important-notes" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Context Length</strong>: Ensure <code>context-length</code> in your roles' <code>args</code> exceeds <code>max_tokens</code> for the benchmark</li>
+<li><strong>Memory</strong>: Long-context evaluation requires significant GPU memory. Use appropriate <code>mem-fraction-static</code> settings</li>
+<li><strong>Throughput</strong>: Increase <code>num_threads</code> for faster evaluation, but monitor for OOM errors</li>
+<li><strong>Categories</strong>: Running specific categories is useful for targeted validation (e.g., just testing summarization capabilities)</li>
+</ol>
+<h2 id="lm-eval-inferencex">lm-eval (InferenceX)<a class="headerlink" href="#lm-eval-inferencex" title="Permanent link">&para;</a></h2>
+<p>The <code>lm-eval</code> benchmark runner integrates <a href="https://github.com/EleutherAI/lm-evaluation-harness">EleutherAI/lm-evaluation-harness</a> via InferenceX's <code>benchmark_lib.sh</code>. Unlike the built-in benchmarks above, this runner sources evaluation logic from an external InferenceX workspace mounted at <code>/infmax-workspace</code>.</p>
+<p>This is used by InferenceX CI to run evals such as GSM8K and GPQA against NVIDIA multi-node disaggregated deployments on GB200, GB300, B200, B300, H100, and H200. AMD MI355X multi-node evals are handled by InferenceX's upstreamed AMD Slurm path, not by this srt-slurm runner.</p>
+<p>In InferenceX CI, recipes normally keep their throughput benchmark configuration. <code>do_sweep.py</code> invokes the registered <code>lm-eval</code> runner as a post-step when <code>RUN_EVAL=true</code>, or as the only benchmark-like step when <code>EVAL_ONLY=true</code>. There is no separate <code>infmax-eval</code> benchmark type.</p>
+<h3 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
+<ol>
+<li><code>RuntimeContext</code> mounts the host path from <code>INFMAX_WORKSPACE</code> at <code>/infmax-workspace</code> inside the Slurm container.</li>
+<li><code>do_sweep.py</code> starts infrastructure, workers, and the frontend for the normal recipe topology.</li>
+<li>For <code>EVAL_ONLY=true</code>, <code>do_sweep.py</code> skips the throughput benchmark stage and runs <code>_run_post_eval()</code> directly after frontend startup.</li>
+<li><code>_run_post_eval()</code> waits for the OpenAI-compatible endpoint on port 8000 and, in eval-only mode, performs the full <code>wait_for_model()</code> health check for the configured prefill/decode or aggregated topology.</li>
+<li><code>_run_post_eval()</code> launches the registered <code>lm-eval</code> runner on the head node and passes through InferenceX metadata such as framework, precision, sequence length, prefill/decode topology, and eval concurrency.</li>
+<li>The runner script (<code>benchmarks/scripts/lm-eval/bench.sh</code>) uses <code>MODEL_NAME</code> from <code>do_sweep.py</code>, or auto-discovers the served model from <code>/v1/models</code> as a fallback.</li>
+<li>The runner sources <code>/infmax-workspace/benchmarks/benchmark_lib.sh</code>, runs <code>run_eval --framework lm-eval</code>, and calls <code>append_lm_eval_summary</code>.</li>
+<li>Eval artifacts are copied to <code>/logs/eval_results/</code> for InferenceX launcher-side artifact pickup.</li>
+</ol>
+<h3 id="eval_only-mode">EVAL_ONLY mode<a class="headerlink" href="#eval_only-mode" title="Permanent link">&para;</a></h3>
+<p>srt-slurm supports an <code>EVAL_ONLY</code> mode for CI jobs that should only validate accuracy. This is controlled by environment variables from the InferenceX workflow:</p>
+<table>
+<thead>
+<tr>
+<th>Env var</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>EVAL_ONLY</code></td>
+<td>Set to <code>true</code> to skip the throughput benchmark stage and run eval only</td>
+</tr>
+<tr>
+<td><code>RUN_EVAL</code></td>
+<td>Set to <code>true</code> to run eval after the throughput benchmark completes</td>
+</tr>
+<tr>
+<td><code>EVAL_CONC</code></td>
+<td>Concurrent requests for lm-eval, normally set by InferenceX from the generated <code>eval-conc</code> value</td>
+</tr>
+<tr>
+<td><code>INFMAX_WORKSPACE</code></td>
+<td>Host path to the InferenceX checkout that should be mounted at <code>/infmax-workspace</code></td>
+</tr>
+<tr>
+<td><code>MODEL_NAME</code></td>
+<td>Served model alias for OpenAI-compatible requests; set by <code>do_sweep.py</code> from <code>config.served_model_name</code></td>
+</tr>
+</tbody>
+</table>
+<p>When <code>EVAL_ONLY=true</code>:
+- Stage 4 skips the throughput benchmark entirely. No throughput result JSON is expected from srt-slurm.
+- The eval path uses the full <code>wait_for_model()</code> health check before starting lm-eval.
+- <code>_run_post_eval()</code> launches the <code>lm-eval</code> runner and returns its exit code.
+- Eval failure is fatal because eval is the only purpose of the job.</p>
+<p>When <code>RUN_EVAL=true</code> (without <code>EVAL_ONLY</code>):
+- Throughput benchmark runs normally
+- After benchmark completes successfully, eval runs as a post-step
+- Eval failure is non-fatal; the benchmark job still succeeds if throughput passed</p>
+<h3 id="environment-variables">Environment variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h3>
+<p>The following env vars are passed through to the lm-eval runner container:</p>
+<table>
+<thead>
+<tr>
+<th>Env var</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RUN_EVAL</code>, <code>EVAL_ONLY</code>, <code>IS_MULTINODE</code></td>
+<td>Control whether eval runs and how InferenceX classifies the artifact</td>
+</tr>
+<tr>
+<td><code>FRAMEWORK</code>, <code>PRECISION</code>, <code>MODEL_PREFIX</code>, <code>RUNNER_TYPE</code>, <code>SPEC_DECODING</code></td>
+<td>Benchmark identity metadata for <code>meta_env.json</code></td>
+</tr>
+<tr>
+<td><code>ISL</code>, <code>OSL</code>, <code>RESULT_FILENAME</code></td>
+<td>Sequence length and result-file metadata</td>
+</tr>
+<tr>
+<td><code>MODEL</code>, <code>MODEL_PATH</code>, <code>MODEL_NAME</code></td>
+<td>Model metadata and the served model alias used for requests</td>
+</tr>
+<tr>
+<td><code>MAX_MODEL_LEN</code>, <code>EVAL_MAX_MODEL_LEN</code></td>
+<td>Context-length metadata used by InferenceX eval helpers when available</td>
+</tr>
+<tr>
+<td><code>PREFILL_TP</code>, <code>PREFILL_EP</code>, <code>PREFILL_NUM_WORKERS</code>, <code>PREFILL_DP_ATTN</code></td>
+<td>Prefill-side topology metadata</td>
+</tr>
+<tr>
+<td><code>DECODE_TP</code>, <code>DECODE_EP</code>, <code>DECODE_NUM_WORKERS</code>, <code>DECODE_DP_ATTN</code></td>
+<td>Decode-side topology metadata</td>
+</tr>
+<tr>
+<td><code>EVAL_CONC</code>, <code>EVAL_CONCURRENT_REQUESTS</code></td>
+<td>Eval concurrency controls</td>
+</tr>
+</tbody>
+</table>
+<p>The runner maps srt-slurm's <code>PREFILL_DP_ATTN</code> and <code>DECODE_DP_ATTN</code> names to InferenceX's <code>PREFILL_DP_ATTENTION</code> and <code>DECODE_DP_ATTENTION</code> names before calling <code>append_lm_eval_summary</code>. This is required for multi-node summary tables to preserve prefill/decode DPA state.</p>
+<h3 id="concurrency">Concurrency<a class="headerlink" href="#concurrency" title="Permanent link">&para;</a></h3>
+<p>Eval concurrency is ultimately read by InferenceX's <code>benchmark_lib.sh</code> from <code>EVAL_CONCURRENT_REQUESTS</code>. The runner script sets that value from <code>EVAL_CONC</code> when present, preserves an existing <code>EVAL_CONCURRENT_REQUESTS</code> otherwise, and falls back to <code>256</code> only if neither variable is set:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">EVAL_CONCURRENT_REQUESTS</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">EVAL_CONC</span><span class="k">:-</span><span class="si">${</span><span class="nv">EVAL_CONCURRENT_REQUESTS</span><span class="k">:-</span><span class="nv">256</span><span class="si">}}</span><span class="s2">"</span>
+</code></pre></div>
+<p>The InferenceX workflow sets <code>EVAL_CONC</code> from the generated <code>eval-conc</code> value. For multi-node configs, InferenceX selects the <code>8k1k</code> entry with the highest max eligible concurrency for each <code>(model, runner, framework, precision, spec-decoding, prefill-dp-attn, decode-dp-attn)</code> group, then sets <code>eval-conc</code> to the upper median of that config's eligible concurrency list. If <code>EVAL_CONC</code> is not set in the environment, <code>do_sweep.py</code> falls back to the max of the recipe benchmark concurrency list.</p>
+<h3 id="output_1">Output<a class="headerlink" href="#output_1" title="Permanent link">&para;</a></h3>
+<p>Eval artifacts are written to <code>/logs/eval_results/</code> inside the container:
+- <code>meta_env.json</code> - metadata used by InferenceX aggregation and summary tables
+- <code>results*.json</code> - lm-eval scores per task
+- <code>sample*.jsonl</code> - per-sample outputs</p>
+<p>These are collected by the InferenceX NVIDIA launch scripts and uploaded as workflow artifacts. In eval-only mode the InferenceX workflow expects eval artifacts, not throughput benchmark artifacts.</p>
+<h3 id="intricacies">Intricacies<a class="headerlink" href="#intricacies" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Eval floor of 16</li>
+<li>There is 1 sweep config of conc: [1], which causes evals to take &gt;4hrs to complete.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
