@@ -530,8 +530,14 @@ def test_iteration_and_identity_on_one_line_preserve_ranks_window_and_provenance
     )
     identity = f" Engine ID map: request_id={SERVER} trtllm_client_id=8 disagg_request_id=101"
     worker_log.write_text(
-        iteration + "2026-09-17 10:58:34" + identity + "\n"
-        + iteration + "2026-09-17 10:58:10" + identity.replace("client_id=8", "client_id=9") + "\n"
+        iteration
+        + "2026-09-17 10:58:34"
+        + identity
+        + "\n"
+        + iteration
+        + "2026-09-17 10:58:10"
+        + identity.replace("client_id=8", "client_id=9")
+        + "\n"
     )
     data = Importer(logs, iteration_timezone=timezone).run()
     rows = [row for row in data["iterations"] if row["worker"] == "decode-0"]
@@ -584,7 +590,13 @@ def test_nvtx_selection_preserves_shared_annotations_and_detokenize_threshold(ar
         conn.execute("DELETE FROM NVTX_EVENTS")
         conn.executemany("INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, NULL, 17)", events)
     profile = Importer(logs, sqlites).run()["profiles"][0]
-    assert profile["names"] == ["detokenize", "detokenize.batch", "transport.send", "kv_router.choose", "compute_logits"]
+    assert profile["names"] == [
+        "detokenize",
+        "detokenize.batch",
+        "transport.send",
+        "kv_router.choose",
+        "compute_logits",
+    ]
     assert [event[:2] for event in profile["events"]] == [
         [1.1, 1.1001],
         [1.2, 1.200000001],
