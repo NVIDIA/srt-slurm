@@ -1,9 +1,9 @@
 schema: 2
-name: "svf-vllm-agg-gb300-tp8-mtp-agentic"
+name: "svf-vllm-agg-gb300-tp4-c4-mtp-agentic"
 
-# GB300 AgentX aggregate topology: one TP8 worker spans two four-GPU
-# nodes and serves both prefill and decode at concurrency 4. Keep at least
-# 16 sequence slots and otherwise size the scheduler at 4x concurrency.
+# GB300 AgentX aggregate topology: one TP4 worker occupies one four-GPU node
+# and serves both prefill and decode at concurrency 4. Size max-num-seqs at
+# 4x concurrency and expand the K=6 CUDA-graph envelope to match.
 
 model:
   path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/DeepSeek-V4-Pro-0813"
@@ -29,7 +29,6 @@ environment:
   # Mooncake prefix-block hashes must match across processes and nodes.
   PYTHONHASHSEED: "0"
   WITH_NVIDIA_PEERMEM: "0"
-  # The frontend shares Grace CPU capacity with the long TP8 cold start.
   ETCD_LEASE_TTL: "7200"
 
 setup_script: vllm-container-deps-and-dynamo-wheel.sh
@@ -92,9 +91,9 @@ engine:
   connector:
 roles:
   agg:
-    nodes: 2
+    nodes: 1
     workers: 1
-    gpus: 8
+    gpus: 4
 
     env:
       HF_HUB_CACHE: "/lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache"
@@ -134,12 +133,12 @@ roles:
       MC_STORE_CLIENT_METRIC: "1"
       MC_STORE_CLIENT_METRIC_INTERVAL: "5"
       MC_TE_METRIC: "0"
-      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-agg-mtp-{job_id}"
+      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-agg-tp4-c4-mtp-{job_id}"
     args:
       served-model-name: "DeepSeek-V4-Pro-0813"
       safetensors-load-strategy: "lazy"
       kv-cache-dtype: "fp8"
-      tensor-parallel-size: 8
+      tensor-parallel-size: 4
       pipeline-parallel-size: 1
       enable-cumem-allocator: true
       disable-custom-all-reduce: true

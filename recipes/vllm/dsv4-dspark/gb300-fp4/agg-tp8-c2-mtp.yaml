@@ -1,8 +1,8 @@
 schema: 2
-name: "svf-vllm-agg-gb300-tp8-mtp-agentic"
+name: "svf-vllm-agg-gb300-tp8-c2-mtp-agentic"
 
 # GB300 AgentX aggregate topology: one TP8 worker spans two four-GPU
-# nodes and serves both prefill and decode at concurrency 4. Keep at least
+# nodes and serves both prefill and decode at concurrency 2. Keep at least
 # 16 sequence slots and otherwise size the scheduler at 4x concurrency.
 
 model:
@@ -134,7 +134,7 @@ roles:
       MC_STORE_CLIENT_METRIC: "1"
       MC_STORE_CLIENT_METRIC_INTERVAL: "5"
       MC_TE_METRIC: "0"
-      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-agg-mtp-{job_id}"
+      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-agg-tp8-c2-mtp-{job_id}"
     args:
       served-model-name: "DeepSeek-V4-Pro-0813"
       safetensors-load-strategy: "lazy"
@@ -186,7 +186,7 @@ benchmark:
       "$AIPERF_VENV/bin/pip" install -q --upgrade pip
       "$AIPERF_VENV/bin/pip" install -q "aiperf @ $AIPERF_REF" "datasets>=4.7.0" "huggingface_hub[cli]>=0.25.0"
     fi
-    ARTIFACT_DIR="/logs/agentic/conc_4/aiperf_artifacts"
+    ARTIFACT_DIR="/logs/agentic/conc_2/aiperf_artifacts"
     mkdir -p "$ARTIFACT_DIR"
     "$AIPERF_VENV/bin/aiperf" profile --scenario inferencex-agentx-mvp \
       --url "http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT" \
@@ -199,5 +199,5 @@ benchmark:
       --warmup-grace-period 1800 --num-dataset-entries 393 \
       --slice-duration 1.0 --stats-interval 30 --use-server-token-count \
       --no-gpu-telemetry --random-seed 42 --failed-request-threshold 0.1 \
-      --benchmark-duration 3600 --concurrency 4 \
+      --benchmark-duration 3600 --concurrency 2 \
       --output-artifact-dir "$ARTIFACT_DIR"

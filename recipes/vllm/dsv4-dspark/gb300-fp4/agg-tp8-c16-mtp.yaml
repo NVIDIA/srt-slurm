@@ -1,8 +1,8 @@
 schema: 2
-name: "svf-vllm-agg-gb300-tp8-mtp-agentic"
+name: "svf-vllm-agg-gb300-tp8-c16-mtp-agentic"
 
 # GB300 AgentX aggregate topology: one TP8 worker spans two four-GPU
-# nodes and serves both prefill and decode at concurrency 4. Keep at least
+# nodes and serves both prefill and decode at concurrency 16. Keep at least
 # 16 sequence slots and otherwise size the scheduler at 4x concurrency.
 
 model:
@@ -104,7 +104,7 @@ roles:
       VLLM_RPC_TIMEOUT: "600000"
       VLLM_LOG_STATS_INTERVAL: "1"
       VLLM_FLOAT32_MATMUL_PRECISION: "high"
-      VLLM_V2_WARMUP_MAX_NUM_SEQS: "16"
+      VLLM_V2_WARMUP_MAX_NUM_SEQS: "64"
       TILELANG_CLEANUP_TEMP_FILES: "1"
       VLLM_USE_NCCL_SYMM_MEM: "0"
       TORCH_SYMMMEM: "NVSHMEM"
@@ -134,7 +134,7 @@ roles:
       MC_STORE_CLIENT_METRIC: "1"
       MC_STORE_CLIENT_METRIC_INTERVAL: "5"
       MC_TE_METRIC: "0"
-      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-agg-mtp-{job_id}"
+      DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-agg-tp8-c16-mtp-{job_id}"
     args:
       served-model-name: "DeepSeek-V4-Pro-0813"
       safetensors-load-strategy: "lazy"
@@ -145,13 +145,13 @@ roles:
       disable-custom-all-reduce: true
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
       max-model-len: 1048576
-      max-num-seqs: 16
+      max-num-seqs: 64
       max-num-batched-tokens: 8192
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112],"mode":0}'
-      max-cudagraph-capture-size: 112
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224,231,238,245,252,259,266,273,280,287,294,301,308,315,322,329,336,343,350,357,364,371,378,385,392,399,406,413,420,427,434,441,448],"mode":0}'
+      max-cudagraph-capture-size: 448
       speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       gpu-memory-utilization: 0.90
@@ -186,7 +186,7 @@ benchmark:
       "$AIPERF_VENV/bin/pip" install -q --upgrade pip
       "$AIPERF_VENV/bin/pip" install -q "aiperf @ $AIPERF_REF" "datasets>=4.7.0" "huggingface_hub[cli]>=0.25.0"
     fi
-    ARTIFACT_DIR="/logs/agentic/conc_4/aiperf_artifacts"
+    ARTIFACT_DIR="/logs/agentic/conc_16/aiperf_artifacts"
     mkdir -p "$ARTIFACT_DIR"
     "$AIPERF_VENV/bin/aiperf" profile --scenario inferencex-agentx-mvp \
       --url "http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT" \
@@ -199,5 +199,5 @@ benchmark:
       --warmup-grace-period 1800 --num-dataset-entries 393 \
       --slice-duration 1.0 --stats-interval 30 --use-server-token-count \
       --no-gpu-telemetry --random-seed 42 --failed-request-threshold 0.1 \
-      --benchmark-duration 3600 --concurrency 4 \
+      --benchmark-duration 3600 --concurrency 16 \
       --output-artifact-dir "$ARTIFACT_DIR"

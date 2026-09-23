@@ -26,6 +26,9 @@ extra_mount:
   - "/lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels"
 environment:
   DYNAMO_WHEEL_DIRS: "/srtctl-wheels"
+  # Mooncake prefix-block hashes must match across processes and nodes.
+  PYTHONHASHSEED: "0"
+  WITH_NVIDIA_PEERMEM: "0"
   ETCD_LEASE_TTL: "7200"
 
 setup_script: vllm-container-deps-and-dynamo-wheel.sh
@@ -99,6 +102,7 @@ roles:
       VLLM_ENGINE_READY_TIMEOUT_S: "3600"
       VLLM_RPC_TIMEOUT: "600000"
       VLLM_LOG_STATS_INTERVAL: "1"
+      VLLM_FLOAT32_MATMUL_PRECISION: "high"
       VLLM_V2_WARMUP_MAX_NUM_SEQS: "32"
       TILELANG_CLEANUP_TEMP_FILES: "1"
       VLLM_USE_NCCL_SYMM_MEM: "0"
@@ -112,7 +116,10 @@ roles:
       VLLM_ALLREDUCE_USE_FLASHINFER: "1"
       VLLM_FLASHINFER_ALLREDUCE_BACKEND: "auto"
       VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+      VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
       VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
+      VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+      VLLM_DSV4_MEGA_FP8_COMBINE: "1"
       VLLM_SPARSE_INDEXER_MAX_LOGITS_MB: "1024"
       VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
       UCX_MEMTYPE_CACHE: "n"
@@ -121,15 +128,19 @@ roles:
       NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"
       NCCL_P2P_LEVEL: "NVL"
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_SLICE_SIZE: "1048576"
+      MC_WORKERS_PER_CTX: "4"
       MC_STORE_CLIENT_METRIC: "1"
       MC_STORE_CLIENT_METRIC_INTERVAL: "5"
       MC_TE_METRIC: "0"
       DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-agg-tp4-mtp-{job_id}"
     args:
       served-model-name: "DeepSeek-V4-Pro-0813"
+      safetensors-load-strategy: "lazy"
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 4
       pipeline-parallel-size: 1
+      enable-cumem-allocator: true
       disable-custom-all-reduce: true
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
       max-model-len: 1048576
@@ -138,19 +149,23 @@ roles:
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[4,8,12,16,20,24,28,32,36,40,44,48,52,56,60,64,68,72,76,80,84,88,92,96,100,104,108,112,116,120,124,128],"mode":0}'
-      speculative-config: '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}'
-      gpu-memory-utilization: 0.94
-      stream-interval: 20
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224],"mode":0}'
+      max-cudagraph-capture-size: 224
+      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
+      moe-backend: "deep_gemm_amxf4_mega_moe"
+      gpu-memory-utilization: 0.90
+      stream-interval: 32
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
+      numa-bind: true
+      numa-bind-nodes: [0, 0, 1, 1]
 
 sbatch_directives:
-  cpus-per-task: "72"
   mem: "0"
 
 srun_options:
   container-remap-root: ""
+  cpu-bind: "none"
 
 benchmark:
   type: custom
