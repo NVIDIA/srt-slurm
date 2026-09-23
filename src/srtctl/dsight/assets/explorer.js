@@ -78,6 +78,8 @@
   const history = [];
   let clientDrag = null,
     suppressClientClick = false;
+  let metricMounts = [],
+    metricCharts = [];
   const state = {
     from: 0,
     to: D.meta.duration,
@@ -98,6 +100,7 @@
       D.profiles[0]?.id ??
       null,
     metricSeries: {},
+    metricCharts: {},
     iterationWorker: null,
     iterationRank: 0,
     expandedWorkers: new Set(),
@@ -147,6 +150,8 @@
       );
   const stateJSON = () => ({
     ...state,
+    metricCharts: clone(state.metricCharts),
+    metricSeries: clone(state.metricSeries),
     expandedSessions: [...state.expandedSessions],
     expandedAgents: [...state.expandedAgents],
     expandedRequests: [...state.expandedRequests],
@@ -180,10 +185,13 @@
       "span",
       "cursor",
       "metricSeries",
+      "metricCharts",
       "iterationWorker",
       "iterationRank",
     ]) {
-      if (value[k] !== undefined) state[k] = value[k];
+      if (value[k] !== undefined)
+        state[k] = ["metricCharts", "metricSeries"].includes(k)
+          ? clone(value[k]) : value[k];
     }
     if (
       ["request", "nsys", "iterations", "evidence", "api"].includes(value.tab)
@@ -253,7 +261,6 @@
     state.expandedSessions.add(r.session);
     state.expandedAgents.add(r.agent);
     if (expand && hasLifecycle(r)) state.expandedRequests.add(id);
-    for (const worker of r.workers) state.expandedWorkers.add(worker);
     if (fit) {
       const pad = Math.max((r.end - r.start) * 0.06, 0.00001);
       state.from = Math.max(0, r.start - pad);
@@ -803,74 +810,35 @@
       `<div class="pager"><span>Sessions ${list.length ? state.page * state.pageSize + 1 : 0}–${Math.min(list.length, (state.page + 1) * state.pageSize)} of ${list.length}</span><div class="buttons"><button data-page="-1" ${state.page === 0 ? "disabled" : ""}>Previous</button><button data-page="1" ${state.page + 1 >= pages ? "disabled" : ""}>Next</button></div></div></section>`
     );
   }
-  function plot(series, color = "#087f8c") {
-    if (!series) return '<div class="empty-lane">No recorded series</div>';
-    const points = series.points.filter(
-      (p) => p[0] >= state.from && p[0] <= state.to,
+  function metricPanel(key, series, title) {
+    const id = `metricChart${metricMounts.length}`;
+    metricMounts.push({ id, key, series, title });
+    return `<div id="${id}" class="dsight-metric-panel" data-metric-key="${esc(key)}"></div>`;
+  }
+  function mountMetricCharts() {
+    metricCharts = metricMounts.map(({ id, key, series, title }) =>
+      window.DSightMetricCharts.mount($(id), {
+        series,
+        title,
+        height: 220,
+        from: state.from,
+        to: state.to,
+        selection: state.metricCharts[key],
+        onSelectionChange: (selection) => {
+          state.metricCharts[key] = selection;
+          window.dispatchEvent(new CustomEvent("trace-explorer:state", { detail: stateJSON() }));
+        },
+        onRangeChange: (from, to) => safe(() => setRange(
+          Math.max(0, from), Math.min(D.meta.duration, to),
+        )),
+      }),
     );
-    if (!points.length)
-      return '<div class="empty-lane">No metric sample in this window · widen range</div>';
-    const max =
-        series.unit === "%" ? 100 : Math.max(1, ...points.map((p) => p[1])),
-      w = state.to - state.from,
-      xy = points.map((p) => [
-        ((p[0] - state.from) / w) * 1000,
-        33 - (p[1] / max) * 29,
-      ]);
-    let path = "";
-    for (let i = 0; i < xy.length; i++) {
-      const [x, y] = xy[i];
-      path += `${i ? " L" : "M"}${x.toFixed(3)},${y.toFixed(3)}`;
-    }
-    return `<svg class="metric-svg" viewBox="0 0 1000 36" preserveAspectRatio="none" role="img" aria-label="${esc(series.label)} sampled values"><path d="${path}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke"/>${xy.length === 1 ? `<circle cx="${xy[0][0]}" cy="${xy[0][1]}" r="2" fill="${color}"/>` : ""}</svg>`;
   }
   function workerTracks() {
-    const r = selected();
     let html =
-      '<div class="section-head"><span>Server workers</span><select id="workerMetric" aria-label="Worker metric"><option value="trtllm_num_requests_running">Running requests</option><option value="trtllm_num_requests_waiting">Waiting requests</option><option value="dynamo_component_inflight_requests">In-flight requests</option><option value="trtllm_kv_cache_utilization">KV cache utilization</option></select></div>';
-    for (const w of D.workers) {
-      const choices = D.metrics.filter(
-          (s) => s.worker === w.id && s.name === state.metric,
-        ),
-        ss =
-          choices.find((s) => s.id === state.metricSeries[w.id]) ?? choices[0],
-        stat = ss ? metricStats(ss) : null;
-      html += track(
-        toggle(
-          "worker",
-          w.id,
-          state.expandedWorkers.has(w.id),
-          "Expand worker " + w.id,
-        ) +
-          labelText(w.id) +
-          `<span class="metric-last">${stat?.samples ? fmt(stat.mean, 1) : "—"} avg</span>`,
-        plot(ss, w.role === "prefill" ? "#b77512" : "#087f8c"),
-        { classes: r?.workers.includes(w.id) ? "selected" : "", height: 37 },
-      );
-      if (state.expandedWorkers.has(w.id)) {
-        if (choices.length)
-          html += `<div class="row-note"><label>Metric series <select data-worker-series="${esc(w.id)}" aria-label="Metric series for ${esc(w.id)}">${choices.map((s) => `<option value="${s.id}" ${s.id === ss.id ? "selected" : ""}>${esc(s.raw_name)} · ${esc(s.endpoint)} · rank ${esc(s.rank ?? "unrecorded")}</option>`).join("")}</select></label></div>`;
-        const related =
-          r?.lifecycle.activities.filter((s) => s.worker === w.id) ?? [];
-        for (const activity of related)
-          html += track(
-            labelText(
-              (activity.depth ? "↳ " : "") +
-                activity.label +
-                (activity.kind === "envelope" ? " · inclusive" : ""),
-            ),
-            bar(
-              activity.start,
-              activity.end,
-              activity.label,
-              `phase ${w.role}`,
-              `data-span="${esc(activity.id)}"`,
-              activity.description,
-            ),
-          );
-        html += `<div class="row-note">${esc(w.host)} · ${w.profiles.length} rank reports. ${w.profiles.length ? `<button data-worker-nsys="${esc(w.id)}">Inspect Nsight</button>` : "No Nsight export for this worker."}</div>`;
-      }
-    }
+      '<div class="section-head"><span>Server metrics</span><select id="workerMetric" aria-label="Worker metric"><option value="trtllm_num_requests_running">Running requests</option><option value="trtllm_num_requests_waiting">Waiting requests</option><option value="dynamo_component_inflight_requests">In-flight requests</option><option value="trtllm_kv_cache_utilization">KV cache utilization</option></select></div>';
+    const choices = D.metrics.filter((s) => s.name === state.metric);
+    html += metricPanel(JSON.stringify(["metric", state.metric]), choices, choices[0]?.label ?? state.metric);
     html += `<div class="section-head"><span>Hardware</span><button id="hardwareToggle" aria-expanded="${state.hardware}">${state.hardware ? "Hide" : "Show"} GPU / host metrics</button></div>`;
     if (state.hardware) {
       const gpuSeries = D.metrics.filter((s) =>
@@ -878,21 +846,12 @@
         ),
         hosts = [...new Set(gpuSeries.map((s) => s.host))];
       for (const host of hosts) {
-        for (const series of gpuSeries.filter((s) => s.host === host))
-          html += track(
-            labelText(`${host} / GPU ${series.gpu}`),
-            plot(series, "#6879b1"),
-            { height: 37 },
-          );
+        const choices = gpuSeries.filter((s) => s.host === host);
+        html += metricPanel(JSON.stringify(["hardware", host, "gpu_util"]), choices, `${host} · GPU utilization`);
       }
-      for (const series of D.metrics.filter(
-        (s) => s.name === "memory_MemAvailable_bytes",
-      ))
-        html += track(
-          labelText(`${series.host} / free RAM`),
-          plot(series, "#607b91"),
-          { height: 37 },
-        );
+      const memory = D.metrics.filter((s) => s.name === "memory_MemAvailable_bytes");
+      for (const host of new Set(memory.map((s) => s.host)))
+        html += metricPanel(JSON.stringify(["hardware", host, "memory_MemAvailable_bytes"]), memory.filter((s) => s.host === host), `${host} · Available RAM`);
       if (!gpuSeries.length)
         html +=
           '<div class="row-note">No GPU utilization series was recorded.</div>';
@@ -900,6 +859,23 @@
       html +=
         '<div class="row-note">GPU and host metrics follow this time range. Individual GPU samples do not identify request ownership.</div>';
     return html;
+  }
+  function workerActivityTracks() {
+    const workers = D.workers.filter((w) => state.expandedWorkers.has(w.id));
+    if (!workers.length) return "";
+    const r = selected();
+    let html = '<section id="workerActivity"><div class="section-head">Selected worker activity</div>';
+    for (const w of workers) {
+      html += `<div class="section-head"><span>${esc(w.id)} · ${esc(w.host)}</span><button data-toggle="worker" data-id="${esc(w.id)}">Close activity</button></div>`;
+      const related = r?.lifecycle.activities.filter((s) => s.worker === w.id) ?? [];
+      for (const activity of related)
+        html += track(
+          labelText((activity.depth ? "↳ " : "") + activity.label + (activity.kind === "envelope" ? " · inclusive" : "")),
+          bar(activity.start, activity.end, activity.label, `phase ${w.role}`, `data-span="${esc(activity.id)}"`, activity.description),
+        );
+      html += `<div class="row-note">${w.profiles.length} rank reports. ${w.profiles.length ? `<button data-worker-nsys="${esc(w.id)}">Inspect Nsight</button>` : "No Nsight export for this worker."}</div>`;
+    }
+    return html + "</section>";
   }
   function nsysTracks() {
     if (!state.nsys) return "";
@@ -1104,7 +1080,7 @@
         html +=
           '<p class="help">All recorded workers are shown, including repeated routing attempts.</p>';
       if (pathWorkers.length)
-        html += '<p class="help" style="margin-top:9px">Click a worker to expand its aligned measurements. Metric values are sample means for the explicitly selected series.</p>';
+        html += '<p class="help" style="margin-top:9px">Click a worker for its recorded activity and Nsight reports. Use the metric chart legend to show or hide worker lines.</p>';
     }
     if (r.server_ids.length || r.engine.length) {
       html +=
@@ -1241,6 +1217,9 @@
   }
   function render() {
     clearClientDrag();
+    for (const chart of metricCharts) chart.destroy();
+    metricCharts = [];
+    metricMounts = [];
     const scroll = $("tracks").scrollTop;
     $("rangeFrom").value = Number(state.from.toFixed(6));
     $("rangeTo").value = Number(state.to.toFixed(6));
@@ -1258,7 +1237,8 @@
       (_, i) =>
         `<span class="tick" style="left:${i * 20}%">${fmt(state.from + ((state.to - state.from) * i) / 5, state.to - state.from < 1 ? 6 : 3)} s</span>`,
     ).join("");
-    $("tracks").innerHTML = clientTracks() + workerTracks() + nsysTracks();
+    $("tracks").innerHTML = clientTracks() + workerTracks() + workerActivityTracks() + nsysTracks();
+    mountMetricCharts();
     $("tracks").scrollTop = scroll;
     if ($("workerMetric")) $("workerMetric").value = state.metric;
     $("visibleCount").textContent =
@@ -1342,8 +1322,9 @@
         return;
       }
       if (b.dataset.pathWorker) {
-        state.expandedWorkers.add(b.dataset.pathWorker);
+        state.expandedWorkers = new Set([b.dataset.pathWorker]);
         render();
+        $("workerActivity")?.scrollIntoView({ block: "nearest" });
         return;
       }
       if (b.dataset.workerNsys) {
@@ -1660,7 +1641,6 @@
   const preferred =
     candidates[Math.min(20, candidates.length - 1)] || D.requests[0];
   state.request = preferred.id;
-  for (const worker of preferred.workers) state.expandedWorkers.add(worker);
   state.expandedSessions.add(preferred.session);
   state.expandedAgents.add(preferred.agent);
   if (location.hash.startsWith("#view=")) {

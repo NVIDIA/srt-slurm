@@ -125,8 +125,13 @@ report; a CUDA table's presence is reported separately from imported data.
   named milestone. **Fit TTFT** selects the client TTFT window and expands the
   lifecycle only when available.
 - Click a milestone or raw span for boundaries and source references. Expand
-  workers for operation/dispatch/response-pump nesting. Select a metric series
-  explicitly when a worker has several rank/label combinations.
+  workers in the request path for operation/dispatch/response-pump nesting and
+  Nsight reports. **Server metrics** shows the metric selected at its top right
+  as one chart across workers, using the same offline uPlot library as the
+  Tachometer dashboard. Click a legend entry to hide or show its line. Every
+  recorded series remains available in the legend; **Labels** exposes its full
+  identity. Hover values include the actual sample timestamp. Chart dragging
+  changes the shared time range; saved views preserve line visibility per metric.
 - **Inspect phase in Nsight** follows the recorded worker. Select a rank or
   compare frontend + request workers. Router DP rank is retained as evidence;
   it is not assumed to map to a global process rank.

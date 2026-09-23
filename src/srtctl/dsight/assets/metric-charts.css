@@ -1,0 +1,34 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
+/* SPDX-License-Identifier: Apache-2.0 */
+.dsight-metric-panel { min-width: 0; border-bottom: 1px solid var(--grid, #d8e1ed); }
+.ds-metric-chart { min-width: 0; padding: 10px 0 10px 12px; color: var(--ink, #152c43); background: #fff; font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.ds-metric-chart > :not(.ds-metric-canvas) { margin-right: 12px; }
+.ds-metric-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.ds-metric-title { margin: 0; font: 600 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.ds-metric-count { font-variant-numeric: tabular-nums; color: var(--muted, #5f7187); }
+.ds-metric-chart button { font: inherit; }
+.ds-metric-canvas { min-width: 0; margin: 8px 0 2px; margin-left: max(0px, calc(var(--label, 0px) - 64px)); }
+.ds-metric-empty { padding: 28px 14px; color: var(--muted, #5f7187); background: #f6f8fc; text-align: center; }
+.ds-metric-legend { max-height: 235px; overflow: auto; margin: 4px 0; }
+.ds-metric-legend-row { display: grid; grid-template-columns: minmax(80px, 1fr) auto auto; align-items: start; gap: 5px 8px; padding: 4px 0; border-bottom: 1px solid #e8eef5; }
+.ds-metric-chart .ds-metric-legend-toggle { min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; background: none; text-align: left; color: var(--ink, #152c43); font-weight: 500; padding: 3px 0; cursor: pointer; }
+.ds-metric-chart .ds-metric-legend-toggle:hover { background: #eef3fa; }
+.ds-metric-chart .ds-metric-legend-toggle[aria-pressed="false"] { opacity: .45; text-decoration: line-through; }
+.ds-metric-swatch { flex: 0 0 15px; height: 3px; }
+.ds-metric-caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-metric-value { text-align: right; color: var(--muted, #5f7187); font-variant-numeric: tabular-nums; padding-top: 3px; white-space: nowrap; font-size: 11px; }
+.ds-metric-label-details { display: contents; }
+.ds-metric-label-details summary { cursor: pointer; width: fit-content; color: #275c9b; padding: 3px 0; font-size: 11px; }
+.ds-metric-label-details summary:focus-visible, .ds-metric-legend-toggle:focus-visible { outline: 3px solid #287ebd; outline-offset: 2px; }
+.ds-metric-label-details pre { grid-column: 1 / -1; max-height: 230px; margin: 0; padding: 9px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; background: #f6f8fc; border: 1px solid var(--grid, #d8e1ed); }
+.ds-metric-note { color: var(--muted, #5f7187); margin: 6px 0 0; font-size: 11px; }
+.ds-metric-chart .uplot { font-family: inherit; }
+.ds-metric-chart .u-select { background: #287ebd20; }
+.ds-metric-chart .u-cursor-x, .ds-metric-chart .u-cursor-y { border-color: #7188a180; }
+@media (max-width: 700px) {
+  .ds-metric-chart { padding: 8px 0 8px 8px; }
+  .ds-metric-canvas { margin-left: max(0px, calc(var(--label, 0px) - 60px)); }
+  .ds-metric-legend-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .ds-metric-value { grid-column: 1; text-align: left; padding-left: 21px; }
+  .ds-metric-label-details summary { grid-column: 2; grid-row: 1; }
+}
