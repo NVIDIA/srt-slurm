@@ -219,6 +219,69 @@ def test_dep4_expansion_and_health_counts_follow_upstream_per_node_topology() ->
     )
 
 
+def test_multinode_dep8_routes_node_local_hybrid_pools_without_rank_reexpansion() -> None:
+    """A later node owns global ranks 4..7, not another local 0..3 namespace."""
+    backend = VLLMProtocol(
+        vllm_config=VLLMServerConfig(
+            prefill={"data-parallel-size": 8},
+            decode={"data-parallel-size": 8},
+        )
+    )
+    processes = [
+        Process("p0", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+        Process("p1", frozenset(range(4)), 7501, 6100, "prefill", 0, node_rank=4),
+        Process("d0", frozenset(range(4)), 7502, 6100, "decode", 0, node_rank=0),
+        Process("d1", frozenset(range(4)), 7503, 6100, "decode", 0, node_rank=4),
+    ]
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(type="vllm-router"),
+        backend=backend,
+        resources=SimpleNamespace(num_prefill=1, num_decode=1, num_agg=0),
+    )
+
+    assert node_local_data_parallel_size(backend, processes) == 1
+    assert _get_health_expectations(config, processes) == (
+        2,
+        2,
+        "2P + 2D Router workers; logical workers: 1P + 1D",
+        4,
+    )
+
+
+@pytest.mark.parametrize("expansion", [1, 4])
+def test_multinode_hybrid_pool_schema_matches_router_expansion(expansion: int) -> None:
+    """The declared expansion must match the unexpanded node-local pool URLs."""
+    data = {
+        "name": "hybrid-pools",
+        "model": {"path": "/model", "container": "vllm", "precision": "bf16"},
+        "resources": {
+            "gpus_per_node": 4,
+            "prefill_nodes": 2,
+            "decode_nodes": 2,
+            "prefill_workers": 1,
+            "decode_workers": 1,
+        },
+        "backend": {
+            "type": "vllm",
+            "vllm_config": {
+                "prefill": {"data-parallel-size": 8},
+                "decode": {"data-parallel-size": 8},
+            },
+        },
+        "frontend": {
+            "type": "vllm-router",
+            "enable_multiple_frontends": False,
+            "args": {"intra-node-data-parallel-size": expansion},
+        },
+    }
+    if expansion == 1:
+        config = SrtConfig.Schema().load(data)
+        assert config.frontend.args["intra-node-data-parallel-size"] == 1
+    else:
+        with pytest.raises(ValidationError, match="conflicts with the allocated vLLM topology"):
+            SrtConfig.Schema().load(data)
+
+
 def test_cross_node_model_parallel_base_is_not_dp_expanded() -> None:
     backend = VLLMProtocol(
         vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 2, "tensor-parallel-size": 8})

@@ -42,7 +42,18 @@ def routed_process_dp_size(backend: Any, process: Process) -> int:
 
 def node_local_data_parallel_size(backend: Any, backend_processes: list[Process]) -> int:
     """Return Router's single DP expansion factor for all advertised URLs."""
-    routed_sizes = {routed_process_dp_size(backend, process) for process in backend_processes if process.http_port > 0}
+    routable = [process for process in backend_processes if process.http_port > 0]
+    process_count_by_endpoint: dict[tuple[str, int], int] = {}
+    for process in routable:
+        endpoint = (process.endpoint_mode, process.endpoint_index)
+        process_count_by_endpoint[endpoint] = process_count_by_endpoint.get(endpoint, 0) + 1
+
+    # Hybrid-LB pools on later nodes have nonzero DP-rank offsets.
+    # Let vLLM route locally; Router expansion would restart ranks at zero.
+    if any(count > 1 for count in process_count_by_endpoint.values()):
+        return 1
+
+    routed_sizes = {routed_process_dp_size(backend, process) for process in routable}
     if len(routed_sizes) > 1:
         sizes = ", ".join(str(size) for size in sorted(routed_sizes))
         raise ValueError(f"vLLM Router requires one uniform node-local DP expansion factor; derived {sizes}")
@@ -83,6 +94,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
             )
 
         expansion_by_mode: dict[str, int] = {}
+        has_multinode_pools = False
         for mode, gpu_count in endpoint_gpu_counts.items():
             if gpu_count <= 0:
                 continue
@@ -109,12 +121,16 @@ class VLLMRouterFrontend(StaticRouterFrontend):
                 )
 
             local_gpu_count = min(gpu_count, resources.gpus_per_node)
+            if replica_size <= local_gpu_count and gpu_count > resources.gpus_per_node:
+                has_multinode_pools = True
             if replica_size > local_gpu_count:
                 expansion_by_mode[mode] = 1
             else:
                 expansion_by_mode[mode] = backend._get_local_dp_size(mode, local_gpu_count)
 
-        expansions = set(expansion_by_mode.values())
+        # A single global Router expansion cannot express later pools' DP-rank offsets.
+        # Match node_local_data_parallel_size: any multi-node pool disables expansion.
+        expansions = {1} if has_multinode_pools else set(expansion_by_mode.values())
         if len(expansions) > 1:
             detail = ", ".join(f"{mode}={size}" for mode, size in expansion_by_mode.items())
             raise ValueError(
@@ -300,15 +316,12 @@ class VLLMRouterFrontend(StaticRouterFrontend):
             return logical_prefill, logical_decode, f"{worker_desc}, registering with the Router over ZMQ discovery"
         if processes is None:
             return logical_prefill, logical_decode, worker_desc
+        expansion = node_local_data_parallel_size(config.backend, processes)
         n_prefill = sum(
-            routed_process_dp_size(config.backend, process)
-            for process in processes
-            if process.endpoint_mode == "prefill" and process.http_port > 0
+            expansion for process in processes if process.endpoint_mode == "prefill" and process.http_port > 0
         )
         n_decode = sum(
-            routed_process_dp_size(config.backend, process)
-            for process in processes
-            if process.endpoint_mode in {"decode", "agg"} and process.http_port > 0
+            expansion for process in processes if process.endpoint_mode in {"decode", "agg"} and process.http_port > 0
         )
         return n_prefill, n_decode, f"{n_prefill}P + {n_decode}D Router workers; logical workers: {worker_desc}"
 
