@@ -38,6 +38,8 @@
     Number.isFinite(n)
       ? n.toLocaleString(undefined, { maximumFractionDigits: digits })
       : "—";
+  const profileLabel = (p) =>
+    `${esc(p.worker)}${p.rank === null ? "" : ` / rank ${p.rank}`}${p.engine == null ? "" : ` / engine ${p.engine}`}${p.gpus ? ` / gpu ${esc(p.gpus)}` : ""}`;
   const ms = (s) =>
     s < 0.001
       ? `${fmt(s * 1e6, 1)} µs`
@@ -929,7 +931,7 @@
   }
   function nsysTracksFor(p) {
     const es = p.events.filter((e) => overlap(e[0], e[1]));
-    let html = `<div class="section-head" data-nsys-heading="${p.id}"><span>Nsight · ${esc(p.worker)}${p.rank === null ? "" : ` / rank ${p.rank}`}</span><small>${fmt(es.length, 0)} selected NVTX ranges</small></div><div class="row-note">Shared CPU/NVTX activity. Shows up to 8 threads and 5 overlap lanes each; all imported events remain queryable. ${p.cuda ? "CUDA kernels exist in the source export; this view imports NVTX and CPU only." : "No CUDA kernel table in this export."}</div>`;
+    let html = `<div class="section-head" data-nsys-heading="${p.id}"><span>Nsight · ${profileLabel(p)}</span><small>${fmt(es.length, 0)} selected NVTX ranges</small></div><div class="row-note">Shared CPU/NVTX activity. Shows up to 8 threads and 5 overlap lanes each; all imported events remain queryable. ${p.cuda ? "CUDA kernels exist in the source export; this view imports NVTX and CPU only." : "No CUDA kernel table in this export."}</div>`;
     const r = selected();
     if (r) {
       html += track(labelText("Selected request"), requestBar(r));
@@ -997,7 +999,7 @@
                 p.names[e[2]],
                 "phase",
                 `data-nvtx="${e[4]}" data-profile="${p.id}"`,
-                `${p.names[e[2]]}\n${ms(e[1] - e[0])}\n${p.worker} / rank ${p.rank ?? "frontend"}\nShared activity, row ${e[4]}`,
+                `${p.names[e[2]]}\n${ms(e[1] - e[0])}\n${profileLabel(p)}\nShared activity, row ${e[4]}`,
               ),
             )
             .join("");
@@ -1139,7 +1141,7 @@
     const groups = [...sums.values()]
       .sort((a, b) => b.time - a.time)
       .slice(0, 18);
-    return `<p>Inspect activity beside the selected request. Worker and time joins identify context; they do not assign shared work to one request.</p><div class="nsys-controls"><label>Report<select id="profileSelect">${D.profiles.map((x) => `<option value="${x.id}" ${p.id === x.id ? "selected" : ""}>${esc(x.worker)}${x.rank === null ? "" : ` / rank ${x.rank}`}</option>`).join("")}</select></label><button id="showNsys">${state.nsys ? "Hide" : "Show"} Nsight tracks</button><button id="compareNsys" aria-pressed="${state.compareNsys}">${state.compareNsys ? "Show one report" : "Compare frontend + request workers"}</button></div><dl class="facts"><dt>Coverage</dt><dd>${fmt(p.capture[0], 3)} to ${fmt(p.capture[1], 3)} s</dd><dt>Matching ranges</dt><dd>${fmt(es.length, 0)}</dd><dt>Recorded host</dt><dd>${esc(p.host || "not in exported metadata")}</dd><dt>CUDA kernels</dt><dd>${p.cuda ? "Present in source; not imported" : "Not captured"}</dd><dt>Excluded ranges</dt><dd>${p.invalid_or_boundary_ranges} malformed / boundary</dd></dl><p class="help">Selected NVTX categories: frontend preprocessing/routing and engine iteration/scheduling/forward preparation. Detokenize ranges below 100 µs remain in the original report, along with other excluded categories.</p>${cpuInspector(p)}<h3>Ranges in selected window</h3><p class="help">Inclusive, clipped elapsed time; nested and parallel ranges overlap. Totals are not CPU utilization or additive TTFT.</p><table class="mini-table"><thead><tr><th>Range</th><th>Count</th><th>Elapsed</th></tr></thead><tbody>${groups.map((g) => `<tr><td>${esc(g.name)}</td><td>${fmt(g.count, 0)}</td><td>${ms(g.time)}</td></tr>`).join("")}</tbody></table>${evidence([p.evidence_source], "Nsight SQLite")}<div class="detail-heading">Collection notes</div><ul class="quality-list">${(p.diagnostics || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
+    return `<p>Inspect activity beside the selected request. Worker and time joins identify context; they do not assign shared work to one request.</p><div class="nsys-controls"><label>Report<select id="profileSelect">${D.profiles.map((x) => `<option value="${x.id}" ${p.id === x.id ? "selected" : ""}>${profileLabel(x)}</option>`).join("")}</select></label><button id="showNsys">${state.nsys ? "Hide" : "Show"} Nsight tracks</button><button id="compareNsys" aria-pressed="${state.compareNsys}">${state.compareNsys ? "Show one report" : "Compare frontend + request workers"}</button></div><dl class="facts"><dt>Coverage</dt><dd>${fmt(p.capture[0], 3)} to ${fmt(p.capture[1], 3)} s</dd><dt>Matching ranges</dt><dd>${fmt(es.length, 0)}</dd><dt>Recorded host</dt><dd>${esc(p.host || "not in exported metadata")}</dd><dt>CUDA kernels</dt><dd>${p.cuda ? "Present in source; not imported" : "Not captured"}</dd><dt>Excluded ranges</dt><dd>${p.invalid_or_boundary_ranges} malformed / boundary</dd></dl><p class="help">Selected NVTX categories: frontend preprocessing/routing and engine iteration/scheduling/forward preparation. Detokenize ranges below 100 µs remain in the original report, along with other excluded categories.</p>${cpuInspector(p)}<h3>Ranges in selected window</h3><p class="help">Inclusive, clipped elapsed time; nested and parallel ranges overlap. Totals are not CPU utilization or additive TTFT.</p><table class="mini-table"><thead><tr><th>Range</th><th>Count</th><th>Elapsed</th></tr></thead><tbody>${groups.map((g) => `<tr><td>${esc(g.name)}</td><td>${fmt(g.count, 0)}</td><td>${ms(g.time)}</td></tr>`).join("")}</tbody></table>${evidence([p.evidence_source], "Nsight SQLite")}<div class="detail-heading">Collection notes</div><ul class="quality-list">${(p.diagnostics || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
   }
   function evidenceInspector() {
     const r = selected();

@@ -80,7 +80,7 @@ identity bridges are omitted.
 | AgentPerf manifest | `phase_manifest.jsonl` beside the export | Measured request starts in `[settling_end, actual_phase_end)` |
 | Frontend logs | `*_frontend_*.out` | Explicit client header → Dynamo UUID bridge |
 | Dynamo OTel | `otel/*/traces.jsonl`, OTLP JSON resource/scope spans | Original timestamps, parents, trace/request/process identities and route attributes |
-| Worker logs | `*_{prefill,decode,aggregated}_w*.out` | Engine ID maps, worker identity and iteration summaries |
+| Worker logs | `*_{prefill,decode,agg}_w*[_e<k>].out` | Engine ID maps, worker identity and iteration summaries |
 | Tachometer | `tachometer/local`, or `--metrics <capture-leaf-or-file>` | Selected running/waiting/in-flight, KV, GPU and host gauges with recorded labels |
 | Nsight SQLite | `--nsys-sqlite <directory-or-file>` | Selected NVTX ranges and available frontend CPU samples, aligned by session UTC anchor |
 
@@ -100,8 +100,15 @@ for alignment. Imported families are listed in `src/srtctl/dsight/metrics.py`;
 this context view does not replace the complete Tachometer metric catalog.
 
 Nsight worker filenames follow
-`<host>_<role>_w<index>_profile_rank<rank>.sqlite`; frontend names follow
-`<host>_frontend_<index>.sqlite`. Unknown names remain unmapped. The default
+`<host>_<role>_w<index>_profile_rank<rank>.sqlite` for MPI ranks and
+`<host>_<role>_w<index>_profile_gpu<devices>.sqlite` for per-process workers
+(SGLang, vLLM); the role is `prefill`, `decode`, or `agg` as in the worker logs,
+and a failover shadow engine's `_e<k>` suffix is retained as the report's
+engine. Frontend names follow `<host>_frontend_<index>.sqlite`. A `_window<n>`
+suffix is accepted. Unknown
+names remain unmapped. Imported NVTX categories are the frontend
+`preprocess.*`/`route.*`/`transport.*` ranges, TRT-LLM executor and scheduling
+ranges, and SGLang `scheduler.*` stages. The default
 NVTX limit is 250,000 events per report; `--max-profile-events` changes it.
 Truncation is explicit. Operator ranges and CUDA kernels remain in the source
 report; a CUDA table's presence is reported separately from imported data.

@@ -1385,10 +1385,16 @@ class NsysObservabilityConfig:
     report_timeout_secs: int = 1800
     # Optional container path to libToolsInjection64.so for NVTX injection.
     nvtx_injection_path: str | None = None
+    # CPU IP sampling and context-switch scope. process-tree fails on engines with
+    # many threads ("Not enough resources ... switch to system-wide"); system-wide
+    # samples every process on the node, none records NVTX only.
+    cpu_sampling: Literal["system-wide", "process-tree", "none"] = "system-wide"
 
     def __post_init__(self) -> None:
         if self.capture_window not in {"measured_workload", "including_startup"}:
             raise ValidationError("observability.nsys.capture_window must be measured_workload or including_startup")
+        if self.cpu_sampling not in {"system-wide", "process-tree", "none"}:
+            raise ValidationError("observability.nsys.cpu_sampling must be system-wide, process-tree or none")
         if self.report_timeout_secs <= 0:
             raise ValidationError("observability.nsys.report_timeout_secs must be positive")
         if self.nvtx_injection_path is not None and not self.nvtx_injection_path.startswith("/"):

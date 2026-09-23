@@ -408,6 +408,7 @@ Automatic NVTX tracing and CPU sampling of workers and Dynamo frontends.
 | `capture_window` | one of `'measured_workload'`, `'including_startup'` | `'measured_workload'` | measured_workload excludes warmup; including_startup spans process launch through teardown. |
 | `report_timeout_secs` | int | `1800` | Maximum wait for a control acknowledgment or a step's report finalization. |
 | `nvtx_injection_path` | str \| None | `None` | Optional container path to libToolsInjection64.so for NVTX injection. |
+| `cpu_sampling` | one of `'system-wide'`, `'process-tree'`, `'none'` | `'system-wide'` | CPU IP sampling and context-switch scope. process-tree fails on engines with many threads ("Not enough resources ... switch to system-wide"); system-wide samples every process on the node, none records NVTX only. |
 
 ### TelemetryExporterConfig
 

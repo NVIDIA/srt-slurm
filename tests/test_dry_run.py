@@ -1067,8 +1067,11 @@ class TestInfmaxWorkspaceMount:
 
 
 @pytest.mark.parametrize("nsys, expected", [({}, "enabled"), ({"enabled": False}, "disabled")])
-def test_observability_nsys_details(capsys, nsys, expected):
-    cfg = _make_config({"observability": {"enabled": True, "nsys": nsys}, "frontend": {"type": "dynamo"}})
+@pytest.mark.parametrize("backend", ["trtllm", "sglang"])
+def test_observability_nsys_details(capsys, nsys, expected, backend):
+    cfg = _make_config(
+        {"observability": {"enabled": True, "nsys": nsys}, "frontend": {"type": "dynamo"}, "backend": {"type": backend}}
+    )
     show_config_details(cfg)
     output = capsys.readouterr().out
     assert "nsys" in output and expected in output
@@ -1076,14 +1079,17 @@ def test_observability_nsys_details(capsys, nsys, expected):
         for text in (
             "NVTX (no CUDA tracing)",
             "nsys CPU sampling",
-            "process-tree (every target)",
+            "system-wide (every target)",
             "Dynamo frontends",
             "measured_workload",
             "after warmup",
             "1800s",
             "DYN_ENABLE_RUST_NVTX",
+            "DYN_NVTX=1",
+            "TLLM_LLMAPI_ENABLE_NVTX" if backend == "trtllm" else "SGLANG_ENABLE_NVTX_SCHEDULER",
         ):
             assert text in output
+        assert ("SGLANG_ENABLE_NVTX_SCHEDULER" in output) == (backend == "sglang")
     else:
         assert "nsys targets" not in output
 

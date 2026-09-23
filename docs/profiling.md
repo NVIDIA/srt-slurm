@@ -51,6 +51,7 @@ observability:
     capture_window: measured_workload  # default: after warmup through workload completion
     report_timeout_secs: 1800          # control/report-finalization budget, not capture length
     # nvtx_injection_path: /opt/nsys/target-linux-sbsa/libToolsInjection64.so
+    cpu_sampling: system-wide          # process-tree | none
 ```
 
 Set `capture_window: including_startup` to include initialization and warmup:
@@ -66,10 +67,13 @@ periodically records instruction pointers and call stacks, helping identify
 functions that consume CPU time without requiring an NVTX range around each
 function. Both appear in the Nsight report.
 
-Every frontend and worker session uses **process-tree** CPU sampling: its
-report includes the launched application and its child processes. Each MPI
-rank has its own profiler session and collects CPU samples for that rank.
-There is no separate CPU-sampling toggle in this preset.
+Every frontend and worker session collects CPU samples with the scope set by
+`nsys.cpu_sampling`. The default `system-wide` records every process on the
+node into each session's report. `process-tree` limits a report to the
+launched application and its children, but Nsight refuses it on engines with
+many threads ("Not enough resources are available to collect the requested CPU
+IP sampling"; SGLang workers hit this), leaving NVTX-only reports. `none`
+disables CPU sampling and keeps NVTX ranges. Each MPI rank has its own session.
 
 **Benchmark boundaries.** SA-Bench starts capture after its warmup and initial
 probe, then stops after the measured requests finish, outside its timing
@@ -112,15 +116,26 @@ and set `SRTCTL_NSYS_BIN` on the submitting/orchestrating host) and Python 3.
 `measured_workload` uses Nsight's interactive `launch`/`start`/`stop`/`shutdown`
 commands and a shared writable `/logs` mount. `including_startup` additionally
 needs Bash, `setsid`, `pgrep`, `pkill`, and `timeout`. The preset sets
-`DYN_ENABLE_RUST_NVTX=1`; Dynamo must have been built with NVTX support to emit
-Rust ranges. On TRT-LLM workers it
-also sets `TLLM_LLMAPI_ENABLE_NVTX=1` and `TLLM_PROFILE_LOG_RANKS=all`. Set
+`DYN_ENABLE_RUST_NVTX=1` and `DYN_NVTX=1` on every target. The Rust runtime ranges
+(`preprocess.*`, `route.*`, `detokenize`, `transport.*`) exist only in a Dynamo
+wheel built with the `nvtx` Cargo feature; a wheel without it still yields CPU
+samples but no Rust ranges. The Python ranges need the `nvtx` package in the
+image. On TRT-LLM workers the preset also sets `TLLM_LLMAPI_ENABLE_NVTX=1` and
+`TLLM_PROFILE_LOG_RANKS=all`. On SGLang workers it sets
+`SGLANG_ENABLE_NVTX_SCHEDULER=1` (SGLang 0.5.x from June 2026 onward), which
+emits the scheduler-loop stages from the spawned scheduler process and needs the
+`nvtx` package importable there. Add `SGLANG_ENABLE_NVTX_OPERATIONS=1` to the
+worker environment for the batch-overlap operation ranges. Set
 `nvtx_injection_path` only when the image needs an explicit NVTX injection
 library; it must be an absolute **container** path compatible with that nsys
-installation. Frontend and worker CPU sampling uses `--sample=process-tree`,
-a 26,000,000 sampling period, and 32 samples per backtrace, and requires the
-host's perf permissions. Run `nsys status --environment` in the serving
-environment to verify CPU sampling is supported.
+installation. CPU sampling uses a 26,000,000 sampling period and 32 samples
+per backtrace and requires the host's perf permissions. Run
+`nsys status --environment` in the serving environment to verify CPU sampling
+is supported. Engines that annotate a hot loop (SGLang's scheduler emits about a
+thousand `scheduler.*` ranges per second per process) can exceed Nsight's NVTX
+buffer; the report then carries the diagnostic "Not all NVTX events might have
+been collected", which `srtctl dsight` surfaces under the report's collection
+notes. Range counts from such a report are lower bounds.
 
 **Reports and shutdown.** Files for `measured_workload` are under the run's
 `logs/profiles/` directory:

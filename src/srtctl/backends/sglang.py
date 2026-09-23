@@ -433,13 +433,14 @@ class SGLangProtocol:
         if process.nccl_port is not None:
             cmd.extend(["--nccl-port", str(process.nccl_port)])
 
-        if use_sglang:
-            # sglang.launch_server serves Prometheus /metrics on its HTTP port only
-            # with --enable-metrics; tachometer (on by default) scrapes it there.
-            # Dynamo workers expose metrics on their system port without this.
-            mode_config = self.get_config_for_mode(mode)
-            if not any(key in mode_config for key in ("enable-metrics", "enable_metrics")):
-                cmd.append("--enable-metrics")
+        # sglang.launch_server serves Prometheus /metrics on its HTTP port only with
+        # --enable-metrics; tachometer (on by default) scrapes it there. dynamo.sglang
+        # serves its own metrics on the system port regardless, but only merges the
+        # engine's sglang:* series (KV usage, running requests, scheduler stages) into
+        # that endpoint when SGLang was started with this flag.
+        mode_config = self.get_config_for_mode(mode)
+        if not any(key in mode_config for key in ("enable-metrics", "enable_metrics")):
+            cmd.append("--enable-metrics")
 
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":

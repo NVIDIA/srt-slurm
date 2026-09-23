@@ -27,6 +27,9 @@ METRICS = {
     "trtllm_num_requests_running": ("Running requests", "requests"),
     "trtllm_num_requests_waiting": ("Waiting requests", "requests"),
     "trtllm_kv_cache_utilization": ("KV cache utilization", "ratio"),
+    "sglang:num_running_reqs": ("Running requests", "requests"),
+    "sglang:num_queue_reqs": ("Waiting requests", "requests"),
+    "sglang:token_usage": ("KV cache utilization", "ratio"),
     "dynamo_component_inflight_requests": ("Worker in flight", "requests"),
     "dynamo_frontend_inflight_requests": ("Frontend in flight", "requests"),
     "dynamo_frontend_queued_requests": ("Frontend queued", "requests"),
@@ -181,7 +184,7 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                 role = row.get("worker_role") or extra.get("worker_role", "")
                 index = row.get("worker_index")
                 index = extra.get("worker_index", "") if index in (None, "") else index
-                worker = f"{role}-{index}" if role in ("prefill", "decode", "aggregated") and index != "" else None
+                worker = f"{role}-{index}" if role in ("prefill", "decode", "agg") and index != "" else None
                 if worker is None and "frontend" in row["scraper_endpoint"]:
                     worker = "frontend"
                 # All non-value columns are part of the identity, including rank,
