@@ -456,3 +456,49 @@ def test_metric_rank_labels_survive_null_columns(artifacts):
     assert series["rank"] == "3" and series["rank_kind"] == "rank"
     assert series["labels"]["metric.rank"] == "3"
     assert series["samples"] == 4
+
+
+def test_per_process_and_shadow_engine_reports_map_to_the_agg_worker_and_keep_scheduler_stages(tmp_path):
+    logs, sqlites = write_run(tmp_path)
+    (logs / "agg-host_agg_w0.out").write_text("")
+    (logs / "agg-host_agg_w0_e1.out").write_text("")
+    with sqlite3.connect(sqlites / "agg-host_agg_w0_e1_profile_gpu0-1_window001.sqlite") as conn:
+        conn.executescript("""
+            CREATE TABLE TARGET_INFO_SESSION_START_TIME (utcEpochNs INTEGER, systemClockNs INTEGER);
+            CREATE TABLE ANALYSIS_DETAILS (startTime INTEGER, stopTime INTEGER);
+            CREATE TABLE NVTX_EVENTS (start INTEGER, end INTEGER, text TEXT, textId INTEGER, globalTid INTEGER);
+            CREATE TABLE StringIds (id INTEGER, value TEXT);
+        """)
+        conn.execute("INSERT INTO TARGET_INFO_SESSION_START_TIME VALUES (?, ?)", (ORIGIN, 1000))
+        conn.execute("INSERT INTO ANALYSIS_DETAILS VALUES (?, ?)", (1000, 10_000_001_000))
+        conn.executemany(
+            "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, NULL, 17)",
+            [
+                (2_300_000_000, 2_400_000_000, "scheduler.run_batch"),
+                (2_400_000_000, 2_450_000_000, "scheduler.process_batch_result"),
+                (2_450_000_000, 2_460_000_000, "attention_layer_3"),
+            ],
+        )
+    data = Importer(logs, sqlites).run()
+    agg = next(p for p in data["profiles"] if p["file"].startswith("agg-host"))
+    assert (agg["worker"], agg["rank"], agg["engine"], agg["gpus"]) == ("agg-0", None, 1, "0-1")
+    assert agg["names"] == ["scheduler.run_batch", "scheduler.process_batch_result"]
+    assert next(w for w in data["workers"] if w["id"] == "agg-0")["profiles"] == [agg["id"]]
+    dataset = TraceDataset(data)
+    assert dataset.query("nsys", worker="agg-0", start=2, end=3)["total"] == 2
+
+
+def test_sglang_engine_gauges_are_imported(artifacts):
+    logs, _ = artifacts
+    path = logs / "tachometer/local/final.parquet"
+    rows = pq.read_table(path).to_pylist()
+    for row in rows:
+        row["metric_name"] = 'sglang:num_running_reqs{model_name="test"}'
+        row["worker_role"] = "agg"
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    data = TraceDataset(Importer(logs).run())
+    result = data.query("metrics", rank=0)
+    assert result["total"] == 1
+    assert result["items"][0]["name"] == "sglang:num_running_reqs"
+    assert result["items"][0]["label"] == "Running requests"
+    assert result["items"][0]["worker"] == "agg-0"

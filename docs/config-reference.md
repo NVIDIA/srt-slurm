@@ -1408,6 +1408,11 @@ for timing, sampling, injection, and report-finalization settings.
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
+SGLang workers always receive `--enable-metrics` unless the recipe sets it: native
+`sglang.launch_server` serves `/metrics` only with the flag, and `dynamo.sglang`
+merges the engine's `sglang:*` series into its system-port `/metrics` only when
+SGLang was started with it.
+
 Tachometer collects every worker rank, frontend, DCGM, node, and process metrics by default (minus the client-polled complement described above); the exporters launch from pinned multi-arch registry images with no configuration. Air-gapped clusters override the images via the `containers:` alias map in `srtslurm.yaml`; `default_exporters: false` disables the built-ins:
 
 ```yaml

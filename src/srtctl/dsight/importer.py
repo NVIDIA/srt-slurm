@@ -365,7 +365,8 @@ class Importer:
         )
         id_owners = collections.defaultdict(set)
         for p in sorted(self.logs.glob("*_w*.out")):
-            match = re.match(r"(.+)_(prefill|decode|aggregated)_w(\d+)\.out", p.name)
+            # Failover shadow engines log as <host>_<role>_w<i>_e<k>.out for the same worker.
+            match = re.match(r"(.+)_(prefill|decode|agg)_w(\d+)(?:_e\d+)?\.out", p.name)
             if not match:
                 continue
             host, role, index = match.groups()
@@ -373,15 +374,18 @@ class Importer:
             if wid in self.workers and self.workers[wid]["host"] != host:
                 raise ValueError(f"Ambiguous worker {wid}: multiple leaders in selected logs")
             epochs = sorted(self.worker_epochs.get((host, role), set()))
-            self.workers[wid] = {
-                "id": wid,
-                "role": role,
-                "index": int(index),
-                "host": host,
-                "process_epochs": epochs,
-                "profiles": [],
-                "metrics": [],
-            }
+            self.workers.setdefault(
+                wid,
+                {
+                    "id": wid,
+                    "role": role,
+                    "index": int(index),
+                    "host": host,
+                    "process_epochs": epochs,
+                    "profiles": [],
+                    "metrics": [],
+                },
+            )
             with p.open(errors="replace", newline="\n") as stream:
                 for line, s in enumerate(stream, 1):
                     if "iter =" in s and (it := iteration.search(s)):

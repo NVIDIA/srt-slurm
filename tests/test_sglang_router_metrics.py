@@ -111,10 +111,12 @@ def _worker_command(backend: SGLangProtocol, frontend_type: str) -> list[str]:
         return backend.build_worker_command(process, [process], _runtime(), frontend_type=frontend_type)
 
 
-def test_native_sglang_workers_enable_metrics_only_for_the_sglang_frontend() -> None:
+def test_sglang_workers_enable_metrics_under_every_frontend() -> None:
     backend = SGLangProtocol(sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 1}))
     assert _worker_command(backend, "sglang").count("--enable-metrics") == 1
-    assert "--enable-metrics" not in _worker_command(backend, "dynamo")
+    # dynamo.sglang only merges the engine's sglang:* series into its system-port
+    # /metrics when SGLang itself was started with the flag.
+    assert _worker_command(backend, "dynamo").count("--enable-metrics") == 1
 
     # A recipe that already sets the flag is not given it twice.
     explicit = SGLangProtocol(sglang_config=SGLangServerConfig(aggregated={"enable-metrics": True}))

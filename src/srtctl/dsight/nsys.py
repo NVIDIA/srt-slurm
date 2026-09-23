@@ -15,8 +15,12 @@ if TYPE_CHECKING:
 
 def cpu_samples(run: Importer, c: sqlite3.Connection, utc: int, lo: int, hi: int) -> dict[str, Any] | None:
     """Retain timestamped callchains for the frontend PID, with no duration inference."""
+    # The completions path emits no preprocess.* ranges; routing and transport ranges
+    # identify the frontend process on every request path.
     pid_rows = c.execute(
-        "SELECT ((e.globalTid >> 24) & 16777215),count(*) n FROM NVTX_EVENTS e LEFT JOIN StringIds s ON e.textId=s.id WHERE coalesce(e.text,s.value) LIKE 'preprocess.%' GROUP BY 1 ORDER BY n DESC"
+        "SELECT ((e.globalTid >> 24) & 16777215),count(*) n FROM NVTX_EVENTS e LEFT JOIN StringIds s ON e.textId=s.id "
+        "WHERE coalesce(e.text,s.value) LIKE 'preprocess.%' OR coalesce(e.text,s.value) LIKE 'route.%' "
+        "OR coalesce(e.text,s.value) LIKE 'transport.%' GROUP BY 1 ORDER BY n DESC"
     ).fetchall()
     if not pid_rows:
         return None
@@ -90,11 +94,14 @@ def read_profiles(run: Importer) -> None:
                 )
                 c.close()
                 continue
-            m = re.search(r"_(prefill|decode)_w(\d+)_profile_rank(\d+)", p.stem)
-            wid, rank = (
-                (f"{m[1]}-{m[2]}", int(m[3]))
+            # MPI ranks export one report per rank; per-process launches (SGLang, vLLM)
+            # export one per worker process named by its GPU set, with the failover
+            # shadow-engine suffix before the profile marker.
+            m = re.search(r"_(prefill|decode|agg)_w(\d+)(?:_e(\d+))?_profile_(?:rank(\d+)|gpu([\d-]+))", p.stem)
+            wid, rank, engine, gpus = (
+                (f"{m[1]}-{m[2]}", int(m[4]) if m[4] else None, int(m[3]) if m[3] else None, m[5])
                 if m
-                else ("frontend" if re.search(r"_frontend_\d+", p.stem) else "unmapped", None)
+                else ("frontend" if re.search(r"_frontend_\d+", p.stem) else "unmapped", None, None, None)
             )
             utc, system = c.execute(
                 "SELECT utcEpochNs,systemClockNs FROM TARGET_INFO_SESSION_START_TIME LIMIT 1"
@@ -145,6 +152,7 @@ def read_profiles(run: Importer) -> None:
                         "kv_router.",
                         "transport.",
                         "compute_",
+                        "scheduler.",
                     )
                 )
                 if not interesting or (name == "detokenize" and b - a < 100_000):
@@ -162,6 +170,8 @@ def read_profiles(run: Importer) -> None:
                 "id": pid,
                 "worker": wid,
                 "rank": rank,
+                "engine": engine,
+                "gpus": gpus,
                 "host": env.get("Hostname", env.get("HostName")),
                 "file": p.name,
                 "evidence_source": sid,
