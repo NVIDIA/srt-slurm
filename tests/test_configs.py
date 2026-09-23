@@ -678,9 +678,11 @@ class TestSGLangProtocol:
         runtime = MagicMock()
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
-        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        runtime.network_interface = "management0"
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1") as resolve_ip:
             command = backend.build_worker_command(processes[1], [processes[1]], runtime)
 
+        resolve_ip.assert_called_once_with("node0", "management0")
         assert command[command.index("--nccl-port") + 1] == str(SGLANG_NCCL_PORT_BASE + 1)
 
 

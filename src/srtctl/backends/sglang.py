@@ -394,7 +394,7 @@ class SGLangProtocol:
         is_multi_node = len(endpoint_nodes) > 1
 
         # Get leader IP for distributed init
-        leader_ip = get_hostname_ip(endpoint_nodes[0])
+        leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
 
         # Direct frontends run the native server; Dynamo frontends run the registering worker.
         use_sglang = frontend.worker_launch == "direct"
@@ -524,7 +524,7 @@ class SGLangProtocol:
         endpoint_nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
         node_rank = endpoint_nodes.index(process.node)
         is_leader = node_rank == 0
-        leader_ip = get_hostname_ip(endpoint_nodes[0])
+        leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
         grpc_port = sidecar_grpc_port(process)
 
         served_model_name = self.get_served_model_name(runtime.model_path.name)
