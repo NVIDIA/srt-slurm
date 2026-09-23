@@ -32,8 +32,8 @@ flowchart LR
     C["Client request JSONL<br/>AIPerf / AgentPerf"] --> CP["Read request timing, TTFT<br/>sessions and token counts"]
     CP --> CU["Client sessions & agents<br/>request bars and Request tab summary"]
 
-    classDef source fill:#edf4ff,stroke:#42638c;
-    classDef ui fill:#edf8ef,stroke:#36784c;
+    classDef source fill:#edf4ff,stroke:#42638c,color:#1c3553;
+    classDef ui fill:#edf8ef,stroke:#36784c,color:#1c3c28;
     class N,T,W,F,O,C source;
     class NU,MU,MQ,IU,BU,LU,CU ui;
 ```
@@ -123,50 +123,5 @@ sources it cannot interpret.
 | Tachometer capture | No metric series is imported; metric lanes can remain empty. |
 
 Omitting an optional source is different from selecting a missing or malformed
-file, which can produce a warning or error. Hiding every empty optional-source
-section is separate UI work; the table describes current behavior.
-
-## Follow-up views and additional engine evidence
-
-These dashed paths describe extensions, **not current outputs** of the shared
-engine-interface refactor:
-
-```mermaid
-flowchart LR
-    M["Existing metric series"] -.-> S["Proposed Server metrics view"]
-    M -.-> F["Proposed Frontend & service metrics view"]
-
-    I["Joined engine request IDs"] -.-> J["Join timed engine events<br/>to the request"]
-    E["Additional engine event source<br/>request ID + stage + timestamps"] -.-> J
-    J -.-> U["Proposed per-request<br/>engine lifecycle breakdown"]
-
-    classDef future fill:#fff4eb,stroke:#b85c1e,stroke-dasharray:5 5;
-    class S,F,E,J,U future;
-```
-
-The requested **Server metrics** and **Frontend & service metrics** destinations
-belong to the separate metrics-UI change. The metric reader already retains
-supported engine, frontend and service samples; UI grouping and selection must
-expose them. They are not additional tabs in the current refactor.
-
-An engine-specific request breakdown also needs recorded stage semantics and
-timing tied to a request ID, plus a reader and UI representation for those events.
-ID maps, periodic iteration statistics and shared NVTX ranges do not provide
-that evidence by themselves. This is a proposed capability, not an implemented
-consequence of the ID bridge.
-
-<details>
-<summary>Implementation map</summary>
-
-| Responsibility | Code |
-| --- | --- |
-| Client normalization, frontend ID bridge, OTel correlation, worker identities and common dataset | [importer.py](../src/srtctl/dsight/importer.py): `clients`, `frontend_bridge`, `lifecycle`, `engine`, `run` |
-| Native AgentPerf request normalization | [clients.py](../src/srtctl/dsight/clients.py): `AgentPerfAdapter` |
-| Engine log observations, NVTX selection and metric definitions | [engines.py](../src/srtctl/dsight/engines.py): `parse_engine_log`, `select_nvtx`, `engine_metrics` |
-| Tachometer sample reading, label preservation and deduplication | [metrics.py](../src/srtctl/dsight/metrics.py): `read_metrics` |
-| Nsight SQLite ranges and available CPU callchains | [nsys.py](../src/srtctl/dsight/nsys.py): `read_profiles`, `cpu_samples` |
-| Request milestones and inclusive runtime activity | [model.py](../src/srtctl/dsight/model.py): `lifecycle` |
-| Normalized data and self-contained HTML output | [build.py](../src/srtctl/dsight/build.py): `build_dashboard` |
-| Timeline and inspector rendering | [explorer.js](../src/srtctl/dsight/assets/explorer.js): `clientTracks`, `workerTracks`, `nsysTracksFor`, `requestInspector`, `iterationInspector`, `cpuInspector` |
-
-</details>
+file, which can produce a warning or error. Some empty optional-source
+sections remain visible; the table describes current behavior.
