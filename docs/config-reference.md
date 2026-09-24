@@ -2014,6 +2014,8 @@ post_eval:
 
 `MODEL_NAME` (the served model name) and `EVAL_CONC` are always set by srtctl. `srtctl dry-run` prints the effective dispatch.
 
+Eval steps inherit the recipe's `srun_options`, including container flags such as `container-writable`.
+
 ---
 
 ## services
