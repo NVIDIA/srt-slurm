@@ -7,7 +7,7 @@ name: "svf-vllm-agg-gb300-tp8-c16-mtp-agentic"
 
 model:
   path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/DeepSeek-V4-Pro-0813"
-  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-nightly-dev-arm64-cu13.0.1-591bb95.sqsh"
+  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-nightly-dev-arm64-cu13.0.1-20ebb28.sqsh"
   precision: "fp4"
 
 identity:
