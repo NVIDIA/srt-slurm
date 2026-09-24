@@ -141,6 +141,7 @@ roles:
       tensor-parallel-size: 4
       pipeline-parallel-size: 1
       enable-cumem-allocator: true
+      enable-expert-parallel: true
       disable-custom-all-reduce: true
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
       max-model-len: 1048576
