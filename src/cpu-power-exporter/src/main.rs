@@ -9,13 +9,18 @@
 //!   exposes `cpu_power_acpi_watts{sensor,type,socket,oem_info,source="acpi"}`.
 //!   Firmware-averaged; available without DCGM.
 //!
-//! - `dcgm`: reads DCGM field 1130 (`DCGM_FI_DEV_CPU_POWER_WATTS`) via the DCGM
-//!   C API and exposes `cpu_power_dcgm_watts{socket,source="dcgm"}`.
-//!   Instantaneous; requires `libdcgm.so` and a system running the DCGM embedded
-//!   host engine.
+//! - `dcgm`: reads the DCGM CPU-entity power fields via the DCGM C API and
+//!   exposes `cpu_power_dcgm_watts{socket,field_id,source="dcgm"}`, one sample
+//!   per (socket, field). Field 1130 is the ACPI `CPU Power Socket N` rail
+//!   (`cpu_rail`) and 1132 the `SysIO Power Socket N` rail (`soc`); DCGM has no
+//!   field for the `Grace Power Socket N` envelope, so DCGM mode reports about
+//!   half the socket power ACPI mode does. Requires `libdcgm.so` (see `dcgm.rs`).
 //!
-//! - `auto` (default): tries DCGM first; falls back to ACPI if `libdcgm.so` is
-//!   absent or no CPU entities are found.
+//! - `auto` (default): tries ACPI first — it carries the socket envelope plus
+//!   every rail — and falls back to DCGM only when no ACPI `power_meter` hwmon
+//!   sensors are present. (DCGM reads the same hwmon files, so if ACPI is absent
+//!   DCGM usually is too; the fallback covers hosts where sysfs is hidden from
+//!   this process but a privileged nv-hostengine is reachable.)
 //!
 //! Endpoints:
 //!   GET /metrics  — Prometheus text format
@@ -139,8 +144,8 @@ struct Args {
 
     /// Power reading back-end.
     ///
-    /// `auto` tries DCGM first and falls back to ACPI when libdcgm.so is
-    /// absent or reports no CPU entities.
+    /// `auto` tries ACPI first (socket envelope + every rail) and falls back
+    /// to DCGM (CPU rail + SysIO only) when no ACPI power_meter sensors exist.
     #[arg(long, default_value = "auto")]
     source: SourceMode,
 }
@@ -360,30 +365,47 @@ fn build_metrics(sensors: &[Sensor]) -> String {
     out
 }
 
+const DCGM_METRICS_HEADER: &str = "# HELP cpu_power_dcgm_watts Grace CPU power via DCGM CPU-entity fields (W): \
+field_id=1130 is the CPU rail (ACPI 'CPU Power Socket N'), 1132 the SysIO rail; DCGM has no socket-envelope field.\n\
+# TYPE cpu_power_dcgm_watts gauge\n";
+
 fn build_metrics_dcgm(reader: &Arc<Mutex<dcgm::DcgmReader>>) -> String {
-    let mut out = String::from(
-        "# HELP cpu_power_dcgm_watts Grace CPU instantaneous power via DCGM field 1130 (W).\n\
-         # TYPE cpu_power_dcgm_watts gauge\n",
-    );
     match reader.lock() {
         Err(_) => {
             tracing::error!("DCGM reader mutex poisoned; skipping scrape");
+            DCGM_METRICS_HEADER.to_owned()
         }
         Ok(mut r) => match r.read_watts() {
-            Err(e) => tracing::warn!(error = %e, "DCGM read failed; skipping scrape"),
-            Ok(readings) => {
-                for (cpu_id, watts) in readings {
-                    if let Some(w) = watts {
-                        let _ = writeln!(
-                            out,
-                            "cpu_power_dcgm_watts{{socket=\"{cpu_id}\",source=\"dcgm\"}} {w:.6}",
-                        );
-                    } else {
-                        tracing::debug!(cpu_id, "no DCGM sample for entity; skipping");
-                    }
-                }
+            Err(e) => {
+                tracing::warn!(error = %e, "DCGM read failed; skipping scrape");
+                DCGM_METRICS_HEADER.to_owned()
             }
+            Ok(readings) => render_dcgm_metrics(&readings),
         },
+    }
+}
+
+/// Render DCGM readings as Prometheus text: one `cpu_power_dcgm_watts` sample per
+/// (socket, field) that has a value, labelled with the DCGM `field_id` it came
+/// from. Readings arrive entity-major with field 1130 first, and emission keeps
+/// that order so a legacy collector that ignores `field_id` still meets 1130 first.
+fn render_dcgm_metrics(readings: &[dcgm::PowerReading]) -> String {
+    let mut out = String::from(DCGM_METRICS_HEADER);
+    for r in readings {
+        match r.watts {
+            Some(w) => {
+                let _ = writeln!(
+                    out,
+                    "cpu_power_dcgm_watts{{socket=\"{}\",field_id=\"{}\",source=\"dcgm\"}} {w:.6}",
+                    r.cpu_id, r.field_id,
+                );
+            }
+            None => tracing::debug!(
+                cpu_id = r.cpu_id,
+                field_id = r.field_id,
+                "no DCGM sample for entity/field; skipping"
+            ),
+        }
     }
     out
 }
@@ -488,54 +510,68 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
     let want_dcgm = matches!(args.source, SourceMode::Dcgm | SourceMode::Auto);
     let want_acpi = matches!(args.source, SourceMode::Acpi | SourceMode::Auto);
 
+    // ACPI first: it is the only source with the socket envelope. DCGM reads
+    // the same hwmon files (minus the envelope), so it is strictly less
+    // informative and only worth falling back to when sysfs shows nothing.
+    if want_acpi {
+        match discover_sensors(&args.hwmon_root) {
+            Ok(sensors) if !sensors.is_empty() => return init_acpi_state(sensors),
+            Ok(_) => {
+                let reason = format!(
+                    "no ACPI power_meter hwmon sensors found under {}",
+                    args.hwmon_root.display()
+                );
+                if matches!(args.source, SourceMode::Acpi) {
+                    anyhow::bail!("{reason}");
+                }
+                tracing::info!(%reason, "ACPI unavailable; falling back to DCGM");
+            }
+            Err(e) => {
+                if matches!(args.source, SourceMode::Acpi) {
+                    return Err(e);
+                }
+                tracing::info!(reason = %e, "ACPI unavailable; falling back to DCGM");
+            }
+        }
+    }
+
     if want_dcgm {
         match dcgm::DcgmReader::new() {
             Ok(mut reader) => {
                 tracing::info!(
                     cpu_count = reader.cpu_ids.len(),
                     cpu_ids = ?reader.cpu_ids,
-                    "DCGM reader initialised"
+                    fields = ?dcgm::POWER_FIELDS,
+                    "DCGM reader initialised (CPU rail + SysIO; no socket envelope)"
                 );
                 // Probe: if every entity returns zero/None the embedded daemon
                 // lacks hardware access (common when running without root while a
-                // system dcgm-exporter holds the DCGM session as root).  In Auto
-                // mode this is a silent fallback to ACPI; in Dcgm mode it is a
-                // hard failure because the caller explicitly requested DCGM.
+                // system dcgm-exporter holds the DCGM session as root). DCGM is
+                // the last resort in Auto mode, so either way this is fatal.
                 let probe = reader.read_watts();
                 let any_live = probe
                     .as_ref()
-                    .map(|v| v.iter().any(|(_, w)| w.is_some()))
+                    .map(|v| v.iter().any(|r| r.watts.is_some()))
                     .unwrap_or(false);
                 if !any_live {
                     let reason = match probe {
                         Err(ref e) => format!("read error: {e}"),
                         Ok(_) => "all entities returned zero watts".into(),
                     };
-                    if matches!(args.source, SourceMode::Dcgm) {
-                        anyhow::bail!("DCGM yielded no live data: {reason}");
-                    }
-                    tracing::info!(%reason, "DCGM yielded no live data; falling back to ACPI");
-                } else {
-                    return Ok(MetricsState::Dcgm(Arc::new(Mutex::new(reader))));
+                    anyhow::bail!("DCGM yielded no live data: {reason}");
                 }
+                return Ok(MetricsState::Dcgm(Arc::new(Mutex::new(reader))));
             }
-            Err(e) => {
-                if matches!(args.source, SourceMode::Dcgm) {
-                    anyhow::bail!("DCGM unavailable: {e}");
-                }
-                tracing::info!(reason = %e, "DCGM unavailable; falling back to ACPI");
-            }
+            Err(e) => anyhow::bail!("DCGM unavailable: {e}"),
         }
     }
 
-    if want_acpi {
-        let sensors: &'static [Sensor] = Vec::leak(discover_sensors(&args.hwmon_root)?);
-        if sensors.is_empty() {
-            anyhow::bail!(
-                "no ACPI power_meter hwmon sensors found under {}",
-                args.hwmon_root.display()
-            );
-        }
+    unreachable!("one of want_dcgm or want_acpi must be true");
+}
+
+fn init_acpi_state(sensors: Vec<Sensor>) -> Result<MetricsState> {
+    {
+        let sensors: &'static [Sensor] = Vec::leak(sensors);
         tracing::info!(count = sensors.len(), "discovered ACPI sensors");
         for s in sensors {
             tracing::debug!(
@@ -561,10 +597,8 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
             })
             .context("spawn acpi-poller thread")?;
 
-        return Ok(MetricsState::Acpi(cache));
+        Ok(MetricsState::Acpi(cache))
     }
-
-    unreachable!("one of want_dcgm or want_acpi must be true");
 }
 
 #[tokio::main]
@@ -627,6 +661,50 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn dcgm_metrics_carry_field_id_and_keep_1130_first_per_socket() {
+        let readings = vec![
+            dcgm::PowerReading {
+                cpu_id: 0,
+                field_id: 1130,
+                watts: Some(50.149),
+            },
+            dcgm::PowerReading {
+                cpu_id: 0,
+                field_id: 1132,
+                watts: Some(6.125),
+            },
+            dcgm::PowerReading {
+                cpu_id: 1,
+                field_id: 1130,
+                watts: Some(46.765),
+            },
+            dcgm::PowerReading {
+                cpu_id: 1,
+                field_id: 1132,
+                watts: None,
+            }, // non-OK status: dropped
+        ];
+        let body = render_dcgm_metrics(&readings);
+        let samples: Vec<&str> = body.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(
+            samples,
+            vec![
+                "cpu_power_dcgm_watts{socket=\"0\",field_id=\"1130\",source=\"dcgm\"} 50.149000",
+                "cpu_power_dcgm_watts{socket=\"0\",field_id=\"1132\",source=\"dcgm\"} 6.125000",
+                "cpu_power_dcgm_watts{socket=\"1\",field_id=\"1130\",source=\"dcgm\"} 46.765000",
+            ]
+        );
+        assert!(body.starts_with("# HELP cpu_power_dcgm_watts "));
+        assert!(body.contains("# TYPE cpu_power_dcgm_watts gauge\n"));
+    }
+
+    #[test]
+    fn dcgm_metrics_with_no_readings_is_just_the_header() {
+        let body = render_dcgm_metrics(&[]);
+        assert_eq!(body, DCGM_METRICS_HEADER);
+    }
 
     fn write_hwmon(root: &Path, node: &str, sensors: &[(&str, Option<&str>, &str)]) -> PathBuf {
         let hwmon = root.join(node);

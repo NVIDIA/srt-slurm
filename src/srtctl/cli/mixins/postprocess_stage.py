@@ -70,6 +70,15 @@ print(out)
 """
 
 
+def _has_power_samples(log_dir: Path) -> bool:
+    """True when some power leg (GPU scraper, CPU scraper, or host CPU collector) wrote a ``samples.csv``.
+
+    Distinguishes "telemetry was off" from "telemetry ran but the energy report
+    could not be built", so the latter can be logged where someone will see it.
+    """
+    return any(log_dir.rglob("samples.csv"))
+
+
 def s3_sync_exclude_pattern(archive_pattern: str) -> str:
     """Translate a Python glob used for the archive into the AWS CLI exclude that covers it.
 
@@ -328,7 +337,16 @@ class PostProcessStageMixin:
         try:
             reports = build_reports(self.runtime.log_dir)
         except PowerReportError as e:
-            logger.debug("Power energy report skipped: %s", e)
+            # Telemetry off (no power CSVs) is the routine case and stays quiet.
+            # But a run that *did* collect power and still gets no report --
+            # benchmark died before aiperf wrote its summary, window narrower
+            # than the sample spacing, ambiguous CSVs -- must say why in the
+            # sweep log, or the missing file is only diagnosable by re-running
+            # the report offline.
+            if _has_power_samples(self.runtime.log_dir):
+                logger.info("Power energy report skipped (power samples present): %s", e)
+            else:
+                logger.debug("Power energy report skipped: %s", e)
             return
         except Exception as e:  # noqa: BLE001 - post-processing must never fail the benchmark
             logger.warning("Power energy report failed: %s", e)

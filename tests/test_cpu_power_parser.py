@@ -5,11 +5,25 @@ from srtctl.core.power.cpu_parser import parse_cpu_scrape
 
 
 def _dcgm_body():
+    """Legacy exporter body: field 1130 only, no field_id label."""
     return (
         "# HELP cpu_power_dcgm_watts x\n"
         "# TYPE cpu_power_dcgm_watts gauge\n"
         'cpu_power_dcgm_watts{socket="0",source="dcgm"} 43.878000\n'
         'cpu_power_dcgm_watts{socket="1",source="dcgm"} 52.350000\n'
+    )
+
+
+def _dcgm_rail_body():
+    """Current exporter body: one sample per (socket, DCGM field), labelled with the field id."""
+    return (
+        "# HELP cpu_power_dcgm_watts x\n"
+        "# TYPE cpu_power_dcgm_watts gauge\n"
+        'cpu_power_dcgm_watts{socket="0",field_id="1130",source="dcgm"} 43.878000\n'
+        'cpu_power_dcgm_watts{socket="0",field_id="1132",source="dcgm"} 6.100000\n'
+        'cpu_power_dcgm_watts{socket="1",field_id="1130",source="dcgm"} 52.350000\n'
+        'cpu_power_dcgm_watts{socket="1",field_id="1132",source="dcgm"} 5.900000\n'
+        'cpu_power_dcgm_watts{socket="1",field_id="1133",source="dcgm"} 70.000000\n'
     )
 
 
@@ -32,10 +46,49 @@ def test_dcgm_mode_sums_all_sockets_into_the_total():
     scrape = parse_cpu_scrape(_dcgm_body())
 
     assert scrape.mode == "dcgm"
-    assert [r.socket_id for r in scrape.readings] == [0, 1]
+    assert [(r.socket_id, r.kind) for r in scrape.readings] == [
+        (0, "dcgm"),
+        (0, "cpu_rail"),
+        (1, "dcgm"),
+        (1, "cpu_rail"),
+    ]
     assert scrape.readings[0].sensor == "CPU0:cpuPowerUsageW"
     assert scrape.readings[0].source == "dcgm"
     assert scrape.total_power_w == 43.878 + 52.35
+
+
+def test_dcgm_field_labelled_body_fills_cpu_rail_and_soc():
+    """1130 is the CPU rail and 1132 is SysIO; 1133 (module) has no rail kind and is dropped."""
+    scrape = parse_cpu_scrape(_dcgm_rail_body())
+
+    assert scrape.mode == "dcgm"
+    assert [(s.socket_id, s.sensor, s.power_w, s.rails) for s in scrape.sockets] == [
+        (0, "CPU0:cpuPowerUsageW", 43.878, {"cpu_rail": 43.878, "soc": 6.1}),
+        (1, "CPU1:cpuPowerUsageW", 52.35, {"cpu_rail": 52.35, "soc": 5.9}),
+    ]
+    # SysIO never joins the node total: power_w stays field 1130 exactly as before.
+    assert scrape.total_power_w == 43.878 + 52.35
+
+
+def test_dcgm_body_without_1130_publishes_no_socket():
+    body = '# TYPE cpu_power_dcgm_watts gauge\ncpu_power_dcgm_watts{socket="0",field_id="1132",source="dcgm"} 6.1\n'
+    scrape = parse_cpu_scrape(body)
+
+    assert scrape.mode == "dcgm"
+    assert scrape.sockets == ()
+    assert scrape.total_power_w is None
+    assert [(r.kind, r.power_w) for r in scrape.readings] == [("soc", 6.1)]
+
+
+def test_dcgm_garbage_field_id_is_ignored():
+    body = (
+        "# TYPE cpu_power_dcgm_watts gauge\n"
+        'cpu_power_dcgm_watts{socket="0",field_id="abc",source="dcgm"} 6.1\n'
+        'cpu_power_dcgm_watts{socket="0",field_id="1130",source="dcgm"} 40.0\n'
+    )
+    scrape = parse_cpu_scrape(body)
+
+    assert [(s.socket_id, s.power_w, s.rails) for s in scrape.sockets] == [(0, 40.0, {"cpu_rail": 40.0})]
 
 
 def test_acpi_mode_totals_only_total_channels():
@@ -81,12 +134,13 @@ def test_acpi_mode_accepts_legacy_exporter_type_aliases():
     assert scrape.sockets[0].rails == {"cpu_rail": 40.0, "soc": 6.0}
 
 
-def test_dcgm_mode_pivots_one_socket_row_with_no_rails():
+def test_legacy_dcgm_body_pivots_one_socket_row_with_the_cpu_rail_filled():
+    """An unlabelled sample is field 1130, which is the CPU rail -- the fact lives in cpu_rails, not on the wire."""
     scrape = parse_cpu_scrape(_dcgm_body())
 
     assert [(s.socket_id, s.sensor, s.power_w, s.rails) for s in scrape.sockets] == [
-        (0, "CPU0:cpuPowerUsageW", 43.878, {}),
-        (1, "CPU1:cpuPowerUsageW", 52.35, {}),
+        (0, "CPU0:cpuPowerUsageW", 43.878, {"cpu_rail": 43.878}),
+        (1, "CPU1:cpuPowerUsageW", 52.35, {"cpu_rail": 52.35}),
     ]
 
 

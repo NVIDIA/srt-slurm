@@ -101,10 +101,37 @@ The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
   it) a `total`-kind rail per socket. Domain names vary by platform (e.g.
   "Grace Power Socket 0" vs. a generic "Total Power socket 0", some suffixed
   with "in uW"); the exporter classifies all known variants into these kinds.
-- **`dcgm`** — reads DCGM CPU entity power directly, one already-aggregated
-  value per socket.
-- **`auto`** (default) — tries DCGM first, falls back to ACPI when DCGM is
-  unavailable or reports no CPU entities.
+- **`dcgm`** — reads the DCGM CPU-entity power fields. DCGM has no CPU power
+  backend of its own: its sysmon module reads the same ACPI hwmon channels by
+  `power1_oem_info` label, so each field *is* one ACPI rail:
+
+  | DCGM field | hwmon label it reads | srtctl rail | CSV column |
+  | --- | --- | --- | --- |
+  | 1130 `DCGM_FI_DEV_CPU_POWER_WATTS` | `CPU Power Socket N` | `cpu_rail` | `power_w` **and** `cpu_rail_w` |
+  | 1132 `DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT` | `SysIO Power Socket N` | `soc` | `soc_w` |
+  | 1131 `DCGM_FI_DEV_CPU_POWER_LIMIT_WATTS` | `Grace Power Socket N` (**cap** only) | — | — |
+  | 1133 `DCGM_FI_DEV_MODULE_POWER_UTIL_CURRENT` | `Module Power Socket N` | — (unverified; excluded) | — |
+
+  No DCGM field reports the `Grace Power Socket N` envelope's draw. Field
+  1133 does read a usage file, but what "Module" spans on GB200/GB300
+  (Grace alone, or the Grace+Blackwell superchip) has not been measured on a
+  live node; it is excluded until `dcgmi dmon -e 1130,1131,1132,1133 -i
+  cpu:0` alongside `cat /sys/class/hwmon/*/device/power1_oem_info` settles
+  it. So
+  **DCGM-mode `power_w` is the CPU rail, roughly half of ACPI-mode `power_w`**
+  (about 53 W vs 100 W per socket on GB200 reference runs). The energy report
+  attaches a "CPU rail only" warning to DCGM-sourced runs; do not compare their
+  CPU figures with ACPI-mode runs as like-for-like. The exporter publishes one
+  `cpu_power_dcgm_watts{socket,field_id}` sample per field; the collector files
+  1130 as `power_w` (as it always has) and also as `cpu_rail_w`, and 1132 as
+  `soc_w`. Older exporter builds publish 1130 alone without a `field_id`
+  label; the collector treats those samples as 1130.
+  Source: NVIDIA/DCGM `modules/sysmon/DcgmSystemMonitor.cpp` (label → file
+  map) and `modules/sysmon/DcgmModuleSysmon.cpp` (field id → getter).
+- **`auto`** (default) — tries ACPI first (it alone carries the socket
+  envelope) and falls back to DCGM only when no ACPI `power_meter` hwmon
+  sensors are present. The Python host collector (`srtctl.core.cpu_power`)
+  uses the same order.
 
 The exporter resolves this once at process startup and serves only one metric
 family (`cpu_power_dcgm_watts` or `cpu_power_acpi_watts`) for its lifetime.
@@ -119,12 +146,18 @@ readings if a scrape body ever contained both, since ACPI carries more detail.
 schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, total_power_w
 ```
 
-- **`power_w`** — one sensor's power reading for that scrape. `sensor` names
-  look like `CPU0:cpuPowerUsageW` (ACPI) or a DCGM field label; granularity is
-  per-socket.
+- **`power_w`** — the socket's power for that scrape: the ACPI `total`
+  envelope (`sensor` = `CPU<n>:cpuSidePowerUsageW`) or DCGM field 1130
+  (`sensor` = `CPU<n>:cpuPowerUsageW`, which is the CPU rail — see above);
+  granularity is per-socket.
+- **`cpu_rail_w`, `soc_w`, `dram_w`** — component rails for the socket, blank
+  when the source has no such reading. ACPI fills whichever rails the firmware
+  exposes; DCGM fills `cpu_rail_w` (= `power_w`, field 1130) and `soc_w`
+  (field 1132) and leaves `dram_w` blank.
 - **`total_power_w`** — the node-level total for that scrape, duplicated on
   every sensor row at the same `(hostname, timestamp_unix)`. In DCGM mode this
-  is the sum of the per-socket DCGM values. In ACPI mode it is **not** a sum of
+  is the sum of the per-socket field-1130 values (CPU rails; SysIO is never
+  added). In ACPI mode it is **not** a sum of
   the `cpu_rail`-, `soc`-, and `dram`-kind rails: whenever a `total`-kind
   channel exists for a socket, that channel alone is the total. Real hardware
   traces show the `total` rail at roughly 93-104W against `cpu_rail`+`soc`
