@@ -164,9 +164,9 @@ def _shape(encoded: str, upper: float | None, cache: dict) -> tuple[str, dict[st
             raise ValueError(f"Invalid histogram_bucket_upper in {encoded!r}")
         if inline is not None and inline != upper:
             raise ValueError(f"Conflicting histogram bounds in {encoded!r}: le differs from histogram_bucket_upper")
-    histogram = inline is not None or upper is not None
-    if histogram:
-        bound = inline if inline is not None else upper
+    bound = inline if inline is not None else upper
+    histogram = bound is not None
+    if bound is not None:
         labels["le"] = "+Inf" if bound == math.inf else "-Inf" if bound == -math.inf else repr(float(bound))
     return name.removesuffix("_bucket") if histogram else name, labels, histogram
 
@@ -177,7 +177,7 @@ def _inventory(batch: pa.RecordBatch, families: dict, parsed: dict) -> None:
         return
     if batch["metric_name"].null_count:
         raise ValueError("Missing raw metric name: null in raw capture")
-    encoded = pc.dictionary_encode(batch["metric_name"])
+    encoded = pc.call_function("dictionary_encode", [batch["metric_name"]])
     definitions = [_parsed_name(name, parsed) for name in encoded.dictionary.to_pylist()]
     names = pc.take(pa.array([item[0] for item in definitions]), encoded.indices)
     inline = pc.take(pa.array([item[2] for item in definitions], type=pa.float64()), encoded.indices)
@@ -185,14 +185,17 @@ def _inventory(batch: pa.RecordBatch, families: dict, parsed: dict) -> None:
         batch["histogram_bucket_upper"] if "histogram_bucket_upper" in batch.schema.names else pa.nulls(batch.num_rows)
     )
     upper = pc.cast(upper, pa.float64())
-    if pc.any(pc.fill_null(pc.is_nan(upper), False)).as_py():
+    if pc.call_function("any", [pc.fill_null(pc.call_function("is_nan", [upper]), False)]).as_py():
         raise ValueError("Invalid histogram_bucket_upper: NaN in raw capture")
-    conflict = pc.fill_null(pc.not_equal(inline, upper), False)
-    if pc.any(conflict).as_py():
-        index = pc.indices_nonzero(conflict)[0].as_py()
+    conflict = pc.fill_null(pc.call_function("not_equal", [inline, upper]), False)
+    if pc.call_function("any", [conflict]).as_py():
+        index = pc.call_function("indices_nonzero", [conflict])[0].as_py()
         raise ValueError(f"Conflicting histogram bounds in {batch['metric_name'][index].as_py()!r}")
-    histogram = pc.or_(pc.is_valid(inline), pc.is_valid(upper))
-    names = pc.if_else(histogram, pc.replace_substring_regex(names, pattern="_bucket$", replacement=""), names)
+    histogram = pc.call_function("or", [pc.call_function("is_valid", [inline]), pc.call_function("is_valid", [upper])])
+    without_bucket = pc.call_function(
+        "replace_substring_regex", [names], options=pc.ReplaceSubstringOptions(pattern="_bucket$", replacement="")
+    )
+    names = pc.call_function("if_else", [histogram, without_bucket, names])
     identities = pa.table({"name": names, "endpoint": batch["scraper_endpoint"], "histogram": histogram})
     for row in identities.group_by(identities.column_names, use_threads=False).aggregate([]).to_pylist():
         family = families.setdefault(row["name"], {"endpoints": set(), "histogram": False, "scalar": False})
@@ -250,17 +253,24 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                 raise ValueError(f"{path}: raw metrics require {sorted(required)}; UTC alignment cannot be inferred")
             run.audit["metric_rows_scanned"] += batch.num_rows
             _inventory(batch, families, parsed)
-            mask = pc.and_(
-                pc.greater_equal(batch["timestamp_ns"], run.origin),
-                pc.less_equal(batch["timestamp_ns"], run.origin + int(run.duration * 1e9)),
+            mask = pc.call_function(
+                "and",
+                [
+                    pc.call_function("greater_equal", [batch["timestamp_ns"], run.origin]),
+                    pc.call_function("less_equal", [batch["timestamp_ns"], run.origin + int(run.duration * 1e9)]),
+                ],
             )
             table = pa.Table.from_batches([batch]).filter(mask)
-            table = table.append_column("_row", pc.add(pc.indices_nonzero(mask), offset))
+            table = table.append_column(
+                "_row", pc.call_function("add", [pc.call_function("indices_nonzero", [mask]), offset])
+            )
             offset += batch.num_rows
             if not table.num_rows:
                 continue
-            finite = pc.fill_null(pc.is_finite(table["metric_value"]), False)
-            run.audit["nonfinite_metric_points"] += table.num_rows - pc.sum(pc.cast(finite, pa.int64())).as_py()
+            finite = pc.fill_null(pc.call_function("is_finite", [table["metric_value"]]), False)
+            run.audit["nonfinite_metric_points"] += (
+                table.num_rows - pc.call_function("sum", [pc.cast(finite, pa.int64())]).as_py()
+            )
             table = table.filter(finite)
             if not table.num_rows:
                 continue
@@ -341,7 +351,7 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                 )
                 series["source_ids"].add(sid)
     result = list(series_by_key.values())
-    catalog = {
+    catalog: dict[str, dict[str, Any]] = {
         name: {
             "name": name,
             **_description(name, family["endpoints"], family["histogram"]),
