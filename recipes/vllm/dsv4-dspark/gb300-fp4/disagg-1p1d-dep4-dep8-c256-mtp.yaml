@@ -23,7 +23,7 @@ dynamo:
 extra_mount:
   - "/lustre:/lustre"
   - "/lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels"
-setup_script: vllm-container-deps-dynamo-wheel-and-fullgraph-patch.sh
+setup_script: vllm-container-deps-and-dynamo-wheel.sh
 
 slurm:
   time_limit: "4:00:00"

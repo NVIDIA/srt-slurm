@@ -29,7 +29,7 @@ environment:
   PYTHONHASHSEED: "0"
   WITH_NVIDIA_PEERMEM: "0"
 
-setup_script: vllm-container-deps-dynamo-wheel-and-fullgraph-patch.sh
+setup_script: vllm-container-deps-and-dynamo-wheel.sh
 
 slurm:
   time_limit: "4:00:00"
