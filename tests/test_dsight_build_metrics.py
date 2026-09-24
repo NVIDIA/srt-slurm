@@ -51,7 +51,7 @@ def test_browser_families_reconstruct_exact_normalized_evidence():
             if series["name"] == name:
                 series["points"] = samples[str(series["id"])]
     assert core == original
-    assert '<script src=' not in html
+    assert "<script src=" not in html
     assert "custom</script>µ" not in html
 
 

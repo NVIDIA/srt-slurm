@@ -55,7 +55,9 @@ def render_html(compressed: bytes, *, data: dict[str, Any] | None = None) -> str
     html = assets.joinpath("explorer.html").read_text(encoding="utf-8")
     core, metric_elements = _browser_payload(compressed, data)
     html = html.replace("__TRACE_DATA_GZIP_BASE64__", base64.b64encode(core).decode())
-    html = html.replace('<script src="explorer.js"></script>', metric_elements + '\n<script src="explorer.js"></script>')
+    html = html.replace(
+        '<script src="explorer.js"></script>', metric_elements + '\n<script src="explorer.js"></script>'
+    )
     for name in ("uPlot.min.css", "metric-charts.css"):
         stylesheet = assets.joinpath(name).read_text(encoding="utf-8")
         if "</style" in stylesheet.lower():
