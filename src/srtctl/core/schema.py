@@ -2941,9 +2941,11 @@ class SrtConfig:
         """Validate DCGM power telemetry.
 
         It runs its collector in the orchestrator process, so it needs neither
-        the scraper image nor node_exporter. Sample and window timestamps must
-        share one host clock, which is why the benchmark client stays on the
-        head node.
+        the scraper image nor node_exporter. Sample timestamps come from the
+        orchestrator host and window boundaries from the benchmark client host;
+        both are ``time.time()`` and are assumed NTP-synchronised within the
+        allocation, so the client may run on any node (``client_placement``,
+        ``client_dedicated_node``).
         """
         telemetry = self.telemetry
         exporter = telemetry.dcgm_exporter
@@ -2976,8 +2978,6 @@ class SrtConfig:
         if self.benchmark.type not in supported_benchmarks:
             supported = ", ".join(sorted(supported_benchmarks))
             raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
-        if self.benchmark.client_placement != "head":
-            raise ValidationError("telemetry requires benchmark.client_placement: head")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra.etcd_nats_dedicated_node:
