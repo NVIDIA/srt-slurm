@@ -24,6 +24,10 @@ def source_expectations(path: Path | None) -> dict[str, Any]:
     """Retain a few independent point witnesses per family, not millions of samples."""
     if path is None:
         return {}
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
     with gzip.open(path, "rt", encoding="utf-8") as stream:
         data = json.load(stream)
     families: dict[str, Any] = {}
@@ -39,7 +43,12 @@ def source_expectations(path: Path | None) -> dict[str, Any]:
                 "labels": series["labels"],
                 "points": [points[index] for index in sorted({0, len(points) // 2, len(points) - 1})],
             }
-    result = {"families": families, "series": len(data["metrics"]), "catalog": data.get("metric_catalog", [])}
+    result = {
+        "families": families,
+        "series": len(data["metrics"]),
+        "catalog": data.get("metric_catalog", []),
+        "source": {"path": str(path.resolve()), "sha256": digest.hexdigest()},
+    }
     del data
     gc.collect()
     return result
@@ -336,6 +345,7 @@ async def run(args: argparse.Namespace) -> None:
             "html_sha256": hashlib.sha256(args.html.read_bytes()).hexdigest(),
             "expected_families": args.expected_families,
             "expected_nonempty": args.expected_nonempty,
+            "source_dataset": expected.get("source"),
             "tests": [],
         }
         try:
