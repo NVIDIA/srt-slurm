@@ -1155,10 +1155,37 @@ class VLLMProtocol:
                 config["profiler-config"] = json.dumps(
                     {
                         "profiler": "cuda",
-                        "delay_iterations": phase.vllm_nsys_delay_iterations,
-                        "max_iterations": phase.vllm_nsys_max_iterations,
+                        "delay_iterations": phase.vllm_profiler_delay_iterations,
+                        "max_iterations": phase.vllm_profiler_max_iterations,
                     }
                 )
+        elif profiling is not None and profiling.is_torch:
+            # vLLM >= 0.20 dropped VLLM_TORCH_PROFILER_DIR; the torch profiler
+            # is enabled only via --profiler-config on the CLI. ignore_frontend
+            # skips AsyncLLM's own unguarded frontend profiler: its stop_profile
+            # calls asyncio.to_thread(self.profiler.stop) from a thread that
+            # doesn't own the CUDA context, which can hang the whole
+            # /engine/stop_profile RPC forever (and with it the benchmark step,
+            # since bench.sh's curl has no timeout). delay/max_iterations mirror
+            # the cuda path so the engine-side profiler self-stops after
+            # stop_step - start_step iterations instead of relying solely on
+            # the stop RPC landing.
+            phase = profiling._get_phase_config(mode)
+            profiler_config: dict[str, Any] = {
+                "profiler": "torch",
+                # "/logs" is the container-side mount of runtime.log_dir (see
+                # container_mounts in core/runtime.py); the host path is not
+                # visible inside the container. A trace_handler writing to a
+                # host path silently succeeds (it creates the directory inside
+                # the container's own, non-persistent filesystem) and the
+                # trace is lost when the container exits.
+                "torch_profiler_dir": f"/logs/profiles/{mode}",
+                "ignore_frontend": True,
+            }
+            if phase is not None and phase.start_step is not None and phase.stop_step is not None:
+                profiler_config["delay_iterations"] = phase.vllm_profiler_delay_iterations
+                profiler_config["max_iterations"] = phase.vllm_profiler_max_iterations
+            config["profiler-config"] = json.dumps(profiler_config)
 
         sidecar_config = get_dynamo_sidecar_config(runtime)
         if sidecar_config is not None:

@@ -73,7 +73,7 @@ def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
     assert loaded.observability.nsys == cfg.observability.nsys
     assert loaded.benchmark.type == "manual"
     assert loaded.profiling.type == "none"
-    assert loaded.profiling.get_env_vars("prefill", str(tmp_path)) == {}
+    assert loaded.profiling.get_env_vars("prefill", str(tmp_path), backend_type="vllm") == {}
 
 
 @pytest.mark.parametrize(

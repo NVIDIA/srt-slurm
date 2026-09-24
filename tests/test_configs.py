@@ -3090,8 +3090,8 @@ class TestVLLMDataParallelMode:
         profiling._get_phase_config.return_value = SimpleNamespace(
             start_step=10,
             stop_step=25,
-            vllm_nsys_delay_iterations=10,
-            vllm_nsys_max_iterations=15,
+            vllm_profiler_delay_iterations=10,
+            vllm_profiler_max_iterations=15,
         )
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):

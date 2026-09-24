@@ -267,8 +267,42 @@ Profiling has specific requirements:
   nonzero configured `start_step` changes the capture length but not its start
   time.
   Dynamo-hosted vLLM and SGLang use
-  `/engine/control/start_profile` and `/engine/control/stop_profile` on each
-  selected worker's `DYN_SYSTEM_PORT`.
+  `/engine/start_profile` and `/engine/stop_profile` on each selected worker's
+  `DYN_SYSTEM_PORT`. The vLLM engine route only honors `profile_prefix`
+  (`{"start_step": ..., "num_steps": ..., "activities": ...}` is ignored), so
+  `start_step`/`stop_step` only take effect for SGLang through that HTTP body.
+  For vLLM, srtctl instead derives the step window from the
+  `profiling.<mode>` block onto the CLI: `type: torch` renders
+  `--profiler-config '{"profiler": "torch", "torch_profiler_dir": ...,
+  "ignore_frontend": true[, "delay_iterations": ..., "max_iterations": ...]}'`
+  (`get_config_for_mode` / `build_worker_command` in `backends/vllm.py`),
+  mirroring the `profiler: cuda` flag `nsys` (type: `nsys`) already used for
+  iteration-triggered nsys capture. `delay_iterations`/`max_iterations` are
+  only set when the mode has a phase config with both `start_step` and
+  `stop_step`; without one, the capture spans the whole call and only
+  `/engine/stop_profile` ends it.
+
+  **`ignore_frontend: true` is required, not optional, for vLLM.** vLLM's
+  `AsyncLLM` (the API-server process) creates its own separate, unguarded
+  torch profiler whenever `profiler: torch` and `ignore_frontend` is unset;
+  its `stop_profile()` calls `asyncio.to_thread(self.profiler.stop)` from a
+  thread that does not own the CUDA context. On the containers this repo has
+  tested (vLLM 0.20.1, GB200/aarch64) that thread mismatch trips a CUPTI/Kineto
+  error (`External init callback must run in same thread as registerClient`,
+  visible in the worker log right after profiling starts) and the frontend
+  profiler's `stop()` call hangs forever. Because `AsyncLLM.stop_profile()`
+  awaits that thread alongside the (fine) engine-worker RPC via
+  `asyncio.gather`, the whole `/engine/stop_profile` HTTP response never
+  comes back, `bench.sh`'s stop-profile `curl` blocks on it, and the
+  benchmark step — and the whole SLURM job — hangs until something cancels
+  it, with `profiles/<mode>/` left empty. `ignore_frontend: true` skips
+  creating that frontend profiler entirely, leaving only the guarded
+  engine-worker profiler (`vllm/profiler/wrapper.py`), which starts/stops on
+  its own RPC-serving thread and self-stops after `max_iterations` steps if
+  set. srtctl always sets it for `backend.type: vllm`; there is no recipe
+  knob to turn it off. `bench.sh`'s start/stop-profile `curl` calls also carry
+  a `--max-time 60` as a second line of defense, so a future hang fails the
+  benchmark step instead of wedging the job.
 - A native Dynamo sidecar exposes its system control server only on the
   endpoint leader. `capture_scope: all` still wraps all physical processes but
   sends control once to that leader; `capture_scope: selected` must select rank
@@ -420,6 +454,32 @@ logs/{job_id}_{workers}_{timestamp}/
 
 ### Empty profile output
 Ensure the benchmark workload is generating requests during the profiling window.
+
+If `profiles/<mode>/` is empty *and* the job hung after "Completed benchmark"
+until it was cancelled (or hit the SLURM time limit), check the worker log for
+`External init callback must run in same thread as registerClient` right after
+profiling starts. That is vLLM's `AsyncLLM` frontend profiler deadlocking on
+`/engine/stop_profile` — see [How It Works](#how-it-works) above. srtctl
+already sends `ignore_frontend: true` for `backend.type: vllm`, so this should
+not recur on a current srtctl build; if it does, confirm the recipe.lock.yaml
+or dry-run command actually contains `--profiler-config` with
+`"ignore_frontend": true` for the affected mode.
+
+If instead the job completes cleanly (the worker log shows "Max profiling
+iterations reached" / "Profiler stopped successfully" or a `stop_profile`
+response, with no error) but `profiles/<mode>/` is *still* empty, the trace
+directory passed to the engine was a host path instead of the container-side
+one. `runtime.log_dir` (e.g. `/mnt/lustre/.../outputs/<job_id>/logs`) is bind
+-mounted into the container at `/logs` (see `container_mounts` in
+`core/runtime.py`); any profiler output path must be written as
+`/logs/profiles/<mode>`, not `f"{runtime.log_dir}/..."`. Passing the host path
+does not error — `os.makedirs`/`tensorboard_trace_handler` happily create that
+directory *inside the container's own, non-persistent filesystem* and write
+the trace there, so it looks like profiling worked (the log has no warnings)
+but nothing appears on the host once the container exits. Check
+`recipe.lock.yaml` / the logged worker command for `--profiler-config` (vLLM
+torch/cuda) or the `*_TORCH_PROFILER_DIR` env var (SGLang) and confirm the
+value starts with `/logs/profiles`, not `/mnt/...` or another host prefix.
 
 ### Profile too short/long
 

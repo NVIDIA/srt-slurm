@@ -19,8 +19,8 @@ model:
   precision: "bf16"
 
 resources:
-  gpu_type: "h100"
-  gpus_per_node: 8
+  gpu_type: "gb200"
+  gpus_per_node: 4
 dynamo:
   source:
     pypi: "1.4.2"
@@ -31,7 +31,9 @@ frontend:
   args:
     router-mode: "kv"
 
-engine: vllm
+engine:
+  type: vllm
+  set_cuda_visible_devices: true
 roles:
   agg:
     nodes: 1

@@ -944,13 +944,19 @@ class ProfilingPhaseConfig:
     worker_rank: int = 0  # Physical process rank within that worker
 
     @property
-    def vllm_nsys_delay_iterations(self) -> int:
-        """vLLM --profiler-config delay_iterations: engine steps before capture starts."""
+    def vllm_profiler_delay_iterations(self) -> int:
+        """vLLM --profiler-config delay_iterations: engine steps before capture starts.
+
+        Shared by the cuda (nsys) and torch profiler kinds.
+        """
         return self.start_step or 0
 
     @property
-    def vllm_nsys_max_iterations(self) -> int:
-        """vLLM --profiler-config max_iterations: number of steps to capture (stop - start)."""
+    def vllm_profiler_max_iterations(self) -> int:
+        """vLLM --profiler-config max_iterations: number of steps to capture (stop - start).
+
+        Shared by the cuda (nsys) and torch profiler.
+        """
         if self.start_step is None or self.stop_step is None:
             return 0
         return max(self.stop_step - self.start_step, 0)
@@ -964,7 +970,10 @@ class ProfilingConfig:
 
     Supports two profiling modes:
     - nsys: NVIDIA Nsight Systems profiling (wraps command with nsys profile)
-    - torch: PyTorch profiler (uses SGLANG_TORCH_PROFILER_DIR)
+    - torch: PyTorch profiler. SGLang reads it from SGLANG_TORCH_PROFILER_DIR;
+      vLLM no longer honors a directory env var (VLLM_TORCH_PROFILER_DIR is
+      unknown to vLLM >= 0.20 and profiling stays disabled), so vLLM gets
+      --profiler-config on the CLI instead (see build_worker_command).
 
     Per-phase start_step/stop_step are specified in the prefill/decode/aggregated sections.
     """
@@ -1029,12 +1038,14 @@ class ProfilingConfig:
             return self.aggregated
         return None
 
-    def get_env_vars(self, mode: str, profile_dir: str) -> dict[str, str]:
+    def get_env_vars(self, mode: str, profile_dir: str, backend_type: str) -> dict[str, str]:
         """Get profiling-specific environment variables.
 
         Args:
             mode: Worker mode (prefill/decode/agg)
             profile_dir: Base directory for profiling output.
+            backend_type: Backend type (e.g. "sglang", "vllm"), selects which
+                torch profiler directory env var the engine reads.
 
         Returns:
             Dictionary of environment variables
@@ -1053,7 +1064,10 @@ class ProfilingConfig:
             if phase_config.stop_step is not None:
                 env[f"PROFILE_{phase_key}_STOP_STEP"] = str(phase_config.stop_step)
 
-        if self.is_torch:
+        if self.is_torch and backend_type != "vllm":
+            # vLLM's torch profiler is enabled via --profiler-config on the CLI
+            # (build_worker_command), not an env var; VLLM_TORCH_PROFILER_DIR is
+            # unknown to vLLM >= 0.20 and would silently leave profiling off.
             env["SGLANG_TORCH_PROFILER_DIR"] = f"{profile_dir}/{mode}"
 
         if self.is_nsys_time:
@@ -2903,7 +2917,8 @@ class SrtConfig:
 
         backend_type = self.backend.type
 
-        # torch profiling is SGLang-only (uses SGLANG_TORCH_PROFILER_DIR)
+        # torch profiling: SGLang reads SGLANG_TORCH_PROFILER_DIR; vLLM is driven
+        # via --profiler-config (see get_env_vars / build_worker_command).
         if prof.is_torch and backend_type == "trtllm":
             raise ValidationError("torch profiling is not supported for the trtllm backend; use nsys instead")
 
@@ -3008,14 +3023,15 @@ class SrtConfig:
                         "control endpoint; direct vLLM and Dynamo sidecar profiling must select rank 0"
                     )
 
-        # Iteration-based nsys (type: nsys) drives the vLLM engine profiler via
-        # --profiler-config, derived from the profiling: block. Forbid duplicating
-        # it in vllm_config so the two can't diverge silently.
-        if prof.type == "nsys" and backend_type == "vllm":
+        # Iteration-based nsys (type: nsys) and torch profiling both drive the
+        # vLLM engine profiler via --profiler-config, derived from the
+        # profiling: block. Forbid duplicating it in vllm_config so the two
+        # can't diverge silently.
+        if prof.type in ("nsys", "torch") and backend_type == "vllm":
             self._validate_vllm_nsys_profiler_config_not_set()
 
     def _validate_vllm_nsys_profiler_config_not_set(self):
-        """Reject profiler-config.* in vllm_config when nsys profiling is enabled.
+        """Reject profiler-config.* in vllm_config when nsys/torch profiling is enabled.
 
         srtctl injects --profiler-config from the profiling: block (single source
         of truth), so a user-supplied profiler-config in vllm_config would either

@@ -327,10 +327,12 @@ class WorkerStageMixin:
 
         self._apply_mooncake_process_config(process, env_to_set)
 
-        # Add profiling environment variables last.
+        # Add profiling environment variables last. "/logs" is the container-side
+        # mount of runtime.log_dir (see container_mounts in core/runtime.py); the
+        # host path is not visible inside the container, so it must not be used
+        # here (matches the nsys_output convention above).
         if profiling.enabled and profiling_selects_process:
-            profile_dir = str(self.runtime.log_dir / "profiles")
-            env_to_set.update(profiling.get_env_vars(mode, profile_dir))
+            env_to_set.update(profiling.get_env_vars(mode, "/logs/profiles", self.backend.type))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 
@@ -544,9 +546,11 @@ class WorkerStageMixin:
             env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
 
         # Add profiling environment variables after the worker environment.
+        # "/logs" is the container-side mount of runtime.log_dir (see
+        # container_mounts in core/runtime.py); the host path is not visible
+        # inside the container, so it must not be used here.
         if profiling.enabled and profiling_selects_process:
-            profile_dir = str(self.runtime.log_dir / "profiles")
-            env_to_set.update(profiling.get_env_vars(mode, profile_dir))
+            env_to_set.update(profiling.get_env_vars(mode, "/logs/profiles", self.backend.type))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 

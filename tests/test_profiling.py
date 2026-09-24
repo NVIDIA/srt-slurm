@@ -14,7 +14,7 @@ from srtctl.benchmarks.base import SCRIPTS_DIR
 @pytest.mark.parametrize(
     ("frontend_type", "start_path", "stop_path"),
     [
-        ("dynamo", "/engine/control/start_profile", "/engine/control/stop_profile"),
+        ("dynamo", "/engine/start_profile", "/engine/stop_profile"),
         ("sglang", "/start_profile", "/stop_profile"),
     ],
 )
@@ -120,7 +120,7 @@ class TestProfilingConfig:
         assert "--trace-fork-before-exec=true" not in prefix
         assert prefix[prefix.index("--capture-range-end") + 1] == "repeat:1:async"
 
-        env = profiling.get_env_vars("agg", "/logs/profiles")
+        env = profiling.get_env_vars("agg", "/logs/profiles", backend_type="sglang")
         assert "LD_LIBRARY_PATH" not in env
 
     def test_nsys_library_paths_preserve_container_environment(self):
@@ -227,18 +227,34 @@ class TestProfilingConfig:
         assert profiling.is_torch is True
         assert profiling.is_nsys is False
 
-        # Test env vars generation for prefill
-        env = profiling.get_env_vars("prefill", "/logs/profiles")
+        # Test env vars generation for prefill (sglang reads SGLANG_TORCH_PROFILER_DIR)
+        env = profiling.get_env_vars("prefill", "/logs/profiles", backend_type="sglang")
         assert env["PROFILING_MODE"] == "prefill"
         assert env["PROFILE_TYPE"] == "torch"
         assert env["PROFILE_PREFILL_START_STEP"] == "5"
         assert env["PROFILE_PREFILL_STOP_STEP"] == "15"
         assert env["SGLANG_TORCH_PROFILER_DIR"] == "/logs/profiles/prefill"
+        assert "VLLM_TORCH_PROFILER_DIR" not in env
 
         # Test env vars generation for decode (different steps)
-        env_decode = profiling.get_env_vars("decode", "/logs/profiles")
+        env_decode = profiling.get_env_vars("decode", "/logs/profiles", backend_type="sglang")
         assert env_decode["PROFILE_DECODE_START_STEP"] == "10"
         assert env_decode["PROFILE_DECODE_STOP_STEP"] == "20"
+
+    def test_torch_profiling_vllm_backend(self):
+        """vLLM >= 0.20 does not read a torch-profiler-dir env var (unlike SGLang);
+        it is enabled via --profiler-config on the CLI instead (see
+        TestVllmNsysProfilerConfig.test_torch_injects_profiler_config)."""
+        from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
+
+        profiling = ProfilingConfig(
+            type="torch",
+            prefill=ProfilingPhaseConfig(start_step=5, stop_step=15),
+        )
+
+        env = profiling.get_env_vars("prefill", "/logs/profiles", backend_type="vllm")
+        assert "VLLM_TORCH_PROFILER_DIR" not in env
+        assert "SGLANG_TORCH_PROFILER_DIR" not in env
 
     def test_aggregated_profiling(self):
         """Test aggregated profiling configuration."""
@@ -249,7 +265,7 @@ class TestProfilingConfig:
             aggregated=ProfilingPhaseConfig(start_step=0, stop_step=100),
         )
 
-        env = profiling.get_env_vars("agg", "/logs/profiles")
+        env = profiling.get_env_vars("agg", "/logs/profiles", backend_type="sglang")
         assert env["PROFILE_TYPE"] == "torch"
         assert env["PROFILE_AGG_START_STEP"] == "0"
         assert env["PROFILE_AGG_STOP_STEP"] == "100"
@@ -626,6 +642,38 @@ class TestProfilingValidation:
                 ),
             )
 
+    def test_vllm_torch_profiler_config_in_vllm_config_rejected(self):
+        """profiler-config.* in vllm_config also conflicts with torch's auto-injected one."""
+        from marshmallow import ValidationError
+
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ProfilingPhaseConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        with pytest.raises(ValidationError, match="profiler-config"):
+            SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="gb200",
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                    prefill_workers=1,
+                    decode_workers=1,
+                ),
+                backend=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"profiler-config.profiler": "torch"})),
+                profiling=ProfilingConfig(
+                    type="torch",
+                    prefill=ProfilingPhaseConfig(),
+                    decode=ProfilingPhaseConfig(),
+                ),
+            )
+
     def test_vllm_nsys_without_profiler_config_ok(self):
         """Steps live only in the profiling: block -> no conflict, validation passes."""
         from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
@@ -662,20 +710,21 @@ class TestVllmNsysProfilerConfig:
     """Tests for vLLM --profiler-config injection driven by the profiling: block."""
 
     def test_phase_iteration_properties(self):
-        """start_step/stop_step map to vLLM delay_iterations/max_iterations."""
+        """start_step/stop_step map to vLLM delay_iterations/max_iterations
+        (shared by the cuda and torch profiler kinds)."""
         from srtctl.core.schema import ProfilingPhaseConfig
 
         phase = ProfilingPhaseConfig(start_step=10, stop_step=30)
-        assert phase.vllm_nsys_delay_iterations == 10
-        assert phase.vllm_nsys_max_iterations == 20
+        assert phase.vllm_profiler_delay_iterations == 10
+        assert phase.vllm_profiler_max_iterations == 20
 
         # Missing bounds -> no capture window (0/0).
         empty = ProfilingPhaseConfig()
-        assert empty.vllm_nsys_delay_iterations == 0
-        assert empty.vllm_nsys_max_iterations == 0
+        assert empty.vllm_profiler_delay_iterations == 0
+        assert empty.vllm_profiler_max_iterations == 0
 
         # stop before start clamps to 0 instead of going negative.
-        assert ProfilingPhaseConfig(start_step=30, stop_step=10).vllm_nsys_max_iterations == 0
+        assert ProfilingPhaseConfig(start_step=30, stop_step=10).vllm_profiler_max_iterations == 0
 
     def _build_decode_cmd(self, profiling, monkeypatch, decode_cfg=None):
         from pathlib import Path
@@ -701,6 +750,13 @@ class TestVllmNsysProfilerConfig:
             is_hf_model=False,
             request_plane="nats",
             network_interface="eth0",
+            # Deliberately not "/logs": runtime.log_dir is the *host* path
+            # (see core/runtime.py's container_mounts); the container only
+            # sees it bind-mounted at /logs. --profiler-config must use the
+            # container-side "/logs/profiles/..." literal, not this value, or
+            # vLLM silently writes the trace into a directory that only
+            # exists inside the container and is lost on exit.
+            log_dir=Path("/mnt/lustre/host/outputs/12345/logs"),
         )
         return backend.build_worker_command(
             process=process,
@@ -751,6 +807,59 @@ class TestVllmNsysProfilerConfig:
         profiling = ProfilingConfig(type="nsys")  # no decode phase
         cmd = self._build_decode_cmd(profiling, monkeypatch)
         assert self._profiler_config(cmd) is None
+
+    def test_torch_injects_profiler_config(self, monkeypatch):
+        """type: torch -> vLLM's torch profiler is enabled via --profiler-config,
+        not VLLM_TORCH_PROFILER_DIR (vLLM >= 0.20 does not read that env var).
+        ignore_frontend is always set: AsyncLLM's own frontend profiler is
+        unguarded and its stop_profile call
+        (asyncio.to_thread(self.profiler.stop)) can hang the whole
+        /engine/stop_profile RPC (and with it bench.sh's untimed curl and the
+        SLURM job) when Kineto/CUPTI objects to being stopped from a thread
+        other than the one that owns the CUDA context."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig(type="torch")
+        cmd = self._build_decode_cmd(profiling, monkeypatch)
+
+        assert self._profiler_config(cmd) == {
+            "profiler": "torch",
+            "torch_profiler_dir": "/logs/profiles/decode",
+            "ignore_frontend": True,
+        }
+
+    def test_torch_with_phase_steps_injects_delay_and_max_iterations(self, monkeypatch):
+        """type: torch with start_step/stop_step -> the engine-side profiler
+        self-stops after N iterations, same as the cuda (nsys) path, instead
+        of relying solely on the stop RPC landing."""
+        from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
+
+        profiling = ProfilingConfig(type="torch", decode=ProfilingPhaseConfig(start_step=10, stop_step=30))
+        cmd = self._build_decode_cmd(profiling, monkeypatch)
+
+        assert self._profiler_config(cmd) == {
+            "profiler": "torch",
+            "torch_profiler_dir": "/logs/profiles/decode",
+            "ignore_frontend": True,
+            "delay_iterations": 10,
+            "max_iterations": 20,
+        }
+
+    def test_torch_does_not_set_vllm_env_var(self):
+        """VLLM_TORCH_PROFILER_DIR is unknown to vLLM >= 0.20; get_env_vars must not set it."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig(type="torch")
+        env = profiling.get_env_vars("decode", "/logs/profiles", backend_type="vllm")
+        assert "VLLM_TORCH_PROFILER_DIR" not in env
+
+    def test_torch_sets_sglang_env_var(self):
+        """SGLang still uses the env var; only vLLM moved to --profiler-config."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig(type="torch")
+        env = profiling.get_env_vars("decode", "/logs/profiles", backend_type="sglang")
+        assert env["SGLANG_TORCH_PROFILER_DIR"] == "/logs/profiles/decode"
 
 
 class TestProfilingTargetSelection:
