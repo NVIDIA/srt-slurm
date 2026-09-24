@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import threading
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -108,6 +109,37 @@ def test_command_override_replaces_the_lm_eval_runner(tmp_path: Path) -> None:
     kwargs = _run_eval(config, tmp_path, {"RUN_EVAL": "true"})
     assert kwargs["command"] == ["bash", "/infmax-workspace/evals/run.sh", "http://localhost:8000"]
     assert kwargs["env_to_set"]["MODEL_NAME"] == "Qwen/Qwen3-0.6B"
+
+
+def test_eval_launch_preserves_container_and_resource_options(tmp_path: Path, monkeypatch) -> None:
+    config = _load()
+    runtime = replace(
+        _runtime(tmp_path),
+        srun_options={
+            "container-writable": "",
+            "container-remap-root": "",
+            "container-workdir": "/evaluation",
+            "cpu-bind": "none",
+        },
+    )
+    orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+    monkeypatch.setenv("EVAL_ONLY", "false")
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.returncode = 0
+    with (
+        patch("srtctl.cli.do_sweep.wait_for_port", return_value=True),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("srtctl.core.slurm.subprocess.Popen", return_value=proc) as popen,
+    ):
+        assert orchestrator._run_post_eval(threading.Event()) == 0
+
+    argv = popen.call_args.args[0]
+    assert "--container-writable" in argv
+    assert "--container-remap-root" in argv
+    assert "--container-workdir=/evaluation" in argv
+    assert "--cpu-bind=none" in argv
 
 
 def test_validation() -> None:

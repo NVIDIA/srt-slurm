@@ -603,6 +603,7 @@ class SweepOrchestrator(
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
+            srun_options=self.runtime.srun_options,
             het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
         )
 
