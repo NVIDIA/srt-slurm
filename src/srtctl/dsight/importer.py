@@ -74,6 +74,7 @@ class Importer:
         self.audit: collections.Counter[str] = collections.Counter(joined_spans=0, clients_with_lifecycle=0)
         self.origin = 0
         self.profiles_data: list[dict[str, Any]] = []
+        self.metric_catalog: list[dict[str, Any]] = []
 
     def source(self, p: Path, kind: str) -> int:
         key = str(p.resolve())
@@ -505,7 +506,7 @@ class Importer:
         if not self.profiles_data:
             self.warnings.append("No Nsight SQLite exports supplied.")
         if not self.metric_series:
-            self.warnings.append("No selected raw metric series available.")
+            self.warnings.append("No raw metric samples available in the selected trace interval.")
         data = {
             "schema": SCHEMA,
             "meta": {
@@ -528,6 +529,7 @@ class Importer:
             "sessions": grouped,
             "workers": list(self.workers.values()),
             "metrics": self.metric_series,
+            "metric_catalog": self.metric_catalog,
             "profiles": self.profiles_data,
             "iterations": self.iterations,
         }

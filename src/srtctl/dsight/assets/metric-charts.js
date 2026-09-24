@@ -101,12 +101,17 @@
     const hidden = new Set((options.selection?.hidden || []).map(String));
     const from = Number(options.from), to = Number(options.to);
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) throw new Error("Metric charts need a finite increasing time range.");
-    const series = (options.series || []).map(raw => ({
-      raw, id: String(raw.id), labels: labelMap(raw), fullLabel: seriesLabel(raw),
-      points: (raw.points || []).filter(point => typeof point[0] === "number" && Number.isFinite(point[0]))
-        .map(point => [point[0], typeof point[1] === "number" && Number.isFinite(point[1]) ? point[1] : null])
-        .sort((a, b) => a[0] - b[0]),
-    })).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
+    const series = (options.series || []).map(raw => {
+      const conflicts = new Set(raw.conflict_timestamps || []), seen = new Set();
+      const points = [];
+      for (const point of raw.points || []) {
+        if (!Number.isFinite(point[0]) || seen.has(point[0])) continue;
+        seen.add(point[0]);
+        points.push([point[0], conflicts.has(point[0]) || !Number.isFinite(point[1]) ? null : point[1]]);
+      }
+      points.sort((a, b) => a[0] - b[0]);
+      return {raw, id: String(raw.id), labels: labelMap(raw), fullLabel: seriesLabel(raw), points};
+    }).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
     setCaptions(series);
     const title = options.title || series[0]?.raw.label || series[0]?.raw.name || "Metric";
     const height = Math.max(150, Number(options.height) || 220);
@@ -119,7 +124,8 @@
     count.setAttribute("aria-live", "polite");
     const chart = element("div", "ds-metric-canvas");
     const legend = element("div", "ds-metric-legend");
-    const note = element("p", "ds-metric-note", "Click a legend entry to show or hide its line. Drag across the plot to set the shared time range. Hover values show the nearest recorded sample and its timestamp.");
+    const hasConflicts = series.some(item => item.raw.conflict_timestamps?.length);
+    const note = element("p", "ds-metric-note", "Click a legend entry to show or hide its line. Drag across the plot to set the shared time range. Hover values show the nearest recorded sample and its timestamp." + (hasConflicts ? " Conflicting values at the same timestamp are shown as gaps; raw evidence retains every value." : ""));
     tools.append(element("h3", "ds-metric-title", title), count);
     root.append(tools, chart, legend, note);
     host.append(root);
@@ -152,9 +158,12 @@
       const value = element("span", "ds-metric-value");
       const details = element("details", "ds-metric-label-details");
       details.append(element("summary", "", "Labels"), element("pre", "", JSON.stringify({
-        id: item.raw.id, endpoint: item.raw.endpoint, host: item.raw.host, worker: item.raw.worker,
+        id: item.raw.id, name: item.raw.name, raw_name: item.raw.raw_name,
+        endpoint: item.raw.endpoint, host: item.raw.host, worker: item.raw.worker,
         gpu: item.raw.gpu, rank: item.raw.rank, rank_kind: item.raw.rank_kind,
         metadata: item.raw.metadata, labels: item.raw.labels,
+        conflict_timestamps: item.raw.conflict_timestamps,
+        conflicting_samples: item.raw.conflicting_samples,
       }, null, 2)));
       row.append(toggle, value, details); legend.append(row);
       return {item, value};
@@ -165,14 +174,18 @@
         const sample = nearestPoint(item.points, time ?? to, from, to);
         const unit = item.raw.unit ? " " + item.raw.unit : "";
         value.textContent = sample ? `${numberText(sample[1])}${sample[1] === null ? "" : unit} @ ${numberText(sample[0])}s` : "No sample in range";
-        value.title = sample ? `Recorded sample at ${sample[0]} elapsed seconds: ${sample[1] ?? "unavailable"}${unit}` : "No recorded sample in the selected range";
+        const unavailable = item.raw.conflict_timestamps?.includes(sample?.[0]) ? "conflicting recorded values" : "unavailable";
+        value.title = sample ? `Recorded sample at ${sample[0]} elapsed seconds: ${sample[1] ?? unavailable}${unit}` : "No recorded sample in the selected range";
       }
     }
     updateCount(); updateValues();
     if (!series.length) chart.append(element("div", "ds-metric-empty", "No recorded series for this metric."));
     else if (typeof window.uPlot !== "function") chart.append(element("div", "ds-metric-empty", "The bundled chart library could not be loaded."));
     else if (!series.some(item => item.points.some(point => point[0] >= from && point[0] <= to && point[1] !== null))) {
-      chart.append(element("div", "ds-metric-empty", "No metric sample in this time range. Widen the shared time range."));
+      const conflictsInRange = series.some(item => item.raw.conflict_timestamps?.some(time => time >= from && time <= to));
+      chart.append(element("div", "ds-metric-empty", conflictsInRange
+        ? "No unambiguous metric value in this time range. Conflicting observations remain in the raw evidence."
+        : "No metric sample in this time range. Widen the shared time range."));
     } else {
       // uPlot.join retains explicit nulls and uses undefined only for alignment holes.
       // No resampling, sample interpolation, or fabricated boundary samples are used.

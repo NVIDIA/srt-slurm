@@ -133,7 +133,9 @@ async def check_metrics(browser: Browser, report: dict[str, Any]) -> None:
         + json.dumps({"from": 0, "to": duration, "hardware": False, "nsys": False, "expandedSessions": []})
         + ")"
     )
-    original_metrics = await browser.js("traceExplorer.queryMetrics()")
+    original_metrics = await browser.js(
+        "traceExplorer.listMetricSeries ? traceExplorer.listMetricSeries() : traceExplorer.queryMetrics()"
+    )
     report["metric_count"] = len(original_metrics)
 
     def metric_key(name: str) -> str:
@@ -146,6 +148,7 @@ async def check_metrics(browser: Browser, report: dict[str, Any]) -> None:
         return panel(key) + f" .ds-metric-legend-row[data-series-id={json.dumps(identifier)}] .ds-metric-legend-toggle"
 
     async def drawn(key: str) -> list[str]:
+        await browser.js("traceExplorer.whenMetricsReady?.()")
         return await browser.js(
             f"JSON.parse(document.querySelector({json.dumps(panel(key) + ' .ds-metric-chart')}).dataset.drawnIds)"
         )
@@ -154,6 +157,7 @@ async def check_metrics(browser: Browser, report: dict[str, Any]) -> None:
         return await browser.js(f"traceExplorer.getState().metricCharts[{json.dumps(key)}]")
 
     async def visible(key: str) -> list[str]:
+        await browser.js("traceExplorer.whenMetricsReady?.()")
         return await browser.js(
             f"Array.from(document.querySelectorAll({json.dumps(panel(key) + ' .ds-metric-legend-row')}))"
             ".filter(e=>e.querySelector('.ds-metric-legend-toggle').getAttribute('aria-pressed')==='true')"
@@ -165,6 +169,7 @@ async def check_metrics(browser: Browser, report: dict[str, Any]) -> None:
             f"(()=>{{const e=document.getElementById('workerMetric');e.value={json.dumps(value)};"
             "e.dispatchEvent(new Event('change',{bubbles:true}))})()"
         )
+        await browser.js("traceExplorer.whenMetricsReady?.()")
 
     async def no_extra_controls() -> None:
         assert await browser.js("document.querySelectorAll('.ds-metric-filters,.ds-metric-chooser').length") == 0
@@ -307,8 +312,8 @@ async def check_metrics(browser: Browser, report: dict[str, Any]) -> None:
     await browser.wait(f"document.querySelector({json.dumps(values_selector)}).title !== {json.dumps(before_hover)}")
     hover = await browser.js(f"document.querySelector({json.dumps(values_selector)}).title")
     source_points = await browser.js(
-        f"traceExplorer.queryMetrics({{name:{json.dumps(name)},points:true}})"
-        f".find(s=>String(s.id)==={json.dumps(identifier)}).points"
+        f"(async()=> (await traceExplorer.queryMetrics({{name:{json.dumps(name)},points:true}}))"
+        f".find(s=>String(s.id)==={json.dumps(identifier)}).points)()"
     )
     sample_text = hover.removeprefix("Recorded sample at ")
     timestamp_text, value_text = sample_text.split(" elapsed seconds: ", 1)
@@ -331,7 +336,7 @@ async def check_metrics(browser: Browser, report: dict[str, Any]) -> None:
     assert abs(state["from"] - duration * 0.25) < duration * 0.015, state
     assert abs(state["to"] - duration * 0.60) < duration * 0.015, state
     assert await browser.js(
-        "(()=>{const s=traceExplorer.getState();return traceExplorer.queryMetrics({points:true})"
+        "(async()=>{const s=traceExplorer.getState();return (await traceExplorer.queryMetrics({name:s.metric,points:true}))"
         ".every(m=>m.points.every(p=>p[0]>=s.from&&p[0]<=s.to))})()"
     )
     report["brushed_range"] = {"from": state["from"], "to": state["to"]}

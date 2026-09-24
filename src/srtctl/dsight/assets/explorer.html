@@ -293,6 +293,22 @@
       .section-head small {
         font-weight: 400;
       }
+      .metric-section-head { align-items: flex-start; }
+      .metric-picker { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; min-width: 0; max-width: 85%; }
+      .metric-picker input { width: 180px; min-width: 0; }
+      .metric-picker select { width: min(480px, 100%); min-width: 0; }
+      .metric-picker small { width: 100%; text-align: right; color: var(--muted); }
+      .metric-description { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--grid); }
+      .metric-description code { color: var(--ink); overflow-wrap: anywhere; }
+      .metric-quality { width: 100%; }
+      .metric-quality summary { cursor: pointer; color: #275c9b; width: fit-content; }
+      .ds-metric-loading { padding: 30px 12px; color: var(--muted); font-size: 12px; }
+      @media (max-width: 700px) {
+        .metric-section-head { flex-wrap: wrap; }
+        .metric-picker { max-width: 100%; width: 100%; justify-content: flex-start; }
+        .metric-picker input, .metric-picker select { width: 100%; }
+        .metric-picker small { text-align: left; }
+      }
       .track {
         display: flex;
         min-height: 31px;
@@ -1085,6 +1101,7 @@
     </script>
     <script src="uPlot.iife.min.js"></script>
     <script src="metric-charts.js"></script>
+    <script src="metric-data.js"></script>
     <script src="explorer.js"></script>
   </body>
 </html>
