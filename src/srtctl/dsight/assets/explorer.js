@@ -50,7 +50,8 @@
   const safe = (fn) => {
     try {
       $("error").textContent = "";
-      return fn();
+      const result = fn();
+      return result?.catch ? result.catch(e => { $("error").textContent = e.message; }) : result;
     } catch (e) {
       $("error").textContent = e.message;
     }
@@ -75,11 +76,18 @@
   );
   const profileById = new Map(D.profiles.map((p) => [p.id, p]));
   const sourceById = new Map(D.sources.map((s) => [s.id, s]));
+  const metricData = window.DSightMetricData.create(D);
+  const metricFamilies = metricData.listFamilies();
+  const metricFamilyByName = new Map(metricFamilies.map(family => [family.name, family]));
+  const defaultMetric = metricFamilyByName.has("trtllm_num_requests_running")
+    ? "trtllm_num_requests_running"
+    : (metricFamilies.find(family => family.samples > 0) || metricFamilies[0])?.name || "";
   const history = [];
   let clientDrag = null,
     suppressClientClick = false;
   let metricMounts = [],
     metricCharts = [];
+  let metricGeneration = 0, metricsReady = Promise.resolve(), metricSearch = "";
   const state = {
     from: 0,
     to: D.meta.duration,
@@ -106,7 +114,7 @@
     expandedWorkers: new Set(),
     hardware: false,
     compareNsys: false,
-    metric: "trtllm_num_requests_running",
+    metric: defaultMetric,
   };
   const overlap = (a, b, lo = state.from, hi = state.to) => a <= hi && b >= lo;
   const selected = () => requests.get(state.request);
@@ -211,6 +219,7 @@
       [...state.expandedRequests].filter((id) => hasLifecycle(requests.get(id))),
     );
     if (state.span && !findInterval(selected(), state.span)) state.span = null;
+    if (!metricFamilyByName.has(state.metric)) state.metric = defaultMetric;
     state.page = Math.max(0, Number.isInteger(state.page) ? state.page : 0);
   }
   function setRange(from, to, remember = true) {
@@ -302,18 +311,19 @@
     return clone(span);
   }
   function metricStats(series, from = state.from, to = state.to) {
-    const points = series.points.filter((p) => p[0] >= from && p[0] <= to);
-    if (!points.length)
+    let samples = 0, min = Infinity, max = -Infinity, sum = 0;
+    let first = null, last = null;
+    for (const point of series.points) {
+      if (point[0] < from || point[0] > to || !Number.isFinite(point[1])) continue;
+      if (!first) first = point;
+      last = point; samples++; sum += point[1];
+      min = Math.min(min, point[1]); max = Math.max(max, point[1]);
+    }
+    if (!samples)
       return { samples: 0, min: null, max: null, mean: null, last: null };
-    const values = points.map((p) => p[1]);
     return {
-      samples: values.length,
-      min: Math.min(...values),
-      max: Math.max(...values),
-      mean: values.reduce((a, b) => a + b, 0) / values.length,
-      last: values.at(-1),
-      first_time: points[0][0],
-      last_time: points.at(-1)[0],
+      samples, min, max, mean: sum / samples, last: last[1],
+      first_time: first[0], last_time: last[0],
     };
   }
   function queryRequests({
@@ -420,7 +430,7 @@
     scrollNsys();
     return queryNsys();
   }
-  function queryMetrics({
+  async function queryMetrics({
     from = state.from,
     to = state.to,
     worker,
@@ -431,34 +441,21 @@
     points = false,
   } = {}) {
     validateRange(from, to);
-    return D.metrics
-      .filter(
-        (s) =>
-          (!worker || s.worker === worker) &&
-          (!host || s.host === host) &&
-          (gpu === undefined || s.gpu === String(gpu)) &&
-          (rank === undefined || String(s.rank) === String(rank)) &&
-          (!name || s.name === name),
-      )
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        raw_name: s.raw_name,
-        labels: clone(s.labels),
-        endpoint: s.endpoint,
-        worker: s.worker,
-        host: s.host,
-        gpu: s.gpu,
-        rank: s.rank,
-        worker_process: s.worker_process,
-        host_source: s.host_source,
-        host_evidence: s.host_evidence,
-        unit: s.unit,
-        ...metricStats(s, from, to),
-        ...(points
-          ? { points: s.points.filter((p) => p[0] >= from && p[0] <= to) }
-          : {}),
-      }));
+    const selectedSeries = metricData.listSeries({worker, host, gpu, rank, name});
+    const ids = new Set(selectedSeries.map(series => String(series.id)));
+    const results = new Map();
+    // Decode one family at a time, including for all-metric summary exports.
+    for (const family of new Set(selectedSeries.map(series => series.name))) {
+      for (const series of await metricData.loadFamily(family)) {
+        if (!ids.has(String(series.id))) continue;
+        const {points: rawPoints, ...metadata} = series;
+        results.set(String(series.id), {
+          ...clone(metadata), ...metricStats(series, from, to),
+          ...(points ? {points: rawPoints.filter(p => p[0] >= from && p[0] <= to).map(p => [...p])} : {}),
+        });
+      }
+    }
+    return selectedSeries.map(series => results.get(String(series.id)));
   }
   function queryCpu({
     profile = state.profile,
@@ -549,24 +546,26 @@
       q = queryIterations({ worker, rank, limit: 50 });
     return `<h3>TRT-LLM iteration context</h3><p class="help">${esc(q.attribution)} Host step time covers a completed host loop; previous-device time is delayed. Neither is a request stage duration.</p><div class="nsys-controls"><label>Worker<select id="iterationWorker">${D.workers.map((w) => `<option value="${esc(w.id)}" ${w.id === worker ? "selected" : ""}>${esc(w.id)}</option>`).join("")}</select></label><label>Global rank<input id="iterationRank" type="number" min="0" value="${rank}" aria-label="Iteration global rank"></label></div><p class="help">${fmt(q.total)} rows overlap this window; first 50 shown. ${q.unaligned_rows ? `${q.unaligned_rows} rows have no timezone; rebuild with --iteration-timezone.` : "Timestamps are aligned to the configured log timezone with one-second resolution."}</p><table class="mini-table"><thead><tr><th>Iteration</th><th>Batch</th><th>Host ms</th><th>Prev. GPU ms</th></tr></thead><tbody>${q.items.map((r) => `<tr><td>${r.iteration}</td><td>${r.batch_requests}</td><td>${fmt(r.host_step_ms)}</td><td>${fmt(r.previous_device_step_ms)}</td></tr>`).join("")}</tbody></table>`;
   }
-  function exportSelection() {
+  async function exportSelection() {
     const r = selected();
-    return {
+    const view = stateJSON();
+    const result = {
       schema: D.schema,
       job: D.meta.job,
       origin_ns: D.meta.origin_ns,
-      view: stateJSON(),
+      view,
       request: r ? clone(r) : null,
       visible_request_count: queryRequests({ limit: 0 }).total,
-      metrics: queryMetrics(),
       profile: state.nsys ? queryNsys({ limit: 200 }) : null,
       limitations: D.meta.limitations,
       audit: D.audit,
       sources: D.sources,
     };
+    result.metrics = await queryMetrics({from: view.from, to: view.to});
+    return result;
   }
   window.traceExplorer = Object.freeze({
-    version: "2.0",
+    version: "3.0",
     ready: true,
     describe: () => ({
       schema: D.schema,
@@ -580,6 +579,9 @@
         "inspectNsys",
         "queryRequests",
         "queryMetrics",
+        "listMetricFamilies",
+        "listMetricSeries",
+        "whenMetricsReady",
         "queryNsys",
         "exportSelection",
       ],
@@ -597,6 +599,13 @@
     inspectNsys,
     queryRequests,
     queryMetrics,
+    listMetricFamilies: () => metricData.listFamilies(),
+    listMetricSeries: filters => metricData.listSeries(filters),
+    metricDataStatus: () => metricData.status(),
+    whenMetricsReady: async () => {
+      let current;
+      do { current = metricsReady; await current; } while (current !== metricsReady);
+    },
     queryNsys,
     queryCpu,
     queryIterations,
@@ -813,32 +822,93 @@
   function metricPanel(key, series, title) {
     const id = `metricChart${metricMounts.length}`;
     metricMounts.push({ id, key, series, title });
-    return `<div id="${id}" class="dsight-metric-panel" data-metric-key="${esc(key)}"></div>`;
+    return `<div id="${id}" class="dsight-metric-panel" data-metric-key="${esc(key)}" aria-busy="true"><div class="ds-metric-loading" role="status">Loading recorded metric samples…</div></div>`;
   }
   function mountMetricCharts() {
-    metricCharts = metricMounts.map(({ id, key, series, title }) =>
-      window.DSightMetricCharts.mount($(id), {
-        series,
-        title,
-        height: 220,
-        from: state.from,
-        to: state.to,
-        selection: state.metricCharts[key],
-        onSelectionChange: (selection) => {
-          state.metricCharts[key] = selection;
-          window.dispatchEvent(new CustomEvent("trace-explorer:state", { detail: stateJSON() }));
-        },
-        onRangeChange: (from, to) => safe(() => setRange(
-          Math.max(0, from), Math.min(D.meta.duration, to),
-        )),
-      }),
-    );
+    const generation = metricGeneration;
+    const from = state.from, to = state.to;
+    const mounts = metricMounts.map(mount => ({...mount, host: $(mount.id)}));
+    metricsReady = (async () => {
+      for (const {host, key, series, title} of mounts) {
+        try {
+          const wanted = new Set(series.map(item => String(item.id)));
+          const loaded = [];
+          for (const name of new Set(series.map(item => item.name))) {
+            loaded.push(...(await metricData.loadFamily(name)).filter(item => wanted.has(String(item.id))));
+            if (generation !== metricGeneration) return;
+          }
+          if (generation !== metricGeneration || !host.isConnected) return;
+          host.replaceChildren();
+          metricCharts.push(window.DSightMetricCharts.mount(host, {
+            series: loaded, title, height: 220, from, to,
+            selection: state.metricCharts[key],
+            onSelectionChange: (selection) => {
+              state.metricCharts[key] = selection;
+              window.dispatchEvent(new CustomEvent("trace-explorer:state", {detail: stateJSON()}));
+            },
+            onRangeChange: (start, end) => safe(() => setRange(
+              Math.max(0, start), Math.min(D.meta.duration, end),
+            )),
+          }));
+          host.setAttribute("aria-busy", "false");
+        } catch (error) {
+          if (generation !== metricGeneration) return;
+          host.replaceChildren();
+          const message = document.createElement("div");
+          message.className = "ds-metric-empty";
+          message.textContent = `Could not load this metric: ${error.message}`;
+          host.append(message); host.setAttribute("aria-busy", "false");
+          $("error").textContent = error.message;
+          throw error;
+        }
+      }
+      if (generation === metricGeneration)
+        window.dispatchEvent(new CustomEvent("trace-explorer:metrics-ready", {detail: {metric: state.metric}}));
+    })();
+    // Keep the readiness promise rejected for API callers while reporting UI errors above.
+    metricsReady.catch(() => {});
+  }
+  function metricOptions() {
+    const query = metricSearch.trim().toLowerCase();
+    const matches = metricFamilies.filter(family =>
+      [family.name, family.title, family.component, family.group, family.description]
+        .some(value => String(value || "").toLowerCase().includes(query)));
+    const componentOrder = ["Frontend", "Router", "Workers", "GPU", "Host"];
+    for (const family of metricFamilies)
+      if (!componentOrder.includes(family.component)) componentOrder.push(family.component);
+    matches.sort((a, b) => componentOrder.indexOf(a.component) - componentOrder.indexOf(b.component)
+      || (a.group_order ?? 100) - (b.group_order ?? 100)
+      || String(a.group).localeCompare(String(b.group))
+      || (a.order ?? 100) - (b.order ?? 100) || a.name.localeCompare(b.name));
+    const groups = new Map();
+    for (const family of matches) {
+      const label = [family.component, family.group].filter(Boolean).join(" / ");
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(family);
+    }
+    if (!matches.some(family => family.name === state.metric) && metricFamilyByName.has(state.metric))
+      groups.set(matches.length ? "Current selection" : "No matches · current selection", [metricFamilyByName.get(state.metric)]);
+    const option = family => `<option value="${esc(family.name)}" ${family.name === state.metric ? "selected" : ""}>${esc(family.title && family.title !== family.name ? family.title + " — " : "")}${esc(family.name)}${family.samples === 0 ? " (no samples)" : ""}</option>`;
+    return {
+      html: [...groups].map(([label, families]) => `<optgroup label="${esc(label)}">${families.map(option).join("")}</optgroup>`).join(""),
+      count: `${matches.length} / ${metricFamilies.length} metrics`,
+    };
+  }
+  function metricDescription(family) {
+    if (!family) return "No metrics were recorded.";
+    const kind = family.value_kind === "histogram"
+      ? `Recorded bucket observation counts${family.observation_unit ? `; bounds in ${family.observation_unit}` : ""}.`
+      : family.counter || family.value_kind === "counter" ? "Raw cumulative counter values." : "Recorded sample values.";
+    return `<code>${esc(family.name)}</code><span>${esc([family.description, kind, family.samples === 0 ? "No samples in the captured trace interval." : ""].filter(Boolean).join(" "))}</span>${family.quality ? `<details class="metric-quality"><summary>Metric notes</summary>${esc(family.quality)}</details>` : ""}`;
   }
   function workerTracks() {
-    let html =
-      '<div class="section-head"><span>Server metrics</span><select id="workerMetric" aria-label="Worker metric"><option value="trtllm_num_requests_running">Running requests</option><option value="trtllm_num_requests_waiting">Waiting requests</option><option value="dynamo_component_inflight_requests">In-flight requests</option><option value="trtllm_kv_cache_utilization">KV cache utilization</option></select></div>';
+    const options = metricOptions();
+    const family = metricFamilyByName.get(state.metric);
+    let html = `<div class="section-head metric-section-head"><span>Metrics</span><div class="metric-picker"><input id="metricSearch" type="search" placeholder="Search metrics" aria-label="Search metrics" value="${esc(metricSearch)}"><select id="workerMetric" aria-label="Metric">${options.html}</select><small id="metricSearchCount" aria-live="polite">${options.count}</small></div></div><div class="metric-description">${metricDescription(family)}</div>`;
     const choices = D.metrics.filter((s) => s.name === state.metric);
-    html += metricPanel(JSON.stringify(["metric", state.metric]), choices, choices[0]?.label ?? state.metric);
+    html += metricPanel(JSON.stringify(["metric", state.metric]), choices, family?.title || choices[0]?.label || state.metric);
+    // Catalog reports expose hardware through the same categorized selector.
+    if (D.metric_catalog) return html;
     html += `<div class="section-head"><span>Hardware</span><button id="hardwareToggle" aria-expanded="${state.hardware}">${state.hardware ? "Hide" : "Show"} GPU / host metrics</button></div>`;
     if (state.hardware) {
       const gpuSeries = D.metrics.filter((s) =>
@@ -1157,9 +1227,11 @@
         : []),
       'x.inspectNsys({worker: "prefill-0", rank: 0});',
       "x.queryNsys({limit: 20});",
-      "x.queryMetrics();",
+      "x.listMetricFamilies();",
+      "x.listMetricSeries({name: x.getState().metric});",
+      "await x.queryMetrics({name: x.getState().metric});",
       "x.queryIterations({worker: 'decode-0', rank: 0});",
-      "x.exportSelection();",
+      "await x.exportSelection();",
     ].join("\n");
     return `<p>The API controls the same inputs and expansions you see here, and returns structured evidence.</p><div class="code">${esc(code)}</div><div class="actions"><button id="downloadState">Export evidence JSON</button><button id="copyState">Copy view state</button></div><h3>Current state</h3><div class="code">${esc(JSON.stringify({ range_seconds: [state.from, state.to], request: state.request, ttft_expanded: state.expandedRequests.has(state.request), nsys_profile: state.nsys ? state.profile : null }, null, 2))}</div><p class="help">Times are seconds from origin_ns. Queries support offset / limit and report total counts. View links preserve range, selection, and expansion.</p>`;
   }
@@ -1217,6 +1289,7 @@
   }
   function render() {
     clearClientDrag();
+    metricGeneration++;
     for (const chart of metricCharts) chart.destroy();
     metricCharts = [];
     metricMounts = [];
@@ -1382,10 +1455,10 @@
           render();
           if (state.nsys) scrollNsys();
         },
-        saveSelection: () =>
-          download(exportSelection(), `trace-${D.meta.job}-selection.json`),
-        downloadState: () =>
-          download(exportSelection(), `trace-${D.meta.job}-selection.json`),
+        saveSelection: async () =>
+          download(await exportSelection(), `trace-${D.meta.job}-selection.json`),
+        downloadState: async () =>
+          download(await exportSelection(), `trace-${D.meta.job}-selection.json`),
         copyState: () =>
           copy(JSON.stringify(stateJSON(), null, 2)).catch(
             (e) => ($("error").textContent = e.message),
@@ -1397,7 +1470,7 @@
           copy(url.href).catch((e) => ($("error").textContent = e.message));
         },
       };
-      actions[b.id]?.();
+      return actions[b.id]?.();
     }),
   );
   document.addEventListener("change", (event) =>
@@ -1433,6 +1506,13 @@
     }),
   );
   let searchTimer;
+  document.addEventListener("input", event => {
+    if (event.target.id !== "metricSearch") return;
+    metricSearch = event.target.value;
+    const options = metricOptions();
+    $("workerMetric").innerHTML = options.html;
+    $("metricSearchCount").textContent = options.count;
+  });
   $("search").addEventListener("input", () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {

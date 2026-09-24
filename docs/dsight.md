@@ -84,7 +84,7 @@ identity bridges are omitted.
 | Frontend logs | `*_frontend_*.out` | Explicit client header → Dynamo UUID bridge |
 | Dynamo OTel | `otel/*/traces.jsonl`, OTLP JSON resource/scope spans | Original timestamps, parents, trace/request/process identities and route attributes |
 | Worker logs | `*_{prefill,decode,agg}_w*[_e<k>].out` | Engine ID maps, worker identity and iteration summaries |
-| Tachometer | `tachometer/local`, or `--metrics <capture-leaf-or-file>` | Selected running/waiting/in-flight, KV, GPU and host gauges with recorded labels |
+| Tachometer | `tachometer/local`, or `--metrics <capture-leaf-or-file>` | All captured metric families, with source labels and samples within the client trace interval |
 | Nsight SQLite | `--nsys-sqlite <directory-or-file>` | Selected NVTX ranges and available frontend CPU samples, aligned by session UTC anchor |
 
 `--phase profiling` excludes explicit AIPerf warmup rows; `--phase all` includes
@@ -99,8 +99,17 @@ response text and SSE payloads are excluded from the normalized dataset.
 For metrics, `final.parquet` supersedes compacted Parquet shards. An Arrow tail
 is also read, with identical samples deduplicated within complete series
 identities. The upload mirror is excluded. Absolute `timestamp_ns` is required
-for alignment. Imported families are listed in `src/srtctl/dsight/metrics.py` and
-`src/srtctl/dsight/engines.py`; this context view does not replace the complete Tachometer metric catalog.
+for alignment. The catalog includes every captured family, including families
+with no samples in the client trace interval. Presentation categories reuse the
+Tachometer taxonomy: **Frontend, Router, Workers, GPU, Host**, with subgroups
+such as engine scheduling, KV cache, and host memory. Unknown families remain
+selectable with their raw names and stored values.
+
+Known counters display captured cumulative values. Histogram lines show recorded
+bucket observation counts, with bucket bounds retained in their identities;
+attached histogram sum/count fields do not manufacture additional series.
+No rate or quantile is inferred. Conflicting values at an identical source and
+timestamp remain in the query evidence and are marked as chart gaps.
 
 Nsight worker filenames follow
 `<host>_<role>_w<index>_profile_rank<rank>.sqlite` for MPI ranks and
@@ -126,9 +135,10 @@ report; a CUDA table's presence is reported separately from imported data.
   lifecycle only when available.
 - Click a milestone or raw span for boundaries and source references. Expand
   workers in the request path for operation/dispatch/response-pump nesting and
-  Nsight reports. **Server metrics** shows the metric selected at its top right
-  as one chart across workers, using the same offline uPlot library as the
-  Tachometer dashboard. Click a legend entry to hide or show its line. Every
+  Nsight reports. The metric selector at the top right searches all captured
+  families by name and title, grouped by component and subgroup. The selected
+  metric appears as one chart across its sources, using the same offline uPlot
+  library as the Tachometer dashboard. Click a legend entry to hide or show its line. Every
   recorded series remains available in the legend; **Labels** exposes its full
   identity. Hover values include the actual sample timestamp. Chart dragging
   changes the shared time range; saved views preserve line visibility per metric.
@@ -141,7 +151,10 @@ report; a CUDA table's presence is reported separately from imported data.
   **Export selection** saves evidence JSON.
 
 Sessions are paginated; details expand on demand. Dense Nsight lanes show event
-density until zoomed in. Queries retain exact imported intervals.
+density until zoomed in. Queries retain exact imported intervals. The offline
+HTML decompresses metric samples by family on demand and bounds its decoded
+cache. The downloadable `trace-data.json.gz` retains complete normalized points
+and source-row evidence for Python, CLI, and MCP queries.
 
 ## Timing definitions
 
@@ -215,10 +228,19 @@ x.selectRange(29, 34);
 x.selectRequest("<client-request-id>", {expand: true});
 x.getLifecycle("<client-request-id>");
 x.inspectNsys({worker: "decode-0", rank: 0, from: 32, to: 33});
-x.queryMetrics({worker: "decode-0"});
+x.listMetricFamilies(); // Synchronous catalog, including coverage and categories.
+x.listMetricSeries(); // Synchronous source identities without point decoding.
+await x.queryMetrics({name: "trtllm_num_requests_running", worker: "decode-0"});
 x.queryIterations({worker: "decode-0", rank: 0});
-x.exportSelection();
+await x.exportSelection();
+await x.whenMetricsReady(); // Wait for the selected chart after a UI action.
 ```
+
+Browser API version 3 makes `queryMetrics()` and `exportSelection()` asynchronous
+so unloaded families return complete results. Await these methods even when a
+family was previously viewed. Exports capture the selected view and range before
+loading samples, so changing the view during loading does not mix selections.
+Range, request, lifecycle, and other existing query methods remain synchronous.
 
 Agent workflow: inspect coverage → find slow requests in a bounded window →
 inspect lifecycle/source evidence → compare worker metrics and shared execution

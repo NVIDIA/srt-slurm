@@ -513,8 +513,10 @@ def test_engine_gauges_are_imported(artifacts, name, label, unit):
     pq.write_table(pa.Table.from_pylist(rows), path)
     data = TraceDataset(Importer(logs).run())
     result = data.query("metrics", rank=0, points=True)
-    assert result["total"] == 1
-    series = result["items"][0]
+    assert result["total"] == 2
+    series = next(item for item in result["items"] if item["name"] == name)
+    unknown = next(item for item in result["items"] if item["name"] == f"{name}_unknown")
+    assert unknown["points"][0][1] == 1000.0
     assert (series["name"], series["label"], series["unit"]) == (name, label, unit)
     assert series["worker"] == "agg-0"
     assert series["labels"]["metric.model_name"] == "test"

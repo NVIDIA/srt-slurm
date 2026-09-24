@@ -44,3 +44,28 @@ null and alignment holes are undefined, as documented by the upstream
 It does not resample, interpolate, or add boundary samples. Hover values show the
 nearest recorded sample with its actual timestamp. Sample evidence remains in
 the unchanged input objects; this component only reads timestamps and values.
+When a series declares `conflict_timestamps`, those timestamps become explicit
+plot gaps; conflicting numeric observations remain in the raw query evidence.
+
+## Metric catalog and loading
+
+`metric-data.js` indexes series metadata and decodes embedded gzip payloads by
+family. The HTML builder separates points from the core browser payload and
+embeds each family as an inert base64 element. It does not alter the downloadable
+normalized dataset. Legacy reports with inline points are also supported.
+Decodes are serialized and coalesced; an LRU cache retains at most 500,000 points.
+A larger family can be viewed but is not retained by that cache. Rendering checks
+a generation token after loading so an earlier selection cannot replace a newer
+chart.
+
+The metric picker consumes `metric_catalog`, including the shared presentation
+semantics in `srtctl.analysis.metric_catalog` adapted from the Tachometer dashboard
+([PR #447](https://github.com/NVIDIA/srt-slurm/pull/447), source commit
+`b2509c17c68f4b2326f7656b3e33738770e1d575`). Every family is selectable, including
+families without samples in the trace interval. These charts display captured
+counter and histogram bucket values without computing rates or percentiles.
+
+Browser API v3 exposes synchronous `listMetricFamilies()` and `listMetricSeries()`
+metadata, asynchronous `queryMetrics()` and `exportSelection()` evidence, and
+`whenMetricsReady()` for chart readiness. Callers must await the asynchronous
+methods regardless of whether the family is cached.
