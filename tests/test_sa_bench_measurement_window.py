@@ -714,3 +714,25 @@ class TestArtifactErrors:
 
         assert rows[0].power_coverage_valid is False
         assert Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID in errors[0].reason_codes
+
+
+class TestWindowCli:
+    def test_custom_benchmark_writes_a_window_the_validator_accepts(self, logs, monkeypatch):
+        monkeypatch.setattr(measurement_window, "CONTAINER_LOG_DIR", str(logs))
+        monkeypatch.setenv(MEASUREMENT_WINDOW_DIR_ENV, str(logs / "power" / WINDOWS_DIRNAME))
+        result = str(logs / RESULT_SUBDIR / f"{RESULT_STEM}.json")
+
+        measurement_window.main(["running", result, "4"])
+        assert _window_json(logs)["status"] == "running"
+        _write_result(logs, start=1785168100.0, end=1785168120.0, duration=20.0)
+        measurement_window.main(["completed", result, "4"])
+
+        payload = _window_json(logs)
+        assert (payload["benchmark_type"], payload["status"], payload["duration"]) == ("custom", "completed", 20.0)
+        [validation] = _validate(logs, _samples(1785168100.0, 1785168120.0), expected=(("custom", 4),))
+        assert validation.power_coverage_valid is True
+
+    def test_is_a_no_op_without_the_window_dir(self, logs, monkeypatch):
+        monkeypatch.delenv(MEASUREMENT_WINDOW_DIR_ENV, raising=False)
+        measurement_window.main(["running", str(logs / RESULT_SUBDIR / f"{RESULT_STEM}.json"), "4"])
+        assert list((logs / "power" / WINDOWS_DIRNAME).iterdir()) == []

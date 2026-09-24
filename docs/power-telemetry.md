@@ -91,6 +91,17 @@ A window file records the formal benchmark boundaries on the head-node Unix
 clock plus a monotonic `duration`, and points at the SA-Bench result it
 brackets; result and window are boundary-identical.
 
+A `benchmark.type: custom` command stamps the same windows with the module's CLI,
+mounted at `/srtctl-benchmarks/sa-bench/measurement_window.py`. Run `running`
+before each measured concurrency and `completed` after it; `completed` reads
+`benchmark_start_time_unix`, `benchmark_end_time_unix` and `duration` from the
+result JSON. Both are no-ops when telemetry is off.
+
+```bash
+python3 /srtctl-benchmarks/sa-bench/measurement_window.py running "$result" "$concurrency"
+python3 /srtctl-benchmarks/sa-bench/measurement_window.py completed "$result" "$concurrency"
+```
+
 With `required: true`, all artifacts are written first and the job then exits
 non-zero whenever the terminal manifest is not publishable. With
 `required: false`, measurement invalidity leaves the benchmark exit code

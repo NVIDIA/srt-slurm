@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 SCHEMA_VERSION = 1
 BENCHMARK_TYPE = "sa-bench"
@@ -53,10 +54,11 @@ def _atomic_write_json(path, payload):
 class MeasurementWindow:
     """One formal window file for one measured concurrency point."""
 
-    def __init__(self, path, result_path, concurrency):
+    def __init__(self, path, result_path, concurrency, benchmark_type=BENCHMARK_TYPE):
         self.path = path
         self.result_path = result_path
         self.concurrency = concurrency
+        self.benchmark_type = benchmark_type
         self._boundary = None
 
     @classmethod
@@ -96,7 +98,7 @@ class MeasurementWindow:
             self.path,
             {
                 "schema_version": SCHEMA_VERSION,
-                "benchmark_type": BENCHMARK_TYPE,
+                "benchmark_type": self.benchmark_type,
                 "result_path": self.result_path,
                 "concurrency": self.concurrency,
                 "benchmark_start_time_unix": start_unix,
@@ -142,3 +144,43 @@ def control_nsys(action):
     """Acknowledge the capture boundary; no-op when automatic nsys is disabled."""
     if os.environ.get("SRT_NSYS_CONTROL_DIR"):
         subprocess.run([sys.executable, os.environ["SRT_NSYS_CONTROL_SCRIPT"], action], check=True)
+
+
+def main(argv=None):
+    """Write one window from outside SA-Bench, e.g. from a ``benchmark.type: custom`` command.
+
+    ``running`` stamps the start now; ``completed`` takes the boundary from the result
+    JSON's ``benchmark_start_time_unix``, ``benchmark_end_time_unix`` and ``duration``.
+    Like the in-process writer, this is a no-op unless srtctl injected the window directory.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("status", choices=[STATUS_RUNNING, STATUS_COMPLETED])
+    parser.add_argument("result", help="Result JSON path under /logs")
+    parser.add_argument("concurrency", type=int)
+    parser.add_argument("--benchmark-type", default="custom")
+    args = parser.parse_args(argv)
+    window = MeasurementWindow.create(
+        save_result=True,
+        result_dir=os.path.dirname(args.result),
+        result_filename=os.path.basename(args.result),
+        concurrency=args.concurrency,
+    )
+    if window is None:
+        return
+    window.benchmark_type = args.benchmark_type
+    if args.status == STATUS_RUNNING:
+        window.mark_running(time.time())
+        return
+    with open(args.result, encoding="utf-8") as handle:
+        result = json.load(handle)
+    window.mark_completed(
+        start_unix=result["benchmark_start_time_unix"],
+        end_unix=result["benchmark_end_time_unix"],
+        duration=result["duration"],
+    )
+
+
+if __name__ == "__main__":
+    main()
