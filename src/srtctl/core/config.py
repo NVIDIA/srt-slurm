@@ -288,6 +288,22 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         tachometer = config.setdefault("observability", {}).setdefault("tachometer", {})
         tachometer.setdefault("default_gpu_exporter", copy.deepcopy(cluster_config["default_gpu_exporter"]))
 
+    # The same cluster exporter serves GPU power telemetry: a recipe that enables
+    # telemetry without naming any collector inherits it (image, port, command and
+    # power_profile), so one recipe measures power on NVIDIA and AMD clusters alike.
+    # Recipes that name a GPU exporter, or that enable only a CPU leg, are untouched;
+    # without this the inherited case was the "nothing to collect" validation error.
+    telemetry = config.get("telemetry")
+    cluster_gpu_exporter = cluster_config.get("default_gpu_exporter")
+    if (
+        isinstance(telemetry, dict)
+        and telemetry.get("enabled")
+        and isinstance(cluster_gpu_exporter, dict)
+        and not any(key in telemetry for key in ("dcgm_exporter", "cpu_power_exporter", "cpu_power"))
+    ):
+        telemetry["dcgm_exporter"] = copy.deepcopy(cluster_gpu_exporter)
+        logger.debug("Applied cluster default_gpu_exporter to telemetry.dcgm_exporter")
+
     # Resolve every container alias in one pass (model.container,
     # frontend.container_image / nginx_container, benchmark.container_image,
     # exporter images, mooncake_kv_store.container, services, ...).

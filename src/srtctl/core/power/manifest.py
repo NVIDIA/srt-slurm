@@ -11,15 +11,13 @@ from typing import Any
 from srtctl import __version__ as PRODUCER_VERSION
 from srtctl.core.power.contract import (
     CLOCK_SOURCE,
-    POWER_METRIC,
-    POWER_SCOPE,
     POWER_UNIT,
     PRODUCER,
     SAMPLES_SCHEMA_VERSION,
     SCHEMA_VERSION,
-    UTILIZATION_METRICS,
     dedupe,
 )
+from srtctl.core.power.profile import DEFAULT_POWER_PROFILE, PowerMetricProfile
 from srtctl.core.power.samples import ObservedDevice
 from srtctl.core.power.topology import ExpectedDevice
 
@@ -35,6 +33,9 @@ TERMINAL_STATUSES = (STATUS_COMPLETE, STATUS_INCOMPLETE, STATUS_FAILED)
 @dataclass(frozen=True)
 class DcgmExporterIdentity:
     """Exactly which exporter image produced the samples.
+
+    Serialized under the historical ``dcgm_exporter`` manifest key for every
+    profile; the profile itself is recorded separately as ``power_profile``.
 
     ``container_image_sha256`` is ``None`` when the resolved image is not a
     regular file (for example a registry URI pulled at srun time).
@@ -116,6 +117,7 @@ class PowerManifest:
     expected_devices: list[ExpectedDevice]
     expected_windows: list[ExpectedWindow]
     producer_git_commit: str | None = None
+    profile: PowerMetricProfile = DEFAULT_POWER_PROFILE
     status: str = STATUS_STARTING
     stopped_at_unix: float | None = None
     publication_valid: bool | None = None
@@ -146,13 +148,14 @@ class PowerManifest:
             "producer": PRODUCER,
             "producer_version": PRODUCER_VERSION,
             "producer_git_commit": self.producer_git_commit,
-            "source_metric": POWER_METRIC,
+            "power_profile": self.profile.name,
+            "source_metric": self.profile.power_metric,
             "unit": POWER_UNIT,
-            "power_scope": POWER_SCOPE,
+            "power_scope": self.profile.power_scope,
             "samples_schema_version": SAMPLES_SCHEMA_VERSION,
             "utilization_metrics": [
                 {"column": metric.column, "source_metric": metric.metric, "unit": metric.unit}
-                for metric in UTILIZATION_METRICS
+                for metric in self.profile.utilization_metrics
             ],
             "timestamp_source": CLOCK_SOURCE,
             "job_id": self.job_id,

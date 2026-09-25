@@ -47,6 +47,7 @@ from srtctl.core.power.manifest import (
     PowerManifest,
 )
 from srtctl.core.power.parser import parse_power_scrape
+from srtctl.core.power.profile import DEFAULT_POWER_PROFILE, PowerMetricProfile
 from srtctl.core.power.samples import SampleRow, SampleWriter, derive_observed_devices, read_samples
 from srtctl.core.power.topology import ExpectedDevice, validate_devices
 from srtctl.core.power.windows import convert_running_windows, validate_expected_windows
@@ -82,6 +83,8 @@ class PowerSessionSettings:
     network_interface: str | None = None
     producer_git_commit: str | None = None
     log_dir: Path | None = None
+    # Which metric and labels the exporter's ``/metrics`` body carries the watts in.
+    profile: PowerMetricProfile = DEFAULT_POWER_PROFILE
 
     @property
     def result_root(self) -> Path:
@@ -155,6 +158,7 @@ class PowerTelemetrySession:
             required=settings.required,
             started_at_unix=time.time(),
             producer_git_commit=settings.producer_git_commit,
+            profile=settings.profile,
             dcgm_exporter=_exporter_identity(settings),
             expected_devices=expected_device_list,
             expected_windows=list(expected_windows),
@@ -402,7 +406,7 @@ class PowerTelemetrySession:
         settled_monotonic = time.monotonic()
         settled_unix = time.time()
 
-        scrape = parse_power_scrape(body) if body is not None else None
+        scrape = parse_power_scrape(body, self._settings.profile) if body is not None else None
         timestamp_unix = (started_unix + settled_unix) / 2
         rows = [
             SampleRow(
@@ -458,7 +462,7 @@ class PowerTelemetrySession:
             return any(not process.is_running for process in self._exporters)
 
     def _check_exporters(self) -> None:
-        """A DCGM exporter exit during collection invalidates the run."""
+        """An exporter exit during collection invalidates the run."""
         if self._stop.is_set():
             return
         if self._any_exporter_exited():

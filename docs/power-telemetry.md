@@ -5,17 +5,20 @@ allocated worker node, the topology needed to map each GPU to a `prefill`,
 `decode`, or `agg` role, and the exact formal benchmark window for every
 measured concurrency. It never integrates power into energy and never branches
 on model, precision, or recipe; consumers integrate watts over the recorded
-window themselves.
+window themselves. The provider name is historical: the exporter that supplies
+the watts is selected per cluster or recipe (see [Exporter profiles](#exporter-profiles)).
 
 ## How it works
 
-- One DCGM exporter task runs on each allocated worker node, launched through
-  the normal SLURM/process-registry path (one `srun` per heterogeneous group).
+- One GPU power exporter task runs on each allocated worker node, launched
+  through the normal SLURM/process-registry path (one `srun` per heterogeneous
+  group).
 - A collector thread inside the orchestrator polls every exporter concurrently
   from the physical head node, so all sample timestamps and benchmark
   boundaries come from one clock.
-- Only `DCGM_FI_DEV_POWER_USAGE` is parsed. Device identity comes from the
-  `gpu` and `UUID` labels.
+- Only the profile's power metric is parsed (`DCGM_FI_DEV_POWER_USAGE` for
+  DCGM). Device identity comes from the profile's index and identity labels
+  (`gpu` and `UUID` for DCGM).
 - **No in-tree benchmark stamps measurement windows yet**, so every run is
   currently unpublishable: it records `MEASUREMENT_WINDOW` reason codes, and
   `required: true` exits non-zero. The adapter belongs with the benchmark
@@ -50,7 +53,10 @@ telemetry:
     port: 9401
 ```
 
-`dcgm-power` needs **only** `dcgm_exporter`: there is no `provider` key, and it does
+`dcgm-power` needs **only** `dcgm_exporter`. A recipe that sets
+`telemetry.enabled: true` with no `dcgm_exporter` and no CPU leg inherits the
+cluster's `default_gpu_exporter` block from `srtslurm.yaml`, so one recipe can
+measure power on clusters with different GPUs. There is no `provider` key, and it does
 not require the top-level `container_image` or a `node_exporter`, because the
 collector runs inside srtctl. Config loading validates the block and rejects
 inconsistent values with actionable messages; in particular
@@ -60,6 +66,69 @@ disabled by default.
 The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.
+
+## Exporter profiles
+
+The collector, parser, manifest and validator do not know which GPU vendor they
+are measuring. Every exporter the collector can scrape is one row of
+`POWER_PROFILES` in `srtctl/core/power/profile.py`, selected by the
+`power_profile` field of the exporter block (`telemetry.dcgm_exporter`, or the
+cluster `default_gpu_exporter` it inherits). A row names:
+
+- the Prometheus metric carrying watts, and the `power_scope` recorded in the manifest;
+- the label carrying the node-local GPU index (must match the index srt-slurm
+  allocates by) and the label carrying a stable per-device identity (fills the
+  `gpu_uuid` column);
+- optional utilization riders mapped onto the fixed `gpu_util_pct` and
+  `sm_active` columns (a row may fill fewer columns; the rest stay empty);
+- labels that mark logical sub-devices (MIG instances, partitions) the artifact
+  cannot represent;
+- the default launch command and how tachometer filters the same endpoint.
+
+| `power_profile` | Exporter | Power metric | Index / identity labels | Utilization |
+| --- | --- | --- | --- | --- |
+| `dcgm` (default) | NVIDIA dcgm-exporter | `DCGM_FI_DEV_POWER_USAGE` | `gpu` / `UUID` | `DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_PROF_SM_ACTIVE` |
+| `amd-device-metrics` | [rocm/device-metrics-exporter](https://github.com/ROCm/device-metrics-exporter) | `gpu_power_usage` | `gpu_id` / `serial_number` | `gpu_gfx_activity` |
+
+The artifact layout is identical for every row. `manifest.json` records the
+row as `power_profile`, and `source_metric` / `power_scope` /
+`utilization_metrics` describe that row's measurement, so a consumer can tell
+the boundaries apart without config. `srtctl-validate-power` checks those keys
+against the named row.
+
+### AMD (`amd-device-metrics`)
+
+The exporter is AMD's Prometheus exporter container, the direct analog of
+dcgm-exporter. Cluster-level configuration, so that recipes need not change:
+
+```yaml
+# srtslurm.yaml
+visible_devices_env: ROCR_VISIBLE_DEVICES
+default_gpu_exporter:
+  container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
+  command: "/home/amd/tools/entrypoint.sh"
+  port: 5000
+  power_profile: amd-device-metrics
+```
+
+The same block works under `telemetry.dcgm_exporter` in a recipe. Notes:
+
+- Pyxis runs the given command, not the image `ENTRYPOINT`; the entrypoint
+  script starts the `gpuagent` daemon the exporter reads from and then execs
+  the exporter, so it is the command (also the profile's default when
+  `command` is omitted).
+- The exporter has no port flag. It listens on 5000 unless a
+  `/etc/metrics/config.json` sets `ServerPort`; keep `port: 5000` unless the
+  command mounts such a file.
+- It needs `/dev/kfd` and `/dev/dri` inside the container, the same devices the
+  ROCm engine containers need; the launch uses the run's container mounts.
+- Metric and label names are lowercase in this exporter. `gpu_uuid` is not
+  exported by default, so the row identifies devices by `serial_number`.
+- `gpu_power_usage` is the per-device draw on bare metal (MI2xx/MI3xx). Compute
+  partitions share one serial number and report 0 W beyond the first partition;
+  a partitioned node fails device validation (`gpu_uuid_changed`), like MIG on
+  NVIDIA. Socket-level figures (`gpu_package_power`) are a different boundary
+  and are not used.
 
 ## Artifacts
 
@@ -78,7 +147,7 @@ never interpolated, averaged, or role-attributed — role and heterogeneous
 group live once in the manifest topology.
 
 `manifest.json` records producer identity (version, git commit, exporter image
-and its SHA-256), the sample interval, expected and observed device sets, the
+and its SHA-256, `power_profile`), the sample interval, expected and observed device sets, the
 topology mapping, the expected window list, the SHA-256 of the finalized
 `samples.csv` bytes, terminal status, per-window coverage validation, and
 reason codes. `status` is the lifecycle outcome;

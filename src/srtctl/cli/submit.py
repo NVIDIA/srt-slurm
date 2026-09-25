@@ -58,6 +58,7 @@ from srtctl.core.git_state import (
     write_git_state_snapshot,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
+from srtctl.core.power.profile import get_power_profile
 from srtctl.core.runtime import Nodes
 from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
@@ -744,6 +745,7 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
             if exporter is not None:
                 details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
+                details.add_row("telemetry", "power_profile", get_power_profile(exporter.power_profile).name)
 
             cpu_exporter = config.telemetry.cpu_power_exporter
             if cpu_exporter is not None:

@@ -15,11 +15,16 @@ default_time_limit: "04:00:00"
 # On ROCm/Linux, select one visibility mask and omit the NVIDIA exporter:
 # visible_devices_env: ROCR_VISIBLE_DEVICES
 # default_gpu_exporter: null
-# Or configure your cluster's exporter (recipe exporter settings still win):
+# Or configure your cluster's exporter once; tachometer scrapes it and
+# `telemetry: {enabled: true}` recipes measure GPU power with it (recipe
+# exporter settings still win). `power_profile` names the row in
+# srtctl.core.power.profile that says which metric and labels carry the watts:
+# `dcgm` (default) or `amd-device-metrics` for rocm/device-metrics-exporter.
 # default_gpu_exporter:
-#   container_image: "your-gpu-exporter:image"
-#   command: "your-gpu-exporter --port {port}"
-#   port: 9401
+#   container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
+#   command: "/home/amd/tools/entrypoint.sh"   # the image entrypoint; pyxis runs the command, not ENTRYPOINT
+#   port: 5000                                  # the exporter's fixed default; it takes no port flag
+#   power_profile: amd-device-metrics
 
 # Some clusters see intermittent git smart-HTTP failures negotiating HTTP/2
 # against github.com (stalls, or truncated responses git misreports as

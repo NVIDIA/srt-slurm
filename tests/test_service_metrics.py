@@ -223,7 +223,7 @@ def test_power_telemetry_owning_dcgm_replaces_the_implied_exporter(tmp_path: Pat
     with patch.object(
         SweepOrchestrator, "backend_processes", [Process("node1", frozenset({0}), 8081, 30000, "agg", 0, 0)]
     ):
-        power = orchestrator._power_dcgm_targets()
+        power = orchestrator._power_exporter_targets()
     assert [(t.endpoint_name, t.url, t.gpu_metadata) for t in power] == [
         ("dcgm_node1", "http://node1:9400/metrics", True)
     ]

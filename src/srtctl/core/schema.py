@@ -54,8 +54,9 @@ from srtctl.core.formatting import (
     FormattablePathField,
 )
 
-# Leaf module (stdlib-only imports), so this cannot cycle back into schema.
+# Leaf modules (stdlib and prometheus-free imports), so these cannot cycle back into schema.
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
+from srtctl.core.power.profile import POWER_PROFILES
 from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
@@ -1542,6 +1543,9 @@ class TelemetryExporterConfig:
     command: str | None = None
     # Host executable to run without a container; relative paths resolve against the srtctl checkout.
     binary: str | None = None
+    # GPU power profile naming the exporter's power metric, device labels, and default `command`:
+    # `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter).
+    power_profile: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1855,9 +1859,10 @@ class CpuPowerExporterConfig:
 class TelemetryConfig:
     """DCGM power telemetry for benchmark measurement windows."""
 
-    # Collect DCGM GPU power over each benchmark concurrency window.
+    # Collect GPU power over each benchmark concurrency window.
     enabled: bool = False
-    # DCGM exporter image, port, and optional command; required when `enabled`.
+    # GPU power exporter image, port, optional command and `power_profile`. When `enabled` with
+    # no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.
     dcgm_exporter: TelemetryExporterConfig | None = None
     # Milliseconds between collector cycles. Replaces the retired
     # ``default_frequency``, which despite its name was a period in seconds
@@ -3392,6 +3397,11 @@ class SrtConfig:
             raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
+        if exporter.power_profile is not None and exporter.power_profile not in POWER_PROFILES:
+            known = ", ".join(sorted(POWER_PROFILES))
+            raise ValidationError(
+                f"telemetry.dcgm_exporter.power_profile={exporter.power_profile!r} is unknown; known profiles: {known}"
+            )
 
         for name in ("startup_timeout_seconds",):
             if not _is_finite_positive(getattr(telemetry, name)):

@@ -283,8 +283,8 @@ DCGM power telemetry for benchmark measurement windows.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `False` | Collect DCGM GPU power over each benchmark concurrency window. |
-| `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` | DCGM exporter image, port, and optional command; required when `enabled`. |
+| `enabled` | bool | `False` | Collect GPU power over each benchmark concurrency window. |
+| `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` | GPU power exporter image, port, optional command and `power_profile`. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used. |
 | `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles. Replaces the retired ``default_frequency``, which despite its name was a period in seconds (1000ms == the old 1.0 default). |
 | `storage_subdir` | str | `'power'` | Output directory below the run's log directory. |
 | `required` | bool | `False` | Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort. |
@@ -469,6 +469,7 @@ Configuration for a metrics exporter deployed on worker nodes.
 | `port` | int | required | Port the exporter serves `/metrics` on, on every worker node. |
 | `command` | str \| None | `None` | Command line replacing the image's default entrypoint arguments. |
 | `binary` | str \| None | `None` | Host executable to run without a container; relative paths resolve against the srtctl checkout. |
+| `power_profile` | str \| None | `None` | GPU power profile naming the exporter's power metric, device labels, and default `command`: `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter). |
 
 ### CpuPowerExporterConfig
 

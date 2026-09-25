@@ -659,6 +659,18 @@
           ],
           "description": "Host executable to run without a container; relative paths resolve against the srtctl checkout.",
           "default": null
+        },
+        "power_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU power profile naming the exporter's power metric, device labels, and default `command`: `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter).",
+          "default": null
         }
       },
       "description": "Configuration for a metrics exporter deployed on worker nodes.",

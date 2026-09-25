@@ -3247,7 +3247,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Collect DCGM GPU power over each benchmark concurrency window.",
+          "description": "Collect GPU power over each benchmark concurrency window.",
           "default": false
         },
         "dcgm_exporter": {
@@ -3259,7 +3259,7 @@
               "type": "null"
             }
           ],
-          "description": "DCGM exporter image, port, and optional command; required when `enabled`.",
+          "description": "GPU power exporter image, port, optional command and `power_profile`. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.",
           "default": null
         },
         "collect_interval_ms": {
@@ -3352,6 +3352,18 @@
             }
           ],
           "description": "Host executable to run without a container; relative paths resolve against the srtctl checkout.",
+          "default": null
+        },
+        "power_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU power profile naming the exporter's power metric, device labels, and default `command`: `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter).",
           "default": null
         }
       },
