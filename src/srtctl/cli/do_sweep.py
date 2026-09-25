@@ -44,7 +44,7 @@ from srtctl.core.processes import (
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
-from srtctl.core.slurm import get_slurm_job_id, start_srun_process
+from srtctl.core.slurm import get_slurm_job_id, shared_container_name, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
@@ -172,7 +172,10 @@ class SweepOrchestrator(
 
     def _print_connection_info(self) -> None:
         """Print srun commands for connecting to nodes."""
-        container_args = f"--container-image={self.runtime.container_image}"
+        container_args = (
+            f"--container-image={self.runtime.container_image} "
+            f"--container-name={shared_container_name(self.runtime.container_image, job_id=str(self.runtime.job_id))}"
+        )
         mounts_str = ",".join(f"{src}:{dst}" for src, dst in self.runtime.container_mounts.items())
         if mounts_str:
             container_args += f" --container-mounts={mounts_str}"

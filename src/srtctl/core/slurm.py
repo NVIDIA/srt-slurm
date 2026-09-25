@@ -11,6 +11,7 @@ This module consolidates all SLURM-related functionality:
 - Container utilities: get_container_mounts_str
 """
 
+import hashlib
 import logging
 import os
 import shlex
@@ -181,6 +182,19 @@ def get_node_ips(
 CONTAINER_REMAP_ROOT_EXPORT = {"ENROOT_REMAP_ROOT": "yes"}
 
 
+def shared_container_name(container_image: str | Path, *, remap_root: bool = False, job_id: str | None = None) -> str:
+    """Pyxis ``--container-name`` shared by every step of this job that runs
+    ``container_image`` on a node, so the image is extracted once per node
+    instead of once per step (see docs/slurm-faq.md, "One Container Per Image
+    Per Node"). Keyed on the image and on the root remap (a rootfs created
+    without ``ENROOT_REMAP_ROOT`` cannot serve a step that needs it), suffixed
+    with the job id so concurrent jobs on a node never share one.
+    """
+    key = f"{container_image}|remap_root" if remap_root else str(container_image)
+    digest = hashlib.sha1(key.encode()).hexdigest()[:12]
+    return f"srtctl_{digest}_{job_id or get_slurm_job_id() or 'nojob'}"
+
+
 def start_srun_process(
     command: list[str],
     *,
@@ -191,6 +205,7 @@ def start_srun_process(
     output: str | None = None,
     container_image: str | None = None,
     container_mounts: dict[Path, Path] | None = None,
+    container_name: str | None = None,
     env_to_pass_through: list[str] | None = None,
     env_to_set: dict[str, str] | None = None,
     env_to_unset: list[str] | None = None,
@@ -219,6 +234,7 @@ def start_srun_process(
         output: Output file path (optional)
         container_image: Container image path (optional)
         container_mounts: Dict of host_path -> container_path mounts
+        container_name: Pyxis ``--container-name``; defaults to :func:`shared_container_name`.
         env_to_pass_through: Environment variable names to pass through
         env_to_set: Environment variables to set (name -> value)
         env_to_unset: Environment variable names to unset before the preamble and command
@@ -290,6 +306,13 @@ def start_srun_process(
     # Container options
     if container_image:
         srun_cmd.extend(["--container-image", str(container_image)])
+        remap_root = bool(srun_export_env) and all(
+            srun_export_env.get(k) == v for k, v in CONTAINER_REMAP_ROOT_EXPORT.items()
+        )
+        container_name = container_name or shared_container_name(
+            container_image, remap_root=remap_root, job_id=slurm_job_id
+        )
+        srun_cmd.append(f"--container-name={container_name}")
         srun_cmd.append("--no-container-entrypoint")
         srun_cmd.append("--no-container-mount-home")
 

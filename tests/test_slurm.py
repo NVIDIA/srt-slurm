@@ -14,7 +14,7 @@ from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import ObservabilityConfig, ResourceConfig
-from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
+from srtctl.core.slurm import get_slurm_het_nodelists, shared_container_name, start_srun_process
 
 
 def _built_bash_command(mock_popen: MagicMock) -> str:
@@ -873,3 +873,72 @@ def test_endpoint_rejects_incompatible_local_rank_mapping(tmp_path: Path) -> Non
     ):
         mixin.start_endpoint_worker(endpoints_to_processes(endpoints))
     mock_srun.assert_not_called()
+
+
+def _container_name_arg(mock_popen: MagicMock) -> str:
+    srun_cmd = mock_popen.call_args.args[0]
+    names = [a for a in srun_cmd if a.startswith("--container-name=")]
+    assert len(names) == 1, srun_cmd
+    return names[0].removeprefix("--container-name=")
+
+
+def test_srun_steps_of_one_image_share_one_named_container() -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["python3", "-m", "prefill"], container_image=Path("/containers/trtllm.sqsh"))
+        first = _container_name_arg(mock_popen)
+        start_srun_process(["python3", "-m", "decode"], container_image=Path("/containers/trtllm.sqsh"))
+        second = _container_name_arg(mock_popen)
+        start_srun_process(["aiperf"], container_image=Path("/containers/client.sqsh"))
+        other_image = _container_name_arg(mock_popen)
+        expected = shared_container_name("/containers/trtllm.sqsh")
+
+    assert first == second == expected == f"srtctl_{expected.split('_')[1]}_12345"
+    assert other_image != first
+
+
+def test_remap_root_steps_get_their_own_container() -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["python3", "-m", "worker"], container_image="/c.sqsh")
+        plain = _container_name_arg(mock_popen)
+        start_srun_process(
+            ["python3", "-m", "worker"],
+            container_image="/c.sqsh",
+            srun_export_env={"ENROOT_REMAP_ROOT": "yes"},
+        )
+        remapped = _container_name_arg(mock_popen)
+        expected = shared_container_name("/c.sqsh", remap_root=True)
+
+    assert plain != remapped
+    assert remapped == expected
+
+
+def test_explicit_container_name_is_honoured() -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["true"], container_image="/c.sqsh", container_name="mine")
+    assert _container_name_arg(mock_popen) == "mine"
+
+
+def test_no_container_name_without_an_image() -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["/bin/node_exporter"], use_bash_wrapper=False)
+    assert not any(a.startswith("--container-name=") for a in mock_popen.call_args.args[0])
