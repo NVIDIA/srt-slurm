@@ -31,6 +31,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/mlperf-client.yaml` | `benchmark.type: custom` driving the MLPerf inference-endpoint client in its own image; placeholder paths, a reference rather than a runnable example |
 | `features/infra-services.yaml` | etcd and NATS as declared services on a dedicated node with a NATS payload limit; the implied exporters overridden or switched off |
 | `features/dynamo-source.yaml` | `dynamo.source:` building Dynamo from a git tag (or a PR head via `--set dynamo.source.rev=refs/pull/<n>/head`), pinned to a commit at submit |
+| `features/node-hooks.yaml` | `host_setup:` pre-run and post-run commands on each node's bare host, driven by `configs/node-hooks.sh`: arbitrary shell commands, one per line, from `HOOK_PRE` / `HOOK_POST` block scalars in the recipe environment, with per-command logging and a state snapshot |
 | `features/vllm-failover.yaml` | `engine.failover:` shadow engine recovery: a GPU Memory Service sidecar and a parked standby engine per vLLM worker, relaunched in place after a crash. Needs a container that ships `gpu_memory_service` (the `dynamo-vllm` alias, an `nvcr.io/nvidia/ai-dynamo/vllm-runtime` image). See [../docs/shadow-engine-recovery.md](../docs/shadow-engine-recovery.md) |
 
 ## Cluster aliases
