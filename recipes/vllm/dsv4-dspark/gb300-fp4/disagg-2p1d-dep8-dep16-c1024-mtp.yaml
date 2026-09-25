@@ -47,11 +47,11 @@ services:
   - name: etcd
     type: etcd
     placement:
-      node: infra
+      node: dedicated
   - name: nats
     type: nats
     placement:
-      node: infra
+      node: dedicated
     options:
       max_payload_mb: 32
   - name: mooncake-master
@@ -67,6 +67,8 @@ services:
         enable_offload: false
 frontend:
   type: dynamo
+  placement:
+    node: dedicated
   enable_multiple_frontends: false
   env:
     ETCD_LEASE_TTL: '120'
