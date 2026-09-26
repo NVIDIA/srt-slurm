@@ -48,7 +48,7 @@ directory. `examples/features/services.yaml` is a runnable version of this.
 ```yaml
 services:
   - name: my-sidecar             # required, unique across the list
-    type: generic                # generic (default) | etcd | nats | mooncake-master | dcgm-exporter | node-exporter | mooncake-store
+    type: generic                # generic (default) | etcd | nats | mooncake-master | dcgm-exporter | node-exporter | mooncake-store | lmcache-server
     enabled: true                # false drops the service (the way to switch an implied one off)
     external: null               # typed kinds only: use an instance that already runs at this address
     command:                     # argv, not shell-interpreted; required for generic
@@ -104,10 +104,10 @@ services:
 | `placement.pool` | none | Run on the nodes another service owns, one instance per node of that pool. Replaces `node`. See [pools.md](pools.md). |
 | `placement.per` | `node` | `worker`: one instance per engine worker on each placed node instead of one per node, attached to that worker (its `CUDA_VISIBLE_DEVICES`, the `{worker_*}` placeholders). See [Placement](#placement). |
 | `nodes` | none | Whole nodes this service owns: its pool, added to the allocation after the engine roles' nodes, in declaration order. Any number of services may own nodes, next to engine roles or without them. An owner is placed on its own pool (`placement.node: workers`). Not supported with `resources.het_jobs`. See [pools.md](pools.md). |
-| `start` | type default | `etcd`, `nats`: `infra`. `mooncake-master`, `mooncake-store`: `before_workers`. `generic` and the exporters: `after_frontend`. |
+| `start` | type default | `etcd`, `nats`: `infra`. `mooncake-master`, `mooncake-store`, `lmcache-server`: `before_workers`. `generic` and the exporters: `after_frontend`. |
 | `readiness` | type default | One probe per node: `port` / `tcp`, `http`, or `log`, plus `timeout_seconds` and `interval_seconds`. The typed kinds gate on their well-known ports when no probe is written. See [Start Order and Readiness](#start-order-and-readiness). Timing out terminates what this stage started and fails the job. |
 | `inherit_discovery_env` | `true` | Inject the same `ETCD_ENDPOINTS` / `NATS_SERVER` the Dynamo frontend gets. |
-| `critical` | type default | `generic`: `false`. `mooncake-store`: `true`. |
+| `critical` | type default | `generic`: `false`. `mooncake-store`, `lmcache-server`: `true`. |
 | `terminal` | `false` | This service is the job's run: the job ends when every instance of every terminal service has exited, with the worst exit code as the job's. The recipe has no benchmark step (`benchmark.type` stays `manual`); combining the two is refused. See [pools.md](pools.md#ending-the-job-with-a-pool). |
 | `metrics` | kind default | Prometheus endpoints the service serves: one `{port, path, nodes, name}` or a list of them (`path` defaults to `/metrics`, `nodes` to `all`, `name` to the service name and is required when there are several). Tachometer scrapes each on every node the service runs on, pools included, as endpoint `<name>_<node>`, and the rows carry `service=<service>`; `nodes: first` scrapes only the service's first node (a cluster head that serves a collector or a router). The exporter kinds declare theirs; write it for anything else that publishes metrics. |
 | `preamble` | none | Shell run after the environment is exported and before `command`. |
@@ -302,6 +302,7 @@ environment its process needs; the launch path is shared by every kind. Register
 | `node-exporter` | `/bin/node_exporter` with the cpu, infiniband, and meminfo collectors on 9101 in `quay.io/prometheus/node-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less. `options`: `port`. |
 | `process-exporter` | `configs/process-exporter -config.path <log_dir>/process-exporter.yml -web.listen-address=:9256 -threads=true ...` on the bare node | `after_frontend` | `false` | Implied on every allocated node (`placement.node: all`) while tachometer runs. Host-native from the static binary `make setup` installs; skipped with a warning when it is missing. A declared `container` switches to the image's `/bin/process-exporter` with the group file under `/logs`. `options`: `port`, `binary`. |
 | `mooncake-store` | `python -m mooncake.mooncake_store_service` | `before_workers` | `true` | Requires a `mooncake-master` entry. Container falls back to the master's. Injects the master's address. |
+| `lmcache-server` | `lmcache server` bound to the RPC and HTTP ports srtctl owns (8750, 8751) | `before_workers` | `true` | One per worker node (`placement.node: workers`); vLLM ranks reach it over localhost with `connector: lmcache-mp`. `args` are appended (`--l1-size-gb`, `--chunk-size`, `--max-workers`, ...). Ready when `GET /healthcheck` answers; LMCache must be installed in the job container. |
 | `ray` | `ray start --head ...` on the first instance, `ray start --address=<head>:6379 ...` on the rest, both `--block` | `before_workers` | `true` | One Ray cluster across the service's nodes; see [Ray cluster](#ray-cluster). Placement `workers` (default), `head`, or `all`. `options`: `port` (GCS, 6379), `dashboard_port` (8265), `num_gpus` (the node's count). `args` are appended to every `ray start`. |
 | `gms` | one `python3 -m gpu_memory_service --device k` per GPU of the worker, supervised by bash, in the job container | `before_workers` | `true` | Implied by `engine.failover`; see [Shadow Engine Recovery](shadow-engine-recovery.md). `placement.per: worker` (required): one instance per vLLM worker in that worker's device view, sockets and lock file under `<shared_dir>/srtctl-<job>/<role>_<index>`. Ready when its log says `GMS ready:`; `readiness.timeout_seconds` (default 120) also bounds the servers' startup. |
 

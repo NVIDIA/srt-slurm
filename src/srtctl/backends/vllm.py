@@ -35,6 +35,7 @@ from srtctl.ports import (
     HTTP_PORTS,
     KV_EVENTS_PORTS,
     KVBM_ZMQ_PORTS,
+    LMCACHE_SERVER_PORT,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     MORIIO_HANDSHAKE_PORTS,
@@ -351,7 +352,7 @@ class VLLMProtocol:
     # Use an environment mask instead of the engine's --device-ids option.
     set_visible_devices: bool = False
 
-    # Default KV connector: "nixl", "lmcache", "kvbm", "moriio", or a raw JSON string for --kv-transfer-config.
+    # Default KV connector: "nixl", "lmcache", "lmcache-mp", "kvbm", "moriio", or a raw JSON string for --kv-transfer-config.
     # Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode resolves it.
     # "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
@@ -1756,6 +1757,8 @@ class KVConnector:
     kv_role: str | None = "kv_both"
     module_path: str | None = None
     discovery: bool = False
+    # Static ``kv_connector_extra_config``; a discovery row's topology-derived extras replace it.
+    extra_config: dict[str, Any] | None = None
 
     def transfer_config(self, mode: WorkerMode) -> dict[str, Any]:
         """The ``--kv-transfer-config`` payload for a worker mode, before any topology-derived extras."""
@@ -1763,6 +1766,8 @@ class KVConnector:
         if self.module_path is not None:
             payload["kv_connector_module_path"] = self.module_path
         payload["kv_role"] = self.kv_role or ("kv_producer" if mode == "prefill" else "kv_consumer")
+        if self.extra_config:
+            payload["kv_connector_extra_config"] = dict(self.extra_config)
         return payload
 
 
@@ -1770,6 +1775,12 @@ class KVConnector:
 _CONNECTOR_MAP: dict[str, KVConnector] = {
     "nixl": KVConnector("NixlConnector"),
     "lmcache": KVConnector("LMCacheConnectorV1"),
+    # Out-of-process LMCache MP server (services[].type: lmcache-server) on the worker's own node.
+    "lmcache-mp": KVConnector(
+        "LMCacheMPConnector",
+        module_path="lmcache.integration.vllm.lmcache_mp_connector",
+        extra_config={"lmcache.mp.host": "tcp://localhost", "lmcache.mp.port": LMCACHE_SERVER_PORT},
+    ),
     "kvbm": KVConnector("DynamoConnector", module_path="kvbm.vllm_integration.connector"),
     # AMD MoRI-IO (ROCm): prefill produces and decode consumes KV; workers register with the vLLM Router.
     "moriio": KVConnector("MoRIIOConnector", kv_role=None, discovery=True),

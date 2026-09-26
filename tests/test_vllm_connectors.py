@@ -23,6 +23,14 @@ def test_table_presets_serialize_exactly_as_before():
     assert VLLMProtocol(connector="LMCache").kv_transfer_config("decode") == json.dumps(
         {"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"}
     )
+    assert VLLMProtocol(connector="lmcache-mp").kv_transfer_config("prefill") == json.dumps(
+        {
+            "kv_connector": "LMCacheMPConnector",
+            "kv_connector_module_path": "lmcache.integration.vllm.lmcache_mp_connector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {"lmcache.mp.host": "tcp://localhost", "lmcache.mp.port": 8750},
+        }
+    )
     assert VLLMProtocol(connector="kvbm").kv_transfer_config("decode") == json.dumps(
         {
             "kv_connector": "DynamoConnector",

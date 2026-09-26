@@ -1,0 +1,88 @@
+# An LMCache DRAM tier on the prefill side of a disaggregated vLLM job.
+#
+# Prefill keeps NIXL for the P/D transfer and adds LMCache for prefix reuse, so its
+# kv-transfer-config is a hand-written MultiConnector (srtctl passes raw JSON through
+# untouched; the `lmcache-mp` shorthand covers the single-connector case). Decode is
+# NIXL only. The server is placed on prefill nodes only (`placement.node: prefill`).
+#
+# Aliases (`qwen3-0.6b`, `vllm-lmcache`) resolve through srtslurm.yaml; see
+# examples/README.md and examples/features/lmcache-server.yaml.
+
+schema: 2
+name: "qwen3-0.6b-vllm-lmcache-disagg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm-lmcache"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+environment:
+  PYTHONHASHSEED: "0"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine:
+  type: vllm
+  connector: nixl
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      DYN_HEALTH_CHECK_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+    args:
+      # NIXL to decode plus LMCache MP on this node; a raw string here replaces the connector preset.
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"LMCacheMPConnector","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":8750}}]}}'
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+  decode:
+    nodes: colocate
+    workers: 1
+    gpus: 1
+    env:
+      DYN_HEALTH_CHECK_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+services:
+  - name: lmcache
+    type: lmcache-server
+    placement:
+      node: prefill          # decode nodes get no server; with `colocate` that is still this one node
+    args:
+      - --l1-size-gb
+      - "16"
+      - --chunk-size
+      - "256"
+      - --max-workers
+      - "1"
+    preamble: |
+      ulimit -l unlimited
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"
