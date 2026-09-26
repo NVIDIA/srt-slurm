@@ -155,7 +155,6 @@ roles:
       speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       gpu-memory-utilization: 0.90
-      stream-interval: 32
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       numa-bind: true
