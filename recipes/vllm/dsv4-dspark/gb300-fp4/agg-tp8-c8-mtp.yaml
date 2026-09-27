@@ -2,8 +2,8 @@ schema: 2
 name: "svf-vllm-agg-gb300-tp8-c8-mtp-agentic"
 
 # GB300 AgentX aggregate topology: one TP8 worker spans two four-GPU
-# nodes and serves both prefill and decode at concurrency 8. Keep at least
-# 16 sequence slots and otherwise size the scheduler at 4x concurrency.
+# nodes and serves both prefill and decode at concurrency 8. Match PR #3416's
+# fixed 16-sequence low-concurrency TP8 serving profile.
 
 model:
   path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/DeepSeek-V4-Pro-0813"
@@ -29,6 +29,7 @@ environment:
   # Mooncake prefix-block hashes must match across processes and nodes.
   PYTHONHASHSEED: "0"
   WITH_NVIDIA_PEERMEM: "0"
+  EVAL_MAX_MODEL_LEN: "1048576"
   # The frontend shares Grace CPU capacity with the long TP8 cold start.
   ETCD_LEASE_TTL: "7200"
 
@@ -60,7 +61,7 @@ services:
     options:
       store_config:
         metadata_server: "P2PHANDSHAKE"
-        global_segment_size: "140GB"
+        global_segment_size: "150GB"
         local_buffer_size: "4GB"
         protocol: "rdma"
         device_name: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"
@@ -72,7 +73,6 @@ frontend:
   env:
     ETCD_LEASE_TTL: '120'
     DYN_ROUTER_TEMPERATURE: '0'
-    DYN_ROUTER_QUEUE_THRESHOLD: None
     DYN_TOKENIZER_CACHE: '1'
     DYN_TOKENIZER_CACHE_BYTES: '8000000000'
     DYN_TOKENIZER: fastokens
@@ -104,7 +104,7 @@ roles:
       VLLM_RPC_TIMEOUT: "600000"
       VLLM_LOG_STATS_INTERVAL: "1"
       VLLM_FLOAT32_MATMUL_PRECISION: "high"
-      VLLM_V2_WARMUP_MAX_NUM_SEQS: "32"
+      VLLM_V2_WARMUP_MAX_NUM_SEQS: "16"
       TILELANG_CLEANUP_TEMP_FILES: "1"
       VLLM_USE_NCCL_SYMM_MEM: "0"
       TORCH_SYMMMEM: "NVSHMEM"
@@ -146,16 +146,16 @@ roles:
       disable-custom-all-reduce: true
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
       max-model-len: 1048576
-      max-num-seqs: 32
+      max-num-seqs: 16
       max-num-batched-tokens: 8192
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224],"mode":0}'
-      max-cudagraph-capture-size: 224
-      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[4,8,12,16,20,24,28,32,36,40,44,48,52,56,60,64,68,72,76,80,84,88,92,96],"mode":0}'
+      speculative-config: '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
-      gpu-memory-utilization: 0.90
+      gpu-memory-utilization: 0.94
+      stream-interval: 10
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       numa-bind: true
