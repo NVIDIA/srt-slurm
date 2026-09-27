@@ -2199,12 +2199,38 @@ class OutputConfig:
 
 @dataclass(frozen=True)
 class HealthCheckConfig:
-    """Health check configuration."""
+    """Health check configuration.
 
-    max_attempts: int = 180  # 30 minutes default (large models take time to load)
+    Attributes:
+        max_attempts: Maximum readiness polls of the frontend before the run fails;
+            180 x 10 s = 30 minutes by default (large models take time to load).
+        interval_seconds: Seconds between readiness polls.
+        fatal_log_markers: Fail the run as soon as a worker's log prints a line the
+            engine names as fatal (for TRT-LLM, the launcher's ``Rank<N> Task exit
+            code: <non-zero>`` and ``Failed to initialize executor``), even while
+            its srun step is still running. Without it a worker whose engine died
+            behind a live launcher is only noticed when this health window runs out.
+        extra_fatal_log_patterns: Additional regular expressions, matched against
+            every new worker log line, that fail the run the same way.
+    """
+
+    max_attempts: int = 180
     interval_seconds: int = 10
+    fatal_log_markers: bool = True
+    extra_fatal_log_patterns: list[str] = field(default_factory=list)
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        import re
+
+        for pattern in self.extra_fatal_log_patterns:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValidationError(
+                    f"health_check.extra_fatal_log_patterns: {pattern!r} is not a valid regular expression: {exc}"
+                ) from None
 
 
 @dataclass(frozen=True)

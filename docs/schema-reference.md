@@ -232,8 +232,10 @@ Health check configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `max_attempts` | int | `180` | 30 minutes default (large models take time to load) |
-| `interval_seconds` | int | `10` |  |
+| `max_attempts` | int | `180` | Maximum readiness polls of the frontend before the run fails; 180 x 10 s = 30 minutes by default (large models take time to load). |
+| `interval_seconds` | int | `10` | Seconds between readiness polls. |
+| `fatal_log_markers` | bool | `True` | Fail the run as soon as a worker's log prints a line the engine names as fatal (for TRT-LLM, the launcher's ``Rank<N> Task exit code: <non-zero>`` and ``Failed to initialize executor``), even while its srun step is still running. Without it a worker whose engine died behind a live launcher is only noticed when this health window runs out. |
+| `extra_fatal_log_patterns` | list[str] | `[]` | Additional regular expressions, matched against every new worker log line, that fail the run the same way. |
 
 ### ObservabilityConfig
 

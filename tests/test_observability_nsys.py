@@ -182,7 +182,7 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
         patch.object(
             backend_class,
             "get_srun_config",
-            return_value=SimpleNamespace(mpi="pmix", oversubscribe=True, cpu_bind="none"),
+            return_value=SimpleNamespace(mpi="pmix", oversubscribe=True, cpu_bind="none", kill_on_bad_exit=False),
         ),
         patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.2"),
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),

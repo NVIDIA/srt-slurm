@@ -45,6 +45,9 @@ class SrunConfig:
         sequential_node_start: With launch_per_endpoint, how many endpoints that share a
                                leader node start at once, each batch gated on readiness.
                                0 starts every endpoint in parallel.
+        kill_on_bad_exit: Pass ``--kill-on-bad-exit=1`` on every endpoint step, so one task
+                          exiting non-zero ends the whole step (and srun exits) instead of
+                          leaving the other ranks up with no engine behind them.
     """
 
     mpi: str | None = None
@@ -52,6 +55,7 @@ class SrunConfig:
     launch_per_endpoint: bool = False
     cpu_bind: str | None = None
     sequential_node_start: int = 0
+    kill_on_bad_exit: bool = False
 
 
 class BackendProtocol(Protocol):
@@ -106,6 +110,17 @@ class BackendProtocol(Protocol):
         """Get srun configuration for this backend.
 
         Returns SrunConfig with MPI settings and launch strategy.
+        """
+        ...
+
+    def fatal_log_patterns(self, mode: str) -> tuple[str, ...]:
+        """Regular expressions that, printed in a worker's log, mean the engine is gone.
+
+        The process monitor fails a critical worker whose srun step is still
+        running when a new log line matches one of these (see
+        ``ManagedProcess.fatal_log_patterns``). Engines whose step exits with the
+        engine answer ``()``; an engine behind a launcher that keeps the step
+        alive names the lines the launcher prints once the engine has died.
         """
         ...
 

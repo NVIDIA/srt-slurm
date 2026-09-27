@@ -13,7 +13,7 @@ import pytest
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import ObservabilityConfig, ResourceConfig
+from srtctl.core.schema import HealthCheckConfig, ObservabilityConfig, ResourceConfig
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
 
 
@@ -192,6 +192,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
+        health_check=HealthCheckConfig(),
         backend=backend,
     )
     mixin.runtime = SimpleNamespace(
@@ -260,6 +261,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
+        health_check=HealthCheckConfig(),
         backend=backend,
     )
     mixin.runtime = SimpleNamespace(
@@ -512,9 +514,12 @@ def test_trtllm_native_kv_event_host_override_is_preserved(tmp_path: Path) -> No
 
 
 def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "trtllm"
     mixin.config.dynamo.sidecar = True
+    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
     mixin.runtime.srun_options = {"exclusive": "", "kill-on-bad-exit": "0"}
 
     with (
@@ -689,6 +694,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
+        health_check=HealthCheckConfig(),
         backend=backend,
     )
     mixin.runtime = SimpleNamespace(
@@ -829,6 +835,7 @@ def test_endpoint_launch_uniform_nodes(tmp_path: Path, gpu_count: int, nodes: in
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.runtime.gpus_per_node = 4
+    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
     endpoints = TRTLLMProtocol().allocate_endpoints(
         num_prefill=1,
         num_decode=0,
@@ -848,7 +855,8 @@ def test_endpoint_launch_uniform_nodes(tmp_path: Path, gpu_count: int, nodes: in
     kwargs = mock_srun.call_args.kwargs
     assert kwargs["ntasks"] == gpu_count
     assert kwargs["nodes"] == nodes
-    assert kwargs["srun_options"] == {"ntasks-per-node": str(per_node)}
+    # TRT-LLM endpoint steps end when any task exits non-zero (see SrunConfig.kill_on_bad_exit).
+    assert kwargs["srun_options"] == {"ntasks-per-node": str(per_node), "kill-on-bad-exit": "1"}
 
 
 def test_endpoint_rejects_incompatible_local_rank_mapping(tmp_path: Path) -> None:
@@ -873,3 +881,83 @@ def test_endpoint_rejects_incompatible_local_rank_mapping(tmp_path: Path) -> Non
     ):
         mixin.start_endpoint_worker(endpoints_to_processes(endpoints))
     mock_srun.assert_not_called()
+
+
+def test_trtllm_endpoint_step_kills_on_bad_exit_without_sidecar(tmp_path: Path) -> None:
+    """--kill-on-bad-exit=1 is on for every TRT-LLM endpoint step, not only behind the sidecar.
+
+    One launcher task exiting non-zero then ends the whole step, so srun exits and the
+    registry sees the failure, instead of leaving the follower ranks blocked forever.
+    """
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "trtllm"
+    mixin.config.dynamo.sidecar = False
+    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_endpoint_worker([process])
+
+    assert mock_srun.call_args.kwargs["srun_options"]["kill-on-bad-exit"] == "1"
+
+
+def test_sglang_worker_step_is_not_killed_on_bad_exit(tmp_path: Path) -> None:
+    from srtctl.backends.sglang import SGLangProtocol
+
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.backend.get_srun_config.return_value = SGLangProtocol().get_srun_config()
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_endpoint_worker([process])
+
+    assert "kill-on-bad-exit" not in mock_srun.call_args.kwargs["srun_options"]
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_worker_steps_watch_the_backend_and_recipe_fatal_log_patterns(tmp_path: Path, launch_method: str) -> None:
+    from srtctl.core.schema import HealthCheckConfig
+
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.backend.fatal_log_patterns.return_value = (r"^Rank\d+ Task exit code: (?!0$)\d+$",)
+    mixin.config.health_check = HealthCheckConfig(extra_fatal_log_patterns=["CUDA error: out of memory"])
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    ):
+        if launch_method == "start_worker":
+            managed = mixin.start_worker(process, [process])
+        else:
+            managed = mixin.start_endpoint_worker([process])
+
+    mixin.backend.fatal_log_patterns.assert_called_with("prefill")
+    assert managed.fatal_log_patterns == (r"^Rank\d+ Task exit code: (?!0$)\d+$", "CUDA error: out of memory")
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_health_check_kill_switch_disables_the_worker_log_watch(tmp_path: Path, launch_method: str) -> None:
+    from srtctl.core.schema import HealthCheckConfig
+
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.backend.fatal_log_patterns.return_value = (r"^Rank\d+ Task exit code: (?!0$)\d+$",)
+    mixin.config.health_check = HealthCheckConfig(fatal_log_markers=False, extra_fatal_log_patterns=["never used"])
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    ):
+        if launch_method == "start_worker":
+            managed = mixin.start_worker(process, [process])
+        else:
+            managed = mixin.start_endpoint_worker([process])
+
+    assert managed.fatal_log_patterns == ()

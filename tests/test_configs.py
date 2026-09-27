@@ -5466,3 +5466,36 @@ class TestClusterConfigPreflight:
         ):
             submit_cli.main()
         assert seen["enforce_preflight"] is False
+
+
+class TestHealthCheckFatalLogMarkers:
+    """health_check owns the switch and the extra patterns for the worker log watch."""
+
+    def test_defaults_watch_with_the_backend_table_only(self):
+        from srtctl.core.schema import HealthCheckConfig
+
+        health_check = HealthCheckConfig()
+        assert health_check.fatal_log_markers is True
+        assert health_check.extra_fatal_log_patterns == []
+
+    def test_recipe_can_switch_off_and_add_patterns(self):
+        from srtctl.core.schema import HealthCheckConfig
+
+        health_check = HealthCheckConfig.Schema().load(
+            {
+                "max_attempts": 30,
+                "interval_seconds": 10,
+                "fatal_log_markers": False,
+                "extra_fatal_log_patterns": ["CUDA error: out of memory", r"^Rank\\d+ Task exit code: 137$"],
+            }
+        )
+        assert health_check.fatal_log_markers is False
+        assert health_check.extra_fatal_log_patterns == ["CUDA error: out of memory", r"^Rank\\d+ Task exit code: 137$"]
+
+    def test_extra_patterns_must_be_regular_expressions(self):
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import HealthCheckConfig
+
+        with pytest.raises(ValidationError, match="regular expression"):
+            HealthCheckConfig.Schema().load({"extra_fatal_log_patterns": ["("]})

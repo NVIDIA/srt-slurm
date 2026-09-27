@@ -1399,24 +1399,42 @@ The `log_dir` supports FormattablePath templating. See [FormattablePath Template
 
 ## health_check
 
-Health check configuration for worker readiness.
+Health check configuration for worker readiness, and the worker log watch that fails a run early.
 
 ```yaml
 health_check:
   max_attempts: 180
   interval_seconds: 10
+  fatal_log_markers: true
+  extra_fatal_log_patterns: []
 ```
 
-| Field              | Type | Default | Description                                      |
-| ------------------ | ---- | ------- | ------------------------------------------------ |
-| `max_attempts`     | int  | 180     | Maximum health check attempts (180 = 30 minutes) |
-| `interval_seconds` | int  | 10      | Seconds between health check attempts            |
+| Field                      | Type      | Default | Description                                                                                   |
+| -------------------------- | --------- | ------- | --------------------------------------------------------------------------------------------- |
+| `max_attempts`             | int       | 180     | Maximum health check attempts (180 = 30 minutes)                                              |
+| `interval_seconds`         | int       | 10      | Seconds between health check attempts                                                         |
+| `fatal_log_markers`        | bool      | true    | Fail the run when a worker log prints a line its engine names as fatal, even while the srun step is still running |
+| `extra_fatal_log_patterns` | list[str] | `[]`    | Additional regular expressions that fail the run the same way, matched against every new worker log line |
 
 **Notes**:
 
 - Default of 180 attempts at 10 second intervals = 30 minutes total wait time.
 - Large models (e.g., 70B+ parameters) may require the full 30 minutes to load.
 - Reduce `max_attempts` for smaller models or faster testing.
+
+**Worker log watch** (`fatal_log_markers`): the process monitor normally learns that a worker died
+from its srun step exiting. A TRT-LLM worker step is one `trtllm-llmapi-launch` task per GPU and the
+engine is a child of the rank-0 task only; when that child dies the launcher prints
+`Rank0 Task exit code: <n>` and the other ranks stay blocked, so the step never exits and the run
+would otherwise wait out the whole health window. With the watch on, the monitor scans each critical
+worker's log for the lines its engine declares fatal (TRT-LLM: `Rank<N> Task exit code: <non-zero>`
+and `Failed to initialize executor`; other engines declare none) and fails the run within one monitor
+poll, printing the process name and the matching line. Bare words such as `Traceback` or `MPI_Abort`
+are deliberately not markers: Dynamo logs a traceback for every request cancelled at EOS, and MPI
+abort lines appear on normal teardown. Use `extra_fatal_log_patterns` to add a marker for one recipe
+(for example `"CUDA error: out of memory"`), and `fatal_log_markers: false` to switch the watch off,
+for probes that kill workers on purpose. TRT-LLM endpoint steps are also launched with
+`srun --kill-on-bad-exit=1`, so a launcher task that does exit non-zero ends the whole step.
 
 ---
 

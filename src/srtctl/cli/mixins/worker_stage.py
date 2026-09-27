@@ -138,6 +138,19 @@ class WorkerStageMixin:
 
         return " && ".join(parts)
 
+    def _fatal_log_patterns(self, mode: str) -> tuple[str, ...]:
+        """Log lines that fail a worker whose srun step outlives its engine.
+
+        The backend names the lines its launcher prints once the engine has died
+        (``BackendProtocol.fatal_log_patterns``); the recipe adds its own through
+        ``health_check.extra_fatal_log_patterns`` or switches the watch off with
+        ``health_check.fatal_log_markers: false``.
+        """
+        health_check = self.config.health_check
+        if not health_check.fatal_log_markers:
+            return ()
+        return tuple(self.backend.fatal_log_patterns(mode)) + tuple(health_check.extra_fatal_log_patterns)
+
     def _visible_device_environment(self, process: "Process") -> dict[str, str]:
         """The cluster's GPU mask for a process that owns part of its node, when something must read it.
 
@@ -407,6 +420,7 @@ class WorkerStageMixin:
             ),
             signal_full=not automatic_nsys,
             step_name=step_name,
+            fatal_log_patterns=self._fatal_log_patterns(mode),
         )
 
     def start_endpoint_worker(self, endpoint_processes: list["Process"]) -> ManagedProcess:
@@ -594,9 +608,10 @@ class WorkerStageMixin:
 
         # Get srun config from backend
         srun_config = self.backend.get_srun_config()
-        if self.backend.type == "trtllm" and self.config.dynamo.sidecar:
-            # The sidecar runs only on rank zero. Make any follower-rank exit
-            # terminate the full endpoint step instead of leaving rank zero up.
+        if srun_config.kill_on_bad_exit:
+            # One task exiting non-zero (a follower rank under the rank-zero
+            # sidecar, or a launcher whose engine died) ends the whole endpoint
+            # step instead of leaving the other ranks up with no engine.
             srun_options["kill-on-bad-exit"] = "1"
 
         step_name = f"{mode}_{index}_{leader.node}"
@@ -635,6 +650,7 @@ class WorkerStageMixin:
             ),
             signal_full=not automatic_nsys,
             step_name=step_name,
+            fatal_log_patterns=self._fatal_log_patterns(mode),
         )
 
     def _wait_for_worker_ready(self, leader: "Process") -> None:

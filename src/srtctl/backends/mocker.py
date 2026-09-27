@@ -124,6 +124,10 @@ class MockerProtocol:
 
         return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
 
+    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
+        """The srun step exits with the engine; its exit code is the whole story."""
+        return ()
+
     @property
     def mooncake_kv_store(self) -> None:
         """The mocker has no Mooncake KV store block."""

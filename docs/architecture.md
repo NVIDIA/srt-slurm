@@ -853,7 +853,7 @@ class ProcessRegistry:
         """Add a process to the registry."""
 
     def check_failures(self) -> bool:
-        """Check if any critical process has failed."""
+        """A critical process exited non-zero, or its log matched one of its fatal_log_patterns while the step still runs."""
 
     def cleanup(self) -> None:
         """Terminate all registered processes."""
@@ -872,6 +872,7 @@ class ManagedProcess:
     log_file: Path | None
     node: str | None
     critical: bool = True  # Failure triggers cleanup
+    fatal_log_patterns: tuple[str, ...] = ()  # Log lines that mean the engine died behind a live srun step
 
     @property
     def is_running(self) -> bool: ...

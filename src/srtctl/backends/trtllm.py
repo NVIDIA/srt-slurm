@@ -23,6 +23,20 @@ if TYPE_CHECKING:
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
 
+# Log lines that mean the engine behind a TRT-LLM worker step is gone while the
+# step itself may stay up. ``trtllm-llmapi-launch`` runs the engine as a child of
+# the rank-0 task and prints ``Rank<N> Task exit code: <code>`` when that child
+# exits; the follower ranks block in ``MPICommExecutor`` with no timeout, so
+# neither srun nor the process registry hears about the death otherwise.
+# ``Failed to initialize executor`` is TRT-LLM's own terminal start-up line.
+# Deliberately absent: ``Traceback`` (Dynamo logs a "response stream is closed"
+# traceback for every request the client cancels at EOS) and ``MPI_Abort``
+# (printed on ordinary teardown). A bare-word marker here would fail healthy runs.
+TRTLLM_FATAL_LOG_PATTERNS: tuple[str, ...] = (
+    r"^Rank\d+ Task exit code: (?!0$)\d+$",
+    r"Failed to initialize executor",
+)
+
 
 @dataclass(frozen=True)
 class TRTLLMServerConfig:
@@ -179,7 +193,14 @@ class TRTLLMProtocol:
             launch_per_endpoint=True,
             cpu_bind="verbose,none",
             sequential_node_start=self.sequential_node_start,
+            # A rank exiting non-zero (or the rank-zero sidecar) must end the
+            # whole endpoint step; the launcher would otherwise keep it up.
+            kill_on_bad_exit=True,
         )
+
+    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
+        """The launcher's task-exit line and the executor's start-up failure, for every mode."""
+        return TRTLLM_FATAL_LOG_PATTERNS
 
     @property
     def mooncake_kv_store(self) -> None:
