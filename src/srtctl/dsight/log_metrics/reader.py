@@ -73,7 +73,7 @@ def read_log_metrics(run: Importer, generators: tuple[LogMetricGenerator, ...] =
         source = source_identity(path)
         if source is None:
             continue
-        for line_number, line in enumerate(path.open(errors="replace"), 1):
+        for line_number, line in enumerate(path.open(errors="replace", newline="\n"), 1):
             for generator in generators:
                 event = generator.parse_line(line, source)
                 if event is None:

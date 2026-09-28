@@ -222,3 +222,12 @@ def test_reference_units_are_validated_at_interface_boundary(tmp_path):
     generator.definitions = (generator.definitions[0], dataclasses.replace(generator.definitions[1], unit="bytes"))
     with pytest.raises(ValueError, match="Invalid log metric reference"):
         read_log_metrics(run, (generator,))
+
+
+def test_carriage_return_progress_keeps_physical_log_line_evidence(tmp_path):
+    _, data = log_run(tmp_path, ["warming\rprogress\rready", config(), batch()])
+    active = metrics(data)[ACTIVE_DECODE]
+    snapshot = next(row for row in data["iterations"] if row.get("backend") == "tokenspeed")
+    assert active["points"][0][2:] == snapshot["evidence"]
+    assert active["points"][0][3] == 3
+    assert metrics(data)[DECODE_LIMIT]["points"][0][3] == 2
