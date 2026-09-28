@@ -93,8 +93,7 @@ _TRT_ITERATION = re.compile(
 )
 
 _TOKEN_BATCH = re.compile(
-    r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)\s+ATTN TP RANK (\d+)\].*?"
-    r"(Prefill|Decode) batch\. (.+)"
+    r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)\s+ATTN TP RANK (\d+)\].*?(Prefill|Decode) batch\. (.+)"
 )
 
 
@@ -111,18 +110,26 @@ def _tokenspeed(line: str) -> EngineLogRecord | None:
         return float(value[1]) if value else None
 
     pages = re.search(r"#pages\(active/cached/total\):\s*(\d+)/(\d+)/(\d+)", m[4])
-    return EngineLogRecord(snapshot=EngineBatchSnapshot(
-        local_time=m[1].replace(",", "."), rank=int(m[2]), batch_kind=m[3].lower(),
-        time_resolution_s=10 ** -len(m[1].split(",")[1]),
-        batch_requests=integer("#running-req"), queued_requests=integer("#queue-req"),
-        new_sequences=integer("#new-seq"), new_tokens=integer("#new-token"),
-        cached_tokens=integer("#cached-token"), page_ratio=number("page ratio"),
-        generation_tokens_per_s=number("gen throughput (token/s)"),
-        average_accept_length=number("avg_accept_len"), accept_rate=number("accept_rate"),
-        active_pages=int(pages[1]) if pages else None,
-        cached_pages=int(pages[2]) if pages else None,
-        total_pages=int(pages[3]) if pages else None,
-    ))
+    return EngineLogRecord(
+        snapshot=EngineBatchSnapshot(
+            local_time=m[1].replace(",", "."),
+            rank=int(m[2]),
+            batch_kind=m[3].lower(),
+            time_resolution_s=10 ** -len(m[1].split(",")[1]),
+            batch_requests=integer("#running-req"),
+            queued_requests=integer("#queue-req"),
+            new_sequences=integer("#new-seq"),
+            new_tokens=integer("#new-token"),
+            cached_tokens=integer("#cached-token"),
+            page_ratio=number("page ratio"),
+            generation_tokens_per_s=number("gen throughput (token/s)"),
+            average_accept_length=number("avg_accept_len"),
+            accept_rate=number("accept_rate"),
+            active_pages=int(pages[1]) if pages else None,
+            cached_pages=int(pages[2]) if pages else None,
+            total_pages=int(pages[3]) if pages else None,
+        )
+    )
 
 
 def _trtllm(line: str) -> EngineLogRecord | None:

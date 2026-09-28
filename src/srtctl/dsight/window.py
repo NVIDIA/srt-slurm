@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 import pyarrow.compute as pc
 
 from .engines import parse_engine_log
-from .metrics import batches, capture_files
 from .identities import log_fields
+from .metrics import batches, capture_files
 from .sources import otel_files
 
 if TYPE_CHECKING:

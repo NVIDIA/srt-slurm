@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .identities import canonical_role
+
 _WORKER = re.compile(
     r"(?P<host>.+)_(?P<role>prefill|decode|agg|aggregated)_w(?P<index>\d+)"
     r"(?:_e(?P<engine>\d+))?(?:_profile_(?:rank(?P<rank>\d+)|gpu(?P<gpus>[\d-]+)))?"

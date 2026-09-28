@@ -96,7 +96,6 @@ class Importer:
             },
         )
 
-
     def source(self, p: Path, kind: str) -> int:
         key = str(p.resolve())
         if key not in self.source_ids:
@@ -123,7 +122,6 @@ class Importer:
         self.by_client = {}
         self.audit["client_requests"] = 0
         self.time_basis = "available source timestamps; no client measurement window"
-
 
     def clients(self) -> None:
         patterns = (
@@ -448,25 +446,43 @@ class Importer:
                     if observation is not None:
                         if it := record.iteration:
                             row = {
-                                **asdict(it), "kind": "iteration", "rank": it.global_rank,
-                                "local_rank": it.rank, "rank_kind": "global_rank", "time_resolution_s": 1.0,
+                                **asdict(it),
+                                "kind": "iteration",
+                                "rank": it.global_rank,
+                                "local_rank": it.rank,
+                                "rank_kind": "global_rank",
+                                "time_resolution_s": 1.0,
                             }
                         else:
                             row = {
-                                **asdict(observation), "kind": "batch_snapshot", "iteration": None,
-                                "global_rank": None, "rank_kind": "attention_tp", "kv_cache_util": None,
-                                "host_step_ms": None, "previous_device_step_ms": None,
+                                **asdict(observation),
+                                "kind": "batch_snapshot",
+                                "iteration": None,
+                                "global_rank": None,
+                                "rank_kind": "attention_tp",
+                                "kv_cache_util": None,
+                                "host_step_ms": None,
+                                "previous_device_step_ms": None,
                             }
                         time = dt.datetime.fromisoformat(observation.local_time)
-                        anchored = self.t(epoch_ns(time.replace(tzinfo=self.iteration_zone).isoformat())) if self.iteration_zone else None
+                        anchored = (
+                            self.t(epoch_ns(time.replace(tzinfo=self.iteration_zone).isoformat()))
+                            if self.iteration_zone
+                            else None
+                        )
                         resolution = record.snapshot.time_resolution_s if record.snapshot is not None else 1.0
                         if anchored is not None and (anchored + resolution < 0 or anchored > self.duration):
                             continue
-                        self.iterations.append({
-                            **row, "backend": record.backend, "worker": wid, "start": anchored,
-                            "end": anchored + resolution if anchored is not None else None,
-                            "evidence": [self.source(p, "worker_log"), line],
-                        })
+                        self.iterations.append(
+                            {
+                                **row,
+                                "backend": record.backend,
+                                "worker": wid,
+                                "start": anchored,
+                                "end": anchored + resolution if anchored is not None else None,
+                                "evidence": [self.source(p, "worker_log"), line],
+                            }
+                        )
                     identity = record.identity
                     if identity is None or identity.server_id not in self.by_server:
                         continue
