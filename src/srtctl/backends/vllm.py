@@ -452,7 +452,9 @@ class VLLMBackend(Backend):
         """``--kv-transfer-config`` JSON for a worker mode, or None when the mode has no connector.
 
         Table connectors expand to their preset for the mode; a raw JSON string
-        from the recipe passes through unchanged. A discovery connector also needs
+        in ``connector`` passes through unchanged. A discovery connector uses an
+        explicit ``kv-transfer-config`` as a template, binding its unique matching
+        child without modifying the recipe or sibling connectors. It also needs
         the realized topology (``process`` and ``runtime``) for its
         ``kv_connector_extra_config``: the router's address and discovery port,
         this worker's HTTP port and routable IP, and the handshake and notify
@@ -469,8 +471,49 @@ class VLLMBackend(Backend):
                 f"connector {connector!r} registers workers with the vLLM Router and needs the worker topology; "
                 "it is only available with frontend.type: vllm-router"
             )
-        payload = row.transfer_config(mode)
-        payload["kv_connector_extra_config"] = self._discovery_extra_config(process, runtime)
+        config = self.get_config_for_mode(mode)
+        if "kv-transfer-config" in config and "kv_transfer_config" in config:
+            raise ValueError("discovery template must not set both kv-transfer-config and kv_transfer_config")
+        template = config.get("kv-transfer-config", config.get("kv_transfer_config"))
+        if template is None:
+            payload = row.transfer_config(mode)
+        elif isinstance(template, str):
+            payload = json.loads(template)
+        else:
+            # Copy JSON objects so binding one worker cannot mutate another's template.
+            payload = json.loads(json.dumps(template))
+        targets: list[dict[str, Any]] = []
+
+        def visit(node: Any) -> None:
+            if not isinstance(node, dict):
+                raise TypeError("discovery kv-transfer-config and its connectors must be JSON objects")
+            if node.get("kv_connector") == row.kv_connector:
+                targets.append(node)
+            extra = node.get("kv_connector_extra_config", {})
+            if not isinstance(extra, dict):
+                raise TypeError("kv_connector_extra_config must be a JSON object")
+            children = extra.get("connectors", [])
+            if not isinstance(children, list):
+                raise TypeError("connectors must be a list")
+            for child in children:
+                visit(child)
+
+        visit(payload)
+        if len(targets) != 1:
+            raise ValueError(f"discovery kv-transfer-config requires exactly one {row.kv_connector}")
+        target = targets[0]
+        expected_role = row.transfer_config(mode)["kv_role"]
+        if target.get("kv_role", expected_role) != expected_role:
+            raise ValueError(f"discovery kv_role must be {expected_role} for {mode}")
+        target["kv_role"] = expected_role
+        extra = target.setdefault("kv_connector_extra_config", {})
+        for key, value in self._discovery_extra_config(process, runtime).items():
+            configured = extra.get(key, value)
+            if key.endswith("_port") and type(configured) is int:
+                configured = str(configured)
+            if configured != value:
+                raise ValueError(f"discovery {key} conflicts with the allocated worker topology")
+            extra[key] = value
         return json.dumps(payload)
 
     def _discovery_extra_config(self, process: Process, runtime: RuntimeContext) -> dict[str, Any]:
@@ -1167,7 +1210,14 @@ class VLLMBackend(Backend):
             if mode in {"prefill", "decode"} or role_connector is not None:
                 kv_transfer_config = self.kv_transfer_config(mode, process, runtime)
                 if kv_transfer_config is not None:
-                    config.setdefault("kv-transfer-config", kv_transfer_config)
+                    row = self.kv_connector_for_mode(mode)
+                    if row is not None and row.discovery:
+                        # The resolver preserves explicit templates and binds their
+                        # discovery child to this worker's allocated addresses/ports.
+                        config.pop("kv_transfer_config", None)
+                        config["kv-transfer-config"] = kv_transfer_config
+                    else:
+                        config.setdefault("kv-transfer-config", kv_transfer_config)
 
             node_rank = endpoint_nodes.index(process.node)
             # The worker that is itself the public endpoint may run the alternate
