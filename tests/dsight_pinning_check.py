@@ -74,6 +74,17 @@ async def check_pinning(browser: Browser, report: dict[str, Any]) -> None:
         assert actual == expected, {"actual": actual, "expected": expected}
         assert await browser.js("traceExplorer.getState().pinnedMetrics") == pinned
         assert await browser.js("document.querySelectorAll('.dsight-metric-panel').length") == len(expected)
+        controls = await browser.js(
+            "Array.from(document.querySelectorAll('.metric-card'),e=>({name:e.dataset.metricName,"
+            "up:e.querySelector('[data-action=\"move-metric-up\"]')?.disabled??null,"
+            "down:e.querySelector('[data-action=\"move-metric-down\"]')?.disabled??null}))"
+        )
+        for item in controls:
+            if item["name"] in pinned:
+                index = pinned.index(item["name"])
+                assert item["up"] == (index == 0) and item["down"] == (index == len(pinned) - 1), item
+            else:
+                assert item["up"] is None and item["down"] is None, item
         for name in expected:
             if name not in ids:
                 continue
@@ -143,6 +154,54 @@ async def check_pinning(browser: Browser, report: dict[str, Any]) -> None:
     report["tests"].append("Every pinned metric preserves its own legend visibility while other charts change")
     await browser.rectangle(card(first))
     await browser.screenshot("01-pinned-comparison.png")
+
+    # Move the actual panels through first, middle, and last positions.
+    await browser.click("#pinMetric")
+    await assert_cards([first, second, third], [first, second, third])
+    await browser.js(
+        "window.__orderSnapshot=traceExplorer.getState();"
+        "window.__orderSnapshotJson=JSON.stringify(__orderSnapshot);"
+        "window.__orderPanel=document.querySelector(" + json.dumps(card(first) + " .ds-metric-chart") + ")"
+    )
+    for expected_pins in ([second, first, third], [second, third, first]):
+        await browser.click(card(first) + " [data-action='move-metric-down']")
+        await assert_cards(expected_pins, expected_pins)
+        assert await browser.js("JSON.stringify(__orderSnapshot)===__orderSnapshotJson")
+        assert await browser.js(
+            "window.__orderPanel===document.querySelector(" + json.dumps(card(first) + " .ds-metric-chart") + ")"
+        )
+        assert await hidden(first) == [ids[first][0]]
+        assert await hidden(second) == [ids[second][-1]]
+    assert await browser.js("traceExplorer.getState().metric") == third
+    assert await browser.js("[traceExplorer.getState().from,traceExplorer.getState().to]") == [0, duration]
+    report["tests"].append(
+        "Move buttons reorder mounted pins without changing legends, selected metric, time range, or saved snapshots"
+    )
+
+    # Reaching the last position focuses its usable Up button; Enter moves it back.
+    assert await browser.js("document.activeElement.dataset.action") == "move-metric-up"
+    await browser.call(
+        "Input.dispatchKeyEvent", type="keyDown", key="Enter", code="Enter", windowsVirtualKeyCode=13, text="\r"
+    )
+    await browser.call("Input.dispatchKeyEvent", type="keyUp", key="Enter", code="Enter", windowsVirtualKeyCode=13)
+    await assert_cards([second, first, third], [second, first, third])
+    await browser.click(card(first) + " [data-action='move-metric-up']")
+    await assert_cards([first, second, third], [first, second, third])
+    assert await browser.js("document.activeElement.dataset.action") == "move-metric-down"
+    focus = await browser.js(
+        "(()=>{const e=document.activeElement,r=e.getBoundingClientRect(),"
+        "t=document.getElementById('tracks').getBoundingClientRect();return {connected:e.isConnected,"
+        "visible:r.bottom>Math.max(0,t.top)&&r.top<Math.min(innerHeight,t.bottom)}})()"
+    )
+    assert focus == {"connected": True, "visible": True}, focus
+    await browser.click(card(first) + " [data-action='move-metric-up']")
+    await assert_cards([first, second, third], [first, second, third])
+    await browser.click("#pinMetric")
+    await assert_cards([first, second, third], [first, second])
+    await browser.js("delete window.__orderPanel;delete window.__orderSnapshot;delete window.__orderSnapshotJson")
+    report["tests"].append(
+        "Move controls enforce pin boundaries, support Enter, and keep usable focus on the moved card"
+    )
 
     # Keep real objects in the page: CDP returnByValue alone would hide shallow-copy errors.
     await browser.js(
@@ -240,17 +299,21 @@ async def check_pinning(browser: Browser, report: dict[str, Any]) -> None:
     report["tests"].append("Brushing a pinned chart updates the shared range, peer axes, and bounded source queries")
 
     # One export checks pins in the asynchronous snapshot; return only the view, not all metric summaries.
+    await browser.click(card(first) + " [data-action='move-metric-down']")
+    await assert_cards([second, first, third], [second, first])
     exported = await browser.js(
         "(async()=>{const before=traceExplorer.getState();const pending=traceExplorer.exportSelection();"
         "traceExplorer.setState({pinnedMetrics:[]});const result=await pending;"
         "return {before,view:result.view,metrics:result.metrics.length}})()"
     )
     assert exported["before"] == exported["view"]
-    assert exported["view"]["pinnedMetrics"] == [first, second]
+    assert exported["view"]["pinnedMetrics"] == [second, first]
     assert exported["metrics"] == len(metadata)
     await state(exported["before"])
+    await browser.click(card(first) + " [data-action='move-metric-up']")
+    await assert_cards([first, second, third], [first, second])
     report["tests"].append(
-        "Selection export captures the original ordered pins even when live pins change while loading"
+        "Selection export captures the chosen panel order even when live pins change while loading"
     )
 
     failure = await browser.js(
@@ -273,6 +336,8 @@ async def check_pinning(browser: Browser, report: dict[str, Any]) -> None:
         "A failed pinned chart rejects readiness after its peers settle, and a later render recovers"
     )
 
+    await browser.click(card(first) + " [data-action='move-metric-down']")
+    await assert_cards([second, first, third], [second, first])
     saved = await browser.js("traceExplorer.getState()")
     url = await browser.js(
         "location.href.split('#')[0]+'#view='+encodeURIComponent(JSON.stringify(traceExplorer.getState()))"
@@ -281,14 +346,14 @@ async def check_pinning(browser: Browser, report: dict[str, Any]) -> None:
     await browser.wait("!window.traceExplorer")
     await browser.call("Page.navigate", url=url)
     await browser.wait("Boolean(window.traceExplorer?.ready)")
-    await assert_cards([first, second, third], [first, second])
+    await assert_cards([second, first, third], [second, first])
     restored = await browser.js("traceExplorer.getState()")
     for key in ("pinnedMetrics", "metric", "metricCharts", "from", "to"):
         assert restored[key] == saved[key], key
     assert await hidden(first) == [ids[first][0]]
     assert await hidden(second) == [ids[second][-1]]
     report["tests"].append(
-        "A saved-view URL restores ordered pins, current metric, independent legends, and the common range"
+        "A saved-view URL restores the order chosen with Move buttons, current metric, legends, and common range"
     )
 
     # Trigger superseded asynchronous generations before any of their loads can complete.

@@ -165,7 +165,10 @@ report; a CUDA table's presence is reported separately from imported data.
 - Click **Pin** beside the metric selector to keep that chart in the Metrics
   section while browsing other metrics. Pinned charts stack in the order you pin
   them, followed by the current unpinned metric. Selecting an already pinned
-  metric uses its existing panel. **Unpin** on a card or beside the selector
+  metric uses its existing panel. Use **Move up** (↑) and **Move down** (↓) on a
+  pinned card to reorder it; the controls are disabled at the first and last
+  positions. Saved views and selection exports preserve your chosen order.
+  **Unpin** on a card or beside the selector
   removes its pin; the selected metric stays visible. Each chart keeps its own
   legend choices, and all charts follow the shared time range.
 - **Inspect phase in Nsight** follows the recorded worker. Select a rank or

@@ -953,10 +953,15 @@ ${s.description}`))).join("") + "</details>";
     const names = pinned ? state.pinnedMetrics : [...state.pinnedMetrics, state.metric];
     for (const name of names) {
       const family = metricFamilyByName.get(name);
-      const isPinned = state.pinnedMetrics.includes(name);
+      const pinIndex = state.pinnedMetrics.indexOf(name);
+      const isPinned = pinIndex >= 0;
       const choices = D.metrics.filter(series => series.name === name);
       const title = family?.title || choices[0]?.label || name;
-      html += `<section class="metric-card${isPinned ? " metric-card-pinned" : ""}" data-metric-name="${esc(name)}" aria-label="${esc(title || "Metric")}" tabindex="-1"><div class="metric-card-head"><div class="metric-description">${metricDescription(family)}</div>${isPinned ? `<div class="metric-pin-controls"><span class="metric-pin-label">Pinned</span><button data-action="unpin-metric" data-metric="${esc(name)}" aria-label="Unpin ${esc(name)}">Unpin</button></div>` : ""}</div>`;
+      const pinControls = isPinned ? `<div class="metric-pin-controls"><span class="metric-pin-label">Pinned</span>
+        <button data-action="move-metric-up" data-metric="${esc(name)}" aria-label="Move ${esc(name)} up" title="Move up" ${pinIndex === 0 ? "disabled" : ""}>↑</button>
+        <button data-action="move-metric-down" data-metric="${esc(name)}" aria-label="Move ${esc(name)} down" title="Move down" ${pinIndex === state.pinnedMetrics.length - 1 ? "disabled" : ""}>↓</button>
+        <button data-action="unpin-metric" data-metric="${esc(name)}" aria-label="Unpin ${esc(name)}">Unpin</button></div>` : "";
+      html += `<section class="metric-card${isPinned ? " metric-card-pinned" : ""}" data-metric-name="${esc(name)}" aria-label="${esc(title || "Metric")}" tabindex="-1"><div class="metric-card-head"><div class="metric-description">${metricDescription(family)}</div>${pinControls}</div>`;
       html += metricPanel(JSON.stringify(["metric", name]), choices, title) + "</section>";
     }
     html += "</section>";
@@ -1414,6 +1419,30 @@ ${s.description}`))).join("") + "</details>";
     safe(() => {
       const b = event.target.closest("button");
       if (!b) return;
+      if (["move-metric-up", "move-metric-down"].includes(b.dataset.action)) {
+        const index = state.pinnedMetrics.indexOf(b.dataset.metric);
+        const direction = b.dataset.action === "move-metric-up" ? -1 : 1;
+        const next = index + direction;
+        if (index < 0 || next < 0 || next >= state.pinnedMetrics.length) return;
+        const cards = [...document.querySelectorAll(".metric-card-pinned")];
+        const panel = cards[index], neighbor = cards[next];
+        const pins = [...state.pinnedMetrics];
+        [pins[index], pins[next]] = [pins[next], pins[index]];
+        state.pinnedMetrics = pins;
+        // Keep mounted charts and pending loads attached to their existing hosts.
+        if (direction < 0) neighbor.before(panel);
+        else neighbor.after(panel);
+        document.querySelectorAll(".metric-card-pinned").forEach((card, i) => {
+          card.querySelector('[data-action="move-metric-up"]').disabled = i === 0;
+          card.querySelector('[data-action="move-metric-down"]').disabled = i === pins.length - 1;
+        });
+        const focus = b.disabled ? panel.querySelector('[data-action^="move-metric-"]:not(:disabled)') : b;
+        focus.focus({preventScroll: true});
+        focus.scrollIntoView({block: "nearest"});
+        renderInspector();
+        window.dispatchEvent(new CustomEvent("trace-explorer:state", {detail: stateJSON()}));
+        return;
+      }
       if (b.id === "pinMetric" || b.dataset.action === "unpin-metric") {
         const name = b.id === "pinMetric" ? state.metric : b.dataset.metric;
         if (!metricFamilyByName.has(name)) return;
