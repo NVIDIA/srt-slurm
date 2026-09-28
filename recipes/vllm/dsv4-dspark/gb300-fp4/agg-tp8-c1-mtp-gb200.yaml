@@ -137,7 +137,7 @@ roles:
       cudagraph-metrics: true
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[6,7,12,14,18,21,24,28,30,35,36,42,48,49,54,56,60,63,66,70,72,77,78,84,90,91,96,98,105,112],"mode":0}'
       speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}'
-      gpu-memory-utilization: 0.92
+      gpu-memory-utilization: 0.90
       stream-interval: 10
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: deepseek_v4
