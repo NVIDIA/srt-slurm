@@ -105,7 +105,7 @@ telemetry:
 
 Fields: [TelemetryConfig](schema-reference.md#telemetryconfig). `collect_interval_ms` is shared by the DCGM and CPU legs and must be at most `3000`.
 
-`telemetry` requires a `benchmark.type` of `sa-bench`, `custom`, `agentic`, `agentx`, or `manual` (a `manual` job has no load window, so like serve-only it captures the whole serve session; use it when an external load generator drives the endpoint), the benchmark client on the head node (`benchmark.placement.node: head`, the default), and no dedicated node for the discovery plane (an `etcd`/`nats` service with `placement.node: dedicated` moves the head off the batch host the collector runs on).
+`telemetry` requires a `benchmark.type` of `sa-bench`, `custom`, `agentic`, `agentx`, or `manual` (a `manual` job has no load window, so like serve-only it captures the whole serve session; use it when an external load generator drives the endpoint), and no dedicated node for the discovery plane (an `etcd`/`nats` service with `placement.node: dedicated` moves the head off the batch host the collector runs on). The benchmark client may run on any node: collector sample timestamps and benchmark window boundaries are both Unix wall-clock readings and are assumed NTP-synchronised across the allocation, which `clock_sync_check` verifies before servers start (see [power-telemetry.md](power-telemetry.md)).
 
 ### CPU power
 

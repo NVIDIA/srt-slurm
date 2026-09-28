@@ -16,7 +16,11 @@ window themselves.
   window boundaries from the benchmark client host; both are Unix wall-clock
   readings and the cluster's NTP synchronisation is assumed to keep them
   aligned, so the client may run on any node (`benchmark.placement.node`,
-  including `dedicated`).
+  including `dedicated`). Before any server starts, the
+  orchestrator probes every allocation node's bare host for a synchronised
+  clock (`timedatectl`, then `chronyc`, then `ntpq`); a node that cannot prove
+  synchronisation fails the job under `required: true` and warns otherwise.
+  Set `clock_sync_check: false` where those tools are unavailable.
 - Only `DCGM_FI_DEV_POWER_USAGE` is parsed. Device identity comes from the
   `gpu` and `UUID` labels.
 - **No in-tree benchmark stamps measurement windows yet**, so every run is

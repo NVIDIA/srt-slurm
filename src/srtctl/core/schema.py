@@ -1867,6 +1867,13 @@ class TelemetryConfig:
     storage_subdir: str = "power"
     # Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort.
     required: bool = False
+    # Before any server starts, verify every allocation node reports an
+    # NTP-synchronised system clock. Sample timestamps (orchestrator host) and
+    # window boundaries (benchmark client host) are compared directly, so an
+    # unsynchronised node silently misaligns the measurement. Fails the job
+    # when ``required`` is true, warns otherwise. Set false on clusters where
+    # timedatectl/chronyc/ntpq are unavailable to unprivileged users.
+    clock_sync_check: bool = True
     # Seconds to wait for the exporters to answer before giving up (DCGM and CPU legs).
     startup_timeout_seconds: float = 30.0
     # Per-request exporter timeout in seconds (DCGM and CPU legs).
