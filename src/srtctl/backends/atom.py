@@ -145,7 +145,13 @@ class AtomProtocol:
         self, process: Process, worker_ip: str, extra_connectors: list[dict[str, Any]]
     ) -> str | None:
         """Mooncake for P/D workers plus the role's extra connectors; several are wrapped in ``multi``."""
-        connectors = [_with_lmcache_server(connector) for connector in extra_connectors]
+        connectors = []
+        for connector in extra_connectors:
+            if connector.get("kv_connector") == "lmcache_mp":
+                # Dial the node-local lmcache-server service unless the recipe set a port.
+                extra = {"lmcache.mp.port": LMCACHE_SERVER_PORT, **connector.get("kv_connector_extra_config", {})}
+                connector = {**connector, "kv_connector_extra_config": extra}
+            connectors.append(connector)
         if process.endpoint_mode in {"prefill", "decode"}:
             if process.nixl_port is None:
                 raise ValueError("ATOM P/D worker is missing its Mooncake handshake port")
@@ -225,14 +231,6 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
         else:
             args.extend([flag, str(value)])
     return args
-
-
-def _with_lmcache_server(connector: dict[str, Any]) -> dict[str, Any]:
-    """Point ATOM's ``lmcache_mp`` at the node-local lmcache-server service unless the recipe set an address."""
-    if connector.get("kv_connector") != "lmcache_mp":
-        return connector
-    extra = {"lmcache.mp.port": LMCACHE_SERVER_PORT, **connector.get("kv_connector_extra_config", {})}
-    return {**connector, "kv_connector_extra_config": extra}
 
 
 def _canonical_arg_key(key: str) -> str:
