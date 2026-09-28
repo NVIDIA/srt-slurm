@@ -20,13 +20,13 @@ flowchart LR
     MP --> MU["Server workers and Hardware<br/>metric charts"]
     MP --> MQ["Agent API / queries<br/>all imported metric series"]
 
-    W["Worker .out logs"] --> IP["Decode and correlate<br/>client / Dynamo / engine IDs"]
+    W["Worker .out logs"] --> IP["Correlate client / Dynamo IDs<br/>and worker / process bindings"]
     F["Frontend .out logs"] --> IP
     IP --> IU["Request tab<br/>Identity bridge +<br/>Recorded request path"]
     W --> BP["Decode iteration statistics<br/>retain worker, rank and time"]
     BP --> BU["Iterations tab<br/>shared batch and step-time context"]
 
-    O["Lifecycle OTel<br/>traces.jsonl"] --> LP["Correlate request / trace IDs<br/>build lifecycle with client boundaries"]
+    O["Lifecycle OTel<br/>flat or per-collector traces.jsonl"] --> LP["Correlate request / trace IDs<br/>build lifecycle with client boundaries"]
     LP --> LU["Expand lifecycle + Request tab<br/>milestones and Source measurements"]
 
     C["Client request JSONL<br/>AIPerf / AgentPerf"] --> CP["Read request timing, TTFT<br/>sessions and token counts"]
@@ -66,8 +66,9 @@ separate view of samples, not an aggregate CPU flamegraph.
 ## Following one request across sources
 
 The client export establishes the request and its timing. Frontend logs bridge
-its HTTP request ID to the Dynamo UUID. That UUID connects to OTel spans and,
-independently, to engine-local IDs from worker logs.
+its HTTP request ID to the Dynamo UUID using text or JSON records. That UUID
+connects to OTel spans and, independently, to worker/process bindings and any
+engine-local IDs recorded in worker logs.
 
 ```mermaid
 flowchart TB
@@ -75,19 +76,29 @@ flowchart TB
     D -->|"OTel: request ID / linked trace ID"| O["Correlated runtime spans"]
     O --> L["Per-request lifecycle UI"]
     C -->|"client start, TTFT and end"| L
-    D -->|"worker .out: Engine ID map"| E["Engine client ID + disaggregated ID<br/>worker / process scope"]
-    E --> U["Request tab<br/>Identity bridge +<br/>Recorded request path"]
+    D -->|"worker .out: request, host, role, epoch"| B["Worker / process binding<br/>source file and line"]
+    D -->|"worker .out: engine ID map"| E["Engine client ID + disaggregated ID<br/>when recorded"]
+    B --> U["Request tab<br/>Identity bridge +<br/>Recorded request path"]
+    E --> U
 ```
 
 - **OTel supplies the existing request breakdown.** Supported spans retain their
   timestamps, parents and inclusive durations. Client start/first-token/end
   boundaries and server milestones produce the progress rows. An engine ID map
   is not required to construct these rows.
-- **Engine ID maps supply identity and navigation.** TRT-LLM logs associate the
-  Dynamo UUID with an engine client ID and disaggregated ID. Worker identity
-  comes from the log filename; process association comes from matching recorded
-  host/role/process attributes in correlated spans when unambiguous. These IDs
-  appear under **Identity bridge** and support the recorded worker path.
+- **Worker bindings supply ownership and navigation.** Common Dynamo log fields
+  associate a request with a recorded host, role and process epoch. The host and
+  role must match the worker filename. Bindings retain the Dynamo attempt and
+  their source/line, independently of engine-local IDs.
+- **Engine ID maps supply additional identity.** TRT-LLM logs associate the
+  Dynamo UUID with an engine client ID and disaggregated ID. These remain in
+  `engine` and also supply a worker binding. Process scope comes from correlated
+  spans when unambiguous; an unknown process remains unknown.
+- **Span-to-worker association is explicit about its basis.** OTel joins to a
+  matching request/process binding, or to the only discovered worker matching
+  its recorded host and role. Collector directory names are not host evidence.
+  Conflicting bindings remain in **Identity bridge** and **Evidence** but are
+  omitted from the confirmed request path and worker filters.
 - **Timing overlap supplies shared context.** A matching worker and overlapping
   Nsight range or iteration can be inspected beside a request. That overlap does
   not assign the batch's execution cost to the request.
@@ -118,7 +129,7 @@ sources it cannot interpret.
 | Client request export | Build fails: this version requires one selected AIPerf or AgentPerf export to establish requests and the time window. |
 | Frontend ID bridge | Requests retain client timing; correlation to Dynamo/engine IDs is unavailable. |
 | Supported, correlated OTel | The affected request has no lifecycle expansion, milestone rows or source-measurement breakdown. Its client bar and TTFT remain. |
-| Worker logs / engine ID maps | Engine identity and iteration context are absent where unrecorded. Metrics and Nsight remain independently importable. |
+| Worker logs / engine ID maps | Log-based bindings, engine identities and iteration context are absent. OTel can still identify a unique discovered worker by its recorded host/role. |
 | Nsight export | No profile data is embedded; the Nsight inspector reports that exports are absent. |
 | Tachometer capture | No metric series is imported; metric lanes can remain empty. |
 
