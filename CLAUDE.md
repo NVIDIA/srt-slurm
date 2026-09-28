@@ -25,6 +25,24 @@ uv run ruff check --fix src/srtctl/
 uv run ruff format src/srtctl/
 ```
 
+## Pull Request Descriptions
+
+Write for a reviewer who knows the repository but has no access to the author's
+chat, agent session, or corporate environment.
+
+- Explain the problem, the changes introduced by this PR, and their impact on
+  users or behavior. Include a concrete before/after example when useful.
+- Keep the description scoped to the actual diff. Do not attribute existing
+  features, unrelated work, or planned follow-ups to this PR. Explain necessary
+  dependencies and link to public repository issues or PRs.
+- Do not include corporate-internal links, private dashboards, internal hostnames,
+  local or cluster artifact paths, session IDs, or references to earlier chat.
+  Replace session-specific shorthand with enough plain-language context for an
+  independent reviewer. Summarize relevant evidence directly; use public code,
+  tests, documentation, or reproducible examples as supporting references.
+- State the validation actually performed and relevant limitations. Keep the
+  description concise, and update it when the PR's scope changes.
+
 ## Code Style
 
 - **Python 3.10+** - use modern syntax (`|` unions, `match` statements)
