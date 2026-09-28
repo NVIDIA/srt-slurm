@@ -312,9 +312,7 @@ async def check_pinning(browser: Browser, report: dict[str, Any]) -> None:
     await state(exported["before"])
     await browser.click(card(first) + " [data-action='move-metric-up']")
     await assert_cards([first, second, third], [first, second])
-    report["tests"].append(
-        "Selection export captures the chosen panel order even when live pins change while loading"
-    )
+    report["tests"].append("Selection export captures the chosen panel order even when live pins change while loading")
 
     failure = await browser.js(
         "(async()=>{const original=DSightMetricCharts;const target="
