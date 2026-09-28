@@ -1,0 +1,62 @@
+# An LMCache DRAM tier next to aggregated SGLang workers.
+#
+# `type: lmcache-server` runs the LMCache multiprocess server on every worker node
+# before the workers start (8750 RPC, 8751 HTTP). SGLang's own `enable-lmcache` flag
+# switches the worker to LMCacheUnifiedRadixCache; srtctl sets LMCACHE_MP_HOST and
+# LMCACHE_MP_PORT so it dials the server on its own node. A recipe that passes
+# `lmcache-config-file` or sets LMCACHE_MP_HOST in the role env keeps its own address.
+#
+# The SGLang image must ship LMCache, so this uses a `sglang-lmcache` alias. Aliases
+# (`qwen3-0.6b`, `sglang-lmcache`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-sglang-lmcache-agg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang-lmcache"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+environment:
+  PYTHONHASHSEED: "0"        # chunk hashes must agree across the server and every rank
+
+frontend:
+  type: sglang
+  enable_multiple_frontends: false
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    args:
+      enable-lmcache: true
+      mem-fraction-static: 0.5
+      context-length: 4096
+
+services:
+  - name: lmcache
+    type: lmcache-server
+    args:
+      - --l1-size-gb
+      - "16"
+      - --chunk-size
+      - "256"
+      - --eviction-policy
+      - LRU
+    preamble: |
+      ulimit -l unlimited
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"
