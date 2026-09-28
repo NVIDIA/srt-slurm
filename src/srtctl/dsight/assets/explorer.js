@@ -892,7 +892,7 @@ ${s.description}`))).join("") + "</details>";
           if (generation !== metricGeneration || !host.isConnected) return;
           host.replaceChildren();
           metricCharts.push(window.DSightMetricCharts.mount(host, {
-            series: loaded, references, title, height: 220, from, to,
+            series: loaded, references, sources: D.sources, title, height: 220, from, to,
             selection: state.metricCharts[key],
             onSelectionChange: (selection) => {
               state.metricCharts[key] = selection;

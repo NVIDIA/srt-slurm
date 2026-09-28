@@ -30,11 +30,11 @@ class DynamoTokenSpeedLogMetrics:
             "Active decode requests reported by the batch logger (#running-req). "
             "Periodic snapshots, not the exported scheduler running-state count or a time-weighted average.",
             reference=DECODE_LIMIT,
-            reference_label="Configured batch limit",
+            reference_label="Logged batch limit",
         ),
         LogMetricDefinition(
             DECODE_LIMIT,
-            "Configured decode batch limit",
+            "Logged decode batch limit",
             "requests",
             "Scheduler max_batch_size, scoped to the recorded attention TP rank. "
             "Held from its log timestamp until the next configuration in the same log scope; "

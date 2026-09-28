@@ -51,6 +51,7 @@ class Importer:
         *,
         client: Path | None = None,
         metrics: Path | None = None,
+        config: Path | None = None,
         phase: str = "profiling",
         iteration_timezone: str | None = None,
         max_profile_events: int = 250_000,
@@ -61,6 +62,7 @@ class Importer:
             raise ValueError(f"Run log directory does not exist: {self.logs}")
         self.sqlites, self.job = sqlites, job or self.logs.parent.name
         self.client_path, self.metrics_path = client, metrics
+        self.config_path = config
         self.phase = phase
         self.iteration_zone = ZoneInfo(iteration_timezone) if iteration_timezone else None
         self.max_profile_events = max_profile_events
@@ -569,11 +571,13 @@ class Importer:
         self.audit["worker_binding_rows"] = sum(len(r["worker_bindings"]) for r in self.requests)
 
     def metrics(self) -> None:
+        from .configuration.reader import attach_configuration
         from .log_metrics.reader import read_log_metrics
         from .metrics import read_metrics
 
         self.metric_series = read_metrics(self)
         self.metric_series.extend(read_log_metrics(self))
+        attach_configuration(self)
 
     def run(self) -> dict[str, Any]:
         self.clients()

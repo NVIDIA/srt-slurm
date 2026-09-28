@@ -24,6 +24,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     build.add_argument(
         "--metrics", type=Path, help="One raw Tachometer capture leaf or file (default: logs/tachometer/local)"
     )
+    build.add_argument("--config", type=Path, help="Optional saved recipe YAML (default: recipe.yaml beside logs)")
     build.add_argument(
         "--nsys-sqlite", type=Path, dest="sqlites", help="Existing Nsight SQLite exports; does not enable profiling"
     )
@@ -71,6 +72,7 @@ def run(args: argparse.Namespace) -> int:
                 args.output,
                 client=args.client,
                 metrics=args.metrics,
+                config=args.config,
                 sqlites=args.sqlites,
                 otel=args.otel,
                 job=args.job,

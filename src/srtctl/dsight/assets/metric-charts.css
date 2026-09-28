@@ -34,3 +34,15 @@
 }
 
 .ds-metric-capacity { grid-column: 1 / -1; border-left: 3px dashed; padding: 5px 8px; margin: 1px 0 3px 21px; background: #f6f8fc; color: var(--ink, #152c43); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.ds-metric-configuration { grid-column: 1 / -1; margin: 0 0 4px 21px; border-left: 3px dotted #7188a1; padding: 5px 8px; background: #f6f8fc; min-width: 0; }
+.ds-metric-legend:has(.ds-metric-configuration[open]) { max-height: 480px; }
+.ds-metric-configuration summary { cursor: pointer; overflow-wrap: anywhere; }
+.ds-metric-configuration summary:focus-visible { outline: 3px solid #287ebd; outline-offset: 2px; }
+.ds-metric-config-field { display: block; margin-top: 3px; font-size: 11px; color: #5f7187; overflow-wrap: anywhere; }
+.ds-metric-config-status { display: inline-block; margin: 4px 0 0; font-size: 11px; color: #5f7187; }
+.ds-metric-config-status[data-match="false"] { color: #855707; font-weight: 600; }
+.ds-metric-config-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 10px; margin: 10px 0 4px; font-size: 11px; }
+.ds-metric-config-facts dt { color: #5f7187; }
+.ds-metric-config-facts dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+@media (max-width: 700px) { .ds-metric-config-facts { grid-template-columns: minmax(0, 1fr); gap: 2px; } .ds-metric-config-facts dd { margin-bottom: 6px; } }

@@ -151,6 +151,60 @@
     ];
   }
 
+  function configurationSeries(item) {
+    return (item.raw.configuration || []).flatMap((config, index) => {
+      const comparison = config.comparison;
+      if (!comparison || comparison.unit !== item.raw.unit || !Number.isFinite(comparison.value) || comparison.value <= 0 || !Number.isFinite(comparison.start)) return [];
+      const display = normalizedSeries({id: `config-${item.id}-${index}`, label: config.label,
+        unit: comparison.unit, temporal: "setting", points: [[comparison.start, comparison.value]]});
+      display.configuration = config;
+      return [display];
+    });
+  }
+
+  function configurationDetails(config, item, from, to, sources) {
+    const box = element("details", "ds-metric-configuration");
+    const summary = element("summary");
+    const value = config.source?.value;
+    summary.append(element("span", "", config.label + " "),
+      element("strong", "", `${typeof value === "number" ? capacityNumber(value) : value == null ? "unset" : String(value)}${value == null ? "" : " " + config.unit}`));
+    const field = element("code", "ds-metric-config-field", config.source?.field || "");
+    summary.append(field);
+    box.append(summary);
+    const facts = element("dl", "ds-metric-config-facts");
+    function fact(label, value) {
+      if (value == null || value === "") return;
+      facts.append(element("dt", "", label), element("dd", "", value));
+    }
+    const source = sources?.find(source => source.id === config.source?.source_id);
+    if (config.comparison) {
+      fact("Comparison", config.comparison.basis);
+      fact("Valid from", `${numberText(config.comparison.start)} elapsed seconds`);
+      const start = Math.max(from, config.comparison.start);
+      const observed = item.points.filter(point => point[0] >= start && point[0] <= to && point[1] !== null);
+      const peak = observed.length ? observed.reduce((peak, point) => Math.max(peak, point[1]), -Infinity) : null;
+      if (peak !== null) fact("Peak / configured limit", `${capacityNumber(peak)} / ${capacityNumber(config.comparison.value)} (${(100 * peak / config.comparison.value).toLocaleString("en-US", {maximumFractionDigits: 1})}%)`);
+      const limits = item.reference && start <= to ? plotPoints(item.reference, start, to).filter(point => point[0] >= start && point[0] <= to && point[1] !== null) : [];
+      if (limits.length) {
+        const match = limits.every(point => point[1] === config.comparison.value);
+        const status = element("span", "ds-metric-config-status", match ? "Recorded limits match" : "Recorded limits differ");
+        status.dataset.match = String(match);
+        summary.append(status);
+      }
+    }
+    fact("Scope", config.scope);
+    if (config.note) fact("Note", config.note);
+    fact("Source", `${source?.path || config.source?.file || "Source " + config.source?.source_id}${config.source?.line ? ":" + config.source.line : ""}`);
+    fact("Field", config.source?.field);
+    for (const evidence of config.comparison?.evidence || []) {
+      const file = sources?.find(source => source.id === evidence.source_id);
+      fact("Scope evidence", `${evidence.field}=${evidence.value}; ${file?.path || "source " + evidence.source_id}${evidence.line ? ":" + evidence.line : ""}`);
+    }
+    if (source?.sha256) fact("SHA-256", source.sha256);
+    box.append(facts);
+    return box;
+  }
+
   /**
    * Mount one metric family across all supplied sources. Points: [seconds, value, ...evidence].
    * selection: {hidden: string[]}; legacy ids/filters are ignored. Callbacks own persistence.
@@ -165,6 +219,7 @@
     for (const item of series) {
       const reference = references.get(String(item.raw.reference?.series_id));
       if (reference && reference.raw.unit === item.raw.unit) item.reference = reference;
+      item.configurations = configurationSeries(item);
     }
     setCaptions(series);
     const title = options.title || series[0]?.raw.label || series[0]?.raw.name || "Metric";
@@ -180,14 +235,17 @@
     const chart = element("div", "ds-metric-canvas");
     const legend = element("div", "ds-metric-legend");
     const hasConflicts = series.some(item => item.raw.conflict_timestamps?.length || item.reference?.raw.conflict_timestamps?.length);
-    const hasCapacity = series.some(item => item.raw.reference);
+    const hasCapacity = series.some(item => item.raw.reference || item.configurations.length);
     const plotItems = [
       ...series.map(item => ({item, owner: item, reference: false})),
       ...series.filter(item => item.reference).map(item => ({item: item.reference, owner: item, reference: true})),
+      ...series.flatMap(owner => owner.configurations.map(item => ({item, owner, configuration: true}))),
     ];
     const note = element("p", "ds-metric-note", "Click a legend entry to show or hide its line. Drag across the plot to set the shared time range. Hover values show the nearest recorded sample and its timestamp." + (hasConflicts ? " Conflicting values at the same timestamp are shown as gaps; raw evidence retains every value." : ""));
     if (hasCapacity) note.textContent += " Solid lines show observations; matching dashed lines show limits. Settings are held until the next recorded configuration; sampled limits are not extended. Peak and usage summarize recorded samples in this range, not continuous occupancy.";
     else if (series.some(item => item.raw.temporal === "setting")) note.textContent += " Dashed steps hold the recorded configuration until it changes; hover shows the original setting timestamp.";
+    if (series.some(item => item.configurations.length)) note.textContent += " Dotted lines show comparable limits from the saved recipe. Configuration details identify the exact field, source and comparison scope.";
+    root.dataset.configurationComparisons = JSON.stringify(series.flatMap(item => item.configurations.map(config => ({series: item.id, field: config.configuration.source.field, value: config.points[0][1], start: config.points[0][0]}))));
     tools.append(element("h3", "ds-metric-title", title), count);
     root.append(tools, chart, legend, note);
     host.append(root);
@@ -229,7 +287,7 @@
         conflicting_samples: item.raw.conflicting_samples,
         source_kind: item.raw.source_kind, generator: item.raw.generator,
         temporal: item.raw.temporal, reference: item.raw.reference,
-        reference_source_ids: item.reference?.raw.source_ids,
+        reference_source_ids: item.reference?.raw.source_ids, configuration: item.raw.configuration,
       }, null, 2)));
       row.append(toggle, value, details);
       if (item.raw.reference) {
@@ -241,6 +299,7 @@
         capacity.style.borderLeftColor = colors.get(item.id);
         row.append(capacity);
       }
+      for (const config of item.raw.configuration || []) row.append(configurationDetails(config, item, from, to, options.sources));
       legend.append(row);
       return {item, value};
     });
@@ -279,12 +338,12 @@
         scales: {x: {time: false, min: from, max: to}, ...(hasCapacity ? {y: {range: (u, min, max) => [Math.min(0, min), Math.max(1, max * 1.08)]}} : {})},
         legend: {show: false},
         cursor: {drag: {x: true, y: false, setScale: false}, sync: {key: options.syncKey || "dsight-metrics", scales: ["x", null]}},
-        series: [{label: "Elapsed seconds"}, ...plotItems.map(({item, owner, reference}) => ({
-          label: reference ? owner.raw.reference.label : owner.caption,
+        series: [{label: "Elapsed seconds"}, ...plotItems.map(({item, owner, reference, configuration}) => ({
+          label: configuration ? item.configuration.label : reference ? owner.raw.reference.label : owner.caption,
           stroke: colors.get(owner.id), width: reference ? 1 : 1.5, spanGaps: false,
-          dash: reference || item.raw.temporal === "setting" ? [6, 4] : [],
+          dash: configuration ? [2, 3] : reference || item.raw.temporal === "setting" ? [6, 4] : [],
           ...(reference || item.raw.temporal === "setting" ? {paths: window.uPlot.paths.stepped({align: 1})} : {}),
-          show: !hidden.has(owner.id), points: {show: !reference && item.raw.temporal !== "setting" && (item.raw.temporal === "sample" || item.points.filter(point => point[0] >= from && point[0] <= to && point[1] !== null).length === 1), size: 4},
+          show: !hidden.has(owner.id), points: {show: !configuration && !reference && item.raw.temporal !== "setting" && (item.raw.temporal === "sample" || item.points.filter(point => point[0] >= from && point[0] <= to && point[1] !== null).length === 1), size: 4},
         }))],
         axes: [
           {stroke: "#5f7187", grid: {stroke: "#d8e1ed88"}, ticks: {stroke: "#d8e1ed"}, font: "11px sans-serif", size: 30, values: (_, ticks) => ticks.map(value => numberText(value) + "s")},
