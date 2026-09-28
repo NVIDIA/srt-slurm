@@ -896,6 +896,39 @@ Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 
 Values in `benchmark.env` are applied last and can explicitly override any automatically injected variable.
 
+#### AgentX with a custom benchmark
+
+The repository's `benchmarks/` directory is mounted at `/benchmarks` in job containers. Add this
+benchmark block to a serving recipe:
+
+```yaml
+benchmark:
+  type: custom
+  command: bash /benchmarks/agentx.sh
+  env:
+    MODEL: "<Hugging Face model ID>"
+    MODEL_PREFIX: "<InferenceX model prefix>"
+    FRAMEWORK: "<framework>"
+    PRECISION: "<precision>"
+    CONC: "8"
+    RESULT_FILENAME: "agentx_c8"
+    DURATION: "900"
+```
+
+The launcher checks these seven values before downloading anything. It clones InferenceX `main`
+and its AIPerf submodule into temporary storage, runs InferenceX's `srt_agentic.sh` against the
+ready srt-slurm frontend, and removes the checkout afterward. AIPerf artifacts and the aggregate
+JSON are written under `/logs/agentic` by default. The benchmark container needs network access
+to GitHub, package downloads, and the AgentX trace dataset. The launch log records the resolved
+InferenceX and AIPerf commits.
+
+Set `AGENTX_INFERENCEX_REF` in `benchmark.env` to pin an InferenceX commit for repeatable runs.
+`CONC_LIST` can specify multiple space-separated concurrency values; `CONC` is still required.
+The launcher supplies InferenceX's common AIPerf settings and accepts overrides through
+`benchmark.env`. Power capture is off unless `ENABLE_AGENTX_POWER=1`; when enabled, configure
+the power inputs required by the InferenceX harness. `RESULT_DIR` and `AGENTIC_OUTPUT_DIR` may be
+overridden to other persistent container paths.
+
 The service variables are how a custom command drives something the job brought up rather than an inference endpoint: a job with no engine roles (`frontend.type: none`, a service that owns the nodes through `services[].nodes`) still runs its benchmark step, and the command finds the service through `SRT_SERVICE_*`. Launchers and clients that are not core live in the repo-root `benchmarks/` folder, mounted in every job container at `/benchmarks` (like `configs/` at `/configs`); `benchmarks/rl/miles/launch.sh` starts a [Miles](miles.md) RL run against a `ray` service.
 
 ### sa-bench (Serving Accuracy)
