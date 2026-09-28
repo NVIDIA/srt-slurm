@@ -720,25 +720,8 @@
         });
       })
       .join("");
-    const streams = model.activities
-      .filter((s) => s.kind === "concurrent")
-      .map((s) =>
-        track(
-          labelText(s.label + " · concurrent"),
-          bar(
-            s.start,
-            s.end,
-            s.label,
-            "phase frontend",
-            `data-span="${esc(s.id)}" data-owner-request="${esc(r.id)}"`,
-            s.description,
-          ),
-        ),
-      )
-      .join("");
     return (
       html +
-      streams +
       `<div class="row-note">${esc(model.timing)} ${model.issues.map(esc).join(" · ")}</div>`
     );
   }

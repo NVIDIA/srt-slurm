@@ -133,6 +133,8 @@ report; a CUDA table's presence is reported separately from imported data.
   lifecycle** reveals cumulative rows: each appends elapsed time ending at its
   named milestone. **Fit TTFT** selects the client TTFT window and expands the
   lifecycle only when available.
+  The breakdown ends at **Client complete**. Overlapping runtime spans, including
+  the frontend response stream, remain available under **Source measurements**.
 - Click a milestone or raw span for boundaries and source references. Expand
   workers in the request path for operation/dispatch/response-pump nesting and
   Nsight reports. The metric selector at the top right searches all captured
