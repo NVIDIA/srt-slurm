@@ -3,7 +3,7 @@ name: "svf-vllm-agg-gb300-tp8-c4-mtp-agentic"
 
 # GB300 AgentX aggregate topology: one TP8 worker spans two four-GPU
 # nodes and serves both prefill and decode at concurrency 4. Match PR #3416's
-# fixed 16-sequence low-concurrency TP8 serving profile.
+# fixed 16-sequence profile with K=6 draft and verification graph captures.
 
 model:
   path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/DeepSeek-V4-Pro-0813"
@@ -148,12 +148,15 @@ roles:
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
       max-model-len: 1048576
       max-num-seqs: 16
-      max-num-batched-tokens: 8192
+      max-num-batched-tokens: 2048
+      long-prefill-token-threshold: 512
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[4,8,12,16,20,24,28,32,36,40,44,48,52,56,60,64,68,72,76,80,84,88,92,96],"mode":0}'
-      speculative-config: '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}'
+      cudagraph-metrics: false
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[6,7,12,14,18,21,24,28,30,35,36,42,48,49,54,56,60,63,66,70,72,77,78,84,90,91,96,98,105,112],"mode":0}'
+      max-cudagraph-capture-size: 112
+      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       gpu-memory-utilization: 0.94
       stream-interval: 10
