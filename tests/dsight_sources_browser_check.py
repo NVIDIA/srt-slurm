@@ -145,8 +145,11 @@ async def run(output: Path, port: int) -> None:
                 if len(options) > 1:
                     other = next(n for n in options if n != name)
                     for choice in (other, name):
-                        await js("(()=>{const e=document.querySelector('#workerMetric');e.value=" + json.dumps(choice)
-                                 + ";e.dispatchEvent(new Event('change',{bubbles:true}))})()")
+                        await js(
+                            "(()=>{const e=document.querySelector('#workerMetric');e.value="
+                            + json.dumps(choice)
+                            + ";e.dispatchEvent(new Event('change',{bubbles:true}))})()"
+                        )
                     await js("traceExplorer.whenMetricsReady()")
                     assert (await js("traceExplorer.getState()"))["metricCharts"][key] == saved["metricCharts"][key]
                 await click(selector)
@@ -154,15 +157,22 @@ async def run(output: Path, port: int) -> None:
                     await js("traceExplorer.whenMetricsReady()")
                     assert len({m["worker"] for m in expected}) == 2
                     # Drag the shared chart; the request and profile time axes must follow it.
-                    rect = await js("(()=>{const e=document.querySelector(" + json.dumps(chart + " .u-over")
-                                    + ");e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();"
-                                    + "return{x:r.x,y:r.y,w:r.width,h:r.height}})()")
+                    rect = await js(
+                        "(()=>{const e=document.querySelector("
+                        + json.dumps(chart + " .u-over")
+                        + ");e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();"
+                        + "return{x:r.x,y:r.y,w:r.width,h:r.height}})()"
+                    )
                     left, right = rect["x"] + rect["w"] * 0.2, rect["x"] + rect["w"] * 0.7
                     y = rect["y"] + rect["h"] / 2
                     await call("Input.dispatchMouseEvent", type="mouseMoved", x=left, y=y)
-                    await call("Input.dispatchMouseEvent", type="mousePressed", button="left", clickCount=1, x=left, y=y)
+                    await call(
+                        "Input.dispatchMouseEvent", type="mousePressed", button="left", clickCount=1, x=left, y=y
+                    )
                     await call("Input.dispatchMouseEvent", type="mouseMoved", button="left", buttons=1, x=right, y=y)
-                    await call("Input.dispatchMouseEvent", type="mouseReleased", button="left", clickCount=1, x=right, y=y)
+                    await call(
+                        "Input.dispatchMouseEvent", type="mouseReleased", button="left", clickCount=1, x=right, y=y
+                    )
                     zoomed = await js("traceExplorer.getState()")
                     assert 0 < zoomed["from"] < zoomed["to"] < report["meta"]["duration"], zoomed
                     await js("traceExplorer.selectRange(0,traceExplorer.describe().meta.duration)")
@@ -202,7 +212,9 @@ async def run(output: Path, port: int) -> None:
                 assert page1["items"][0]["id"] != page2["items"][0]["id"]
             await click('.tabs [data-tab="api"]')
             examples = await js("document.querySelector('#inspectorBody .code').textContent")
-            await js("(async()=>{" + examples + "})()")  # Every advertised example uses an available source and recorded identity.
+            await js(
+                "(async()=>{" + examples + "})()"
+            )  # Every advertised example uses an available source and recorded identity.
             # Stale links cannot enable unavailable sources or retain bogus identities.
             saved = {
                 "from": 0,
