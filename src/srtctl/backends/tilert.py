@@ -1,0 +1,169 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 SemiAnalysis LLC. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""TileRT decode workers; prefill is provided by an independently selected engine."""
+
+from __future__ import annotations
+
+import builtins
+from collections.abc import Sequence
+from dataclasses import field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
+
+from marshmallow import Schema
+from marshmallow_dataclass import dataclass
+
+from srtctl.ports import DYN_SYSTEM_PORT_BASE
+
+if TYPE_CHECKING:
+    from srtctl.backends.base import SrunConfig
+    from srtctl.core.runtime import RuntimeContext
+    from srtctl.core.schema import ProfilingConfig
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
+
+
+@dataclass(frozen=True)
+class TileRTServerConfig:
+    decode: dict[str, Any] | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class TileRTProtocol:
+    """Launch TileRT's decode server with recipe-owned model and transport settings."""
+
+    type: Literal["tilert"] = "tilert"
+    served_model_name: str | None = None
+    prefill_environment: dict[str, str] = field(default_factory=dict)
+    decode_environment: dict[str, str] = field(default_factory=dict)
+    aggregated_environment: dict[str, str] = field(default_factory=dict)
+    tilert_config: TileRTServerConfig | None = None
+
+    Schema: ClassVar[builtins.type[Schema]] = Schema
+
+    def get_srun_config(self) -> SrunConfig:
+        from srtctl.backends.base import SrunConfig
+
+        return SrunConfig()
+
+    def get_config_for_mode(self, mode: str) -> dict[str, Any]:
+        return dict(self.tilert_config.decode or {}) if mode == "decode" and self.tilert_config else {}
+
+    def get_environment_for_mode(self, mode: str) -> dict[str, str]:
+        return dict(
+            {
+                "prefill": self.prefill_environment,
+                "decode": self.decode_environment,
+                "agg": self.aggregated_environment,
+            }[mode]
+        )
+
+    def get_process_environment(self, process: Process) -> dict[str, str]:
+        return {}
+
+    def fatal_log_patterns(self, mode: str) -> tuple[str, ...]:
+        return ()
+
+    def get_served_model_name(self, default: str) -> str:
+        return self.served_model_name or default
+
+    @property
+    def mooncake_kv_store(self) -> None:
+        return None
+
+    @property
+    def failover(self) -> None:
+        return None
+
+    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+        return {}
+
+    def get_failover_environment(self, process: Process, job_id: str) -> dict[str, str]:
+        return {}
+
+    def should_set_visible_devices(self) -> bool:
+        return True
+
+    def allocate_endpoints(
+        self,
+        num_prefill: int,
+        num_decode: int,
+        num_agg: int,
+        gpus_per_prefill: int,
+        gpus_per_decode: int,
+        gpus_per_agg: int,
+        gpus_per_node: int,
+        available_nodes: Sequence[str],
+        spread_workers: bool = False,
+    ) -> list[Endpoint]:
+        from srtctl.core.topology import allocate_endpoints
+
+        return allocate_endpoints(
+            num_prefill=num_prefill,
+            num_decode=num_decode,
+            num_agg=num_agg,
+            gpus_per_prefill=gpus_per_prefill,
+            gpus_per_decode=gpus_per_decode,
+            gpus_per_agg=gpus_per_agg,
+            gpus_per_node=gpus_per_node,
+            available_nodes=available_nodes,
+            spread_workers=spread_workers,
+        )
+
+    def endpoints_to_processes(
+        self,
+        endpoints: list[Endpoint],
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
+        port_allocator: NodePortAllocator | None = None,
+        frontend_type: str = "tilert-router",
+        dynamo_sidecar: bool = False,
+    ) -> list[Process]:
+        from srtctl.core.topology import endpoints_to_processes
+
+        if dynamo_sidecar:
+            raise ValueError("TileRT does not support Dynamo sidecars")
+        if any(ep.mode != "decode" or len(ep.nodes) != 1 for ep in endpoints):
+            raise ValueError("TileRT supports single-node decode workers only")
+        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+
+    def build_worker_command(
+        self,
+        process: Process,
+        endpoint_processes: list[Process],
+        runtime: RuntimeContext,
+        frontend_type: str = "tilert-router",
+        nsys_prefix: list[str] | None = None,
+        dump_config_path: Path | None = None,
+        profiling: ProfilingConfig | None = None,
+    ) -> list[str]:
+        if process.endpoint_mode != "decode" or len({p.node for p in endpoint_processes}) != 1:
+            raise ValueError("TileRT supports single-node decode workers only")
+        if process.nixl_port is None:
+            raise ValueError("TileRT decode worker needs an allocated control port")
+        config = self.get_config_for_mode("decode")
+        managed = {key.lstrip("-").replace("_", "-") for key in config} & {"engine", "http-port", "ctrl-port"}
+        if managed:
+            raise ValueError(f"TileRT arguments are owned by srtctl: {sorted(managed)}")
+        command = [
+            *(nsys_prefix or []),
+            "python",
+            "-m",
+            "tilert.pd_vllm.decode_server",
+            "--engine",
+            "tilert",
+            "--http-port",
+            str(process.http_port),
+            "--ctrl-port",
+            str(process.nixl_port),
+        ]
+        for key, value in config.items():
+            flag = f"--{key.replace('_', '-')}"
+            if value is True:
+                command.append(flag)
+            elif value is not False and value is not None:
+                for item in value if isinstance(value, list) else [value]:
+                    command.extend([flag, str(item)])
+        return command

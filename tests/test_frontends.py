@@ -72,6 +72,7 @@ class TestFrontendRegistry:
             "none",
             "sglang",
             "sglang-router",
+            "tilert-router",
             "trtllm_serve",
             "vllm",
             "vllm-router",

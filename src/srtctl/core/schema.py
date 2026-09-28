@@ -41,6 +41,7 @@ from srtctl.backends import (
     BackendConfig,
     MockerProtocol,
     SGLangProtocol,
+    TileRTProtocol,
     TRTLLMProtocol,
     VLLMMooncakeKVStoreConfig,
     VLLMProtocol,
@@ -451,7 +452,9 @@ class BackendConfigField(fields.Field):
             # Default to SGLang
             return SGLangProtocol()
 
-        if isinstance(value, AtomProtocol | SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol):
+        if isinstance(
+            value, AtomProtocol | SGLangProtocol | TileRTProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
+        ):
             return value
 
         if not isinstance(value, dict):
@@ -462,6 +465,8 @@ class BackendConfigField(fields.Field):
 
         if backend_type == "atom":
             return AtomProtocol.Schema().load(value)
+        elif backend_type == "tilert":
+            return TileRTProtocol.Schema().load(value)
         elif backend_type == "sglang":
             schema = SGLangProtocol.Schema()
             return schema.load(value)
@@ -476,7 +481,7 @@ class BackendConfigField(fields.Field):
             return schema.load(value)
         else:
             raise ValidationError(
-                f"Unknown backend type: {backend_type!r}. Supported types: atom, sglang, trtllm, vllm, mocker"
+                f"Unknown backend type: {backend_type!r}. Supported types: atom, sglang, tilert, trtllm, vllm, mocker"
             )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
@@ -485,6 +490,8 @@ class BackendConfigField(fields.Field):
             return None
         if isinstance(value, AtomProtocol):
             return AtomProtocol.Schema().dump(value)
+        if isinstance(value, TileRTProtocol):
+            return TileRTProtocol.Schema().dump(value)
         if isinstance(value, SGLangProtocol):
             return SGLangProtocol.Schema().dump(value)
         if isinstance(value, TRTLLMProtocol):
@@ -2119,7 +2126,7 @@ class FrontendConfig:
 
     Attributes:
         type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
-            Gateway) and "vllm-router" (static routers); "sglang", "vllm", and
+            Gateway), "vllm-router", "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and
             "trtllm_serve" (direct: the single aggregate worker binds the public
             port, no router process); "none" (services-only job: no router, no
             OpenAI endpoint, no worker-count health gate; requires no engine

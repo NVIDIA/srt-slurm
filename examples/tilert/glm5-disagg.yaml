@@ -1,0 +1,58 @@
+# Configure these image aliases with prepared TileRT/vLLM images in srtslurm.yaml.
+# Mount preconverted weights at /tilert_weights; see docs/tilert.md.
+schema: 2
+name: glm5-tilert-disagg
+model:
+  path: hf:zai-org/GLM-5.1-FP8
+  container: tilert-decode
+  precision: fp8
+resources:
+  gpu_type: b200
+  gpus_per_node: 8
+roles:
+  prefill:
+    engine: vllm
+    container: tilert-prefill
+    nodes: 1
+    workers: 1
+    gpus: 8
+    args:
+      served-model-name: zai-org/GLM-5.1-FP8
+      tensor-parallel-size: 8
+      max-model-len: 202752
+      return-tokens-as-token-ids: true
+      kv-cache-dtype: fp8_ds_mla
+      kv-transfer-config: >-
+        {"kv_connector":"TileRTConnector","kv_connector_module_path":"tilert.pd_vllm.prefill_connector",
+         "kv_role":"kv_producer","kv_connector_extra_config":{
+           "tilert_model":"glm5","tilert_max_seq_len":202752,"tilert_transport":"nixl"}}
+      speculative-config: '{"method":"mtp","num_speculative_tokens":1}'
+      enforce-eager: true
+      trust-remote-code: true
+      gpu-memory-utilization: 0.75
+  decode:
+    engine: tilert
+    container: tilert-decode
+    nodes: 1
+    workers: 1
+    gpus: 8
+    args:
+      model: glm5
+      model-weights-dir: /tilert_weights/glm5.1-fp8
+      max-seq-len: 202752
+      kv-cache-dtype: fp8
+      transport: nixl
+      with-mtp: true
+frontend:
+  type: tilert-router
+  container_image: tilert-router
+  enable_multiple_frontends: false
+  args:
+    parser: none
+    model-path: zai-org/GLM-5.1-FP8
+    queue-timeout: 1800
+health_check:
+  max_attempts: 720
+  interval_seconds: 5
+benchmark:
+  type: manual

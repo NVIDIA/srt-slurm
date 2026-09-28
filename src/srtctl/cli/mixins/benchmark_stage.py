@@ -742,12 +742,24 @@ class BenchmarkStageMixin:
         )
         metrics_path = frontend.metrics_path
         if logical_workers_only:
-            if logical_endpoints is None:
-                logical_endpoints = self._logical_worker_endpoints()
             # Sidecars use native worker commands, so publish_metrics does not
-            # control their existing logical-worker URL discovery.
-            if self.config.dynamo.sidecar or not dynamo_trtllm_metrics_disabled:
+            # control their existing logical-worker URL discovery. Their native
+            # HTTP metrics live on the logical endpoint, not the sidecar's port.
+            if self.config.dynamo.sidecar:
+                if logical_endpoints is None:
+                    logical_endpoints = self._logical_worker_endpoints()
                 urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
+            elif not dynamo_trtllm_metrics_disabled:
+                for process in self.backend_processes:
+                    if frontend.worker_endpoint_port(process, self.config, self.runtime) is None:
+                        continue
+                    # Routability does not imply metrics support. The frontend
+                    # owns both the supported ranks/roles and the metrics port.
+                    port = frontend.worker_metrics_port(process, self.runtime)
+                    if port is None:
+                        continue
+                    host = get_hostname_ip(process.node, self.runtime.network_interface)
+                    urls.append(f"http://{host}:{port}{metrics_path}")
         elif frontend.worker_launch == "direct":
             # Every rank the frontend says serves metrics. trtllm-serve mounts its
             # Prometheus route only when the engine runs with return_perf_metrics

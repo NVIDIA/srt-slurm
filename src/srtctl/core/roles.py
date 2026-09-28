@@ -60,6 +60,7 @@ from typing import Any
 ENGINE_CONFIG_KEY: dict[str, str] = {
     "atom": "atom_config",
     "sglang": "sglang_config",
+    "tilert": "tilert_config",
     "vllm": "vllm_config",
     "trtllm": "trtllm_config",
     "mocker": "mocker_config",
