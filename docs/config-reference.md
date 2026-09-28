@@ -59,7 +59,10 @@ contract, so recipes cannot override those arguments. See the complete
 To run another KV connector next to the Mooncake one (for example ATOM's in-process
 LMCache CPU offload on prefill), list it under `extra-kv-connectors` in that role's
 args. srtctl keeps generating the Mooncake entry, with its handshake port, and wraps
-both in ATOM's `multi` connector. Prefill and decode roles only.
+both in ATOM's `multi` connector. An aggregate role with one extra connector runs it
+on its own. An `lmcache_mp` connector (ATOM's client for the `lmcache-server`
+service) dials the server on its own node, port 8750, unless its
+`kv_connector_extra_config` sets `lmcache.mp.port` or `lmcache.mp.server_urls`.
 
 ```yaml
 roles:

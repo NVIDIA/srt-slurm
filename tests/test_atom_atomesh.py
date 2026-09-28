@@ -222,12 +222,35 @@ def test_atom_wraps_extra_kv_connectors_with_mooncake_in_multi() -> None:
     assert json.loads(decode_command[decode_command.index("--kv-transfer-config") + 1])["kv_connector"] == "mooncake"
 
 
-def test_atom_rejects_extra_kv_connectors_on_aggregate_workers() -> None:
-    backend = AtomProtocol(atom_config=AtomServerConfig(aggregated={"extra-kv-connectors": [{"kv_connector": "x"}]}))
+def test_atom_aggregate_worker_runs_a_single_extra_connector_unwrapped() -> None:
+    offload = {"kv_connector": "lmcache_offload", "kv_role": "offload"}
+    backend = AtomProtocol(atom_config=AtomServerConfig(aggregated={"extra-kv-connectors": [offload]}))
     process = Process("node0", frozenset(range(8)), 7500, 6100, "agg", 0)
 
-    with pytest.raises(ValueError, match="only supported on prefill/decode"):
-        _build(backend, process)
+    command = _build(backend, process)
+
+    assert json.loads(command[command.index("--kv-transfer-config") + 1]) == offload
+
+
+@pytest.mark.parametrize(
+    ("extra_config", "expected"),
+    [
+        ({}, {"lmcache.mp.port": 8750}),
+        (
+            {"lmcache.mp.port": 5555, "lmcache.mp.tp_rank_collapse": True},
+            {"lmcache.mp.port": 5555, "lmcache.mp.tp_rank_collapse": True},
+        ),
+    ],
+)
+def test_atom_lmcache_mp_defaults_to_the_lmcache_server_port(extra_config: dict, expected: dict) -> None:
+    """lmcache_mp dials srtctl's lmcache-server on its own node unless the recipe gave an address."""
+    connector = {"kv_connector": "lmcache_mp", "kv_role": "offload", "kv_connector_extra_config": extra_config}
+    backend = AtomProtocol(atom_config=AtomServerConfig(aggregated={"extra-kv-connectors": [connector]}))
+    process = Process("node0", frozenset(range(8)), 7500, 6100, "agg", 0)
+
+    command = _build(backend, process)
+
+    assert json.loads(command[command.index("--kv-transfer-config") + 1])["kv_connector_extra_config"] == expected
 
 
 def test_atom_rejects_cross_node_model_parallel_endpoint() -> None:

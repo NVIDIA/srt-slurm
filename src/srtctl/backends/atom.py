@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.ports import DYN_SYSTEM_PORT_BASE
+from srtctl.ports import DYN_SYSTEM_PORT_BASE, LMCACHE_SERVER_PORT
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
@@ -141,22 +141,26 @@ class AtomProtocol:
 
         return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
-    def _kv_transfer_config(self, process: Process, worker_ip: str, extra_connectors: list[dict[str, Any]]) -> str:
-        if process.endpoint_mode not in {"prefill", "decode"}:
-            raise ValueError("ATOM KV transfer is only valid for prefill/decode workers")
-        if process.nixl_port is None:
-            raise ValueError("ATOM P/D worker is missing its Mooncake handshake port")
-        payload: dict[str, Any] = {
-            "kv_role": "kv_producer" if process.endpoint_mode == "prefill" else "kv_consumer",
-            "kv_connector": self.connector,
-            "proxy_ip": worker_ip,
-            "handshake_port": process.nixl_port,
-        }
-        if self.mooncake_protocol is not None:
-            payload["protocol"] = self.mooncake_protocol
-        if extra_connectors:
-            # e.g. ATOM's in-process lmcache_offload next to the P/D transfer
-            payload = {"kv_connector": "multi", "connectors": [payload, *extra_connectors]}
+    def _kv_transfer_config(
+        self, process: Process, worker_ip: str, extra_connectors: list[dict[str, Any]]
+    ) -> str | None:
+        """Mooncake for P/D workers plus the role's extra connectors; several are wrapped in ``multi``."""
+        connectors = [_with_lmcache_server(connector) for connector in extra_connectors]
+        if process.endpoint_mode in {"prefill", "decode"}:
+            if process.nixl_port is None:
+                raise ValueError("ATOM P/D worker is missing its Mooncake handshake port")
+            mooncake: dict[str, Any] = {
+                "kv_role": "kv_producer" if process.endpoint_mode == "prefill" else "kv_consumer",
+                "kv_connector": self.connector,
+                "proxy_ip": worker_ip,
+                "handshake_port": process.nixl_port,
+            }
+            if self.mooncake_protocol is not None:
+                mooncake["protocol"] = self.mooncake_protocol
+            connectors.insert(0, mooncake)
+        if not connectors:
+            return None
+        payload = connectors[0] if len(connectors) == 1 else {"kv_connector": "multi", "connectors": connectors}
         return json.dumps(payload, separators=(",", ":"))
 
     def build_worker_command(
@@ -200,10 +204,9 @@ class AtomProtocol:
                 str(len(process.gpu_indices)),
             ]
         )
-        if process.endpoint_mode in {"prefill", "decode"}:
-            command.extend(["--kv-transfer-config", self._kv_transfer_config(process, worker_ip, extra_connectors)])
-        elif extra_connectors:
-            raise ValueError("ATOM extra-kv-connectors are only supported on prefill/decode workers")
+        kv_transfer_config = self._kv_transfer_config(process, worker_ip, extra_connectors)
+        if kv_transfer_config is not None:
+            command.extend(["--kv-transfer-config", kv_transfer_config])
         command.extend(_config_to_cli_args(config))
         return command
 
@@ -222,6 +225,14 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
         else:
             args.extend([flag, str(value)])
     return args
+
+
+def _with_lmcache_server(connector: dict[str, Any]) -> dict[str, Any]:
+    """Point ATOM's ``lmcache_mp`` at the node-local lmcache-server service unless the recipe set an address."""
+    if connector.get("kv_connector") != "lmcache_mp":
+        return connector
+    extra = {"lmcache.mp.port": LMCACHE_SERVER_PORT, **connector.get("kv_connector_extra_config", {})}
+    return {**connector, "kv_connector_extra_config": extra}
 
 
 def _canonical_arg_key(key: str) -> str:
