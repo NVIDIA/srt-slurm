@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -37,23 +37,50 @@ class EngineIteration:
 
 
 @dataclass(frozen=True)
+class EngineBatchSnapshot:
+    """Periodic scheduler observations, without a forward-step counter or timer."""
+
+    local_time: str
+    rank: int
+    batch_kind: str
+    time_resolution_s: float
+    batch_requests: int | None = None
+    queued_requests: int | None = None
+    new_sequences: int | None = None
+    new_tokens: int | None = None
+    cached_tokens: int | None = None
+    page_ratio: float | None = None
+    generation_tokens_per_s: float | None = None
+    average_accept_length: float | None = None
+    accept_rate: float | None = None
+    active_pages: int | None = None
+    cached_pages: int | None = None
+    total_pages: int | None = None
+
+
+@dataclass(frozen=True)
 class EngineLogRecord:
     # A line can carry both observations. Keep them together so the reader owns
     # line-level filtering and provenance, including out-of-window iterations.
     iteration: EngineIteration | None = None
     identity: EngineIdentity | None = None
+    snapshot: EngineBatchSnapshot | None = None
+    backend: str | None = None
 
 
 @dataclass(frozen=True)
 class MetricDefinition:
     label: str
     unit: str
+    group: str = "worker"
+    description: str = ""
 
 
 @dataclass(frozen=True)
 class EngineDialect:
     name: str
     nvtx_prefixes: tuple[str, ...] = ()
+    nvtx_names: tuple[str, ...] = ()
     log_parser: Callable[[str], EngineLogRecord | None] | None = None
     metrics: tuple[tuple[str, MetricDefinition], ...] = ()
 
@@ -64,6 +91,38 @@ _TRT_ITERATION = re.compile(
     r"kv_cache_util = ([\d.]+).*?host_step_time = ([\d.eE+-]+)ms.*?"
     r"prev_device_step_time = ([\d.eE+-]+)ms.*?timestamp = ([\d-]+ [\d:]+)"
 )
+
+_TOKEN_BATCH = re.compile(
+    r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)\s+ATTN TP RANK (\d+)\].*?"
+    r"(Prefill|Decode) batch\. (.+)"
+)
+
+
+def _tokenspeed(line: str) -> EngineLogRecord | None:
+    if "batch." not in line or not (m := _TOKEN_BATCH.search(line)):
+        return None
+
+    def integer(label: str) -> int | None:
+        value = re.search(re.escape(label) + r":\s*(\d+)", m[4])
+        return int(value[1]) if value else None
+
+    def number(label: str) -> float | None:
+        value = re.search(re.escape(label) + r":\s*([\d.eE+-]+)", m[4])
+        return float(value[1]) if value else None
+
+    pages = re.search(r"#pages\(active/cached/total\):\s*(\d+)/(\d+)/(\d+)", m[4])
+    return EngineLogRecord(snapshot=EngineBatchSnapshot(
+        local_time=m[1].replace(",", "."), rank=int(m[2]), batch_kind=m[3].lower(),
+        time_resolution_s=10 ** -len(m[1].split(",")[1]),
+        batch_requests=integer("#running-req"), queued_requests=integer("#queue-req"),
+        new_sequences=integer("#new-seq"), new_tokens=integer("#new-token"),
+        cached_tokens=integer("#cached-token"), page_ratio=number("page ratio"),
+        generation_tokens_per_s=number("gen throughput (token/s)"),
+        average_accept_length=number("avg_accept_len"), accept_rate=number("accept_rate"),
+        active_pages=int(pages[1]) if pages else None,
+        cached_pages=int(pages[2]) if pages else None,
+        total_pages=int(pages[3]) if pages else None,
+    ))
 
 
 def _trtllm(line: str) -> EngineLogRecord | None:
@@ -107,6 +166,45 @@ DIALECTS = (
         ),
     ),
     EngineDialect(
+        "tokenspeed",
+        nvtx_prefixes=("forward_step ",),
+        nvtx_names=(
+            "graph_replay",
+            "target_forward",
+            "update_runtime_state",
+            "sampling_prep",
+            "pre_fill_setup",
+            "input_prep_fill",
+            "output_d2h",
+            "loop:commit",
+            "commit:sync",
+            "reset_valid_cache_length",
+            "reset_remote_prefill_cache_lengths",
+            "zero_cache_pages",
+        ),
+        log_parser=_tokenspeed,
+        metrics=(
+            (
+                "tokenspeed:num_requests_running",
+                MetricDefinition(
+                    "Running requests", "requests", description="Requests with scheduler-side generation state."
+                ),
+            ),
+            (
+                "tokenspeed:num_requests_waiting",
+                MetricDefinition(
+                    "Waiting requests", "requests", description="Requests waiting in the engine scheduler queue."
+                ),
+            ),
+            (
+                "tokenspeed:kv_cache_usage_perc",
+                MetricDefinition(
+                    "KV pages in use", "ratio", description="Fraction of device KV pages in use, from 0 to 1."
+                ),
+            ),
+        ),
+    ),
+    EngineDialect(
         "sglang",
         nvtx_prefixes=("scheduler.",),
         metrics=(
@@ -118,22 +216,35 @@ DIALECTS = (
 )
 
 _COMMON_NVTX = ("preprocess.", "route.", "router.", "tokenize", "detokenize", "kv_router.", "transport.", "compute_")
-_NVTX_PREFIXES = _COMMON_NVTX + tuple(prefix for dialect in DIALECTS for prefix in dialect.nvtx_prefixes)
 
 
 def parse_engine_log(line: str) -> EngineLogRecord | None:
     """Decode a recognized line without assigning timestamps or request ownership."""
     for dialect in DIALECTS:
         if dialect.log_parser and (record := dialect.log_parser(line)) is not None:
-            return record
+            return replace(record, backend=dialect.name)
     return None
 
 
 def select_nvtx(name: str, duration_ns: int) -> bool:
-    """Select shared host annotations; short bare detokenize ranges are omitted."""
+    """Select supported host annotations through the common dialect catalog."""
+    return classify_nvtx(name, duration_ns) is not None
+
+
+def classify_nvtx(name: str, duration_ns: int) -> dict[str, str | None] | None:
+    """Select host annotations, retaining their original names and semantics."""
     if name == "detokenize" and duration_ns < 100_000:
-        return False
-    return name.startswith(_NVTX_PREFIXES)
+        return None
+    if name.startswith(_COMMON_NVTX):
+        return {"backend": None, "scope": "host", "description": "Shared host annotation; not request ownership."}
+    for dialect in DIALECTS:
+        if name in dialect.nvtx_names or name.startswith(dialect.nvtx_prefixes):
+            return {
+                "backend": dialect.name,
+                "scope": "host",
+                "description": "Shared host annotation; includes waits and launch overhead, not GPU execution duration.",
+            }
+    return None
 
 
 def engine_metrics() -> dict[str, MetricDefinition]:
