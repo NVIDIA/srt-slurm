@@ -241,16 +241,10 @@ def test_engine_string_and_mapping_map_onto_backend() -> None:
     assert expanded["backend"]["type"] == "trtllm"
     assert expanded["backend"]["served_model_name"] == "m"
     assert "engine" not in expanded
-    # roles.<r>.engine may restate the engine, and must agree.
-    assert (
-        expand_roles({"engine": "sglang", "roles": {"agg": {"engine": "sglang", "workers": 1}}})["backend"]["type"]
-        == "sglang"
-    )
     assert expand_roles({"roles": {"agg": {"engine": "vllm", "workers": 1}}})["backend"]["type"] == "vllm"
-    with pytest.raises(ValueError, match="conflicts with engine.type"):
-        expand_roles({"engine": "sglang", "roles": {"agg": {"engine": "vllm"}}})
-    with pytest.raises(ValueError, match="same engine"):
-        expand_roles({"roles": {"prefill": {"engine": "vllm"}, "decode": {"engine": "sglang"}}})
+    inferred = expand_roles({"roles": {"prefill": {"engine": "vllm"}, "decode": {"engine": "sglang"}}})
+    assert inferred["backend"]["type"] == "sglang"
+    assert inferred["role_backends"]["prefill"]["type"] == "vllm"
     with pytest.raises(ValueError, match="conflicts with backend.type"):
         expand_roles({"engine": "vllm", "backend": {"type": "sglang"}})
 
@@ -269,7 +263,7 @@ def test_per_role_kv_events_and_sidecar() -> None:
     assert config["dynamo"]["sidecar"] is True
 
     with pytest.raises(ValueError, match="sidecar must agree"):
-        expand_roles({"roles": {"prefill": {"sidecar": True}, "decode": {"sidecar": False}}})
+        expand_roles({"engine": "sglang", "roles": {"prefill": {"sidecar": True}, "decode": {"sidecar": False}}})
     with pytest.raises(ValueError, match="cannot be combined"):
         expand_roles({"backend": {"kv_events_config": True}, "roles": {"prefill": {"kv_events": True}}})
     with pytest.raises(ValueError, match="cannot be combined"):
@@ -309,7 +303,7 @@ def test_per_role_critical_maps_onto_resources_and_the_worker_flag() -> None:
     assert loaded.resources.worker_critical("agg") is True
 
     with pytest.raises(TypeError, match="critical must be a boolean"):
-        expand_roles({"roles": {"decode": {"critical": "no"}}})
+        expand_roles({"engine": "sglang", "roles": {"decode": {"critical": "no"}}})
     with pytest.raises(ValueError, match="cannot be combined"):
         expand_roles({"resources": {"decode_critical": False}, "roles": {"decode": {"workers": 1}}})
 

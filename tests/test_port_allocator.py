@@ -93,24 +93,11 @@ class TestNodePortAllocator:
 
 def _example_processes(config: SrtConfig) -> list[Process]:
     """The process topology srtctl would launch for a recipe, on synthetic nodes."""
-    resources = config.resources
     nodes = [f"node-{index}" for index in range(config.total_nodes)]
-    endpoints = config.backend.allocate_endpoints(
-        num_prefill=resources.num_prefill,
-        num_decode=resources.num_decode,
-        num_agg=resources.num_agg,
-        gpus_per_prefill=resources.gpus_per_prefill,
-        gpus_per_decode=resources.gpus_per_decode,
-        gpus_per_agg=resources.gpus_per_agg,
-        gpus_per_node=resources.gpus_per_node,
-        available_nodes=nodes,
-        spread_workers=resources.spread_workers,
-    )
-    return config.backend.endpoints_to_processes(
+    endpoints = config.allocate_worker_endpoints(nodes)
+    return config.worker_processes(
         endpoints,
         port_allocator=NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: config.dynamo.sidecar_port}),
-        frontend_type=config.frontend.type,
-        dynamo_sidecar=config.dynamo.sidecar,
     )
 
 

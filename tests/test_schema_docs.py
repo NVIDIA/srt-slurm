@@ -67,7 +67,7 @@ def test_schema_reference_documents_only_the_2_0_layout() -> None:
     for key in LEGACY_TOP_LEVEL:
         assert f"| `{key}` |" not in recipe_table, f"legacy top-level key {key} leaked into schema-reference.md"
     for cls, mapping in (LEGACY_FIELDS | INTERNAL_FIELDS).items():
-        section = _section(text, cls.__name__)
+        section = recipe_table if cls is SrtConfig else _section(text, cls.__name__)
         for key in mapping:
             assert f"| `{key}` |" not in section, f"legacy key {cls.__name__}.{key} leaked into schema-reference.md"
     for cls in LEGACY_CLASSES | INTERNAL_CLASSES:

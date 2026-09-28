@@ -40,7 +40,7 @@ def routed_process_dp_size(backend: Any, process: Process) -> int:
     return local_gpu_count // replica_size
 
 
-def node_local_data_parallel_size(backend: Any, backend_processes: list[Process]) -> int:
+def node_local_data_parallel_size(config: Any, backend_processes: list[Process]) -> int:
     """Return Router's single DP expansion factor for all advertised URLs."""
     routable = [process for process in backend_processes if process.http_port > 0]
     process_count_by_endpoint: dict[tuple[str, int], int] = {}
@@ -53,7 +53,9 @@ def node_local_data_parallel_size(backend: Any, backend_processes: list[Process]
     if any(count > 1 for count in process_count_by_endpoint.values()):
         return 1
 
-    routed_sizes = {routed_process_dp_size(backend, process) for process in routable}
+    routed_sizes = {
+        routed_process_dp_size(config.backend_for_role(process.endpoint_mode), process) for process in routable
+    }
     if len(routed_sizes) > 1:
         sizes = ", ".join(str(size) for size in sorted(routed_sizes))
         raise ValueError(f"vLLM Router requires one uniform node-local DP expansion factor; derived {sizes}")
@@ -79,28 +81,27 @@ class VLLMRouterFrontend(StaticRouterFrontend):
         (``per_node`` DP), its GPU count must equal DP*TP*PP*PCP, and every pool
         must derive the same ``--intra-node-data-parallel-size``.
         """
-        backend = config.backend
         resources = config.resources
         endpoint_gpu_counts: dict[str, int] = {
             "prefill": resources.gpus_per_prefill if resources.num_prefill else 0,
             "decode": resources.gpus_per_decode if resources.num_decode else 0,
             "agg": resources.gpus_per_agg if resources.num_agg else 0,
         }
-        if backend.find_dp_modes() and backend.dp_launch_mode != "per_node":
-            raise ValueError(
-                "frontend.type: vllm-router with data-parallel-size requires "
-                "backend.dp_launch_mode: per_node; deprecated per_gpu processes are "
-                "Dynamo registrations, not independently routable vLLM API servers"
-            )
-
         expansion_by_mode: dict[str, int] = {}
         has_multinode_pools = False
         for mode, gpu_count in endpoint_gpu_counts.items():
             if gpu_count <= 0:
                 continue
+            backend = config.backend_for_role(mode)
             if not backend._is_dp_mode(mode):
                 expansion_by_mode[mode] = 1
                 continue
+            if backend.dp_launch_mode != "per_node":
+                raise ValueError(
+                    "frontend.type: vllm-router with data-parallel-size requires "
+                    "backend.dp_launch_mode: per_node; deprecated per_gpu processes are "
+                    "Dynamo registrations, not independently routable vLLM API servers"
+                )
             try:
                 configured_dp_size = backend._get_dp_size(mode)
                 dp_size = int(configured_dp_size) if configured_dp_size is not None else 1
@@ -155,7 +156,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
                 f"configured {configured_expansion}, derived {derived_expansion}"
             )
 
-        if backend.discovers_workers():
+        if config.backend.discovers_workers():
             self._validate_discovery(config)
 
     def _validate_discovery(self, config: Any) -> None:
@@ -275,7 +276,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
         normalized_frontend_args = {str(key).replace("_", "-") for key in frontend_args}
         managed_args: list[str] = []
 
-        local_dp_size = node_local_data_parallel_size(backend, backend_processes)
+        local_dp_size = node_local_data_parallel_size(config, backend_processes)
         configured_dp_size = frontend_args.get(
             "intra-node-data-parallel-size",
             frontend_args.get("intra_node_data_parallel_size"),
@@ -316,7 +317,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
             return logical_prefill, logical_decode, f"{worker_desc}, registering with the Router over ZMQ discovery"
         if processes is None:
             return logical_prefill, logical_decode, worker_desc
-        expansion = node_local_data_parallel_size(config.backend, processes)
+        expansion = node_local_data_parallel_size(config, processes)
         n_prefill = sum(
             expansion for process in processes if process.endpoint_mode == "prefill" and process.http_port > 0
         )

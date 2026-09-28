@@ -104,7 +104,7 @@ _V2_TOP_LEVEL_ROWS = (
     FieldDoc(
         key="engine",
         type_label="str \\| mapping",
-        default="required",
+        default="optional when every role sets `engine`",
         description=(
             "The engine type (`atom`, `sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` "
             "plus the engine-wide knobs listed under [Engine types](#engine-types)."
@@ -140,7 +140,13 @@ _ROLE_ROWS: tuple[tuple[str, str, str, str], ...] = (
     ("env", "dict[str, str]", "`{}`", "Environment for every worker of this role."),
     ("args", "mapping", "`{}`", "The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`)."),
     ("extra_args", "list[str]", "`[]`", "Raw extra CLI arguments (TRT-LLM)."),
-    ("engine", "str", "top-level `engine`", "Optional; must equal the top-level engine type."),
+    (
+        "engine",
+        "str \\| mapping",
+        "mutually exclusive with top-level `engine`",
+        "Engine type or mapping with engine options. Set on every role when no top-level engine is declared.",
+    ),
+    ("container", "str", "`model.container`", "Optional role image; accepts cluster container aliases."),
     (
         "kv_events",
         "bool \\| mapping",
@@ -434,8 +440,11 @@ _V2_SERVICE_OPTION_FIELDS: dict[type, frozenset[str]] = {
     VLLMMooncakeKVStoreConfig: frozenset({"device_names_by_gpu"}),
 }
 
-# ATOM was added in v2; its normalized role fields are internal, not v1 API.
-INTERNAL_FIELDS = {AtomProtocol: _present(AtomProtocol, _backend_legacy_fields(ENGINE_CONFIG_KEY["atom"]))}
+# Normalized role fields are internal, not v1 API.
+INTERNAL_FIELDS = {
+    SrtConfig: {"role_backends": "`roles.<role>.engine`", "role_containers": "`roles.<role>.container`"},
+    AtomProtocol: _present(AtomProtocol, _backend_legacy_fields(ENGINE_CONFIG_KEY["atom"])),
+}
 INTERNAL_CLASSES = frozenset({AtomServerConfig})
 
 
@@ -467,7 +476,7 @@ def _render_top_level_table() -> list[str]:
     """The recipe's top-level keys in the 2.0 layout: dataclass fields minus v1 keys, plus engine/roles."""
     out = _table_header()
     for row in field_docs(SrtConfig):
-        if row.key in LEGACY_TOP_LEVEL:
+        if row.key in LEGACY_TOP_LEVEL or row.key in INTERNAL_FIELDS.get(SrtConfig, {}):
             continue
         if row.key == "schema":
             row = FieldDoc(row.key, row.type_label, "`2`", "Recipe schema version. Write `schema: 2` for this layout.")
@@ -492,6 +501,7 @@ def _render_authoring_surface() -> list[str]:
         "`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of "
         + ", ".join(f"`{name}`" for name, _ in BACKEND_TYPES)
         + "; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).",
+        "Use either one top-level engine or an explicit engine on every role, never both. Role engines do not inherit options from each other.",
         "",
         "### roles",
         "",

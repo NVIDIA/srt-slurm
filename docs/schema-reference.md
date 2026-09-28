@@ -13,7 +13,7 @@ Top-level keys of a recipe YAML.
 | `name` | str | required |  |
 | `model` | [ModelConfig](#modelconfig) | required |  |
 | `resources` | [ResourceConfig](#resourceconfig) | required |  |
-| `engine` | str \| mapping | required | The engine type (`atom`, `sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
+| `engine` | str \| mapping | optional when every role sets `engine` | The engine type (`atom`, `sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
 | `roles` | mapping of role -> [Role](#roles) | required | One block per worker role (`prefill`, `decode`, `agg`): topology, env, and engine args. |
 | `schema` | int | `2` | Recipe schema version. Write `schema: 2` for this layout. |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` |  |
@@ -45,6 +45,7 @@ Three vocabularies are specific to the 2.0 layout. They are normalized into the 
 ### engine
 
 `engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+Use either one top-level engine or an explicit engine on every role, never both. Role engines do not inherit options from each other.
 
 ### roles
 
@@ -58,7 +59,8 @@ Three vocabularies are specific to the 2.0 layout. They are normalized into the 
 | `env` | dict[str, str] | `{}` | Environment for every worker of this role. |
 | `args` | mapping | `{}` | The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`). |
 | `extra_args` | list[str] | `[]` | Raw extra CLI arguments (TRT-LLM). |
-| `engine` | str | top-level `engine` | Optional; must equal the top-level engine type. |
+| `engine` | str \| mapping | mutually exclusive with top-level `engine` | Engine type or mapping with engine options. Set on every role when no top-level engine is declared. |
+| `container` | str | `model.container` | Optional role image; accepts cluster container aliases. |
 | `kv_events` | bool \| mapping | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
 | `sidecar` | bool | `False` | Run the native engine with a Dynamo sidecar; every role must agree. |
 | `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |

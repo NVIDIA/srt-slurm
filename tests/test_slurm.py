@@ -194,6 +194,8 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         resources=ResourceConfig(),
         health_check=HealthCheckConfig(),
         backend=backend,
+        backend_for_role=lambda _mode: backend,
+        role_containers={},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -263,6 +265,8 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         resources=ResourceConfig(),
         health_check=HealthCheckConfig(),
         backend=backend,
+        backend_for_role=lambda _mode: backend,
+        role_containers={},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -434,7 +438,7 @@ def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) ->
 
 
 def _start_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, str]:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.dynamo.event_plane = event_plane
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -446,7 +450,7 @@ def _start_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, s
 
 
 def _start_endpoint_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, str]:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.dynamo.event_plane = event_plane
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -598,7 +602,7 @@ def test_worker_control_plane_uses_routable_infra_ip(tmp_path: Path) -> None:
         _start_worker_env(tmp_path, event_plane=None),
         _start_endpoint_worker_env(tmp_path, event_plane=None),
     ):
-        assert "NATS_SERVER" not in env
+        assert env["NATS_SERVER"] == "nats://10.0.0.1:4222"
         assert env["ETCD_ENDPOINTS"] == "http://10.0.0.1:2379"
 
 
@@ -696,6 +700,8 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         resources=ResourceConfig(),
         health_check=HealthCheckConfig(),
         backend=backend,
+        backend_for_role=lambda _mode: backend,
+        role_containers={},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -923,11 +929,17 @@ def test_sglang_worker_step_is_not_killed_on_bad_exit(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
-def test_worker_steps_watch_the_backend_and_recipe_fatal_log_patterns(tmp_path: Path, launch_method: str) -> None:
+@pytest.mark.parametrize("role_engine", [False, True])
+def test_worker_steps_watch_the_backend_and_recipe_fatal_log_patterns(
+    tmp_path: Path, launch_method: str, role_engine: bool
+) -> None:
     from srtctl.core.schema import HealthCheckConfig
 
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
-    mixin.backend.fatal_log_patterns.return_value = (r"^Rank\d+ Task exit code: (?!0$)\d+$",)
+    backend = mixin.config.backend_for_role("prefill")
+    backend.fatal_log_patterns.return_value = (r"^Rank\d+ Task exit code: (?!0$)\d+$",)
+    if role_engine:
+        mixin.config.backend = None
     mixin.config.health_check = HealthCheckConfig(extra_fatal_log_patterns=["CUDA error: out of memory"])
 
     with (
@@ -939,7 +951,7 @@ def test_worker_steps_watch_the_backend_and_recipe_fatal_log_patterns(tmp_path: 
         else:
             managed = mixin.start_endpoint_worker([process])
 
-    mixin.backend.fatal_log_patterns.assert_called_with("prefill")
+    backend.fatal_log_patterns.assert_called_with("prefill")
     assert managed.fatal_log_patterns == (r"^Rank\d+ Task exit code: (?!0$)\d+$", "CUDA error: out of memory")
 
 

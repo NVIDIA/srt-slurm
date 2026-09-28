@@ -832,6 +832,7 @@ class TestProfilingTargetSelection:
         stage = WorkerStageMixin()
         stage.config = SimpleNamespace(
             backend=SimpleNamespace(type="vllm"),
+            backend_for_role=lambda _mode: stage.config.backend,
             profiling=ProfilingConfig(
                 type="nsys",
                 aggregated=ProfilingPhaseConfig(capture_scope="selected", worker_index=1, worker_rank=2),

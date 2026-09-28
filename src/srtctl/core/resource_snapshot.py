@@ -133,17 +133,7 @@ def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[st
                 pack_multinode_workers=config.backend.type == "trtllm",
             )
         else:
-            endpoints = config.backend.allocate_endpoints(
-                num_prefill=resources.num_prefill,
-                num_decode=resources.num_decode,
-                num_agg=resources.num_agg,
-                gpus_per_prefill=resources.gpus_per_prefill,
-                gpus_per_decode=resources.gpus_per_decode,
-                gpus_per_agg=resources.gpus_per_agg,
-                gpus_per_node=resources.gpus_per_node,
-                available_nodes=runtime.nodes.worker,
-                spread_workers=resources.spread_workers,
-            )
+            endpoints = config.allocate_worker_endpoints(runtime.nodes.worker)
     except Exception:
         logger.debug("Failed to derive backend node GPU allocation", exc_info=True)
         return {}

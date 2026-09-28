@@ -142,6 +142,10 @@ def resolve_container_aliases(config: dict[str, Any], containers: Mapping[str, s
                 walk(item, (*path, index))
 
     walk(config, ())
+    for role, image in config.get("role_containers", {}).items():
+        if image in containers:
+            config["role_containers"][role] = containers[image]
+            notes.append(f"Resolved container alias roles.{role}.container: '{image}' -> '{containers[image]}'")
     return notes
 
 
@@ -955,6 +959,11 @@ def expand_engine_config_defaults(resolved_config: dict) -> dict:
     expand_observability(resolved_config)
     expand_trtllm_serve_defaults(resolved_config)
     expand_trtllm_engine_defaults(resolved_config)
+    for backend in resolved_config.get("role_backends", {}).values():
+        role_config = {**resolved_config, "backend": backend}
+        expand_observability(role_config)
+        expand_trtllm_serve_defaults(role_config)
+        expand_trtllm_engine_defaults(role_config)
     return resolved_config
 
 

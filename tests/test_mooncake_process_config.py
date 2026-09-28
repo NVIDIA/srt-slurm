@@ -68,7 +68,12 @@ def test_rendered_configs_match_worker_environment(tmp_path):
     workers = [process([0, 1]), process([2, 3]), process([2, 3], node="n1")]
     b = backend(["h0", "h1", "h2", "h3"])
     runtime = SimpleNamespace(log_dir=tmp_path, container_log_dir=Path("/logs"), infra_node_ip="infra", gpus_per_node=4)
-    context = SimpleNamespace(config=SimpleNamespace(backend=b), backend=b, runtime=runtime, backend_processes=workers)
+    context = SimpleNamespace(
+        config=SimpleNamespace(backend=b, backend_for_role=lambda _mode: b),
+        backend=b,
+        runtime=runtime,
+        backend_processes=workers,
+    )
     SweepOrchestrator._write_mooncake_store_config(context)
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "mooncake_store_config.json",
@@ -87,7 +92,7 @@ def test_rendered_configs_match_worker_environment(tmp_path):
 def test_default_writer_and_worker_keep_shared_config(tmp_path):
     b = backend()
     context = SimpleNamespace(
-        config=SimpleNamespace(backend=b),
+        config=SimpleNamespace(backend=b, backend_for_role=lambda _mode: b),
         backend=b,
         runtime=SimpleNamespace(log_dir=tmp_path, infra_node_ip="infra", gpus_per_node=4),
     )
