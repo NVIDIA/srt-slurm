@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Run InferenceX AgentX against an srt-slurm deployment. This directory is
-# mounted at /benchmarks; use benchmark.type: custom with command: bash /benchmarks/agentx.sh.
+# mounted at /benchmarks; use benchmark.type: custom with command: /benchmarks/agentx.sh.
 set -euo pipefail
 
 required=(MODEL MODEL_PREFIX FRAMEWORK PRECISION CONC RESULT_FILENAME DURATION)

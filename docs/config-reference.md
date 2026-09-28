@@ -904,7 +904,7 @@ benchmark block to a serving recipe:
 ```yaml
 benchmark:
   type: custom
-  command: bash /benchmarks/agentx.sh
+  command: /benchmarks/agentx.sh
   env:
     MODEL: "<Hugging Face model ID>"
     MODEL_PREFIX: "<InferenceX model prefix>"
