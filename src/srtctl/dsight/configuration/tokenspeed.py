@@ -43,7 +43,9 @@ def _batch_comparison(
     value = field.value
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0:
         return None
-    limit = series if series["name"] == DECODE_LIMIT else metric_series.get(series.get("reference", {}).get("series_id"))
+    limit = (
+        series if series["name"] == DECODE_LIMIT else metric_series.get(series.get("reference", {}).get("series_id"))
+    )
     if not limit or not limit["points"]:
         return None
     evidence = []
@@ -90,8 +92,10 @@ class TokenSpeedMetricConfiguration:
             comparison = _batch_comparison(field, series, metric_series, logs) if binding.scheduler_limit else None
             note = ""
             if binding.scheduler_limit and comparison is None:
-                note = "Global recipe setting; a per-scheduler comparison requires a positive numeric value and " \
+                note = (
+                    "Global recipe setting; a per-scheduler comparison requires a positive numeric value and "
                     "recorded attention dp_size=1 for every setting in this log scope."
+                )
             elif not binding.scheduler_limit:
                 note = "Configuration context only. Token budgets and page granularity do not establish the usable KV pool size."
             result.append(MetricConfiguration(binding.label, binding.unit, binding.scope, field, comparison, note))

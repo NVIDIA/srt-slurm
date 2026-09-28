@@ -67,7 +67,9 @@ def attach_configuration(run: Importer, adapters: dict[str, MetricConfigAdapter]
             run.warnings.append(f"Configuration metadata omitted: file does not exist: {run.config_path}")
         return
     if len(paths) != 1:
-        run.warnings.append("Configuration metadata omitted: multiple recipe.yaml candidates; select one with --config.")
+        run.warnings.append(
+            "Configuration metadata omitted: multiple recipe.yaml candidates; select one with --config."
+        )
         return
     path = paths[0]
     try:
@@ -75,7 +77,9 @@ def attach_configuration(run: Importer, adapters: dict[str, MetricConfigAdapter]
         raw = path.read_bytes()
         data = load_yaml_text_with_comments(raw.decode("utf-8"))
         engine = data.get("engine", {})
-        adapter = (ADAPTERS if adapters is None else adapters).get(engine.get("type")) if isinstance(engine, dict) else None
+        adapter = (
+            (ADAPTERS if adapters is None else adapters).get(engine.get("type")) if isinstance(engine, dict) else None
+        )
         if adapter is None:
             return
         run.sources[source_id]["sha256"] = hashlib.sha256(raw).hexdigest()

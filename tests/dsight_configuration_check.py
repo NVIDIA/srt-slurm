@@ -39,7 +39,9 @@ async def run(out: Path, port: int) -> None:
         try:
             for domain in ("Page", "Runtime", "Network"):
                 await browser.call(f"{domain}.enable")
-            await browser.call("Emulation.setDeviceMetricsOverride", width=1500, height=1100, deviceScaleFactor=1, mobile=False)
+            await browser.call(
+                "Emulation.setDeviceMetricsOverride", width=1500, height=1100, deviceScaleFactor=1, mobile=False
+            )
             for case, (content, lines) in cases.items():
                 importer, _data, config_path = configured_run(out / case, content, lines)
                 built = build_dashboard(importer.logs, out / case / "report", iteration_timezone="UTC")
@@ -53,14 +55,26 @@ async def run(out: Path, port: int) -> None:
                   const Plot=window.uPlot;
                   window.uPlot=Object.assign(function(...args){const plot=new Plot(...args);__plots.push(plot);return plot},Plot);
                 })()""")
-                await browser.js("traceExplorer.setState(" + json.dumps({"metric":ACTIVE_DECODE,"pinnedMetrics":[ACTIVE_DECODE,ACTIVE_PAGES],"from":0,"to":10}) + ")")
+                await browser.js(
+                    "traceExplorer.setState("
+                    + json.dumps(
+                        {"metric": ACTIVE_DECODE, "pinnedMetrics": [ACTIVE_DECODE, ACTIVE_PAGES], "from": 0, "to": 10}
+                    )
+                    + ")"
+                )
                 await browser.js("traceExplorer.whenMetricsReady()")
-                series = await browser.js("traceExplorer.queryMetrics({name:" + json.dumps(ACTIVE_DECODE) + ",points:true})")
-                assert series[0]["max"] in (4,6)
+                series = await browser.js(
+                    "traceExplorer.queryMetrics({name:" + json.dumps(ACTIVE_DECODE) + ",points:true})"
+                )
+                assert series[0]["max"] in (4, 6)
                 assert not await browser.js("document.getElementById('error').textContent")
-                assert await browser.js("traceExplorer.listMetricFamilies().map(f=>f.name).filter(n=>n.startsWith('log_tokenspeed_')).length") == (3 if case=="missing-scope" else 4)
-                boxes = await browser.js("document.querySelector('.metric-card').querySelectorAll('.ds-metric-configuration').length")
-                if case in {"absent","malformed"}:
+                assert await browser.js(
+                    "traceExplorer.listMetricFamilies().map(f=>f.name).filter(n=>n.startsWith('log_tokenspeed_')).length"
+                ) == (3 if case == "missing-scope" else 4)
+                boxes = await browser.js(
+                    "document.querySelector('.metric-card').querySelectorAll('.ds-metric-configuration').length"
+                )
+                if case in {"absent", "malformed"}:
                     assert boxes == 0
                     assert "configuration" not in series[0]
                     assert await browser.js("__plots[0].series.length") == 3
@@ -70,26 +84,30 @@ async def run(out: Path, port: int) -> None:
                     assert "roles.decode.args.max-num-seqs" in text and "Configured max requests" in text
                     assert str(config_path) in text
                     metadata = series[0]["configuration"][0]
-                    if case in {"multiple-dp","missing-scope"}:
+                    if case in {"multiple-dp", "missing-scope"}:
                         assert metadata["comparison"] is None
-                        assert await browser.js("__plots[0].series.length") == (2 if case=="missing-scope" else 3)
+                        assert await browser.js("__plots[0].series.length") == (2 if case == "missing-scope" else 3)
                         assert "per-scheduler comparison requires" in text
                     else:
                         assert await browser.js("__plots[0].series.length") == 4
-                        assert await browser.js("__plots[0].series[3].dash") == [2,3]
+                        assert await browser.js("__plots[0].series[3].dash") == [2, 3]
                         assert await browser.js("__plots[0].scales.y.max") > metadata["source"]["value"]
                         assert "dp_size=1" in text and "SHA-256" in text
-                        if case=="late-scope":
+                        if case == "late-scope":
                             assert metadata["comparison"]["start"] == 4
-                            assert await browser.js("__plots[0].data[0].every((t,i)=>t>=4 || !Number.isFinite(__plots[0].data[3][i]))")
+                            assert await browser.js(
+                                "__plots[0].data[0].every((t,i)=>t>=4 || !Number.isFinite(__plots[0].data[3][i]))"
+                            )
                         else:
                             assert metadata["comparison"]["start"] == -1
-                            assert ("Recorded limits match" if case=="matching" else "Recorded limits differ") in text
+                            assert ("Recorded limits match" if case == "matching" else "Recorded limits differ") in text
                         await browser.click(".ds-metric-legend-toggle")
                         assert await browser.js("__plots[0].series.slice(1).every(s=>s.show===false)")
                         await browser.click(".ds-metric-legend-toggle")
-                    if case=="different":
-                        logged = await browser.js("traceExplorer.queryMetrics({name:"+json.dumps(DECODE_LIMIT)+",points:true})")
+                    if case == "different":
+                        logged = await browser.js(
+                            "traceExplorer.queryMetrics({name:" + json.dumps(DECODE_LIMIT) + ",points:true})"
+                        )
                         assert logged[0]["carried_setting"][0][1] == 8
                         assert metadata["source"]["value"] == 16
                         await browser.click(".ds-metric-configuration summary")
@@ -98,17 +116,36 @@ async def run(out: Path, port: int) -> None:
                         await browser.js("traceExplorer.setState({from:0,to:3})")
                         await browser.js("traceExplorer.whenMetricsReady()")
                         await browser.click(".ds-metric-configuration summary")
-                        assert "4 / 16 (25%)" in await browser.js("document.querySelector('.ds-metric-configuration').textContent")
-                        await browser.call("Emulation.setDeviceMetricsOverride",width=390,height=1100,deviceScaleFactor=1,mobile=False)
-                        await asyncio.sleep(.2)
+                        assert "4 / 16 (25%)" in await browser.js(
+                            "document.querySelector('.ds-metric-configuration').textContent"
+                        )
+                        await browser.call(
+                            "Emulation.setDeviceMetricsOverride",
+                            width=390,
+                            height=1100,
+                            deviceScaleFactor=1,
+                            mobile=False,
+                        )
+                        await asyncio.sleep(0.2)
                         await browser.rectangle("#metricsSection")
                         await browser.screenshot("02-narrow-config-lineage.png")
                         assert await browser.js("document.documentElement.scrollWidth<=innerWidth+1")
-                        await browser.call("Emulation.setDeviceMetricsOverride",width=1500,height=1100,deviceScaleFactor=1,mobile=False)
-                report["cases"].append({"case":case,"passed":True,"configuration":series[0].get("configuration")})
-            errors = [event for event in browser.events if event.get("method")=="Runtime.exceptionThrown"]
+                        await browser.call(
+                            "Emulation.setDeviceMetricsOverride",
+                            width=1500,
+                            height=1100,
+                            deviceScaleFactor=1,
+                            mobile=False,
+                        )
+                report["cases"].append({"case": case, "passed": True, "configuration": series[0].get("configuration")})
+            errors = [event for event in browser.events if event.get("method") == "Runtime.exceptionThrown"]
             assert not errors, errors
-            requests = [event for event in browser.events if event.get("method")=="Network.requestWillBeSent" and event["params"]["request"]["url"].startswith(("http:","https:"))]
+            requests = [
+                event
+                for event in browser.events
+                if event.get("method") == "Network.requestWillBeSent"
+                and event["params"]["request"]["url"].startswith(("http:", "https:"))
+            ]
             assert not requests, requests
             report.update(runtime_errors=errors, external_requests=requests)
         except Exception as error:
@@ -116,13 +153,13 @@ async def run(out: Path, port: int) -> None:
             await browser.screenshot("failure.png")
             raise
         finally:
-            (out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
-    print(json.dumps({"passed":len(report["cases"]),"runtime_errors":report["runtime_errors"]}))
+            (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps({"passed": len(report["cases"]), "runtime_errors": report["runtime_errors"]}))
 
 
 if __name__ == "__main__":
-    parser=argparse.ArgumentParser()
-    parser.add_argument("--out",type=Path,required=True)
-    parser.add_argument("--port",type=int,default=9222)
-    args=parser.parse_args()
-    asyncio.run(run(args.out,args.port))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--port", type=int, default=9222)
+    args = parser.parse_args()
+    asyncio.run(run(args.out, args.port))

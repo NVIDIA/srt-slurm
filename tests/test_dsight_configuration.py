@@ -25,7 +25,9 @@ from srtctl.dsight.query import TraceDataset
 
 
 def scheduler(second=30, maximum=8, dp=1):
-    return config(second, str(maximum)).replace("global max_num_seqs=64, dp_size=8", f"global max_num_seqs={maximum}, dp_size={dp}")
+    return config(second, str(maximum)).replace(
+        "global max_num_seqs=64, dp_size=8", f"global max_num_seqs={maximum}, dp_size={dp}"
+    )
 
 
 def recipe(value="16"):
@@ -56,7 +58,9 @@ def test_recipe_metadata_preserves_runtime_samples_and_exact_lineage(tmp_path):
     run, original, path = configured_run(tmp_path)
     path.write_text(recipe())
     data = Importer(run.logs, iteration_timezone="UTC").run()
-    assert [(s["name"], s["points"]) for s in data["metrics"]] == [(s["name"], s["points"]) for s in original["metrics"]]
+    assert [(s["name"], s["points"]) for s in data["metrics"]] == [
+        (s["name"], s["points"]) for s in original["metrics"]
+    ]
     assert data["metric_catalog"] == original["metric_catalog"]
     active = metric(data)
     annotation = active["configuration"][0]
@@ -111,13 +115,16 @@ def test_engine_fallback_retains_actual_field_path(tmp_path):
     assert annotation["source"]["value"] == 24
 
 
-@pytest.mark.parametrize("lines", [
-    [scheduler(dp=2), batch()],
-    [config().replace(", dp_size=8", ""), batch()],
-    [scheduler(), batch(), scheduler(35, dp=2), batch(36)],
-    [scheduler(), scheduler(dp=2), batch()],
-    [batch()],
-])
+@pytest.mark.parametrize(
+    "lines",
+    [
+        [scheduler(dp=2), batch()],
+        [config().replace(", dp_size=8", ""), batch()],
+        [scheduler(), batch(), scheduler(35, dp=2), batch(36)],
+        [scheduler(), scheduler(dp=2), batch()],
+        [batch()],
+    ],
+)
 def test_unknown_changed_or_multiple_dp_has_context_without_capacity_overlay(tmp_path, lines):
     _, data, _ = configured_run(tmp_path, recipe(), lines)
     annotation = metric(data)["configuration"][0]
@@ -135,7 +142,15 @@ def test_comparison_does_not_borrow_another_rank_or_worker(tmp_path):
     assert metric(data)["configuration"][0]["comparison"] is None
 
 
-@pytest.mark.parametrize("content", ["roles: [broken", "- not\n- a mapping\n", "engine:\n  type: tokenspeed\nroles:\n  decode:\n    args: []\n", recipe(".nan")])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "roles: [broken",
+        "- not\n- a mapping\n",
+        "engine:\n  type: tokenspeed\nroles:\n  decode:\n    args: []\n",
+        recipe(".nan"),
+    ],
+)
 def test_bad_optional_configuration_keeps_runtime_metrics(tmp_path, content):
     _, data, _ = configured_run(tmp_path, content)
     assert metric(data)["points"][0][1] == 4
@@ -145,7 +160,9 @@ def test_bad_optional_configuration_keeps_runtime_metrics(tmp_path, content):
 
 
 def test_duplicate_keys_are_not_silently_accepted(tmp_path):
-    _, data, _ = configured_run(tmp_path, recipe().replace("max-num-seqs: 16", "max-num-seqs: 16\n      max-num-seqs: 32"))
+    _, data, _ = configured_run(
+        tmp_path, recipe().replace("max-num-seqs: 16", "max-num-seqs: 16\n      max-num-seqs: 32")
+    )
     assert "configuration" not in metric(data)
     assert any("duplicate" in warning for warning in data["meta"]["warnings"])
 
@@ -186,8 +203,15 @@ def test_second_adapter_attaches_metadata_to_native_tachometer_series(tmp_path):
             field = document.field("capacity")
             if series["name"] != "trtllm_num_requests_running" or field is None:
                 return ()
-            return (MetricConfiguration("Configured capacity", "requests", "Worker", field,
-                                        ConfigComparison(20, "requests", 0, "Direct worker setting")),)
+            return (
+                MetricConfiguration(
+                    "Configured capacity",
+                    "requests",
+                    "Worker",
+                    field,
+                    ConfigComparison(20, "requests", 0, "Direct worker setting"),
+                ),
+            )
 
     attach_configuration(run, {"example": ExampleConfiguration()})
     native = [s for s in run.metric_series if s["name"] == "trtllm_num_requests_running"]

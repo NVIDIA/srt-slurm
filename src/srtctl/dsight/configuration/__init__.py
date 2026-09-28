@@ -8,4 +8,11 @@ from .tokenspeed import TokenSpeedMetricConfiguration
 
 ADAPTERS: dict[str, MetricConfigAdapter] = {"tokenspeed": TokenSpeedMetricConfiguration()}
 
-__all__ = ["ADAPTERS", "ConfigComparison", "ConfigDocument", "ConfigEvidence", "MetricConfigAdapter", "MetricConfiguration"]
+__all__ = [
+    "ADAPTERS",
+    "ConfigComparison",
+    "ConfigDocument",
+    "ConfigEvidence",
+    "MetricConfigAdapter",
+    "MetricConfiguration",
+]
