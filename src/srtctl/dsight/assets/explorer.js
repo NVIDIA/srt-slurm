@@ -124,7 +124,6 @@
     hardware: false,
     compareNsys: false,
     metric: defaultMetric,
-    lifecycleView: "activities",
   };
   const overlap = (a, b, lo = state.from, hi = state.to) => a <= hi && b >= lo;
   const selected = () => requests.get(state.request);
@@ -169,7 +168,6 @@
   const stateJSON = () => ({
     ...state,
     metricCharts: clone(state.metricCharts),
-    metricSeries: clone(state.metricSeries),
     pinnedMetrics: [...state.pinnedMetrics],
     expandedSessions: [...state.expandedSessions],
     expandedAgents: [...state.expandedAgents],
@@ -200,7 +198,6 @@
       "hardware",
       "compareNsys",
       "metric",
-      "lifecycleView",
       "span",
       "cursor",
       "metricCharts",
@@ -236,7 +233,6 @@
     state.nsys = Boolean(state.nsys && available.nsight);
     state.hardware = Boolean(state.hardware && available.hardware_metrics);
     if (!usableProfiles.some((p) => p.id === state.profile)) state.profile = usableProfiles[0]?.id ?? null;
-    if (!["activities", "milestones"].includes(state.lifecycleView)) state.lifecycleView = "activities";
   }
   function setRange(from, to, remember = true) {
     validateRange(from, to);
@@ -765,27 +761,7 @@
   }
   function lifecycleRows(r) {
     if (!hasLifecycle(r)) return "";
-    const controls = `<div class="row-note breakdown-controls"><strong>Request breakdown</strong>
-      <button data-lifecycle-view="activities" aria-pressed="${state.lifecycleView === "activities"}">Activity spans</button>
-      <button data-lifecycle-view="milestones" aria-pressed="${state.lifecycleView === "milestones"}">Progress milestones</button></div>`;
-    if (state.lifecycleView === "milestones") return controls + milestoneRows(r);
-    const activities = lifecycleModel(r).activities;
-    let html = controls + '<div class="row-note">Recorded OTel intervals. Nested and concurrent spans overlap; their durations are not additive.</div>';
-    for (const role of [...new Set(activities.map((a) => a.role))]) {
-      html += `<div class="activity-group">${esc(role)} · OTel</div>`;
-      for (const a of activities.filter((a) => a.role === role)) {
-        const label = `<button class="stage-row-label" data-span="${esc(a.id)}" data-owner-request="${esc(r.id)}" title="${esc(a.description)}"><span class="stage-name">${a.depth ? "↳ " : ""}${esc(a.label)}${a.kind === "envelope" ? " · inclusive" : ""}</span><small>${ms(a.end - a.start)}</small></button>`;
-        html += track(label, bar(a.start, a.end, a.label, `phase ${a.role} ${state.span === a.id && state.request === r.id ? "selected" : ""}`,
-          `data-span="${esc(a.id)}" data-owner-request="${esc(r.id)}"`,
-          `${a.label}
-${a.name}
-${ms(a.end-a.start)} · ${a.host}
-${a.description}`),
-          {classes: "activity-track", data: `data-activity-row="${esc(a.id)}" data-owner-request="${esc(r.id)}"`});
-      }
-    }
-    if (lifecycleModel(r).issues.length) html += `<div class="row-note">${lifecycleModel(r).issues.map(esc).join(" · ")}</div>`;
-    return html;
+    return '<div class="row-note"><strong>Request breakdown · Progress milestones</strong></div>' + milestoneRows(r);
   }
   function serverTracks() {
     if (!available.server_activity) return "";
@@ -1187,7 +1163,7 @@ ${s.description}`))).join("") + "</details>";
       if (sp.worker_basis) html += `<p class="help">Worker association: ${esc(sp.worker_basis)}.</p>`;
       html += evidence(sp.evidence, "Dynamo OTel span");
     }
-    if (hasLifecycle(r) && state.expandedRequests.has(r.id) && state.lifecycleView === "milestones") {
+    if (hasLifecycle(r) && state.expandedRequests.has(r.id)) {
       html += `<h3>Progress milestones</h3><div class="stage-list">${lifecycleModel(
         r,
       )
@@ -1452,11 +1428,6 @@ ${s.description}`))).join("") + "</details>";
           const nearby = cards[Math.min(cardIndex, cards.length - 1)];
           (nearby?.querySelector('[data-action="unpin-metric"]') || nearby || $("pinMetric")).focus();
         }
-        return;
-      }
-      if (b.dataset.lifecycleView) {
-        state.lifecycleView = b.dataset.lifecycleView;
-        render();
         return;
       }
       if (b.dataset.request) {

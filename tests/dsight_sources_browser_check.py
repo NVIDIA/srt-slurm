@@ -181,13 +181,15 @@ async def run(output: Path, port: int) -> None:
                 assert bool(await js("document.querySelector('#expandTTFT') !== null")) == cap["request_breakdown"]
                 if cap["request_breakdown"]:
                     model = await js(f"traceExplorer.getLifecycle({json.dumps(CLIENT)})")
-                    assert await js("document.querySelectorAll('[data-activity-row]').length") == len(
-                        model["activities"]
-                    )
-                    await click('[data-lifecycle-view="milestones"]')
                     assert await js("document.querySelectorAll('.lifecycle-chain').length") == len(model["stages"])
-                    await click('[data-lifecycle-view="activities"]')
-                    assert not await js("document.querySelectorAll('.lifecycle-chain').length")
+                    assert not await js("document.querySelector('[data-lifecycle-view]') !== null")
+                    assert "Source measurements" in await js("document.querySelector('#inspectorBody').innerText")
+                    # Older saved views cannot restore the removed activity-span breakdown.
+                    await js("traceExplorer.setState({lifecycleView:'activities'})")
+                    assert await js("document.querySelectorAll('.lifecycle-chain').length") == len(model["stages"])
+                    assert (await js(f"traceExplorer.getLifecycle({json.dumps(CLIENT)})"))["activities"] == model[
+                        "activities"
+                    ]
                 await js("traceExplorer.selectRequest('client-only',{expand:true})")
                 assert not await js("document.querySelector('#expandTTFT') !== null")
             else:

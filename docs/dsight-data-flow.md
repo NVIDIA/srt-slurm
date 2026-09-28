@@ -28,7 +28,7 @@ flowchart LR
 
     O["Lifecycle OTel<br/>flat or per-collector traces.jsonl"] --> LP["Correlate request / trace IDs<br/>build lifecycle with client boundaries"]
     LP --> SU["Unjoined server activity<br/>when no client request matches"]
-    LP --> LU["Expand lifecycle + Request tab<br/>activity spans, progress milestones<br/>and Source measurements"]
+    LP --> LU["Expand lifecycle + Request tab<br/>progress milestones<br/>and Source measurements"]
 
     C["Client request JSONL<br/>AIPerf / AgentPerf"] --> CP["Read request timing, TTFT<br/>sessions and token counts"]
     CP --> CU["Client sessions & agents<br/>request bars and Request tab summary"]
@@ -58,10 +58,10 @@ The UI destinations use the current section and tab names:
 | Visible area | What its data means |
 | --- | --- |
 | **Nsight** tab and overlay | NVTX intervals arranged by thread and overlap lane, alongside the selected request. Available frontend CPU samples feed **Frontend CPU sample hotspots**. CUDA kernel timing is not imported. |
-| **Metrics** panel | A searchable selector groups every captured family into Frontend, Router, Workers, GPU and Host categories. One shared chart shows the selected family across workers, hosts, ranks and labels; its legend controls individual series. Families without samples in the selected capture window remain discoverable. |
+| **Metrics** panel | A searchable selector groups every captured family into Frontend, Router, Workers, GPU and Host categories. Each family uses one shared chart across workers, hosts, ranks and labels; its legend controls individual series. Pinned families remain stacked while browsing other metrics, and all charts follow the shared time range. Families without samples in the selected capture window remain discoverable. |
 | **Agent API / queries** | All imported metric series and bounded queries for independent server activity, batch observations and profiles. |
 | **Batch context** tab | Recorded iteration or scheduler-snapshot fields. Missing counters and timers stay unknown; these are not per-request stage durations. |
-| **Request** tab | Client measurements, recorded ID mappings, worker path and correlated OTel source measurements. **Expand lifecycle** shows original activity spans or chronological progress milestones. Overlapping spans retain their original durations. |
+| **Request** tab | Client measurements, recorded ID mappings, worker path and correlated OTel source measurements. **Expand lifecycle** shows chronological progress milestones. Source measurements retain the original durations of overlapping spans. |
 
 The Nsight overlay is a time-based NVTX timeline. Its CPU hotspot table is a
 separate view of samples, not an aggregate CPU flamegraph.

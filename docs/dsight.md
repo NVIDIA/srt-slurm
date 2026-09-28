@@ -148,10 +148,10 @@ report; a CUDA table's presence is reported separately from imported data.
 - Drag in the overview **or Client sessions & agents**, or enter From/To.
   All tracks follow the same time range.
 - Expand session → agent → request. For requests with OTel activity, **Expand
-  lifecycle** reveals **Activity spans**, retaining original overlap and nesting.
-  **Progress milestones** switches to cumulative rows ending at chronological
-  recorded boundaries. **Fit TTFT** selects the client TTFT window and expands the
-  lifecycle only when available.
+  lifecycle** reveals **Progress milestones**: cumulative rows ending at
+  chronological recorded boundaries. Original overlapping OTel spans remain in
+  **Source measurements** and worker tracks. **Fit TTFT** selects the client TTFT
+  window and expands the lifecycle only when available.
 - Click a milestone or raw span for boundaries and source references. Expand
   workers in the request path for operation/dispatch/response-pump nesting and
   Nsight reports. The metric selector at the top right searches all captured
