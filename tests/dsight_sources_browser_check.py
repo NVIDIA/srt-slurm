@@ -221,7 +221,9 @@ async def run(output: Path, port: int) -> None:
                     assert (await js("traceExplorer.queryNsys({limit:1})"))["worker"] == worker
                     after = await js("traceExplorer.getState()")
                     assert (after["from"], after["to"], after["request"]) == (
-                        before["from"], before["to"], before["request"]
+                        before["from"],
+                        before["to"],
+                        before["request"],
                     )
                     await click('.tabs [data-tab="request"]')
                 await js("traceExplorer.selectSpan('dop',{nsys:true})")
