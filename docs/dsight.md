@@ -22,7 +22,7 @@ uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
 uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
   --output "<path_to_report_directory>" --no-otel
 
-# Optional existing profiles and a known timezone for TRT-LLM iteration logs:
+# Optional existing profiles and a known timezone for iteration/batch logs:
 uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
   --output "<path_to_report_directory>" \
   --nsys-sqlite "<path_to_nsys_sqlite_exports>" \
@@ -65,7 +65,22 @@ Pass a run directory containing `logs/`, or the log directory itself. Multiple
 client exports require `--client "<path_to_client_export>"`; DSight does not silently
 mix concurrency sweeps or duplicated exports.
 
-OTel is optional and is imported automatically when available. Use `--no-otel`
+Each source is optional. Views and controls appear only for usable observations:
+no OTel means no request breakdown; no matching NVTX/CPU samples means no Nsight
+section; no metrics means no metric selector; no batch records means no batch tab.
+Missing CPU samples never become an empty hotspot table. An empty time selection
+keeps available controls and reports that no observations overlap the window.
+
+Client-only, metrics-only, Nsight-only, OTel-only and timestamped-batch-only
+captures are supported. Without a client export (or with an empty export), the
+window is the union of recorded source timestamps. DSight does not synthesize
+client requests or TTFT. Unjoined server spans have a separate section and query,
+including in runs that also contain measured clients. A nonempty client export
+whose rows all fail the requested phase filter remains an error. Missing explicitly
+supplied paths, malformed inputs and captures without a positive recorded time
+range remain errors, rather than silently appearing complete.
+
+OTel is imported automatically when available. Use `--no-otel`
 to skip reading OTel files entirely. A request without supported, correlated
 OTel activity has no lifecycle expansion button, stage rows, or source-measurement
 breakdown. This also applies to untraced requests in a partially traced run.
@@ -78,9 +93,9 @@ identity bridges are omitted.
 | AgentX / AIPerf | `profile_export.jsonl`, `agentic/*/[aiperf_artifacts/]profile_export.jsonl`, `artifacts/*/profile_export.jsonl` | Client timing, tokens and recorded session/agent identities |
 | Native AgentPerf | `requests.jsonl`, `agentperf/requests.jsonl`, `agentperf/*/requests.jsonl` | HTTP identity; companion phase-analysis JSONL supplies fully decoded timing where present |
 | AgentPerf manifest | `phase_manifest.jsonl` beside the export | Measured request starts in `[settling_end, actual_phase_end)` |
-| Frontend logs | `*_frontend_*.out` | Explicit client header → Dynamo UUID bridge |
-| Dynamo OTel | `otel/*/traces.jsonl`, OTLP JSON resource/scope spans | Original timestamps, parents, trace/request/process identities and route attributes |
-| Worker logs | `*_{prefill,decode,agg}_w*[_e<k>].out` | Engine ID maps, worker identity and iteration summaries |
+| Frontend logs | `*_frontend_*.out` | Explicit client header → Dynamo UUID bridge from text or original JSON records |
+| Dynamo OTel | `otel/traces.jsonl` or `otel/*/traces.jsonl`, OTLP JSON resource/scope spans | Original timestamps, parents, trace/request/process identities and route attributes |
+| Worker logs | `*_{prefill,decode,agg}_w*[_e<k>].out` | Engine ID maps when recorded, Dynamo request/process bindings, iterations or periodic batch snapshots |
 | Tachometer | `tachometer/local`, or `--metrics <capture-leaf-or-file>` | Selected running/waiting/in-flight, KV, GPU and host gauges with recorded labels |
 | Nsight SQLite | `--nsys-sqlite <directory-or-file>` | Selected NVTX ranges and available frontend CPU samples, aligned by session UTC anchor |
 
@@ -96,21 +111,25 @@ response text and SSE payloads are excluded from the normalized dataset.
 For metrics, `final.parquet` supersedes compacted Parquet shards. An Arrow tail
 is also read, with identical samples deduplicated within complete series
 identities. The upload mirror is excluded. Absolute `timestamp_ns` is required
-for alignment. Imported families are listed in `src/srtctl/dsight/metrics.py`;
+for alignment. Common families are listed in `src/srtctl/dsight/metrics.py`, engine families in
+`src/srtctl/dsight/engines.py`;
 this context view does not replace the complete Tachometer metric catalog.
 
 Nsight worker filenames follow
 `<host>_<role>_w<index>_profile_rank<rank>.sqlite` for MPI ranks and
 `<host>_<role>_w<index>_profile_gpu<devices>.sqlite` for per-process workers
-(SGLang, vLLM); the role is `prefill`, `decode`, or `agg` as in the worker logs,
+(including TokenSpeed and SGLang captures); the role is `prefill`, `decode`, or `agg` as in the worker logs,
 and a failover shadow engine's `_e<k>` suffix is retained as the report's
 engine. Frontend names follow `<host>_frontend_<index>.sqlite`. A `_window<n>`
 suffix is accepted. Unknown
 names remain unmapped. Imported NVTX categories are the frontend
 `preprocess.*`/`route.*`/`transport.*` ranges, TRT-LLM executor and scheduling
-ranges, and SGLang `scheduler.*` stages. The default
+ranges, SGLang `scheduler.*` stages, and TokenSpeed forward/graph-replay,
+input preparation, sampling, cache and commit annotations. OS PID/TID, GPU device
+sets and distributed ranks stay separate; a GPU-set filename does not imply rank 0.
+The default
 NVTX limit is 250,000 events per report; `--max-profile-events` changes it.
-Truncation is explicit. Operator ranges and CUDA kernels remain in the source
+Truncation and the imported time range are explicit. Operator ranges and CUDA kernels remain in the source
 report; a CUDA table's presence is reported separately from imported data.
 
 ## Using the timeline
@@ -118,8 +137,9 @@ report; a CUDA table's presence is reported separately from imported data.
 - Drag in the overview **or Client sessions & agents**, or enter From/To.
   All tracks follow the same time range.
 - Expand session → agent → request. For requests with OTel activity, **Expand
-  lifecycle** reveals cumulative rows: each appends elapsed time ending at its
-  named milestone. **Fit TTFT** selects the client TTFT window and expands the
+  lifecycle** reveals **Activity spans**, retaining original overlap and nesting.
+  **Progress milestones** switches to cumulative rows ending at chronological
+  recorded boundaries. **Fit TTFT** selects the client TTFT window and expands the
   lifecycle only when available.
 - Click a milestone or raw span for boundaries and source references. Expand
   workers for operation/dispatch/response-pump nesting. Select a metric series
@@ -127,10 +147,13 @@ report; a CUDA table's presence is reported separately from imported data.
 - **Inspect phase in Nsight** follows the recorded worker. Select a rank or
   compare frontend + request workers. Router DP rank is retained as evidence;
   it is not assumed to map to a global process rank.
-- **Iterations** shows shared batch context. Supply the log's timezone to align
-  timestamps that have no offset.
+- **Batch context** shows the measurements actually recorded by each engine.
+  TokenSpeed periodic snapshots show running/queued requests and cache pages;
+  absent iteration counters or device timers are not filled with zeros. Supply
+  the log's timezone to align timestamps that have no offset.
 - **Copy view link** saves range, request and expansions in the URL fragment.
-  **Export selection** saves evidence JSON.
+  **Export selection** saves evidence JSON, including bounded pages of independent
+  server activity and batch observations with total counts for pagination.
 
 Sessions are paginated; details expand on demand. Dense Nsight lanes show event
 density until zoomed in. Queries retain exact imported intervals.
@@ -152,14 +175,22 @@ queue time, KV transfer, or first-token compute.
 | Worker operation | `worker.operation.*` OTel | Inclusive parent of dispatch and response pumping, including backend waits |
 | Response pump | `response.streaming.<role>` OTel | Begins before awaiting the first item; includes initial wait, generation and publishing |
 | Frontend response stream | `response.streaming` OTel | First final SSE event available → completion/drop; concurrent with worker generation |
+| Worker binding | Dynamo structured worker logs | Recorded request UUID, host, role and process epoch; distinct from engine-local IDs |
 | Engine bridge | `Engine ID map` log | UUID → worker/process-local client ID → disaggregated ID; post-submission observation |
 | Iteration context | TRT-LLM log | Shared batches, host-loop time, delayed device time; one-second timestamps |
+| Batch snapshot | TokenSpeed log | Periodic scheduler state, millisecond timestamp precision and attention TP rank; not a forward iteration |
 | NVTX / CPU | Nsight SQLite | Shared process/rank activity; overlap does not prove request ownership |
 
 Definitions follow the lifecycle instrumentation introduced in
 [Dynamo #14101](https://github.com/ai-dynamo/dynamo/pull/14101). Multiple attempts,
 repeated milestones, non-monotonic clocks, or milestones outside client TTFT
 suppress the derived server partition; client timing and raw spans remain.
+Chronological ordering accommodates concurrent prefill/decode setup; it does not
+assert causality. Missing first-token timing leaves an unsplit neutral request bar,
+with raw server activity still available. Conflicting worker bindings remain in
+evidence and are excluded from definite paths. A unique recorded host/role can
+link activity to a worker when an explicit process binding is unavailable; this
+weaker basis is labeled. Collector directory names are never worker identities.
 No cross-host clock correction is invented. Engine queue/compute/KV timing needs
 additional recorded per-request evidence.
 
@@ -181,7 +212,10 @@ Times are seconds relative to the exact string `meta.origin_ns`. List queries
 return total, offset, limit, range and items. Limits are at most 1,000; metric
 `--points` includes up to 1,000 points per series with a truncation flag. Kinds:
 `summary`, `requests`, `request`, `lifecycle`, `metrics`, `profiles`, `nsys`,
-`cpu`, `iterations`, `sources`.
+`cpu`, `iterations`, `server_spans`, `sources`. Rank filters follow the recorded
+`rank_kind`: TRT-LLM global rank (with local rank retained separately), TokenSpeed
+attention TP rank, or the Nsight report's recorded distributed rank. Prefer
+`--profile` for captures that only identify a GPU set.
 
 Lifecycle queries return `available: false` and empty `stages`, `activities`,
 `milestones`, and `rows` when no supported OTel activity is joined. No fallback
@@ -217,10 +251,42 @@ inspect lifecycle/source evidence → compare worker metrics and shared executio
 context → save a view for human review. Verify an optimization hypothesis
 against a specific source before claiming a cause.
 
+## Engine extension boundary
+
+The normalized `srtctl-trace/1` contract adds `worker_bindings`, independent
+`server_spans`, source capabilities, observation kinds/rank scopes, metric
+metadata and Nsight thread identities. Existing request, lifecycle, metric and
+profile collections retain their roles. CLI, Python, MCP and the browser consume
+the same records; `summary.capabilities` / `traceExplorer.describe().available`
+report usable sources. Empty collections are valid. Unknown values stay null.
+
+The implementation separates four responsibilities:
+
+- `sources.py` parses shared filenames, Dynamo JSON identity records and OTel
+  discovery. This is independent of the backend engine.
+- `engines.py` contains frozen `EngineDialect` descriptors for TRT-LLM, TokenSpeed
+  and SGLang. Each can provide any subset of NVTX names/prefixes, a single-line
+  log decoder and exact metric definitions. Log decoding has no clocks, joins,
+  filesystem access or UI state.
+- Source readers and `Importer` own UTC alignment, bounded imports, provenance,
+  identity joins and auditing. `window.py` derives a source-only time envelope;
+  `capabilities.py` determines which views have usable evidence.
+- The viewer selects controls from capabilities and metric metadata. It has no
+  engine-name switches and never assumes every engine records TRT-LLM timers.
+
+To add another engine, first preserve representative source fixtures. Add its
+vocabulary to an `EngineDialect`, documenting metric units and observation/rank
+semantics. Reuse common identity and source readers. Add fixture tests for missing
+sources, unknown IDs and timing precision; use the optional-source browser matrix
+below. Introduce a new common observation kind only when existing kinds cannot
+represent the evidence. Do not infer IDs/ranks/timings to satisfy a shape.
+SGLang's existing NVTX and metrics remain supported; this does not claim a
+SGLang batch-log decoder or vLLM-specific vocabulary has been implemented.
+
 ## Development checks
 
 ```bash
-uv run pytest tests/test_dsight.py tests/test_dsight_agentperf.py
+uv run pytest tests/test_dsight.py tests/test_dsight_agentperf.py tests/test_dsight_engines.py
 uv run ty check src/srtctl/dsight
 node --check src/srtctl/dsight/assets/explorer.js
 ```
@@ -240,3 +306,16 @@ source files (uses the same isolated Chrome port):
 uv run --with websockets python tests/dsight_optional_otel_check.py \
   --port 9338 --out "<path_to_browser_check_output>"
 ```
+
+Check the complete optional-source matrix (TokenSpeed overlap, independently
+missing OTel/Nsight/metrics, and each source alone), restored view links and
+available API examples:
+
+```bash
+uv run --with websockets python tests/dsight_sources_browser_check.py \
+  --port 9338 --out "<fresh_path_to_browser_check_output>"
+```
+
+For very large SQLite sorts, set `SQLITE_TMPDIR` to a writable temporary directory
+with sufficient capacity. This affects temporary sorting only; exports are opened
+read-only. Plan memory/disk headroom for the normalized dataset and staged output.

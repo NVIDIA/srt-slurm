@@ -50,10 +50,11 @@ def query_trace(
     """Read a CLI-generated trace dashboard; never start profiling or a benchmark.
 
     dataset is a local dashboard directory or trace-data.json.gz. kind is summary,
-    requests, request, lifecycle, metrics, profiles, nsys, cpu, iterations, or
-    sources. start/end are seconds relative to summary.meta.origin_ns.
+    requests, request, lifecycle, server_spans, metrics, profiles, nsys, cpu,
+    iterations, or sources. start/end are seconds relative to summary.meta.origin_ns.
     request/lifecycle require request_id. All list queries have offset/limit
-    (maximum 1000). Rank selects the Nsight/iteration global rank, not router DP
+    (maximum 1000). Rank selects the recorded Nsight rank or the observation's
+    rank_kind (global rank for TRT-LLM, attention TP for TokenSpeed), not router DP
     rank. Runtime spans and shared batch activity are not exclusive request costs.
     Generate the dataset explicitly with srtctl dsight build before querying.
     """

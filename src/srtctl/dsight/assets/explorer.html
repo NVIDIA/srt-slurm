@@ -23,6 +23,10 @@
         color: var(--ink);
         background: var(--paper);
       }
+      [hidden] { display: none !important; }
+      .breakdown-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+      .activity-group { padding: 5px 12px; font-size: 11px; color: var(--muted); background: #f8fafd; text-transform: capitalize; }
+      .activity-track .stage-row-label { padding-left: 14px; }
       * {
         box-sizing: border-box;
       }
@@ -152,10 +156,14 @@
       .notice {
         margin: 12px 24px 0;
         padding: 8px 12px;
-        border-left: 3px solid var(--amber);
-        background: #fff6e5;
+        border-left: 3px solid #6688ad;
+        background: #edf3f9;
         font-size: 12px;
         line-height: 1.5;
+      }
+      .notice.has-warning {
+        border-left-color: var(--amber);
+        background: #fff6e5;
       }
       .toolbar {
         display: flex;

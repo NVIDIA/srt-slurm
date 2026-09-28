@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .capabilities import capabilities
 from .clients import AgentPerfAdapter
-from .model import SCHEMA, lifecycle
+from .engines import parse_engine_log
+from .model import SCHEMA, activity_label, lifecycle
 from .nsys import read_profiles
-
-ANSI = re.compile(r"\x1b\[[0-9;]*m")
-UUID = r"[0-9a-fA-F-]{36}"
+from .sources import canonical_role, frontend_identity, log_fields, otel_files, source_identity
 
 
 def epoch_ns(s: str) -> int:
@@ -72,6 +72,26 @@ class Importer:
         self.audit: collections.Counter[str] = collections.Counter(joined_spans=0, clients_with_lifecycle=0)
         self.origin = 0
         self.profiles_data: list[dict[str, Any]] = []
+        self.server_spans: list[dict[str, Any]] = []
+        self.requests: list[dict[str, Any]] = []
+        self.time_basis = "client measurement window"
+
+    def register_worker(self, wid: str, host: str | None, role: str, index: int | None) -> None:
+        """Discover worker identity from any independent recorded source."""
+        if wid == "frontend":
+            return
+        self.workers.setdefault(
+            wid,
+            {
+                "id": wid,
+                "role": canonical_role(role),
+                "index": index,
+                "host": host,
+                "process_epochs": sorted(self.worker_epochs.get((host, canonical_role(role)), set())),
+                "profiles": [],
+                "metrics": [],
+            },
+        )
 
     def source(self, p: Path, kind: str) -> int:
         key = str(p.resolve())
@@ -91,6 +111,15 @@ class Importer:
     def t(self, ns: int | str) -> float:
         return round((int(ns) - self.origin) / 1e9, 9)
 
+    def source_window(self) -> None:
+        from .window import source_window
+
+        self.origin, end = source_window(self)
+        self.duration = (end - self.origin) / 1e9
+        self.by_client = {}
+        self.audit["client_requests"] = 0
+        self.time_basis = "available source timestamps; no client measurement window"
+
     def clients(self) -> None:
         patterns = (
             "profile_export.jsonl",
@@ -106,6 +135,9 @@ class Importer:
             if self.client_path
             else sorted({p.resolve() for pat in patterns for p in self.logs.glob(pat)})
         )
+        if not files:
+            self.source_window()
+            return
         if len(files) != 1:
             raise ValueError(
                 f"Expected one client export (AIPerf or AgentPerf), found {len(files)}; select it with --client"
@@ -139,7 +171,10 @@ class Importer:
                 except (KeyError, TypeError, ValueError) as exc:
                     raise ValueError(f"{files[0]}:{line}: invalid client record: {exc}") from exc
         if not rows:
-            raise ValueError(f"No requests for phase {self.phase!r}; warmup is never substituted")
+            if self.audit["excluded_client_rows"]:
+                raise ValueError(f"No requests for phase {self.phase!r}; warmup is never substituted")
+            self.source_window()
+            return
         self.origin = min(int(r["metadata"]["request_start_ns"]) for _, r in rows)
         self.requests: list[dict[str, Any]] = []
         for line, row in rows:
@@ -188,6 +223,7 @@ class Importer:
                 "server_ids": [],
                 "spans": [],
                 "engine": [],
+                "worker_bindings": [],
                 "raw_start_ns": str(m["request_start_ns"]),
                 "raw_end_ns": str(m["request_end_ns"]),
             }
@@ -220,18 +256,17 @@ class Importer:
             for line, s in enumerate(p.open(errors="replace", newline="\n"), 1):
                 if "x_request_id" not in s:
                     continue
-                s = ANSI.sub("", s)
-                x = re.search(r'x_request_id="([^"]+)"', s)
-                d = re.search(r"(?:dynamo\.request\.id|\brequest_id)=(" + UUID + r")", s)
-                if not x or not d or x[1] not in self.by_client:
+                identity = frontend_identity(s)
+                if identity is None or identity[0] not in self.by_client:
                     continue
-                r = self.by_client[x[1]]
-                if d[1] not in r["server_ids"]:
-                    r["server_ids"].append(d[1])
-                    self.bridge[d[1]] = [self.source(p, "frontend_log"), line]
-                if d[1] in self.by_server and self.by_server[d[1]]["id"] != r["id"]:
+                client_id, server_id = identity
+                r = self.by_client[client_id]
+                if server_id not in r["server_ids"]:
+                    r["server_ids"].append(server_id)
+                    self.bridge[server_id] = [self.source(p, "frontend_log"), line]
+                if server_id in self.by_server and self.by_server[server_id]["id"] != r["id"]:
                     raise ValueError("Ambiguous client/server bridge")
-                self.by_server[d[1]] = r
+                self.by_server[server_id] = r
         self.audit["clients_with_server_identity"] = sum(bool(r["server_ids"]) for r in self.requests)
         self.audit["multiple_server_attempts"] = sum(len(r["server_ids"]) > 1 for r in self.requests)
         for r in self.requests:
@@ -241,7 +276,7 @@ class Importer:
         spans: list[dict[str, Any]] = []
         trace_requests = collections.defaultdict(set)
         seen = {}
-        for p in sorted(self.logs.glob("otel/*/traces.jsonl")):
+        for p in otel_files(self.logs):
             if not p.stat().st_size:
                 continue
             sid = self.source(p, "otel")
@@ -280,6 +315,7 @@ class Importer:
                             role = a.get(
                                 "dynamo.operation.role", "frontend" if service == "dynamo-frontend" else "unknown"
                             )
+                            role = canonical_role(role)
                             host = a.get("dynamo.instance.id", p.parent.name)
                             epoch = a.get("dynamo.process.epoch")
                             if epoch:
@@ -294,6 +330,7 @@ class Importer:
                                     "end": end,
                                     "role": role,
                                     "host": host,
+                                    "host_recorded": bool(a.get("dynamo.instance.id")),
                                     "process": epoch,
                                     "request": rid,
                                     "operation": a.get("dynamo.operation.id"),
@@ -326,6 +363,9 @@ class Importer:
                 r = self.by_client[next(iter(candidates))]
             if r is None:
                 self.audit["unjoined_spans"] += 1
+                if definition := activity_label(s):
+                    label, kind, description = definition
+                    self.server_spans.append({**s, "label": label, "kind": kind, "description": description})
                 continue
             s["join"] = "request_id" if s["request"] in self.by_server else "trace_id"
             r["spans"].append(s)
@@ -359,109 +399,149 @@ class Importer:
                 self.audit["associated_router_selections"] += 1
 
     def engine(self) -> None:
-        pattern = re.compile(r"Engine ID map: request_id=(\S+) trtllm_client_id=(\S+) disagg_request_id=(\S+)")
-        iteration = re.compile(
-            r"iter = (\d+).*?global_rank = (\d+).*?rank = (\d+).*?num_scheduled_requests = (\d+).*?kv_cache_util = ([\d.]+).*?host_step_time = ([\d.eE+-]+)ms.*?prev_device_step_time = ([\d.eE+-]+)ms.*?timestamp = ([\d-]+ [\d:]+)"
-        )
-        id_owners = collections.defaultdict(set)
-        for p in sorted(self.logs.glob("*_w*.out")):
-            # Failover shadow engines log as <host>_<role>_w<i>_e<k>.out for the same worker.
-            match = re.match(r"(.+)_(prefill|decode|agg)_w(\d+)(?:_e\d+)?\.out", p.name)
-            if not match:
+        id_owners: dict[tuple, set[str]] = collections.defaultdict(set)
+        bindings: set[tuple] = set()
+
+        def bind(request: dict[str, Any], entry: dict[str, Any]) -> None:
+            key = (request["id"], entry["worker"], entry["process"])
+            if key not in bindings:
+                request["worker_bindings"].append(entry)
+                bindings.add(key)
+
+        for path in sorted(self.logs.glob("*_w*.out")):
+            identity = source_identity(path)
+            if identity is None:
                 continue
-            host, role, index = match.groups()
-            wid = f"{role}-{index}"
+            wid, host, role = identity.worker, identity.host, identity.role
             if wid in self.workers and self.workers[wid]["host"] != host:
                 raise ValueError(f"Ambiguous worker {wid}: multiple leaders in selected logs")
-            epochs = sorted(self.worker_epochs.get((host, role), set()))
-            self.workers.setdefault(
-                wid,
-                {
-                    "id": wid,
-                    "role": role,
-                    "index": int(index),
-                    "host": host,
-                    "process_epochs": epochs,
-                    "profiles": [],
-                    "metrics": [],
-                },
-            )
-            with p.open(errors="replace", newline="\n") as stream:
-                for line, s in enumerate(stream, 1):
-                    if "iter =" in s and (it := iteration.search(s)):
-                        time = dt.datetime.fromisoformat(it[8])
+            self.register_worker(wid, host, role, identity.index)
+            with path.open(errors="replace", newline="\n") as stream:
+                for line, text in enumerate(stream, 1):
+                    # Common Dynamo evidence is not an engine-local request ID.
+                    if "dynamo.request.id" in text:
+                        fields = log_fields(text)
+                        server_id = fields.get("dynamo.request.id")
+                        if (
+                            server_id in self.by_server
+                            and fields.get("dynamo.instance.id") == host
+                            and canonical_role(fields.get("dynamo.operation.role", "")) == role
+                            and fields.get("dynamo.process.epoch")
+                        ):
+                            bind(
+                                self.by_server[server_id],
+                                {
+                                    "worker": wid,
+                                    "host": host,
+                                    "role": role,
+                                    "server_id": server_id,
+                                    "process": fields["dynamo.process.epoch"],
+                                    "basis": "request, host, role and process epoch recorded in this worker log",
+                                    "evidence": [self.source(path, "worker_log"), line],
+                                },
+                            )
+                    record = parse_engine_log(text)
+                    if record is None:
+                        continue
+                    evidence = [self.source(path, "worker_log"), line]
+                    if record["kind"] in ("iteration", "batch_snapshot"):
+                        time = dt.datetime.fromisoformat(record["local_time"])
                         anchored = (
-                            self.t(int(time.replace(tzinfo=self.iteration_zone).timestamp()) * 10**9)
+                            self.t(round(time.replace(tzinfo=self.iteration_zone).timestamp() * 1e9))
                             if self.iteration_zone
                             else None
                         )
-                        if anchored is not None and (anchored + 1 < 0 or anchored > self.duration):
+                        resolution = record["time_resolution_s"]
+                        if anchored is not None and (anchored + resolution < 0 or anchored > self.duration):
                             continue
                         self.iterations.append(
                             {
+                                **record,
                                 "worker": wid,
-                                "iteration": int(it[1]),
-                                "global_rank": int(it[2]),
-                                "rank": int(it[3]),
-                                "batch_requests": int(it[4]),
-                                "kv_cache_util": float(it[5]),
-                                "host_step_ms": float(it[6]),
-                                "previous_device_step_ms": float(it[7]),
-                                "local_time": it[8],
                                 "start": anchored,
-                                "end": anchored + 1 if anchored is not None else None,
-                                "evidence": [self.source(p, "worker_log"), line],
+                                "end": anchored + resolution if anchored is not None else None,
+                                "evidence": evidence,
                             }
                         )
-                    m = pattern.search(s)
-                    if not m or m[1] not in self.by_server:
                         continue
-                    r = self.by_server[m[1]]
-                    process = {
+                    server_id = record["server_id"]
+                    if server_id not in self.by_server:
+                        continue
+                    request = self.by_server[server_id]
+                    processes = {
                         sp["process"]
-                        for sp in r["spans"]
+                        for sp in request["spans"]
                         if sp["host"] == host and sp["role"] == role and sp["process"]
                     }
                     entry = {
+                        **record,
                         "worker": wid,
                         "host": host,
                         "role": role,
-                        "client_id": m[2],
-                        "disagg_id": m[3],
-                        "server_id": m[1],
-                        "process": next(iter(process)) if len(process) == 1 else None,
-                        "evidence": [self.source(p, "worker_log"), line],
+                        "process": next(iter(processes)) if len(processes) == 1 else None,
+                        "evidence": evidence,
                     }
-                    stamp = re.search(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)", s)
+                    stamp = re.search(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)", text)
                     if stamp:
                         entry["observed_at"] = self.t(epoch_ns(stamp[0]))
-                    r["engine"].append(entry)
-                    id_owners[(wid, entry["process"], m[2])].add(m[1])
+                    request["engine"].append(entry)
+                    bind(request, {**entry, "basis": "explicit engine request ID map in worker log"})
+                    id_owners[(wid, entry["process"], entry["client_id"])].add(server_id)
         self.audit["ambiguous_engine_ids"] = sum(len(v) > 1 for v in id_owners.values())
         self.audit["clients_with_both_engine_maps"] = sum(
             {e["role"] for e in r["engine"]} >= {"prefill", "decode"} for r in self.requests
         )
         self.audit["engine_map_rows"] = sum(len(r["engine"]) for r in self.requests)
-        for r in self.requests:
-            for entry in r["engine"]:
+        for request in self.requests:
+            for entry in request["engine"]:
                 entry["identity_ambiguous"] = (
                     entry["process"] is None
                     or len(id_owners[(entry["worker"], entry["process"], entry["client_id"])]) > 1
                 )
-            for span in r["spans"]:
+        self.audit["iteration_rows"] = len(self.iterations)
+        self.audit["batch_snapshot_rows"] = sum(r["kind"] == "batch_snapshot" for r in self.iterations)
+
+    def worker_links(self) -> None:
+        """Join request activities using explicit process bindings or unique hosts.
+
+        Host/role fallback is only available when OTel actually recorded the host;
+        collector directory names and timestamp proximity are never identities.
+        """
+        for request in self.requests:
+            owners: dict[tuple, set[str]] = collections.defaultdict(set)
+            for binding in request["worker_bindings"]:
+                key = (binding["server_id"], binding["host"], binding["role"], binding["process"])
+                owners[key].add(binding["worker"])
+            for binding in request["worker_bindings"]:
+                key = (binding["server_id"], binding["host"], binding["role"], binding["process"])
+                binding["ambiguous"] = len(owners[key]) > 1
+                self.audit["ambiguous_worker_bindings"] += binding["ambiguous"]
+            for span in request["spans"]:
                 candidates = {
                     e["worker"]
-                    for e in r["engine"]
+                    for e in request["worker_bindings"]
                     if e["host"] == span["host"]
                     and e["role"] == span["role"]
                     and e["process"] is not None
                     and e["process"] == span["process"]
                 }
+                basis = "recorded request and process binding"
+                if not candidates and span.get("host_recorded") and span["role"] != "frontend":
+                    candidates = {
+                        w["id"]
+                        for w in self.workers.values()
+                        if w["host"] == span["host"] and w["role"] == span["role"]
+                    }
+                    basis = "unique recorded host and role; engine-local request ID unavailable"
                 span["worker"] = next(iter(candidates)) if len(candidates) == 1 else None
+                span["worker_basis"] = basis if len(candidates) == 1 else None
                 if len(candidates) > 1:
                     self.audit["ambiguous_span_workers"] += 1
-            r["workers"] = sorted({e["worker"] for e in r["engine"]})
-        self.audit["iteration_rows"] = len(self.iterations)
+            request["workers"] = sorted(
+                {e["worker"] for e in request["worker_bindings"] if not e["ambiguous"]}
+                | {s["worker"] for s in request["spans"] if s.get("worker")}
+            )
+        self.audit["worker_binding_rows"] = sum(len(r["worker_bindings"]) for r in self.requests)
 
     def metrics(self) -> None:
         from .metrics import read_metrics
@@ -476,6 +556,7 @@ class Importer:
         self.engine()
         self.metrics()
         read_profiles(self)
+        self.worker_links()
         sessions = collections.defaultdict(list)
         for request in self.requests:
             sessions[request["session"]].append(request)
@@ -502,16 +583,12 @@ class Importer:
             "Nsight ranges and iteration logs are shared worker/rank context; overlap is not request ownership.",
             "Client TTFT uses the benchmark metric; frontend SSE readiness is a separate server event.",
             "Cross-host skew is not measured. Recorded UTC anchors are used without correction.",
-            "Iteration timestamps have one-second precision; counters and previous-device timers can lag the forward pass. No universal counter shift is applied.",
+            "Batch context retains each source’s timestamp precision and rank scope. Snapshots are not numbered forward steps; counters and previous-device timers can lag execution.",
         ]
         if self.iterations and not self.iteration_zone:
             limitations.append(
                 "Iteration timestamps have no timezone: they remain unaligned. Rebuild with --iteration-timezone to align coarse windows."
             )
-        if not self.profiles_data:
-            self.warnings.append("No Nsight SQLite exports supplied.")
-        if not self.metric_series:
-            self.warnings.append("No selected raw metric series available.")
         data = {
             "schema": SCHEMA,
             "meta": {
@@ -521,6 +598,7 @@ class Importer:
                 "duration": self.duration,
                 "source_root": str(self.logs.resolve()),
                 "phase": self.phase,
+                "time_basis": self.time_basis,
                 "otel_enabled": self.otel,
                 "session_key": "root_correlation_id, then client correlation/session/request identity",
                 "clock": "Recorded UTC anchors; cross-host skew uncalibrated",
@@ -536,7 +614,9 @@ class Importer:
             "metrics": self.metric_series,
             "profiles": self.profiles_data,
             "iterations": self.iterations,
+            "server_spans": self.server_spans,
         }
+        data["capabilities"] = capabilities(data)
         for source in self.sources:
             stat = Path(source["path"]).stat()
             if stat.st_size != source["bytes"] or str(stat.st_mtime_ns) != source["modified_ns"]:

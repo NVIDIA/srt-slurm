@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from typing import TYPE_CHECKING, Any
+
+from .engines import classify_nvtx
+from .sources import source_identity
 
 if TYPE_CHECKING:
     from .importer import Importer
@@ -94,15 +96,11 @@ def read_profiles(run: Importer) -> None:
                 )
                 c.close()
                 continue
-            # MPI ranks export one report per rank; per-process launches (SGLang, vLLM)
-            # export one per worker process named by its GPU set, with the failover
-            # shadow-engine suffix before the profile marker.
-            m = re.search(r"_(prefill|decode|agg)_w(\d+)(?:_e(\d+))?_profile_(?:rank(\d+)|gpu([\d-]+))", p.stem)
-            wid, rank, engine, gpus = (
-                (f"{m[1]}-{m[2]}", int(m[4]) if m[4] else None, int(m[3]) if m[3] else None, m[5])
-                if m
-                else ("frontend" if re.search(r"_frontend_\d+", p.stem) else "unmapped", None, None, None)
-            )
+            identity = source_identity(p)
+            wid = identity.worker if identity else "unmapped"
+            rank = identity.rank if identity else None
+            engine = identity.engine if identity else None
+            gpus = identity.gpus if identity else None
             utc, system = c.execute(
                 "SELECT utcEpochNs,systemClockNs FROM TARGET_INFO_SESSION_START_TIME LIMIT 1"
             ).fetchone()
@@ -116,6 +114,8 @@ def read_profiles(run: Importer) -> None:
             )
             names = []
             name_ids = {}
+            definitions = []
+            threads: dict[str, dict[str, Any]] = {}
             events = []
             bad = c.execute(
                 "SELECT count(*) FROM NVTX_EVENTS WHERE end IS NOT NULL AND (end < start OR start < ? OR end > ?)",
@@ -132,30 +132,8 @@ def read_profiles(run: Importer) -> None:
             truncated = False
             for rowid, a, b, name, tid in c.execute(query, (cap_start, cap_end, hi, lo)):
                 timed += 1
-                # Keep the engine iteration/scheduler/forward context and frontend stages.
-                # Tiny operator annotations remain in the original report, not this HTML.
-                interesting = (name or "").startswith(
-                    (
-                        "[Executor]",
-                        "preprocess.",
-                        "route.",
-                        "router.",
-                        "tokenize",
-                        "detokenize",
-                        "_schedule",
-                        "_forward_step",
-                        "_prepare_inputs",
-                        "_fetch_new_requests",
-                        "prepare_resources",
-                        "LLM.generate_async",
-                        "RpcWorker.submit",
-                        "kv_router.",
-                        "transport.",
-                        "compute_",
-                        "scheduler.",
-                    )
-                )
-                if not interesting or (name == "detokenize" and b - a < 100_000):
+                definition = classify_nvtx(name or "", b - a)
+                if definition is None:
                     continue
                 if kept >= run.max_profile_events:
                     truncated = True
@@ -163,6 +141,14 @@ def read_profiles(run: Importer) -> None:
                 if name not in name_ids:
                     name_ids[name] = len(names)
                     names.append(name)
+                    definitions.append(definition)
+                tid_string = str(tid)
+                if tid_string not in threads:
+                    threads[tid_string] = {
+                        "global_tid": tid_string,
+                        "pid": ((int(tid) >> 24) & 0xFFFFFF) if tid is not None else None,
+                        "tid": (int(tid) & 0xFFFFFF) if tid is not None else None,
+                    }
                 events.append([run.t(utc + a), run.t(utc + b), name_ids[name], str(tid), rowid])
                 kept += 1
             pid = len(run.profiles_data)
@@ -172,7 +158,8 @@ def read_profiles(run: Importer) -> None:
                 "rank": rank,
                 "engine": engine,
                 "gpus": gpus,
-                "host": env.get("Hostname", env.get("HostName")),
+                "host": env.get("Hostname", env.get("HostName")) or (identity.host if identity else None),
+                "host_source": "Nsight environment" if env else "filename" if identity else "unknown",
                 "file": p.name,
                 "evidence_source": sid,
                 "epoch_ns": str(utc),
@@ -181,10 +168,14 @@ def read_profiles(run: Importer) -> None:
                 "invalid_or_boundary_ranges": bad,
                 "timed_ranges_scanned": timed,
                 "names": names,
+                "name_definitions": definitions,
+                "threads": list(threads.values()),
+                "backends": sorted({d["backend"] for d in definitions if d["backend"]}),
+                "imported_range": [events[0][0], max(e[1] for e in events)] if events else None,
                 "events": events,
                 "truncated": truncated,
                 "cuda": "CUPTI_ACTIVITY_KIND_KERNEL" in tables,
-                "attribution": "worker/rank/time context; no per-request NVTX identity",
+                "attribution": "shared worker/process/thread context; no per-request NVTX identity",
                 "clock": "Nsight session UTC anchor; cross-host skew not calibrated",
             }
             if "DIAGNOSTIC_EVENT" in tables:
@@ -197,6 +188,8 @@ def read_profiles(run: Importer) -> None:
             if wid == "frontend" and {"SAMPLING_CALLCHAINS", "COMPOSITE_EVENTS"}.issubset(tables):
                 item["cpu"] = cpu_samples(run, c, utc, lo, hi)
             run.profiles_data.append(item)
+            if identity and identity.role != "frontend":
+                run.register_worker(wid, item["host"], identity.role, identity.index)
             if wid in run.workers:
                 run.workers[wid]["profiles"].append(pid)
             c.close()
