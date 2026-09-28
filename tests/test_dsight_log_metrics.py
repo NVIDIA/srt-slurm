@@ -180,7 +180,9 @@ class ExampleGenerator:
 
     name = "example"
     definitions = (
-        LogMetricDefinition("log_example_active", "Active", "items", "Recorded active work", reference="log_example_limit"),
+        LogMetricDefinition(
+            "log_example_active", "Active", "items", "Recorded active work", reference="log_example_limit"
+        ),
         LogMetricDefinition("log_example_limit", "Limit", "items", "Recorded config", temporal="setting"),
     )
 
