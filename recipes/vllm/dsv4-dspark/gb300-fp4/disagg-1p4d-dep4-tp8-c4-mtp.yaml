@@ -206,7 +206,7 @@ roles:
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
-      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}'
+      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
 
 sbatch_directives:
   mem: "0"
