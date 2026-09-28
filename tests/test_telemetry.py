@@ -132,8 +132,19 @@ class TestTachometerConfig:
         names = [line.split("name:", 1)[1].strip() for line in text.splitlines() if "name:" in line]
         assert names[0] == "frontend"
         assert names.index("trtllm_llmapi_launch") < names.index("dynamo_trtllm")
-        for expected in ("dynamo_trtllm", "dynamo_sglang", "dynamo_vllm", "aiperf", "etcd", "nats"):
+        for expected in (
+            "dynamo_trtllm",
+            "dynamo_sglang",
+            "sglang_scheduler",
+            "sglang_dp_controller",
+            "sglang_detokenizer",
+            "dynamo_vllm",
+            "aiperf",
+            "etcd",
+            "nats",
+        ):
             assert expected in names
+        assert names.index("sglang_scheduler") < names.index("dynamo_sglang")
         assert "dynamo\\.frontend" in text
 
         # The container launch (a declared container) reaches the group file through /logs.
@@ -153,6 +164,10 @@ class TestTachometerConfig:
             ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node --rank 0", "trtllm_engine"),
             ("python3 -m dynamo.trtllm --disaggregation-mode decode", "dynamo_trtllm"),
             ("python3 -m dynamo.frontend", "frontend"),
+            ("python3 -m dynamo.sglang --disaggregation-mode prefill", "dynamo_sglang"),
+            ("sglang::scheduler_DP1_TP1_EP1", "sglang_scheduler"),
+            ("sglang::data_parallel_controller", "sglang_dp_controller"),
+            ("sglang::detokenizer", "sglang_detokenizer"),
             ("trtllm-llmapi-launch-other", None),
             ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node_extra", None),
         ],
