@@ -569,9 +569,11 @@ class Importer:
         self.audit["worker_binding_rows"] = sum(len(r["worker_bindings"]) for r in self.requests)
 
     def metrics(self) -> None:
+        from .log_metrics.reader import read_log_metrics
         from .metrics import read_metrics
 
         self.metric_series = read_metrics(self)
+        self.metric_series.extend(read_log_metrics(self))
 
     def run(self) -> dict[str, Any]:
         self.clients()

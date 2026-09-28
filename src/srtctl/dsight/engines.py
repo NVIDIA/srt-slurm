@@ -97,7 +97,7 @@ _TOKEN_BATCH = re.compile(
 )
 
 
-def _tokenspeed(line: str) -> EngineLogRecord | None:
+def parse_tokenspeed_log(line: str) -> EngineLogRecord | None:
     if "batch." not in line or not (m := _TOKEN_BATCH.search(line)):
         return None
 
@@ -189,7 +189,7 @@ DIALECTS = (
             "reset_remote_prefill_cache_lengths",
             "zero_cache_pages",
         ),
-        log_parser=_tokenspeed,
+        log_parser=parse_tokenspeed_log,
         metrics=(
             (
                 "tokenspeed:num_requests_running",

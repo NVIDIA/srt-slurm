@@ -32,3 +32,5 @@
   .ds-metric-value { grid-column: 1; text-align: left; padding-left: 21px; }
   .ds-metric-label-details summary { grid-column: 2; grid-row: 1; }
 }
+
+.ds-metric-capacity { grid-column: 1 / -1; border-left: 3px dashed; padding: 5px 8px; margin: 1px 0 3px 21px; background: #f6f8fc; color: var(--ink, #152c43); font-size: 12px; font-variant-numeric: tabular-nums; }

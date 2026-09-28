@@ -146,7 +146,7 @@ class TraceDataset:
                 if rank is not None and str(series["rank"]) != str(rank):
                     continue
                 selected = [p for p in series["points"] if lo <= p[0] <= hi]
-                values = [p[1] for p in selected]
+                values = [p[1] for p in selected if p[1] is not None]
                 item = {k: v for k, v in series.items() if k != "points"}
                 item.update(
                     samples=len(values),
@@ -155,6 +155,10 @@ class TraceDataset:
                     mean=sum(values) / len(values) if values else None,
                     last=values[-1] if values else None,
                 )
+                if series.get("temporal") == "setting":
+                    prior = [p for p in series["points"] if p[0] < lo]
+                    stamp = max((p[0] for p in prior), default=None)
+                    item["carried_setting"] = [p for p in prior if p[0] == stamp]
                 if points:
                     item.update(
                         points=selected[:1000], points_total=len(selected), points_truncated=len(selected) > 1000

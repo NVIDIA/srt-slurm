@@ -14,8 +14,10 @@ import pyarrow.compute as pc
 
 from .engines import parse_engine_log
 from .identities import log_fields
+from .log_metrics import GENERATORS
+from .log_metrics.reader import timestamp_ns
 from .metrics import batches, capture_files
-from .sources import otel_files
+from .sources import otel_files, source_identity
 
 if TYPE_CHECKING:
     from .importer import Importer
@@ -74,7 +76,18 @@ def source_window(run: Importer) -> tuple[int, int]:
                         include(anchor[0] + capture[0] - anchor[1], anchor[0] + capture[1] - anchor[1])
     # Union all sources; a shorter metrics capture must not hide later log evidence.
     for path in sorted(run.logs.glob("*_w*.out")):
+        source = source_identity(path)
         for line in path.open(errors="replace"):
+            # Metric-only dialects participate in source-only captures too.
+            # Configuration alone does not establish a workload time envelope.
+            if source is not None:
+                for generator in GENERATORS:
+                    if event := generator.parse_line(line, source):
+                        sampled = {d.name for d in generator.definitions if d.temporal == "sample"}
+                        if any(name in sampled for name, _ in event.values):
+                            stamp = timestamp_ns(event.time, run.iteration_zone)
+                            if stamp is not None:
+                                include(stamp, stamp + round(event.time_resolution_s * 1e9))
             row = parse_engine_log(line)
             observation = (row.iteration or row.snapshot) if row else None
             if observation is not None and run.iteration_zone:

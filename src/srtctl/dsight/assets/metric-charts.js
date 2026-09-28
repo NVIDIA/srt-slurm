@@ -92,6 +92,65 @@
       .sort((a, b) => Math.abs(a[0] - time) - Math.abs(b[0] - time))[0];
   }
 
+  function normalizedSeries(raw) {
+    const conflicts = new Set(raw.conflict_timestamps || []), seen = new Set(), points = [];
+    for (const point of raw.points || []) {
+      if (!Number.isFinite(point[0]) || seen.has(point[0])) continue;
+      seen.add(point[0]);
+      points.push([point[0], conflicts.has(point[0]) || !Number.isFinite(point[1]) ? null : point[1], ...point.slice(2)]);
+    }
+    points.sort((a, b) => a[0] - b[0]);
+    return {raw, id: String(raw.id), labels: labelMap(raw), fullLabel: seriesLabel(raw), points};
+  }
+
+  function referenceAt(item, time) {
+    if (!item) return null;
+    let low = 0, high = item.points.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (item.points[middle][0] <= time) low = middle + 1; else high = middle;
+    }
+    const point = item.points[low - 1];
+    return point && (item.raw.temporal === "setting" || point[0] === time) ? point : null;
+  }
+
+  function plotPoints(item, from, to) {
+    if (item.raw.temporal !== "setting") return item.points;
+    // Only the display projects a recorded setting to the view boundaries.
+    // Raw/query points keep the original configuration timestamp and evidence.
+    const points = item.points.filter(point => point[0] >= from && point[0] <= to);
+    const prior = referenceAt(item, from);
+    if (prior && prior[0] < from) points.unshift([from, prior[1]]);
+    if (points.length && points[points.length - 1][0] < to) points.push([to, points[points.length - 1][1]]);
+    return points;
+  }
+
+  function capacityNumber(value) {
+    return Number.isFinite(value) ? value.toLocaleString("en-US", {maximumFractionDigits: 4}) : "—";
+  }
+
+  function capacitySummary(item, from, to) {
+    const samples = item.points.filter(p => p[0] >= from && p[0] <= to && p[1] !== null);
+    const label = item.raw.reference.label || "Limit";
+    if (!samples.length) return ["No observed value in range", label + " shown where recorded"];
+    const peak = samples.reduce((value, p) => Math.max(value, p[1]), -Infinity);
+    let usage = null, unknown = 0;
+    for (const point of samples) {
+      const reference = referenceAt(item.reference, point[0]);
+      if (reference?.[1] > 0) usage = Math.max(usage ?? 0, point[1] / reference[1]);
+      else unknown++;
+    }
+    const referencePoints = item.reference ? plotPoints(item.reference, from, to).filter(p => p[0] >= from && p[0] <= to) : [];
+    const limits = [...new Set(referencePoints.filter(p => p[1] !== null).map(p => p[1]))].sort((a, b) => a - b);
+    const limit = !limits.length ? "unavailable" : limits.length === 1 ? capacityNumber(limits[0])
+      : `${capacityNumber(limits[0])}–${capacityNumber(limits[limits.length - 1])} (changed)`;
+    return [
+      `Peak observed ${capacityNumber(peak)} ${item.raw.unit || ""}`, `${label} ${limit}`,
+      ...(usage === null ? [] : [`Highest observed usage ${(100 * usage).toLocaleString("en-US", {maximumFractionDigits: 1})}%`]),
+      ...(unknown ? [`Limit unavailable for ${unknown}/${samples.length} samples`] : []),
+    ];
+  }
+
   /**
    * Mount one metric family across all supplied sources. Points: [seconds, value, ...evidence].
    * selection: {hidden: string[]}; legacy ids/filters are ignored. Callbacks own persistence.
@@ -101,17 +160,12 @@
     const hidden = new Set((options.selection?.hidden || []).map(String));
     const from = Number(options.from), to = Number(options.to);
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) throw new Error("Metric charts need a finite increasing time range.");
-    const series = (options.series || []).map(raw => {
-      const conflicts = new Set(raw.conflict_timestamps || []), seen = new Set();
-      const points = [];
-      for (const point of raw.points || []) {
-        if (!Number.isFinite(point[0]) || seen.has(point[0])) continue;
-        seen.add(point[0]);
-        points.push([point[0], conflicts.has(point[0]) || !Number.isFinite(point[1]) ? null : point[1]]);
-      }
-      points.sort((a, b) => a[0] - b[0]);
-      return {raw, id: String(raw.id), labels: labelMap(raw), fullLabel: seriesLabel(raw), points};
-    }).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
+    const references = new Map((options.references || []).map(raw => [String(raw.id), normalizedSeries(raw)]));
+    const series = (options.series || []).map(normalizedSeries).sort((a, b) => a.id.localeCompare(b.id, "en", {numeric: true}));
+    for (const item of series) {
+      const reference = references.get(String(item.raw.reference?.series_id));
+      if (reference && reference.raw.unit === item.raw.unit) item.reference = reference;
+    }
     setCaptions(series);
     const title = options.title || series[0]?.raw.label || series[0]?.raw.name || "Metric";
     const height = Math.max(150, Number(options.height) || 220);
@@ -119,13 +173,21 @@
     const root = element("section", "ds-metric-chart");
     root.setAttribute("aria-label", title + " metric series");
     root.dataset.drawnIds = JSON.stringify(series.map(item => item.id));
+    root.dataset.referenceIds = JSON.stringify(series.filter(item => item.reference).map(item => item.reference.id));
     const tools = element("div", "ds-metric-tools");
     const count = element("span", "ds-metric-count");
     count.setAttribute("aria-live", "polite");
     const chart = element("div", "ds-metric-canvas");
     const legend = element("div", "ds-metric-legend");
-    const hasConflicts = series.some(item => item.raw.conflict_timestamps?.length);
+    const hasConflicts = series.some(item => item.raw.conflict_timestamps?.length || item.reference?.raw.conflict_timestamps?.length);
+    const hasCapacity = series.some(item => item.raw.reference);
+    const plotItems = [
+      ...series.map(item => ({item, owner: item, reference: false})),
+      ...series.filter(item => item.reference).map(item => ({item: item.reference, owner: item, reference: true})),
+    ];
     const note = element("p", "ds-metric-note", "Click a legend entry to show or hide its line. Drag across the plot to set the shared time range. Hover values show the nearest recorded sample and its timestamp." + (hasConflicts ? " Conflicting values at the same timestamp are shown as gaps; raw evidence retains every value." : ""));
+    if (hasCapacity) note.textContent += " Solid lines show observations; matching dashed lines show limits. Settings are held until the next recorded configuration; sampled limits are not extended. Peak and usage summarize recorded samples in this range, not continuous occupancy.";
+    else if (series.some(item => item.raw.temporal === "setting")) note.textContent += " Dashed steps hold the recorded configuration until it changes; hover shows the original setting timestamp.";
     tools.append(element("h3", "ds-metric-title", title), count);
     root.append(tools, chart, legend, note);
     host.append(root);
@@ -137,7 +199,7 @@
       chart.setAttribute("aria-label", `${title}; ${visible} series shown, elapsed ${from} to ${to} seconds. Legend entries control visibility; source labels and sampled values appear below.`);
     }
 
-    const legendRows = series.map((item, index) => {
+    const legendRows = series.map(item => {
       const row = element("div", "ds-metric-legend-row");
       row.dataset.seriesId = item.id;
       const toggle = element("button", "ds-metric-legend-toggle");
@@ -149,7 +211,8 @@
         if (hidden.has(item.id)) hidden.delete(item.id); else hidden.add(item.id);
         const show = !hidden.has(item.id);
         toggle.setAttribute("aria-pressed", String(show));
-        plot?.setSeries(index + 1, {show});
+        for (let position = 0; position < plotItems.length; position++)
+          if (plotItems[position].owner.id === item.id) plot?.setSeries(position + 1, {show});
         updateCount();
         options.onSelectionChange?.({hidden: [...hidden]});
       });
@@ -164,40 +227,64 @@
         metadata: item.raw.metadata, labels: item.raw.labels,
         conflict_timestamps: item.raw.conflict_timestamps,
         conflicting_samples: item.raw.conflicting_samples,
+        source_kind: item.raw.source_kind, generator: item.raw.generator,
+        temporal: item.raw.temporal, reference: item.raw.reference,
+        reference_source_ids: item.reference?.raw.source_ids,
       }, null, 2)));
-      row.append(toggle, value, details); legend.append(row);
+      row.append(toggle, value, details);
+      if (item.raw.reference) {
+        const capacity = element("div", "ds-metric-capacity");
+        capacitySummary(item, from, to).forEach((part, index) => {
+          if (index) capacity.append(document.createTextNode(" · "));
+          capacity.append(element(index < 2 ? "strong" : "span", "", part));
+        });
+        capacity.style.borderLeftColor = colors.get(item.id);
+        row.append(capacity);
+      }
+      legend.append(row);
       return {item, value};
     });
 
     function updateValues(time = null) {
       for (const {item, value} of legendRows) {
-        const sample = nearestPoint(item.points, time ?? to, from, to);
+        const sample = item.raw.temporal === "setting" ? referenceAt(item, time ?? to) : nearestPoint(item.points, time ?? to, from, to);
         const unit = item.raw.unit ? " " + item.raw.unit : "";
         value.textContent = sample ? `${numberText(sample[1])}${sample[1] === null ? "" : unit} @ ${numberText(sample[0])}s` : "No sample in range";
         const unavailable = item.raw.conflict_timestamps?.includes(sample?.[0]) ? "conflicting recorded values" : "unavailable";
-        value.title = sample ? `Recorded sample at ${sample[0]} elapsed seconds: ${sample[1] ?? unavailable}${unit}` : "No recorded sample in the selected range";
+        value.title = sample ? `Recorded ${item.raw.temporal === "setting" ? "setting" : "sample"} at ${sample[0]} elapsed seconds: ${sample[1] ?? unavailable}${unit}` : "No recorded sample in the selected range";
+        if (sample && item.raw.reference) {
+          const reference = referenceAt(item.reference, sample[0]);
+          value.textContent += ` · limit ${capacityNumber(reference?.[1])}`;
+          if (reference) value.title += `; ${item.raw.reference.label}: ${reference[1] ?? "unavailable"}, recorded at ${reference[0]}s (source ${reference[2]}, line ${reference[3]})`;
+        }
       }
     }
     updateCount(); updateValues();
     if (!series.length) chart.append(element("div", "ds-metric-empty", "No recorded series for this metric."));
     else if (typeof window.uPlot !== "function") chart.append(element("div", "ds-metric-empty", "The bundled chart library could not be loaded."));
-    else if (!series.some(item => item.points.some(point => point[0] >= from && point[0] <= to && point[1] !== null))) {
+    else if (!plotItems.some(({item}) => plotPoints(item, from, to).some(point => point[0] >= from && point[0] <= to && point[1] !== null))) {
       const conflictsInRange = series.some(item => item.raw.conflict_timestamps?.some(time => time >= from && time <= to));
       chart.append(element("div", "ds-metric-empty", conflictsInRange
         ? "No unambiguous metric value in this time range. Conflicting observations remain in the raw evidence."
         : "No metric sample in this time range. Widen the shared time range."));
     } else {
       // uPlot.join retains explicit nulls and uses undefined only for alignment holes.
-      // No resampling, sample interpolation, or fabricated boundary samples are used.
-      const data = window.uPlot.join(series.map(item => [item.points.map(point => point[0]), item.points.map(point => point[1])]));
+      // Configuration display boundaries are separate from preserved raw points.
+      const data = window.uPlot.join(plotItems.map(({item}) => {
+        const points = plotPoints(item, from, to);
+        return [points.map(point => point[0]), points.map(point => point[1])];
+      }));
       const chartOptions = {
         width: Math.max(180, chart.clientWidth), height, padding: [10, 0, 0, 0],
-        scales: {x: {time: false, min: from, max: to}},
+        scales: {x: {time: false, min: from, max: to}, ...(hasCapacity ? {y: {range: (u, min, max) => [Math.min(0, min), Math.max(1, max * 1.08)]}} : {})},
         legend: {show: false},
         cursor: {drag: {x: true, y: false, setScale: false}, sync: {key: options.syncKey || "dsight-metrics", scales: ["x", null]}},
-        series: [{label: "Elapsed seconds"}, ...series.map(item => ({
-          label: item.caption, stroke: colors.get(item.id), width: 1.5, spanGaps: false,
-          show: !hidden.has(item.id), points: {show: item.points.filter(point => point[0] >= from && point[0] <= to && point[1] !== null).length === 1, size: 5},
+        series: [{label: "Elapsed seconds"}, ...plotItems.map(({item, owner, reference}) => ({
+          label: reference ? owner.raw.reference.label : owner.caption,
+          stroke: colors.get(owner.id), width: reference ? 1 : 1.5, spanGaps: false,
+          dash: reference || item.raw.temporal === "setting" ? [6, 4] : [],
+          ...(reference || item.raw.temporal === "setting" ? {paths: window.uPlot.paths.stepped({align: 1})} : {}),
+          show: !hidden.has(owner.id), points: {show: !reference && item.raw.temporal !== "setting" && (item.raw.temporal === "sample" || item.points.filter(point => point[0] >= from && point[0] <= to && point[1] !== null).length === 1), size: 4},
         }))],
         axes: [
           {stroke: "#5f7187", grid: {stroke: "#d8e1ed88"}, ticks: {stroke: "#d8e1ed"}, font: "11px sans-serif", size: 30, values: (_, ticks) => ticks.map(value => numberText(value) + "s")},

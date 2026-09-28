@@ -466,6 +466,11 @@
         results.set(String(series.id), {
           ...clone(metadata), ...metricStats(series, from, to),
           ...(points ? {points: rawPoints.filter(p => p[0] >= from && p[0] <= to).map(p => [...p])} : {}),
+          ...(series.temporal === "setting" ? {carried_setting: (() => {
+            const prior = rawPoints.filter(p => p[0] < from);
+            const stamp = prior.length ? prior[prior.length - 1][0] : null;
+            return prior.filter(p => p[0] === stamp).map(p => [...p]);
+          })()} : {}),
         });
       }
     }
@@ -878,10 +883,16 @@ ${s.description}`))).join("") + "</details>";
             loaded.push(...(await metricData.loadFamily(name)).filter(item => wanted.has(String(item.id))));
             if (generation !== metricGeneration) return;
           }
+          const references = [];
+          const referenceIds = new Set(loaded.filter(item => item.reference?.series_id != null).map(item => String(item.reference.series_id)));
+          for (const name of new Set(loaded.filter(item => item.reference?.series_id != null).map(item => item.reference.name))) {
+            references.push(...(await metricData.loadFamily(name)).filter(item => referenceIds.has(String(item.id))));
+            if (generation !== metricGeneration) return;
+          }
           if (generation !== metricGeneration || !host.isConnected) return;
           host.replaceChildren();
           metricCharts.push(window.DSightMetricCharts.mount(host, {
-            series: loaded, title, height: 220, from, to,
+            series: loaded, references, title, height: 220, from, to,
             selection: state.metricCharts[key],
             onSelectionChange: (selection) => {
               state.metricCharts[key] = selection;

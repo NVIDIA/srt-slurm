@@ -17,12 +17,14 @@ flowchart LR
     NP --> NU["Nsight tab + overlay timeline<br/>NVTX lanes and CPU sample hotspots"]
 
     T["Tachometer capture<br/>Parquet / Arrow"] --> MP["Catalog all metric families<br/>preserve labels; align and deduplicate"]
-    MP --> MU["Metrics panel<br/>Frontend, Router, Workers, GPU, Host"]
+    MP --> MU["Metrics panel<br/>Frontend, Router, Workers, GPU, Host<br/>observations + paired capacity limits"]
     MP --> MQ["Agent API / queries<br/>all imported metric series"]
 
     W["Worker .out logs"] --> IP["Correlate client / Dynamo IDs<br/>and worker / process bindings"]
     F["Frontend .out logs"] --> IP
     IP --> IU["Request tab<br/>Identity bridge +<br/>Recorded request path"]
+    W --> LM["LogMetricGenerator interface<br/>Dynamo–TokenSpeed batches + scheduler config"]
+    LM --> MP
     W --> BP["Decode iterations / batch snapshots<br/>retain worker, rank scope and time"]
     BP --> BU["Batch context tab<br/>shared scheduler and step-time context"]
 
@@ -41,8 +43,10 @@ flowchart LR
 
 The Python readers produce one normalized dataset containing requests, sessions,
 workers, metrics, profiles, batch observations and unjoined server activity,
-with references back to source files
-and rows. The builder writes `trace-data.json.gz` and embeds the same data in
+with references back to source files and rows. Log metric generators and Tachometer
+share the metric series representation; log evidence does not need an intermediate
+Parquet file. The [metric source/schema guide](dsight-log-metrics.md) documents the
+raw columns, normalized points and capacity relationships. The builder writes `trace-data.json.gz` and embeds the same data in
 `index.html`, with metric samples split into independently compressed families.
 The browser reads the catalog immediately and decompresses metric points when
 selected or queried. It does not open the original SQLite, Parquet or log files.
@@ -58,7 +62,7 @@ The UI destinations use the current section and tab names:
 | Visible area | What its data means |
 | --- | --- |
 | **Nsight** tab and overlay | NVTX intervals arranged by thread and overlap lane, alongside the selected request. Available frontend CPU samples feed **Frontend CPU sample hotspots**. CUDA kernel timing is not imported. |
-| **Metrics** panel | A searchable selector groups every captured family into Frontend, Router, Workers, GPU and Host categories. Each family uses one shared chart across workers, hosts, ranks and labels; its legend controls individual series. Pinned families remain stacked while browsing other metrics, and all charts follow the shared time range. Families without samples in the selected capture window remain discoverable. |
+| **Metrics** panel | Log-derived capacity families appear under Workers / Log-derived metrics, with paired dashed limits and per-source peak/usage summaries. A searchable selector groups every captured family into Frontend, Router, Workers, GPU and Host categories. Each family uses one shared chart across workers, hosts, ranks and labels; its legend controls individual series. Pinned families remain stacked while browsing other metrics, and all charts follow the shared time range. Families without samples in the selected capture window remain discoverable. |
 | **Agent API / queries** | All imported metric series and bounded queries for independent server activity, batch observations and profiles. |
 | **Batch context** tab | Recorded iteration or scheduler-snapshot fields. Missing counters and timers stay unknown; these are not per-request stage durations. |
 | **Request** tab | Client measurements, recorded ID mappings, worker path and correlated OTel source measurements. **Expand lifecycle** shows chronological progress milestones. Source measurements retain the original durations of overlapping spans. |
@@ -118,12 +122,16 @@ correlation, source references and limits.
 | Input to the engine interface | Answer returned to the reader |
 | --- | --- |
 | One worker-log line | Typed engine identity, iteration or scheduler-snapshot observations, or no recognized record. |
+| One worker-log line + filename identity, through `LogMetricGenerator` | Timestamped metric values with rank/process/label scope. Metric definitions declare units, sample versus setting semantics, and optional limit relationships. The shared reader owns alignment, evidence and exact-scope joins. |
 | An NVTX name and duration | Whether to include that host annotation and its engine/scope metadata. Original names and timestamps remain in the profile records. |
 | A recorded metric name | Optional engine-specific display metadata and units. The shared Tachometer catalog includes other captured families too; values, labels and source rows remain in the metric reader. |
 
 TRT-LLM currently supplies all three kinds of rules. SGLang supplies NVTX prefixes
 and metric definitions; it has no worker-log decoder here. TokenSpeed supplies
-NVTX vocabulary, metric definitions and periodic batch snapshots. A dialect can
+NVTX vocabulary, metric definitions and periodic batch snapshots. Its
+`DynamoTokenSpeedLogMetrics` generator also supplies active decode requests,
+configured batch limits, active KV pages and usable page pool sizes to **Metrics**.
+A dialect can
 omit sources it cannot interpret.
 
 ## Missing inputs

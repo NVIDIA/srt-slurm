@@ -16,6 +16,7 @@ The application loads local files only; no CDN or JavaScript build is required.
 ```javascript
 const chart = DSightMetricCharts.mount(host, {
   series, // normalized DSight series; points: [elapsed_seconds, value, ...evidence]
+  references, // optional series matched by each observed series' reference.series_id
   from, to,
   selection: {hidden: []},
   onSelectionChange(selection) { /* adapter persists hidden series IDs */ },
@@ -41,7 +42,9 @@ disclosure exposes normalized identity plus complete raw metadata and label JSON
 The chart uses `uPlot.join` to align the original timestamps. Explicit nulls stay
 null and alignment holes are undefined, as documented by the upstream
 [`join` implementation](https://github.com/leeoniya/uPlot/blob/1.6.32/src/utils.js).
-It does not resample, interpolate, or add boundary samples. Hover values show the
+It does not resample or add observations. A series with `temporal: "setting"`
+has separate display coordinates that hold configuration until its next recorded
+change and clip it to the view boundaries; raw points remain unchanged. Hover values show the
 nearest recorded sample with its actual timestamp. Sample evidence remains in
 the unchanged input objects; this component only reads timestamps and values.
 When a series declares `conflict_timestamps`, those timestamps become explicit
@@ -69,3 +72,18 @@ Browser API v3 exposes synchronous `listMetricFamilies()` and `listMetricSeries(
 metadata, asynchronous `queryMetrics()` and `exportSelection()` evidence, and
 `whenMetricsReady()` for chart readiness. Callers must await the asynchronous
 methods regardless of whether the family is cached.
+
+## Capacity references
+
+An observed series can declare `reference: {name, label, series_id}`. The caller
+loads that reference family and supplies the exact paired series via `references`.
+The component checks units and renders a dashed limit in the observed series'
+color; its legend toggle controls both lines. `temporal: "setting"` references use
+the latest preceding setting, including explicit null/conflict invalidations.
+Sample references require an exact timestamp match for usage calculations and
+are never extended to view boundaries.
+
+Per-source summaries show the range's observed peak, recorded limit or changed
+range, highest observed sample/limit ratio, and unavailable limit counts. They do
+not infer continuous occupancy or aggregate workers/ranks. All evidence remains
+in the input objects. Missing `references` is valid; observed values still render.

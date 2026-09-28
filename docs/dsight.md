@@ -98,7 +98,7 @@ identity bridges are omitted.
 | AgentPerf manifest | `phase_manifest.jsonl` beside the export | Measured request starts in `[settling_end, actual_phase_end)` |
 | Frontend logs | `*_frontend_*.out` | Explicit client header → Dynamo UUID bridge from text or original JSON records |
 | Dynamo OTel | `otel/traces.jsonl` or `otel/*/traces.jsonl`, OTLP JSON resource/scope spans | Original timestamps, parents, trace/request/process identities and route attributes |
-| Worker logs | `*_{prefill,decode,agg}_w*[_e<k>].out` | Engine ID maps when recorded, Dynamo request/process bindings, iterations or periodic batch snapshots |
+| Worker logs | `*_{prefill,decode,agg}_w*[_e<k>].out` | Engine ID maps when recorded, Dynamo request/process bindings, iterations or periodic batch snapshots; log-derived metrics and scheduler settings |
 | Tachometer | `tachometer/local`, or `--metrics <capture-leaf-or-file>` | All captured metric families, with source labels and samples within the client trace interval |
 | Nsight SQLite | `--nsys-sqlite <directory-or-file>` | Selected NVTX ranges and available frontend CPU samples, aligned by session UTC anchor |
 
@@ -119,6 +119,14 @@ with no samples in the client trace interval. Presentation categories reuse the
 Tachometer taxonomy: **Frontend, Router, Workers, GPU, Host**, with subgroups
 such as engine scheduling, KV cache, and host memory. Unknown families remain
 selectable with their raw names and stored values.
+
+Worker logs can also supply metrics without Tachometer. The shared
+`LogMetricGenerator` interface normalizes these into the same series/catalog used
+by the metric UI. The Dynamo–TokenSpeed implementation supplies active decode
+batch size, configured batch limit, active KV pages and usable page pool size.
+See [metric sources, schema and log generators](dsight-log-metrics.md) for exact
+names, units, evidence and extension rules. Local log timestamps require
+`--iteration-timezone`; missing configuration stays unknown.
 
 Known counters display captured cumulative values. Histogram lines show recorded
 bucket observation counts, with bucket bounds retained in their identities;
@@ -303,7 +311,7 @@ profile collections retain their roles. CLI, Python, MCP and the browser consume
 the same records; `summary.capabilities` / `traceExplorer.describe().available`
 report usable sources. Empty collections are valid. Unknown values stay null.
 
-The implementation separates four responsibilities:
+The implementation separates these responsibilities:
 
 - `sources.py` parses shared filenames and discovers OTel captures;
   `identities.py` decodes common Dynamo identities from text and JSON logs.
@@ -312,6 +320,10 @@ The implementation separates four responsibilities:
   and SGLang. Each can provide any subset of NVTX names/prefixes, a single-line
   log decoder and exact metric definitions. Log decoders return typed identity, iteration and snapshot observations.
   Decoding has no clocks, joins, filesystem access or UI state.
+- `log_metrics/base.py` defines the `LogMetricGenerator` Protocol and immutable
+  metric definitions/events. `log_metrics/tokenspeed.py` implements its
+  Dynamo–TokenSpeed dialect; `log_metrics/reader.py` normalizes all registered
+  generators into the shared metric schema and joins limits in their exact scope.
 - Source readers and `Importer` own UTC alignment, bounded imports, provenance,
   identity joins and auditing. `window.py` derives a source-only time envelope;
   `capabilities.py` determines which views have usable evidence.
@@ -330,7 +342,7 @@ SGLang batch-log decoder or vLLM-specific vocabulary has been implemented.
 ## Development checks
 
 ```bash
-uv run pytest tests/test_dsight.py tests/test_dsight_agentperf.py tests/test_dsight_engines.py
+uv run pytest tests/test_dsight.py tests/test_dsight_agentperf.py tests/test_dsight_engines.py tests/test_dsight_log_metrics.py
 uv run ty check src/srtctl/dsight
 node --check src/srtctl/dsight/assets/explorer.js
 ```

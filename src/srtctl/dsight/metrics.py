@@ -371,8 +371,14 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
         }
         for name, family in sorted(families.items())
     }
+    finalize_metrics(run, result, catalog)
+    return result
+
+
+def finalize_metrics(run: Importer, result: list[dict[str, Any]], catalog: dict[str, dict[str, Any]]) -> None:
+    """Shared series finalization for captured and log-derived measurements."""
     for series in result:
-        series["points"].sort()
+        series["points"].sort(key=lambda point: (point[0], point[2], point[3]))
         points, seen = [], set()
         for point in series["points"]:
             identity = tuple(point[:2])
@@ -407,7 +413,6 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
             run.register_worker(series["worker"], series["host"], role, int(index))
         if series["worker"] in run.workers:
             run.workers[series["worker"]]["metrics"].append(series["id"])
-    run.metric_catalog = list(catalog.values())
-    run.audit["metric_families"] = len(catalog)
-    run.audit["metric_points"] = sum(len(series["points"]) for series in result)
-    return result
+    run.metric_catalog.extend(catalog.values())
+    run.audit["metric_families"] = len(run.metric_catalog)
+    run.audit["metric_points"] += sum(len(series["points"]) for series in result)
