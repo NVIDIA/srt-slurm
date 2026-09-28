@@ -87,6 +87,7 @@
     suppressClientClick = false;
   let metricMounts = [],
     metricCharts = [];
+  let metricPanelHeights = new Map();
   let metricGeneration = 0, metricsReady = Promise.resolve(), metricSearch = "";
   const state = {
     from: 0,
@@ -109,6 +110,7 @@
       null,
     metricSeries: {},
     metricCharts: {},
+    pinnedMetrics: [],
     iterationWorker: null,
     iterationRank: 0,
     expandedWorkers: new Set(),
@@ -160,6 +162,7 @@
     ...state,
     metricCharts: clone(state.metricCharts),
     metricSeries: clone(state.metricSeries),
+    pinnedMetrics: [...state.pinnedMetrics],
     expandedSessions: [...state.expandedSessions],
     expandedAgents: [...state.expandedAgents],
     expandedRequests: [...state.expandedRequests],
@@ -220,6 +223,8 @@
     );
     if (state.span && !findInterval(selected(), state.span)) state.span = null;
     if (!metricFamilyByName.has(state.metric)) state.metric = defaultMetric;
+    if (Array.isArray(value.pinnedMetrics))
+      state.pinnedMetrics = [...new Set(value.pinnedMetrics.filter(name => metricFamilyByName.has(name)))];
     state.page = Math.max(0, Number.isInteger(state.page) ? state.page : 0);
   }
   function setRange(from, to, remember = true) {
@@ -822,13 +827,15 @@
   function metricPanel(key, series, title) {
     const id = `metricChart${metricMounts.length}`;
     metricMounts.push({ id, key, series, title });
-    return `<div id="${id}" class="dsight-metric-panel" data-metric-key="${esc(key)}" aria-busy="true"><div class="ds-metric-loading" role="status">Loading recorded metric samples…</div></div>`;
+    const height = metricPanelHeights.get(key);
+    return `<div id="${id}" class="dsight-metric-panel" data-metric-key="${esc(key)}" ${height ? `style="min-height:${height}px"` : ""} aria-busy="true"><div class="ds-metric-loading" role="status">Loading recorded metric samples…</div></div>`;
   }
   function mountMetricCharts() {
     const generation = metricGeneration;
     const from = state.from, to = state.to;
     const mounts = metricMounts.map(mount => ({...mount, host: $(mount.id)}));
     metricsReady = (async () => {
+      let firstError;
       for (const {host, key, series, title} of mounts) {
         try {
           const wanted = new Set(series.map(item => String(item.id)));
@@ -850,6 +857,7 @@
               Math.max(0, start), Math.min(D.meta.duration, end),
             )),
           }));
+          host.style.removeProperty("min-height");
           host.setAttribute("aria-busy", "false");
         } catch (error) {
           if (generation !== metricGeneration) return;
@@ -858,10 +866,12 @@
           message.className = "ds-metric-empty";
           message.textContent = `Could not load this metric: ${error.message}`;
           host.append(message); host.setAttribute("aria-busy", "false");
+          host.style.removeProperty("min-height");
           $("error").textContent = error.message;
-          throw error;
+          firstError ??= error;
         }
       }
+      if (firstError) throw firstError;
       if (generation === metricGeneration)
         window.dispatchEvent(new CustomEvent("trace-explorer:metrics-ready", {detail: {metric: state.metric}}));
     })();
@@ -903,10 +913,18 @@
   }
   function workerTracks() {
     const options = metricOptions();
-    const family = metricFamilyByName.get(state.metric);
-    let html = `<div class="section-head metric-section-head"><span>Metrics</span><div class="metric-picker"><input id="metricSearch" type="search" placeholder="Search metrics" aria-label="Search metrics" value="${esc(metricSearch)}"><select id="workerMetric" aria-label="Metric">${options.html}</select><small id="metricSearchCount" aria-live="polite">${options.count}</small></div></div><div class="metric-description">${metricDescription(family)}</div>`;
-    const choices = D.metrics.filter((s) => s.name === state.metric);
-    html += metricPanel(JSON.stringify(["metric", state.metric]), choices, family?.title || choices[0]?.label || state.metric);
+    const pinned = state.pinnedMetrics.includes(state.metric);
+    let html = `<section id="metricsSection" aria-label="Metrics"><div class="section-head metric-section-head"><span>Metrics</span><div class="metric-picker"><input id="metricSearch" type="search" placeholder="Search metrics" aria-label="Search metrics" value="${esc(metricSearch)}"><select id="workerMetric" aria-label="Metric">${options.html}</select><button id="pinMetric" aria-pressed="${pinned}" aria-label="${pinned ? "Unpin" : "Pin"} selected metric" ${state.metric ? "" : "disabled"}>${pinned ? "Unpin" : "Pin"}</button><small id="metricSearchCount" aria-live="polite">${options.count}</small></div></div>`;
+    const names = pinned ? state.pinnedMetrics : [...state.pinnedMetrics, state.metric];
+    for (const name of names) {
+      const family = metricFamilyByName.get(name);
+      const isPinned = state.pinnedMetrics.includes(name);
+      const choices = D.metrics.filter(series => series.name === name);
+      const title = family?.title || choices[0]?.label || name;
+      html += `<section class="metric-card${isPinned ? " metric-card-pinned" : ""}" data-metric-name="${esc(name)}" aria-label="${esc(title || "Metric")}" tabindex="-1"><div class="metric-card-head"><div class="metric-description">${metricDescription(family)}</div>${isPinned ? `<div class="metric-pin-controls"><span class="metric-pin-label">Pinned</span><button data-action="unpin-metric" data-metric="${esc(name)}" aria-label="Unpin ${esc(name)}">Unpin</button></div>` : ""}</div>`;
+      html += metricPanel(JSON.stringify(["metric", name]), choices, title) + "</section>";
+    }
+    html += "</section>";
     // Catalog reports expose hardware through the same categorized selector.
     if (D.metric_catalog) return html;
     html += `<div class="section-head"><span>Hardware</span><button id="hardwareToggle" aria-expanded="${state.hardware}">${state.hardware ? "Hide" : "Show"} GPU / host metrics</button></div>`;
@@ -1290,10 +1308,13 @@
   function render() {
     clearClientDrag();
     metricGeneration++;
+    // Reserve existing chart heights during async reloads so lower pins stay in view.
+    const scroll = $("tracks").scrollTop;
+    metricPanelHeights = new Map([...document.querySelectorAll(".dsight-metric-panel")]
+      .map(host => [host.dataset.metricKey, host.getBoundingClientRect().height]));
     for (const chart of metricCharts) chart.destroy();
     metricCharts = [];
     metricMounts = [];
-    const scroll = $("tracks").scrollTop;
     $("rangeFrom").value = Number(state.from.toFixed(6));
     $("rangeTo").value = Number(state.to.toFixed(6));
     $("rangeFrom").max = D.meta.duration;
@@ -1354,6 +1375,22 @@
     safe(() => {
       const b = event.target.closest("button");
       if (!b) return;
+      if (b.id === "pinMetric" || b.dataset.action === "unpin-metric") {
+        const name = b.id === "pinMetric" ? state.metric : b.dataset.metric;
+        if (!metricFamilyByName.has(name)) return;
+        const cardIndex = [...document.querySelectorAll(".metric-card")].indexOf(b.closest(".metric-card"));
+        state.pinnedMetrics = state.pinnedMetrics.includes(name)
+          ? state.pinnedMetrics.filter(metric => metric !== name)
+          : [...state.pinnedMetrics, name];
+        render();
+        if (cardIndex < 0) $("pinMetric").focus({preventScroll: true});
+        else {
+          const cards = document.querySelectorAll(".metric-card");
+          const nearby = cards[Math.min(cardIndex, cards.length - 1)];
+          (nearby?.querySelector('[data-action="unpin-metric"]') || nearby || $("pinMetric")).focus();
+        }
+        return;
+      }
       if (b.dataset.request) {
         selectRequest(b.dataset.request);
         return;
@@ -1497,6 +1534,7 @@
       if (t.id === "workerMetric") {
         state.metric = t.value;
         render();
+        $("workerMetric").focus({preventScroll: true});
       }
       if (t.id === "sessionSort") {
         state.sort = t.value;

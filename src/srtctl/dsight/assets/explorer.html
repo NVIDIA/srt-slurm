@@ -298,8 +298,13 @@
       .metric-picker input { width: 180px; min-width: 0; }
       .metric-picker select { width: min(480px, 100%); min-width: 0; }
       .metric-picker small { width: 100%; text-align: right; color: var(--muted); }
-      .metric-description { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--grid); }
+      .metric-card + .metric-card { border-top: 1px solid var(--grid); }
+      .metric-card-head { display: flex; align-items: flex-start; border-bottom: 1px solid var(--grid); }
+      .metric-card-pinned .metric-card-head { background: #f5f8fc; }
+      .metric-description { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px; font-size: 11px; color: var(--muted); }
       .metric-description code { color: var(--ink); overflow-wrap: anywhere; }
+      .metric-pin-controls { display: flex; align-items: center; gap: 8px; padding: 8px 12px 8px 0; }
+      .metric-pin-label { color: #275c9b; font-size: 11px; font-weight: 650; }
       .metric-quality { width: 100%; }
       .metric-quality summary { cursor: pointer; color: #275c9b; width: fit-content; }
       .ds-metric-loading { padding: 30px 12px; color: var(--muted); font-size: 12px; }

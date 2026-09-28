@@ -142,13 +142,20 @@ report; a CUDA table's presence is reported separately from imported data.
   recorded series remains available in the legend; **Labels** exposes its full
   identity. Hover values include the actual sample timestamp. Chart dragging
   changes the shared time range; saved views preserve line visibility per metric.
+- Click **Pin** beside the metric selector to keep that chart in the Metrics
+  section while browsing other metrics. Pinned charts stack in the order you pin
+  them, followed by the current unpinned metric. Selecting an already pinned
+  metric uses its existing panel. **Unpin** on a card or beside the selector
+  removes its pin; the selected metric stays visible. Each chart keeps its own
+  legend choices, and all charts follow the shared time range.
 - **Inspect phase in Nsight** follows the recorded worker. Select a rank or
   compare frontend + request workers. Router DP rank is retained as evidence;
   it is not assumed to map to a global process rank.
 - **Iterations** shows shared batch context. Supply the log's timezone to align
   timestamps that have no offset.
-- **Copy view link** saves range, request and expansions in the URL fragment.
-  **Export selection** saves evidence JSON.
+- **Copy view link** saves range, request, expansions, pinned metrics and line
+  visibility in the URL fragment. **Export selection** saves evidence JSON with
+  the same view state.
 
 Sessions are paginated; details expand on demand. Dense Nsight lanes show event
 density until zoomed in. Queries retain exact imported intervals. The offline
@@ -230,10 +237,11 @@ x.getLifecycle("<client-request-id>");
 x.inspectNsys({worker: "decode-0", rank: 0, from: 32, to: 33});
 x.listMetricFamilies(); // Synchronous catalog, including coverage and categories.
 x.listMetricSeries(); // Synchronous source identities without point decoding.
+x.setState({pinnedMetrics: ["trtllm_num_requests_running"]});
 await x.queryMetrics({name: "trtllm_num_requests_running", worker: "decode-0"});
 x.queryIterations({worker: "decode-0", rank: 0});
 await x.exportSelection();
-await x.whenMetricsReady(); // Wait for the selected chart after a UI action.
+await x.whenMetricsReady(); // Wait for all visible metric charts after a UI action.
 ```
 
 Browser API version 3 makes `queryMetrics()` and `exportSelection()` asynchronous
@@ -241,6 +249,9 @@ so unloaded families return complete results. Await these methods even when a
 family was previously viewed. Exports capture the selected view and range before
 loading samples, so changing the view during loading does not mix selections.
 Range, request, lifecycle, and other existing query methods remain synchronous.
+`pinnedMetrics` in `getState()` / `setState()` is an ordered array of metric family
+names. Restoring it removes duplicates and unknown names; an empty array clears
+all pins. State updates that omit it preserve the current pins.
 
 Agent workflow: inspect coverage → find slow requests in a bounded window →
 inspect lifecycle/source evidence → compare worker metrics and shared execution
