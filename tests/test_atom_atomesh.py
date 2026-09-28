@@ -200,6 +200,46 @@ def test_atom_pd_worker_emits_mooncake_kv_transfer_config(protocol: str | None, 
     }
 
 
+def test_atom_wraps_extra_kv_connectors_with_mooncake_in_multi() -> None:
+    """A role's extra-kv-connectors ride next to srtctl's Mooncake connector and never reach the CLI as a flag."""
+    offload = {"kv_connector": "lmcache_offload", "kv_role": "offload", "lmcache.max_local_cpu_size": 180}
+    backend = AtomProtocol(atom_config=AtomServerConfig(prefill={"extra-kv-connectors": [offload], "max-model-len": 8}))
+    prefill = Process("node0", frozenset(range(8)), 7500, 6100, "prefill", 0, nixl_port=6301)
+    decode = Process("node1", frozenset(range(8)), 7500, 6100, "decode", 0, nixl_port=6302)
+
+    prefill_command = _build(backend, prefill)
+    decode_command = _build(backend, decode)
+
+    assert json.loads(prefill_command[prefill_command.index("--kv-transfer-config") + 1]) == {
+        "kv_connector": "multi",
+        "connectors": [
+            {"kv_role": "kv_producer", "kv_connector": "mooncake", "proxy_ip": WORKER_IP, "handshake_port": 6301},
+            offload,
+        ],
+    }
+    assert "--extra-kv-connectors" not in prefill_command
+    assert prefill_command[-2:] == ["--max-model-len", "8"]
+    assert json.loads(decode_command[decode_command.index("--kv-transfer-config") + 1])["kv_connector"] == "mooncake"
+
+
+def test_atom_aggregate_worker_passes_a_single_extra_connector_unwrapped() -> None:
+    offload = {"kv_connector": "lmcache_offload", "kv_role": "offload"}
+    backend = AtomProtocol(atom_config=AtomServerConfig(aggregated={"extra_kv_connectors": [offload]}))
+    process = Process("node0", frozenset(range(8)), 7500, 6100, "agg", 0)
+
+    command = _build(backend, process)
+
+    assert json.loads(command[command.index("--kv-transfer-config") + 1]) == offload
+
+
+def test_atom_rejects_extra_kv_connectors_without_a_connector_name() -> None:
+    backend = AtomProtocol(atom_config=AtomServerConfig(prefill={"extra-kv-connectors": [{"kv_role": "offload"}]}))
+    process = Process("node0", frozenset(range(8)), 7500, 6100, "prefill", 0, nixl_port=6301)
+
+    with pytest.raises(ValueError, match="extra-kv-connectors"):
+        _build(backend, process)
+
+
 def test_atom_rejects_cross_node_model_parallel_endpoint() -> None:
     """ATOM cannot coordinate one logical worker across two Slurm nodes."""
     leader = Process("node0", frozenset(range(4)), 7500, 6100, "prefill", 0, nixl_port=6301)
