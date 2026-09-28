@@ -16,8 +16,8 @@ flowchart LR
     N["Nsight export<br/>*.sqlite"] --> NP["Select NVTX ranges<br/>align time; read available CPU samples"]
     NP --> NU["Nsight tab + overlay timeline<br/>NVTX lanes and CPU sample hotspots"]
 
-    T["Tachometer capture<br/>Parquet / Arrow"] --> MP["Select metric families<br/>preserve labels; align and deduplicate"]
-    MP --> MU["Server metrics, Frontend &amp; service metrics<br/>and Hardware charts"]
+    T["Tachometer capture<br/>Parquet / Arrow"] --> MP["Catalog all metric families<br/>preserve labels; align and deduplicate"]
+    MP --> MU["Metrics panel<br/>Frontend, Router, Workers, GPU, Host"]
     MP --> MQ["Agent API / queries<br/>all imported metric series"]
 
     W["Worker .out logs"] --> IP["Correlate client / Dynamo IDs<br/>and worker / process bindings"]
@@ -43,8 +43,9 @@ The Python readers produce one normalized dataset containing requests, sessions,
 workers, metrics, profiles, batch observations and unjoined server activity,
 with references back to source files
 and rows. The builder writes `trace-data.json.gz` and embeds the same data in
-`index.html`. The browser reads those normalized records; it does not open the
-original SQLite, Parquet or log files.
+`index.html`, with metric samples split into independently compressed families.
+The browser reads the catalog immediately and decompresses metric points when
+selected or queried. It does not open the original SQLite, Parquet or log files.
 
 All views share a time origin: the first selected client request, or the earliest
 recorded source timestamp when no client export is available. Nsight uses its
@@ -57,9 +58,7 @@ The UI destinations use the current section and tab names:
 | Visible area | What its data means |
 | --- | --- |
 | **Nsight** tab and overlay | NVTX intervals arranged by thread and overlap lane, alongside the selected request. Available frontend CPU samples feed **Frontend CPU sample hotspots**. CUDA kernel timing is not imported. |
-| **Server metrics** | A shared chart for the selected imported worker metric. Its legend controls individual worker/rank/label series. |
-| **Frontend & service metrics** | Shared charts for imported frontend and service series, grouped by recorded metric name. |
-| **Hardware** | Imported GPU and host gauges, grouped by host and metric, with individual series controlled in the legend. |
+| **Metrics** panel | A searchable selector groups every captured family into Frontend, Router, Workers, GPU and Host categories. One shared chart shows the selected family across workers, hosts, ranks and labels; its legend controls individual series. Families without samples in the selected capture window remain discoverable. |
 | **Agent API / queries** | All imported metric series and bounded queries for independent server activity, batch observations and profiles. |
 | **Batch context** tab | Recorded iteration or scheduler-snapshot fields. Missing counters and timers stay unknown; these are not per-request stage durations. |
 | **Request** tab | Client measurements, recorded ID mappings, worker path and correlated OTel source measurements. **Expand lifecycle** shows original activity spans or chronological progress milestones. Overlapping spans retain their original durations. |
@@ -120,7 +119,7 @@ correlation, source references and limits.
 | --- | --- |
 | One worker-log line | Typed engine identity, iteration or scheduler-snapshot observations, or no recognized record. |
 | An NVTX name and duration | Whether to include that host annotation and its engine/scope metadata. Original names and timestamps remain in the profile records. |
-| A recorded metric name | Whether the engine catalog includes it, plus its display label, original unit, group and description. Values and labels remain in the metric reader. |
+| A recorded metric name | Optional engine-specific display metadata and units. The shared Tachometer catalog includes other captured families too; values, labels and source rows remain in the metric reader. |
 
 TRT-LLM currently supplies all three kinds of rules. SGLang supplies NVTX prefixes
 and metric definitions; it has no worker-log decoder here. TokenSpeed supplies

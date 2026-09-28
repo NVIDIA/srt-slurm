@@ -1335,7 +1335,7 @@ ${s.description}`))).join("") + "</details>";
   function overview() {
     const bins = Array(300).fill(0);
     const observations = available.requests ? D.requests : available.server_activity ? D.server_spans :
-      D.metrics.length ? D.metrics.flatMap((m) => m.points.map((p) => ({start:p[0]}))) :
+      D.metrics.length ? D.metrics.flatMap((m) => (m.points ?? []).map((p) => ({start:p[0]}))) :
       D.profiles.map((p) => ({start: Math.max(0,p.capture[0])}));
     for (const r of observations)
       bins[Math.min(299, Math.floor((r.start / D.meta.duration) * 300))]++;

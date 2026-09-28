@@ -58,7 +58,8 @@ async def run(output: Path, port: int) -> None:
                 if await js(
                     f"Boolean(window.traceExplorer?.ready && traceExplorer.describe().meta.job === {json.dumps(job)})"
                 ):
-                    assert not await js("window.traceExplorerError || document.querySelector('#error').textContent")
+                    error = await js("window.traceExplorerError || document.querySelector('#error').textContent")
+                    assert not error, (job, error)
                     return
                 await asyncio.sleep(0.05)
             raise AssertionError("Dashboard did not initialize: " + str(await js("window.traceExplorerError")))

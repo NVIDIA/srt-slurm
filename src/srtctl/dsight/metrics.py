@@ -26,6 +26,8 @@ from .sources import canonical_role
 if TYPE_CHECKING:
     from .importer import Importer
 
+ENGINE_METRICS = engine_metrics()
+
 METRICS = {
     "gpu_util": MetricDefinition("GPU utilization", "%", "hardware"),
     "DCGM_FI_DEV_GPU_UTIL": MetricDefinition("GPU utilization", "%", "hardware"),
@@ -37,7 +39,7 @@ METRICS = {
     "dynamo_work_handler_queue_depth": MetricDefinition("Handler queue", "requests"),
     "load1": MetricDefinition("Host load (1 min)", "load", "hardware"),
     "memory_MemAvailable_bytes": MetricDefinition("Host available memory", "bytes", "hardware"),
-    **engine_metrics(),
+    **ENGINE_METRICS,
 }
 
 
@@ -215,6 +217,8 @@ def _description(name: str, endpoints: set[str], histogram: bool) -> dict[str, A
         info.update(title=override.label, unit=override.unit)
         if override.description:
             info["description"] = override.description
+    if name in ENGINE_METRICS and info["component"] != "Workers":
+        info.update(component="Workers", group="Other captured metrics", group_order=100)
     info["value_kind"] = "histogram" if histogram else "counter" if info["counter"] else "stored"
     if histogram:
         info["observation_unit"] = info["unit"]
