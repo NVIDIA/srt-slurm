@@ -77,13 +77,16 @@ Conflicting values at one timestamp remain in raw evidence and appear as gaps.
 
 | Metric name to select or pin | Source field | Unit | Paired reference |
 | --- | --- | --- | --- |
-| `dsight_log_active_decode_requests` | Decode batch `#running-req` | requests | `dsight_log_decode_request_limit` |
-| `dsight_log_decode_request_limit` | Scheduler config `max_batch_size` | requests | — |
-| `dsight_log_active_kv_pages` | `#pages(active/cached/total)` → active | pages | `dsight_log_kv_pool_pages` |
-| `dsight_log_kv_pool_pages` | `#pages(active/cached/total)` → total | pages | — |
+| `log_tokenspeed_active_decode_requests` | Decode batch `#running-req` | requests | `log_tokenspeed_decode_request_limit` |
+| `log_tokenspeed_decode_request_limit` | Scheduler config `max_batch_size` | requests | — |
+| `log_tokenspeed_active_kv_pages` | `#pages(active/cached/total)` → active | pages | `log_tokenspeed_kv_pool_pages` |
+| `log_tokenspeed_kv_pool_pages` | `#pages(active/cached/total)` → total | pages | — |
 
-These families appear under **Workers / Log-derived metrics**. The `dsight_log_`
-namespace distinguishes generated evidence from native Prometheus metrics.
+These families appear under **Workers / Log-derived metrics**. Generated metrics
+use `log_<component>_<name>`, where `<component>` identifies the component that
+produced the consumed log. The `log_` prefix distinguishes generated evidence from
+native Prometheus metrics. These logs come from TokenSpeed, so their component is
+`tokenspeed`, even when TokenSpeed runs through the Dynamo integration.
 Active decode batch is not the exported `tokenspeed:num_requests_running`
 scheduler-state count. The configured per-scheduler batch limit is not global
 `max_num_seqs` or benchmark concurrency. KV pool size comes from the same snapshot

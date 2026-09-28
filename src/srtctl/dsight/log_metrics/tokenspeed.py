@@ -11,10 +11,10 @@ from ..engines import parse_tokenspeed_log
 from ..sources import SourceIdentity
 from .base import LogMetricDefinition, LogMetricEvent
 
-ACTIVE_DECODE = "dsight_log_active_decode_requests"
-DECODE_LIMIT = "dsight_log_decode_request_limit"
-ACTIVE_PAGES = "dsight_log_active_kv_pages"
-POOL_PAGES = "dsight_log_kv_pool_pages"
+ACTIVE_DECODE = "log_tokenspeed_active_decode_requests"
+DECODE_LIMIT = "log_tokenspeed_decode_request_limit"
+ACTIVE_PAGES = "log_tokenspeed_active_kv_pages"
+POOL_PAGES = "log_tokenspeed_kv_pool_pages"
 
 _CONFIG = re.compile(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)\s+ATTN TP RANK (\d+)\].*?Scheduler config: (.+)")
 _MAX_BATCH = re.compile(r"(?:^|\s)max_batch_size=(\d+)(?=\s|$)")

@@ -180,8 +180,8 @@ class ExampleGenerator:
 
     name = "example"
     definitions = (
-        LogMetricDefinition("example_active", "Active", "items", "Recorded active work", reference="example_limit"),
-        LogMetricDefinition("example_limit", "Limit", "items", "Recorded config", temporal="setting"),
+        LogMetricDefinition("log_example_active", "Active", "items", "Recorded active work", reference="log_example_limit"),
+        LogMetricDefinition("log_example_limit", "Limit", "items", "Recorded config", temporal="setting"),
     )
 
     def parse_line(self, line, source):
@@ -190,7 +190,7 @@ class ExampleGenerator:
         _, process, value = line.split()
         return LogMetricEvent(
             "2026-09-17T10:58:33.5+00:00",
-            (("example_active", float(value)), ("example_limit", 10)),
+            (("log_example_active", float(value)), ("log_example_limit", 10)),
             rank=2,
             rank_kind="dp",
             process=process,
@@ -206,7 +206,7 @@ def test_new_generator_uses_same_normalizer_without_engine_switches(tmp_path):
     series = read_log_metrics(run, (ExampleGenerator(),))
     assert len(series) == 4
     by_id = {s["id"]: s for s in series}
-    for active in (s for s in series if s["name"] == "example_active"):
+    for active in (s for s in series if s["name"] == "log_example_active"):
         reference = by_id[active["reference"]["series_id"]]
         assert reference["worker_process"] == active["worker_process"]
         assert active["rank_kind"] == "dp" and active["labels"]["partition"] == "a"

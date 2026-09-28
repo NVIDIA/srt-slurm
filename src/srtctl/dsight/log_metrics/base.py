@@ -46,10 +46,12 @@ class LogMetricEvent:
 class LogMetricGenerator(Protocol):
     """One stateless parser per dialect; the reader owns clocks, scope and evidence.
 
-    Definitions use a distinct namespace from native exported metrics. A reference
-    names another definition of the same unit; it is joined only in the exact same
-    file/worker/rank/process/label scope. Unsupported lines return None. Invalid or
-    missing observations are omitted; invalid settings can emit None to prevent
+    Definitions use log_<component>_<name>, where component identifies the producer
+    of the consumed log (e.g. tokenspeed or dynamo_frontend), distinct from native
+    exported metrics. A reference names another definition of the same unit; it is
+    joined only in the exact same file/worker/rank/process/label scope. Unsupported
+    lines return None. Invalid or missing observations are omitted; invalid
+    settings can emit None to prevent
     carrying an earlier configuration through a restart/configuration record.
     """
 
