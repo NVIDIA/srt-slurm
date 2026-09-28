@@ -162,6 +162,7 @@ roles:
       VLLM_V2_WARMUP_MAX_NUM_SEQS: "16"
       VLLM_SERVER_DEV_MODE: "1"
       VLLM_USE_V2_MODEL_RUNNER: "1"
+      VLLM_USE_RUST_FRONTEND: "1"
       VLLM_USE_NCCL_SYMM_MEM: "0"
       TORCH_SYMMMEM: "NVSHMEM"
       VLLM_ALLREDUCE_USE_FLASHINFER: "1"
@@ -169,9 +170,9 @@ roles:
       VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
       VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
       VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "0"
-      VLLM_DSV4_MEGA_FP8_COMBINE: "1"
       VLLM_SPARSE_INDEXER_MAX_LOGITS_MB: "1024"
       VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+      VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
       TILELANG_CLEANUP_TEMP_FILES: "1"
       UCX_MEMTYPE_CACHE: "n"
       UCX_NET_DEVICES: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1"
@@ -191,7 +192,6 @@ roles:
       tensor-parallel-size: 8
       pipeline-parallel-size: 1
       enable-cumem-allocator: true
-      enable-expert-parallel: true
       disable-custom-all-reduce: true
       max-model-len: 1048576
       max-num-seqs: 16
@@ -199,16 +199,14 @@ roles:
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
+      cudagraph-metrics: false
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[6,7,12,14,18,21,24,28,30,35,36,42,48,49,54,56,60,63,66,70,72,77,78,84,90,91,96,98,105,112],"mode":0}'
-      max-cudagraph-capture-size: 112
       gpu-memory-utilization: 0.90
+      stream-interval: 1
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"indexer_kv_dtype":"mxfp4"}'
-      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"synthetic","synthetic_acceptance_length":3.77}'
-      moe-backend: "deep_gemm_amxf4_mega_moe"
-      numa-bind: true
-      numa-bind-nodes: [0, 0, 1, 1]
+      speculative-config: '{"method":"dspark","num_speculative_tokens":6,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}'
 
 sbatch_directives:
   mem: "0"
