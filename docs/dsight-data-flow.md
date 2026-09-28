@@ -30,7 +30,7 @@ flowchart LR
 
     O["Lifecycle OTel<br/>flat or per-collector traces.jsonl"] --> LP["Correlate request / trace IDs<br/>build lifecycle with client boundaries"]
     LP --> SU["Unjoined server activity<br/>when no client request matches"]
-    LP --> LU["Expand lifecycle + Request tab<br/>progress milestones<br/>and Source measurements"]
+    LP --> LU["Expand lifecycle + Request tab<br/>progress milestones"]
 
     C["Client request JSONL<br/>AIPerf / AgentPerf"] --> CP["Read request timing, TTFT<br/>sessions and token counts"]
     CP --> CU["Client sessions & agents<br/>request bars and Request tab summary"]
@@ -65,7 +65,7 @@ The UI destinations use the current section and tab names:
 | **Metrics** panel | Log-derived capacity families appear under Workers / Log-derived metrics, with paired dashed limits and per-source peak/usage summaries. A searchable selector groups every captured family into Frontend, Router, Workers, GPU and Host categories. Each family uses one shared chart across workers, hosts, ranks and labels; its legend controls individual series. Pinned families remain stacked while browsing other metrics, and all charts follow the shared time range. Families without samples in the selected capture window remain discoverable. |
 | **Agent API / queries** | All imported metric series and bounded queries for independent server activity, batch observations and profiles. |
 | **Batch context** tab | Recorded iteration or scheduler-snapshot fields. Missing counters and timers stay unknown; these are not per-request stage durations. |
-| **Request** tab | Client measurements, recorded ID mappings, worker path and correlated OTel source measurements. **Expand lifecycle** shows chronological progress milestones. Source measurements retain the original durations of overlapping spans. |
+| **Request** tab | Client measurements, recorded ID mappings and worker path. **Expand lifecycle** shows chronological progress milestones. Request-path cards open usable worker Nsight reports directly; cards without a report are disabled. |
 
 The Nsight overlay is a time-based NVTX timeline. Its CPU hotspot table is a
 separate view of samples, not an aggregate CPU flamegraph.
@@ -140,7 +140,7 @@ omit sources it cannot interpret.
 | --- | --- |
 | Client request export | Other sources can establish the time window. Client request bars and per-request breakdowns are absent; shared evidence remains available. |
 | Frontend ID bridge | Requests retain client timing; correlation to Dynamo/engine IDs is unavailable. |
-| Supported, correlated OTel | The affected request has no lifecycle expansion, milestone rows or source-measurement breakdown. Its client bar and TTFT remain. |
+| Supported, correlated OTel | The affected request has no lifecycle expansion or milestone rows. Its client bar and TTFT remain. |
 | Worker logs / engine ID maps | Log-based bindings, engine identities and iteration context are absent. OTel can still identify a unique discovered worker by its recorded host/role. |
 | Nsight export or usable profile data | The Nsight section and controls are hidden. Missing CPU samples separately hide the hotspot table. |
 | Tachometer capture | Metric charts and selectors are hidden. |

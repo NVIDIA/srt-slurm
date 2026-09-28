@@ -183,19 +183,47 @@ async def run(output: Path, port: int) -> None:
                     model = await js(f"traceExplorer.getLifecycle({json.dumps(CLIENT)})")
                     assert await js("document.querySelectorAll('.lifecycle-chain').length") == len(model["stages"])
                     assert not await js("document.querySelector('[data-lifecycle-view]') !== null")
-                    assert "Source measurements" in await js("document.querySelector('#inspectorBody').innerText")
+                    inspector = await js("document.querySelector('#inspectorBody').innerText")
+                    assert "Progress milestones" in inspector and "Source measurements" not in inspector
                     # Older saved views cannot restore the removed activity-span breakdown.
-                    await js("traceExplorer.setState({lifecycleView:'activities'})")
+                    await js("traceExplorer.setState({lifecycleView:'activities',expandedWorkers:['decode-0']})")
                     assert await js("document.querySelectorAll('.lifecycle-chain').length") == len(model["stages"])
+                    assert not await js("Boolean(document.getElementById('workerActivity'))")
+                    assert "expandedWorkers" not in await js("traceExplorer.getState()")
                     assert (await js(f"traceExplorer.getLifecycle({json.dumps(CLIENT)})"))["activities"] == model[
                         "activities"
                     ]
+                    if mode == "no-nsight":
+                        cards = await js(
+                            "Array.from(document.querySelectorAll('.path-node[data-path-worker]'))"
+                            ".map(e=>({disabled:e.disabled,text:e.innerText}))"
+                        )
+                        assert cards and all(c["disabled"] and "No Nsight report" in c["text"] for c in cards)
+                        before = await js("traceExplorer.getState()")
+                        await click(".path-node[data-path-worker]")
+                        assert await js("traceExplorer.getState()") == before
                 await js("traceExplorer.selectRequest('client-only',{expand:true})")
                 assert not await js("document.querySelector('#expandTTFT') !== null")
             else:
                 assert (await js("traceExplorer.queryRequests().total")) == 0
             if mode == "tokenspeed":
                 await js(f"traceExplorer.selectRequest({json.dumps(CLIENT)},{{expand:true,fit:true}})")
+                for worker in ("frontend", "prefill-0", "decode-0"):
+                    before = await js("traceExplorer.getState()")
+                    selector = f'.path-node[data-path-worker="{worker}"]'
+                    # This fixture records only a decode profile.
+                    disabled = await js(f"document.querySelector({json.dumps(selector)}).disabled")
+                    assert disabled == (worker != "decode-0")
+                    await click(selector)
+                    if disabled:
+                        assert await js("traceExplorer.getState()") == before
+                        continue
+                    assert (await js("traceExplorer.queryNsys({limit:1})"))["worker"] == worker
+                    after = await js("traceExplorer.getState()")
+                    assert (after["from"], after["to"], after["request"]) == (
+                        before["from"], before["to"], before["request"]
+                    )
+                    await click('.tabs [data-tab="request"]')
                 await js("traceExplorer.selectSpan('dop',{nsys:true})")
                 result = await js("traceExplorer.queryNsys({limit:10})")
                 assert result["rank"] is None and result["total"] == 3

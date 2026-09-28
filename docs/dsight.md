@@ -85,8 +85,8 @@ range remain errors, rather than silently appearing complete.
 
 OTel is imported automatically when available. Use `--no-otel`
 to skip reading OTel files entirely. A request without supported, correlated
-OTel activity has no lifecycle expansion button, stage rows, or source-measurement
-breakdown. This also applies to untraced requests in a partially traced run.
+OTel activity has no lifecycle expansion button or stage rows.
+This also applies to untraced requests in a partially traced run.
 Client request bars and their measured TTFT remain available, along with any
 independent worker logs, metrics, and Nsight exports. Empty request paths and
 identity bridges are omitted.
@@ -158,12 +158,12 @@ report; a CUDA table's presence is reported separately from imported data.
 - Expand session → agent → request. For requests with OTel activity, **Expand
   lifecycle** reveals **Progress milestones**: cumulative rows ending at
   chronological recorded boundaries. The breakdown ends at **Client complete**.
-  Original overlapping OTel spans, including the frontend response stream, remain
-  in **Source measurements** and worker tracks. **Fit TTFT** selects the client TTFT
-  window and expands the lifecycle only when available.
-- Click a milestone or raw span for boundaries and source references. Expand
-  workers in the request path for operation/dispatch/response-pump nesting and
-  Nsight reports. The metric selector at the top right searches all captured
+  **Fit TTFT** selects the client TTFT window and expands the lifecycle only when
+  available.
+- Click a milestone for boundaries and source references. Click **Inspect Nsight**
+  on a recorded request-path card to open that worker's report directly, keeping
+  the shared time range. Cards without a usable report are disabled and say
+  **No Nsight report**. The metric selector at the top right searches all captured
   families by name and title, grouped by component and subgroup. The selected
   metric appears as one chart across its sources, using the same offline uPlot
   library as the Tachometer dashboard. Click a legend entry to hide or show its line. Every

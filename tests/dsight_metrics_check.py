@@ -199,17 +199,26 @@ async def check_metrics(browser: Browser, report: dict[str, Any]) -> None:
     )
     assert not await browser.js("Boolean(document.getElementById('workerActivity'))")
     context_worker = await browser.js("traceExplorer.getRequest(traceExplorer.getState().request).workers[0]")
-    await browser.click(f"[data-path-worker={json.dumps(context_worker)}]")
-    assert await browser.js("Boolean(document.getElementById('workerActivity'))")
+    await browser.js("traceExplorer.expandRequest(traceExplorer.getState().request)")
+    inspector = await browser.js("document.querySelector('#inspectorBody').innerText")
+    assert "Progress milestones" in inspector and "Source measurements" not in inspector
+    await browser.js("traceExplorer.setState({expandedWorkers:" + json.dumps([context_worker]) + "})")
+    assert "expandedWorkers" not in await browser.js("traceExplorer.getState()")
+    before = await browser.js("traceExplorer.getState()")
+    await browser.screenshot("00-request-details.png")
+    await browser.click(f".path-node[data-path-worker={json.dumps(context_worker)}]")
+    after = await browser.js("traceExplorer.getState()")
+    for field in ("from", "to", "request", "metric", "metricCharts", "pinnedMetrics"):
+        assert after[field] == before[field], field
+    assert after["tab"] == "nsys" and after["nsys"]
+    assert (await browser.js("traceExplorer.queryNsys({limit:1})"))["worker"] == context_worker
     assert await browser.js("document.querySelectorAll('.dsight-metric-panel').length") == 1
-    await browser.click("#workerActivity [data-worker-nsys]")
     assert await browser.js("document.querySelectorAll('.nsys-track').length") > 0
-    await browser.click("#workerActivity [data-toggle='worker']")
     assert not await browser.js("Boolean(document.getElementById('workerActivity'))")
     await browser.js("traceExplorer.setState({nsys:false,tab:'request'})")
     assert await browser.js("document.querySelectorAll('.dsight-metric-panel').length") == 1
     report["tests"].append(
-        "Inspector worker activity and Nsight remain accessible without adding separate worker metric charts"
+        "Request-path cards open Nsight directly while preserving the view and omitting redundant request sections"
     )
 
     scope = panel(key)

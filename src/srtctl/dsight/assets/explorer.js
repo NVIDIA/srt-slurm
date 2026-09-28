@@ -120,7 +120,6 @@
     pinnedMetrics: [],
     iterationWorker: null,
     iterationRank: null,
-    expandedWorkers: new Set(),
     hardware: false,
     compareNsys: false,
     metric: defaultMetric,
@@ -172,7 +171,6 @@
     expandedSessions: [...state.expandedSessions],
     expandedAgents: [...state.expandedAgents],
     expandedRequests: [...state.expandedRequests],
-    expandedWorkers: [...state.expandedWorkers],
   });
   function validateRange(from, to) {
     if (!Number.isFinite(from) || !Number.isFinite(to))
@@ -218,7 +216,6 @@
       "expandedSessions",
       "expandedAgents",
       "expandedRequests",
-      "expandedWorkers",
     ]) {
       if (Array.isArray(value[k])) state[k] = new Set(value[k]);
     }
@@ -999,23 +996,6 @@ ${s.description}`))).join("") + "</details>";
         '<div class="row-note">GPU and host metrics follow this time range. Individual GPU samples do not identify request ownership.</div>';
     return html;
   }
-  function workerActivityTracks() {
-    const workers = D.workers.filter((w) => state.expandedWorkers.has(w.id));
-    if (!workers.length) return "";
-    const r = selected();
-    let html = '<section id="workerActivity"><div class="section-head">Selected worker activity</div>';
-    for (const w of workers) {
-      html += `<div class="section-head"><span>${esc(w.id)} · ${esc(w.host)}</span><button data-toggle="worker" data-id="${esc(w.id)}">Close activity</button></div>`;
-      const related = r?.lifecycle.activities.filter((s) => s.worker === w.id) ?? [];
-      for (const activity of related)
-        html += track(
-          labelText((activity.depth ? "↳ " : "") + activity.label + (activity.kind === "envelope" ? " · inclusive" : "")),
-          bar(activity.start, activity.end, activity.label, `phase ${w.role}`, `data-span="${esc(activity.id)}"`, activity.description),
-        );
-      html += `<div class="row-note">${w.profiles.length} rank reports. ${w.profiles.length ? `<button data-worker-nsys="${esc(w.id)}">Inspect Nsight</button>` : "No Nsight export for this worker."}</div>`;
-    }
-    return html + "</section>";
-  }
   function nsysTracks() {
     if (!state.nsys) return "";
     const p = profileById.get(state.profile);
@@ -1138,7 +1118,8 @@ ${s.description}`))).join("") + "</details>";
     return `<div class="evidence-item"><span class="tag">${esc(label)}</span><br><code>${esc(s?.path ?? "Unknown source")}${ref[1] !== undefined ? ":" + ref[1] : ""}</code>${ref[2] !== undefined ? `<br>span index ${ref[2]}` : ""}</div>`;
   }
   function pathNode(id, title, host, active) {
-    return `<button class="path-node ${active ? "active" : ""}" data-path-worker="${esc(id)}"><strong>${esc(title)}</strong><small>${esc(host || "host not mapped")}</small></button>`;
+    const hasProfile = usableProfiles.some((p) => p.worker === id);
+    return `<button class="path-node ${active ? "active" : ""}" data-path-worker="${esc(id)}" ${hasProfile ? "" : "disabled"}><strong>${esc(title)}</strong><small>${esc(host || "host not mapped")}</small><small>${hasProfile ? "Inspect Nsight" : "No Nsight report"}</small></button>`;
   }
 
   function spanHasProfile(r,span) {
@@ -1189,10 +1170,7 @@ ${s.description}`))).join("") + "</details>";
         )
         .join(
           "",
-        )}</div><p class="help">Each delta begins at the preceding milestone. Raw spans keep their original inclusive durations in the source table and worker tracks.</p>`;
-    }
-    if (hasLifecycle(r) && state.expandedRequests.has(r.id)) {
-      html += `<h3>Source measurements</h3><p class="help">Dynamo OTel spans below are inclusive. The operation contains backend stream creation and response pumping. Frontend streaming runs concurrently.</p><table class="mini-table"><thead><tr><th>Runtime activity</th><th>Elapsed</th><th>Source</th></tr></thead><tbody>${r.lifecycle.activities.map((a) => `<tr><td><button data-span="${esc(a.id)}" title="${esc(a.description)}">${esc((a.depth ? "↳ " : "") + a.label)}</button></td><td>${ms(a.end - a.start)}</td><td title="${esc(a.name)}">OTel</td></tr>`).join("")}</tbody></table>`;
+        )}</div><p class="help">Each delta begins at the preceding milestone.</p>`;
       if (r.lifecycle.issues.length)
         html += `<p class="notice">${r.lifecycle.issues.map(esc).join("<br>")}</p>`;
     }
@@ -1205,7 +1183,7 @@ ${s.description}`))).join("") + "</details>";
           html += `<div class="path-arrow">↓</div><div class="prefill-options">${prefill
             .map(
               (w) =>
-                `<button data-path-worker="${w.id}" class="${r.workers.includes(w.id) ? "active" : ""}">${esc(w.id)}</button>`,
+                `<button data-path-worker="${esc(w.id)}" class="${r.workers.includes(w.id) ? "active" : ""}" title="Inspect Nsight for ${esc(w.id)}" ${usableProfiles.some((p) => p.worker === w.id) ? "" : "disabled"}>${esc(w.id)}</button>`,
             )
             .join("")}</div>`;
       }
@@ -1224,7 +1202,7 @@ ${s.description}`))).join("") + "</details>";
         html +=
           '<p class="help">All recorded workers are shown, including repeated routing attempts.</p>';
       if (pathWorkers.length)
-        html += '<p class="help" style="margin-top:9px">Click a worker for its recorded activity and Nsight reports. Use the metric chart legend to show or hide worker lines.</p>';
+        html += '<p class="help" style="margin-top:9px">Click a worker to inspect its Nsight report. Use the metric chart legend to show or hide worker lines.</p>';
     }
     if (r.server_ids.length || r.engine.length) {
       html +=
@@ -1384,7 +1362,7 @@ ${s.description}`))).join("") + "</details>";
       (_, i) =>
         `<span class="tick" style="left:${i * 20}%">${fmt(state.from + ((state.to - state.from) * i) / 5, state.to - state.from < 1 ? 6 : 3)} s</span>`,
     ).join("");
-    $("tracks").innerHTML = clientTracks() + serverTracks() + workerTracks() + workerActivityTracks() + nsysTracks() ||
+    $("tracks").innerHTML = clientTracks() + serverTracks() + workerTracks() + nsysTracks() ||
       '<div class="loading">No supported timed observations are available. Source coverage is listed in Evidence.</div>';
     mountMetricCharts();
     $("tracks").scrollTop = scroll;
@@ -1488,7 +1466,6 @@ ${s.description}`))).join("") + "</details>";
             session: "expandedSessions",
             agent: "expandedAgents",
             request: "expandedRequests",
-            worker: "expandedWorkers",
           }[kind];
         if (kind === "request" && !state.expandedRequests.has(id)) {
           expandRequest(id);
@@ -1511,13 +1488,7 @@ ${s.description}`))).join("") + "</details>";
         return;
       }
       if (b.dataset.pathWorker) {
-        state.expandedWorkers = new Set([b.dataset.pathWorker]);
-        render();
-        $("workerActivity")?.scrollIntoView({ block: "nearest" });
-        return;
-      }
-      if (b.dataset.workerNsys) {
-        inspectNsys({ worker: b.dataset.workerNsys });
+        inspectNsys({ worker: b.dataset.pathWorker });
         return;
       }
       if (b.dataset.nvtx) {
