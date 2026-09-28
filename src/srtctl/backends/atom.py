@@ -141,26 +141,22 @@ class AtomProtocol:
 
         return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
-    def _kv_transfer_config(
-        self, process: Process, worker_ip: str, extra_connectors: list[dict[str, Any]]
-    ) -> str | None:
-        """The P/D Mooncake connector plus the role's extra connectors, wrapped in ``multi`` when there are several."""
-        connectors = [*extra_connectors]
-        if process.endpoint_mode in {"prefill", "decode"}:
-            if process.nixl_port is None:
-                raise ValueError("ATOM P/D worker is missing its Mooncake handshake port")
-            mooncake = {
-                "kv_role": "kv_producer" if process.endpoint_mode == "prefill" else "kv_consumer",
-                "kv_connector": self.connector,
-                "proxy_ip": worker_ip,
-                "handshake_port": process.nixl_port,
-            }
-            if self.mooncake_protocol is not None:
-                mooncake["protocol"] = self.mooncake_protocol
-            connectors.insert(0, mooncake)
-        if not connectors:
-            return None
-        payload = connectors[0] if len(connectors) == 1 else {"kv_connector": "multi", "connectors": connectors}
+    def _kv_transfer_config(self, process: Process, worker_ip: str, extra_connectors: list[dict[str, Any]]) -> str:
+        if process.endpoint_mode not in {"prefill", "decode"}:
+            raise ValueError("ATOM KV transfer is only valid for prefill/decode workers")
+        if process.nixl_port is None:
+            raise ValueError("ATOM P/D worker is missing its Mooncake handshake port")
+        payload: dict[str, Any] = {
+            "kv_role": "kv_producer" if process.endpoint_mode == "prefill" else "kv_consumer",
+            "kv_connector": self.connector,
+            "proxy_ip": worker_ip,
+            "handshake_port": process.nixl_port,
+        }
+        if self.mooncake_protocol is not None:
+            payload["protocol"] = self.mooncake_protocol
+        if extra_connectors:
+            # e.g. ATOM's in-process lmcache_offload next to the P/D transfer
+            payload = {"kv_connector": "multi", "connectors": [payload, *extra_connectors]}
         return json.dumps(payload, separators=(",", ":"))
 
     def build_worker_command(
@@ -182,7 +178,7 @@ class AtomProtocol:
 
         worker_ip = get_hostname_ip(process.node, runtime.network_interface)
         config = self.get_config_for_mode(process.endpoint_mode)
-        extra_connectors = _pop_extra_connectors(config)
+        extra_connectors = config.pop("extra-kv-connectors", [])
         reserved = {"model", "host", "server-port", "tp", "tensor-parallel-size", "kv-transfer-config"}
         overlap = reserved.intersection(_canonical_arg_key(key) for key in config)
         if overlap:
@@ -204,9 +200,10 @@ class AtomProtocol:
                 str(len(process.gpu_indices)),
             ]
         )
-        kv_transfer_config = self._kv_transfer_config(process, worker_ip, extra_connectors)
-        if kv_transfer_config is not None:
-            command.extend(["--kv-transfer-config", kv_transfer_config])
+        if process.endpoint_mode in {"prefill", "decode"}:
+            command.extend(["--kv-transfer-config", self._kv_transfer_config(process, worker_ip, extra_connectors)])
+        elif extra_connectors:
+            raise ValueError("ATOM extra-kv-connectors are only supported on prefill/decode workers")
         command.extend(_config_to_cli_args(config))
         return command
 
@@ -225,15 +222,6 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
         else:
             args.extend([flag, str(value)])
     return args
-
-
-def _pop_extra_connectors(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Remove ``extra-kv-connectors`` from a role's args: connectors that ride next to srtctl's Mooncake one."""
-    keys = [key for key in config if _canonical_arg_key(key) == "extra-kv-connectors"]
-    connectors = [connector for key in keys for connector in (config.pop(key) or [])]
-    if not all(isinstance(connector, dict) and "kv_connector" in connector for connector in connectors):
-        raise ValueError("ATOM extra-kv-connectors must be a list of connector mappings with a kv_connector key")
-    return connectors
 
 
 def _canonical_arg_key(key: str) -> str:

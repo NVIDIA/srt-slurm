@@ -222,21 +222,11 @@ def test_atom_wraps_extra_kv_connectors_with_mooncake_in_multi() -> None:
     assert json.loads(decode_command[decode_command.index("--kv-transfer-config") + 1])["kv_connector"] == "mooncake"
 
 
-def test_atom_aggregate_worker_passes_a_single_extra_connector_unwrapped() -> None:
-    offload = {"kv_connector": "lmcache_offload", "kv_role": "offload"}
-    backend = AtomProtocol(atom_config=AtomServerConfig(aggregated={"extra_kv_connectors": [offload]}))
+def test_atom_rejects_extra_kv_connectors_on_aggregate_workers() -> None:
+    backend = AtomProtocol(atom_config=AtomServerConfig(aggregated={"extra-kv-connectors": [{"kv_connector": "x"}]}))
     process = Process("node0", frozenset(range(8)), 7500, 6100, "agg", 0)
 
-    command = _build(backend, process)
-
-    assert json.loads(command[command.index("--kv-transfer-config") + 1]) == offload
-
-
-def test_atom_rejects_extra_kv_connectors_without_a_connector_name() -> None:
-    backend = AtomProtocol(atom_config=AtomServerConfig(prefill={"extra-kv-connectors": [{"kv_role": "offload"}]}))
-    process = Process("node0", frozenset(range(8)), 7500, 6100, "prefill", 0, nixl_port=6301)
-
-    with pytest.raises(ValueError, match="extra-kv-connectors"):
+    with pytest.raises(ValueError, match="only supported on prefill/decode"):
         _build(backend, process)
 
 
