@@ -11,9 +11,22 @@ import math
 from pathlib import Path
 from typing import Any
 
+from .capabilities import capabilities
 from .model import SCHEMA
 
-KINDS = ("summary", "requests", "request", "lifecycle", "metrics", "profiles", "nsys", "cpu", "iterations", "sources")
+KINDS = (
+    "summary",
+    "requests",
+    "request",
+    "lifecycle",
+    "metrics",
+    "profiles",
+    "nsys",
+    "cpu",
+    "iterations",
+    "sources",
+    "server_spans",
+)
 
 
 class TraceDataset:
@@ -84,6 +97,7 @@ class TraceDataset:
                 "schema": data["schema"],
                 "meta": data["meta"],
                 "audit": data["audit"],
+                "capabilities": data.get("capabilities", capabilities(data)),
                 "counts": {
                     key: len(data[key])
                     for key in ("requests", "sessions", "workers", "metrics", "profiles", "iterations")
@@ -120,6 +134,8 @@ class TraceDataset:
                     | {"span_count": len(request["spans"])}
                 )
             return page(result)
+        if kind == "server_spans":
+            return page([s for s in data.get("server_spans", []) if overlaps(s["start"], s["end"])])
         if kind == "sources":
             return page(data["sources"])
         if kind == "metrics":
@@ -164,12 +180,13 @@ class TraceDataset:
             rows = [
                 r
                 for r in data["iterations"]
-                if (not worker or r["worker"] == worker) and (rank is None or r["global_rank"] == rank)
+                if (not worker or r["worker"] == worker)
+                and (rank is None or (r["rank"] if "rank_kind" in r else r["global_rank"]) == rank)
             ]
             return page(
                 [r for r in rows if r["start"] is not None and overlaps(r["start"], r["end"])],
                 unaligned_rows=sum(r["start"] is None for r in rows),
-                attribution="Shared batches, one-second timestamps. Counters and timers are not mapped to requests or NVTX iterations.",
+                attribution="Shared batch observations with recorded timestamp precision and rank scope; not per-request execution time.",
             )
         if kind == "nsys":
             events = []
@@ -185,6 +202,9 @@ class TraceDataset:
                                 "end": event[1],
                                 "name": p["names"][event[2]],
                                 "global_tid": event[3],
+                                "pid": ((int(event[3]) >> 24) & 0xFFFFFF) if event[3].isdigit() else None,
+                                "tid": (int(event[3]) & 0xFFFFFF) if event[3].isdigit() else None,
+                                "definition": p["name_definitions"][event[2]] if p.get("name_definitions") else None,
                                 "rowid": event[4],
                                 "evidence_source": p["evidence_source"],
                             }

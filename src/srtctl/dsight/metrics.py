@@ -21,22 +21,25 @@ from pyarrow import ipc
 from srtctl.analysis.metric_catalog import describe_metric
 
 from .engines import MetricDefinition, engine_metrics
+from .sources import canonical_role
 
 if TYPE_CHECKING:
     from .importer import Importer
 
+ENGINE_METRICS = engine_metrics()
+
 METRICS = {
-    "gpu_util": MetricDefinition("GPU utilization", "%"),
-    "DCGM_FI_DEV_GPU_UTIL": MetricDefinition("GPU utilization", "%"),
-    "FI_DEV_FB_USED": MetricDefinition("GPU memory used", "MiB"),
-    **engine_metrics(),
+    "gpu_util": MetricDefinition("GPU utilization", "%", "hardware"),
+    "DCGM_FI_DEV_GPU_UTIL": MetricDefinition("GPU utilization", "%", "hardware"),
+    "FI_DEV_FB_USED": MetricDefinition("GPU memory used", "MiB", "hardware"),
     "dynamo_component_inflight_requests": MetricDefinition("Worker in flight", "requests"),
-    "dynamo_frontend_inflight_requests": MetricDefinition("Frontend in flight", "requests"),
-    "dynamo_frontend_queued_requests": MetricDefinition("Frontend queued", "requests"),
-    "dynamo_frontend_router_queue_pending_requests": MetricDefinition("Router pending", "requests"),
+    "dynamo_frontend_inflight_requests": MetricDefinition("Frontend in flight", "requests", "frontend"),
+    "dynamo_frontend_queued_requests": MetricDefinition("Frontend queued", "requests", "frontend"),
+    "dynamo_frontend_router_queue_pending_requests": MetricDefinition("Router pending", "requests", "frontend"),
     "dynamo_work_handler_queue_depth": MetricDefinition("Handler queue", "requests"),
-    "load1": MetricDefinition("Host load (1 min)", "load"),
-    "memory_MemAvailable_bytes": MetricDefinition("Host available memory", "bytes"),
+    "load1": MetricDefinition("Host load (1 min)", "load", "hardware"),
+    "memory_MemAvailable_bytes": MetricDefinition("Host available memory", "bytes", "hardware"),
+    **ENGINE_METRICS,
 }
 
 
@@ -212,6 +215,10 @@ def _description(name: str, endpoints: set[str], histogram: bool) -> dict[str, A
     info = describe_metric(name, sorted(endpoints))
     if override := METRICS.get(name):
         info.update(title=override.label, unit=override.unit)
+        if override.description:
+            info["description"] = override.description
+    if name in ENGINE_METRICS and info["component"] != "Workers":
+        info.update(component="Workers", group="Other captured metrics", group_order=100)
     info["value_kind"] = "histogram" if histogram else "counter" if info["counter"] else "stored"
     if histogram:
         info["observation_unit"] = info["unit"]
@@ -291,7 +298,7 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                 host = raw_host or endpoint.get("node_metadata", {}).get("hostname", "")
                 gpu = str(row.get("gpu")) if row.get("gpu") is not None else ""
                 extra = endpoint.get("gpu_metadata", {}).get(gpu, {})
-                role = row.get("worker_role") or extra.get("worker_role", "")
+                role = canonical_role(row.get("worker_role") or extra.get("worker_role", ""))
                 index = row.get("worker_index")
                 index = extra.get("worker_index", "") if index in (None, "") else index
                 worker = f"{role}-{index}" if role in ("prefill", "decode", "agg") and index != "" else None
@@ -325,6 +332,9 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                         "label": info["title"],
                         "unit": info["unit"],
                         "value_kind": info["value_kind"],
+                        "component": info["component"],
+                        "group": info["group"],
+                        "description": info["description"],
                         "raw_name": row["metric_name"],
                         "endpoint": endpoint_name,
                         "host": host,
@@ -392,6 +402,9 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
             )
             if warning not in entry["quality"]:
                 entry["quality"] = " ".join(part for part in (entry["quality"], warning) if part)
+        if series["worker"] and series["worker"] != "frontend" and series["host"]:
+            role, index = series["worker"].rsplit("-", 1)
+            run.register_worker(series["worker"], series["host"], role, int(index))
         if series["worker"] in run.workers:
             run.workers[series["worker"]]["metrics"].append(series["id"])
     run.metric_catalog = list(catalog.values())

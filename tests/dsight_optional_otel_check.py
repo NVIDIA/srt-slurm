@@ -14,6 +14,7 @@ from urllib.parse import quote
 import websockets
 from dsight_browser_check import browser_targets
 from test_dsight import CLIENT, SERVER, write_run
+from test_dsight_identities import dynamo_run
 
 from srtctl.dsight.build import build_dashboard
 
@@ -92,8 +93,21 @@ async def run(output: Path, port: int) -> None:
         await call("Runtime.enable")
         await call("Network.enable")
         await call("Emulation.setDeviceMetricsOverride", width=1600, height=1100, deviceScaleFactor=1, mobile=False)
-        for mode in ("mixed", "missing", "empty", "unjoined", "disabled", "client-only"):
-            logs, sqlites = write_run(inputs / mode)
+        for mode in (
+            "mixed",
+            "missing",
+            "empty",
+            "unjoined",
+            "disabled",
+            "client-only",
+            "worker-bindings",
+            "ambiguous-workers",
+        ):
+            bindings_only = mode in ("worker-bindings", "ambiguous-workers")
+            logs, sqlites = (dynamo_run if bindings_only else write_run)(inputs / mode)
+            if mode == "ambiguous-workers":
+                original = logs / "decode-host_decode_w0.out"
+                (logs / "decode-host_decode_w1.out").write_bytes(original.read_bytes())
             trace = next(logs.glob("otel/*/traces.jsonl"))
             if mode == "missing":
                 trace.unlink()
@@ -118,7 +132,7 @@ async def run(output: Path, port: int) -> None:
             assert not await js(
                 "/Recorded request path|Identity bridge/.test(document.querySelector('#inspectorBody').innerText)"
             )
-            available = mode == "mixed"
+            available = mode in ("mixed", "worker-bindings", "ambiguous-workers")
             check = await check_request(CLIENT, available)
             await click("#fitTTFT")
             state = await js("traceExplorer.getState()")
@@ -165,15 +179,41 @@ async def run(output: Path, port: int) -> None:
             assert abs(state["from"] - 1) < 1e-5 and abs(state["to"] - 3) < 1e-5, state
             if mode != "client-only":
                 assert len(await js("traceExplorer.queryMetrics()")) == 2
-                assert (await js("traceExplorer.queryIterations({from:0,to:10})"))["total"] == 2
+                assert (await js("traceExplorer.queryIterations({from:0,to:10})"))["total"] == (
+                    0 if bindings_only else 2
+                )
                 assert (await js("traceExplorer.inspectNsys({worker:'decode-0',rank:0,from:2,to:3})"))["total"] == 2
                 await click("[data-tab=request]")
             else:
                 assert await js("getComputedStyle(document.querySelector('#joinBadge')).display === 'none'")
             await check_request(CLIENT, available)
+            if bindings_only:
+                identity = await js(
+                    "(()=>{const r=traceExplorer.getRequest(traceExplorer.getState().request);"
+                    "return {workers:r.workers,engine:r.engine,bindings:r.worker_bindings,"
+                    "path:[...document.querySelectorAll('.path-node[data-path-worker]')]"
+                    ".map(e=>e.dataset.pathWorker).filter(id=>id!=='frontend').sort(),"
+                    "text:document.querySelector('#inspectorBody').innerText}})()"
+                )
+                expected = ["prefill-0"] if mode == "ambiguous-workers" else ["decode-0", "prefill-0"]
+                assert identity["workers"] == identity["path"] == expected, identity
+                assert identity["engine"] == [] and "engine client" not in identity["text"], identity
+                assert "epoch-prefill" in identity["text"] and "epoch-decode" in identity["text"], identity
+                assert ("Conflicting worker bindings" in identity["text"]) is (mode == "ambiguous-workers"), identity
+                exported = await js("traceExplorer.exportSelection()")
+                assert exported["request"]["worker_bindings"] == identity["bindings"]
+                await click("[data-tab=evidence]")
+                evidence_text = await js("document.querySelector('#inspectorBody').innerText")
+                assert "prefill-0 binding" in evidence_text and "decode-0 binding" in evidence_text
+                assert "decode-host_decode_w0.out:1" in evidence_text
+                await click("[data-tab=request]")
             if not available:
                 assert not await js("document.querySelector('#coverageNotice').innerText.includes('OTel')")
             await js("document.querySelector('#tracks').scrollTop=0")
+            if bindings_only:
+                await js(
+                    "document.querySelector('#inspectorBody').scrollTop=document.querySelector('#inspectorBody').scrollHeight"
+                )
             shot = await call("Page.captureScreenshot", format="png", captureBeyondViewport=False)
             (output / f"{mode}.png").write_bytes(base64.b64decode(shot["data"]))
             results.append(
