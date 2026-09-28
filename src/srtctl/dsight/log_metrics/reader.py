@@ -135,6 +135,9 @@ def read_log_metrics(run: Importer, generators: tuple[LogMetricGenerator, ...] =
             before = [p[0] for p in series["points"] if p[0] < 0]
             start = max(before) if before else 0
             series["points"] = [p for p in series["points"] if p[0] >= start]
+            # Equal metric values can still carry different configuration fields.
+            # Keep every setting record for metadata lineage before point deduplication.
+            series["setting_evidence"] = [[p[0], p[2], p[3]] for p in series["points"]]
         definition = definitions[name]
         if definition.reference:
             series["reference"] = {

@@ -74,7 +74,7 @@ async def run(out: Path, port: int) -> None:
                 if case == "constant":
                     assert (
                         "Peak observed 6 requests" in active
-                        and "Configured batch limit 8" in active
+                        and "Logged batch limit 8" in active
                         and "75%" in active
                     )
                     assert "Peak observed 96 pages" in texts[1] and "KV pool size 128" in texts[1]
@@ -111,7 +111,7 @@ async def run(out: Path, port: int) -> None:
                     await browser.rectangle("#metricsSection")
                     await browser.screenshot("03-changing-limit.png")
                 elif case in {"missing", "wrong-rank"}:
-                    assert "Configured batch limit unavailable" in active and "2/2 samples" in active
+                    assert "Logged batch limit unavailable" in active and "2/2 samples" in active
                     assert await browser.js("__plots[0].series.length") == 2
                 elif case in {"late", "invalidated"}:
                     assert "1/2 samples" in active

@@ -81,7 +81,8 @@ client requests or TTFT. Unjoined server spans have a separate section and query
 including in runs that also contain measured clients. A nonempty client export
 whose rows all fail the requested phase filter remains an error. Missing explicitly
 supplied paths, malformed inputs and captures without a positive recorded time
-range remain errors, rather than silently appearing complete.
+range remain errors, rather than silently appearing complete. Optional config
+metadata failures instead produce warnings and preserve runtime views.
 
 OTel is imported automatically when available. Use `--no-otel`
 to skip reading OTel files entirely. A request without supported, correlated
@@ -100,6 +101,7 @@ identity bridges are omitted.
 | Dynamo OTel | `otel/traces.jsonl` or `otel/*/traces.jsonl`, OTLP JSON resource/scope spans | Original timestamps, parents, trace/request/process identities and route attributes |
 | Worker logs | `*_{prefill,decode,agg}_w*[_e<k>].out` | Engine ID maps when recorded, Dynamo request/process bindings, iterations or periodic batch snapshots; log-derived metrics and scheduler settings |
 | Tachometer | `tachometer/local`, or `--metrics <capture-leaf-or-file>` | All captured metric families, with source labels and samples within the client trace interval |
+| Saved recipe YAML | `recipe.yaml` in the log directory or its parent; `--config <file>` selects one explicitly | Optional metric metadata: config value, unit, scope and exact file/field/line lineage |
 | Nsight SQLite | `--nsys-sqlite <directory-or-file>` | Selected NVTX ranges and available frontend CPU samples, aligned by session UTC anchor |
 
 `--phase profiling` excludes explicit AIPerf warmup rows; `--phase all` includes
@@ -123,10 +125,19 @@ selectable with their raw names and stored values.
 Worker logs can also supply metrics without Tachometer. The shared
 `LogMetricGenerator` interface normalizes these into the same series/catalog used
 by the metric UI. The Dynamo–TokenSpeed implementation supplies active decode
-batch size, configured batch limit, active KV pages and usable page pool size.
+batch size, logged batch limit, active KV pages and usable page pool size.
 See [metric sources, schema and log generators](dsight-log-metrics.md) for exact
 names, units, evidence and extension rules. Local log timestamps require
-`--iteration-timezone`; missing configuration stays unknown.
+`--iteration-timezone`; missing logged settings stay unknown.
+
+Saved configuration is separate metadata on an existing metric series. It adds
+no metric families or sample points. Expand a config entry below a chart to see
+its YAML field, source line/hash and comparison scope. A directly comparable
+config bound appears as a dotted line alongside the dashed logged limit. Missing
+config hides these entries; incompatible units or unknown scope show context
+without a line. Only supported fields are exported, not the whole recipe. See
+[configuration metadata and lineage](dsight-log-metrics.md#optional-configuration-metadata)
+for field precedence, DP scope and the shared adapter contract.
 
 Known counters display captured cumulative values. Histogram lines show recorded
 bucket observation counts, with bucket bounds retained in their identities;
@@ -219,6 +230,7 @@ queue time, KV transfer, or first-token compute.
 | Iteration context | TRT-LLM log | Shared batches, host-loop time, delayed device time; one-second timestamps |
 | Batch snapshot | TokenSpeed log | Periodic scheduler state, millisecond timestamp precision and attention TP rank; not a forward iteration |
 | NVTX / CPU | Nsight SQLite | Shared process/rank activity; overlap does not prove request ownership |
+| Config context | Saved recipe YAML | Selected values with file/field/line lineage; comparison requires compatible unit and scope |
 
 Definitions follow the lifecycle instrumentation introduced in
 [Dynamo #14101](https://github.com/ai-dynamo/dynamo/pull/14101). Multiple attempts,
@@ -328,6 +340,10 @@ The implementation separates these responsibilities:
   metric definitions/events. `log_metrics/tokenspeed.py` implements its
   Dynamo–TokenSpeed dialect; `log_metrics/reader.py` normalizes all registered
   generators into the shared metric schema and joins limits in their exact scope.
+- `configuration/base.py` defines the `MetricConfigAdapter` Protocol and immutable
+  field/line evidence, annotations and optional comparison bounds. Its shared
+  reader loads saved YAML and attaches selected metadata to existing series;
+  `configuration/tokenspeed.py` owns TokenSpeed field mappings and scope checks.
 - Source readers and `Importer` own UTC alignment, bounded imports, provenance,
   identity joins and auditing. `window.py` derives a source-only time envelope;
   `capabilities.py` determines which views have usable evidence.

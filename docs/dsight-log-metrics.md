@@ -3,7 +3,8 @@
 The **Metrics** panel reads one normalized series/catalog schema. Its inputs are
 Tachometer Parquet/Arrow captures and supported worker logs. Both go through the
 same series finalization, source evidence, compressed family loading, charts,
-pinning and query APIs. No AIPerf metric summary is used for these families.
+pinning and query APIs. Saved configuration attaches as optional metadata to
+existing series. No AIPerf metric summary is used for these families.
 
 ## Source to UI
 
@@ -14,9 +15,14 @@ flowchart LR
     G --> LR["log_metrics.reader<br/>timezone, scope, file + line evidence"]
     TR --> S["Shared metric series + catalog<br/>deduplication, conflicts, reference IDs"]
     LR --> S
+    C["Optional saved recipe YAML"] --> CA["MetricConfigAdapter<br/>selected fields, unit, scope, lineage"]
+    S --> CA
+    CA --> M["Series configuration metadata<br/>no new families or samples"]
+    M --> D
+    M --> H
     S --> D["trace-data.json.gz<br/>Python / CLI / MCP queries"]
     S --> H["index.html<br/>lazy compressed JSON families"]
-    H --> UI["Metrics panel<br/>pinned charts, legend, sampled peaks<br/>solid observations + dashed limits"]
+    H --> UI["Metrics panel<br/>pinned charts, legend, sampled peaks<br/>solid observations + dashed logged limits<br/>dotted config bounds + expandable lineage"]
 ```
 
 The browser does not parse Parquet. Log-derived metrics enter the shared
@@ -88,7 +94,7 @@ produced the consumed log. The `log_` prefix distinguishes generated evidence fr
 native Prometheus metrics. These logs come from TokenSpeed, so their component is
 `tokenspeed`, even when TokenSpeed runs through the Dynamo integration.
 Active decode batch is not the exported `tokenspeed:num_requests_running`
-scheduler-state count. The configured per-scheduler batch limit is not global
+scheduler-state count. The logged per-scheduler batch limit is not global
 `max_num_seqs` or benchmark concurrency. KV pool size comes from the same snapshot
 as active pages, not `num_device_pages`, reserved-page arithmetic, or token counts.
 
@@ -103,7 +109,8 @@ the previous limit. Settings are not applied before their recorded timestamps.
 
 Pin **Active decode batch** and **Active KV pages** to see activity and capacity
 on the same time axis. Each source has a solid observed line and a matching
-**dashed** limit in the same units. Hiding that source hides both lines. Capacity
+**dashed** logged limit in the same units. A comparable saved-config bound adds
+a **dotted** line. Hiding that source hides all its lines. Capacity
 charts start at zero and include the reference in the vertical scale.
 
 The legend highlights **Peak observed** and the limit/pool value using exact
@@ -119,6 +126,112 @@ reference is bounded by its samples; usage requires a matching sample timestamp.
 Changed limits display a range marked **changed**. Missing/ambiguous limits show
 **unavailable**, including the count of observed samples without a valid limit.
 The observed metric still works without a reference, Tachometer, OTel or Nsight.
+
+## Optional configuration metadata
+
+Configuration is an annotation on an existing series, not a flattened metric.
+A metric can have independent runtime evidence and zero or more config entries.
+`log_tokenspeed_decode_request_limit` continues to mean the scheduler's logged
+`max_batch_size`; it is never populated or replaced from YAML.
+
+The reader discovers `recipe.yaml` in the log directory or its parent. If both
+exist, it warns and imports neither. `--config <saved-recipe.yaml>` selects one
+file explicitly. Missing or malformed optional config preserves runtime data;
+explicit path errors and ambiguous discovery are reported as warnings. Unsupported
+engines or absent fields add no config UI. Config-only input does not establish
+a run time range.
+
+Each entry in a series' optional `configuration` array contains:
+
+| Field | Meaning |
+| --- | --- |
+| `label`, `unit`, `scope` | Display name, original config unit and the scope the setting applies to |
+| `source.source_id`, `source.file` | Reference to the saved YAML source in the source manifest, plus basename |
+| `source.field`, `source.line` | Exact dotted field path and one-based line; line can be unknown for a YAML merge key |
+| `source.value` | Recorded scalar value, including null; no implicit defaults are supplied |
+| `comparison` | Optional comparable upper bound with `value`, `unit`, `start`, `basis` and supporting `evidence` |
+| `note` | Explanation when config is context only or cannot be compared |
+
+The source manifest stores the file path and SHA-256 of the bytes read. Only
+fields selected by an adapter are exported, not the full recipe. Comparison
+units must match the metric. `start` is the first elapsed time supported by scope
+evidence, not a synthetic config sample. Comparison evidence retains its own
+source ID, field, value and line. Metadata survives Python/CLI/MCP queries,
+compressed browser loading and selection export; it does not change sample
+statistics or the metric catalog.
+
+For example, an active-decode series can have observed values of 4 and 6, a
+separate logged limit of 8, and config metadata containing:
+
+```json
+{
+  "label": "Configured max requests",
+  "unit": "requests",
+  "scope": "Global across attention DP ranks",
+  "source": {
+    "source_id": 3,
+    "file": "recipe.yaml",
+    "field": "roles.decode.args.max-num-seqs",
+    "line": 12,
+    "value": 16
+  }
+}
+```
+
+These synthetic values remain separate. With compatible scope, the chart shows
+activity against both 8 and 16 and labels the recorded limits as different. The
+config entry exposes the field path while collapsed. Expanding it shows the
+comparison basis, peak/configured ratio for the selected range, source line/hash
+and any supporting log evidence. Metadata without a comparison still shows its
+value, units, field, source and explanation. Metadata without a value never
+creates a zero line.
+
+### TokenSpeed field bindings and scope
+
+The adapter reads `roles.<worker-role>.args.<argument>` first, falling back to
+`engine.args.<argument>` only when the role override is absent. A present null or
+invalid override never falls back silently. Both forms retain their actual
+source path and line.
+
+| Metric families | Argument | Config unit | Comparison behavior |
+| --- | --- | --- | --- |
+| Active decode requests; logged decode limit | `max-num-seqs` | requests | Global across attention DP ranks. A positive value becomes a per-scheduler bound only when every captured same-scope scheduler-setting record explicitly reports `dp_size=1`. |
+| Active KV pages; logged KV pool pages | `max-total-tokens` | tokens | Context only: a configured token budget does not establish usable KV pool pages. |
+| Active KV pages; logged KV pool pages | `prefix-granularity` | tokens | Context only: the configured tokens per page are shown without inventing a page limit. |
+
+A global request setting and a per-scheduler batch limit have different scope
+when attention DP is greater than one. Missing, changing or conflicting DP
+evidence therefore leaves config visible without a dotted capacity line. No
+DP default or per-rank division is inferred from an omitted recipe field. Scope
+proof is taken only from the same file/worker/rank/process/labels as the paired
+logged limit; it is not borrowed from another worker. All setting-line references
+are retained before metric deduplication, so equal limit values cannot hide
+conflicting scope evidence. A later scope record does not project the comparison
+backward before that timestamp.
+
+### Configuration adapter interface
+
+`configuration/base.py` defines frozen `ConfigEvidence`, `ConfigDocument`,
+`MetricConfiguration` and `ConfigComparison` records and this protocol:
+
+```python
+class MetricConfigAdapter(Protocol):
+    def read(
+        self,
+        document: ConfigDocument,
+        series: dict[str, Any],
+        role: str,
+        metric_series: dict[int, dict[str, Any]],
+        logs: ConfigLogEvidence,
+    ) -> tuple[MetricConfiguration, ...]: ...
+```
+
+`ConfigDocument.field(*path)` returns only a selected scalar and its source
+lineage. The shared reader owns discovery, YAML parsing, hashes, evidence-line
+access and attachment to existing series. Engine adapters own field mappings,
+precedence and comparison semantics. They can annotate log-derived or native
+Tachometer metrics. `configuration/__init__.py` registers the TokenSpeed adapter.
+The chart consumes this common contract without engine-specific branches.
 
 ## Generator interface
 
@@ -151,10 +264,12 @@ log syntax stays in the adapter; rendering depends only on the normalized contra
 Focused checks:
 
 ```bash
-uv run pytest tests/test_dsight_log_metrics.py
+uv run pytest tests/test_dsight_log_metrics.py tests/test_dsight_configuration.py
 uv run --with websockets python tests/dsight_log_metrics_check.py --port 9222 --out /tmp/dsight-log-metrics-check
+uv run --with websockets python tests/dsight_configuration_check.py --port 9222 --out /tmp/dsight-configuration-check
 ```
 
-The browser check requires a Chrome instance with remote debugging enabled. It
-builds synthetic source fixtures and checks paired visibility, zoomed summaries,
-changing/missing/conflicting limits, source evidence and narrow-screen layout.
+The browser checks require a Chrome instance with remote debugging enabled. They
+build synthetic source fixtures and check paired visibility, zoomed summaries,
+changing/missing/conflicting limits, optional config and DP scope, source evidence,
+offline behavior and narrow-screen layout.
