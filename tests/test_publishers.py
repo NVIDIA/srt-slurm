@@ -51,10 +51,10 @@ def test_command_receives_original_paths_and_outcome(tmp_path):
         ("raise SystemExit(9)", "CalledProcessError"),
         ("print('not JSON')", "JSONDecodeError"),
         ("print('x' * 70000)", "ValueError"),
-        ("print('{\"protocol_version\":2,\"status\":\"accepted\"}')", "ValueError"),
-        ("print('{\"protocol_version\":1,\"status\":\"success\"}')", "ValueError"),
-        ("print('{\"protocol_version\":1,\"status\":\"accepted\",\"links\":{\"a\":\"file:///tmp/a\"}}')", "ValueError"),
-        ("print('{\"protocol_version\":1,\"status\":\"accepted\",\"links\":{\"a\":\"https://u:p@example.org\"}}')", "ValueError"),
+        ('print(\'{"protocol_version":2,"status":"accepted"}\')', "ValueError"),
+        ('print(\'{"protocol_version":1,"status":"success"}\')', "ValueError"),
+        ('print(\'{"protocol_version":1,"status":"accepted","links":{"a":"file:///tmp/a"}}\')', "ValueError"),
+        ('print(\'{"protocol_version":1,"status":"accepted","links":{"a":"https://u:p@example.org"}}\')', "ValueError"),
     ],
 )
 def test_failures_are_separate_from_benchmark(tmp_path, script, error):
@@ -86,7 +86,9 @@ def test_absent_executable_does_not_prevent_next_publisher(tmp_path):
     publish_results(
         [
             ResultPublisherConfig("missing", [str(tmp_path / "missing")]),
-            ResultPublisherConfig("next", [sys.executable, "-c", "print('{\"protocol_version\":1,\"status\":\"skipped\"}')"]),
+            ResultPublisherConfig(
+                "next", [sys.executable, "-c", 'print(\'{"protocol_version":1,"status":"skipped"}\')']
+            ),
         ],
         log_dir=logs,
         job_id="42",
@@ -104,7 +106,10 @@ def test_commands_are_argv_not_shell(tmp_path):
     script = "import json,sys; assert sys.argv[1].startswith('$('); print(json.dumps({'protocol_version':1,'status':'skipped'}))"
     publish_results(
         [ResultPublisherConfig("example", [sys.executable, "-c", script, injected])],
-        log_dir=logs, job_id="42", benchmark_type="custom", run_exit_code=0,
+        log_dir=logs,
+        job_id="42",
+        benchmark_type="custom",
+        run_exit_code=0,
     )
     assert not (tmp_path / "injected").exists()
     assert json.loads((logs / "publishers/example.json").read_text())["state"] == "skipped"
@@ -115,13 +120,16 @@ def test_no_publisher_does_no_io(tmp_path):
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("value", [
-    {"name": "../bad", "command": ["cmd"]},
-    {"name": "a", "command": []},
-    {"name": "a", "command": [""]},
-    {"name": "a", "command": "cmd"},
-    {"name": "a", "command": ["cmd"], "timeout_seconds": 0},
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"name": "../bad", "command": ["cmd"]},
+        {"name": "a", "command": []},
+        {"name": "a", "command": [""]},
+        {"name": "a", "command": "cmd"},
+        {"name": "a", "command": ["cmd"], "timeout_seconds": 0},
+    ],
+)
 def test_invalid_configuration_rejected(value):
     with pytest.raises((ValueError, ValidationError)):
         ResultPublisherConfig.Schema().load(value)
@@ -133,7 +141,9 @@ def test_duplicate_receipt_names_rejected():
 
 
 def test_diagnostics_do_not_copy_command_output(tmp_path, caplog):
-    receipt = dispatch(tmp_path, "import sys; print('secret-output'); print('secret-stderr',file=sys.stderr); sys.exit(1)")
+    receipt = dispatch(
+        tmp_path, "import sys; print('secret-output'); print('secret-stderr',file=sys.stderr); sys.exit(1)"
+    )
     assert "secret" not in json.dumps(receipt)
     assert "secret" not in caplog.text
 
@@ -144,20 +154,33 @@ def test_hook_runs_after_artifacts_before_s3_even_on_failure(tmp_path):
     mixin = PostProcessStageMixin()
     mixin.runtime = SimpleNamespace(log_dir=tmp_path / "logs", job_id="42")
     publishers = [ResultPublisherConfig("example", ["publisher"])]
-    mixin.config = SimpleNamespace(reporting=ReportingConfig(publishers=publishers), benchmark=SimpleNamespace(type="custom"))
+    mixin.config = SimpleNamespace(
+        reporting=ReportingConfig(publishers=publishers), benchmark=SimpleNamespace(type="custom")
+    )
     calls = Mock()
     for name in (
-        "_copy_config_to_logs", "_generate_rollup", "_extract_benchmark_results", "_compare_against_previous_lock",
-        "_normalize_ruter", "_build_perf_dashboard", "_build_power_energy_report", "_run_postprocess_container",
+        "_copy_config_to_logs",
+        "_generate_rollup",
+        "_extract_benchmark_results",
+        "_compare_against_previous_lock",
+        "_normalize_ruter",
+        "_build_perf_dashboard",
+        "_build_power_energy_report",
+        "_run_postprocess_container",
     ):
         setattr(mixin, name, getattr(calls, name))
     mixin._get_ai_analysis_config = Mock(return_value=None)
-    with patch("srtctl.cli.mixins.postprocess_stage.write_lockfile"), patch(
-        "srtctl.cli.mixins.postprocess_stage.publish_results", calls.publish_results
+    with (
+        patch("srtctl.cli.mixins.postprocess_stage.write_lockfile"),
+        patch("srtctl.cli.mixins.postprocess_stage.publish_results", calls.publish_results),
     ):
         mixin.run_postprocess(4)
     names = [call[0] for call in calls.mock_calls]
-    assert names.index("_build_power_energy_report") < names.index("publish_results") < names.index("_run_postprocess_container")
+    assert (
+        names.index("_build_power_energy_report")
+        < names.index("publish_results")
+        < names.index("_run_postprocess_container")
+    )
     calls.publish_results.assert_called_once_with(
         publishers, log_dir=tmp_path / "logs", job_id="42", benchmark_type="custom", run_exit_code=4
     )
