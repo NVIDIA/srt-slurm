@@ -192,6 +192,9 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
     default_backend = config.setdefault("backend", {})
     if "role_backends" in config or "role_containers" in config:
         raise ValueError("roles: cannot be combined with internal role_backends or role_containers")
+    per_role_engines = not has_engine_default and any(
+        isinstance(spec, dict) and spec.get("engine") is not None for spec in roles.values()
+    )
 
     for role_name, spec in roles.items():
         if role_name not in ROLE_TO_MODE:
@@ -205,7 +208,7 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
         backend = default_backend
         if has_engine_default and "engine" in spec:
             raise ValueError(f"roles.{role_name}.engine cannot be combined with a top-level engine or backend")
-        if not has_engine_default:
+        if per_role_engines:
             selected = _engine_mapping(spec["engine"]) if spec.get("engine") is not None else {}
             if not selected.get("type"):
                 raise ValueError(f"roles.{role_name}.engine must name a type when no top-level engine is set")
@@ -258,7 +261,7 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
     if sidecars:
         config.setdefault("dynamo", {})["sidecar"] = sidecars.pop()
 
-    if not has_engine_default and roles:
+    if per_role_engines:
         # Existing job metadata uses the serving backend; workers resolve only
         # through role_backends. This does not supply defaults to sibling roles.
         serving_role = next(role for role in ("decode", "agg", "prefill") if role in roles)

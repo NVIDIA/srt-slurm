@@ -99,6 +99,18 @@ def test_no_default_requires_an_engine_on_every_role(missing_role):
         load(data)
 
 
+def test_roles_without_any_engine_share_the_default_backend():
+    data = recipe()
+    for spec in data["roles"].values():
+        spec.pop("engine")
+        spec.pop("container", None)
+    expanded = expand_roles(copy.deepcopy(data))
+    assert "role_backends" not in expanded
+    config = SrtConfig.Schema().load(expanded)
+    assert not config.has_role_backends
+    assert config.backend_for_role("prefill") is config.backend_for_role("decode")
+
+
 def test_role_mapping_and_containers_round_trip():
     expanded = expand_roles(recipe())
     migrated = roles_from_legacy(expanded)
