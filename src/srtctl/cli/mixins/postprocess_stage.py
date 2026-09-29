@@ -344,6 +344,24 @@ class PostProcessStageMixin:
             output_path,
         )
 
+        self._build_power_report_html()
+
+    def _build_power_report_html(self) -> None:
+        """Self-contained HTML companion to ``power_energy_report.json``.
+
+        Renders the same per-concurrency stats as a table plus GPU/CPU power-over-time
+        charts from the raw ``samples.csv`` legs. Best-effort and independently
+        swallowed from ``_build_power_energy_report``: a rendering bug here must never
+        take down a benchmark that has already produced results, and a failure here
+        does not imply the JSON report (already written) is bad.
+        """
+        try:
+            from srtctl.analysis.power_report_html import try_build
+        except ImportError as e:
+            logger.warning("Power report HTML unavailable (import failed): %s", e)
+            return
+        try_build(self.runtime)
+
     def start_incremental_power_report(self) -> None:
         """Start per-case energy emission for the duration of the benchmark.
 
