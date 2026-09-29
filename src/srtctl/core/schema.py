@@ -101,8 +101,22 @@ class ReportingStatusConfig:
     # variable name belongs in a recipe: the resolved config is written to the lockfile
     # and the log directory, so a literal token there would leak.
     token_env: str | None = None
+    # Seconds between uploads of raw logs and Tachometer captures to every endpoint.
+    # Unset disables streaming; lifecycle events are unaffected.
+    logging_stream_interval: float | None = field(
+        default=None,
+        metadata={
+            "marshmallow_field": fields.Float(data_key="logging-stream-interval", load_default=None, allow_none=True)
+        },
+    )
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.logging_stream_interval is not None and not _is_finite_positive(self.logging_stream_interval):
+            raise ValidationError(
+                f"reporting.status.logging-stream-interval must be positive, got {self.logging_stream_interval!r}"
+            )
 
 
 @dataclass(frozen=True)

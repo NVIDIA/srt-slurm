@@ -16,6 +16,8 @@ reporting:
       - "https://status.example.com"
     # Optional: which environment variable holds the bearer token (default SRTCTL_STATUS_TOKEN)
     token_env: SRTCTL_STATUS_TOKEN
+    # Optional: push new log and metric output every N seconds (off when unset)
+    logging-stream-interval: 10
 ```
 
 If not configured, status reporting is disabled and jobs run normally.
@@ -253,9 +255,71 @@ Incremental event feed for one job. Events carry a monotonically increasing `id`
 
 Same as above across every job, with an optional `job_id` filter. This is the feed for dashboards and agents that want to react to job transitions without polling each job.
 
+### POST /api/jobs/{job_id}/logs
+
+Streaming is opt-in with `reporting.status.logging-stream-interval`. The sweep
+uploads new bytes from `.out`, `.err`, `.log`, `.csv` and `.jsonl` files, using
+persistent HTTP connections and chunks of at most 1 MiB. Shutdown gives the
+worker up to five seconds for a final best-effort flush.
+
+```http
+POST /api/jobs/12345/logs?file=worker.out&offset=4096&cluster=b200
+Content-Type: application/octet-stream
+Authorization: Bearer <token>
+
+<raw file bytes>
+```
+
+`file` is a relative path and `offset` is the source byte position. The API
+stores the bytes and decodes UTF-8 when read, including characters split across
+chunks. `final=1` marks EOF at shutdown; an empty body can finalize bytes already
+sent. Response: `{"job_id": "12345", "stored": 1}` (`stored: 0` for a resend).
+Exact retries are idempotent; conflicting overlaps return 409. The legacy JSON
+`{"chunks": [{"file", "offset", "size", "data"}], "metadata": {"cluster": "b200"}}`
+format is also accepted.
+
+Files must be append-only. Uploader offsets are in memory; delivery across
+uploader restarts is not guaranteed. Logs remain on disk if uploads fail.
+
+### POST /api/jobs/{job_id}/captures
+
+Tachometer captures are sent unchanged from `tachometer/local`:
+
+```http
+POST /api/jobs/12345/captures?file=tachometer/local/current.arrow&generation=<uuid-hex>&offset=0&total=8192&cluster=b200
+Content-Type: application/octet-stream
+Authorization: Bearer <token>
+
+<raw Arrow or Parquet bytes>
+```
+
+`generation` identifies one file version; `total` is its byte length. Chunks are
+sequential and exact retries are idempotent. The response is
+`{"job_id": "12345", "next_offset": 8192, "complete": true}` once the complete
+capture has been processed. Incomplete generations never produce metric rows.
+
+The collector decodes captures, removes observations repeated by snapshots or
+compaction, and exposes the result as `tachometer_rows.jsonl` through the log
+read API. The cluster does no decoding, row hashing, JSON conversion, or local
+indexing for streaming. Tachometer publishes Arrow snapshots atomically so an
+open upload can finish even when the next snapshot replaces the file.
+Unchanged captures are skipped; changed Arrow snapshots are uploaded in full,
+so polling still uses disk bandwidth and network bandwidth.
+
+When configured, `cluster` accompanies every raw upload. Shared collectors must
+use `(cluster, job_id)` for identity; the built-in collector retains its existing
+job-ID scope. Custom collectors must implement both binary upload routes before
+enabling streaming. These routes use the existing write bearer token.
+
+### GET /api/jobs/{job_id}/logs
+
+Without `file`: `{"job_id": "12345", "files": [{"file": "...", "size": 4608, "updated_at": "..."}]}`, `size` being the bytes received so far.
+
+With `file` (and optional `offset`, default 0): the contiguous content from `offset`, up to about 1 MiB, as `{"job_id", "file", "offset", "next_offset", "data"}`. Tail a file by polling with `offset = next_offset`.
+
 ### DELETE /api/jobs/{job_id}
 
-Remove a job and its events. `200 {"deleted": true, "job_id": ...}` or `404`.
+Remove a job, its events and its streamed logs. `200 {"deleted": true, "job_id": ...}` or `404`.
 
 ### GET /api/health
 

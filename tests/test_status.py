@@ -598,3 +598,236 @@ class TestJobStageEnum:
         assert JobStage.FRONTEND.value == "frontend"
         assert JobStage.BENCHMARK.value == "benchmark"
         assert JobStage.CLEANUP.value == "cleanup"
+
+
+class TestTachometerStreaming:
+    """The collector owns capture decoding, deduplication and text decoding."""
+
+    @staticmethod
+    def _store(tmp_path):
+        from srtctl.status_server.store import StatusStore
+
+        store = StatusStore(tmp_path / "collector.sqlite3")
+        store.init()
+        return store
+
+    @staticmethod
+    def _capture(tmp_path, rows, suffix="arrow"):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from pyarrow import ipc
+
+        path = tmp_path / f"capture.{suffix}"
+        table = pa.Table.from_pylist(rows)
+        if suffix == "parquet":
+            pq.write_table(table, path)
+        else:
+            with ipc.new_stream(path, table.schema) as writer:
+                writer.write_table(table)
+        return path.read_bytes()
+
+    @staticmethod
+    def _upload(store, data, file="tachometer/local/current.arrow", generation=None):
+        from uuid import uuid4
+
+        generation = generation or uuid4().hex
+        result = None
+        for offset in range(0, len(data), 127):
+            chunk = data[offset : offset + 127]
+            result = store.append_capture("8", file, generation, offset, len(data), chunk)
+            assert result["next_offset"] == offset + len(chunk)
+        assert result["complete"]
+        return generation
+
+    @staticmethod
+    def _rows(store):
+        import json
+
+        text, _ = store.read_log("8", "tachometer_rows.jsonl")
+        return [json.loads(line) for line in text.splitlines()]
+
+    def test_snapshots_rotation_and_compaction_deduplicate_on_collector(self, tmp_path):
+        store = self._store(tmp_path)
+        rows = [
+            {"timestamp_ns": 20, "metric_name": "z", "metric_value": 1.0},
+            {"timestamp_ns": 20, "metric_name": "a", "metric_value": 2.0},
+            {"timestamp_ns": 10, "metric_name": "a", "metric_value": 3.0},
+            {"timestamp_ns": 30, "metric_name": "a", "metric_value": 4.0},
+        ]
+        for end in (1, 2):
+            self._upload(store, self._capture(tmp_path, rows[:end]))
+        self._upload(store, self._capture(tmp_path, rows[:3], "parquet"), "tachometer/local/out-1.parquet")
+        self._upload(store, self._capture(tmp_path, rows[3:]))
+        compacted = [{**row, "metric_name_clean": row["metric_name"]} for row in reversed(rows)]
+        self._upload(store, self._capture(tmp_path, compacted, "parquet"), "tachometer/local/final.parquet")
+        assert self._rows(store) == rows
+        with store._connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM capture_chunks WHERE data IS NOT NULL").fetchone()[0] == 0
+
+    def test_exact_retry_after_lost_final_response_never_reprocesses(self, tmp_path):
+        store = self._store(tmp_path)
+        data = self._capture(tmp_path, [{"metric_name": "a", "metric_value": 1}])
+        generation = "a" * 32
+        result = store.append_capture("8", "current.arrow", generation, 0, len(data), data)
+        with patch.object(type(store), "_process_capture", side_effect=AssertionError("Already processed")):
+            assert store.append_capture("8", "current.arrow", generation, 0, len(data), data) == result
+        assert len(self._rows(store)) == 1
+
+    def test_incomplete_generation_is_never_decoded_and_is_pruned(self, tmp_path):
+        store = self._store(tmp_path)
+        data = self._capture(tmp_path, [{"metric_name": "a", "metric_value": 1}])
+        first = store.append_capture("8", "current.arrow", "a" * 32, 0, len(data), data[:100])
+        assert first == {"job_id": "8", "next_offset": 100, "complete": False}
+        assert self._rows(store) == []
+        store.append_capture("8", "current.arrow", "b" * 32, 0, len(data), data[:100])
+        with store._connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM job_captures").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM capture_chunks").fetchone()[0] == 1
+        store.append_capture("8", "current.arrow", "b" * 32, 100, len(data), data[100:])
+        assert len(self._rows(store)) == 1
+
+    def test_capture_conflicts_and_out_of_order_chunks(self, tmp_path):
+        import pytest
+
+        from srtctl.status_server.store import LogChunkConflict
+
+        store = self._store(tmp_path)
+        args = ("8", "current.arrow", "a" * 32)
+        store.append_capture(*args, 0, 1000, b"first")
+        assert store.append_capture(*args, 0, 1000, b"first")["next_offset"] == 5
+        for offset, total, data in ((0, 1000, b"other"), (0, 1001, b"first"), (9, 1000, b"gap"), (2, 1000, b"overlap")):
+            with pytest.raises(LogChunkConflict):
+                store.append_capture(*args, offset, total, data)
+        assert self._rows(store) == []
+
+    def test_decode_failure_retries_without_duplicate_output(self, tmp_path):
+        import pyarrow as pa
+        import pytest
+
+        store = self._store(tmp_path)
+        rows = [{"metric_name": name, "metric_value": 1} for name in ("a", "b")]
+        data = self._capture(tmp_path, rows)
+        args = ("8", "current.arrow", "a" * 32, 0, len(data), data)
+
+        def failing_batches(path):
+            yield pa.RecordBatch.from_pylist(rows[:1])
+            raise OSError("temporary decoder failure")
+
+        with patch("srtctl.dsight.metrics.batches", failing_batches), pytest.raises(OSError):
+            store.append_capture(*args)
+        assert self._rows(store) == rows[:1]
+        store.append_capture(*args)
+        assert self._rows(store) == rows
+
+    def test_raw_log_decodes_split_utf8_and_final_invalid_tail(self, tmp_path):
+        store = self._store(tmp_path)
+        raw = "hello €!".encode()
+        assert store.append_raw_log("8", "worker.log", 0, raw[:7]) == 1
+        assert store.read_log("8", "worker.log") == ("hello ", 6)
+        assert store.append_raw_log("8", "worker.log", 0, raw[:7]) == 0
+        store.append_raw_log("8", "worker.log", 7, raw[7:] + b"\xe2")
+        assert store.read_log("8", "worker.log", offset=6) == ("€!", len(raw))
+        store.append_raw_log("8", "worker.log", len(raw) + 1, b"", final=True)
+        assert store.read_log("8", "worker.log", offset=len(raw)) == ("�", len(raw) + 1)
+
+    def test_raw_log_partial_reads_resume_within_chunk(self, tmp_path):
+        store = self._store(tmp_path)
+        raw = "a€b".encode()
+        store.append_raw_log("8", "worker.log", 0, raw)
+        assert store.read_log("8", "worker.log", max_bytes=3) == ("a", 1)
+        assert store.read_log("8", "worker.log", offset=1, max_bytes=4) == ("€b", 5)
+
+    def test_delete_removes_capture_state_and_observation_index(self, tmp_path):
+        store = self._store(tmp_path)
+        store.create_job("8", "test")
+        self._upload(store, self._capture(tmp_path, [{"metric_name": "a", "metric_value": 1}]))
+        store.append_raw_log("8", "worker.log", 0, b"done", final=True)
+        assert store.delete_job("8")
+        with store._connect() as conn:
+            for table in ("job_captures", "capture_chunks", "metric_observations", "job_logs", "job_log_ends"):
+                assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+    def test_raw_routes_validate_bounds_and_paths(self, tmp_path):
+        from urllib.parse import urlencode
+
+        import pytest
+
+        from srtctl.status_server.server import ApiError, _raw_upload
+
+        store = self._store(tmp_path)
+        params = {"file": "current.arrow", "generation": "a" * 32, "offset": 0, "total": 10}
+        for invalid in (
+            {"file": "../current.arrow"},
+            {"file": "/current.arrow"},
+            {"file": "worker.log"},
+            {"generation": "bad"},
+            {"offset": -1},
+            {"offset": 10},
+            {"total": 0},
+            {"total": 1 << 63},
+        ):
+            with pytest.raises(ApiError) as error:
+                _raw_upload(store, "/api/jobs/8/captures?" + urlencode({**params, **invalid}), b"data")
+            assert error.value.status == 422
+
+    def test_binary_http_upload_requires_write_token_and_serves_rows(self, tmp_path):
+        import socket
+        import threading
+        from urllib.parse import urlencode
+
+        import requests
+
+        from srtctl.status_server.server import AuthPolicy, make_server
+
+        store = self._store(tmp_path)
+        server = make_server(store, port=0, auth=AuthPolicy(write_token="secret", read_token="viewer"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_port}/api/jobs/8"
+            data = self._capture(tmp_path, [{"metric_name": "a", "metric_value": 1}])
+            path = (
+                base
+                + "/captures?"
+                + urlencode(
+                    {
+                        "file": "tachometer/local/current.arrow",
+                        "generation": "a" * 32,
+                        "offset": 0,
+                        "total": len(data),
+                        "cluster": "test-cluster",
+                    }
+                )
+            )
+            headers = {"Content-Type": "application/octet-stream"}
+            assert requests.post(path, data=data, headers=headers, timeout=5).status_code == 401
+            assert (
+                requests.post(
+                    path, data=data, headers={**headers, "Authorization": "Bearer viewer"}, timeout=5
+                ).status_code
+                == 403
+            )
+            # A disconnected sender must not leave a shorter acknowledged chunk.
+            with socket.create_connection(("127.0.0.1", server.server_port), timeout=5) as connection:
+                connection.sendall(
+                    b"POST /api/jobs/8/logs?file=truncated.log&offset=0 HTTP/1.1\r\n"
+                    b"Host: localhost\r\nAuthorization: Bearer secret\r\n"
+                    b"Content-Type: application/octet-stream\r\nContent-Length: 10\r\n\r\nabc"
+                )
+                connection.shutdown(socket.SHUT_WR)
+                assert b"400" in connection.recv(4096).split(b"\r\n")[0]
+            assert store.read_log("8", "truncated.log") == ("", 0)
+            headers["Authorization"] = "Bearer secret"
+            result = requests.post(path, data=data, headers=headers, timeout=5)
+            assert result.status_code == 200
+            assert result.json() == {"job_id": "8", "next_offset": len(data), "complete": True}
+            result = requests.get(base + "/logs?file=tachometer_rows.jsonl", headers=headers, timeout=5)
+            assert result.status_code == 200
+            assert '"metric_name":"a"' in result.json()["data"]
+            log = base + "/logs?file=worker.log&offset=0&final=1"
+            assert requests.post(log, data=b"raw log", headers=headers, timeout=5).json()["stored"] == 1
+            assert requests.get(base + "/logs?file=worker.log", headers=headers, timeout=5).json()["data"] == "raw log"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)

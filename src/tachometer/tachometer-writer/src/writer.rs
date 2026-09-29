@@ -5,7 +5,7 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use log::{error, info};
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -338,26 +338,21 @@ async fn periodic_save_task(
 
 /// Write an Arrow IPC stream file to local disk.
 fn write_arrow_file_local(local_dir: &Path, filename: &str, batch: &RecordBatch) -> Result<()> {
-    let path = local_dir.join(filename);
-    let file = File::create(&path).map_err(|e| {
-        crate::NoMoreError::Io(std::io::Error::other(format!(
-            "Failed to create file {}: {}",
-            path.display(),
-            e
-        )))
-    })?;
-    let mut writer = BufWriter::new(file);
-
-    let mut stream_writer = StreamWriter::try_new(&mut writer, batch.schema().as_ref())
-        .map_err(|e| crate::NoMoreError::Arrow(e.to_string()))?;
-    stream_writer
-        .write(batch)
-        .map_err(|e| crate::NoMoreError::Arrow(e.to_string()))?;
-    stream_writer
-        .finish()
-        .map_err(|e| crate::NoMoreError::Arrow(e.to_string()))?;
-
-    Ok(())
+    publish_capture_file(local_dir, filename, |file| {
+        let mut writer = BufWriter::new(file);
+        {
+            let mut stream_writer = StreamWriter::try_new(&mut writer, batch.schema().as_ref())
+                .map_err(|e| crate::NoMoreError::Arrow(e.to_string()))?;
+            stream_writer
+                .write(batch)
+                .map_err(|e| crate::NoMoreError::Arrow(e.to_string()))?;
+            stream_writer
+                .finish()
+                .map_err(|e| crate::NoMoreError::Arrow(e.to_string()))?;
+        }
+        writer.flush()?;
+        Ok(())
+    })
 }
 
 /// Write a Parquet file to local disk.
@@ -371,7 +366,7 @@ fn write_parquet_file_local(local_dir: &Path, filename: &str, batch: &RecordBatc
         .set_write_batch_size(100_000)
         .build();
 
-    publish_parquet_file(local_dir, filename, |file| {
+    publish_capture_file(local_dir, filename, |file| {
         let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))
             .map_err(|e| crate::NoMoreError::Parquet(e.to_string()))?;
         writer
@@ -384,9 +379,9 @@ fn write_parquet_file_local(local_dir: &Path, filename: &str, batch: &RecordBatc
     })
 }
 
-/// Keep in-progress files outside the compactor's out-*.parquet scan. The
-/// callback must close its Parquet writer successfully before publication.
-fn publish_parquet_file(
+/// Publish complete captures atomically. Open readers keep the previous snapshot
+/// during replacement, and the compactor cannot observe unfinished output.
+fn publish_capture_file(
     local_dir: &Path,
     filename: &str,
     write: impl FnOnce(&mut File) -> Result<()>,
@@ -435,6 +430,27 @@ mod tests {
     }
 
     #[test]
+    fn arrow_snapshot_readers_survive_replacement() {
+        use std::io::Read;
+
+        let local = tempfile::tempdir().unwrap();
+        let path = local.path().join("current.arrow");
+        write_arrow_file_local(local.path(), "current.arrow", &batch(0)).unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        let mut open_snapshot = File::open(&path).unwrap();
+
+        write_arrow_file_local(local.path(), "current.arrow", &batch(3)).unwrap();
+        let mut previous = Vec::new();
+        open_snapshot.read_to_end(&mut previous).unwrap();
+        assert_eq!(previous, expected);
+        assert_ne!(std::fs::read(&path).unwrap(), previous);
+        let mut reader =
+            arrow::ipc::reader::StreamReader::try_new(File::open(&path).unwrap(), None).unwrap();
+        assert_eq!(reader.next().unwrap().unwrap(), batch(3));
+        assert!(reader.next().is_none());
+    }
+
+    #[test]
     fn compaction_cannot_observe_an_unfinished_parquet_file() {
         let local = tempfile::tempdir().unwrap();
         let remote = tempfile::tempdir().unwrap();
@@ -446,7 +462,7 @@ mod tests {
             .unwrap();
         write_parquet_file_local(local.path(), "out-1.parquet", &batch(0)).unwrap();
 
-        publish_parquet_file(local.path(), "out-2.parquet", |file| {
+        publish_capture_file(local.path(), "out-2.parquet", |file| {
             let next = batch(3);
             let mut writer = ArrowWriter::try_new(file, next.schema(), None).unwrap();
             writer.write(&next).unwrap();
@@ -526,7 +542,7 @@ mod tests {
     #[test]
     fn failed_parquet_write_does_not_publish_or_leave_a_partial_file() {
         let local = tempfile::tempdir().unwrap();
-        let result = publish_parquet_file(local.path(), "out-1.parquet", |file| {
+        let result = publish_capture_file(local.path(), "out-1.parquet", |file| {
             file.write_all(b"PAR1unfinished parquet")?;
             Err(crate::NoMoreError::Io(std::io::Error::other(
                 "injected write failure",

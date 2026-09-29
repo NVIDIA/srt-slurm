@@ -17,15 +17,18 @@ Usage (server, e.g. srtctl.status_server):
 """
 
 from srtctl.contract.enums import JobStage, JobStatus
-from srtctl.contract.requests import JobCreatePayload, JobUpdatePayload
+from srtctl.contract.requests import JobCreatePayload, JobUpdatePayload, LogAppendPayload, LogChunk
 from srtctl.contract.responses import (
     EventFeedResponse,
     JobDetail,
     JobEventListResponse,
     JobEventRecord,
     JobListResponse,
+    JobLogFilesResponse,
+    JobLogResponse,
     JobResponse,
     JobSummary,
+    LogFileSummary,
 )
 
 __all__ = [
@@ -35,9 +38,14 @@ __all__ = [
     "JobEventListResponse",
     "JobEventRecord",
     "JobListResponse",
+    "JobLogFilesResponse",
+    "JobLogResponse",
     "JobResponse",
     "JobStage",
     "JobStatus",
     "JobSummary",
     "JobUpdatePayload",
+    "LogAppendPayload",
+    "LogChunk",
+    "LogFileSummary",
 ]

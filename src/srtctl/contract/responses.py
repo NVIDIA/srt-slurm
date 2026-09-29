@@ -83,3 +83,31 @@ class EventFeedResponse(BaseModel):
 
     events: list[JobEventRecord]
     next_cursor: int | None = None
+
+
+class LogFileSummary(BaseModel):
+    """One streamed file: bytes received so far and when the last chunk arrived."""
+
+    file: str
+    size: int
+    updated_at: str
+
+
+class JobLogFilesResponse(BaseModel):
+    """GET /api/jobs/{job_id}/logs: every streamed file of a job."""
+
+    job_id: str
+    files: list[LogFileSummary]
+
+
+class JobLogResponse(BaseModel):
+    """GET /api/jobs/{job_id}/logs?file=...: contiguous content from ``offset``.
+
+    ``next_offset`` is the ``offset`` to pass on the next poll.
+    """
+
+    job_id: str
+    file: str
+    offset: int
+    next_offset: int
+    data: str

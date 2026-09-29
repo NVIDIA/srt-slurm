@@ -56,13 +56,16 @@ from srtctl.contract import (
     JobDetail,
     JobEventListResponse,
     JobListResponse,
+    JobLogFilesResponse,
+    JobLogResponse,
     JobResponse,
     JobStage,
     JobStatus,
     JobSummary,
     JobUpdatePayload,
+    LogAppendPayload,
 )
-from srtctl.status_server.store import StatusStore
+from srtctl.status_server.store import LogChunkConflict, StatusStore
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +74,7 @@ DEFAULT_PORT = 8080
 DEFAULT_DB_PATH = Path("~/.local/state/srtctl/status.db")
 DEFAULT_TOKEN_ENV = "SRTCTL_STATUS_TOKEN"
 DEFAULT_READ_TOKEN_ENV = "SRTCTL_STATUS_READ_TOKEN"
-# The largest legitimate body is the started-metadata PUT, a few KB. Anything
-# beyond this is rejected before it is read so a public endpoint cannot be
-# used to fill the disk.
+# Bound each raw streaming chunk and JSON request before reading its body.
 MAX_BODY_BYTES = 1 << 20
 HEALTH_PATH = "/api/health"
 # The single-page UI. It is static and reveals nothing, so it is served without
@@ -83,6 +84,8 @@ UI_PATHS = frozenset({"/", "/index.html"})
 
 _JOB_ROUTE = re.compile(r"^/api/jobs/(?P<job_id>[^/]+)$")
 _JOB_EVENTS_ROUTE = re.compile(r"^/api/jobs/(?P<job_id>[^/]+)/events$")
+_JOB_CAPTURES_ROUTE = re.compile(r"^/api/jobs/(?P<job_id>[^/]+)/captures$")
+_JOB_LOGS_ROUTE = re.compile(r"^/api/jobs/(?P<job_id>[^/]+)/logs$")
 
 Response = tuple[HTTPStatus, dict[str, Any]]
 
@@ -251,6 +254,11 @@ def route(store: StatusStore, method: str, raw_path: str, body: dict[str, Any] |
         return _event_feed(store, query)
     if (match := _JOB_EVENTS_ROUTE.match(path)) and method == "GET":
         return _job_events(store, match["job_id"], query)
+    if match := _JOB_LOGS_ROUTE.match(path):
+        if method == "POST":
+            return _append_logs(store, match["job_id"], body)
+        if method == "GET":
+            return _job_logs(store, match["job_id"], query)
     if match := _JOB_ROUTE.match(path):
         if method == "GET":
             return _get_job(store, match["job_id"])
@@ -322,6 +330,63 @@ def _job_events(store: StatusStore, job_id: str, query: dict[str, str]) -> Respo
     limit = _int_param(query, "limit", 100, minimum=1, maximum=1000)
     events = store.list_events(after=after, limit=limit, job_id=job_id)
     response = JobEventListResponse(job_id=job_id, events=events, next_cursor=_next_cursor(events, after))
+    return HTTPStatus.OK, response.model_dump()
+
+
+def _append_logs(store: StatusStore, job_id: str, body: dict[str, Any] | None) -> Response:
+    payload = LogAppendPayload.model_validate(body or {})
+    try:
+        stored = store.append_logs(job_id, [chunk.model_dump() for chunk in payload.chunks])
+    except LogChunkConflict as exc:
+        raise ApiError(HTTPStatus.CONFLICT, str(exc)) from exc
+    return HTTPStatus.OK, {"job_id": job_id, "stored": stored}
+
+
+def _raw_upload(store: StatusStore, path: str, raw: bytes) -> Response:
+    url = urlparse(path)
+    query = {key: values[-1] for key, values in parse_qs(url.query).items()}
+    file = query.get("file", "")
+    if not file or len(file) > 4096 or "\x00" in file or any(part in ("", ".", "..") for part in file.split("/")):
+        raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "file must be a relative path without traversal")
+    if len(query.get("cluster", "")) > 256:
+        raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "cluster is too long")
+    offset = _int_param(query, "offset", 0, minimum=0, maximum=(1 << 63) - 1)
+    if offset + len(raw) > (1 << 63) - 1:
+        raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "chunk exceeds maximum offset")
+    normalized = url.path.rstrip("/")
+    try:
+        if match := _JOB_LOGS_ROUTE.fullmatch(normalized):
+            final = _int_param(query, "final", 0, minimum=0, maximum=1)
+            if not raw and not final:
+                raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "Empty log chunk requires final=1")
+            stored = store.append_raw_log(match["job_id"], file, offset, raw, final=bool(final))
+            return HTTPStatus.OK, {"job_id": match["job_id"], "stored": stored}
+        if match := _JOB_CAPTURES_ROUTE.fullmatch(normalized):
+            generation = query.get("generation", "")
+            if not re.fullmatch(r"[0-9a-f]{32}", generation):
+                raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "generation must be 32 lowercase hex characters")
+            if Path(file).suffix not in (".arrow", ".parquet"):
+                raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "capture must be an Arrow or Parquet file")
+            total = _int_param(query, "total", 0, minimum=1, maximum=(1 << 63) - 1)
+            if not raw or offset + len(raw) > total:
+                raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "capture chunk must be nonempty and within total")
+            return HTTPStatus.OK, store.append_capture(match["job_id"], file, generation, offset, total, raw)
+    except LogChunkConflict as exc:
+        raise ApiError(HTTPStatus.CONFLICT, str(exc)) from exc
+    raise ApiError(HTTPStatus.NOT_FOUND, "No raw upload route")
+
+
+def _job_logs(store: StatusStore, job_id: str, query: dict[str, str]) -> Response:
+    """File list without ``file``; with it, content from ``offset`` (poll with ``offset = next_offset``)."""
+    file = query.get("file")
+    if file is None:
+        files = store.list_log_files(job_id)
+        if not files and store.get_job(job_id) is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, "Job not found")
+        return HTTPStatus.OK, JobLogFilesResponse(job_id=job_id, files=files).model_dump()
+    offset = _int_param(query, "offset", 0, minimum=0)
+    data, next_offset = store.read_log(job_id, file, offset=offset)
+    response = JobLogResponse(job_id=job_id, file=file, offset=offset, next_offset=next_offset, data=data)
     return HTTPStatus.OK, response.model_dump()
 
 
@@ -434,7 +499,10 @@ def _handler_class(store: StatusStore, auth: AuthPolicy, cors: CorsPolicy) -> ty
                     self._send(HTTPStatus.OK, page, "text/html; charset=utf-8", cors_headers, head_only)
                     return
                 auth.check(effective, path, self.headers.get("Authorization"))
-                status, body = route(store, effective, self.path, _parse_json(raw))
+                if effective == "POST" and self.headers.get_content_type() == "application/octet-stream":
+                    status, body = _raw_upload(store, self.path, raw or b"")
+                else:
+                    status, body = route(store, effective, self.path, _parse_json(raw))
             except ApiError as exc:
                 if exc.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
                     logger.info("%s %s %s from %s", exc.status.value, method, self.path, self.address_string())
@@ -455,13 +523,20 @@ def _handler_class(store: StatusStore, auth: AuthPolicy, cors: CorsPolicy) -> ty
             except ValueError:
                 self.close_connection = True
                 raise ApiError(HTTPStatus.BAD_REQUEST, "Content-Length must be an integer") from None
+            if length < 0:
+                self.close_connection = True
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Content-Length must be nonnegative")
             if length > MAX_BODY_BYTES:
                 # Not read, so the connection cannot be reused for a keep-alive request.
                 self.close_connection = True
                 raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"Body larger than {MAX_BODY_BYTES} bytes")
             if length == 0:
                 return None
-            return self.rfile.read(length)
+            data = self.rfile.read(length)
+            if len(data) != length:
+                self.close_connection = True
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Incomplete request body")
+            return data
 
         def _send(
             self, status: HTTPStatus, data: bytes, content_type: str, headers: dict[str, str], head_only: bool
