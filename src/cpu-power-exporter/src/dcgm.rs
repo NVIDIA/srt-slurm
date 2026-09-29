@@ -52,6 +52,13 @@ pub const SYSIO_POWER_FIELD_ID: u16 = 1132;
 /// meets it first.
 pub const POWER_FIELDS: [u16; 2] = [CPU_POWER_FIELD_ID, SYSIO_POWER_FIELD_ID];
 
+/// The field sets the reader tries, most informative first. A libdcgm that
+/// rejects 1132 for CPU entities (older releases, or a build whose sysmon does
+/// not expose SysIO) must still come up on 1130 alone -- that is the floor
+/// every earlier exporter had, and in `auto` mode DCGM is the last resort, so
+/// failing here means no CPU power at all.
+const FIELD_SET_CANDIDATES: [&[u16]; 2] = [&POWER_FIELDS, &[CPU_POWER_FIELD_ID]];
+
 /// DCGM_FE_CPU: entity group for Grace CPU nodes.
 const DCGM_FE_CPU: u32 = 7;
 
@@ -281,6 +288,43 @@ impl fmt::Display for DcgmUnavailable {
 
 impl std::error::Error for DcgmUnavailable {}
 
+/// Create a field group for `field_ids` and register the watch on `group_id`.
+/// Returns the field-group handle; on failure the partially created group is
+/// destroyed so the next candidate starts clean.
+fn watch_field_set(
+    lib: &DcgmLib,
+    handle: Handle,
+    group_id: Handle,
+    field_ids: &[u16],
+    field_group_name: &CString,
+) -> Result<Handle, DcgmUnavailable> {
+    let mut field_group_id: Handle = 0;
+    check(
+        unsafe {
+            (lib.field_group_create)(
+                handle,
+                field_ids.len() as i32,
+                field_ids.as_ptr(),
+                field_group_name.as_ptr(),
+                &mut field_group_id,
+            )
+        },
+        "dcgmFieldGroupCreate",
+    )?;
+    if let Err(e) = check(
+        unsafe { (lib.watch_fields)(handle, group_id, field_group_id, 100_000, 60.0, 600) },
+        "dcgmWatchFields",
+    ) {
+        // Best effort; a leaked field group on a failed attempt is harmless
+        // but tidy up so the fallback attempt is not confused by it.
+        unsafe {
+            (lib.field_group_destroy)(handle, field_group_id);
+        }
+        return Err(e);
+    }
+    Ok(field_group_id)
+}
+
 fn check(ret: i32, context: &str) -> Result<(), DcgmUnavailable> {
     if ret == DCGM_ST_OK {
         Ok(())
@@ -309,7 +353,8 @@ pub struct PowerReading {
     pub watts: Option<f64>,
 }
 
-/// Per-socket CPU power readings via the DCGM CPU-entity power fields ([`POWER_FIELDS`]).
+/// Per-socket CPU power readings via the DCGM CPU-entity power fields ([`POWER_FIELDS`]),
+/// or field 1130 alone when this libdcgm will not watch 1132 (see [`DcgmReader::fields`]).
 ///
 /// `Drop` cleans up the entity group, field group, embedded handle, and library
 /// in the reverse order of construction.
@@ -322,6 +367,8 @@ pub struct DcgmReader {
     entities: Vec<GroupEntityPair>,
     /// CPU entity IDs in enumeration order (index == socket position).
     pub cpu_ids: Vec<u32>,
+    /// Power fields actually watched (see [`FIELD_SET_CANDIDATES`]).
+    fields: &'static [u16],
 }
 
 // SAFETY: DcgmLib is Send; all other fields are plain integers / Vecs.
@@ -431,27 +478,33 @@ impl DcgmReader {
             )?;
         }
 
-        // Create a field group containing every CPU power field we publish.
-        let field_ids = POWER_FIELDS;
-        let mut field_group_id: Handle = 0;
-        check(
-            unsafe {
-                (lib.field_group_create)(
-                    handle,
-                    field_ids.len() as i32,
-                    field_ids.as_ptr(),
-                    field_group_name.as_ptr(),
-                    &mut field_group_id,
-                )
-            },
-            "dcgmFieldGroupCreate",
-        )?;
-
-        // Register the watch: 100 ms interval, keep 60 s of history, 600 max samples.
-        check(
-            unsafe { (lib.watch_fields)(handle, group_id, field_group_id, 100_000, 60.0, 600) },
-            "dcgmWatchFields",
-        )?;
+        // Create a field group and register the watch (100 ms interval, 60 s of
+        // history, 600 max samples). Try every power field first; if this
+        // libdcgm rejects the set, fall back to 1130 alone rather than fail.
+        let mut watched: Option<(Handle, &'static [u16])> = None;
+        let mut last_err: Option<DcgmUnavailable> = None;
+        for (attempt, candidate) in FIELD_SET_CANDIDATES.iter().enumerate() {
+            let name =
+                CString::new(format!("{}_{attempt}", field_group_name.to_str().unwrap())).unwrap();
+            match watch_field_set(&lib, handle, group_id, candidate, &name) {
+                Ok(field_group_id) => {
+                    if attempt > 0 {
+                        tracing::warn!(
+                            fields = ?candidate,
+                            wanted = ?POWER_FIELDS,
+                            reason = %last_err.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+                            "DCGM refused the full CPU power field set; watching the CPU rail only (no SysIO)"
+                        );
+                    }
+                    watched = Some((field_group_id, candidate));
+                    break;
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        let Some((field_group_id, fields)) = watched else {
+            return Err(last_err.expect("at least one field-set attempt"));
+        };
 
         // Force the first watched update so the initial read returns real data
         // rather than a blank sample.  waitForUpdate=1 blocks until done.
@@ -476,7 +529,14 @@ impl DcgmReader {
             field_group_id,
             entities,
             cpu_ids,
+            fields,
         })
+    }
+
+    /// The power fields this reader actually watches: [`POWER_FIELDS`], or
+    /// `[1130]` when the field-group fallback fired. Always starts with 1130.
+    pub fn fields(&self) -> &'static [u16] {
+        self.fields
     }
 
     /// Read the latest cached value of every power field for each CPU entity.
@@ -494,8 +554,9 @@ impl DcgmReader {
         )?;
 
         let n = self.entities.len();
+        let field_ids = self.fields;
         // DCGM writes entities × fields values, entity-major.
-        let mut values: Vec<FieldValueV2> = (0..n * POWER_FIELDS.len())
+        let mut values: Vec<FieldValueV2> = (0..n * field_ids.len())
             .map(|_| FieldValueV2 {
                 version: DCGM_FIELD_VALUE_V2_VERSION,
                 entity_group_id: 0,
@@ -508,8 +569,6 @@ impl DcgmReader {
                 val: FieldValueUnion { i64: 0 },
             })
             .collect();
-
-        let field_ids = POWER_FIELDS;
 
         check(
             unsafe {
@@ -531,7 +590,7 @@ impl DcgmReader {
         // authoritative, and a value we did not ask for is dropped.
         let result: Vec<PowerReading> = values
             .iter()
-            .filter(|v| POWER_FIELDS.contains(&v.field_id))
+            .filter(|v| field_ids.contains(&v.field_id))
             .map(|v| {
                 let watts = if v.status == DCGM_ST_OK {
                     // SAFETY: every field in POWER_FIELDS is a double field; union variant is valid.
@@ -618,6 +677,20 @@ mod tests {
         // socket gets the same value it always did.
         assert_eq!(POWER_FIELDS, [1130, 1132]);
         assert_eq!(POWER_FIELDS[0], CPU_POWER_FIELD_ID);
+    }
+
+    #[test]
+    fn field_set_fallback_ends_at_the_cpu_rail_alone() {
+        // Every candidate starts with 1130, and the last resort is 1130 by
+        // itself: the floor every earlier exporter had.
+        assert_eq!(FIELD_SET_CANDIDATES[0], &POWER_FIELDS[..]);
+        assert_eq!(
+            *FIELD_SET_CANDIDATES.last().unwrap(),
+            &[CPU_POWER_FIELD_ID][..]
+        );
+        for candidate in FIELD_SET_CANDIDATES {
+            assert_eq!(candidate[0], CPU_POWER_FIELD_ID);
+        }
     }
 
     #[test]

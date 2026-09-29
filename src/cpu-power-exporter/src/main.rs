@@ -515,22 +515,49 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
 
     // ACPI first: it is the only source with the socket envelope. DCGM reads
     // the same hwmon files (minus the envelope), so it is strictly less
-    // informative and only worth falling back to when sysfs shows nothing.
+    // informative and only worth falling back to when sysfs shows nothing
+    // usable. Discovery alone is not enough: a node can expose power_meter
+    // channels that all read zero, and publishing those would integrate to
+    // 0 J and look like a measurement rather than a gap.
     if want_acpi {
+        let acpi_only = matches!(args.source, SourceMode::Acpi);
         match discover_sensors(&args.hwmon_root) {
-            Ok(sensors) if !sensors.is_empty() => return init_acpi_state(sensors),
-            Ok(_) => {
+            Ok(sensors) if sensors.is_empty() => {
                 let reason = format!(
                     "no ACPI power_meter hwmon sensors found under {}",
                     args.hwmon_root.display()
                 );
-                if matches!(args.source, SourceMode::Acpi) {
+                if acpi_only {
                     anyhow::bail!("{reason}");
                 }
                 tracing::info!(%reason, "ACPI unavailable; falling back to DCGM");
             }
+            Ok(sensors) => {
+                match probe_acpi_live(&sensors, ACPI_PROBE_RETRIES, ACPI_PROBE_RETRY_DELAY) {
+                    Some(live) => {
+                        tracing::info!(
+                            live,
+                            total = sensors.len(),
+                            "ACPI sensors report non-zero power; using ACPI"
+                        );
+                        return init_acpi_state(sensors);
+                    }
+                    None => {
+                        let reason = format!(
+                            "all {} ACPI power_meter sensors under {} read zero across {} probe(s)",
+                            sensors.len(),
+                            args.hwmon_root.display(),
+                            ACPI_PROBE_RETRIES + 1
+                        );
+                        if acpi_only {
+                            anyhow::bail!("{reason}");
+                        }
+                        tracing::warn!(%reason, "ACPI sensors present but dead; falling back to DCGM");
+                    }
+                }
+            }
             Err(e) => {
-                if matches!(args.source, SourceMode::Acpi) {
+                if acpi_only {
                     return Err(e);
                 }
                 tracing::info!(reason = %e, "ACPI unavailable; falling back to DCGM");
@@ -544,8 +571,9 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
                 tracing::info!(
                     cpu_count = reader.cpu_ids.len(),
                     cpu_ids = ?reader.cpu_ids,
-                    fields = ?dcgm::POWER_FIELDS,
-                    "DCGM reader initialised (CPU rail + SysIO; no socket envelope)"
+                    fields = ?reader.fields(),
+                    "DCGM reader initialised (CPU rail{}; no socket envelope)",
+                    if reader.fields().contains(&dcgm::SYSIO_POWER_FIELD_ID) { " + SysIO" } else { " only" }
                 );
                 // Probe: if every entity returns zero/None the embedded daemon
                 // lacks hardware access (common when running without root while a
@@ -570,6 +598,33 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
     }
 
     unreachable!("one of want_dcgm or want_acpi must be true");
+}
+
+/// Extra reads after the first all-zero probe before declaring ACPI dead.
+/// hwmon `power1_average` can legitimately read 0 on the first poll after
+/// boot; a false negative here would put a good node on DCGM's half-size
+/// number for the whole run.
+const ACPI_PROBE_RETRIES: u32 = 1;
+const ACPI_PROBE_RETRY_DELAY: Duration = Duration::from_millis(1_000);
+
+/// Read every sensor up to `1 + retries` times; `Some(n)` with the count of
+/// sensors that produced a finite, positive value on the first pass where any
+/// did, `None` when every pass read zero (or unreadable) everywhere.
+fn probe_acpi_live(sensors: &[Sensor], retries: u32, delay: Duration) -> Option<usize> {
+    for attempt in 0..=retries {
+        let live = sensors
+            .iter()
+            .filter(|s| matches!(read_acpi_watts(&s.path), Some(w) if w.is_finite() && w > 0.0))
+            .count();
+        if live > 0 {
+            return Some(live);
+        }
+        if attempt < retries {
+            tracing::debug!(attempt, "all ACPI sensors read zero; retrying probe");
+            std::thread::sleep(delay);
+        }
+    }
+    None
 }
 
 fn init_acpi_state(sensors: Vec<Sensor>) -> Result<MetricsState> {
@@ -707,6 +762,58 @@ mod tests {
     fn dcgm_metrics_with_no_readings_is_just_the_header() {
         let body = render_dcgm_metrics(&[]);
         assert_eq!(body, DCGM_METRICS_HEADER);
+    }
+
+    #[test]
+    fn acpi_probe_is_dead_when_every_sensor_reads_zero() {
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "0"),
+                ("power2", Some("CPU Power Socket 0"), "0"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        assert_eq!(sensors.len(), 2);
+        assert_eq!(probe_acpi_live(&sensors, 1, Duration::from_millis(1)), None);
+    }
+
+    #[test]
+    fn acpi_probe_is_live_when_any_sensor_reads_positive() {
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "98029000"),
+                ("power2", Some("CPU Power Socket 0"), "0"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        assert_eq!(probe_acpi_live(&sensors, 0, Duration::ZERO), Some(1));
+    }
+
+    #[test]
+    fn acpi_probe_retries_once_when_the_first_pass_is_zero() {
+        // A sensor that reads 0 on the first poll and a real value on the
+        // second (first hwmon average after boot) must not flip the node to DCGM.
+        let dir = TempDir::new().unwrap();
+        let hwmon = write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[("power1", Some("Grace Power Socket 0"), "0")],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        let path = hwmon.join("power1_average");
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            fs::write(path, "98029000").unwrap();
+        });
+        let live = probe_acpi_live(&sensors, 1, Duration::from_millis(200));
+        writer.join().unwrap();
+        assert_eq!(live, Some(1));
     }
 
     fn write_hwmon(root: &Path, node: &str, sensors: &[(&str, Option<&str>, &str)]) -> PathBuf {

@@ -1972,7 +1972,8 @@ class CpuPowerExporterConfig:
     """Power reading back-end passed through to the bundled Rust binary's own
     ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries ACPI
     first (the only source with the socket envelope) and falls back to DCGM
-    when no ACPI power_meter hwmon sensors exist. DCGM mode reports field
+    when no ACPI power_meter hwmon sensors exist or every one of them reads
+    zero on two probes. DCGM mode reports field
     1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope,
     and the energy report flags such runs as "CPU rail only". Has no effect
     when the Python stdlib fallback exporter is used instead of the binary --

@@ -132,9 +132,15 @@ The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
   Source: NVIDIA/DCGM `modules/sysmon/DcgmSystemMonitor.cpp` (label → file
   map) and `modules/sysmon/DcgmModuleSysmon.cpp` (field id → getter).
 - **`auto`** (default) — tries ACPI first (it alone carries the socket
-  envelope) and falls back to DCGM only when no ACPI `power_meter` hwmon
-  sensors are present. The Python host collector (`srtctl.core.cpu_power`)
-  uses the same order.
+  envelope) and falls back to DCGM only when ACPI is unusable: no
+  `power_meter` hwmon sensors, or every discovered sensor reads zero across
+  two probes one second apart (a node can expose channels that never report;
+  publishing them would integrate to 0 J and pass for a measurement). The
+  fallback is logged at WARN with the sensor count. In DCGM mode the exporter
+  watches 1130+1132 and, if this libdcgm refuses that set for CPU entities,
+  retries with 1130 alone (logged at WARN) rather than fail — 1130 alone is the
+  floor every earlier exporter had. The Python host collector
+  (`srtctl.core.cpu_power`) uses the same ACPI-first order.
 
 The exporter resolves this once at process startup and serves only one metric
 family (`cpu_power_dcgm_watts` or `cpu_power_acpi_watts`) for its lifetime.
