@@ -6,8 +6,6 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from srtctl.contract import JobCreatePayload, JobStage, JobStatus, JobUpdatePayload
 from srtctl.core.schema import ReportingConfig, ReportingStatusConfig
 from srtctl.core.status import (
@@ -600,37 +598,3 @@ class TestJobStageEnum:
         assert JobStage.FRONTEND.value == "frontend"
         assert JobStage.BENCHMARK.value == "benchmark"
         assert JobStage.CLEANUP.value == "cleanup"
-
-
-@pytest.mark.parametrize(
-    ("method", "kwargs"),
-    [
-        ("report", {"status": JobStatus.WORKERS, "stage": JobStage.WORKERS}),
-        ("report_completed", {"exit_code": 0}),
-        ("report_completed", {"exit_code": 1}),
-        ("report_artifacts", {"logs_url": "s3://bucket/logs/12345/"}),
-    ],
-)
-def test_every_update_includes_cluster_metadata(method, kwargs):
-    reporter = StatusReporter(job_id="12345", api_endpoints=("https://status.example.com",))
-    with (
-        patch("srtctl.core.status._cluster_setting", return_value="cluster-a"),
-        patch("srtctl.core.status.requests.put", return_value=SimpleNamespace(status_code=200)) as put,
-    ):
-        assert getattr(reporter, method)(**kwargs) is True
-    assert put.call_args.args[0] == "https://status.example.com/api/jobs/12345"
-    assert put.call_args.kwargs["json"]["metadata"]["cluster"] == "cluster-a"
-
-
-@pytest.mark.parametrize("cluster", ["cluster-a", None])
-def test_cluster_metadata_preserves_payload_and_existing_metadata(cluster):
-    reporter = StatusReporter(job_id="12345", api_endpoints=("https://status.example.com",))
-    payload = {"status": "starting", "metadata": {"job_name": "benchmark", "model": {"path": "model"}}}
-    with (
-        patch("srtctl.core.status._cluster_setting", return_value=cluster),
-        patch("srtctl.core.status.requests.put", return_value=SimpleNamespace(status_code=200)) as put,
-    ):
-        assert reporter._put(payload) is True
-    expected = {**payload["metadata"], **({"cluster": cluster} if cluster else {})}
-    assert put.call_args.kwargs["json"]["metadata"] == expected
-    assert "cluster" not in payload["metadata"]

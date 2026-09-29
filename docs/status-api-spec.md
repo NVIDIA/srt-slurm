@@ -297,13 +297,9 @@ from srtctl.contract import (
 
 ## Behavior
 
-Every reporter PUT includes `metadata.cluster` when `cluster` is configured in
-`srtslurm.yaml`, including stage, completion, and artifact updates. A collector
-can combine it with the job ID in the request URL to distinguish jobs from
-different clusters using the same endpoint and bearer token. Existing metadata
-is preserved. Without a configured cluster, update payloads are unchanged.
-The built-in collector still keys records by job ID alone; a shared collector
-must use the cluster metadata when identifying records to avoid collisions.
+Every status update includes `metadata.cluster` when set in `srtslurm.yaml`.
+Shared collectors can use `(cluster, job_id)` to distinguish runs; the built-in
+collector still keys records by job ID alone.
 
 - All requests have a 5-second timeout
 - Redirects are never followed; a 3xx, 401 or 403 is logged at WARNING and counts as a failure
