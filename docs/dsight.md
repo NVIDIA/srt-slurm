@@ -157,6 +157,13 @@ report; a CUDA table's presence is reported separately from imported data.
 
 - Drag in the overview **or Client sessions & agents**, or enter From/To.
   All tracks follow the same time range.
+- In **Request & execution path**, click **Fit Session** to zoom out to every
+  recorded request in the selected request's session, including its main agent
+  and subagents. The range uses the session's full recorded start/end, independent
+  of the current time window or search filter, with the same padding as
+  **Fit request**. Selection, expansions and pinned metrics are preserved;
+  **Previous time range** (↶) returns to the previous zoom. This works without
+  OTel. It covers the imported requests, not unrecorded session activity.
 - Expand session → agent → request. For requests with OTel activity, **Expand
   lifecycle** reveals **Progress milestones**: cumulative rows ending at
   chronological recorded boundaries. The breakdown ends at **Client complete**.
@@ -238,6 +245,19 @@ additional recorded per-request evidence.
 Iteration counters and previous-device timers can lag the forward pass under
 overlap scheduling. Original counters are preserved; no universal shift or
 per-request assignment of shared batch time is applied.
+
+## Session zoom example
+
+Build the small client-only capture in [examples/dsight/fit-session](../examples/dsight/fit-session):
+
+```bash
+uv run --no-dev srtctl dsight build examples/dsight/fit-session --output /tmp/dsight-fit-session
+```
+
+Open `/tmp/dsight-fit-session/index.html`, select `child-turn`, then click
+**Fit request** followed by **Fit Session**. The latter includes `parent-turn`
+and `sibling-turn`, from 1 to 9 seconds plus padding, while keeping `child-turn`
+selected. The unrelated sessions at either end are outside the fitted range.
 
 ## Agent, CLI and Python access
 
@@ -375,6 +395,13 @@ available API examples:
 
 ```bash
 uv run --with websockets python tests/dsight_sources_browser_check.py \
+  --port 9338 --out "<fresh_path_to_browser_check_output>"
+```
+
+Check session zoom, subagents, filtered views, range history and missing sources:
+
+```bash
+uv run --with websockets python tests/dsight_fit_session_check.py \
   --port 9338 --out "<fresh_path_to_browser_check_output>"
 ```
 
