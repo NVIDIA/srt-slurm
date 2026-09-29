@@ -143,7 +143,9 @@ use the monotonic clock. The collector writes a cycle's endpoints together:
 `cycle_writer_lock_wait_seconds` and `cycle_sample_write_seconds` therefore
 repeat that shared batch timing on each endpoint record, rather than assigning
 an individual endpoint's write cost. `sample_write_completed` reports whether
-the batch was appended and flushed.
+the batch was appended and flushed; when it is false, `sample_write_error`
+names the exception class if the append raised, or is null when the session
+was already finalizing and refused the batch.
 
 Only a daemon writer performs diagnostic file I/O, outside the sample writer
 lock. Its queue holds at most 128 pending records; overflow drops diagnostics,

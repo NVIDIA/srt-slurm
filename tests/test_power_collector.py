@@ -20,7 +20,7 @@ from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import MANIFEST_FILENAME, SAMPLES_FILENAME, WINDOWS_DIRNAME, Reason
 from srtctl.core.power.diagnostics import ScrapeDiagnostics
 from srtctl.core.power.manifest import ExpectedWindow
-from srtctl.core.power.samples import read_samples
+from srtctl.core.power.samples import SampleRow, read_samples
 from srtctl.core.power.session import (
     PowerEndpoint,
     PowerSessionSettings,
@@ -319,6 +319,37 @@ class TestScrapeDiagnostics:
             session.stop_and_finalize()
             if session._diagnostics is not None:
                 session._diagnostics.close(time.monotonic() + 1)
+
+    def test_sample_write_failure_is_named_and_distinct_from_refusal(self, tmp_path, exporters):
+        endpoint = exporters(_body("a"))
+        session = _session(tmp_path, _endpoints(("node-a", endpoint.url)), windows=[])
+        session.initialize()
+        with (
+            patch.object(session._writer, "append", side_effect=OSError("samples disk failure")),
+            pytest.raises(OSError, match="samples disk failure"),
+        ):
+            session.collect_once()
+        # Refusal is only reachable when finalization wins the race between poll and persist.
+        result = _EndpointResult(
+            "node-a",
+            [SampleRow(100.0, 1, "node-a", gpu, f"GPU-{gpu}", 100.0) for gpu in range(GPUS_PER_NODE)],
+            [],
+            0.01,
+        )
+        session._mutation_disabled = True
+        assert session._persist_cycle([result], result.rows, scrape_seq=1, scheduled_monotonic=None) == 0
+        session._mutation_disabled = False
+        session.stop_and_finalize()
+
+        records = [json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()]
+        failed, refused, summary = records
+        assert failed["row_count"] == GPUS_PER_NODE
+        assert failed["sample_write_completed"] is False
+        assert failed["sample_write_error"] == "OSError"
+        assert refused["row_count"] == GPUS_PER_NODE
+        assert refused["sample_write_completed"] is False
+        assert refused["sample_write_error"] is None
+        assert summary["event"] == "diagnostic_summary"
 
     def test_diagnostic_write_failure_preserves_samples(self, tmp_path, exporters, monkeypatch):
         real_open = Path.open

@@ -320,13 +320,20 @@ class PowerTelemetrySession:
         waiting_at = time.monotonic()
         acquired_at = waiting_at
         written = False
+        write_error: str | None = None
         try:
             with self._writer_lock:
                 acquired_at = time.monotonic()
                 if self._mutation_disabled or self._writer is None:
                     return 0
-                self._writer.append(rows)
-                self._writer.flush()
+                try:
+                    self._writer.append(rows)
+                    self._writer.flush()
+                except BaseException as exc:
+                    # Name the failure so the record separates "append raised"
+                    # from "refused because finalization already disabled writes".
+                    write_error = type(exc).__name__
+                    raise
                 written = True
                 observed_keys = {(row.hostname, row.gpu_index) for row in rows}
                 if (
@@ -360,6 +367,7 @@ class PowerTelemetrySession:
                             "cycle_writer_lock_wait_seconds": acquired_at - waiting_at,
                             "cycle_sample_write_seconds": finished_at - acquired_at,
                             "sample_write_completed": written,
+                            "sample_write_error": write_error,
                         }
                     )
 
