@@ -127,3 +127,27 @@ consistency instead. Exit status is `0` only when the recomputed package is
 publishable, the stored verdict is `true`, and the two agree; otherwise it is
 `1` and every failure is printed. The `--expect-*` flags optionally assert an
 expected job shape for hardware canaries.
+
+## Diagnosing slow scrapes
+
+The collector writes best-effort `scrape-timings.jsonl` beside `samples.csv`.
+Join an endpoint record to its GPU rows using `(hostname, scrape_seq)`.
+Each settled request records its start/end times, HTTP status or exception,
+request and parse durations, sample timestamp, row count and reason codes.
+Failed HTTP requests retain timing records without inventing power samples.
+Requests still unsettled when the cycle deadline expires have no timing record.
+
+`schedule_lag_seconds` measures request start against the background cycle's
+scheduled time; manual and final bracketing scrapes use null. All durations
+use the monotonic clock. The collector writes a cycle's endpoints together:
+`cycle_writer_lock_wait_seconds` and `cycle_sample_write_seconds` therefore
+repeat that shared batch timing on each endpoint record, rather than assigning
+an individual endpoint's write cost. `sample_write_completed` reports whether
+the batch was appended and flushed.
+
+Only a daemon writer performs diagnostic file I/O, outside the sample writer
+lock. Its queue holds at most 128 pending records; overflow drops diagnostics,
+not power samples. A final `diagnostic_summary` reports `dropped_records`.
+Missing summary means diagnostics may be incomplete. Shutdown waits only until
+the existing collector deadline. This optional sidecar is not publication
+validation evidence, and its absence or write failure does not invalidate power.
