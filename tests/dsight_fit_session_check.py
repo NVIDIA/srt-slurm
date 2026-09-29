@@ -25,15 +25,24 @@ async def run(output: Path, port: int) -> None:
     logs, profiles = write_run(output / "inputs")
     client = next(logs.rglob("profile_export.jsonl"))
     with client.open("a") as stream:
-        stream.write(json.dumps({
-            "metadata": {
-                "request_id": "subagent-turn", "root_correlation_id": "session-a",
-                "x_correlation_id": "child-agent", "parent_correlation_id": "agent-a", "agent_depth": 1,
-                "request_start_ns": ORIGIN + 2_000_000_000, "request_end_ns": ORIGIN + 4_000_000_000,
-                "benchmark_phase": "profiling",
-            },
-            "metrics": {"time_to_first_token": {"value": 100}},
-        }) + "\n")
+        stream.write(
+            json.dumps(
+                {
+                    "metadata": {
+                        "request_id": "subagent-turn",
+                        "root_correlation_id": "session-a",
+                        "x_correlation_id": "child-agent",
+                        "parent_correlation_id": "agent-a",
+                        "agent_depth": 1,
+                        "request_start_ns": ORIGIN + 2_000_000_000,
+                        "request_end_ns": ORIGIN + 4_000_000_000,
+                        "benchmark_phase": "profiling",
+                    },
+                    "metrics": {"time_to_first_token": {"value": 100}},
+                }
+            )
+            + "\n"
+        )
     metrics_only = output / "metrics-only-input"
     shutil.copytree(logs / "tachometer", metrics_only / "tachometer")
     example = Path(__file__).resolve().parents[1] / "examples/dsight/fit-session"
@@ -49,7 +58,9 @@ async def run(output: Path, port: int) -> None:
         for domain in ("Page", "Runtime", "Network"):
             await browser.call(domain + ".enable")
         await browser.call("Network.setBlockedURLs", urls=["http://*", "https://*"])
-        await browser.call("Emulation.setDeviceMetricsOverride", width=1600, height=1100, deviceScaleFactor=1, mobile=False)
+        await browser.call(
+            "Emulation.setDeviceMetricsOverride", width=1600, height=1100, deviceScaleFactor=1, mobile=False
+        )
 
         async def navigate(name: str) -> None:
             await browser.call("Page.navigate", url="about:blank")
@@ -74,8 +85,19 @@ async def run(output: Path, port: int) -> None:
             after = await browser.js("traceExplorer.getState()")
             assert math.isclose(after["from"], expected[0], abs_tol=1e-8), after
             assert math.isclose(after["to"], expected[1], abs_tol=1e-8), after
-            for key in ("request", "search", "span", "tab", "profile", "nsys", "pinnedMetrics", "metricCharts",
-                        "expandedRequests", "expandedSessions", "expandedAgents"):
+            for key in (
+                "request",
+                "search",
+                "span",
+                "tab",
+                "profile",
+                "nsys",
+                "pinnedMetrics",
+                "metricCharts",
+                "expandedRequests",
+                "expandedSessions",
+                "expandedAgents",
+            ):
                 assert after[key] == before[key], key
             assert not await browser.js("document.querySelector('#error').textContent")
             # A second click at the same range must not add a duplicate history entry.
@@ -88,22 +110,26 @@ async def run(output: Path, port: int) -> None:
             results.append({"request": request, "session_range": expected, "passed": True})
 
         await navigate("traced")
-        await browser.js("traceExplorer.setState({pinnedMetrics:['trtllm_num_requests_running'],metricCharts:{"
-                         "'[\"metric\",\"trtllm_num_requests_running\"]':{hidden:['0']}}})")
+        await browser.js(
+            "traceExplorer.setState({pinnedMetrics:['trtllm_num_requests_running'],metricCharts:{"
+            "'[\"metric\",\"trtllm_num_requests_running\"]':{hidden:['0']}}})"
+        )
         await fit(CLIENT, (0, 8.48))
         await fit("subagent-turn", (0, 8.48))
         # Missing TTFT and OTel still allow fitting this single-request session.
         await fit("client-only", (8.94, 10))
         await navigate("client-only")
-        await fit("parent-turn", (.52, 9.48))
-        await fit("child-turn", (.52, 9.48))
-        await fit("sibling-turn", (.52, 9.48))
+        await fit("parent-turn", (0.52, 9.48))
+        await fit("child-turn", (0.52, 9.48))
+        await fit("sibling-turn", (0.52, 9.48))
         await browser.screenshot("session-fit-desktop.png")
-        await browser.call("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=1, mobile=False)
-        await fit("child-turn", (.52, 9.48))
+        await browser.call(
+            "Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=1, mobile=False
+        )
+        await fit("child-turn", (0.52, 9.48))
         assert not await browser.js("document.documentElement.scrollWidth > innerWidth")
         await browser.screenshot("session-fit-narrow.png")
-        await fit("earlier-turn", (0, .265))
+        await fit("earlier-turn", (0, 0.265))
         await fit("later-turn", (10.94, 12))
         await navigate("metrics-only")
         assert not await browser.js("Boolean(document.querySelector('#fitSession'))")
