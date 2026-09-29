@@ -25,6 +25,23 @@ async def run(output: Path, port: int) -> None:
     logs, profiles = write_run(output / "inputs")
     client = next(logs.rglob("profile_export.jsonl"))
     with client.open("a") as stream:
+        for turn in range(1, 20):
+            stream.write(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "request_id": f"extra-turn-{turn}",
+                            "root_correlation_id": "session-a",
+                            "x_correlation_id": "agent-a",
+                            "request_start_ns": ORIGIN + turn * 100_000_000,
+                            "request_end_ns": ORIGIN + turn * 100_000_000 + 1_000_000_000,
+                            "benchmark_phase": "profiling",
+                        },
+                        "metrics": {},
+                    }
+                )
+                + "\n"
+            )
         stream.write(
             json.dumps(
                 {
@@ -111,6 +128,17 @@ async def run(output: Path, port: int) -> None:
 
         await navigate("traced")
         await browser.js(
+            "traceExplorer.setState({expandedSessions:['session-a'],expandedAgents:['agent-a'],expandedRequests:[]})"
+        )
+        expected_requests = [CLIENT, *[f"extra-turn-{turn}" for turn in range(1, 20)]]
+        for selected_request in (CLIENT, "extra-turn-19"):
+            await browser.js("traceExplorer.selectRequest(" + json.dumps(selected_request) + ", {expand:false})")
+            visible = await browser.js(
+                "[...document.querySelectorAll('#clientTracks .lane [data-request]:not(.agent)')]"
+                ".map(e=>e.dataset.request)"
+            )
+            assert visible == expected_requests, visible
+        await browser.js(
             "traceExplorer.setState({pinnedMetrics:['trtllm_num_requests_running'],metricCharts:{"
             "'[\"metric\",\"trtllm_num_requests_running\"]':{hidden:['0']}}})"
         )
@@ -136,7 +164,12 @@ async def run(output: Path, port: int) -> None:
         assert not await browser.js("document.querySelector('#error').textContent")
         errors = [e for e in browser.events if e.get("method") == "Runtime.exceptionThrown"]
         assert not errors, errors
-        report = {"cases": results, "request_free_button_absent": True, "runtime_errors": errors}
+        report = {
+            "cases": results,
+            "expanded_agent_requests": len(expected_requests),
+            "request_free_button_absent": True,
+            "runtime_errors": errors,
+        }
         (output / "fit-session-report.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report), flush=True)
 

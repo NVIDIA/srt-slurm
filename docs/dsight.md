@@ -186,7 +186,9 @@ report; a CUDA table's presence is reported separately from imported data.
   **Fit request**. Selection, expansions and pinned metrics are preserved;
   **Previous time range** (↶) returns to the previous zoom. This works without
   OTel. It covers the imported requests, not unrecorded session activity.
-- Expand session → agent → request. For requests with OTel activity, **Expand
+- Expand session → agent → request. An expanded agent shows every request
+  matching the current time range and search, in chronological order.
+  For requests with OTel activity, **Expand
   lifecycle** reveals **Progress milestones**: cumulative rows ending at
   chronological recorded boundaries. The breakdown ends at **Client complete**.
   **Fit TTFT** selects the client TTFT window and expands the lifecycle only when

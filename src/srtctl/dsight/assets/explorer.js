@@ -817,11 +817,7 @@
           ar.map((r) => requestBar(r, "agent")).join(""),
         );
         if (!aopen) continue;
-        const chosen = ar.includes(selected())
-          ? [selected(), ...ar.filter((r) => r !== selected()).slice(0, 7)]
-          : ar.slice(0, 8);
-        chosen.sort((a, b) => a.start - b.start);
-        for (const r of chosen) {
+        for (const r of ar.sort((a, b) => a.start - b.start)) {
           const ropen = hasLifecycle(r) && state.expandedRequests.has(r.id);
           html += track(
             '<span class="indent2"></span>' +
@@ -839,8 +835,6 @@
           );
           if (ropen) html += lifecycleRows(r);
         }
-        if (ar.length > 8)
-          html += `<div class="row-note">Showing ${chosen.length} of ${ar.length} requests for this agent. Zoom or search to narrow the list; all remain queryable through the API.</div>`;
       }
     }
     if (!list.length)
