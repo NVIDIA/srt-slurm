@@ -20,7 +20,13 @@ from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import MANIFEST_FILENAME, SAMPLES_FILENAME, WINDOWS_DIRNAME, Reason
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.samples import read_samples
-from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession, _run_daemon_workers
+from srtctl.core.power.session import (
+    PowerEndpoint,
+    PowerSessionSettings,
+    PowerTelemetrySession,
+    _EndpointResult,
+    _run_daemon_workers,
+)
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
@@ -263,6 +269,19 @@ class TestCollection:
         assert {row.hostname for row in rows} == {"node-a", "node-b"}
         assert {row.scrape_seq for row in rows} == {0}
 
+    def test_collect_once_rejects_a_running_background_collector(self, tmp_path, exporters):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)))
+        session.initialize()
+        assert session.start_and_wait_for_readiness() is True
+
+        try:
+            with pytest.raises(RuntimeError, match="background collector"):
+                session.collect_once()
+        finally:
+            session.stop_and_finalize()
+
     def test_terminal_manifest_records_the_samples_digest(self, tmp_path, exporters):
         endpoint = exporters(_body("a"))
         session = _session(
@@ -348,7 +367,20 @@ class TestCollection:
 
         rows, _ = read_samples(session.power_dir / SAMPLES_FILENAME)
         assert {row.hostname for row in rows} == {"node-a"}
-        assert Reason.ENDPOINT_TIMEOUT in _manifest(session)["reason_codes"]
+        manifest = _manifest(session)
+        assert Reason.ENDPOINT_TIMEOUT in manifest["reason_codes"]
+        assert manifest["missed_sample_count"] == 1
+        assert manifest["missed_sample_ranges"] == [
+            {
+                "hostname": "node-b",
+                "first_scrape_seq": 0,
+                "last_scrape_seq": 0,
+                "first_scheduled_at_unix": manifest["missed_sample_ranges"][0]["first_scheduled_at_unix"],
+                "last_scheduled_at_unix": manifest["missed_sample_ranges"][0]["last_scheduled_at_unix"],
+                "count": 1,
+                "reason_codes": [Reason.ENDPOINT_TIMEOUT],
+            }
+        ]
 
     def test_abandoned_poller_is_reported_as_endpoint_timeout(self, tmp_path, exporters, monkeypatch):
         """A worker still alive at the cycle deadline settles nothing but must still count as a miss."""
@@ -388,6 +420,139 @@ class TestCollection:
         assert second == 2 * GPUS_PER_NODE
         assert Reason.ENDPOINT_HTTP_ERROR in _manifest(session)["reason_codes"]
 
+    def test_alternating_misses_keep_an_exact_count_without_unbounded_manifest_growth(
+        self, tmp_path, exporters, monkeypatch
+    ):
+        endpoint = exporters(_body("a"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", endpoint.url)),
+            processes=_processes()[:1],
+            windows=[],
+        )
+        session.initialize()
+        real_poll = session._poll
+
+        def poll(power_endpoint, scrape_seq):
+            if scrape_seq % 2 == 0:
+                return _EndpointResult(power_endpoint.hostname, [], [Reason.ENDPOINT_TIMEOUT], None)
+            return real_poll(power_endpoint, scrape_seq)
+
+        monkeypatch.setattr(session, "_poll", poll)
+        cycle_count = 150
+        for _ in range(cycle_count):
+            session.collect_once()
+        session.stop_and_finalize()
+
+        manifest = _manifest(session)
+        assert manifest["missed_sample_count"] == cycle_count // 2
+        assert manifest["missed_sample_ranges_truncated"] is True
+        assert len(manifest["missed_sample_ranges"]) <= 64
+
+    def test_slow_endpoint_does_not_delay_healthy_endpoint_schedule(self, tmp_path, exporters, monkeypatch):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", a.url), ("node-b", b.url)),
+            sample_interval_seconds=0.05,
+            request_timeout_seconds=0.5,
+        )
+        session.initialize()
+        real_poll = session._poll
+        starts: dict[str, list[float]] = {"node-a": [], "node-b": []}
+        active_slow = 0
+        max_active_slow = 0
+        lock = threading.Lock()
+
+        def poll(endpoint, scrape_seq):
+            nonlocal active_slow, max_active_slow
+            starts[endpoint.hostname].append(time.monotonic())
+            if endpoint.hostname != "node-b":
+                return real_poll(endpoint, scrape_seq)
+            with lock:
+                active_slow += 1
+                max_active_slow = max(max_active_slow, active_slow)
+            try:
+                time.sleep(0.22)
+                return real_poll(endpoint, scrape_seq)
+            finally:
+                with lock:
+                    active_slow -= 1
+
+        monkeypatch.setattr(session, "_poll", poll)
+        assert session.start_and_wait_for_readiness() is True
+        time.sleep(0.16)
+        session.stop_and_finalize()
+
+        healthy_before_first_slow_completion = [
+            started for started in starts["node-a"] if started < starts["node-b"][0] + 0.22
+        ]
+        manifest = _manifest(session)
+        assert len(healthy_before_first_slow_completion) >= 4
+        assert max_active_slow == 1
+        assert manifest["missed_sample_count"] >= 3
+        assert any(
+            item["hostname"] == "node-b" and item["reason_codes"] == [Reason.SAMPLE_SCHEDULE_OVERRUN]
+            for item in manifest["missed_sample_ranges"]
+        )
+        assert Reason.SAMPLE_SCHEDULE_OVERRUN in manifest["reason_codes"]
+
+    def test_partial_slot_overrun_fires_the_due_slot_late(self, tmp_path, exporters):
+        """A modest overrun must not make the endpoint discard every next slot."""
+        fast = exporters(_body("a"))
+        modestly_slow = exporters(_body("b"), delay=0.06)
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", fast.url), ("node-b", modestly_slow.url)),
+            sample_interval_seconds=0.05,
+            request_timeout_seconds=0.5,
+        )
+        session.initialize()
+
+        assert session.start_and_wait_for_readiness() is True
+        time.sleep(0.6)
+        session.stop_and_finalize()
+
+        rows, _ = read_samples(session.samples_path)
+        fast_slots = {row.scrape_seq for row in rows if row.hostname == "node-a"}
+        slow_slots = {row.scrape_seq for row in rows if row.hostname == "node-b"}
+
+        # A 1.2x-latency request stream can retain roughly five of six slots.
+        # The old immediate-skip rule retained only every other slot.
+        assert len(slow_slots) >= 0.7 * len(fast_slots), (sorted(fast_slots), sorted(slow_slots))
+
+    def test_long_overrun_skips_only_slots_that_fully_elapsed(self, tmp_path, exporters, monkeypatch):
+        endpoint = exporters(_body("a"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", endpoint.url)),
+            processes=_processes()[:1],
+            sample_interval_seconds=0.1,
+            request_timeout_seconds=0.5,
+        )
+        session.initialize()
+        real_poll = session._poll
+
+        def poll(power_endpoint, scrape_seq):
+            if scrape_seq == 1:
+                time.sleep(0.45)
+            return real_poll(power_endpoint, scrape_seq)
+
+        monkeypatch.setattr(session, "_poll", poll)
+        assert session.start_and_wait_for_readiness() is True
+        time.sleep(1.0)
+        session.stop_and_finalize()
+
+        overrun = next(
+            item
+            for item in _manifest(session)["missed_sample_ranges"]
+            if item["reason_codes"] == [Reason.SAMPLE_SCHEDULE_OVERRUN] and item["first_scrape_seq"] == 2
+        )
+        assert overrun["last_scrape_seq"] == 4
+        rows, _ = read_samples(session.samples_path)
+        assert 5 in {row.scrape_seq for row in rows}
+
 
 class TestReadiness:
     def test_readiness_uses_the_persisted_cycle_signal_without_rescanning_csv(self, tmp_path, exporters):
@@ -404,6 +569,32 @@ class TestReadiness:
 
         assert ready is True
         session.stop_and_finalize()
+
+    def test_complementary_endpoint_slots_never_form_a_ready_scrape(self, tmp_path, exporters, monkeypatch):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", a.url), ("node-b", b.url)),
+            sample_interval_seconds=0.05,
+            startup_timeout_seconds=0.3,
+        )
+        session.initialize()
+        real_poll = session._poll
+
+        def poll(endpoint, scrape_seq):
+            result = real_poll(endpoint, scrape_seq)
+            endpoint_has_this_slot = (endpoint.hostname == "node-a") == (scrape_seq % 2 == 0)
+            if endpoint_has_this_slot:
+                return result
+            return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_TIMEOUT], result.duration_seconds)
+
+        monkeypatch.setattr(session, "_poll", poll)
+
+        assert session.start_and_wait_for_readiness() is False
+        outcome = session.stop_and_finalize()
+
+        assert Reason.EXPORTER_STARTUP_TIMEOUT in outcome.reason_codes
 
     def test_complete_scrape_after_the_startup_deadline_is_not_ready(self, tmp_path, exporters):
         a = exporters(_body("a"))
@@ -1240,6 +1431,100 @@ class TestShutdown:
 
         rows, _ = read_samples(session.power_dir / SAMPLES_FILENAME)
         assert max(row.scrape_seq for row in rows) >= 1
+
+    def test_final_scrape_uses_one_shared_slot_after_an_endpoint_hangs(self, tmp_path, exporters, monkeypatch):
+        fast = exporters(_body("a"))
+        slow = exporters(_body("b"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", fast.url), ("node-b", slow.url)),
+            sample_interval_seconds=0.05,
+            request_timeout_seconds=0.5,
+        )
+        session.initialize()
+        real_poll = session._poll
+        slow_poll_started = threading.Event()
+        release_slow_poll = threading.Event()
+
+        def poll(endpoint, scrape_seq):
+            if endpoint.hostname == "node-b" and scrape_seq == 1:
+                slow_poll_started.set()
+                release_slow_poll.wait(2.0)
+            return real_poll(endpoint, scrape_seq)
+
+        monkeypatch.setattr(session, "_poll", poll)
+        assert session.start_and_wait_for_readiness() is True
+        assert slow_poll_started.wait(1.0)
+        time.sleep(0.16)
+
+        finalizer = threading.Thread(target=session.stop_and_finalize)
+        finalizer.start()
+        assert session._stop.wait(1.0)
+        release_slow_poll.set()
+        finalizer.join(timeout=2.0)
+        assert not finalizer.is_alive()
+
+        rows, _ = read_samples(session.samples_path)
+        slots_by_host = {
+            hostname: {row.scrape_seq for row in rows if row.hostname == hostname} for hostname in ("node-a", "node-b")
+        }
+        final_slot = max(slots_by_host["node-a"])
+        assert max(slots_by_host["node-b"]) == final_slot
+
+        missed_slow_slots = {
+            scrape_seq
+            for item in _manifest(session)["missed_sample_ranges"]
+            if item["hostname"] == "node-b"
+            for scrape_seq in range(item["first_scrape_seq"], item["last_scrape_seq"] + 1)
+        }
+        assert slots_by_host["node-b"] | missed_slow_slots == set(range(final_slot + 1))
+
+    def test_collector_crash_still_pins_every_survivor_to_one_bracket_slot(self, tmp_path, exporters, monkeypatch):
+        """A sibling crash must account for every slot crossed by an in-flight survivor."""
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", a.url), ("node-b", b.url)),
+            sample_interval_seconds=0.05,
+            request_timeout_seconds=0.5,
+        )
+        session.initialize()
+        real_poll = session._poll
+        slow_poll_started = threading.Event()
+        release_slow_poll = threading.Event()
+
+        def poll(endpoint, scrape_seq):
+            if endpoint.hostname == "node-b" and scrape_seq == 2:
+                slow_poll_started.set()
+                release_slow_poll.wait(3.0)
+            if endpoint.hostname == "node-a" and scrape_seq == 6:
+                raise RuntimeError("simulated collector crash on node-a")
+            return real_poll(endpoint, scrape_seq)
+
+        monkeypatch.setattr(session, "_poll", poll)
+        assert session.start_and_wait_for_readiness() is True
+        assert slow_poll_started.wait(1.0)
+        assert session._stop.wait(1.0), "node-a's crash should stop collection"
+        with session._state_lock:
+            shutdown_bracket = session._shutdown_bracket
+        assert shutdown_bracket is not None, "a crash-initiated stop must arm the shared bracket"
+        crash_bracket = shutdown_bracket[0]
+
+        release_slow_poll.set()
+        outcome = session.stop_and_finalize()
+
+        assert Reason.COLLECTOR_EXCEPTION in outcome.reason_codes
+        rows, _ = read_samples(session.samples_path)
+        slow_slots = {row.scrape_seq for row in rows if row.hostname == "node-b"}
+        missed_slow_slots = {
+            scrape_seq
+            for item in _manifest(session)["missed_sample_ranges"]
+            if item["hostname"] == "node-b"
+            for scrape_seq in range(item["first_scrape_seq"], item["last_scrape_seq"] + 1)
+        }
+        assert max(slow_slots) == crash_bracket
+        assert slow_slots | missed_slow_slots == set(range(crash_bracket + 1))
 
     def test_manifest_records_disk_derived_counts(self, tmp_path, exporters):
         a = exporters(_body("a"))

@@ -119,7 +119,7 @@ def test_two_concurrency_points_emit_independently_as_they_become_covered(tmp_pa
 
 def test_case_is_withheld_until_samples_bracket_the_window(tmp_path):
     # Samples stop at 1004, but the window ends at 1010 -- a 6s gap, beyond
-    # MAX_SAMPLE_GAP_SECONDS, so integration must be refused.
+    # MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS, so integration must be refused.
     log_dir = _make_sa_bench_log_dir(tmp_path, sample_times=(999.5, 1002.0, 1004.0))
     emitter = IncrementalPowerEmitter(log_dir)
 
@@ -229,7 +229,7 @@ def test_emits_an_aiperf_case_beside_its_own_source(tmp_path):
 
 
 def test_a_permanently_uncovered_case_is_marked_dead_and_warned_once(tmp_path, caplog):
-    # Window ends at 1010; MAX_SAMPLE_GAP_SECONDS is 3.0s. The nearest sample
+    # Window ends at 1010; MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS is 3.0s. The nearest sample
     # to the window end is 1005 (5s gap, refused), and the newest sample seen
     # overall is 1990 -- 976s past the window end, far beyond any tolerance
     # -- so no future sample (which can only be newer still) can shrink the

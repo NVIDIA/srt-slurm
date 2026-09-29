@@ -40,7 +40,7 @@ from typing import TextIO, TypeVar
 import numpy as np
 
 from srtctl.core.cpu_power import UTILIZATION_COLUMNS as CPU_UTILIZATION_COLUMNS
-from srtctl.core.power.contract import MAX_SAMPLE_GAP_SECONDS, UTILIZATION_METRICS
+from srtctl.core.power.contract import MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS, UTILIZATION_METRICS
 from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES as CPU_RAIL_COLUMN_NAMES
 from srtctl.core.power.cpu_rails import legacy_rail_rank
 
@@ -636,9 +636,9 @@ def windowed_energy(label: str, times: np.ndarray, watts: np.ndarray, start: flo
     end_i = _nearest_index(times, end)
     start_gap = abs(times[start_i] - start)
     end_gap = abs(times[end_i] - end)
-    if start_gap > MAX_SAMPLE_GAP_SECONDS:
+    if start_gap > MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS:
         raise PowerReportError(f"{label}: nearest sample to window start is {start_gap:.3f}s away, no coverage")
-    if end_gap > MAX_SAMPLE_GAP_SECONDS:
+    if end_gap > MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS:
         raise PowerReportError(f"{label}: nearest sample to window end is {end_gap:.3f}s away, no coverage")
     if end_i <= start_i:
         raise PowerReportError(f"{label}: window narrower than the sample spacing")

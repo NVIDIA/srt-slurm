@@ -46,7 +46,7 @@ from srtctl.analysis.power_energy_report import (
     report_to_dict,
     sa_bench_window,
 )
-from srtctl.core.power.contract import MAX_SAMPLE_GAP_SECONDS, atomic_write_json
+from srtctl.core.power.contract import MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS, atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ class IncrementalPowerEmitter:
                         concurrency,
                         newest_sample_unix,
                         window.end_unix,
-                        MAX_SAMPLE_GAP_SECONDS,
+                        MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS,
                     )
                 continue
 
@@ -203,7 +203,7 @@ class IncrementalPowerEmitter:
         """A case is permanently unready once samples have grown past its window with no coverage.
 
         Samples only ever grow forward in time, so once the newest sample seen
-        is already more than ``MAX_SAMPLE_GAP_SECONDS`` past the window end,
+        is already more than ``MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS`` past the window end,
         no future poll can shrink that gap -- this case can never become
         integrable. Only decidable once samples have actually been loaded
         (``newest_sample_unix is not None``); a run with no samples loaded yet
@@ -211,7 +211,7 @@ class IncrementalPowerEmitter:
         """
         if newest_sample_unix is None:
             return False
-        return newest_sample_unix > window.end_unix + MAX_SAMPLE_GAP_SECONDS
+        return newest_sample_unix > window.end_unix + MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS
 
     def _load_samples(self, paths: RunPaths) -> tuple[CpuSamples | None, GpuSamples | None]:
         """Load whichever sample series discovery found.
@@ -265,7 +265,7 @@ class IncrementalPowerEmitter:
 
         ``build_concurrency_report`` integrates every socket, device and node in
         the window, and ``windowed_energy`` refuses any window whose nearest
-        sample is more than MAX_SAMPLE_GAP_SECONDS from a boundary. So a case
+        sample is more than MAX_POWER_REPORT_BOUNDARY_GAP_SECONDS from a boundary. So a case
         that is not yet fully bracketed by samples raises here and is withheld
         -- which is exactly the completeness guarantee we want.
         """
