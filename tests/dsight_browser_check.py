@@ -151,12 +151,10 @@ async def run(html, output, port, request_id):
         report["tests"].append("Human expansion appends one milestone per row and drills into provenance")
         await js("document.getElementById('tracks').scrollTop=0;document.getElementById('inspectorBody').scrollTop=0")
         await screenshot("11-cumulative-lifecycle.png")
-        await js("traceExplorer.setState({tab:'iterations'})")
         iterations = await js(
             "traceExplorer.queryIterations({worker:traceExplorer.getRequest(traceExplorer.getState().request).workers[0],rank:0,limit:3})"
         )
         assert iterations["items"] or iterations["unaligned_rows"]
-        await screenshot("12-iterations.png")
         report["tests"].append("Iteration context is queryable without claiming per-request batch ownership")
         # Exercise every imported rank via query, and a concrete worker through the UI.
         profiles = await js("traceExplorer.listProfiles()")

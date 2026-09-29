@@ -46,6 +46,12 @@ MOONCAKE_HTTP_METADATA_PORT = 8701
 # the master lives entirely inside our consolidated 8700-range.
 MOONCAKE_METRICS_PORT = 8702
 
+# LMCache multiprocess server (services[].type: lmcache-server), one per worker node,
+# reached by that node's vLLM ranks over localhost. LMCache's own defaults (5555, 8080)
+# sit inside ranges the NIXL side channel and the frontend can reach.
+LMCACHE_SERVER_PORT = 8750
+LMCACHE_HTTP_PORT = 8751
+
 # vLLM backend ports.
 VLLM_NIXL_PORT_BASE = 5400
 # vLLM Router discovery endpoint (frontend.type: vllm-router with a discovery

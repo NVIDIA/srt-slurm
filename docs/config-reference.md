@@ -56,6 +56,28 @@ srt-slurm owns the model path, HTTP port, tensor parallel size, and KV-transfer
 contract, so recipes cannot override those arguments. See the complete
 [ATOM/AToMesh recipe](../examples/atom/atomesh-disagg.yaml).
 
+To run another KV connector next to the Mooncake one (for example ATOM's in-process
+LMCache CPU offload on prefill), list it under `extra-kv-connectors` in that role's
+args. srtctl keeps generating the Mooncake entry, with its handshake port, and wraps
+both in ATOM's `multi` connector. An aggregate role with one extra connector runs it
+on its own. An `lmcache_mp` connector (ATOM's client for the `lmcache-server`
+service) dials the server on its own node, port 8750, unless its
+`kv_connector_extra_config` sets `lmcache.mp.port` or `lmcache.mp.server_urls`.
+
+```yaml
+roles:
+  prefill:
+    env:
+      PYTHONHASHSEED: "0"      # LMCache prefix hashes must agree across offload workers
+    args:
+      extra-kv-connectors:
+        - kv_connector: lmcache_offload
+          kv_role: offload
+          lmcache.local_cpu: true
+          lmcache.max_local_cpu_size: 180   # GB per worker
+          lmcache.chunk_size: 256
+```
+
 ```yaml
 schema: 2                      # Required: recipe layout version
 name: "my-benchmark"           # Required: job name

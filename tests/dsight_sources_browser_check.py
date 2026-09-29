@@ -109,22 +109,29 @@ async def run(output: Path, port: int) -> None:
                     # This fixture contains distinct sample timestamps.
                     metrics_logs, _ = write_run(output / "metric-source")
                     shutil.copytree(metrics_logs / "tachometer", logs / "tachometer")
-            report = build_dashboard(logs, output / "reports" / mode, **options)
+            report = build_dashboard(logs, output / "reports" / mode, single_file=True, **options)
             cap, url = report["capabilities"], Path(report["html"]).as_uri()
             await navigate(url, mode)
             visibility = await js("""(()=> {
               const shown = (q) => [...document.querySelectorAll(q)].some(e => e.getClientRects().length);
               return {requestTab:shown('.tabs [data-tab=request]'), nsightTab:shown('.tabs [data-tab=nsys]'),
-                batchesTab:shown('.tabs [data-tab=iterations]'), clientTracks:!!document.querySelector('#clientTracks'),
+                removedTabs:!!document.querySelector('[data-tab=iterations],[data-tab=evidence]'),
+                apiTab:shown('.tabs [data-tab=api]'), clientTracks:!!document.querySelector('#clientTracks'),
+                unjoinedTracks:!!document.querySelector('.server-activity'), legend:shown('.legend'),
                 hardware:shown('#hardwareToggle'), metrics:shown('#workerMetric'), cpu:/CPU sample hotspots/.test(document.body.innerText)};
             })()""")
             assert visibility["requestTab"] == cap["requests"], (mode, visibility, cap)
             assert visibility["clientTracks"] == cap["requests"], (mode, visibility, cap)
             assert visibility["nsightTab"] == cap["nsight"], (mode, visibility, cap)
-            assert visibility["batchesTab"] == cap["iterations"], (mode, visibility, cap)
+            assert not visibility["removedTabs"] and visibility["apiTab"], (mode, visibility)
             assert not visibility["hardware"], (mode, visibility, cap)  # Hardware lives in the catalog selector.
             assert visibility["metrics"] == cap["metrics"], (mode, visibility, cap)
             assert not visibility["cpu"]
+            assert not visibility["unjoinedTracks"], (mode, visibility)
+            assert visibility["legend"] == (cap["requests"] or cap["nsight"]), (mode, visibility, cap)
+            if mode == "otel-only":
+                empty = await js("document.querySelector('#tracks').innerText")
+                assert "No timeline tracks" in empty and "Agent API" in empty, empty
             assert (await js("traceExplorer.describe().available")) == cap
             if cap["metrics"]:
                 await js("traceExplorer.whenMetricsReady()")
@@ -230,15 +237,14 @@ async def run(output: Path, port: int) -> None:
                 result = await js("traceExplorer.queryNsys({limit:10})")
                 assert result["rank"] is None and result["total"] == 3
                 assert await js("document.querySelectorAll('.nsys-track').length") > 0
-                await click('.tabs [data-tab="iterations"]')
-                header = await js("document.querySelector('#inspectorBody').innerText")
-                assert "Queued" in header and "Prev. device ms" not in header and "TRT-LLM" not in header, header
+                batches = await js("traceExplorer.queryIterations({from:0,to:traceExplorer.describe().meta.duration})")
+                assert any(row["queued_requests"] == 12 for row in batches["items"])
+                assert all(row.get("previous_device_step_ms") is None for row in batches["items"])
             await js("traceExplorer.selectRange(0, traceExplorer.describe().meta.duration)")
             exported = await js("traceExplorer.exportSelection()")
             assert bool(exported["server_spans"]["total"]) == cap["server_activity"]
             assert bool(exported["batch_observations"]["total"]) == cap["iterations"]
             if cap["server_activity"]:
-                assert await js("document.querySelector('.server-activity') !== null")
                 page1 = await js("traceExplorer.queryServerSpans({limit:1})")
                 page2 = await js("traceExplorer.queryServerSpans({offset:1,limit:1})")
                 assert page1["items"][0]["id"] != page2["items"][0]["id"]
@@ -247,6 +253,9 @@ async def run(output: Path, port: int) -> None:
             await js(
                 "(async()=>{" + examples + "})()"
             )  # Every advertised example uses an available source and recorded identity.
+            valid_view = await js("traceExplorer.getState()")
+            if cap["metrics"]:
+                valid_view["pinnedMetrics"] = [valid_view["metric"]]
             # Stale links cannot enable unavailable sources or retain bogus identities.
             saved = {
                 "from": 0,
@@ -264,11 +273,28 @@ async def run(output: Path, port: int) -> None:
             state = await js("traceExplorer.getState()")
             assert state["request"] is None and state["span"] is None and state["expandedRequests"] == [], state
             assert state["nsys"] == cap["nsight"] and state["hardware"] == cap["hardware_metrics"], state
+            assert not await js("Boolean(document.querySelector('.server-activity'))")
             assert not await js("/CPU sample hotspots/.test(document.body.innerText)")
             if not cap["nsight"]:
                 assert state["tab"] != "nsys"
                 assert (await js("traceExplorer.queryNsys()"))["total"] == 0
             assert not await js("window.traceExplorerError || document.querySelector('#error').textContent")
+            # Removed tab names and their obsolete filters cannot restore dead controls.
+            expected_tab = "request" if cap["requests"] else "nsys" if cap["nsight"] else "api"
+            for removed_tab in ("iterations", "evidence"):
+                retired = {**valid_view, "tab": removed_tab, "iterationWorker": "decode-0", "iterationRank": 0}
+                await navigate(url + "#view=" + quote(json.dumps(retired)), mode)
+                restored = await js("traceExplorer.getState()")
+                assert restored["tab"] == expected_tab, (mode, removed_tab, restored)
+                for field in ("from", "to", "request", "expandedRequests", "pinnedMetrics"):
+                    assert restored[field] == valid_view[field], (mode, removed_tab, field, restored)
+                assert "iterationWorker" not in restored and "iterationRank" not in restored
+                assert await js("document.querySelector('#inspectorBody').innerText.length") > 0
+                assert await js("document.querySelector('.tabs [aria-pressed=true]').dataset.tab") == expected_tab
+                assert not await js("Boolean(document.querySelector('[data-tab=iterations],[data-tab=evidence]'))")
+                await click('.tabs [data-tab="api"]')
+                await js("traceExplorer.setState(" + json.dumps({"tab": removed_tab}) + ")")
+                assert (await js("traceExplorer.getState()"))["tab"] == "api"
             shot = await call("Page.captureScreenshot", format="png", captureBeyondViewport=False)
             (output / f"{mode}.png").write_bytes(base64.b64decode(shot["data"]))
             results.append({"mode": mode, "capabilities": cap, "visibility": visibility, "passed": True})

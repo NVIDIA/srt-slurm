@@ -19,7 +19,14 @@ from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Endpoint
 from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
-from srtctl.services import ServiceConfig, ServiceSourceConfig, list_service_types
+from srtctl.services import (
+    HttpProbe,
+    ServiceConfig,
+    ServiceLaunchContext,
+    ServiceSourceConfig,
+    get_service_kind,
+    list_service_types,
+)
 from srtctl.services.implicit import discovery_env, effective_services, uses_discovery_plane
 
 SRUN = "srtctl.cli.mixins.service_stage.start_srun_process"
@@ -91,6 +98,7 @@ def test_registered_kinds() -> None:
         "etcd",
         "generic",
         "gms",
+        "lmcache-server",
         "mooncake-master",
         "mooncake-store",
         "nats",
@@ -164,6 +172,34 @@ services:
       rev: refs/pull/1/head
 """
         )
+
+
+def test_lmcache_server_defaults_and_command() -> None:
+    kind = get_service_kind("lmcache-server")
+    service = ServiceConfig(name="lmcache", type="lmcache-server", args=["--l1-size-gb", "180"])
+    ctx = ServiceLaunchContext.preview()
+
+    assert (service.effective_start, kind.default_critical, kind.default_placement) == (
+        "before_workers",
+        True,
+        "workers",
+    )
+    assert kind.build_command(service, ctx) == [
+        "lmcache",
+        "server",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8750",
+        "--http-host",
+        "0.0.0.0",
+        "--http-port",
+        "8751",
+        "--l1-size-gb",
+        "180",
+    ]
+    probe = kind.readiness(service, ctx)
+    assert probe is not None and probe.http == HttpProbe(port=8751, path="/healthcheck")
 
 
 def test_mooncake_store_defaults_and_requires_master() -> None:
@@ -832,3 +868,39 @@ def test_resolve_host_binary(tmp_path: Path, monkeypatch) -> None:
     assert exporters.resolve_host_binary("configs/process-exporter") == binary
     assert exporters.resolve_host_binary(str(binary)) == binary
     assert exporters.resolve_host_binary("/nonexistent/process-exporter") is None
+
+
+def _lmcache_entries(config: SrtConfig) -> list[tuple[str, bool, str, str]]:
+    return [
+        (entry.service.name, entry.implicit, entry.service.effective_placement, entry.reason)
+        for entry in effective_services(config)
+        if entry.service.type == "lmcache-server"
+    ]
+
+
+def test_lmcache_mp_connector_implies_lmcache_server_on_the_roles_that_use_it() -> None:
+    every_role = _load("", backend="backend:\n  type: vllm\n  connector: lmcache-mp\n")
+    assert _lmcache_entries(every_role) == [
+        ("lmcache-server", True, "workers", "prefill connector lmcache-mp, decode connector lmcache-mp")
+    ]
+
+    # A role override goes through the same resolver: only prefill nodes get a server.
+    prefill_only = _load(
+        "",
+        backend="backend:\n  type: vllm\n  connector: nixl\n  vllm_config:\n    prefill:\n      connector: lmcache-mp\n",
+    )
+    assert _lmcache_entries(prefill_only) == [("lmcache-server", True, "prefill", "prefill connector lmcache-mp")]
+
+    assert _lmcache_entries(_load("", backend="backend:\n  type: vllm\n  connector: nixl\n")) == []
+
+
+def test_declared_lmcache_server_replaces_the_implied_one_under_any_name() -> None:
+    backend = "backend:\n  type: vllm\n  connector: lmcache-mp\n"
+    declared = _load(
+        "services:\n  - name: cache\n    type: lmcache-server\n    placement:\n      node: decode\n", backend=backend
+    )
+    assert _lmcache_entries(declared) == [("cache", False, "decode", "")]
+    disabled = _load(
+        "services:\n  - name: lmcache-server\n    type: lmcache-server\n    enabled: false\n", backend=backend
+    )
+    assert _lmcache_entries(disabled) == []

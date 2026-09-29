@@ -52,14 +52,17 @@ plot gaps; conflicting numeric observations remain in the raw query evidence.
 
 ## Metric catalog and loading
 
-`metric-data.js` indexes series metadata and decodes embedded gzip payloads by
-family. The HTML builder separates points from the core browser payload and
-embeds each family as an inert base64 element. It does not alter the downloadable
-normalized dataset. Legacy reports with inline points are also supported.
-Decodes are serialized and coalesced; an LRU cache retains at most 500,000 points.
-A larger family can be viewed but is not retained by that cache. Rendering checks
-a generation token after loading so an earlier selection cannot replace a newer
-chart.
+`metric-data.js` indexes series metadata. Progressive reports delegate selected
+time windows to `detail-data.js`, which fetches content-addressed gzip shards from
+the same static host. Its shared LRU cache budgets 32 MiB of decoded JSON bytes,
+and each fetch accepts cancellation. Shards retain exact timestamps, values and
+source references, including nulls and conflicting settings across shard edges.
+The browser never downloads the SQLite cache used by local CLI/MCP queries.
+
+`--single-file` retains the older inert base64 family payloads, serialized and
+coalesced decompression, and a 500,000-point family cache. Legacy inline points
+also remain supported. Rendering checks its generation after loading so an
+earlier selection cannot replace a newer chart.
 
 The metric picker consumes `metric_catalog`, including the shared presentation
 semantics in `srtctl.analysis.metric_catalog` adapted from the Tachometer dashboard
@@ -68,10 +71,13 @@ semantics in `srtctl.analysis.metric_catalog` adapted from the Tachometer dashbo
 families without samples in the trace interval. These charts display captured
 counter and histogram bucket values without computing rates or percentiles.
 
-Browser API v3 exposes synchronous `listMetricFamilies()` and `listMetricSeries()`
+Browser API v3.1 exposes synchronous `listMetricFamilies()` and `listMetricSeries()`
 metadata, asynchronous `queryMetrics()` and `exportSelection()` evidence, and
 `whenMetricsReady()` for chart readiness. Callers must await the asynchronous
 methods regardless of whether the family is cached.
+Nsight `queryNsys()`, `queryCpu()` and `inspectNsys()` should also be awaited;
+`whenDetailsReady()` waits for the active window's exact tracks or density view.
+Overview bins are labeled summaries, never substitutes for exact API results.
 
 ## Capacity references
 

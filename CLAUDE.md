@@ -28,6 +28,14 @@ uv run ruff check --fix src/srtctl/
 uv run ruff format src/srtctl/
 ```
 
+## Using DSight
+
+Before using DSight, read [docs/dsight.md](docs/dsight.md) and load the applicable
+[DSight skills](docs/dsight.md#agent-skills) by reading the linked skill files.
+This includes building or querying reports, analyzing existing results,
+preparing dashboard views, and changing DSight code. These skills live under
+`src/srtctl/dsight/skills/` and are part of this repository.
+
 ## Pull Request Descriptions
 
 Write for a reviewer who knows the repository but has no access to the author's
@@ -98,6 +106,7 @@ This file holds the rules for every change. Subsystem rules live next to the cod
 | Orchestrator stages, host setup | `src/srtctl/cli/AGENTS.md` | `docs/cli.md` |
 | Status reporting | `src/srtctl/status_server/AGENTS.md` | `docs/monitoring.md` |
 | Benchmarks | `src/srtctl/benchmarks/AGENTS.md` | `docs/config-reference.md` |
+| DSight reports, queries and analysis | `src/srtctl/dsight/AGENTS.md` | `docs/dsight.md`, `docs/dsight-storage.md` |
 | Tests, mock orchestrator, snapshots | `tests/AGENTS.md` | `tests/README.md` |
 | Documentation | `docs/AGENTS.md` | `docs/README.md` |
 | Recipe fields | `docs/schema-reference.md` (generated) | `docs/config-reference.md` |

@@ -32,6 +32,9 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/infra-services.yaml` | etcd and NATS as declared services on a dedicated node with a NATS payload limit; the implied exporters overridden or switched off |
 | `features/dynamo-source.yaml` | `dynamo.source:` building Dynamo from a git tag (or a PR head via `--set dynamo.source.rev=refs/pull/<n>/head`), pinned to a commit at submit |
 | `features/node-hooks.yaml` | `host_setup:` pre-run and post-run commands on each node's bare host, driven by `configs/node-hooks.sh`: arbitrary shell commands, one per line, from `HOOK_PRE` / `HOOK_POST` block scalars in the recipe environment, with per-command logging and a state snapshot |
+| `features/lmcache-server.yaml` | `services[].type: lmcache-server` plus `connector: lmcache-mp`: an LMCache DRAM tier, one server per worker node started before the workers and gated on its healthcheck; LMCache flags go under `args`. Needs a vLLM image that ships LMCache (the `vllm-lmcache` alias). See [../docs/services.md](../docs/services.md#service-types) |
+| `features/lmcache-server-disagg.yaml` | The same tier on the prefill side only: the server placed on prefill nodes and a hand-written `MultiConnector` (NIXL plus LMCache MP) in the prefill args, which srtctl passes through untouched |
+| `features/lmcache-server-sglang.yaml` | The same server next to aggregated SGLang workers: SGLang's `enable-lmcache` flag, with srtctl pointing each worker at the server on its node (`LMCACHE_MP_HOST`/`LMCACHE_MP_PORT`). Needs an SGLang image that ships LMCache (the `sglang-lmcache` alias) |
 | `features/vllm-failover.yaml` | `engine.failover:` shadow engine recovery: a GPU Memory Service sidecar and a parked standby engine per vLLM worker, relaunched in place after a crash. Needs a container that ships `gpu_memory_service` (the `dynamo-vllm` alias, an `nvcr.io/nvidia/ai-dynamo/vllm-runtime` image). See [../docs/shadow-engine-recovery.md](../docs/shadow-engine-recovery.md) |
 
 ## Cluster aliases
@@ -47,6 +50,8 @@ containers:
   vllm: /path/to/vllm.sqsh                  # vLLM image with the vllm-router executable
   trtllm: /path/to/tensorrtllm-runtime.sqsh # Dynamo TRT-LLM runtime image (ships ai-dynamo and trtllm-serve)
   dynamo-vllm: /path/to/vllm-runtime.sqsh   # Dynamo vLLM runtime image (ships ai-dynamo and gpu_memory_service), for features/vllm-failover.yaml
+  vllm-lmcache: /path/to/vllm-lmcache.sqsh  # vLLM image with LMCache installed, for features/lmcache-server.yaml and -disagg.yaml
+  sglang-lmcache: /path/to/sglang-lmcache.sqsh  # SGLang image with LMCache installed, for features/lmcache-server-sglang.yaml
 ```
 
 `resources.gpu_type` and `gpus_per_node` are set to `h100` and `8`; change them to match the partition you submit to.

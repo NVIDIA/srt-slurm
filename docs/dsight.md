@@ -5,6 +5,20 @@ samples, and existing Nsight exports on one timeline.
 
 See the [data-flow guide](dsight-data-flow.md) for diagrams connecting each source
 file to its UI view, request-identity joins, and the limits of each source.
+The [storage and query reference](dsight-storage.md) documents the SQLite schema,
+indexed query semantics, static detail format and browser API.
+
+## Agent skills
+
+Before using DSight, agents must read this guide and load the applicable skills
+below by reading their `SKILL.md` files. This applies when building or querying
+reports, analyzing existing results, preparing dashboard views, or changing
+DSight code. The skills are maintained alongside DSight; no global installation
+is required.
+
+| Skill | When to load it |
+| --- | --- |
+| [dsight-query](../src/srtctl/dsight/skills/dsight-query/SKILL.md) | Query an existing report, inspect source coverage, compare runs, or gather evidence for a dashboard view. Prefer the normalized SQLite cache through the read-only CLI, Python or MCP interface. |
 
 ## Generate on a cluster login node
 
@@ -44,23 +58,43 @@ the same artifacts. Large captures can require substantial CPU, memory, and
 filesystem reads; follow your site's login-node resource limits and use a CPU
 job when needed.
 
-Open `<path_to_report_directory>/index.html` in a browser on your own machine,
-after copying or publishing the generated HTML. The HTML embeds its data and
-assets; it works offline, including from `file://`, in a modern browser with
-`DecompressionStream` support. Generation is **CLI-only**: DSight has no submission,
+Publish the complete report directory on a static HTTP host and open `index.html`.
+For local viewing, serve it with Python (no database service is needed):
+
+```bash
+python -m http.server 8000 --bind 127.0.0.1 --directory "<path_to_report_directory>"
+# Open http://127.0.0.1:8000/index.html
+```
+
+The HTML embeds the request catalog and UI assets. Metric samples and Nsight
+detail load from adjacent compressed files as needed. This works without internet
+access; a modern browser with `DecompressionStream` support is required. Copying
+only the HTML omits its detail files. Direct `file://` viewing requires the larger
+embedded format: add `--single-file` to the build command.
+
+Generation is **CLI-only**: DSight has no submission,
 benchmark, cleanup, or upload hook. It does not enable profiling, change recipes,
 launch GPU jobs, or export `.nsys-rep` files. `dashboard` is an alias for `dsight`.
 
 | Output | Purpose |
 | --- | --- |
-| `index.html` | Self-contained interactive UI |
-| `trace-data.json.gz` | Exact normalized dataset embedded in the HTML |
+| `index.html` | UI assets, request/lifecycle catalog, source metadata and detail indexes |
+| `detail/*.json.gz` | Content-addressed exact metric/NVTX/CPU shards, fetched on demand |
+| `trace-data.sqlite` | Indexed normalized evidence for local CLI and MCP queries; not downloaded by the browser |
 | `manifest.json` | Schema, counts, warnings, source inventory and output hashes |
+
+`--single-file` instead writes the legacy embedded `index.html` and
+`trace-data.json.gz`. Both formats retain the same normalized evidence. Directory
+queries prefer SQLite; explicit legacy JSON/gzip paths remain supported.
 
 A rebuild stages the complete output before replacing an earlier DSight
 directory. Import/render failures preserve the previous generation. Existing
 directories that are not DSight outputs are rejected. Use preserved inputs:
 the importer checks registered source files for changes during generation.
+The HTML and all detail files form one generation. Publish them together. Detail
+URLs contain content hashes; a missing file reports an error rather than an empty
+measurement. HTTPS/localhost viewers also verify decoded content hashes. Existing
+open pages may need a reload after their directory is rebuilt.
 
 ## Inputs
 
@@ -70,15 +104,17 @@ mix concurrency sweeps or duplicated exports.
 
 Each source is optional. Views and controls appear only for usable observations:
 no OTel means no request breakdown; no matching NVTX/CPU samples means no Nsight
-section; no metrics means no metric selector; no batch records means no batch tab.
+section; no metrics means no metric selector.
 Missing CPU samples never become an empty hotspot table. An empty time selection
 keeps available controls and reports that no observations overlap the window.
 
 Client-only, metrics-only, Nsight-only, OTel-only and timestamped-batch-only
 captures are supported. Without a client export (or with an empty export), the
 window is the union of recorded source timestamps. DSight does not synthesize
-client requests or TTFT. Unjoined server spans have a separate section and query,
-including in runs that also contain measured clients. A nonempty client export
+client requests or TTFT. Unjoined server spans remain available through
+`queryServerSpans()` and evidence export, without separate timeline rows.
+OTel-only captures retain source coverage and query access; their timeline shows
+an empty-state message. A nonempty client export
 whose rows all fail the requested phase filter remains an error. Missing explicitly
 supplied paths, malformed inputs and captures without a positive recorded time
 range remain errors, rather than silently appearing complete.
@@ -155,7 +191,16 @@ report; a CUDA table's presence is reported separately from imported data.
 
 - Drag in the overview **or Client sessions & agents**, or enter From/To.
   All tracks follow the same time range.
-- Expand session → agent → request. For requests with OTel activity, **Expand
+- In **Request & execution path**, click **Fit Session** to zoom out to every
+  recorded request in the selected request's session, including its main agent
+  and subagents. The range uses the session's full recorded start/end, independent
+  of the current time window or search filter, with the same padding as
+  **Fit request**. Selection, expansions and pinned metrics are preserved;
+  **Previous time range** (↶) returns to the previous zoom. This works without
+  OTel. It covers the imported requests, not unrecorded session activity.
+- Expand session → agent → request. An expanded agent shows every request
+  matching the current time range and search, in chronological order.
+  For requests with OTel activity, **Expand
   lifecycle** reveals **Progress milestones**: cumulative rows ending at
   chronological recorded boundaries. The breakdown ends at **Client complete**.
   **Fit TTFT** selects the client TTFT window and expands the lifecycle only when
@@ -182,20 +227,46 @@ report; a CUDA table's presence is reported separately from imported data.
 - **Inspect phase in Nsight** follows the recorded worker. Select a rank or
   compare frontend + request workers. Router DP rank is retained as evidence;
   it is not assumed to map to a global process rank.
-- **Batch context** shows the measurements actually recorded by each engine.
-  TokenSpeed periodic snapshots show running/queued requests and cache pages;
-  absent iteration counters or device timers are not filled with zeros. Supply
-  the log's timezone to align timestamps that have no offset.
+- **Request & execution path** contains **Request**, **Nsight**, and **Agent API**
+  tabs. Request and Nsight appear only when their data is available; Agent API
+  remains available for queries and exports. Saved links targeting a removed or
+  unavailable tab open the first available tab.
+- **Agent API** exposes recorded batch observations through `queryIterations()`.
+  TokenSpeed periodic snapshots retain running/queued requests and cache pages;
+  absent iteration counters or device timers remain unknown. Supply the log's
+  timezone to align timestamps that have no offset.
 - **Copy view link** saves range, request, expansions, pinned metrics and line
   visibility in the URL fragment. **Export selection** saves evidence JSON with
   the same view state, including bounded pages of independent server activity
   and batch observations with total counts for pagination.
 
-Sessions are paginated; details expand on demand. Dense Nsight lanes show event
-density until zoomed in. Queries retain exact imported intervals. The offline
-HTML decompresses metric samples by family on demand and bounds its decoded
-cache. The downloadable `trace-data.json.gz` retains complete normalized points
-and source-row evidence for Python, CLI, and MCP queries.
+Sessions are paginated; details expand on demand. A broad Nsight selection shows
+512 precomputed density bins per report, labeled with their time resolution.
+These count overlapping intervals and do not represent CPU utilization. When
+the candidate shards contain at most 20,000 rows, the timeline loads exact ranges
+and available CPU samples. Larger selections retain the overview until zoomed in;
+exact paginated queries remain available at any range.
+
+Browser API v3.1 supports `await traceExplorer.queryNsys(...)`,
+`await traceExplorer.queryCpu(...)` and `await traceExplorer.inspectNsys(...)`.
+Use `await traceExplorer.whenDetailsReady()` after changing a view to wait for its
+Nsight tracks, and `whenMetricsReady()` for charts. Legacy embedded reports also
+accept these awaited calls. `exportSelection()` awaits exact evidence queries.
+
+Static shards contain at most 8,192 rows or approximately 512 KiB of decoded JSON.
+Time bounds include intervals beginning before the viewport, so long crossing
+ranges are retained. Metric loads include neighboring samples and all records at
+the latest preceding setting timestamp. The shared LRU cache budgets 32 MiB of
+decoded JSON bytes; this is a cache budget, not a total JavaScript heap limit.
+Pan/zoom cancels stale view fetches. A requested wide exact query can still read
+many shards, especially with a name filter; use local SQLite for broad analysis.
+
+SQLite keeps the existing normalized values, source references, relative-second
+timestamps, clock notes and partial-import warnings. It indexes NVTX ranges by
+profile, duration class and start time, and metric/CPU samples by series/profile
+and time. Requests and lifecycle metadata still load as a catalog; ingestion
+still normalizes a run in memory. Neither delivery format removes the importer's
+explicit event limit or upgrades incomplete source coverage.
 
 ## Timing definitions
 
@@ -236,6 +307,19 @@ additional recorded per-request evidence.
 Iteration counters and previous-device timers can lag the forward pass under
 overlap scheduling. Original counters are preserved; no universal shift or
 per-request assignment of shared batch time is applied.
+
+## Session zoom example
+
+Build the small client-only capture in [examples/dsight/fit-session](../examples/dsight/fit-session):
+
+```bash
+uv run --no-dev srtctl dsight build examples/dsight/fit-session --output /tmp/dsight-fit-session
+```
+
+Open `/tmp/dsight-fit-session/index.html`, select `child-turn`, then click
+**Fit request** followed by **Fit Session**. The latter includes `parent-turn`
+and `sibling-turn`, from 1 to 9 seconds plus padding, while keeping `child-turn`
+selected. The unrelated sessions at either end are outside the fitted range.
 
 ## Agent, CLI and Python access
 
@@ -279,7 +363,7 @@ const x = window.traceExplorer;
 x.selectRange(29, 34);
 x.selectRequest("<client-request-id>", {expand: true});
 x.getLifecycle("<client-request-id>");
-x.inspectNsys({worker: "decode-0", rank: 0, from: 32, to: 33});
+await x.inspectNsys({worker: "decode-0", rank: 0, from: 32, to: 33});
 x.listMetricFamilies(); // Synchronous catalog, including coverage and categories.
 x.listMetricSeries(); // Synchronous source identities without point decoding.
 x.setState({pinnedMetrics: ["trtllm_num_requests_running"]});
@@ -287,13 +371,15 @@ await x.queryMetrics({name: "trtllm_num_requests_running", worker: "decode-0"});
 x.queryIterations({worker: "decode-0", rank: 0});
 await x.exportSelection();
 await x.whenMetricsReady(); // Wait for all visible metric charts after a UI action.
+await x.whenDetailsReady(); // Wait for the current Nsight detail rendering.
 ```
 
-Browser API version 3 makes `queryMetrics()` and `exportSelection()` asynchronous
-so unloaded families return complete results. Await these methods even when a
-family was previously viewed. Exports capture the selected view and range before
-loading samples, so changing the view during loading does not mix selections.
-Range, request, lifecycle, and other existing query methods remain synchronous.
+Browser API version 3.1 makes `queryNsys()`, `inspectNsys()` and `queryCpu()`
+awaitable for progressive reports, alongside `queryMetrics()` and
+`exportSelection()`. Await these methods even when a family or window was
+previously viewed. Exports capture the selected view and range before loading
+samples, so changing the view during loading does not mix selections. Range,
+request, lifecycle, catalog and batch query methods remain synchronous.
 `pinnedMetrics` in `getState()` / `setState()` is an ordered array of metric family
 names. Restoring it removes duplicates and unknown names; an empty array clears
 all pins. State updates that omit it preserve the current pins.
@@ -368,11 +454,18 @@ uv run --with websockets python tests/dsight_optional_otel_check.py \
 ```
 
 Check the complete optional-source matrix (TokenSpeed overlap, independently
-missing OTel/Nsight/metrics, and each source alone), restored view links and
-available API examples:
+missing OTel/Nsight/metrics, and each source alone), restored view links including
+removed inspector tabs, and available API examples:
 
 ```bash
 uv run --with websockets python tests/dsight_sources_browser_check.py \
+  --port 9338 --out "<fresh_path_to_browser_check_output>"
+```
+
+Check session zoom, subagents, filtered views, range history and missing sources:
+
+```bash
+uv run --with websockets python tests/dsight_fit_session_check.py \
   --port 9338 --out "<fresh_path_to_browser_check_output>"
 ```
 

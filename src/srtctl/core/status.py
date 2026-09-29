@@ -171,6 +171,9 @@ class StatusReporter:
         buys a lot. The final failure is a WARNING in the sweep log; the run itself
         is never affected.
         """
+        cluster = _cluster_setting()
+        if cluster:
+            payload = {**payload, "metadata": {**(payload.get("metadata") or {}), "cluster": cluster}}
         any_success = False
         headers = _auth_headers(self.token_env)
         for endpoint in self.api_endpoints:

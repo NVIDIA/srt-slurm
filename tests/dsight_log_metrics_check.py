@@ -42,7 +42,7 @@ async def run(out: Path, port: int) -> None:
             )
             for case, lines in cases.items():
                 imported, _ = log_run(out / case, lines)
-                summary = build_dashboard(imported.logs, out / case / "report", iteration_timezone="UTC")
+                summary = build_dashboard(imported.logs, out / case / "report", single_file=True, iteration_timezone="UTC")
                 await browser.call("Page.navigate", url="about:blank")
                 await browser.wait("!window.traceExplorer")
                 await browser.call("Page.navigate", url=Path(summary["html"]).resolve().as_uri())

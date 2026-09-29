@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -30,6 +31,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     build.add_argument(
         "--no-otel", action="store_false", dest="otel", help="Skip OTel import and request lifecycle breakdowns"
     )
+    build.add_argument("--single-file", action="store_true", help="Embed all data for file:// viewing (larger HTML)")
     build.add_argument("--job", help="Display identifier (default: parent directory of logs)")
     build.add_argument(
         "--phase", default="profiling", help="Client benchmark_phase to include; 'all' includes warmup explicitly"
@@ -44,7 +46,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         help="Maximum imported NVTX events per report; truncation is reported",
     )
     query = commands.add_parser("query", help="Query the generated dataset as JSON without a browser")
-    query.add_argument("dataset", type=Path, help="Dashboard directory or trace-data.json.gz")
+    query.add_argument("dataset", type=Path, help="Dashboard directory, trace-data.sqlite or legacy trace-data.json.gz")
     query.add_argument("kind", choices=KINDS, nargs="?", default="summary")
     query.add_argument("--from", type=float, dest="start")
     query.add_argument("--to", type=float, dest="end")
@@ -77,6 +79,7 @@ def run(args: argparse.Namespace) -> int:
                 phase=args.phase,
                 iteration_timezone=args.iteration_timezone,
                 max_profile_events=args.max_profile_events,
+                single_file=args.single_file,
             )
         else:
             options = {
@@ -101,7 +104,7 @@ def run(args: argparse.Namespace) -> int:
             result = TraceDataset.from_path(args.dataset).query(args.kind, **options)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
         return 2
 

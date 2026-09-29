@@ -4,7 +4,7 @@
   "use strict";
   const clone = value => JSON.parse(JSON.stringify(value));
 
-  function create(data, {maxCachedPoints = 500000} = {}) {
+  function create(data, {maxCachedPoints = 500000, detailData} = {}) {
     const byName = new Map();
     for (const series of data.metrics) {
       if (!byName.has(series.name)) byName.set(series.name, []);
@@ -22,7 +22,7 @@
     // Serial decompression also bounds temporary JSON/base64 memory during broad queries.
     let queue = Promise.resolve();
     const metadata = series => {
-      const {points, ...rest} = series;
+      const {points, chunks, ...rest} = series;
       return rest;
     };
     function matching({name, worker, host, gpu, rank} = {}) {
@@ -53,8 +53,14 @@
         return {...series, points: points[String(series.id)]};
       });
     }
-    function loadFamily(name) {
+    function loadFamily(name, {from = -Infinity, to = Infinity, signal} = {}) {
       if (!familyByName.has(name)) return Promise.reject(Error(`Unknown metric family: ${name}`));
+      if (data.delivery) return (async () => {
+        const series = [];
+        for (const source of byName.get(name) || [])
+          series.push({...metadata(source), points: await detailData.metric(source, from, to, signal)});
+        return series;
+      })();
       if (cache.has(name)) {
         const entry = cache.get(name);
         cache.delete(name); cache.set(name, entry);

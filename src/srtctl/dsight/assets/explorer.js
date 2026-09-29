@@ -71,12 +71,11 @@
     throw e;
   }
   const available = D.capabilities;
-  const usableProfiles = D.profiles.filter((p) => p.events.length || p.cpu?.samples?.length);
+  const usableProfiles = D.profiles.filter((p) => (p.event_count ?? p.events.length) || (p.cpu?.sample_count ?? p.cpu?.samples?.length));
   const tabs = [
     ...(available.requests ? ["request"] : []),
     ...(available.nsight ? ["nsys"] : []),
-    ...(available.iterations ? ["iterations"] : []),
-    "evidence", "api",
+    "api",
   ];
   const requests = new Map(D.requests.map((r) => [r.id, r]));
   const sessionRequests = new Map(
@@ -84,7 +83,10 @@
   );
   const profileById = new Map(D.profiles.map((p) => [p.id, p]));
   const sourceById = new Map(D.sources.map((s) => [s.id, s]));
-  const metricData = window.DSightMetricData.create(D);
+  const detailData = window.DSightDetailData.create(D);
+  const metricData = window.DSightMetricData.create(D, {detailData});
+  const nsysViews = new Map();
+  let detailsReady = Promise.resolve(), detailController, detailKey = "", metricController;
   const metricFamilies = metricData.listFamilies();
   const metricFamilyByName = new Map(metricFamilies.map(family => [family.name, family]));
   const defaultMetric = metricFamilyByName.has("trtllm_num_requests_running")
@@ -118,8 +120,6 @@
       null,
     metricCharts: {},
     pinnedMetrics: [],
-    iterationWorker: null,
-    iterationRank: null,
     hardware: false,
     compareNsys: false,
     metric: defaultMetric,
@@ -199,8 +199,6 @@
       "span",
       "cursor",
       "metricCharts",
-      "iterationWorker",
-      "iterationRank",
     ]) {
       if (value[k] !== undefined)
         state[k] = k === "metricCharts"
@@ -381,6 +379,19 @@
     validateRange(from, to);
     const p = profileById.get(profile);
     if (!p) return {available: false, total: 0, items: [], range: [from, to]};
+    const formatEvents = ({items, total, ...page}) => ({
+      profile: p.id, worker: p.worker, rank: p.rank, attribution: p.attribution,
+      capture: p.capture, total, ...page,
+      items: items.map((e) => ({
+        start: e[0], end: e[1], name: p.names[e[2]], globalTid: e[3],
+        pid: p.threads?.find(t => t.global_tid === e[3])?.pid ?? null,
+        tid: p.threads?.find(t => t.global_tid === e[3])?.tid ?? null,
+        definition: clone(p.name_definitions?.[e[2]] ?? null), rowid: e[4], evidence_source: p.evidence_source,
+      })),
+    });
+    if (p.event_chunks) return detailData.events(p, {from, to, name,
+      offset: Math.max(0, Math.floor(offset)), limit: Math.max(0, Math.min(10000, Math.floor(limit))),
+    }).then(formatEvents);
     const es = p.events.filter(
       (e) =>
         overlap(e[0], e[1], from, to) &&
@@ -457,7 +468,7 @@
     const results = new Map();
     // Decode one family at a time, including for all-metric summary exports.
     for (const family of new Set(selectedSeries.map(series => series.name))) {
-      for (const series of await metricData.loadFamily(family)) {
+      for (const series of await metricData.loadFamily(family, {from, to})) {
         if (!ids.has(String(series.id))) continue;
         const {points: rawPoints, ...metadata} = series;
         results.set(String(series.id), {
@@ -483,13 +494,19 @@
     const p = profileById.get(profile);
     if (!p) return {available: false, total_samples: 0, hotspots: []};
     const cpu = p.cpu;
-    if (!cpu?.samples?.length)
+    if (!(cpu?.sample_count ?? cpu?.samples?.length))
       return {
         total_samples: 0,
         hotspots: [],
         available: false,
         attribution: "CPU samples were not imported for this process",
       };
+    if (cpu.chunks) return detailData.cpu(p, from, to).then(({counts, total}) => ({
+      available: true, total_samples: total, pid: cpu.pid, attribution: cpu.attribution,
+      range: [from, to], evidence_source: p.evidence_source,
+      hotspots: [...counts].sort((a, b) => b[1] - a[1]).slice(0, Math.min(200, Math.max(0, limit)))
+        .map(([id, n]) => ({symbol: cpu.names[id], samples: n, fraction: total ? n / total : 0})),
+    }));
     const samples = cpu.samples.filter((s) => s[0] >= from && s[0] <= to),
       counts = new Map();
     for (const s of samples)
@@ -513,8 +530,14 @@
     };
   }
   function cpuInspector(p) {
-    if (!p.cpu?.samples?.length) return "";
-    const q = queryCpu({ profile: p.id, limit: 12 });
+    if (!(p.cpu?.sample_count ?? p.cpu?.samples?.length)) return "";
+    const result = nsysViews.get(p.id)?.cpu;
+    if (p.cpu?.chunks && !result) return '<p class="help">Zoom in to load CPU sample hotspots, or use await traceExplorer.queryCpu() for the exact window.</p>';
+    const q = result ? {
+      total_samples: result.total,
+      hotspots: [...result.counts].sort((a, b) => b[1] - a[1]).slice(0, 12)
+        .map(([id, n]) => ({symbol: p.cpu.names[id], samples: n, fraction: n / result.total})),
+    } : queryCpu({ profile: p.id, limit: 12 });
     return `<h3>Frontend CPU sample hotspots</h3><p class="help">${fmt(q.total_samples, 0)} process samples in this window. Inclusive frames; percentages may overlap and do not measure this request’s CPU time.</p><table class="mini-table"><thead><tr><th>Sampled frame</th><th>Samples</th><th>Share</th></tr></thead><tbody>${q.hotspots.map((h) => `<tr><td title="${esc(h.symbol)}">${esc(h.symbol.length > 130 ? h.symbol.slice(0, 127) + "…" : h.symbol)}</td><td>${fmt(h.samples, 0)}</td><td>${fmt(h.fraction * 100, 1)}%</td></tr>`).join("")}</tbody></table>`;
   }
   function queryIterations({
@@ -553,31 +576,6 @@
         "Shared batch observations. Source timestamp precision and rank scope are preserved; these are not request durations.",
     };
   }
-  function iterationInspector() {
-    const workers = [...new Set(D.iterations.map((r) => r.worker))];
-    const worker = workers.includes(state.iterationWorker) ? state.iterationWorker :
-      workers.find((w) => selected()?.workers.includes(w)) ?? workers[0];
-    const ranks = [...new Map(D.iterations.filter((r) => r.worker === worker)
-      .map((r) => [r.rank, r.rank_kind ?? "rank"])).entries()];
-    const rank = ranks.some(([n]) => n === state.iterationRank) ? state.iterationRank : null;
-    const q = queryIterations({worker, rank, limit: 50});
-    const columns = [
-      ["local_time", "Recorded time", (x) => esc(x)],
-      ["batch_kind", "Phase", (x) => esc(x)],
-      ["iteration", "Iteration", (x) => fmt(x, 0)],
-      ["batch_requests", "Running", (x) => fmt(x, 0)],
-      ["queued_requests", "Queued", (x) => fmt(x, 0)],
-      ["active_pages", "Active pages", (x) => fmt(x, 0)],
-      ["total_pages", "Total pages", (x) => fmt(x, 0)],
-      ["host_step_ms", "Host ms", (x) => fmt(x)],
-      ["previous_device_step_ms", "Prev. device ms", (x) => fmt(x)],
-    ].filter(([key]) => D.iterations.some((r) => r.worker === worker && r[key] != null));
-    return `<h3>Batch observations</h3><p class="help">${esc(q.attribution)} Periodic snapshots do not identify individual forward steps.</p>
-      <div class="nsys-controls"><label>Worker<select id="iterationWorker">${workers.map((w) => `<option value="${esc(w)}" ${w === worker ? "selected" : ""}>${esc(w)}</option>`).join("")}</select></label>
-      <label>Recorded rank<select id="iterationRank"><option value="">All ranks</option>${ranks.map(([n, kind]) => `<option value="${n}" ${n === rank ? "selected" : ""}>${esc(kind)} ${n}</option>`).join("")}</select></label></div>
-      <p class="help">${fmt(q.total)} observations in this window; first 50 shown.${q.unaligned_rows ? ` ${q.unaligned_rows} observations have no known timezone and remain unaligned.` : ""}</p>
-      ${q.items.length ? `<table class="mini-table"><thead><tr>${columns.map(([,label]) => `<th>${label}</th>`).join("")}</tr></thead><tbody>${q.items.map((r) => `<tr>${columns.map(([key,,format]) => `<td>${r[key] == null ? "—" : format(r[key])}</td>`).join("")}</tr>`).join("")}</tbody></table>` : '<p class="help">No aligned observations in this time window.</p>'}`;
-  }
   function queryServerSpans({from = state.from, to = state.to, offset = 0, limit = 100} = {}) {
     validateRange(from, to);
     offset = Math.max(0, Math.floor(offset));
@@ -597,7 +595,7 @@
       visible_request_count: queryRequests({ limit: 0 }).total,
       server_spans: queryServerSpans(),
       batch_observations: queryIterations({limit: 1000}),
-      profile: state.nsys ? queryNsys({ limit: 200 }) : null,
+      profile: state.nsys ? await queryNsys({ profile: view.profile, from: view.from, to: view.to, limit: 200 }) : null,
       limitations: D.meta.limitations,
       audit: D.audit,
       sources: D.sources,
@@ -606,7 +604,7 @@
     return result;
   }
   window.traceExplorer = Object.freeze({
-    version: "3.0",
+    version: "3.1",
     ready: true,
     describe: () => ({
       schema: D.schema,
@@ -644,6 +642,11 @@
     listMetricFamilies: () => metricData.listFamilies(),
     listMetricSeries: filters => metricData.listSeries(filters),
     metricDataStatus: () => metricData.status(),
+    detailDataStatus: () => detailData.status(),
+    whenDetailsReady: async () => {
+      let current;
+      do { current = detailsReady; await current; } while (current !== detailsReady);
+    },
     whenMetricsReady: async () => {
       let current;
       do { current = metricsReady; await current; } while (current !== metricsReady);
@@ -668,9 +671,9 @@
     listProfiles: () =>
       D.profiles.map(({ events, names, cpu, ...p }) => ({
         ...clone(p),
-        selected_event_count: events.length,
+        selected_event_count: p.event_count ?? events.length,
         names: names.length,
-        cpu_samples: cpu?.samples.length ?? 0,
+        cpu_samples: cpu?.sample_count ?? cpu?.samples.length ?? 0,
       })),
     getSource: (id) => clone(sourceById.get(id) ?? null),
     exportSelection,
@@ -765,18 +768,6 @@
     if (!hasLifecycle(r)) return "";
     return '<div class="row-note"><strong>Request breakdown · Progress milestones</strong></div>' + milestoneRows(r);
   }
-  function serverTracks() {
-    if (!available.server_activity) return "";
-    const rows = D.server_spans.filter((s) => overlap(s.start,s.end));
-    return `<details class="server-activity" ${available.requests ? "" : "open"}><summary class="section-head">Unjoined server activity <small>${fmt(rows.length)} intervals in range</small></summary>
-      <div class="row-note">Recorded spans without a matching measured client request. First 100 intervals shown; zoom in to inspect. No client TTFT is inferred.</div>` +
-      rows.slice(0,100).map((s) => track(labelText(s.label), bar(s.start,s.end,s.label,`phase ${s.role}`,"",
-        `${s.name}
-${s.host}
-Request ${s.request ?? "unknown"}
-${ms(s.end-s.start)}
-${s.description}`))).join("") + "</details>";
-  }
   function clientTracks() {
     if (!available.requests) return "";
     const list = sessionList(),
@@ -826,11 +817,7 @@ ${s.description}`))).join("") + "</details>";
           ar.map((r) => requestBar(r, "agent")).join(""),
         );
         if (!aopen) continue;
-        const chosen = ar.includes(selected())
-          ? [selected(), ...ar.filter((r) => r !== selected()).slice(0, 7)]
-          : ar.slice(0, 8);
-        chosen.sort((a, b) => a.start - b.start);
-        for (const r of chosen) {
+        for (const r of ar.sort((a, b) => a.start - b.start)) {
           const ropen = hasLifecycle(r) && state.expandedRequests.has(r.id);
           html += track(
             '<span class="indent2"></span>' +
@@ -848,8 +835,6 @@ ${s.description}`))).join("") + "</details>";
           );
           if (ropen) html += lifecycleRows(r);
         }
-        if (ar.length > 8)
-          html += `<div class="row-note">Showing ${chosen.length} of ${ar.length} requests for this agent. Zoom or search to narrow the list; all remain queryable through the API.</div>`;
       }
     }
     if (!list.length)
@@ -877,13 +862,13 @@ ${s.description}`))).join("") + "</details>";
           const wanted = new Set(series.map(item => String(item.id)));
           const loaded = [];
           for (const name of new Set(series.map(item => item.name))) {
-            loaded.push(...(await metricData.loadFamily(name)).filter(item => wanted.has(String(item.id))));
+            loaded.push(...(await metricData.loadFamily(name, {from, to, signal: metricController.signal})).filter(item => wanted.has(String(item.id))));
             if (generation !== metricGeneration) return;
           }
           const references = [];
           const referenceIds = new Set(loaded.filter(item => item.reference?.series_id != null).map(item => String(item.reference.series_id)));
           for (const name of new Set(loaded.filter(item => item.reference?.series_id != null).map(item => item.reference.name))) {
-            references.push(...(await metricData.loadFamily(name)).filter(item => referenceIds.has(String(item.id))));
+            references.push(...(await metricData.loadFamily(name, {from, to, signal: metricController.signal})).filter(item => referenceIds.has(String(item.id))));
             if (generation !== metricGeneration) return;
           }
           if (generation !== metricGeneration || !host.isConnected) return;
@@ -996,10 +981,9 @@ ${s.description}`))).join("") + "</details>";
         '<div class="row-note">GPU and host metrics follow this time range. Individual GPU samples do not identify request ownership.</div>';
     return html;
   }
-  function nsysTracks() {
-    if (!state.nsys) return "";
+  function chosenProfiles() {
     const p = profileById.get(state.profile);
-    if (!p) return "";
+    if (!p) return [];
     let chosen = [p];
     if (state.compareNsys && selected()) {
       const ids = new Set(["frontend", ...selected().workers]);
@@ -1022,9 +1006,75 @@ ${s.description}`))).join("") + "</details>";
                 : 2),
         );
     }
-    return chosen.map(nsysTracksFor).join("");
+    return chosen;
+  }
+  function nsysTracks() {
+    if (!state.nsys) return "";
+    return chosenProfiles().map(nsysTracksFor).join("");
+  }
+  function densityTrack(p) {
+    const bins = p.event_density, width = D.meta.duration / bins.length;
+    const peak = Math.max(1, ...bins);
+    const rects = bins.map((n, i) => {
+      if (!n || (i + 1) * width < state.from || i * width > state.to) return "";
+      const x = Math.max(0, (i * width - state.from) / (state.to - state.from) * 1000);
+      const right = Math.min(1000, ((i + 1) * width - state.from) / (state.to - state.from) * 1000);
+      return `<rect x="${x}" y="${32 - 28 * n / peak}" width="${Math.max(0, right - x)}" height="${28 * n / peak}" fill="#8067b4"/>`;
+    }).join("");
+    return `<div class="section-head" data-nsys-heading="${p.id}"><span>Nsight · ${profileLabel(p)}</span><small>Density overview</small></div>`
+      + `<div class="row-note">${fmt(p.event_count, 0)} imported NVTX ranges in this report. Counts per ${ms(width)} bin; overlapping ranges are not CPU utilization. Zoom in for exact ranges. The API returns exact paginated rows.</div>`
+      + track(labelText("NVTX interval density"), `<svg class="metric-svg" viewBox="0 0 1000 35" preserveAspectRatio="none">${rects}</svg>`, {classes: "nsys-track", height: 35});
+  }
+  function refreshDetails() {
+    if (!D.delivery) return;
+    const chosen = state.nsys ? chosenProfiles() : state.tab === "nsys" ? [profileById.get(state.profile)].filter(Boolean) : [];
+    const from = state.from, to = state.to;
+    const key = JSON.stringify([from, to, chosen.map(p => p.id)]);
+    if (key === detailKey) return;
+    detailKey = key;
+    detailController?.abort();
+    detailController = new AbortController();
+    const signal = detailController.signal;
+    nsysViews.clear();
+    for (const p of D.profiles) if (p.event_chunks) p.events = [];
+    for (const p of chosen) nsysViews.set(p.id, {from, to, loading: true});
+    detailsReady = (async () => {
+      for (const p of chosen) {
+        const sampleCount = (p.cpu?.chunks || []).filter(c => c.bounds[0] <= to && c.bounds[3] >= from).reduce((n, c) => n + c.count, 0);
+        if (detailData.estimate(p, from, to) > 20000 || sampleCount > 20000) {
+          nsysViews.set(p.id, {from, to, summary: true});
+          continue;
+        }
+        const result = await detailData.events(p, {from, to, limit: 20000, signal});
+        const cpu = p.cpu?.chunks ? await detailData.cpu(p, from, to, signal) : null;
+        signal.throwIfAborted();
+        p.events = result.items;
+        nsysViews.set(p.id, {from, to, total: result.total, cpu});
+      }
+      signal.throwIfAborted();
+      if ($("nsysTracks")) $("nsysTracks").innerHTML = nsysTracks();
+      renderInspector();
+      window.dispatchEvent(new Event("trace-explorer:details-ready"));
+    })().catch(error => {
+      if (error.name === "AbortError") return;
+      if (!signal.aborted) {
+        for (const p of chosen) nsysViews.set(p.id, {from, to, error: error.message});
+        if ($("nsysTracks")) $("nsysTracks").innerHTML = nsysTracks();
+        renderInspector();
+        $("error").textContent = error.message;
+      }
+      throw error;
+    });
+    detailsReady.catch(() => {});
   }
   function nsysTracksFor(p) {
+    if (p.event_chunks) {
+      const view = nsysViews.get(p.id);
+      if (!view || view.from !== state.from || view.to !== state.to || view.loading)
+        return `<div class="section-head" data-nsys-heading="${p.id}"><span>Nsight · ${profileLabel(p)}</span></div><div class="row-note">Loading selected ranges…</div>`;
+      if (view.error) return `<div class="row-note">Could not load Nsight ranges: ${esc(view.error)}</div>`;
+      if (view.summary) return densityTrack(p);
+    }
     const es = p.events.filter((e) => overlap(e[0], e[1]));
     let html = `<div class="section-head" data-nsys-heading="${p.id}"><span>Nsight · ${profileLabel(p)}</span><small>${fmt(es.length, 0)} selected NVTX ranges</small></div><div class="row-note">Shared CPU/NVTX activity. Shows up to 8 threads and 5 overlap lanes each; all imported events remain queryable. ${p.cuda ? "The source contains a CUDA kernel table; this view displays host NVTX and CPU samples." : ""}</div>`;
     const r = selected();
@@ -1134,7 +1184,7 @@ ${s.description}`))).join("") + "</details>";
     const pathWorkers = D.workers.filter((w) => r.workers.includes(w.id)),
       sp = findInterval(r, state.span),
       front = r.spans.find((s) => s.role === "frontend");
-    let html = `<div class="help">Session ${esc(short(r.session))} / ${r.client_kind === "agentperf" ? "client" : r.depth ? "subagent" : "main agent"} / turn ${esc(r.turn)}</div><div class="request-id mono">${esc(r.id)}</div><div class="stats"><div class="stat">${fmt(r.ttft_ms)}<small>Client TTFT · ms</small></div><div class="stat">${fmt(r.end - r.start, 3)}<small>Request duration · s</small></div><div class="stat">${fmt(r.input_tokens, 0)}<small>Input tokens</small></div><div class="stat">${fmt(r.output_tokens, 0)}<small>Output tokens</small></div></div><div class="actions"><button id="fitRequest">Fit request</button><button id="fitTTFT" ${r.first === null ? "disabled" : ""}>Fit TTFT</button>${hasLifecycle(r) ? `<button id="expandTTFT" aria-expanded="${state.expandedRequests.has(r.id)}">${state.expandedRequests.has(r.id) ? "Collapse" : "Expand"} lifecycle</button>` : ""}</div>`;
+    let html = `<div class="help">Session ${esc(short(r.session))} / ${r.client_kind === "agentperf" ? "client" : r.depth ? "subagent" : "main agent"} / turn ${esc(r.turn)}</div><div class="request-id mono">${esc(r.id)}</div><div class="stats"><div class="stat">${fmt(r.ttft_ms)}<small>Client TTFT · ms</small></div><div class="stat">${fmt(r.end - r.start, 3)}<small>Request duration · s</small></div><div class="stat">${fmt(r.input_tokens, 0)}<small>Input tokens</small></div><div class="stat">${fmt(r.output_tokens, 0)}<small>Output tokens</small></div></div><div class="actions"><button id="fitSession" title="Fit all recorded requests in this session, including subagents">Fit Session</button><button id="fitRequest">Fit request</button><button id="fitTTFT" ${r.first === null ? "disabled" : ""}>Fit TTFT</button>${hasLifecycle(r) ? `<button id="expandTTFT" aria-expanded="${state.expandedRequests.has(r.id)}">${state.expandedRequests.has(r.id) ? "Collapse" : "Expand"} lifecycle</button>` : ""}</div>`;
     if (sp) {
       const stage = [
           ...lifecycleModel(r).stages,
@@ -1227,7 +1277,11 @@ ${s.description}`))).join("") + "</details>";
   }
   function nsysInspector() {
     const p = profileById.get(state.profile);
-    if (!p) return "<p>No Nsight SQLite exports are embedded.</p>";
+    if (!p) return "<p>No Nsight SQLite exports were imported.</p>";
+    const view = p.event_chunks ? nsysViews.get(p.id) : null;
+    const pending = p.event_chunks && (!view || view.from !== state.from || view.to !== state.to || view.loading);
+    const detailNote = pending ? "Loading selected ranges…" : view?.error ? `Could not load ranges: ${esc(view.error)}`
+      : view?.summary ? "Density overview. Zoom in for exact range counts and elapsed totals, or use await traceExplorer.queryNsys()." : "";
     const es = p.events.filter((e) => overlap(e[0], e[1])),
       sums = new Map();
     for (const e of es) {
@@ -1243,27 +1297,7 @@ ${s.description}`))).join("") + "</details>";
     const groups = [...sums.values()]
       .sort((a, b) => b.time - a.time)
       .slice(0, 18);
-    return `<p>Inspect activity beside the selected request. Worker and time joins identify context; they do not assign shared work to one request.</p><div class="nsys-controls"><label>Report<select id="profileSelect">${usableProfiles.map((x) => `<option value="${x.id}" ${p.id === x.id ? "selected" : ""}>${profileLabel(x)}</option>`).join("")}</select></label><button id="showNsys">${state.nsys ? "Hide" : "Show"} Nsight tracks</button>${selected()?.workers.length ? `<button id="compareNsys" aria-pressed="${state.compareNsys}">${state.compareNsys ? "Show one report" : "Compare frontend + request workers"}</button>` : ""}</div><dl class="facts"><dt>Coverage</dt><dd>${fmt(p.capture[0], 3)} to ${fmt(p.capture[1], 3)} s</dd>${p.truncated ? `<dt>Partial import</dt><dd>Events included through ${fmt(p.imported_range?.[1],3)} s; later source events are omitted.</dd>` : ""}<dt>Matching ranges</dt><dd>${fmt(es.length, 0)}</dd><dt>Recorded host</dt><dd>${esc(p.host || "not in exported metadata")}</dd>${p.cuda ? "<dt>CUDA source</dt><dd>Kernel table retained in original export</dd>" : ""}<dt>Excluded ranges</dt><dd>${p.invalid_or_boundary_ranges} malformed / boundary</dd></dl><p class="help">Selected NVTX categories: frontend preprocessing/routing and engine iteration/scheduling/forward preparation. Detokenize ranges below 100 µs remain in the original report, along with other excluded categories.</p>${cpuInspector(p)}<h3>Ranges in selected window</h3><p class="help">Inclusive, clipped elapsed time; nested and parallel ranges overlap. Totals are not CPU utilization or additive TTFT.</p><table class="mini-table"><thead><tr><th>Range</th><th>Count</th><th>Elapsed</th></tr></thead><tbody>${groups.map((g) => `<tr><td>${esc(g.name)}</td><td>${fmt(g.count, 0)}</td><td>${ms(g.time)}</td></tr>`).join("")}</tbody></table>${evidence([p.evidence_source], "Nsight SQLite")}<div class="detail-heading">Collection notes</div><ul class="quality-list">${(p.diagnostics || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
-  }
-  function evidenceInspector() {
-    const r = selected();
-    return `<h3>Join coverage</h3><dl class="facts"><dt>Client requests</dt><dd>${fmt(D.audit.client_requests, 0)}</dd><dt>Client → Dynamo</dt><dd>${fmt(D.audit.clients_with_server_identity, 0)}</dd>${D.audit.clients_with_lifecycle ? `<dt>With lifecycle</dt><dd>${fmt(D.audit.clients_with_lifecycle, 0)}</dd>` : ""}<dt>Worker bindings</dt><dd>${fmt(D.audit.worker_binding_rows ?? 0, 0)}</dd><dt>Ambiguous bindings</dt><dd>${fmt(D.audit.ambiguous_worker_bindings ?? 0, 0)}</dd><dt>Both engine maps</dt><dd>${fmt(D.audit.clients_with_both_engine_maps, 0)}</dd><dt>Ambiguous engine IDs</dt><dd>${D.audit.ambiguous_engine_ids}</dd></dl><h3>Timing and coverage</h3><ul class="quality-list">${[...D.meta.warnings, ...D.meta.limitations].map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="help">No negative residual is relabeled as execution time. Clock anchors remain uncorrected; GPU metrics preserve host / GPU labels.</p>${
-      r
-        ? evidence(r.evidence, "Client record") +
-          r.bridge_evidence
-            .map((e) => evidence(e, "Client → Dynamo"))
-            .join("") +
-          (r.worker_bindings ?? []).map((e) => evidence(e.evidence,
-            `${e.worker} binding · ${e.ambiguous ? "ambiguous worker evidence" : e.basis}`)).join("") +
-          r.engine.map((e) => evidence(e.evidence, `${e.worker} engine ID map`)).join("") +
-          r.spans
-            .filter(
-              (s) => s.name === "request.lifecycle" || s.id === state.span,
-            )
-            .map((s) => evidence(s.evidence, s.name))
-            .join("")
-        : ""
-    }`;
+    return `<p>Inspect activity beside the selected request. Worker and time joins identify context; they do not assign shared work to one request.</p><div class="nsys-controls"><label>Report<select id="profileSelect">${usableProfiles.map((x) => `<option value="${x.id}" ${p.id === x.id ? "selected" : ""}>${profileLabel(x)}</option>`).join("")}</select></label><button id="showNsys">${state.nsys ? "Hide" : "Show"} Nsight tracks</button>${selected()?.workers.length ? `<button id="compareNsys" aria-pressed="${state.compareNsys}">${state.compareNsys ? "Show one report" : "Compare frontend + request workers"}</button>` : ""}</div><dl class="facts"><dt>Coverage</dt><dd>${fmt(p.capture[0], 3)} to ${fmt(p.capture[1], 3)} s</dd>${p.truncated ? `<dt>Partial import</dt><dd>Events included through ${fmt(p.imported_range?.[1],3)} s; later source events are omitted.</dd>` : ""}<dt>Matching ranges</dt><dd>${detailNote ? "Not yet queried" : fmt(es.length, 0)}</dd><dt>Recorded host</dt><dd>${esc(p.host || "not in exported metadata")}</dd>${p.cuda ? "<dt>CUDA source</dt><dd>Kernel table retained in original export</dd>" : ""}<dt>Excluded ranges</dt><dd>${p.invalid_or_boundary_ranges} malformed / boundary</dd></dl><p class="help">Selected NVTX categories: frontend preprocessing/routing and engine iteration/scheduling/forward preparation. Detokenize ranges below 100 µs remain in the original report, along with other excluded categories.</p>${detailNote ? `<p class="help">${detailNote}</p>` : ""}${cpuInspector(p)}<h3>Ranges in selected window</h3><p class="help">Inclusive, clipped elapsed time; nested and parallel ranges overlap. Totals are not CPU utilization or additive TTFT.</p><table class="mini-table"><thead><tr><th>Range</th><th>Count</th><th>Elapsed</th></tr></thead><tbody>${groups.map((g) => `<tr><td>${esc(g.name)}</td><td>${fmt(g.count, 0)}</td><td>${ms(g.time)}</td></tr>`).join("")}</tbody></table>${evidence([p.evidence_source], "Nsight SQLite")}<div class="detail-heading">Collection notes</div><ul class="quality-list">${(p.diagnostics || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
   }
   function apiInspector() {
     const r = selected() ?? D.requests[0], p = usableProfiles[0];
@@ -1273,7 +1307,7 @@ ${s.description}`))).join("") + "</details>";
       `x.selectRange(0, ${D.meta.duration});`,
       ...(r ? ["x.queryRequests({limit: 10});", `x.selectRequest(${id});`, `x.getRequest(${id});`] : []),
       ...(hasLifecycle(r) ? [`x.getLifecycle(${id});`, `x.expandRequest(${id});`] : []),
-      ...(p ? [`x.inspectNsys({profile: ${p.id}});`, "x.queryNsys({limit: 20});"] : []),
+      ...(p ? [`await x.inspectNsys({profile: ${p.id}});`, "await x.whenDetailsReady();", "await x.queryNsys({limit: 20});"] : []),
       ...(available.metrics ? ["x.listMetricFamilies();", "x.listMetricSeries({name: x.getState().metric});", "await x.queryMetrics({name: x.getState().metric});"] : []),
       ...(available.iterations ? ["x.queryIterations({limit: 10});"] : []),
       ...(available.server_activity ? ["x.queryServerSpans({offset: 0, limit: 10});"] : []),
@@ -1288,11 +1322,7 @@ ${s.description}`))).join("") + "</details>";
         ? requestInspector()
         : state.tab === "nsys"
           ? nsysInspector()
-          : state.tab === "iterations"
-            ? iterationInspector()
-            : state.tab === "evidence"
-              ? evidenceInspector()
-              : apiInspector();
+          : apiInspector();
     $("inspectorBody").scrollTop = scroll;
     document.querySelectorAll("[data-tab]").forEach((b) => {
       b.classList.toggle("active", b.dataset.tab === state.tab);
@@ -1301,6 +1331,7 @@ ${s.description}`))).join("") + "</details>";
     $("selectionTag").textContent = selected()
       ? selected().status
       : "No selection";
+    refreshDetails();
   }
   function overview() {
     const bins = Array(300).fill(0);
@@ -1339,6 +1370,8 @@ ${s.description}`))).join("") + "</details>";
   function render() {
     clearClientDrag();
     metricGeneration++;
+    metricController?.abort();
+    metricController = new AbortController();
     // Reserve existing chart heights during async reloads so lower pins stay in view.
     const scroll = $("tracks").scrollTop;
     metricPanelHeights = new Map([...document.querySelectorAll(".dsight-metric-panel")]
@@ -1362,8 +1395,8 @@ ${s.description}`))).join("") + "</details>";
       (_, i) =>
         `<span class="tick" style="left:${i * 20}%">${fmt(state.from + ((state.to - state.from) * i) / 5, state.to - state.from < 1 ? 6 : 3)} s</span>`,
     ).join("");
-    $("tracks").innerHTML = clientTracks() + serverTracks() + workerTracks() + nsysTracks() ||
-      '<div class="loading">No supported timed observations are available. Source coverage is listed in Evidence.</div>';
+    $("tracks").innerHTML = clientTracks() + workerTracks() + (state.nsys ? `<div id="nsysTracks">${nsysTracks()}</div>` : "") ||
+      '<div class="loading">No timeline tracks are available. Imported data and source coverage are available in Agent API.</div>';
     mountMetricCharts();
     $("tracks").scrollTop = scroll;
     if ($("workerMetric")) $("workerMetric").value = state.metric;
@@ -1518,6 +1551,10 @@ ${s.description}`))).join("") + "</details>";
           state.expandedRequests.clear();
           render();
         },
+        fitSession: () => {
+          const session = D.sessions.find((s) => s.id === r?.session);
+          if (session) fitRange(session.start, session.end);
+        },
         fitRequest: () => r && fitRange(r.start, r.end),
         fitTTFT: () => {
           if (r && r.first !== null) {
@@ -1563,14 +1600,6 @@ ${s.description}`))).join("") + "</details>";
   document.addEventListener("change", (event) =>
     safe(() => {
       const t = event.target;
-      if (t.id === "iterationWorker") {
-        state.iterationWorker = t.value;
-        renderInspector();
-      }
-      if (t.id === "iterationRank") {
-        state.iterationRank = t.value === "" ? null : Number(t.value);
-        renderInspector();
-      }
       if (t.id === "profileSelect") {
         state.profile = Number(t.value);
         state.nsys = true;
@@ -1789,16 +1818,15 @@ ${s.description}`))).join("") + "</details>";
   });
   document.querySelectorAll(".tabs [data-tab]").forEach((button) => {
     button.hidden = !tabs.includes(button.dataset.tab);
-    if (button.dataset.tab === "iterations") button.textContent = "Batch context";
   });
   document.querySelector(".timeline-controls").hidden = !available.requests;
-  document.querySelector(".legend").hidden = !available.requests && !available.nsight && !available.server_activity;
+  document.querySelector(".legend").hidden = !available.requests && !available.nsight;
   document.querySelector(".legend").innerHTML = [
     ...(available.requests ? ['<span><i class="dot" style="background:var(--amber)"></i>Client TTFT</span>',
       '<span><i class="dot" style="background:var(--teal)"></i>Output reception</span>'] : []),
     ...(D.requests.some((r) => !Number.isFinite(r.first) || r.first < r.start || r.first > r.end)
       ? ['<span><i class="dot" style="background:#b7c2cd"></i>First-token timing unavailable</span>'] : []),
-    ...(available.request_breakdown || available.server_activity ? ['<span><i class="dot" style="background:var(--violet)"></i>OTel activity</span>'] : []),
+    ...(available.request_breakdown ? ['<span><i class="dot" style="background:var(--violet)"></i>OTel activity</span>'] : []),
     ...(available.nsight ? ['<span><i class="dot" style="background:var(--violet)"></i>Host NVTX</span>'] : []),
     '<span class="muted">Shared time axis</span>',
   ].join("");
@@ -1823,7 +1851,7 @@ ${s.description}`))).join("") + "</details>";
   ].filter(([count]) => count).map(([count, label]) => `${fmt(count,0)} ${label}`);
   $("coverageNotice").classList.toggle("has-warning", D.meta.warnings.length > 0);
   $("coverageNotice").innerHTML =
-    `<strong>Imported:</strong> ${imported.join(" · ") || "No supported observations"}. ${D.meta.warnings.map(esc).join(" ")} <button data-tab="evidence">View evidence</button>`;
+    `<strong>Imported:</strong> ${imported.join(" · ") || "No supported observations"}. ${D.meta.warnings.map(esc).join(" ")}`;
   if (!available.requests) $("cursorLabel").textContent = "Time since source window start";
   if (D.meta.qualification?.passed)
     $("runSubtitle").textContent += " · capture qualified";

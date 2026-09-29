@@ -27,6 +27,7 @@ from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sid
 from srtctl.ports import (
     DIST_INIT_PORTS,
     DYN_SYSTEM_PORT_BASE,
+    LMCACHE_SERVER_PORT,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     NCCL_PORTS,
@@ -207,10 +208,17 @@ class SGLangProtocol:
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
 
-        SGLang handles kv-events via CLI args (--kv-events-config), so no
-        additional process-specific env vars are needed here.
+        A worker started with ``enable-lmcache`` dials the LMCache MP server on its own
+        node (``services[].type: lmcache-server``) unless the recipe points it elsewhere
+        with ``lmcache-config-file`` or ``LMCACHE_MP_HOST`` in the role env.
         """
-        return {}
+        mode = process.endpoint_mode
+        config = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
+        if not config.get("enable-lmcache") or config.get("lmcache-config-file"):
+            return {}
+        if "LMCACHE_MP_HOST" in self.get_environment_for_mode(mode):
+            return {}
+        return {"LMCACHE_MP_HOST": "127.0.0.1", "LMCACHE_MP_PORT": str(LMCACHE_SERVER_PORT)}
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
         """Get mooncake env vars to inject on a specific worker.

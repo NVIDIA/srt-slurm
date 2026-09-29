@@ -17,13 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
+from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
+    from srtctl.core.topology import WorkerMode
 
 ETCD_SERVICE_NAME = "etcd"
 NATS_SERVICE_NAME = "nats"
@@ -80,6 +81,42 @@ def runs_nats(config: SrtConfig) -> bool:
     return bool(nats_implied_reasons(config))
 
 
+def connector_services(config: SrtConfig) -> list[EffectiveService]:
+    """The service each vLLM role's KV connector needs on its nodes (``KVConnector.service_type``).
+
+    Placed on the one role that uses the connector, or on every worker node when
+    several do. A declared service of that type owns the placement instead.
+    """
+    backend = config.backend
+    if not isinstance(backend, VLLMProtocol):
+        return []
+    resources = config.resources
+    workers: dict[WorkerMode, int] = {
+        "prefill": resources.num_prefill,
+        "decode": resources.num_decode,
+        "agg": resources.num_agg,
+    }
+    modes_by_type: dict[str, list[WorkerMode]] = {}
+    for mode, count in workers.items():
+        row = backend.kv_connector_for_mode(mode)
+        if count and row is not None and row.service_type is not None:
+            modes_by_type.setdefault(row.service_type, []).append(mode)
+    declared = {service.type for service in config.services}
+    return [
+        EffectiveService(
+            ServiceConfig(
+                name=service_type,
+                type=service_type,
+                placement=ServicePlacementConfig(node=modes[0] if len(modes) == 1 else "workers"),
+            ),
+            implicit=True,
+            reason=", ".join(f"{mode} connector {backend.connector_for_mode(mode)}" for mode in modes),
+        )
+        for service_type, modes in modes_by_type.items()
+        if service_type not in declared
+    ]
+
+
 def implied_services(config: SrtConfig) -> list[EffectiveService]:
     """Services the rest of the recipe asks for without naming them."""
     implied: list[EffectiveService] = []
@@ -97,6 +134,8 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
         implied.append(
             EffectiveService(ServiceConfig(name=GMS_SERVICE_NAME, type="gms"), implicit=True, reason="engine.failover")
         )
+
+    implied.extend(connector_services(config))
 
     mooncake_cfg = config.backend.mooncake_kv_store
     if mooncake_cfg is not None:

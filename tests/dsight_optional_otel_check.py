@@ -124,10 +124,18 @@ async def run(output: Path, port: int) -> None:
                 (logs / "profile_export.jsonl").write_bytes(client.read_bytes())
                 sqlites = None
             report = build_dashboard(
-                logs, output / mode, sqlites=sqlites, otel=mode != "disabled", iteration_timezone="UTC", job=mode
+                logs, output / mode, single_file=True, sqlites=sqlites, otel=mode != "disabled", iteration_timezone="UTC", job=mode
             )
             url = Path(report["html"]).as_uri()
             await navigate(url, mode)
+            assert not await js("Boolean(document.querySelector('.server-activity'))")
+            if mode == "unjoined":
+                # Spans without a measured client remain queryable and exportable.
+                spans = await js("traceExplorer.queryServerSpans()")
+                assert spans["total"] > 0 and spans["items"]
+                exported = await js("traceExplorer.exportSelection()")
+                assert exported["server_spans"] == spans
+                assert not await js("document.querySelector('.legend').innerText.includes('OTel activity')")
             await check_request("client-only", False)
             assert not await js(
                 "/Recorded request path|Identity bridge/.test(document.querySelector('#inspectorBody').innerText)"
@@ -151,6 +159,7 @@ async def run(output: Path, port: int) -> None:
             assert "client-only" not in state["expandedRequests"], state
             assert (CLIENT in state["expandedRequests"]) is available, state
             assert (state["span"] is not None) is available, state
+            assert not await js("Boolean(document.querySelector('.server-activity'))")
             await js("document.querySelector('#rangeFrom').value=0;document.querySelector('#rangeTo').value=4")
             await click("#applyRange")
             state = await js("traceExplorer.getState()")
@@ -202,11 +211,12 @@ async def run(output: Path, port: int) -> None:
                 assert ("Conflicting worker bindings" in identity["text"]) is (mode == "ambiguous-workers"), identity
                 exported = await js("traceExplorer.exportSelection()")
                 assert exported["request"]["worker_bindings"] == identity["bindings"]
-                await click("[data-tab=evidence]")
-                evidence_text = await js("document.querySelector('#inspectorBody').innerText")
-                assert "prefill-0 binding" in evidence_text and "decode-0 binding" in evidence_text
-                assert "decode-host_decode_w0.out:1" in evidence_text
-                await click("[data-tab=request]")
+                sources = {source["id"]: source for source in exported["sources"]}
+                assert any(
+                    sources[binding["evidence"][0]]["path"].endswith("decode-host_decode_w0.out")
+                    and binding["evidence"][1] == 1
+                    for binding in exported["request"]["worker_bindings"]
+                )
             if not available:
                 assert not await js("document.querySelector('#coverageNotice').innerText.includes('OTel')")
             await js("document.querySelector('#tracks').scrollTop=0")

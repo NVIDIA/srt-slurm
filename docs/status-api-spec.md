@@ -297,6 +297,10 @@ from srtctl.contract import (
 
 ## Behavior
 
+Every status update includes `metadata.cluster` when set in `srtslurm.yaml`.
+Shared collectors can use `(cluster, job_id)` to distinguish runs; the built-in
+collector still keys records by job ID alone.
+
 - All requests have a 5-second timeout
 - Redirects are never followed; a 3xx, 401 or 403 is logged at WARNING and counts as a failure
 - Other failures are logged at DEBUG level and ignored
