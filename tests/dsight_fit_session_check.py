@@ -64,7 +64,9 @@ async def run(output: Path, port: int) -> None:
     shutil.copytree(logs / "tachometer", metrics_only / "tachometer")
     example = Path(__file__).resolve().parents[1] / "examples/dsight/fit-session"
     reports = {
-        "traced": build_dashboard(logs, output / "traced", single_file=True, sqlites=profiles, iteration_timezone="UTC"),
+        "traced": build_dashboard(
+            logs, output / "traced", single_file=True, sqlites=profiles, iteration_timezone="UTC"
+        ),
         "client-only": build_dashboard(example, output / "client-only", single_file=True),
         "metrics-only": build_dashboard(metrics_only, output / "metrics-only", single_file=True),
     }
