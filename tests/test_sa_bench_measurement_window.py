@@ -353,6 +353,77 @@ class TestCoverageValidation:
         )
         assert _validate(logs, observed, sample_interval_seconds=0.2)[0].power_coverage_valid is True
 
+    @pytest.mark.parametrize(("window_seconds", "valid"), [(19, False), (20, True)])
+    def test_one_lost_sample_needs_at_least_twenty_intervals(self, logs, window_seconds, valid):
+        """At 1 s cadence a single dropped sample is 1/N of the span: 5.26% at N=19, 5.0% at N=20."""
+        start, end = self._completed(logs, end=1000.0 + window_seconds, duration=float(window_seconds))
+        observed = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start), int(end) + 1))
+                if t != int(start) + window_seconds // 2
+            ]
+        )
+        result = _validate(logs, observed)[0]
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+        assert Reason.SAMPLE_GAP_EXCEEDED not in result.reason_codes
+
+    @pytest.mark.parametrize(("window_seconds", "valid"), [(39, False), (40, True)])
+    def test_one_gap_at_the_per_gap_threshold_needs_forty_intervals(self, logs, window_seconds, valid):
+        """A single 3 s hole at 1 s cadence passes the per-gap rule but is two missing intervals: 5.1% at N=39."""
+        start, end = self._completed(logs, end=1000.0 + window_seconds, duration=float(window_seconds))
+        hole = {int(start) + 10, int(start) + 11}
+        observed = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start) - 2, int(end) + 3))
+                if t not in hole
+            ]
+        )
+        result = _validate(logs, observed)[0]
+        assert result.per_device_max_sample_gap_seconds["node-a/GPU-a0"] == pytest.approx(MAX_SAMPLE_GAP_SECONDS)
+        assert Reason.SAMPLE_GAP_EXCEEDED not in result.reason_codes
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+
+    @pytest.mark.parametrize(("sparse_missing_per_hundred", "valid"), [(4, True), (6, False)])
+    def test_sample_loss_is_judged_per_device_not_pooled(self, logs, sparse_missing_per_hundred, valid):
+        """A healthy GPU must neither rescue nor condemn a sibling; pooled counting would give 2% / 3%."""
+        start, end = self._completed(logs, end=1100.0, duration=100.0)
+        dropped = {int(start) + 10 * k for k in range(1, sparse_missing_per_hundred + 1)}
+        sparse = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start) - 2, int(end) + 3))
+                if t not in dropped
+            ]
+        )
+        healthy = _samples(start, end, devices=(("node-b", 0, "GPU-b0"),))
+        result = _validate(logs, sparse + healthy)[0]
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+
+    @pytest.mark.parametrize(("actual_cadence", "valid"), [(1.02, True), (1.06, False)])
+    def test_monotone_cadence_drift_is_loss_only_past_the_threshold(self, logs, actual_cadence, valid):
+        """Unlike alternating jitter, drift accumulates: 1.06 s per cycle over 1000 s is ~5.7% fewer samples."""
+        start, _end = self._completed(logs, end=2000.0, duration=1000.0)
+        count = int(1004 / actual_cadence) + 2
+        observed = derive_observed_devices(
+            [SampleRow(start - 2.0 + actual_cadence * i, i, "node-a", 0, "GPU-a0", 400.0) for i in range(count)]
+        )
+        result = _validate(logs, observed)[0]
+        assert Reason.SAMPLE_GAP_EXCEEDED not in result.reason_codes
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+
+    def test_unknown_cadence_fails_closed_as_sample_loss(self, logs):
+        """A manifest without sample_interval_seconds cannot prove coverage; today it reads as loss."""
+        start, end = self._completed(logs)
+        result = _validate(logs, _samples(start, end), sample_interval_seconds=None)[0]
+        assert result.power_coverage_valid is False
+        assert result.reason_codes == (Reason.SAMPLE_LOSS_EXCEEDED,)
+
     def test_bracketed_window_with_small_gaps_is_valid(self, logs):
         start, end = self._completed(logs)
 
