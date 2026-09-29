@@ -96,7 +96,9 @@ the source of truth).
 
 The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
 
-- **`acpi`** — reads Linux ACPI `power_meter` hwmon sysfs channels. Reports
+- **`acpi`** — reads Linux ACPI `power_meter` hwmon sysfs channels. The driver
+  name can be on the hwmon node or under `device/`, as exposed by legacy
+  `acpi_power_meter` registration on some Grace systems. Reports
   per-channel detail: `cpu_rail`, `soc`, `dram`, and (where firmware exposes
   it) a `total`-kind rail per socket. Domain names vary by platform (e.g.
   "Grace Power Socket 0" vs. a generic "Total Power socket 0", some suffixed
