@@ -18,6 +18,7 @@ import itertools
 import logging
 import math
 import os
+import re
 import shlex
 from collections.abc import Iterator, Mapping
 from dataclasses import field
@@ -101,6 +102,19 @@ class ReportingStatusConfig:
     # variable name belongs in a recipe: the resolved config is written to the lockfile
     # and the log directory, so a literal token there would leak.
     token_env: str | None = None
+    # Prefix for collector job IDs (for example "cluster-a:"). Use a unique prefix
+    # per cluster when sharing a collector; empty preserves raw Slurm job IDs.
+    job_id_prefix: str = ""
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]*", self.job_id_prefix):
+            raise ValueError(
+                "reporting.status.job_id_prefix must contain only ASCII letters, digits, '.', '_', ':', '-'"
+            )
+
+    def collector_job_id(self, slurm_job_id: str) -> str:
+        """Resolve the same collector identity at submit time and during the run."""
+        return f"{self.job_id_prefix}{slurm_job_id}"
 
     Schema: ClassVar[type[Schema]] = Schema
 

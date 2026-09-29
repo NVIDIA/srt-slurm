@@ -16,9 +16,35 @@ reporting:
       - "https://status.example.com"
     # Optional: which environment variable holds the bearer token (default SRTCTL_STATUS_TOKEN)
     token_env: SRTCTL_STATUS_TOKEN
+    # Optional: namespace job IDs when several clusters share a collector
+    job_id_prefix: "cluster-a:"
 ```
 
 If not configured, status reporting is disabled and jobs run normally.
+
+## Sharing a collector across clusters
+
+Set a distinct, stable `reporting.status.job_id_prefix` in each cluster's
+`srtslurm.yaml`, for example `cluster-a:` and `cluster-b:`. Slurm job `12345`
+then reports as `cluster-a:12345` or `cluster-b:12345`; the collector keys records
+by this full string. The display-only `cluster` field does not namespace IDs.
+The original Slurm ID is retained in `metadata.slurm_job_id` on the submit POST
+and every PUT, including updates that create a placeholder after a lost POST.
+Slurm commands, local log paths and S3 artifact paths continue to use the raw ID.
+
+The prefix defaults to empty, preserving existing IDs and payloads. Allowed
+characters are ASCII letters, digits, `.`, `_`, `:`, and `-`. Clients should
+percent-encode the full ID as one URL path segment; the native collector decodes
+it, so `/api/jobs/cluster-a%3A12345` addresses `cluster-a:12345`.
+Use the same prefix for submission and runtime, and across all reporters for one
+cluster. Changing it starts a separate collector record; it does not migrate
+existing data. A prefix prevents cross-cluster collisions, but does not prevent
+reuse of an ID within one cluster after Slurm's counter resets. Choose a new
+prefix for a new cluster incarnation in that case.
+
+The submitting host and allocation head node must both reach the collector;
+this setting does not establish network routes. See the runnable
+[status reporting example](../examples/features/status-reporting.yaml).
 
 ## Running the native collector
 

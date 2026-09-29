@@ -135,6 +135,8 @@ class StatusReporter:
     token_env: str = DEFAULT_TOKEN_ENV
     # Connection attempts per endpoint for each report; see _put.
     attempts: int = 2
+    # Present when collector identity differs from the raw Slurm job ID.
+    slurm_job_id: str | None = None
 
     @classmethod
     def from_config(cls, reporting: "ReportingConfig | None", job_id: str) -> "StatusReporter":
@@ -152,7 +154,12 @@ class StatusReporter:
         if endpoints:
             logger.info("Status reporting enabled: %s", ", ".join(endpoints))
 
-        return cls(job_id=job_id, api_endpoints=endpoints, token_env=_token_env(status))
+        return cls(
+            job_id=status.collector_job_id(job_id) if status else job_id,
+            api_endpoints=endpoints,
+            token_env=_token_env(status),
+            slurm_job_id=job_id if status and status.job_id_prefix else None,
+        )
 
     @property
     def enabled(self) -> bool:
@@ -171,6 +178,8 @@ class StatusReporter:
         buys a lot. The final failure is a WARNING in the sweep log; the run itself
         is never affected.
         """
+        if self.slurm_job_id is not None:
+            payload = {**payload, "metadata": {**payload.get("metadata", {}), "slurm_job_id": self.slurm_job_id}}
         any_success = False
         headers = _auth_headers(self.token_env)
         for endpoint in self.api_endpoints:
@@ -388,8 +397,10 @@ def create_job_record(
     token_env = _token_env(status)
     headers = _auth_headers(token_env)
 
+    if status and status.job_id_prefix:
+        metadata = {**(metadata or {}), "slurm_job_id": job_id}
     payload = JobCreatePayload(
-        job_id=job_id,
+        job_id=status.collector_job_id(job_id) if status else job_id,
         job_name=job_name,
         submitted_at=submitted_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         cluster=cluster,

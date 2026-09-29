@@ -46,7 +46,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from pydantic import ValidationError
 
@@ -250,14 +250,15 @@ def route(store: StatusStore, method: str, raw_path: str, body: dict[str, Any] |
     if path == "/api/events" and method == "GET":
         return _event_feed(store, query)
     if (match := _JOB_EVENTS_ROUTE.match(path)) and method == "GET":
-        return _job_events(store, match["job_id"], query)
+        return _job_events(store, unquote(match["job_id"]), query)
     if match := _JOB_ROUTE.match(path):
+        job_id = unquote(match["job_id"])
         if method == "GET":
-            return _get_job(store, match["job_id"])
+            return _get_job(store, job_id)
         if method == "PUT":
-            return _update_job(store, match["job_id"], body)
+            return _update_job(store, job_id, body)
         if method == "DELETE":
-            return _delete_job(store, match["job_id"])
+            return _delete_job(store, job_id)
     raise ApiError(HTTPStatus.NOT_FOUND, f"No route for {method} {path}")
 
 

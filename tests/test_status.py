@@ -6,6 +6,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from srtctl.contract import JobCreatePayload, JobStage, JobStatus, JobUpdatePayload
 from srtctl.core.schema import ReportingConfig, ReportingStatusConfig
 from srtctl.core.status import (
@@ -598,3 +600,16 @@ class TestJobStageEnum:
         assert JobStage.FRONTEND.value == "frontend"
         assert JobStage.BENCHMARK.value == "benchmark"
         assert JobStage.CLEANUP.value == "cleanup"
+
+
+class TestCollectorJobIdPrefix:
+    @pytest.mark.parametrize("prefix", ["", "cluster-a:", "rack_1.east-2:"])
+    def test_schema_round_trip(self, prefix):
+        status = ReportingStatusConfig.Schema().load({"job_id_prefix": prefix})
+        assert status.collector_job_id("12345") == f"{prefix}12345"
+        assert ReportingStatusConfig.Schema().dump(status)["job_id_prefix"] == prefix
+
+    @pytest.mark.parametrize("prefix", ["a/b:", "a?b:", "a#b:", "a%b:", "a b:", "a\\b:", "é:", "a\n"])
+    def test_rejects_unsafe_prefix_on_load(self, prefix):
+        with pytest.raises(ValueError, match="reporting.status.job_id_prefix"):
+            ReportingStatusConfig.Schema().load({"job_id_prefix": prefix})

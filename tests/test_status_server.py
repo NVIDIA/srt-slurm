@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 import requests
@@ -868,3 +869,72 @@ class TestCreateJobRecordRetry:
         assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
             "Status report to https://collector.example lost after 2 attempts: timed out"
         ]
+
+
+class TestClusterJobIdentity:
+    @pytest.mark.parametrize("missing_post", [False, True])
+    def test_same_slurm_job_on_two_clusters_stays_separate(self, base_url, tmp_path, monkeypatch, missing_post):
+        import srtctl.core.config
+
+        for cluster, exit_code in [("cluster-a", 0), ("cluster-b", 1)]:
+            reporting = ReportingConfig(status=ReportingStatusConfig(endpoint=base_url, job_id_prefix=f"{cluster}:"))
+            metadata = {"tags": [cluster]}
+            if not missing_post:
+                assert create_job_record(reporting, "12345", cluster, cluster=cluster, metadata=metadata)
+                assert metadata == {"tags": [cluster]}  # Caller-owned metadata is not changed.
+            monkeypatch.setattr(
+                srtctl.core.config, "get_srtslurm_setting", lambda key, default=None, cluster_name=cluster: cluster_name
+            )
+            reporter = StatusReporter.from_config(reporting, "12345")
+            assert reporter.report_started(_config(), _runtime(tmp_path / cluster))
+            assert reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, f"Running on {cluster}")
+            assert reporter.report_artifacts(f"s3://results/{cluster}/12345/")
+            assert reporter.report_completed(exit_code, logs_url=f"s3://results/{cluster}/12345/")
+            if missing_post:
+                # Backfilling the submit record must use the same ID and preserve completion.
+                assert create_job_record(reporting, "12345", cluster, cluster=cluster, metadata=metadata)
+
+        jobs = _get(base_url, "/api/jobs").json()["jobs"]
+        assert {job["job_id"] for job in jobs} == {"cluster-a:12345", "cluster-b:12345"}
+        for cluster, status in [("cluster-a", "completed"), ("cluster-b", "failed")]:
+            job_id = f"{cluster}:12345"
+            # Match encodeURIComponent(id) in the native UI, including its escaped colon.
+            path = f"/api/jobs/{quote(job_id, safe='')}"
+            response = _get(base_url, path)
+            assert response.status_code == 200
+            job = response.json()
+            assert job["job_id"] == job_id
+            assert job["cluster"] == cluster
+            assert job["status"] == status
+            assert job["logs_url"] == f"s3://results/{cluster}/12345/"
+            assert job["metadata"]["slurm_job_id"] == "12345"
+            assert job["metadata"]["log_dir"] == str(tmp_path / cluster)
+            events = _get(base_url, f"{path}/events").json()["events"]
+            assert all(event["job_id"] == job_id for event in events)
+            assert events[-1]["status"] == status
+            assert [event["message"] for event in events if event["stage"] == "benchmark"] == [f"Running on {cluster}"]
+
+    def test_first_update_retains_raw_id_without_started_report(self, base_url):
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint=base_url, job_id_prefix="cluster-a:"))
+        assert StatusReporter.from_config(reporting, "12345").report_completed(1)
+        job = _get(base_url, "/api/jobs/cluster-a%3A12345").json()
+        assert job["metadata"]["slurm_job_id"] == "12345"
+        assert job["status"] == "failed"
+
+    def test_legacy_and_prefixed_ids_coexist(self, base_url, reporting):
+        assert create_job_record(reporting, "12345", "legacy")
+        assert StatusReporter.from_config(reporting, "12345").report_completed(0)
+        prefixed = ReportingConfig(status=ReportingStatusConfig(endpoint=base_url, job_id_prefix="cluster-a:"))
+        assert create_job_record(prefixed, "12345", "namespaced")
+        assert StatusReporter.from_config(prefixed, "12345").report_completed(1)
+        legacy = _get(base_url, "/api/jobs/12345").json()
+        assert legacy["status"] == "completed"
+        assert legacy["metadata"] is None
+        assert _get(base_url, "/api/jobs/cluster-a%3A12345").json()["status"] == "failed"
+
+    def test_encoded_update_and_delete_address_same_record(self, base_url):
+        assert _create(base_url, "cluster-a:12345").status_code == 201
+        assert _put(base_url, "cluster-a%3A12345", {"status": "workers"}).status_code == 200
+        assert _get(base_url, "/api/jobs/cluster-a:12345").json()["status"] == "workers"
+        assert requests.delete(f"{base_url}/api/jobs/cluster-a%3A12345", timeout=5).status_code == 200
+        assert _get(base_url, "/api/jobs/cluster-a:12345").status_code == 404

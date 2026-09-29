@@ -1,0 +1,50 @@
+# Report this single-worker benchmark to a shared collector.
+# Replace endpoint with a collector reachable from the submit host and head node.
+# Export SRTCTL_STATUS_TOKEN there; never put the token itself in this file.
+# Normally reporting belongs in each cluster's srtslurm.yaml, with a unique,
+# stable prefix per cluster (and cluster: "cluster-a" for dashboard filtering).
+# See docs/status-api-spec.md. Model/container aliases: examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-status-reporting"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+frontend:
+  type: sglang
+  enable_multiple_frontends: false
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"
+
+reporting:
+  status:
+    endpoint: "https://status.example.com"
+    job_id_prefix: "cluster-a:"

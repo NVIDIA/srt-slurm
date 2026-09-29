@@ -516,6 +516,7 @@ Status reporting configuration.
 | `endpoint` | str \| None | `None` |  |
 | `endpoints` | list[str] \| None | `None` |  |
 | `token_env` | str \| None | `None` | Name of the environment variable holding the bearer token the reporter sends as ``Authorization: Bearer`` on every request (default SRTCTL_STATUS_TOKEN). Only the variable name belongs in a recipe: the resolved config is written to the lockfile and the log directory, so a literal token there would leak. |
+| `job_id_prefix` | str | `''` | Prefix for collector job IDs (for example "cluster-a:"). Use a unique prefix per cluster when sharing a collector; empty preserves raw Slurm job IDs. |
 
 ### AIAnalysisConfig
 
