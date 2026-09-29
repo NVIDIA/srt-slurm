@@ -131,16 +131,27 @@ The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
   label; the collector treats those samples as 1130.
   Source: NVIDIA/DCGM `modules/sysmon/DcgmSystemMonitor.cpp` (label → file
   map) and `modules/sysmon/DcgmModuleSysmon.cpp` (field id → getter).
-- **`auto`** (default) — tries ACPI first (it alone carries the socket
-  envelope) and falls back to DCGM only when ACPI is unusable: no
-  `power_meter` hwmon sensors, or every discovered sensor reads zero across
-  two probes one second apart (a node can expose channels that never report;
-  publishing them would integrate to 0 J and pass for a measurement). The
-  fallback is logged at WARN with the sensor count. In DCGM mode the exporter
-  watches 1130+1132 and, if this libdcgm refuses that set for CPU entities,
-  retries with 1130 alone (logged at WARN) rather than fail — 1130 alone is the
-  floor every earlier exporter had. The Python host collector
-  (`srtctl.core.cpu_power`) uses the same ACPI-first order.
+- **`auto`** (default) — walks a fixed ladder at startup, most informative
+  source first, and each source must prove itself before it is used. Every
+  step down is logged at WARN in the exporter's `.out` file with the reason:
+
+  1. **ACPI, live** — `power_meter` hwmon sensors were discovered *and* at
+     least one reads a positive value. Discovery alone is not enough: a node
+     can expose channels that never report, and publishing them would
+     integrate to 0 J and pass for a measurement. If every sensor reads
+     zero, the probe is repeated once after 1 s (hwmon averages can read 0
+     on the first poll after boot) before ACPI is declared dead.
+  2. **DCGM, fields 1130 + 1132** — CPU rail and SysIO.
+  3. **DCGM, field 1130 alone** — when this libdcgm refuses 1132 for CPU
+     entities (older release, or a sysmon without SysIO). 1130 alone is the
+     floor every earlier exporter had; in `auto` DCGM is the last resort, so
+     failing here would mean no CPU power at all.
+  4. **Exit non-zero** — no source could be established.
+
+  `--source acpi` and `--source dcgm` run only their own rungs (ACPI still
+  requires the liveness probe to pass; DCGM still tries 1130+1132 then 1130)
+  and exit non-zero instead of stepping down. The Python host collector
+  (`srtctl.core.cpu_power`) implements the same ladder.
 
 The exporter resolves this once at process startup and serves only one metric
 family (`cpu_power_dcgm_watts` or `cpu_power_acpi_watts`) for its lifetime.
@@ -163,6 +174,18 @@ schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, to
   when the source has no such reading. ACPI fills whichever rails the firmware
   exposes; DCGM fills `cpu_rail_w` (= `power_w`, field 1130) and `soc_w`
   (field 1132) and leaves `dram_w` blank.
+
+  A rail that could not be read is **blank, never `0`**, whatever the cause:
+  the exporter fell back to watching 1130 alone (blank on every row, one WARN
+  at startup); DCGM returned a non-OK status for that (socket, field) on that
+  scrape; or the value was zero or non-finite (the exporter drops it, since
+  `0` from these files means "not measured", not "idle"). The primary is
+  different: a socket whose `power_w` source (ACPI `total`, or field 1130) is
+  missing on a scrape produces **no row** for that socket rather than a row
+  with blank `power_w`. Component rails never substitute for it and are
+  never summed into `total_power_w`, so a missing `soc_w` changes nothing
+  else on the row. Consumers should treat a blank rail as "unknown", not as
+  a zero-watt rail.
 - **`total_power_w`** — the node-level total for that scrape, duplicated on
   every sensor row at the same `(hostname, timestamp_unix)`. In DCGM mode this
   is the sum of the per-socket field-1130 values (CPU rails; SysIO is never
@@ -239,8 +262,12 @@ are a separate, unrelated top-level config (`gpu_power_limits`) — not part of
 scraper design. Instead of an exporter plus a head-node poller, srtctl launches
 `python3 -m srtctl.core.cpu_power` directly on the bare host of every worker
 node. Each collector reads Linux ACPI `power_meter` hwmon channels (or DCGM CPU
-entity field 1130) itself, writes its own per-node CSV under
-`<storage_subdir>/nodes/`, and drops a ready marker. At teardown the head node
+entity fields 1130 and 1132) itself, writes its own per-node CSV under
+`<storage_subdir>/nodes/`, and drops a ready marker. Its `--source auto`
+walks the same ladder as the exporter (ACPI only if some sensor reads
+positive, then DCGM 1130+1132, then 1130 alone), logging each step down to
+the collector's `.out` file; the per-node `*.metadata.json` records which
+DCGM power fields were actually watched (`power_fields[].watched`). At teardown the head node
 (`CpuPowerTelemetrySession`, `src/srtctl/core/cpu_power_session.py`) merges the
 node CSVs into `<storage_subdir>/samples.csv` and writes `manifest.json`.
 
@@ -249,7 +276,7 @@ telemetry:
   enabled: true
   cpu_power:
     enabled: true              # presence alone is not enough; this flag turns the leg on
-    source: auto               # "auto" (ACPI then DCGM, best-effort) | "acpi" | "dcgm" (mandatory)
+    source: auto               # "auto" (live ACPI, then DCGM 1130+1132, then 1130) | "acpi" | "dcgm" (mandatory)
     sample_interval_seconds: 0.1
     startup_timeout_seconds: 30.0
     required: false            # true fails the job if the leg is not ready or not publishable
@@ -268,7 +295,7 @@ Differences from `cpu_power_exporter`:
   extra `timestamp_local` column, not in `power/cpu/`. The energy report
   (`python -m srtctl.analysis.power_energy_report <log_dir>`) discovers either
   location; when a run has both, pass `--cpu-samples <path>` to pick one.
-- **Per-socket utilization (DCGM source only).** Alongside power field 1130
+- **Per-socket utilization (DCGM source only).** Alongside the power fields
   the DCGM reader watches CPU entity fields 1100-1104 and appends five
   columns to every sample row: `cpu_util_total`, `cpu_util_user`,
   `cpu_util_nice`, `cpu_util_sys`, `cpu_util_irq`, reported by DCGM as a

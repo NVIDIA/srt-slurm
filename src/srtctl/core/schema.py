@@ -1934,8 +1934,10 @@ class CpuPowerConfig:
 
     Attributes:
         enabled: Master switch for this leg. Default: False.
-        source: ``auto`` tries ACPI then DCGM and is best-effort; naming
-            ``acpi`` or ``dcgm`` explicitly makes that provider mandatory.
+        source: ``auto`` uses ACPI when some sensor reads a positive value,
+            else DCGM fields 1130+1132, else 1130 alone, logging each step
+            down; naming ``acpi`` or ``dcgm`` explicitly makes that provider
+            mandatory (it still proves itself, but exits instead of stepping).
         sample_interval_seconds: Read period on each node, in seconds.
         startup_timeout_seconds: How long to wait for every node's collector
             to publish its ready marker before giving up on readiness.
@@ -1973,7 +1975,8 @@ class CpuPowerExporterConfig:
     ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries ACPI
     first (the only source with the socket envelope) and falls back to DCGM
     when no ACPI power_meter hwmon sensors exist or every one of them reads
-    zero on two probes. DCGM mode reports field
+    zero on two probes; DCGM watches fields 1130+1132 and falls back to 1130
+    alone if this libdcgm refuses the pair. DCGM mode reports field
     1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope,
     and the energy report flags such runs as "CPU rail only". Has no effect
     when the Python stdlib fallback exporter is used instead of the binary --

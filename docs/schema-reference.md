@@ -492,7 +492,7 @@ Host-side CPU power collection on every worker node.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `False` | Master switch for this leg. Default: False. |
-| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | ``auto`` tries ACPI then DCGM and is best-effort; naming ``acpi`` or ``dcgm`` explicitly makes that provider mandatory. |
+| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | ``auto`` uses ACPI when some sensor reads a positive value, else DCGM fields 1130+1132, else 1130 alone, logging each step down; naming ``acpi`` or ``dcgm`` explicitly makes that provider mandatory (it still proves itself, but exits instead of stepping). |
 | `sample_interval_seconds` | float | `0.1` | Read period on each node, in seconds. |
 | `startup_timeout_seconds` | float | `30.0` | How long to wait for every node's collector to publish its ready marker before giving up on readiness. |
 | `required` | bool | `False` | Fail the job when the leg does not become ready or does not produce a valid publication. |
