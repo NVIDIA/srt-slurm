@@ -26,6 +26,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | --- | --- |
 | `features/sweep.yaml` | `sweep:` plus `{placeholder}` substitution; one job per combination |
 | `features/override.yaml` | `base` plus `override_*` and `zip_override_*` variants in one file |
+| `features/power-noprof.yaml` | Stock DCGM exporter with profiling-free counters; retains strict power validation. Requires the `dcgm-exporter` container alias; see [power telemetry](../docs/power-telemetry.md#profiling-free-counters) |
 | `features/profiling.yaml` | `profiling:` torch capture on an aggregated worker |
 | `features/services.yaml` | `services:` sidecar (an HTTP log browser on the head node) with a `readiness:` port gate |
 | `features/mlperf-client.yaml` | `benchmark.type: custom` driving the MLPerf inference-endpoint client in its own image; placeholder paths, a reference rather than a runnable example |

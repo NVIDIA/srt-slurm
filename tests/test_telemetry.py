@@ -5,6 +5,7 @@
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
 from srtctl.core.processes import ProcessRegistry
+from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import (
     BenchmarkConfig,
     CpuPowerConfig,
@@ -1606,6 +1608,49 @@ def _worker(node, gpus, mode="agg", index=0, het_group=None):
 
 class TestDcgmPowerExporterLaunch:
     """One exporter task per allocated physical node, owned before the next launch."""
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_noprof_example_launches_with_readable_counters(self, mock_srun, tmp_path, monkeypatch):
+        source = Path(__file__).resolve().parents[1]
+        config = SrtConfig.from_yaml(source / "examples/features/power-noprof.yaml")
+        config = replace(config, model=replace(config.model, path="hf:Qwen/Qwen3-0.6B"))
+        monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(source))
+        monkeypatch.delenv("SRTCTL_OUTPUT_DIR", raising=False)
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node-a"]),
+            patch("srtctl.core.runtime.get_slurm_het_nodelists", return_value=None),
+            patch("srtctl.core.runtime.get_hostname_ip", return_value="127.0.0.1"),
+        ):
+            runtime = RuntimeContext.from_config(config, "12345", log_dir_base=tmp_path)
+
+        harness = _power_harness(tmp_path, [_worker("node-a", [0])])
+        harness.runtime = runtime
+        exporter = config.telemetry.dcgm_exporter
+        assert exporter is not None
+        harness._start_exporter_container(
+            exporter_config=exporter,
+            name="dcgm-exporter",
+            nodelist=["node-a"],
+            log_file=tmp_path / "exporter.out",
+            default_command_template="unused",
+            use_bash_wrapper=False,
+        )
+        launch = mock_srun.call_args.kwargs
+        command = launch["command"]
+        counters = Path(command[command.index("--collectors") + 1])
+        mounts = launch["container_mounts"]
+        host_root = next(host for host, container in mounts.items() if container == counters.parent)
+        fields = {
+            line.split(",")[0].strip()
+            for line in (host_root / counters.name).read_text().splitlines()
+            if line.strip() and not line.startswith("#")
+        }
+        assert command[0] == "dcgm-exporter"
+        assert command[command.index("--address") + 1] == ":9401"
+        assert launch["container_image"] == "dcgm-exporter"
+        assert {"DCGM_FI_DEV_POWER_USAGE", "DCGM_FI_DEV_GPU_UTIL"} <= fields
+        assert not any(field.startswith("DCGM_FI_PROF_") for field in fields)
+        assert config.telemetry.required
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_single_node_launches_one_task_without_a_bash_wrapper(self, mock_srun, tmp_path):

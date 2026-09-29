@@ -61,6 +61,31 @@ The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.
 
+## Profiling-free counters
+
+[power-noprof.yaml](../examples/features/power-noprof.yaml) uses the stock
+DCGM exporter with [dcgm-counters-noprof.csv](../configs/dcgm-counters-noprof.csv).
+Configure the `dcgm-exporter` container alias in `srtslurm.yaml` to a stock
+image compatible with your driver. The existing `dcgm_exporter.command`
+override selects the CSV; submitted jobs mount the source checkout's `configs/`
+directory at `/configs`. Keep that directory available on every worker node.
+
+This opt-in configuration omits `DCGM_FI_PROF_*` fields, including
+`DCGM_FI_PROF_SM_ACTIVE`. Power, energy and GPU utilization counters remain
+selected; `sm_active` is unavailable and must not be reported as zero.
+Omitting profiling watches can help isolate profiling-related delays, but does
+not guarantee that power scrapes are timely. The exporter image, DCGM mode,
+hardware and driver still affect behavior. It changes neither host services nor
+window/gap validation, and `telemetry.required` remains enabled.
+
+Before submitting, run `srtctl dry-run -f examples/features/power-noprof.yaml`.
+For a real run, check the exporter log and manifest for the selected image and
+`--collectors /configs/dcgm-counters-noprof.csv`, confirm the CSV is readable in
+the container, and inspect `/metrics` for watts and the absence of profiling
+fields. Validate retained samples for every expected GPU and measured window
+with `srtctl-validate-power` before using the results. A successful dry-run does
+not establish runtime counter support or sampling reliability.
+
 ## Artifacts
 
 ```text
