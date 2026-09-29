@@ -212,7 +212,9 @@ def test_mock_sweep_preserves_benchmark_outcome(tmp_path, publisher_exit, expect
     path.write_text(yaml.safe_dump(config))
     output = tmp_path / "outputs/42"
     exit_code = run_mock_sweep(
-        config_path=path, output_dir=output, job_id="42",
+        config_path=path,
+        output_dir=output,
+        job_id="42",
         options=MockOptions(child_duration_s=0.05, phase_pause_s=0.01),
     )
     assert exit_code == 0
