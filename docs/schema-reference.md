@@ -347,6 +347,7 @@ Reporting configuration for status updates, AI analysis, and log exports.
 | `status` | [ReportingStatusConfig](#reportingstatusconfig) \| None | `None` |  |
 | `ai_analysis` | [AIAnalysisConfig](#aianalysisconfig) \| None | `None` |  |
 | `s3` | [S3Config](#s3config) \| None | `None` |  |
+| `publishers` | list[[ResultPublisherConfig](#resultpublisherconfig)] | `[]` |  |
 
 ### DynamoSourceConfig
 
@@ -546,6 +547,16 @@ S3 upload configuration for log artifacts.
 | `secret_access_key` | str \| None | `None` | AWS secret access key (falls back to AWS_SECRET_ACCESS_KEY env var) |
 | `exclude` | list[str] \| None | `None` | Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`. Set to `[]` to ship the whole directory. |
 | `archive` | list[str] \| None | `None` | Patterns (Python glob, `**` allowed) packed into one `bundle.tar.zst` uploaded next to the loose files and left out of the plain sync. Omit for the default, aiperf's per-request `profile_export.jsonl`; set to `[]` for no archive. |
+
+### ResultPublisherConfig
+
+Locally installed command accepting the result publisher JSON protocol.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | str | required |  |
+| `command` | list[str] | required |  |
+| `timeout_seconds` | int | `60` |  |
 
 ### TcpProbe
 
