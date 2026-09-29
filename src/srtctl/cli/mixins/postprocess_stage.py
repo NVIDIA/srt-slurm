@@ -28,6 +28,7 @@ from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.config import load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
+from srtctl.core.publishers import publish_results
 from srtctl.core.schema import DEFAULT_S3_ARCHIVE, DEFAULT_S3_EXCLUDE, AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
 from srtctl.ruter import normalize_run
@@ -191,7 +192,7 @@ class PostProcessStageMixin:
         1. Copy config YAML into log directory (for S3 upload)
         2. Rollup generation (benchmark-specific normalization)
         3. Benchmark result extraction (reads rollup or falls back to raw)
-        4. S3 upload of the whole log directory (if S3 configured)
+        4. Optional result publishers, then S3 upload (if configured)
         5. Eager push of ``logs_url`` to the status API right after the S3 sync
            completes, so downstream consumers can fetch results from S3 even
            if later stages below fail or hang.
@@ -247,6 +248,18 @@ class PostProcessStageMixin:
         # requirement as the perf dashboard above: must land before the S3
         # sync so it ships with the rest of the log directory.
         self._build_power_energy_report()
+
+        # Publishers run on the orchestrator host and see the original artifacts.
+        # Their receipts are available to the subsequent S3 archive operation.
+        reporting = self.config.reporting
+        if reporting is not None:
+            publish_results(
+                reporting.publishers,
+                log_dir=self.runtime.log_dir,
+                job_id=self.runtime.job_id,
+                benchmark_type=self.config.benchmark.type,
+                run_exit_code=exit_code,
+            )
 
         # Upload the log directory to S3 (if configured)
         s3_url = self._run_postprocess_container()
