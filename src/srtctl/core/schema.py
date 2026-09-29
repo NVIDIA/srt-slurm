@@ -2550,7 +2550,7 @@ class SrtConfig:
             return
         if self.frontend.type != "dynamo":
             raise ValidationError("dynamo.sidecar: true requires frontend.type: dynamo")
-        if not isinstance(self.backend, (SGLangProtocol, VLLMProtocol, TRTLLMProtocol)):
+        if not isinstance(self.backend, SGLangProtocol | VLLMProtocol | TRTLLMProtocol):
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
         if isinstance(self.backend, VLLMProtocol) and self.backend.dp_launch_mode != "per_node":
             raise ValidationError(
@@ -2664,19 +2664,20 @@ class SrtConfig:
         res = self.resources
         if not res.is_disaggregated or res.decode_nodes != 0 or not res.num_decode:
             return
-        if (res.prefill_nodes or 0) < 1 or not res.num_prefill:
+        prefill_nodes = res.prefill_nodes or 0
+        if prefill_nodes < 1 or not res.num_prefill:
             raise ValidationError(
                 "decode colocation (roles.decode.nodes: colocate / resources.decode_nodes: 0) needs at least "
                 "one prefill node and one prefill worker to share"
             )
         if self.total_nodes != res.total_nodes:
             return  # the backend packs prefill and decode across extra nodes itself (vLLM)
-        capacity = res.prefill_nodes * res.gpus_per_node
+        capacity = prefill_nodes * res.gpus_per_node
         demand = res.prefill_gpus + res.decode_gpus
         layout = (
             f"{res.num_prefill} prefill x {res.gpus_per_prefill} GPU(s) + "
             f"{res.num_decode} decode x {res.gpus_per_decode} GPU(s) = {demand} GPU(s) on "
-            f"{res.prefill_nodes} node(s) x {res.gpus_per_node} GPU(s) = {capacity} GPU(s)"
+            f"{prefill_nodes} node(s) x {res.gpus_per_node} GPU(s) = {capacity} GPU(s)"
         )
         if demand > capacity:
             raise ValidationError(f"colocated decode workers do not fit on the prefill nodes: {layout}")
@@ -2689,7 +2690,7 @@ class SrtConfig:
                 gpus_per_decode=res.gpus_per_decode,
                 gpus_per_agg=res.gpus_per_agg,
                 gpus_per_node=res.gpus_per_node,
-                available_nodes=[f"node{i}" for i in range(res.prefill_nodes)],
+                available_nodes=[f"node{i}" for i in range(prefill_nodes)],
                 spread_workers=res.spread_workers,
             )
         except (ValueError, IndexError) as exc:

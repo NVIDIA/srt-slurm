@@ -1,0 +1,392 @@
+# examples/features/vllm-failover.yaml
+# exit_code: 0
+# srun calls: 15
+
+## service_etcd
+nodelist: node-01
+output: <output>/logs/service_etcd.out
+container_image: dynamo-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/etcd && mkdir -p /tmp/etcd
+command: |
+    /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_gms_agg_0_node-01
+nodelist: node-01
+output: <output>/logs/service_gms_agg_0_node-01.out
+container_image: dynamo-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_0
+use_bash_wrapper: True
+command: |
+    bash -c 'set -u
+    dir=/dev/shm/srtctl-4242/agg_0
+    mkdir -p "$dir" && rm -f "$dir"/gms_*.sock || exit 1
+    export GMS_SOCKET_DIR="$dir"
+    pids=()
+    for device in $(seq 0 0); do
+        python3 -m gpu_memory_service --device "$device" &
+        pids+=($!)
+    done
+    stopping=0
+    stop() { stopping=1; kill -TERM "${pids[@]}" 2>/dev/null; }
+    trap stop TERM INT
+    count=0
+    for _ in $(seq 1 120); do
+        for pid in "${pids[@]}"; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                echo "GMS server pid $pid exited during startup" >&2
+                stop; wait; exit 1
+            fi
+        done
+        count=$(ls "$dir"/gms_*.sock 2>/dev/null | wc -l)
+        if [ "$count" -ge 2 ]; then break; fi
+        sleep 1
+    done
+    if [ "$count" -lt 2 ]; then
+        echo "GMS startup timed out: $count of 2 sockets in $dir after 120s" >&2
+        stop; wait; exit 1
+    fi
+    echo "GMS ready: 1 device(s), $count sockets in $dir"
+    wait -n "${pids[@]}"
+    rc=$?
+    if [ "$stopping" = 1 ]; then
+        wait
+        rm -rf -- "$dir"
+        exit 0
+    fi
+    echo "GMS server exited (code=$rc); stopping the rest" >&2
+    stop; wait
+    if [ "$rc" = 0 ]; then rc=1; fi
+    exit "$rc"
+    '
+
+## service_gms_agg_1_node-01
+nodelist: node-01
+output: <output>/logs/service_gms_agg_1_node-01.out
+container_image: dynamo-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_1
+use_bash_wrapper: True
+command: |
+    bash -c 'set -u
+    dir=/dev/shm/srtctl-4242/agg_1
+    mkdir -p "$dir" && rm -f "$dir"/gms_*.sock || exit 1
+    export GMS_SOCKET_DIR="$dir"
+    pids=()
+    for device in $(seq 0 0); do
+        python3 -m gpu_memory_service --device "$device" &
+        pids+=($!)
+    done
+    stopping=0
+    stop() { stopping=1; kill -TERM "${pids[@]}" 2>/dev/null; }
+    trap stop TERM INT
+    count=0
+    for _ in $(seq 1 120); do
+        for pid in "${pids[@]}"; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                echo "GMS server pid $pid exited during startup" >&2
+                stop; wait; exit 1
+            fi
+        done
+        count=$(ls "$dir"/gms_*.sock 2>/dev/null | wc -l)
+        if [ "$count" -ge 2 ]; then break; fi
+        sleep 1
+    done
+    if [ "$count" -lt 2 ]; then
+        echo "GMS startup timed out: $count of 2 sockets in $dir after 120s" >&2
+        stop; wait; exit 1
+    fi
+    echo "GMS ready: 1 device(s), $count sockets in $dir"
+    wait -n "${pids[@]}"
+    rc=$?
+    if [ "$stopping" = 1 ]; then
+        wait
+        rm -rf -- "$dir"
+        exit 0
+    fi
+    echo "GMS server exited (code=$rc); stopping the rest" >&2
+    stop; wait
+    if [ "$rc" = 0 ]; then rc=1; fi
+    exit "$rc"
+    '
+
+## agg_0_node-01
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0.out
+container_image: dynamo-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0
+    DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7500
+    DYN_SYSTEM_STARTING_HEALTH_STATUS: notready
+    DYN_VLLM_GMS_SHADOW_MODE: true
+    DYN_VLLM_KV_EVENT_PORT: 5200
+    ENGINE_ID: 0
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    FAILOVER_LOCK_PATH: /dev/shm/srtctl-4242/agg_0/failover.lock
+    GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_0
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20000
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true ) && mkdir -p /dev/shm/srtctl-4242/agg_0
+command: |
+    python3 -m dynamo.vllm --model /model --served-model-name Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}' --load-format gms --gms-shadow-mode --request-plane tcp --dump-config-to /logs/node-01_config.json --gpu-memory-utilization 0.4 --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+
+## agg_0_node-01_e1
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0_e1.out
+container_image: dynamo-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0
+    DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7501
+    DYN_SYSTEM_STARTING_HEALTH_STATUS: notready
+    DYN_VLLM_GMS_SHADOW_MODE: true
+    DYN_VLLM_KV_EVENT_PORT: 5201
+    ENGINE_ID: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    FAILOVER_LOCK_PATH: /dev/shm/srtctl-4242/agg_0/failover.lock
+    GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_0
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5401
+    VLLM_PORT: 20050
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true ) && mkdir -p /dev/shm/srtctl-4242/agg_0
+command: |
+    python3 -m dynamo.vllm --model /model --served-model-name Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}' --load-format gms --gms-shadow-mode --request-plane tcp --dump-config-to /logs/node-01_config_e1.json --gpu-memory-utilization 0.4 --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+
+## agg_1_node-01
+nodelist: node-01
+output: <output>/logs/node-01_agg_w1.out
+container_image: dynamo-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 1
+    DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7502
+    DYN_SYSTEM_STARTING_HEALTH_STATUS: notready
+    DYN_VLLM_GMS_SHADOW_MODE: true
+    DYN_VLLM_KV_EVENT_PORT: 5202
+    ENGINE_ID: 0
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    FAILOVER_LOCK_PATH: /dev/shm/srtctl-4242/agg_1/failover.lock
+    GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_1
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5402
+    VLLM_PORT: 20100
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true ) && mkdir -p /dev/shm/srtctl-4242/agg_1
+command: |
+    python3 -m dynamo.vllm --model /model --served-model-name Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}' --load-format gms --gms-shadow-mode --request-plane tcp --dump-config-to /logs/node-01_config.json --gpu-memory-utilization 0.4 --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+
+## agg_1_node-01_e1
+nodelist: node-01
+output: <output>/logs/node-01_agg_w1_e1.out
+container_image: dynamo-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 1
+    DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7503
+    DYN_SYSTEM_STARTING_HEALTH_STATUS: notready
+    DYN_VLLM_GMS_SHADOW_MODE: true
+    DYN_VLLM_KV_EVENT_PORT: 5203
+    ENGINE_ID: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    FAILOVER_LOCK_PATH: /dev/shm/srtctl-4242/agg_1/failover.lock
+    GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_1
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5403
+    VLLM_PORT: 20150
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true ) && mkdir -p /dev/shm/srtctl-4242/agg_1
+command: |
+    python3 -m dynamo.vllm --model /model --served-model-name Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}' --load-format gms --gms-shadow-mode --request-plane tcp --dump-config-to /logs/node-01_config_e1.json --gpu-memory-utilization 0.4 --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+
+## frontend_0
+nodelist: node-01
+output: <output>/logs/node-01_frontend_0.out
+container_image: dynamo-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+mpi: pmix
+command: |
+    python3 -m dynamo.frontend --http-port=8000 --router-mode round-robin
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
