@@ -115,8 +115,11 @@ class ReportingStatusConfig:
 class ResultPublisherConfig:
     """Locally installed command accepting the result publisher JSON protocol."""
 
+    # Unique receipt name: 1–64 letters, digits, underscores or hyphens, starting with a letter or digit.
     name: str = field(metadata={"validate": validate.Regexp(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")})
+    # Installed executable and arguments on the orchestrator host; no shell expansion or automatic installation.
     command: list[str] = field(metadata={"validate": validate.Length(min=1)})
+    # Maximum runtime per command (1–3600 seconds). Timeout warns without changing the benchmark outcome.
     timeout_seconds: int = field(default=60, metadata={"validate": validate.Range(min=1, max=3600)})
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -133,6 +136,7 @@ class ReportingConfig:
     status: ReportingStatusConfig | None = None
     ai_analysis: "AIAnalysisConfig | None" = None
     s3: "S3Config | None" = None
+    # Optional installed result publishers, called after local artifact generation and before S3 export.
     publishers: list[ResultPublisherConfig] = field(default_factory=list)
 
     Schema: ClassVar[type[Schema]] = Schema

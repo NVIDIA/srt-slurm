@@ -1,0 +1,51 @@
+# Publish results through an independently installed command on the orchestrator host.
+# Install benchmark-results-publish before submitting and configure its destination
+# outside this recipe. Missing commands warn without changing the benchmark outcome.
+# See docs/result-publishers.md for the JSON protocol and receipt/recovery semantics.
+#
+# Aliases resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-result-publishers"
+
+slurm:
+  time_limit: "00:15:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+engine:
+  type: mocker
+  engine_type: vllm
+  speedup_ratio: 100
+
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4"
+
+reporting:
+  publishers:
+    - name: team-results
+      command: ["benchmark-results-publish"]
+      timeout_seconds: 60

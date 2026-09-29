@@ -184,3 +184,37 @@ def test_hook_runs_after_artifacts_before_s3_even_on_failure(tmp_path):
     calls.publish_results.assert_called_once_with(
         publishers, log_dir=tmp_path / "logs", job_id="42", benchmark_type="custom", run_exit_code=4
     )
+
+
+@pytest.mark.parametrize("publisher_exit,expected_state", [(0, "accepted"), (9, "unknown")])
+def test_mock_sweep_preserves_benchmark_outcome(tmp_path, publisher_exit, expected_state):
+    import yaml
+
+    from srtctl.mock import MockOptions, run_mock_sweep
+
+    script = (
+        "import json,sys; from pathlib import Path; r=json.load(sys.stdin); "
+        "assert (Path(r['log_dir'])/'benchmark.out').is_file(); "
+        "assert (Path(r['run_dir'])/'recipe.lock.yaml').is_file(); "
+        "print(json.dumps({'protocol_version':1,'status':'accepted'})); "
+        f"sys.exit({publisher_exit})"
+    )
+    config = {
+        "schema": 2,
+        "name": "publisher-mock",
+        "model": {"path": "hf:fake/mock-model", "container": "nvcr.io/fake:latest", "precision": "fp8"},
+        "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+        "roles": {"agg": {"nodes": 1, "workers": 1}},
+        "benchmark": {"type": "custom", "command": "echo fake-benchmark"},
+        "reporting": {"publishers": [{"name": "example", "command": [sys.executable, "-c", script]}]},
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "outputs/42"
+    exit_code = run_mock_sweep(
+        config_path=path, output_dir=output, job_id="42",
+        options=MockOptions(child_duration_s=0.05, phase_pause_s=0.01),
+    )
+    assert exit_code == 0
+    assert json.loads((output / "result.json").read_text())["status"] == "completed"
+    assert json.loads((output / "logs/publishers/example.json").read_text())["state"] == expected_state

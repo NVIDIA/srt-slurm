@@ -347,7 +347,7 @@ Reporting configuration for status updates, AI analysis, and log exports.
 | `status` | [ReportingStatusConfig](#reportingstatusconfig) \| None | `None` |  |
 | `ai_analysis` | [AIAnalysisConfig](#aianalysisconfig) \| None | `None` |  |
 | `s3` | [S3Config](#s3config) \| None | `None` |  |
-| `publishers` | list[[ResultPublisherConfig](#resultpublisherconfig)] | `[]` |  |
+| `publishers` | list[[ResultPublisherConfig](#resultpublisherconfig)] | `[]` | Optional installed result publishers, called after local artifact generation and before S3 export. |
 
 ### DynamoSourceConfig
 
@@ -554,9 +554,9 @@ Locally installed command accepting the result publisher JSON protocol.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `name` | str | required |  |
-| `command` | list[str] | required |  |
-| `timeout_seconds` | int | `60` |  |
+| `name` | str | required | Unique receipt name: 1–64 letters, digits, underscores or hyphens, starting with a letter or digit. |
+| `command` | list[str] | required | Installed executable and arguments on the orchestrator host; no shell expansion or automatic installation. |
+| `timeout_seconds` | int | `60` | Maximum runtime per command (1–3600 seconds). Timeout warns without changing the benchmark outcome. |
 
 ### TcpProbe
 
