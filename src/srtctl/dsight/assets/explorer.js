@@ -75,8 +75,7 @@
   const tabs = [
     ...(available.requests ? ["request"] : []),
     ...(available.nsight ? ["nsys"] : []),
-    ...(available.iterations ? ["iterations"] : []),
-    "evidence", "api",
+    "api",
   ];
   const requests = new Map(D.requests.map((r) => [r.id, r]));
   const sessionRequests = new Map(
@@ -118,8 +117,6 @@
       null,
     metricCharts: {},
     pinnedMetrics: [],
-    iterationWorker: null,
-    iterationRank: null,
     hardware: false,
     compareNsys: false,
     metric: defaultMetric,
@@ -199,8 +196,6 @@
       "span",
       "cursor",
       "metricCharts",
-      "iterationWorker",
-      "iterationRank",
     ]) {
       if (value[k] !== undefined)
         state[k] = k === "metricCharts"
@@ -552,31 +547,6 @@
       attribution:
         "Shared batch observations. Source timestamp precision and rank scope are preserved; these are not request durations.",
     };
-  }
-  function iterationInspector() {
-    const workers = [...new Set(D.iterations.map((r) => r.worker))];
-    const worker = workers.includes(state.iterationWorker) ? state.iterationWorker :
-      workers.find((w) => selected()?.workers.includes(w)) ?? workers[0];
-    const ranks = [...new Map(D.iterations.filter((r) => r.worker === worker)
-      .map((r) => [r.rank, r.rank_kind ?? "rank"])).entries()];
-    const rank = ranks.some(([n]) => n === state.iterationRank) ? state.iterationRank : null;
-    const q = queryIterations({worker, rank, limit: 50});
-    const columns = [
-      ["local_time", "Recorded time", (x) => esc(x)],
-      ["batch_kind", "Phase", (x) => esc(x)],
-      ["iteration", "Iteration", (x) => fmt(x, 0)],
-      ["batch_requests", "Running", (x) => fmt(x, 0)],
-      ["queued_requests", "Queued", (x) => fmt(x, 0)],
-      ["active_pages", "Active pages", (x) => fmt(x, 0)],
-      ["total_pages", "Total pages", (x) => fmt(x, 0)],
-      ["host_step_ms", "Host ms", (x) => fmt(x)],
-      ["previous_device_step_ms", "Prev. device ms", (x) => fmt(x)],
-    ].filter(([key]) => D.iterations.some((r) => r.worker === worker && r[key] != null));
-    return `<h3>Batch observations</h3><p class="help">${esc(q.attribution)} Periodic snapshots do not identify individual forward steps.</p>
-      <div class="nsys-controls"><label>Worker<select id="iterationWorker">${workers.map((w) => `<option value="${esc(w)}" ${w === worker ? "selected" : ""}>${esc(w)}</option>`).join("")}</select></label>
-      <label>Recorded rank<select id="iterationRank"><option value="">All ranks</option>${ranks.map(([n, kind]) => `<option value="${n}" ${n === rank ? "selected" : ""}>${esc(kind)} ${n}</option>`).join("")}</select></label></div>
-      <p class="help">${fmt(q.total)} observations in this window; first 50 shown.${q.unaligned_rows ? ` ${q.unaligned_rows} observations have no known timezone and remain unaligned.` : ""}</p>
-      ${q.items.length ? `<table class="mini-table"><thead><tr>${columns.map(([,label]) => `<th>${label}</th>`).join("")}</tr></thead><tbody>${q.items.map((r) => `<tr>${columns.map(([key,,format]) => `<td>${r[key] == null ? "—" : format(r[key])}</td>`).join("")}</tr>`).join("")}</tbody></table>` : '<p class="help">No aligned observations in this time window.</p>'}`;
   }
   function queryServerSpans({from = state.from, to = state.to, offset = 0, limit = 100} = {}) {
     validateRange(from, to);
@@ -1233,26 +1203,6 @@
       .slice(0, 18);
     return `<p>Inspect activity beside the selected request. Worker and time joins identify context; they do not assign shared work to one request.</p><div class="nsys-controls"><label>Report<select id="profileSelect">${usableProfiles.map((x) => `<option value="${x.id}" ${p.id === x.id ? "selected" : ""}>${profileLabel(x)}</option>`).join("")}</select></label><button id="showNsys">${state.nsys ? "Hide" : "Show"} Nsight tracks</button>${selected()?.workers.length ? `<button id="compareNsys" aria-pressed="${state.compareNsys}">${state.compareNsys ? "Show one report" : "Compare frontend + request workers"}</button>` : ""}</div><dl class="facts"><dt>Coverage</dt><dd>${fmt(p.capture[0], 3)} to ${fmt(p.capture[1], 3)} s</dd>${p.truncated ? `<dt>Partial import</dt><dd>Events included through ${fmt(p.imported_range?.[1],3)} s; later source events are omitted.</dd>` : ""}<dt>Matching ranges</dt><dd>${fmt(es.length, 0)}</dd><dt>Recorded host</dt><dd>${esc(p.host || "not in exported metadata")}</dd>${p.cuda ? "<dt>CUDA source</dt><dd>Kernel table retained in original export</dd>" : ""}<dt>Excluded ranges</dt><dd>${p.invalid_or_boundary_ranges} malformed / boundary</dd></dl><p class="help">Selected NVTX categories: frontend preprocessing/routing and engine iteration/scheduling/forward preparation. Detokenize ranges below 100 µs remain in the original report, along with other excluded categories.</p>${cpuInspector(p)}<h3>Ranges in selected window</h3><p class="help">Inclusive, clipped elapsed time; nested and parallel ranges overlap. Totals are not CPU utilization or additive TTFT.</p><table class="mini-table"><thead><tr><th>Range</th><th>Count</th><th>Elapsed</th></tr></thead><tbody>${groups.map((g) => `<tr><td>${esc(g.name)}</td><td>${fmt(g.count, 0)}</td><td>${ms(g.time)}</td></tr>`).join("")}</tbody></table>${evidence([p.evidence_source], "Nsight SQLite")}<div class="detail-heading">Collection notes</div><ul class="quality-list">${(p.diagnostics || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
   }
-  function evidenceInspector() {
-    const r = selected();
-    return `<h3>Join coverage</h3><dl class="facts"><dt>Client requests</dt><dd>${fmt(D.audit.client_requests, 0)}</dd><dt>Client → Dynamo</dt><dd>${fmt(D.audit.clients_with_server_identity, 0)}</dd>${D.audit.clients_with_lifecycle ? `<dt>With lifecycle</dt><dd>${fmt(D.audit.clients_with_lifecycle, 0)}</dd>` : ""}<dt>Worker bindings</dt><dd>${fmt(D.audit.worker_binding_rows ?? 0, 0)}</dd><dt>Ambiguous bindings</dt><dd>${fmt(D.audit.ambiguous_worker_bindings ?? 0, 0)}</dd><dt>Both engine maps</dt><dd>${fmt(D.audit.clients_with_both_engine_maps, 0)}</dd><dt>Ambiguous engine IDs</dt><dd>${D.audit.ambiguous_engine_ids}</dd></dl><h3>Timing and coverage</h3><ul class="quality-list">${[...D.meta.warnings, ...D.meta.limitations].map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="help">No negative residual is relabeled as execution time. Clock anchors remain uncorrected; GPU metrics preserve host / GPU labels.</p>${
-      r
-        ? evidence(r.evidence, "Client record") +
-          r.bridge_evidence
-            .map((e) => evidence(e, "Client → Dynamo"))
-            .join("") +
-          (r.worker_bindings ?? []).map((e) => evidence(e.evidence,
-            `${e.worker} binding · ${e.ambiguous ? "ambiguous worker evidence" : e.basis}`)).join("") +
-          r.engine.map((e) => evidence(e.evidence, `${e.worker} engine ID map`)).join("") +
-          r.spans
-            .filter(
-              (s) => s.name === "request.lifecycle" || s.id === state.span,
-            )
-            .map((s) => evidence(s.evidence, s.name))
-            .join("")
-        : ""
-    }`;
-  }
   function apiInspector() {
     const r = selected() ?? D.requests[0], p = usableProfiles[0];
     const id = JSON.stringify(r?.id);
@@ -1276,11 +1226,7 @@
         ? requestInspector()
         : state.tab === "nsys"
           ? nsysInspector()
-          : state.tab === "iterations"
-            ? iterationInspector()
-            : state.tab === "evidence"
-              ? evidenceInspector()
-              : apiInspector();
+          : apiInspector();
     $("inspectorBody").scrollTop = scroll;
     document.querySelectorAll("[data-tab]").forEach((b) => {
       b.classList.toggle("active", b.dataset.tab === state.tab);
@@ -1351,7 +1297,7 @@
         `<span class="tick" style="left:${i * 20}%">${fmt(state.from + ((state.to - state.from) * i) / 5, state.to - state.from < 1 ? 6 : 3)} s</span>`,
     ).join("");
     $("tracks").innerHTML = clientTracks() + workerTracks() + nsysTracks() ||
-      '<div class="loading">No timeline tracks are available. Imported data and source coverage are available in Agent API and Evidence.</div>';
+      '<div class="loading">No timeline tracks are available. Imported data and source coverage are available in Agent API.</div>';
     mountMetricCharts();
     $("tracks").scrollTop = scroll;
     if ($("workerMetric")) $("workerMetric").value = state.metric;
@@ -1551,14 +1497,6 @@
   document.addEventListener("change", (event) =>
     safe(() => {
       const t = event.target;
-      if (t.id === "iterationWorker") {
-        state.iterationWorker = t.value;
-        renderInspector();
-      }
-      if (t.id === "iterationRank") {
-        state.iterationRank = t.value === "" ? null : Number(t.value);
-        renderInspector();
-      }
       if (t.id === "profileSelect") {
         state.profile = Number(t.value);
         state.nsys = true;
@@ -1777,7 +1715,6 @@
   });
   document.querySelectorAll(".tabs [data-tab]").forEach((button) => {
     button.hidden = !tabs.includes(button.dataset.tab);
-    if (button.dataset.tab === "iterations") button.textContent = "Batch context";
   });
   document.querySelector(".timeline-controls").hidden = !available.requests;
   document.querySelector(".legend").hidden = !available.requests && !available.nsight;
@@ -1811,7 +1748,7 @@
   ].filter(([count]) => count).map(([count, label]) => `${fmt(count,0)} ${label}`);
   $("coverageNotice").classList.toggle("has-warning", D.meta.warnings.length > 0);
   $("coverageNotice").innerHTML =
-    `<strong>Imported:</strong> ${imported.join(" · ") || "No supported observations"}. ${D.meta.warnings.map(esc).join(" ")} <button data-tab="evidence">View evidence</button>`;
+    `<strong>Imported:</strong> ${imported.join(" · ") || "No supported observations"}. ${D.meta.warnings.map(esc).join(" ")}`;
   if (!available.requests) $("cursorLabel").textContent = "Time since source window start";
   if (D.meta.qualification?.passed)
     $("runSubtitle").textContent += " · capture qualified";

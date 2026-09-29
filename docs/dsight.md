@@ -70,7 +70,7 @@ mix concurrency sweeps or duplicated exports.
 
 Each source is optional. Views and controls appear only for usable observations:
 no OTel means no request breakdown; no matching NVTX/CPU samples means no Nsight
-section; no metrics means no metric selector; no batch records means no batch tab.
+section; no metrics means no metric selector.
 Missing CPU samples never become an empty hotspot table. An empty time selection
 keeps available controls and reports that no observations overlap the window.
 
@@ -184,10 +184,14 @@ report; a CUDA table's presence is reported separately from imported data.
 - **Inspect phase in Nsight** follows the recorded worker. Select a rank or
   compare frontend + request workers. Router DP rank is retained as evidence;
   it is not assumed to map to a global process rank.
-- **Batch context** shows the measurements actually recorded by each engine.
-  TokenSpeed periodic snapshots show running/queued requests and cache pages;
-  absent iteration counters or device timers are not filled with zeros. Supply
-  the log's timezone to align timestamps that have no offset.
+- **Request & execution path** contains **Request**, **Nsight**, and **Agent API**
+  tabs. Request and Nsight appear only when their data is available; Agent API
+  remains available for queries and exports. Saved links targeting a removed or
+  unavailable tab open the first available tab.
+- **Agent API** exposes recorded batch observations through `queryIterations()`.
+  TokenSpeed periodic snapshots retain running/queued requests and cache pages;
+  absent iteration counters or device timers remain unknown. Supply the log's
+  timezone to align timestamps that have no offset.
 - **Copy view link** saves range, request, expansions, pinned metrics and line
   visibility in the URL fragment. **Export selection** saves evidence JSON with
   the same view state, including bounded pages of independent server activity
@@ -370,8 +374,8 @@ uv run --with websockets python tests/dsight_optional_otel_check.py \
 ```
 
 Check the complete optional-source matrix (TokenSpeed overlap, independently
-missing OTel/Nsight/metrics, and each source alone), restored view links and
-available API examples:
+missing OTel/Nsight/metrics, and each source alone), restored view links including
+removed inspector tabs, and available API examples:
 
 ```bash
 uv run --with websockets python tests/dsight_sources_browser_check.py \

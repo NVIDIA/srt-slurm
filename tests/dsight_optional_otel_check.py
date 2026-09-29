@@ -211,11 +211,12 @@ async def run(output: Path, port: int) -> None:
                 assert ("Conflicting worker bindings" in identity["text"]) is (mode == "ambiguous-workers"), identity
                 exported = await js("traceExplorer.exportSelection()")
                 assert exported["request"]["worker_bindings"] == identity["bindings"]
-                await click("[data-tab=evidence]")
-                evidence_text = await js("document.querySelector('#inspectorBody').innerText")
-                assert "prefill-0 binding" in evidence_text and "decode-0 binding" in evidence_text
-                assert "decode-host_decode_w0.out:1" in evidence_text
-                await click("[data-tab=request]")
+                sources = {source["id"]: source for source in exported["sources"]}
+                assert any(
+                    sources[binding["evidence"][0]]["path"].endswith("decode-host_decode_w0.out")
+                    and binding["evidence"][1] == 1
+                    for binding in exported["request"]["worker_bindings"]
+                )
             if not available:
                 assert not await js("document.querySelector('#coverageNotice').innerText.includes('OTel')")
             await js("document.querySelector('#tracks').scrollTop=0")
