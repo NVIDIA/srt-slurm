@@ -57,12 +57,15 @@ if [[ ! "${numa_node}" =~ ^[0-9]+$ ]]; then
     exec "$@"
 fi
 
-cpu_list="$(cat "/sys/devices/system/node/node${numa_node}/cpulist")"
-
-memory_prefix=()
-if [[ "${bind_memory}" == true ]]; then
-    memory_prefix=(numactl --membind="${numa_node}")
+cpu_list="$(cat "/sys/devices/system/node/node${numa_node}/cpulist" 2>/dev/null || true)"
+if [[ -z "${cpu_list}" ]]; then
+    echo "numa_cpu_bind.sh: cannot bind CPUs: GPU ${physical_gpu} (${sysfs_addr}) NUMA node ${numa_node} has no readable, nonempty CPU list" >&2
+    exit 2
 fi
 
-echo "numa_cpu_bind.sh: SLURM_LOCALID=${SLURM_LOCALID} gpu=${physical_gpu} (${sysfs_addr}) numa_node=${numa_node} bound to cpus=${cpu_list} memory_policy=${memory_prefix[*]:-inherited}" >&2
-exec "${memory_prefix[@]}" taskset -c "${cpu_list}" "$@"
+echo "numa_cpu_bind.sh: SLURM_LOCALID=${SLURM_LOCALID} gpu=${physical_gpu} (${sysfs_addr}) numa_node=${numa_node} bound to cpus=${cpu_list}" >&2
+if [[ "${bind_memory}" == true ]]; then
+    echo "numa_cpu_bind.sh: memory_policy=bind:${numa_node}" >&2
+    exec numactl --membind="${numa_node}" taskset -c "${cpu_list}" "$@"
+fi
+exec taskset -c "${cpu_list}" "$@"

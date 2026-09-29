@@ -1,13 +1,9 @@
-# TRT-LLM aggregated, router-free.
-#
-# Exactly one `trtllm-serve` worker owns the public OpenAI port directly; no
-# separate frontend process is launched. `frontend.type: trtllm_serve` in aggregate
-# mode requires exactly one aggregated worker. No Dynamo, NATS, or etcd.
-#
-# Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
+# TRT-LLM aggregate worker with strict GPU-local CPU and memory placement.
+# Requires GPU NUMA affinity, numactl, and enough memory on the local node.
+# Aliases resolve through srtslurm.yaml; see examples/README.md.
 
 schema: 2
-name: "qwen3-0.6b-trtllm-serve-agg"
+name: "qwen3-0.6b-trtllm-serve-agg-numa-local"
 
 slurm:
   time_limit: "00:30:00"
@@ -20,22 +16,22 @@ model:
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
+
 frontend:
   type: trtllm_serve
   enable_multiple_frontends: false
 
 engine:
   type: trtllm
-  # API model name shared by the server and benchmark/eval clients.
   served_model_name: "Qwen/Qwen3-0.6B"
+  numa_cpu_bind: true
+  numa_memory_bind: local
+
 roles:
   agg:
     nodes: 1
     workers: 1
     gpus: 1
-    env:
-      PYTHONUNBUFFERED: "1"
-      TLLM_LOG_LEVEL: "INFO"
     args:
       backend: "pytorch"
       tensor_parallel_size: 1

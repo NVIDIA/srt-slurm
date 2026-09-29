@@ -11,6 +11,22 @@ from pathlib import Path
 
 import pytest
 
+from srtctl.backends import TRTLLMProtocol
+
+
+@pytest.mark.parametrize("memory_bind", [None, False, True, "local"])
+def test_memory_policy_round_trip(memory_bind) -> None:
+    schema = TRTLLMProtocol.Schema()
+    settings = {"numa_cpu_bind": True, "numa_memory_bind": memory_bind}
+    backend = schema.load(settings)
+    assert backend.numa_memory_bind == memory_bind
+    assert schema.dump(backend)["numa_memory_bind"] == memory_bind
+
+
+def test_local_memory_requires_cpu_binding() -> None:
+    with pytest.raises(ValueError, match="numa_memory_bind: local requires numa_cpu_bind: true"):
+        TRTLLMProtocol.Schema().load({"numa_memory_bind": "local"})
+
 
 @pytest.mark.parametrize(
     ("node", "bind_memory", "expected_memory", "expected_cpus", "expected_exit"),
@@ -20,6 +36,8 @@ import pytest
         ("-1", True, None, None, 2),
         ("missing", True, None, None, 2),
         ("invalid", True, None, None, 2),
+        ("empty-cpus", True, None, None, 2),
+        ("missing-cpus", True, None, None, 2),
         ("denied", True, None, None, 42),
         ("1", False, None, "4-7", 0),
         ("-1", False, None, None, 0),
@@ -50,12 +68,16 @@ elif name == "cat":
     node = os.environ["TEST_NUMA_NODE"]
     if node == "missing":
         sys.exit(1)
-    if node == "denied":
+    if node in ("denied", "empty-cpus", "missing-cpus"):
         node = "1"
     if args == ["/sys/bus/pci/devices/0000:ab:00.0/numa_node"]:
         print(node)
     else:
         assert args == [f"/sys/devices/system/node/node{node}/cpulist"]
+        if os.environ["TEST_NUMA_NODE"] == "missing-cpus":
+            sys.exit(1)
+        if os.environ["TEST_NUMA_NODE"] == "empty-cpus":
+            sys.exit(0)
         print({"0": "0-3", "1": "4-7"}[node])
 elif name == "numactl":
     assert args[0].startswith("--membind=")
@@ -108,6 +130,7 @@ else:
     if expected_exit:
         assert result.stdout == ""  # The worker must not run after a binding failure.
         if expected_exit == 2:
-            assert "cannot bind memory" in result.stderr
+            expected_error = "cannot bind CPUs" if node in ("empty-cpus", "missing-cpus") else "cannot bind memory"
+            assert expected_error in result.stderr
     else:
         assert json.loads(result.stdout) == [expected_memory, expected_cpus, arguments]
