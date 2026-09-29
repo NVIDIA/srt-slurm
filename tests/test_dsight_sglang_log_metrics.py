@@ -215,9 +215,7 @@ def test_distinct_requests_at_one_timestamp_keep_all_values_and_line_evidence(tm
     lines = [
         base,
         base.replace("rid=request-one", "rid=request-two"),
-        base.replace("rid=request-one", "rid=request-three").replace(
-            "queue_duration=0.41ms", "queue_duration=1.23ms"
-        ),
+        base.replace("rid=request-one", "rid=request-three").replace("queue_duration=0.41ms", "queue_duration=1.23ms"),
     ]
     (logs / "prefill-host_prefill_w0.out").write_text("\n".join(lines) + "\n")
     data = Importer(logs, iteration_timezone="UTC").run()
@@ -237,7 +235,8 @@ def test_synthetic_example_imports_all_families_without_client_or_telemetry():
     assert not data["requests"]
     assert {s["name"] for s in data["metrics"]} == {d.name for d in SGLangLogMetrics.definitions}
     queue = next(
-        s for s in data["metrics"]
+        s
+        for s in data["metrics"]
         if s["name"] == "log_sglang_request_queue_duration_ms" and s["labels"]["phase"] == "prefill"
     )
     assert [p[1] for p in queue["points"]] == [10, 10, 40]
