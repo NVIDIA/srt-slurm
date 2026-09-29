@@ -727,6 +727,44 @@ class TestAuth:
         assert reporter.token_env == "MY_COLLECTOR_TOKEN"
         assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go")
 
+    def test_token_file_when_the_variable_is_unset(self, auth_url, monkeypatch, tmp_path):
+        """srtslurm.yaml can point at a token file so submitters need no shell setup."""
+        monkeypatch.delenv("SRTCTL_STATUS_TOKEN", raising=False)
+        token_file = tmp_path / "status.token"
+        token_file.write_text(f"{WRITE}\n# trailing lines are ignored\n")
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint=auth_url, token_file=str(token_file)))
+
+        assert create_job_record(reporting, job_id="45", job_name="from-file")
+        reporter = StatusReporter.from_config(reporting, job_id="45")
+        assert reporter.token_file == str(token_file)
+        assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go")
+        assert requests.get(f"{auth_url}/api/jobs/45", headers=_bearer(READ), timeout=5).json()["status"] == "workers"
+
+        # The variable wins over the file when both are present.
+        monkeypatch.setenv("SRTCTL_STATUS_TOKEN", "wrong")
+        assert reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "go") is False
+
+        # ~ expands.
+        monkeypatch.delenv("SRTCTL_STATUS_TOKEN")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        home_relative = ReportingConfig(status=ReportingStatusConfig(endpoint=auth_url, token_file="~/status.token"))
+        assert StatusReporter.from_config(home_relative, job_id="45").report(
+            JobStatus.FRONTEND, JobStage.FRONTEND, "go"
+        )
+
+    def test_unreadable_token_file_warns_once_and_reports_without_a_token(self, auth_url, monkeypatch, caplog):
+        monkeypatch.delenv("SRTCTL_STATUS_TOKEN", raising=False)
+        missing = "/nonexistent/srtctl/status.token"
+        reporting = ReportingConfig(status=ReportingStatusConfig(endpoint=auth_url, token_file=missing))
+        reporter = StatusReporter.from_config(reporting, job_id="46")
+        with caplog.at_level(logging.WARNING, logger="srtctl.core.status"):
+            assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "go") is False
+            assert reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "again") is False
+        unreadable = [r.getMessage() for r in caplog.records if "unreadable" in r.getMessage()]
+        assert len(unreadable) == 1 and missing in unreadable[0]
+        # The 401 names both places the token could have come from.
+        assert f"$SRTCTL_STATUS_TOKEN or {missing}" in caplog.text
+
     def test_redirects_are_failures_not_success(self, caplog):
         """A collector behind a login page answers 302; following it would look like HTTP 200."""
 

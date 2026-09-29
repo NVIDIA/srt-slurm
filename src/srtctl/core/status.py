@@ -27,6 +27,14 @@ Configuration (in srtslurm.yaml or recipe YAML):
         endpoint: "https://status.example.com"
         endpoints:
           - "https://status2.example.com"
+
+    # Bearer token: $SRTCTL_STATUS_TOKEN (token_env renames it), else the first line
+    # of token_file. A cluster srtslurm.yaml with both endpoint and token_file needs
+    # no shell setup from anyone who submits from it.
+    reporting:
+      status:
+        endpoint: "https://status.example.com"
+        token_file: "~/.config/srtctl/status.token"
 """
 
 import logging
@@ -56,13 +64,42 @@ def _token_env(status: "ReportingStatusConfig | None") -> str:
     return (status.token_env if status and status.token_env else None) or DEFAULT_TOKEN_ENV
 
 
-def _auth_headers(token_env: str) -> dict[str, str]:
-    """``Authorization: Bearer`` header when the token variable is set, else nothing."""
-    token = os.environ.get(token_env)
+def _token_file(status: "ReportingStatusConfig | None") -> str | None:
+    return status.token_file if status and status.token_file else None
+
+
+# Token files that already produced a warning; a missing file warns once per process, not per PUT.
+_warned_token_files: set[str] = set()
+
+
+def _read_token_file(token_file: str) -> str | None:
+    """First line of ``token_file`` with whitespace stripped, or None (warned once) when unreadable."""
+    path = os.path.expanduser(token_file)
+    try:
+        with open(path, encoding="utf-8") as f:
+            token = f.readline().strip()
+    except OSError as e:
+        if token_file not in _warned_token_files:
+            _warned_token_files.add(token_file)
+            logger.warning("Status token file %s is unreadable (%s); reporting without a token", token_file, e)
+        return None
+    return token or None
+
+
+def _auth_headers(token_env: str, token_file: str | None = None) -> dict[str, str]:
+    """``Authorization: Bearer`` header from the token variable, else from ``token_file``, else nothing.
+
+    Resolved on every request so a token rotated mid-run is picked up by the next report.
+    """
+    token = os.environ.get(token_env) or (_read_token_file(token_file) if token_file else None)
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _log_rejection(action: str, endpoint: str, status_code: int, token_env: str) -> None:
+def _token_source(token_env: str, token_file: str | None) -> str:
+    return f"${token_env}" + (f" or {token_file}" if token_file else "")
+
+
+def _log_rejection(action: str, endpoint: str, status_code: int, token_env: str, token_file: str | None = None) -> None:
     """Auth failures and redirects are configuration errors, so they warn; anything else stays at DEBUG.
 
     Redirects matter because a collector behind a login page (an SSO proxy, for
@@ -78,7 +115,11 @@ def _log_rejection(action: str, endpoint: str, status_code: int, token_env: str)
         )
     elif status_code in (401, 403):
         logger.warning(
-            "%s to %s rejected (HTTP %d); check the bearer token in $%s", action, endpoint, status_code, token_env
+            "%s to %s rejected (HTTP %d); check the bearer token in %s",
+            action,
+            endpoint,
+            status_code,
+            _token_source(token_env, token_file),
         )
     else:
         logger.debug("%s to %s failed: HTTP %d", action, endpoint, status_code)
@@ -133,6 +174,8 @@ class StatusReporter:
     timeout: float = 5.0
     # Environment variable holding the bearer token; see DEFAULT_TOKEN_ENV.
     token_env: str = DEFAULT_TOKEN_ENV
+    # File read for the token when the variable is unset; see _read_token_file.
+    token_file: str | None = None
     # Connection attempts per endpoint for each report; see _put.
     attempts: int = 2
 
@@ -152,7 +195,7 @@ class StatusReporter:
         if endpoints:
             logger.info("Status reporting enabled: %s", ", ".join(endpoints))
 
-        return cls(job_id=job_id, api_endpoints=endpoints, token_env=_token_env(status))
+        return cls(job_id=job_id, api_endpoints=endpoints, token_env=_token_env(status), token_file=_token_file(status))
 
     @property
     def enabled(self) -> bool:
@@ -172,7 +215,7 @@ class StatusReporter:
         is never affected.
         """
         any_success = False
-        headers = _auth_headers(self.token_env)
+        headers = _auth_headers(self.token_env, self.token_file)
         for endpoint in self.api_endpoints:
             url = f"{endpoint}/api/jobs/{self.job_id}"
             for attempt in range(1, self.attempts + 1):
@@ -193,7 +236,7 @@ class StatusReporter:
                     logger.debug("Status reported to %s", endpoint)
                     any_success = True
                 else:
-                    _log_rejection("Status report", endpoint, response.status_code, self.token_env)
+                    _log_rejection("Status report", endpoint, response.status_code, self.token_env, self.token_file)
                 break
         return any_success
 
@@ -386,7 +429,8 @@ def create_job_record(
     if not endpoints:
         return False
     token_env = _token_env(status)
-    headers = _auth_headers(token_env)
+    token_file = _token_file(status)
+    headers = _auth_headers(token_env, token_file)
 
     payload = JobCreatePayload(
         job_id=job_id,
@@ -420,7 +464,7 @@ def create_job_record(
                 logger.debug("Job record created on %s: %s", endpoint, job_id)
                 any_success = True
             else:
-                _log_rejection("Job record creation", endpoint, response.status_code, token_env)
+                _log_rejection("Job record creation", endpoint, response.status_code, token_env, token_file)
             break
 
     return any_success

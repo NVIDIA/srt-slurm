@@ -98,6 +98,10 @@ class ReportingStatusConfig:
     # variable name belongs in a recipe: the resolved config is written to the lockfile
     # and the log directory, so a literal token there would leak.
     token_env: str | None = None
+    # Path of a file holding the bearer token (first line, whitespace stripped; ``~``
+    # expands), read when the variable is unset. Lets a cluster's srtslurm.yaml point
+    # every submitter at one token without shell setup. Only the path is in the config.
+    token_file: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
