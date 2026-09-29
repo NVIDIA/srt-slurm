@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 try:  # mcp 1.x
-    from mcp.server.fastmcp import FastMCP as _Server
+    from mcp.server.fastmcp import FastMCP as _Server  # ty: ignore[unresolved-import]
 
     _V1 = True
 except ImportError:  # mcp 2.x renamed FastMCP to MCPServer and moved host/port to run()
@@ -38,7 +38,7 @@ from srtctl.mcp.spec_tools import (
 
 _HOST = os.getenv("SRTCTL_MCP_HOST", "127.0.0.1")
 _PORT = int(os.getenv("SRTCTL_MCP_PORT", "18082"))
-mcp = _Server("srtctl-spec", host=_HOST, port=_PORT) if _V1 else _Server("srtctl-spec")
+mcp = _Server("srtctl-spec", host=_HOST, port=_PORT) if _V1 else _Server("srtctl-spec")  # ty: ignore[unknown-argument]
 
 
 @mcp.tool()

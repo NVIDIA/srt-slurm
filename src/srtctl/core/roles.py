@@ -265,10 +265,10 @@ def roles_from_legacy(config: dict[str, Any]) -> dict[str, Any]:
     that assert the two forms are equivalent. Only non-empty roles appear.
     """
     result = copy.deepcopy(config)
-    resources = result.get("resources") if isinstance(result.get("resources"), dict) else {}
-    backend = result.get("backend") if isinstance(result.get("backend"), dict) else {}
+    resources: dict[str, Any] = result["resources"] if isinstance(result.get("resources"), dict) else {}
+    backend: dict[str, Any] = result["backend"] if isinstance(result.get("backend"), dict) else {}
     engine_key = _engine_key(result)
-    engine_cfg = backend.get(engine_key) if isinstance(backend.get(engine_key), dict) else {}
+    engine_cfg: dict[str, Any] = backend[engine_key] if isinstance(backend.get(engine_key), dict) else {}
 
     roles: dict[str, dict[str, Any]] = {}
     for role_name in ROLE_NAMES:

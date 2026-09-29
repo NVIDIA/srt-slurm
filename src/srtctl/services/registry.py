@@ -12,7 +12,7 @@ with :func:`register_service`, the same pattern as ``@register_benchmark``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -55,7 +55,14 @@ class ServiceLaunchContext:
             infra_node_ip="<infra_ip>",
             job_id="<job_id>",
         )
-        return cls(runtime=runtime, node=node, node_ip="<node_ip>", node_id=0, index=0, role="<role>")  # type: ignore[arg-type]
+        return cls(
+            runtime=cast("RuntimeContext", runtime),
+            node=node,
+            node_ip="<node_ip>",
+            node_id=0,
+            index=0,
+            role="<role>",
+        )
 
     def template_vars(self) -> dict[str, str]:
         """Placeholders substituted into command, args, env values, and preamble."""
