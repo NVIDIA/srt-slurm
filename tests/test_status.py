@@ -613,9 +613,10 @@ class TestJobStageEnum:
 )
 def test_every_update_includes_cluster_metadata(method, kwargs):
     reporter = StatusReporter(job_id="12345", api_endpoints=("https://status.example.com",))
-    with patch("srtctl.core.status._cluster_setting", return_value="cluster-a"), patch(
-        "srtctl.core.status.requests.put", return_value=SimpleNamespace(status_code=200)
-    ) as put:
+    with (
+        patch("srtctl.core.status._cluster_setting", return_value="cluster-a"),
+        patch("srtctl.core.status.requests.put", return_value=SimpleNamespace(status_code=200)) as put,
+    ):
         assert getattr(reporter, method)(**kwargs) is True
     assert put.call_args.args[0] == "https://status.example.com/api/jobs/12345"
     assert put.call_args.kwargs["json"]["metadata"]["cluster"] == "cluster-a"
@@ -625,9 +626,10 @@ def test_every_update_includes_cluster_metadata(method, kwargs):
 def test_cluster_metadata_preserves_payload_and_existing_metadata(cluster):
     reporter = StatusReporter(job_id="12345", api_endpoints=("https://status.example.com",))
     payload = {"status": "starting", "metadata": {"job_name": "benchmark", "model": {"path": "model"}}}
-    with patch("srtctl.core.status._cluster_setting", return_value=cluster), patch(
-        "srtctl.core.status.requests.put", return_value=SimpleNamespace(status_code=200)
-    ) as put:
+    with (
+        patch("srtctl.core.status._cluster_setting", return_value=cluster),
+        patch("srtctl.core.status.requests.put", return_value=SimpleNamespace(status_code=200)) as put,
+    ):
         assert reporter._put(payload) is True
     expected = {**payload["metadata"], **({"cluster": cluster} if cluster else {})}
     assert put.call_args.kwargs["json"]["metadata"] == expected
