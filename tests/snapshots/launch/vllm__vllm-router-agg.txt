@@ -1,0 +1,188 @@
+# examples/vllm/vllm-router-agg.yaml
+# exit_code: 0
+# srun calls: 11
+
+## agg_0_node-01
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7500
+    DYN_VLLM_KV_EVENT_PORT: 5200
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20000
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6100 --device-ids 0 --gpu-memory-utilization 0.5 --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+
+## agg_1_node-01
+nodelist: node-01
+output: <output>/logs/node-01_agg_w1.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7501
+    DYN_VLLM_KV_EVENT_PORT: 5201
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5401
+    VLLM_PORT: 20050
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6132 --device-ids 1 --gpu-memory-utilization 0.5 --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+
+## vllm_router_0
+nodelist: node-01
+output: <output>/logs/node-01_vllm-router_0.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+command: |
+    vllm-router --worker-urls http://127.0.0.1:6100 http://127.0.0.1:6132 --host 0.0.0.0 --port 8000 --worker-startup-timeout-secs 1800 --policy consistent_hash
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    SRTCTL_FRONTEND_TYPE: vllm-router
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+command: |
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4x8 inf /model Qwen/Qwen3-0.6B false 8 0 0 0.8 10 2 '' true random '' false

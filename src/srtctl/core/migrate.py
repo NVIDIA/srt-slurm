@@ -36,6 +36,7 @@ from typing import Any
 
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from srtctl.backends import SGLangProtocol, VLLMProtocol
 from srtctl.core.roles import COLOCATE, ENGINE_CONFIG_KEY, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.schema import CURRENT_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
 from srtctl.core.yaml_utils import dump_yaml_with_comments, load_yaml_text_with_comments
@@ -703,7 +704,7 @@ def _resolved_dump(raw: dict[str, Any]) -> dict[str, Any]:
     if (
         isinstance(backend, dict)
         and "kv_events_config" in backend
-        and hasattr(loaded.backend, "get_kv_events_config_for_mode")
+        and isinstance(loaded.backend, SGLangProtocol | VLLMProtocol)
     ):
         active = {
             "prefill": loaded.resources.num_prefill,

@@ -54,7 +54,6 @@ jobs:
 
       - name: Run ty
         run: uv run ty check src/srtctl/
-        continue-on-error: true # ty is still experimental
 
   test:
     runs-on: ubuntu-latest

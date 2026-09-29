@@ -149,7 +149,7 @@ class ViewData:
             stage = "decode" if decision["stage"] == "decode" else "prefill"
             grouped.setdefault(request_id, {}).setdefault(stage, decision)
 
-        rows = []
+        rows: list[dict[str, Any]] = []
         for request_id, stages in grouped.items():
             prefill = stages.get("prefill")
             decode = stages.get("decode")
