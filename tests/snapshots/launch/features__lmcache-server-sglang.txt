@@ -72,7 +72,6 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     LMCACHE_MP_HOST: 127.0.0.1
     LMCACHE_MP_PORT: 8750
-    PYTHONHASHSEED: 0
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
 bash_preamble: |
@@ -192,7 +191,6 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    PYTHONHASHSEED: 0
     SRTCTL_FRONTEND_TYPE: sglang
     SRT_FRONTEND_HOST: 127.0.0.1
     SRT_FRONTEND_PORT: 8000
