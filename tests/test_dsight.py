@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import copy
-import gzip
 import hashlib
 import json
 import sqlite3
@@ -382,7 +381,7 @@ def test_cli_and_embedded_data_share_the_same_contract(artifacts, tmp_path, monk
     assert exit_info.value.code == 0
     result = json.loads(capsys.readouterr().out)
     assert result["counts"]["requests"] == 2
-    payload = json.loads(gzip.decompress((out / "trace-data.json.gz").read_bytes()))
+    payload = TraceDataset.from_path(out).data
     assert payload["schema"] == "srtctl-trace/1"
     assert payload["meta"]["otel_enabled"] is not no_otel
     assert payload["requests"][0]["lifecycle"]["available"] is not no_otel

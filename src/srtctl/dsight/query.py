@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bounded read-only queries over the exact dataset embedded in the HTML."""
+"""Read-only queries over indexed or legacy normalized evidence."""
 
 from __future__ import annotations
 
@@ -9,10 +9,13 @@ import gzip
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .capabilities import capabilities
 from .model import SCHEMA
+
+if TYPE_CHECKING:
+    from .storage import TraceStore
 
 KINDS = (
     "summary",
@@ -30,21 +33,26 @@ KINDS = (
 
 
 class TraceDataset:
-    def __init__(self, data: dict[str, Any]) -> None:
+    def __init__(self, data: dict[str, Any], store: TraceStore | None = None) -> None:
         if data.get("schema") != SCHEMA:
             raise ValueError(f"Unsupported trace schema: {data.get('schema')!r}; expected {SCHEMA}")
         if not math.isfinite(data["meta"]["duration"]) or data["meta"]["duration"] <= 0:
             raise ValueError("Dataset has no positive finite duration")
         self.data = data
+        self.store = store
         self.requests = {r["id"]: r for r in data["requests"]}
         if len(self.requests) != len(data["requests"]):
             raise ValueError("Duplicate client request identities in dataset")
 
     @classmethod
     def from_path(cls, path: Path | str) -> TraceDataset:
-        path = Path(path)
-        if path.is_dir():
-            path /= "trace-data.json.gz"
+        from .storage import TraceStore
+
+        path = dataset_path(path)
+        with path.open("rb") as stream:
+            if stream.read(16) == b"SQLite format 3\x00":
+                store = TraceStore(path)
+                return cls(store.data, store)
         raw = path.read_bytes()
         return cls(json.loads(gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw))
 
@@ -78,6 +86,20 @@ class TraceDataset:
             raise ValueError("min_ttft_ms must be finite and nonnegative")
         if kind not in KINDS:
             raise ValueError(f"Unknown query kind {kind!r}; choose from {KINDS}")
+
+        if self.store and kind in ("metrics", "profiles", "nsys", "cpu"):
+            return self.store.query(
+                kind,
+                lo=lo,
+                hi=hi,
+                worker=worker,
+                rank=rank,
+                profile=profile,
+                name=name,
+                offset=offset,
+                limit=limit,
+                points=points,
+            )
 
         def overlaps(a: float, b: float) -> bool:
             return a <= hi and b >= lo
@@ -239,3 +261,13 @@ class TraceDataset:
             total_samples=count,
             attribution="Inclusive process samples; not per-request CPU time.",
         )
+
+
+def dataset_path(path: Path | str) -> Path:
+    """Prefer the indexed cache, retaining explicit legacy JSON/gzip support."""
+    from .storage import FILENAME
+
+    path = Path(path)
+    if path.is_dir():
+        path /= FILENAME if (path / FILENAME).is_file() else "trace-data.json.gz"
+    return path

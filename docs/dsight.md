@@ -44,23 +44,43 @@ the same artifacts. Large captures can require substantial CPU, memory, and
 filesystem reads; follow your site's login-node resource limits and use a CPU
 job when needed.
 
-Open `<path_to_report_directory>/index.html` in a browser on your own machine,
-after copying or publishing the generated HTML. The HTML embeds its data and
-assets; it works offline, including from `file://`, in a modern browser with
-`DecompressionStream` support. Generation is **CLI-only**: DSight has no submission,
+Publish the complete report directory on a static HTTP host and open `index.html`.
+For local viewing, serve it with Python (no database service is needed):
+
+```bash
+python -m http.server 8000 --bind 127.0.0.1 --directory "<path_to_report_directory>"
+# Open http://127.0.0.1:8000/index.html
+```
+
+The HTML embeds the request catalog and UI assets. Metric samples and Nsight
+detail load from adjacent compressed files as needed. This works without internet
+access; a modern browser with `DecompressionStream` support is required. Copying
+only the HTML omits its detail files. Direct `file://` viewing requires the larger
+embedded format: add `--single-file` to the build command.
+
+Generation is **CLI-only**: DSight has no submission,
 benchmark, cleanup, or upload hook. It does not enable profiling, change recipes,
 launch GPU jobs, or export `.nsys-rep` files. `dashboard` is an alias for `dsight`.
 
 | Output | Purpose |
 | --- | --- |
-| `index.html` | Self-contained interactive UI |
-| `trace-data.json.gz` | Exact normalized dataset embedded in the HTML |
+| `index.html` | UI assets, request/lifecycle catalog, source metadata and detail indexes |
+| `detail/*.json.gz` | Content-addressed exact metric/NVTX/CPU shards, fetched on demand |
+| `trace-data.sqlite` | Indexed normalized evidence for local CLI and MCP queries; not downloaded by the browser |
 | `manifest.json` | Schema, counts, warnings, source inventory and output hashes |
+
+`--single-file` instead writes the legacy embedded `index.html` and
+`trace-data.json.gz`. Both formats retain the same normalized evidence. Directory
+queries prefer SQLite; explicit legacy JSON/gzip paths remain supported.
 
 A rebuild stages the complete output before replacing an earlier DSight
 directory. Import/render failures preserve the previous generation. Existing
 directories that are not DSight outputs are rejected. Use preserved inputs:
 the importer checks registered source files for changes during generation.
+The HTML and all detail files form one generation. Publish them together. Detail
+URLs contain content hashes; a missing file reports an error rather than an empty
+measurement. HTTPS/localhost viewers also verify decoded content hashes. Existing
+open pages may need a reload after their directory is rebuilt.
 
 ## Inputs
 
@@ -204,11 +224,33 @@ report; a CUDA table's presence is reported separately from imported data.
   the same view state, including bounded pages of independent server activity
   and batch observations with total counts for pagination.
 
-Sessions are paginated; details expand on demand. Dense Nsight lanes show event
-density until zoomed in. Queries retain exact imported intervals. The offline
-HTML decompresses metric samples by family on demand and bounds its decoded
-cache. The downloadable `trace-data.json.gz` retains complete normalized points
-and source-row evidence for Python, CLI, and MCP queries.
+Sessions are paginated; details expand on demand. A broad Nsight selection shows
+512 precomputed density bins per report, labeled with their time resolution.
+These count overlapping intervals and do not represent CPU utilization. When
+the candidate shards contain at most 20,000 rows, the timeline loads exact ranges
+and available CPU samples. Larger selections retain the overview until zoomed in;
+exact paginated queries remain available at any range.
+
+Browser API v3.1 supports `await traceExplorer.queryNsys(...)`,
+`await traceExplorer.queryCpu(...)` and `await traceExplorer.inspectNsys(...)`.
+Use `await traceExplorer.whenDetailsReady()` after changing a view to wait for its
+Nsight tracks, and `whenMetricsReady()` for charts. Legacy embedded reports also
+accept these awaited calls. `exportSelection()` awaits exact evidence queries.
+
+Static shards contain at most 8,192 rows or approximately 512 KiB of decoded JSON.
+Time bounds include intervals beginning before the viewport, so long crossing
+ranges are retained. Metric loads include neighboring samples and all records at
+the latest preceding setting timestamp. The shared LRU cache budgets 32 MiB of
+decoded JSON bytes; this is a cache budget, not a total JavaScript heap limit.
+Pan/zoom cancels stale view fetches. A requested wide exact query can still read
+many shards, especially with a name filter; use local SQLite for broad analysis.
+
+SQLite keeps the existing normalized values, source references, relative-second
+timestamps, clock notes and partial-import warnings. It indexes NVTX ranges by
+profile, duration class and start time, and metric/CPU samples by series/profile
+and time. Requests and lifecycle metadata still load as a catalog; ingestion
+still normalizes a run in memory. Neither delivery format removes the importer's
+explicit event limit or upgrades incomplete source coverage.
 
 ## Timing definitions
 

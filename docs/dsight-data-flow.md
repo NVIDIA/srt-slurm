@@ -46,10 +46,25 @@ workers, metrics, profiles, batch observations and unmatched OTel spans,
 with references back to source files and rows. Log metric generators and Tachometer
 share the metric series representation; log evidence does not need an intermediate
 Parquet file. The [metric source/schema guide](dsight-log-metrics.md) documents the
-raw columns, normalized points and capacity relationships. The builder writes `trace-data.json.gz` and embeds the same data in
-`index.html`, with metric samples split into independently compressed families.
-The browser reads the catalog immediately and decompresses metric points when
-selected or queried. Unmatched OTel spans remain queryable and exportable as
+raw columns, normalized points and capacity relationships. The builder writes a
+versioned `trace-data.sqlite` cache and projects its normalized evidence into
+compressed static detail shards. The HTML contains the request/lifecycle catalog,
+profile and metric metadata, density bins, and shard indexes. The browser fetches
+selected metric windows and exact Nsight ranges; CLI/MCP queries use SQLite's
+indexes. Both preserve the existing source identities and time origin.
+
+```mermaid
+flowchart LR
+    I[Normalized evidence] --> S[Indexed SQLite cache]
+    S --> Q[CLI / MCP exact queries]
+    I --> C[HTML catalog + density summaries]
+    I --> D[Compressed exact detail shards]
+    C --> B[Browser]
+    D -->|Selected time window / metric| B
+```
+
+`--single-file` retains embedded HTML and the legacy JSON/gzip artifact.
+Unmatched OTel spans remain queryable and exportable as
 `server_spans`; they have no dedicated timeline section. The browser does not
 open the original SQLite, Parquet or log files.
 

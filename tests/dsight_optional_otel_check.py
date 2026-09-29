@@ -124,7 +124,7 @@ async def run(output: Path, port: int) -> None:
                 (logs / "profile_export.jsonl").write_bytes(client.read_bytes())
                 sqlites = None
             report = build_dashboard(
-                logs, output / mode, sqlites=sqlites, otel=mode != "disabled", iteration_timezone="UTC", job=mode
+                logs, output / mode, single_file=True, sqlites=sqlites, otel=mode != "disabled", iteration_timezone="UTC", job=mode
             )
             url = Path(report["html"]).as_uri()
             await navigate(url, mode)

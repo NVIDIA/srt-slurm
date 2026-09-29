@@ -109,7 +109,7 @@ async def run(output: Path, port: int) -> None:
                     # This fixture contains distinct sample timestamps.
                     metrics_logs, _ = write_run(output / "metric-source")
                     shutil.copytree(metrics_logs / "tachometer", logs / "tachometer")
-            report = build_dashboard(logs, output / "reports" / mode, **options)
+            report = build_dashboard(logs, output / "reports" / mode, single_file=True, **options)
             cap, url = report["capabilities"], Path(report["html"]).as_uri()
             await navigate(url, mode)
             visibility = await js("""(()=> {
