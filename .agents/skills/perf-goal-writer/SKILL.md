@@ -1,5 +1,5 @@
 ---
-name: performance-benchmark-goal-writer
+name: perf-goal-writer
 description: Write or refine a ready-to-use /goal prompt for a performance benchmark, regression investigation or optimization campaign. Define measurable targets, a matched baseline, change boundaries, diagnostic evidence and completion criteria. Use for drafting the goal, not executing the campaign.
 ---
 

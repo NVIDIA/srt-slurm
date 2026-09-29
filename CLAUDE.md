@@ -114,7 +114,7 @@ This file holds the rules for every change. Subsystem rules live next to the cod
 Procedures that recur are skills under `.agents/skills/` (`add-config-field`, `validate-without-cluster`, `design-rule-sweep`). Review criteria are in `REVIEW.md`.
 
 When asked to write or refine a performance benchmark or optimization goal, use
-[performance-benchmark-goal-writer](.agents/skills/performance-benchmark-goal-writer/SKILL.md)
+[perf-goal-writer](.agents/skills/perf-goal-writer/SKILL.md)
 to define its targets, baseline, change boundaries and evidence requirements.
 
 Several Design Rules are enforced by `tests/test_design_rules.py`. Its baselines list code that predates a rule and may only shrink: fix a baselined site and delete its entry, never add one to make a change pass.
