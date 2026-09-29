@@ -78,6 +78,8 @@ async def check(args, port, origin, root):
                 error: document.getElementById('error').textContent,
             })""")
             assert not measurement["error"], measurement
+            tabs = await browser.js("[...document.querySelectorAll('.tabs [data-tab]')].map(b => b.dataset.tab)")
+            assert tabs == ["request", "nsys", "api"], tabs
             measurement.update(path=str(path), throttled_10mbit=throttle)
             measurements.append(measurement)
             if throttle:

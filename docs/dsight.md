@@ -5,6 +5,8 @@ samples, and existing Nsight exports on one timeline.
 
 See the [data-flow guide](dsight-data-flow.md) for diagrams connecting each source
 file to its UI view, request-identity joins, and the limits of each source.
+The [storage and query reference](dsight-storage.md) documents the SQLite schema,
+indexed query semantics, static detail format and browser API.
 
 ## Generate on a cluster login node
 
@@ -347,7 +349,7 @@ const x = window.traceExplorer;
 x.selectRange(29, 34);
 x.selectRequest("<client-request-id>", {expand: true});
 x.getLifecycle("<client-request-id>");
-x.inspectNsys({worker: "decode-0", rank: 0, from: 32, to: 33});
+await x.inspectNsys({worker: "decode-0", rank: 0, from: 32, to: 33});
 x.listMetricFamilies(); // Synchronous catalog, including coverage and categories.
 x.listMetricSeries(); // Synchronous source identities without point decoding.
 x.setState({pinnedMetrics: ["trtllm_num_requests_running"]});
@@ -355,13 +357,15 @@ await x.queryMetrics({name: "trtllm_num_requests_running", worker: "decode-0"});
 x.queryIterations({worker: "decode-0", rank: 0});
 await x.exportSelection();
 await x.whenMetricsReady(); // Wait for all visible metric charts after a UI action.
+await x.whenDetailsReady(); // Wait for the current Nsight detail rendering.
 ```
 
-Browser API version 3 makes `queryMetrics()` and `exportSelection()` asynchronous
-so unloaded families return complete results. Await these methods even when a
-family was previously viewed. Exports capture the selected view and range before
-loading samples, so changing the view during loading does not mix selections.
-Range, request, lifecycle, and other existing query methods remain synchronous.
+Browser API version 3.1 makes `queryNsys()`, `inspectNsys()` and `queryCpu()`
+awaitable for progressive reports, alongside `queryMetrics()` and
+`exportSelection()`. Await these methods even when a family or window was
+previously viewed. Exports capture the selected view and range before loading
+samples, so changing the view during loading does not mix selections. Range,
+request, lifecycle, catalog and batch query methods remain synchronous.
 `pinnedMetrics` in `getState()` / `setState()` is an ordered array of metric family
 names. Restoring it removes duplicates and unknown names; an empty array clears
 all pins. State updates that omit it preserve the current pins.

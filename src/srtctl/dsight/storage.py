@@ -18,6 +18,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from .capabilities import capabilities
+
 VERSION = 1
 FILENAME = "trace-data.sqlite"
 
@@ -36,6 +38,7 @@ def catalog(data: dict[str, Any]) -> dict[str, Any]:
         profiles.append(item)
     return {
         **data,
+        "capabilities": data["capabilities"] if "capabilities" in data else capabilities(data),
         "profiles": profiles,
         "metrics": [{**s, "points": []} for s in data["metrics"]],
     }

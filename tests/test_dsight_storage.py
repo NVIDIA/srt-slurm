@@ -146,6 +146,25 @@ def test_sqlite_version_and_read_only_queries(dataset, tmp_path):
         TraceDataset.from_path(path)
 
 
+def test_legacy_capabilities_survive_moving_detail_out_of_catalog(dataset, tmp_path):
+    data, _ = dataset
+    data.pop("capabilities", None)
+    data.pop("metric_catalog", None)
+    report = tmp_path / "legacy-repacked"
+    write_dashboard(data, report)
+    assert TraceDataset.from_path(report).query("summary") == TraceDataset(data).query("summary")
+
+
+def test_replaced_generation_requires_reopening(dataset, tmp_path):
+    data, indexed = dataset
+    replacement = tmp_path / "replacement.sqlite"
+    write_store(data, replacement)
+    replacement.replace(indexed.store.path)
+    with pytest.raises(ValueError, match="rebuilt; reopen"):
+        indexed.query("nsys")
+    assert TraceDataset.from_path(indexed.store.path).query("nsys") == TraceDataset(data).query("nsys")
+
+
 def test_details_do_not_inflate_initial_html(dataset, tmp_path):
     data, _ = dataset
     small = write_dashboard(data, tmp_path / "small")
