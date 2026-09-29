@@ -112,10 +112,39 @@ that encode the desired conclusion.
 
 ## Deliver the goal
 
+Write the shortest complete goal. Aim for **2,000 characters or fewer**, often
+less; this is a preference, not a quota. **4,000 characters is the hard ceiling
+for Claude Code.** Use a lower limit if the user or target harness specifies one;
+when the harness is unspecified, keep the same 4,000-character ceiling.
+
+Count the exact final payload programmatically, including `/goal`, spaces and
+newlines, after filling placeholders and after any final edit. Exclude only the
+surrounding code fence and the separate count note. Use the harness's character
+counting convention when known; otherwise count UTF-16 code units conservatively
+so characters outside the basic multilingual plane count as two. For example:
+
+```python
+from pathlib import Path
+
+goal = Path("goal.txt").read_text(encoding="utf-8")
+count = len(goal.encode("utf-16-le")) // 2
+assert count <= 4000  # Replace with a lower applicable limit.
+print(count)
+```
+
+Compress repeated instructions and background first. Keep targets, baseline,
+essential controls, allowed changes and completion criteria in the goal; use
+short references to accessible artifacts for supporting detail. Do not truncate
+text or silently drop requirements to fit. Revise until the payload fits; if the
+requirements cannot fit, resolve that conflict before presenting an executable
+goal. The limit applies to the generated goal, not this skill's instructions.
+
 Return one copyable `/goal` prompt with the objective first, the three-step loop,
-controls, allowed changes and concrete completion criteria. Put unresolved inputs
-after the draft so they are easy to answer. Use the user's requested output path
-when supplied; do not install a goal or run it merely because it was drafted.
+controls, allowed changes and concrete completion criteria. Show the verified
+character count and limit outside the copyable prompt. Put unresolved inputs
+after a provisional draft so they are easy to answer. Use the user's requested
+output path when supplied; do not install a goal or run it merely because it was
+drafted.
 
 Require separate experiment worktrees/run directories and preserved baselines.
 Keep a durable root-cause record with evidence, rejected hypotheses, exact

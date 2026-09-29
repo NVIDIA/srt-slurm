@@ -1,48 +1,37 @@
 # Performance benchmark goal template
 
 Replace bracketed fields with verified or explicitly user-supplied values. Adapt
-the scope to the task and remove inapplicable clauses. Leave unknowns visibly
-unresolved in a provisional draft; do not invent targets, permissions or results.
+the scope and remove inapplicable clauses. Keep the filled goal compact: prefer
+2,000 characters or fewer; never exceed 4,000 for Claude Code or a lower applicable
+harness/user limit. Count the complete payload after substitution, including
+`/goal`, spaces and newlines. Put the verified count outside the copyable block.
+Leave unknowns explicit in provisional drafts; do not invent targets or authority.
 
 ```text
 /goal
 
-[Improve the named behavior or answer the benchmark question] for [model,
-workload and load points], using [identifiable baseline]. Success means [exact
-metrics, percentiles, units, directions and thresholds at each load point],
-while preserving [correctness and error/unfinished-request criteria].
+[Objective] for [workload/load points] versus [baseline/run/revisions].
+Pass: [metric, percentile, units, direction and bounds at every load point],
+with [correctness/error/unfinished-request criteria].
 
-Controls and scope: Keep [workload, hardware/topology, placement, engine knobs,
-baseline revisions and measurement method] fixed except for [experimental
-variables]. Start from [recorded baseline/arm]. Changes are permitted in
-[repositories/code/configuration]; do not change [explicit exclusions].
-Use [repeat/sample plan and variability reporting] within [supplied budget].
+Fix [controls]; vary only [experimental variables]. May change [scope];
+do not change [exclusions]. Use [repeat/sample/aggregation plan] within [budget].
 
-1. Analyze: Compare matched baseline and candidate runs with diagnostic
-instrumentation enabled. Correlate [relevant available sources] over the same
-window by request, frontend, worker and rank. Verify coverage, clock alignment,
-effective configuration and metric definitions. Identify missing evidence and
-collect it before making causal claims.
+1. Analyze: Compare matched instrumented runs. Correlate [relevant sources]
+by request, frontend, worker/rank and time. Check capture coverage, clocks,
+effective config and metric definitions; collect missing evidence within scope.
 
-2. Hypothesize: Rank falsifiable explanations with supporting and conflicting
-evidence. For each, state the predicted signal change and smallest experiment
-that distinguishes it from alternatives.
+2. Hypothesize: Rank falsifiable causes with supporting/conflicting evidence,
+predicted signals and the smallest discriminating experiments.
 
-3. Verify: Apply justified changes within the allowed scope, rebuild as needed
-and rerun controlled comparisons. Test each fix separately and then together,
-checking predicted causal signals alongside the performance targets.
-Use matched observability-on runs for diagnosis and matched observability-off
-runs for final performance [adapt if monitoring overhead is the target]. Check
-errors, incomplete work and request mix as well as latency and throughput.
+3. Verify: Test fixes separately, then together; check predicted signals and
+targets. Match instrumentation between arms: observability on for diagnosis,
+off for final performance [adapt to the requested measurement policy].
+Preserve functional settings across both. Check request mix, errors and
+unfinished work; report every required load point/repetition and variability.
 
-Preserve baseline and candidate experiments in separate worktrees/run folders.
-Record exact source revisions, images, configurations and evidence locations.
-Maintain root_cause.md with measured findings, rejected hypotheses, reproduction
-steps and before/after results across resumptions.
-
-Complete when [all target/validity criteria and requested deliverables] are
-verified, the before/after table reports every required run/load point, and
-[required causal-evidence review] finds no unsupported conclusions. Include
-[source-linked evidence and dashboard views, if applicable]. Iterate within the
-agreed scope and budget; if blocked, report the unmet criteria and evidence.
+Keep experiment worktrees/run folders and baselines separate. Record revisions,
+images, config, evidence and rejected hypotheses in root_cause.md with
+reproduction steps. Complete when [acceptance criteria/deliverables/review]
+are verified. Iterate within scope/budget; if blocked, report unmet criteria.
 ```
