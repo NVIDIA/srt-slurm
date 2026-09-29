@@ -392,8 +392,11 @@ def _sample_loss_within_policy(sequence: Sequence[float], sample_interval_second
 
 
 def _bracketing_sequence(times: Sequence[float], start: float, end: float) -> list[float] | None:
-    """The last sample at or before start, every in-window sample, the first at or after end."""
-    ordered = sorted(times)
+    """The last sample at or before start, every in-window sample, the first at or after end.
+
+    Duplicate timestamps collapse to one: a row written twice is one instant sampled, not two.
+    """
+    ordered = sorted(set(times))
     before = [value for value in ordered if value <= start]
     after = [value for value in ordered if value >= end]
     if not before or not after:

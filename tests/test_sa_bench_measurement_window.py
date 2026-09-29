@@ -387,6 +387,19 @@ class TestCoverageValidation:
         assert result.power_coverage_valid is valid
         assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
 
+    def test_duplicate_timestamps_do_not_mask_sample_loss(self, logs):
+        """Every other sample dropped, then each survivor written twice: still 50% loss."""
+        start, end = self._completed(logs, end=1100.0, duration=100.0)
+        observed = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(list(range(int(start) - 2, int(end) + 3, 2)) * 2)
+            ]
+        )
+        result = _validate(logs, observed)[0]
+        assert result.power_coverage_valid is False
+        assert Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes
+
     @pytest.mark.parametrize(("sparse_missing_per_hundred", "valid"), [(4, True), (6, False)])
     def test_sample_loss_is_judged_per_device_not_pooled(self, logs, sparse_missing_per_hundred, valid):
         """A healthy GPU must neither rescue nor condemn a sibling; pooled counting would give 2% / 3%."""
