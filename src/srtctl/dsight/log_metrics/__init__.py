@@ -4,8 +4,9 @@
 """Registered log metric generators. Adding a dialect does not change the UI."""
 
 from .base import LogMetricDefinition, LogMetricEvent, LogMetricGenerator
+from .sglang import SGLangLogMetrics
 from .tokenspeed import DynamoTokenSpeedLogMetrics
 
-GENERATORS: tuple[LogMetricGenerator, ...] = (DynamoTokenSpeedLogMetrics(),)
+GENERATORS: tuple[LogMetricGenerator, ...] = (DynamoTokenSpeedLogMetrics(), SGLangLogMetrics())
 
 __all__ = ["GENERATORS", "LogMetricDefinition", "LogMetricEvent", "LogMetricGenerator"]

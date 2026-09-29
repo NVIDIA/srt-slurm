@@ -19,7 +19,7 @@ class LogMetricDefinition:
     description: str
     # A setting remains effective until the next recorded setting in this scope.
     # Samples are observations only; neither their values nor their limits persist.
-    temporal: Literal["sample", "setting"] = "sample"
+    temporal: Literal["sample", "setting", "event"] = "sample"
     reference: str | None = None
     reference_label: str | None = None
 
@@ -50,7 +50,8 @@ class LogMetricGenerator(Protocol):
     of the consumed log (e.g. tokenspeed or dynamo_frontend), distinct from native
     exported metrics. A reference names another definition of the same unit; it is
     joined only in the exact same file/worker/rank/process/label scope. Unsupported
-    lines return None. Invalid or missing observations are omitted; invalid
+    lines return None. Event metrics retain distinct source lines even when multiple
+    requests have the same timestamp and value. Invalid or missing observations are omitted; invalid
     settings can emit None to prevent
     carrying an earlier configuration through a restart/configuration record.
     """

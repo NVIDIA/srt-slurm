@@ -1243,7 +1243,7 @@
         if (recorded.length) {
           if (hasPathNode && role !== "prefill") html += '<div class="path-arrow">↓</div>';
           html += recorded
-            .map((w) => pathNode(w.id, w.id, w.host, true))
+            .map((w) => pathNode(w.id, w.id, (w.hosts || [w.host]).filter(Boolean).join(", "), true))
             .join("");
           hasPathNode = true;
         }

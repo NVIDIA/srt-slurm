@@ -91,3 +91,53 @@ def test_duplicate_agentperf_analysis_identity_is_rejected(tmp_path):
     (tmp_path / "model__phase0__traj1.jsonl").write_text((json.dumps(row) + "\n") * 2)
     with pytest.raises(ValueError, match="ambiguous AgentPerf"):
         Importer(tmp_path).run()
+
+
+def test_http_success_without_output_preserves_unsuccessful_phase_outcome(tmp_path):
+    raw = {
+        "request_id": "drain-truncated-stream",
+        "phase_idx": 0,
+        "user_id": 1,
+        "conversation_id": "c",
+        "conversation_idx": 0,
+        "start_time": 1789642700.0,
+        "end_time": 1789642701.0,
+        "success": True,
+        "ttft": None,
+    }
+    (tmp_path / "requests.jsonl").write_text(json.dumps(raw) + "\n")
+    (tmp_path / "model__phase0__traj1.jsonl").write_text(
+        json.dumps({**raw, "has_output": False, "num_chunks": 0}) + "\n"
+    )
+    data = Importer(tmp_path).run()
+    request = data["requests"][0]
+    assert request["status"] == "error"
+    assert request["first"] is None
+    assert request["timing_quality"] == "phase analysis"
+
+
+@pytest.mark.parametrize(
+    "phase_cache,expected", [({}, 42), ({"server_cached_tokens": None}, None), ({"server_cached_tokens": 7}, 7)]
+)
+def test_phase_cache_usage_omission_uses_exact_identity_match(tmp_path, phase_cache, expected):
+    raw = {
+        "request_id": "r",
+        "phase_idx": 0,
+        "user_id": 1,
+        "conversation_id": "c",
+        "conversation_idx": 0,
+        "start_time": 1789642700.0,
+        "end_time": 1789642701.0,
+        "success": True,
+        "server_cached_tokens": 42,
+    }
+    (tmp_path / "requests.jsonl").write_text(json.dumps(raw) + "\n")
+    phase = {k: v for k, v in raw.items() if k != "server_cached_tokens"}
+    (tmp_path / "model__phase0__traj1.jsonl").write_text(json.dumps({**phase, **phase_cache}) + "\n")
+    request = Importer(tmp_path).run()["requests"][0]
+    assert request["cached_tokens"] == expected
+    if expected is None:
+        assert request["cache_usage_evidence"] is None
+    else:
+        evidence_key = "identity_evidence" if not phase_cache else "evidence"
+        assert request["cache_usage_evidence"] == request[evidence_key]

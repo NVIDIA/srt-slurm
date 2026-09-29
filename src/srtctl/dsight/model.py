@@ -167,7 +167,9 @@ def lifecycle(request: Record) -> Record:
     add("response.streaming", "First frontend SSE ready", boundary="start")
     first = request["first"]
     if len(request["server_ids"]) > 1:
-        issues.append("Multiple Dynamo request IDs: progress is not linearized across attempts")
+        issues.append(
+            "Multiple Dynamo request IDs: their attempt relationship is unverified; progress is not linearized"
+        )
     # P/D routing and setup can overlap. Order measured boundaries by time,
     # not by a presumed engine execution sequence; this asserts no causality.
     milestones.sort(key=lambda item: (item["time"], item.get("trace", ""), item.get("span_id", ""), item["label"]))

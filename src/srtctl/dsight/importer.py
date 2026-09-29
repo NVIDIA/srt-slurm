@@ -83,18 +83,24 @@ class Importer:
         """Discover worker identity from any independent recorded source."""
         if wid == "frontend":
             return
-        self.workers.setdefault(
+        worker = self.workers.setdefault(
             wid,
             {
                 "id": wid,
                 "role": canonical_role(role),
                 "index": index,
                 "host": host,
+                "hosts": [],
                 "process_epochs": sorted(self.worker_epochs.get((host, canonical_role(role)), set())),
                 "profiles": [],
                 "metrics": [],
             },
         )
+        if host and host not in worker["hosts"]:
+            worker["hosts"] = sorted([*worker["hosts"], host])
+        # One distributed worker may span several nodes. Do not select an
+        # arbitrary leader; individual logs, series and bindings keep hosts.
+        worker["host"] = worker["hosts"][0] if len(worker["hosts"]) == 1 else None
 
     def source(self, p: Path, kind: str) -> int:
         key = str(p.resolve())
@@ -219,6 +225,7 @@ class Importer:
                 "client_kind": row.get("client_kind", "aiperf"),
                 "timing_quality": row.get("timing_quality", "client export"),
                 "identity_evidence": row.get("identity_evidence"),
+                "cache_usage_evidence": row.get("cache_usage_evidence"),
                 "phase_evidence": row.get("phase_evidence"),
                 "original_start_time": row.get("original_start_time"),
                 "original_end_time": row.get("original_end_time"),
@@ -271,7 +278,7 @@ class Importer:
                     raise ValueError("Ambiguous client/server bridge")
                 self.by_server[server_id] = r
         self.audit["clients_with_server_identity"] = sum(bool(r["server_ids"]) for r in self.requests)
-        self.audit["multiple_server_attempts"] = sum(len(r["server_ids"]) > 1 for r in self.requests)
+        self.audit["multiple_server_identities"] = sum(len(r["server_ids"]) > 1 for r in self.requests)
         for r in self.requests:
             r["bridge_evidence"] = [self.bridge[x] for x in r["server_ids"]]
 
@@ -408,7 +415,7 @@ class Importer:
         bindings: set[tuple] = set()
 
         def bind(request: dict[str, Any], entry: dict[str, Any], basis: str) -> None:
-            key = (entry["server_id"], entry["worker"], entry["process"])
+            key = (entry["server_id"], entry["worker"], entry["host"], entry["process"])
             if key not in bindings:
                 request["worker_bindings"].append(
                     {k: entry[k] for k in ("worker", "host", "role", "server_id", "process", "evidence")}
@@ -421,8 +428,6 @@ class Importer:
             if source is None:
                 continue
             wid, host, role = source.worker, source.host, source.role
-            if wid in self.workers and self.workers[wid]["host"] != host:
-                raise ValueError(f"Ambiguous worker {wid}: multiple leaders in selected logs")
             self.register_worker(wid, host, role, source.index)
             with p.open(errors="replace", newline="\n") as stream:
                 for line, s in enumerate(stream, 1):
@@ -478,6 +483,7 @@ class Importer:
                                 **row,
                                 "backend": record.backend,
                                 "worker": wid,
+                                "host": host,
                                 "start": anchored,
                                 "end": anchored + resolution if anchored is not None else None,
                                 "evidence": [self.source(p, "worker_log"), line],
@@ -511,7 +517,7 @@ class Importer:
                         entry["observed_at"] = self.t(epoch_ns(stamp[0]))
                     r["engine"].append(entry)
                     bind(r, entry, "explicit engine request ID map in worker log")
-                    id_owners[(wid, entry["process"], identity.client_id)].add(identity.server_id)
+                    id_owners[(wid, host, entry["process"], identity.client_id)].add(identity.server_id)
         self.audit["ambiguous_engine_ids"] = sum(len(v) > 1 for v in id_owners.values())
         self.audit["clients_with_both_engine_maps"] = sum(
             {e["role"] for e in r["engine"]} >= {"prefill", "decode"} for r in self.requests
@@ -521,10 +527,12 @@ class Importer:
             for entry in r["engine"]:
                 entry["identity_ambiguous"] = (
                     entry["process"] is None
-                    or len(id_owners[(entry["worker"], entry["process"], entry["client_id"])]) > 1
+                    or len(id_owners[(entry["worker"], entry["host"], entry["process"], entry["client_id"])]) > 1
                 )
         for worker in self.workers.values():
-            worker["process_epochs"] = sorted(self.worker_epochs[(worker["host"], worker["role"])])
+            worker["process_epochs"] = sorted(
+                {epoch for host in worker["hosts"] for epoch in self.worker_epochs[(host, worker["role"])]}
+            )
         self.audit["iteration_rows"] = len(self.iterations)
         self.audit["batch_snapshot_rows"] = sum(r["kind"] == "batch_snapshot" for r in self.iterations)
 
@@ -555,7 +563,7 @@ class Importer:
                     candidates = {
                         w["id"]
                         for w in self.workers.values()
-                        if w["host"] == span["host"] and w["role"] == span["role"]
+                        if span["host"] in w["hosts"] and w["role"] == span["role"]
                     }
                     basis = "unique recorded host and role; no request/process binding"
                 span["worker"] = next(iter(candidates)) if len(candidates) == 1 else None

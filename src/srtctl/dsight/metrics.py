@@ -381,7 +381,9 @@ def finalize_metrics(run: Importer, result: list[dict[str, Any]], catalog: dict[
         series["points"].sort(key=lambda point: (point[0], point[2], point[3]))
         points, seen = [], set()
         for point in series["points"]:
-            identity = tuple(point[:2])
+            # Separate request events can have equal values at a clock tick.
+            # Their source line, not just time/value, is their observation identity.
+            identity = tuple(point) if series.get("temporal") == "event" else tuple(point[:2])
             if identity not in seen:
                 points.append(point)
                 seen.add(identity)
@@ -390,11 +392,12 @@ def finalize_metrics(run: Importer, result: list[dict[str, Any]], catalog: dict[
         series["points"] = points
         conflicts = []
         conflicting_samples = 0
-        for timestamp, samples in groupby(points, key=lambda point: point[0]):
-            count = sum(1 for _ in samples)
-            if count > 1:
-                conflicts.append(timestamp)
-                conflicting_samples += count
+        if series.get("temporal") != "event":
+            for timestamp, samples in groupby(points, key=lambda point: point[0]):
+                count = sum(1 for _ in samples)
+                if count > 1:
+                    conflicts.append(timestamp)
+                    conflicting_samples += count
         series["conflict_timestamps"] = conflicts
         series["conflicting_samples"] = conflicting_samples
         run.audit["conflicting_metric_samples"] += conflicting_samples

@@ -23,7 +23,7 @@ flowchart LR
     W["Worker .out logs"] --> IP["Correlate client / Dynamo IDs<br/>and worker / process bindings"]
     F["Frontend .out logs"] --> IP
     IP --> IU["Request tab<br/>Identity bridge +<br/>Recorded request path"]
-    W --> LM["LogMetricGenerator interface<br/>Dynamo–TokenSpeed batches + scheduler config"]
+    W --> LM["LogMetricGenerator interface<br/>TokenSpeed batches + config<br/>SGLang batches + request timings"]
     LM --> MP
     W --> BP["Decode iterations / batch snapshots<br/>retain worker, rank scope and time"]
     BP --> MQ
@@ -139,7 +139,7 @@ correlation, source references and limits.
 | Input to the engine interface | Answer returned to the reader |
 | --- | --- |
 | One worker-log line | Typed engine identity, iteration or scheduler-snapshot observations, or no recognized record. |
-| One worker-log line + filename identity, through `LogMetricGenerator` | Timestamped metric values with rank/process/label scope. Metric definitions declare units, sample versus setting semantics, and optional limit relationships. The shared reader owns alignment, evidence and exact-scope joins. |
+| One worker-log line + filename identity, through `LogMetricGenerator` | Timestamped metric values with rank/process/label scope. Metric definitions declare units, sample/event/setting semantics, and optional limit relationships. The shared reader owns alignment, evidence and exact-scope joins. Distinct request events preserve source-line identity even at the same timestamp. |
 | An NVTX name and duration | Whether to include that host annotation and its engine/scope metadata. Original names and timestamps remain in the profile records. |
 | A recorded metric name | Optional engine-specific display metadata and units. The shared Tachometer catalog includes other captured families too; values, labels and source rows remain in the metric reader. |
 

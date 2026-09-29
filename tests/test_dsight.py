@@ -552,6 +552,7 @@ def test_iteration_and_identity_on_one_line_preserve_ranks_window_and_provenance
     source = next(source["id"] for source in data["sources"] if source["path"] == str(worker_log))
     assert rows[0] == {
         "worker": "decode-0",
+        "host": "decode-host",
         "iteration": 42,
         "global_rank": 4,
         "rank": 4,

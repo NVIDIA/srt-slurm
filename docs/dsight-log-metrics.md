@@ -10,7 +10,7 @@ pinning and query APIs. No AIPerf metric summary is used for these families.
 ```mermaid
 flowchart LR
     T["Tachometer Parquet / Arrow rows"] --> TR["metrics.read_metrics<br/>names, labels, absolute timestamps"]
-    W["Worker .out lines + filename identity"] --> G["LogMetricGenerator Protocol<br/>DynamoTokenSpeedLogMetrics"]
+    W["Worker .out lines + filename identity"] --> G["LogMetricGenerator Protocol<br/>TokenSpeed and SGLang adapters"]
     G --> LR["log_metrics.reader<br/>timezone, scope, file + line evidence"]
     TR --> S["Shared metric series + catalog<br/>deduplication, conflicts, reference IDs"]
     LR --> S
@@ -57,6 +57,9 @@ Log series additionally declare `source_kind: "worker_log"`, `generator`,
 `time_resolution_s`, and `temporal`:
 
 - `sample`: a recorded observation; no value is assumed before or after it.
+- `event`: a recorded per-request observation; distinct source lines remain
+  distinct points even when timestamp and value match. Simultaneous events do
+  not count as conflicting metric samples.
 - `setting`: a recorded configuration held until the next setting in the same
   scope. A null value invalidates the previous setting. The last timestamp group
   before the trace window is retained at its original, possibly negative, elapsed
@@ -99,6 +102,86 @@ warning. Missing page fields or configuration do not create zero-valued samples.
 A new scheduler configuration without a valid positive `max_batch_size` clears
 the previous limit. Settings are not applied before their recorded timestamps.
 
+## SGLang batch metrics
+
+SGLang `Prefill batch [...]` and `Decode batch [...]` lines contribute the recorded
+fields below as `log_sglang_*` samples. The shared reader retains each physical
+log line as evidence. Each series keeps the logged DP rank and its TP and EP
+labels, plus a `phase` label (`prefill` or `decode`); values from different ranks,
+phases, files or workers are never summed. A field absent or invalid on a line
+creates no point. All values are snapshots or logger-reported rates, not held
+settings or continuously measured occupancy.
+
+| Phase | Recorded fields | Metric suffixes | Units |
+| --- | --- | --- | --- |
+| Prefill | `#new-seq`, `#new-token`, `#cached-token` | `new_sequences`, `new_tokens`, `cached_tokens` | requests, tokens, tokens |
+| Prefill | `#pending-token`, `#bootstrap-req`, `#inflight-req`, `#optimistic-req` | `pending_tokens`, `bootstrap_requests`, `inflight_requests`, `optimistic_requests` | tokens, requests, requests, requests |
+| Prefill | `input throughput (token/s)` | `input_throughput_tokens_per_second` | tokens/s |
+| Decode | `#token`, `#prealloc-req`, `#transfer-req`, `#retracted-req` | `decode_tokens`, `preallocated_requests`, `transfer_requests`, `retracted_requests` | tokens, requests, requests, requests |
+| Decode | `accept len`, `accept rate`, `pre-allocated usage`, `gen throughput (token/s)` | `accept_length`, `accept_rate`, `preallocated_usage`, `generation_throughput_tokens_per_second` | tokens, ratio, ratio, tokens/s |
+| Both | `#running-req`, `#queue-req`, `token usage`, `cuda graph` | `running_requests`, `queued_requests`, `token_usage`, `cuda_graph_enabled` | requests, requests, ratio, boolean (0/1) |
+
+The suffixes in this table have the `log_sglang_` prefix in the catalog. `#token`
+is the decode pool's used-token count excluding available and evictable tokens.
+SGLang logs `#cached-token` as batch
+`log_hit_tokens`; it is not a full-workload cache hit rate. `token usage` is the
+reported token-pool ratio, and `pre-allocated usage` is the preallocated-token
+count divided by the scheduler token capacity. `accept len` and `accept rate`
+are the speculative acceptance values reported for that decode logging interval.
+Input and generation throughput are the logger's own rates over its preceding
+logging interval. The adapter does not derive a cache-hit fraction, resample a
+rate, or infer values between samples.
+
+SGLang timestamps are local. Pass the run's actual timezone through
+`--iteration-timezone` to align them with client and exported telemetry; without
+it the reader omits these metrics and records a warning.
+The supported format includes fractional-second timestamps and explicit
+`DP`, `TP`, and `EP` rank labels. The [synthetic SGLang example](../examples/dsight/sglang/README.md)
+builds a report from these logs alone.
+
+### Per-request timing records
+
+SGLang `ReqTimeStats(...)` lines also enter the same catalog. The request's
+`rid` stays in the source line, not in series labels. A request emits one
+record when the scheduler sees it finished and request-time logging is enabled;
+the point is placed at the **log emission time**, which is an observation after
+completion, not the queue-entry or first-forward time. Scope retains the logged
+DP rank, TP/EP labels and `type=prefill` or `type=decode` as the `phase` label.
+
+| Metric suffix after `log_sglang_` | Source or calculation | Unit |
+| --- | --- | --- |
+| `request_input_tokens`, `request_cached_input_tokens` | `input_len`, `cached_input_len` on that request | tokens |
+| `request_uncached_input_tokens` | `input_len - cached_input_len`, when both counts are valid and cached ≤ input | tokens |
+| `request_cached_input_fraction` | `cached_input_len / input_len`, when input > 0 and 0 ≤ cached ≤ input | ratio |
+| `request_bootstrap_duration_ms`, `request_queue_duration_ms`, `request_forward_duration_ms` | Corresponding `ReqTimeStats` durations on either phase | ms |
+| `request_allocation_wait_duration_ms`, `request_transfer_duration_ms` | Decode-only `alloc_wait_duration`, `transfer_duration` | ms |
+| `request_transfer_speed_gib_per_second`, `request_transfer_total_mib` | Prefill-only transfer fields as logged | GiB/s, MiB |
+
+These durations describe the individual request's recorded stages. They cannot
+be summed across requests, equated with client latency, or assigned to the
+emission timestamp as if that were their start. `request_cached_input_fraction`
+is a per-request fraction, not the batch's `#cached-token` share or a
+full-workload cache hit rate. A missing or invalid input count leaves that
+derived value absent; a valid zero denominator remains unknown rather than zero.
+Request metrics use `event` semantics: queries and SQLite keep every request's
+point and source line, including repeated values at the same millisecond. The
+chart displays the median when events share a timestamp and labels the number
+of events at that tick. This display value is not an additional raw sample;
+hover and the source query distinguish it from individual requests. The line
+between event ticks is a visual guide, not continuous occupancy.
+SGLang computes `transfer_total` by dividing bytes by 1024² and `transfer_speed`
+by 1024³, despite printing `MB` and `GB/s`; the catalog uses their binary units.
+For chunked prefill transfer, the logged transfer timing can cover only the last
+chunk, so these fields do not establish a whole-request transfer rate.
+Its duration formatter returns zero when either timing endpoint is unavailable,
+so a logged zero does not always prove a zero-length stage. Prefill
+`forward_duration` runs from forward entry through completion and can include
+chunking and transfer. The logged prefill `entry_time` is the bootstrap queue
+entry time, while `queue_duration` starts at the waiting queue entry; the
+adapter does not use `entry_time` as an alignment anchor.
+The [upstream request-timing implementation](https://github.com/sgl-project/sglang/blob/f884231f5a3108d9139b0141406ddea60f6a97ff/python/sglang/srt/observability/req_time_stats.py)
+defines the stage boundaries, missing-endpoint behavior, and binary transfer units.
+
 ## Capacity presentation
 
 Pin **Active decode batch** and **Active KV pages** to see activity and capacity
@@ -138,7 +221,7 @@ class LogMetricGenerator(Protocol):
 
 A generator returns timestamped values and recorded rank/process/label scope;
 unsupported lines return `None`. Definitions supply metric names, units, sample
-versus setting semantics and optional reference relationships. The shared reader
+versus event/setting semantics and optional reference relationships. The shared reader
 owns file discovery, timezone alignment, window selection, evidence, validation,
 normalization and reference matching. Configuration-only evidence does not invent
 a workload time envelope for a source-only report.
@@ -146,12 +229,13 @@ a workload time envelope for a source-only report.
 `log_metrics/__init__.py` holds the generator registry. An implementation is added
 there with representative source fixtures and missing/changed-limit tests. Engine
 log syntax stays in the adapter; rendering depends only on the normalized contract.
-`DynamoTokenSpeedLogMetrics` is the implemented generator.
+`DynamoTokenSpeedLogMetrics` and `SGLangLogMetrics` are registered generators.
 
 Focused checks:
 
 ```bash
 uv run pytest tests/test_dsight_log_metrics.py
+uv run pytest tests/test_dsight_sglang_log_metrics.py
 uv run --with websockets python tests/dsight_log_metrics_check.py --port 9222 --out /tmp/dsight-log-metrics-check
 ```
 

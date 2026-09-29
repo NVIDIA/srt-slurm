@@ -83,7 +83,7 @@ def source_window(run: Importer) -> tuple[int, int]:
             if source is not None:
                 for generator in GENERATORS:
                     if event := generator.parse_line(line, source):
-                        sampled = {d.name for d in generator.definitions if d.temporal == "sample"}
+                        sampled = {d.name for d in generator.definitions if d.temporal != "setting"}
                         if any(name in sampled for name, _ in event.values):
                             stamp = timestamp_ns(event.time, run.iteration_zone)
                             if stamp is not None:

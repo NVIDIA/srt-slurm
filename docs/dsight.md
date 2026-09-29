@@ -144,8 +144,17 @@ selects measured requests; without it, the measurement window is not inferred.
 Phase-analysis records join the request log on phase, request ID, user,
 conversation and conversation index. Timing and HTTP-identity references remain
 separate. Missing analysis records are labeled as liveness-log timing. AgentPerf
+streams explicitly marked `has_output=false` are unsuccessful even when HTTP
+`success=true`. If a phase-analysis record omits cache usage, the exactly matched
+request-log value is retained with its own source reference; an explicit null
+remains unknown.
+AgentPerf
 sessions group phase/user/conversation; agent nesting is not inferred. Prompts,
 response text and SSE payloads are excluded from the normalized dataset.
+
+Worker IDs can span multiple hosts, as in a two-node SGLang decode worker.
+The worker catalog retains all observed hosts; log samples, process bindings,
+and configuration references remain scoped to their recorded host and source.
 
 For metrics, `final.parquet` supersedes compacted Parquet shards. An Arrow tail
 is also read, with identical samples deduplicated within complete series
