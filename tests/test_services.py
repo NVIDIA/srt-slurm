@@ -868,3 +868,39 @@ def test_resolve_host_binary(tmp_path: Path, monkeypatch) -> None:
     assert exporters.resolve_host_binary("configs/process-exporter") == binary
     assert exporters.resolve_host_binary(str(binary)) == binary
     assert exporters.resolve_host_binary("/nonexistent/process-exporter") is None
+
+
+def _lmcache_entries(config: SrtConfig) -> list[tuple[str, bool, str, str]]:
+    return [
+        (entry.service.name, entry.implicit, entry.service.effective_placement, entry.reason)
+        for entry in effective_services(config)
+        if entry.service.type == "lmcache-server"
+    ]
+
+
+def test_lmcache_mp_connector_implies_lmcache_server_on_the_roles_that_use_it() -> None:
+    every_role = _load("", backend="backend:\n  type: vllm\n  connector: lmcache-mp\n")
+    assert _lmcache_entries(every_role) == [
+        ("lmcache-server", True, "workers", "prefill connector lmcache-mp, decode connector lmcache-mp")
+    ]
+
+    # A role override goes through the same resolver: only prefill nodes get a server.
+    prefill_only = _load(
+        "",
+        backend="backend:\n  type: vllm\n  connector: nixl\n  vllm_config:\n    prefill:\n      connector: lmcache-mp\n",
+    )
+    assert _lmcache_entries(prefill_only) == [("lmcache-server", True, "prefill", "prefill connector lmcache-mp")]
+
+    assert _lmcache_entries(_load("", backend="backend:\n  type: vllm\n  connector: nixl\n")) == []
+
+
+def test_declared_lmcache_server_replaces_the_implied_one_under_any_name() -> None:
+    backend = "backend:\n  type: vllm\n  connector: lmcache-mp\n"
+    declared = _load(
+        "services:\n  - name: cache\n    type: lmcache-server\n    placement:\n      node: decode\n", backend=backend
+    )
+    assert _lmcache_entries(declared) == [("cache", False, "decode", "")]
+    disabled = _load(
+        "services:\n  - name: lmcache-server\n    type: lmcache-server\n    enabled: false\n", backend=backend
+    )
+    assert _lmcache_entries(disabled) == []

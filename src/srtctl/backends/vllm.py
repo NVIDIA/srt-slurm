@@ -1763,6 +1763,8 @@ class KVConnector:
     discovery: bool = False
     # Static ``kv_connector_extra_config``; a discovery row's topology-derived extras replace it.
     extra_config: dict[str, Any] | None = None
+    # Service kind the connector talks to on its worker's node; implied when the recipe declares none.
+    service_type: str | None = None
 
     def transfer_config(self, mode: WorkerMode) -> dict[str, Any]:
         """The ``--kv-transfer-config`` payload for a worker mode, before any topology-derived extras."""
@@ -1784,6 +1786,7 @@ _CONNECTOR_MAP: dict[str, KVConnector] = {
         "LMCacheMPConnector",
         module_path="lmcache.integration.vllm.lmcache_mp_connector",
         extra_config={"lmcache.mp.host": "tcp://localhost", "lmcache.mp.port": LMCACHE_SERVER_PORT},
+        service_type="lmcache-server",
     ),
     "kvbm": KVConnector("DynamoConnector", module_path="kvbm.vllm_integration.connector"),
     # AMD MoRI-IO (ROCm): prefill produces and decode consumes KV; workers register with the vLLM Router.

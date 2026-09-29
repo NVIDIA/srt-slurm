@@ -5,6 +5,7 @@
 # the job until `GET /healthcheck` answers. `connector: lmcache-mp` points each vLLM
 # worker's LMCacheMPConnector at the server on its own node. Everything after the
 # ports is LMCache's own CLI: put `lmcache server --help` flags under `args`.
+# `connector: lmcache-mp` implies the server; the entry below only adds `args`.
 #
 # The vLLM image must ship LMCache (the connector is imported inside the worker), so
 # this uses a `vllm-lmcache` alias. Aliases (`qwen3-0.6b`, `vllm-lmcache`) resolve
@@ -29,7 +30,7 @@ dynamo:
     pypi: "1.4.2"
 
 environment:
-  PYTHONHASHSEED: "0"        # chunk hashes must agree across the server and every rank
+  PYTHONHASHSEED: "0"        # chunk hashes must agree across the server and every rank; services need it too
 
 frontend:
   type: dynamo
@@ -55,7 +56,7 @@ roles:
       max-model-len: 4096
 
 services:
-  - name: lmcache
+  - name: lmcache-server
     type: lmcache-server
     # placement.node: workers (default) — one instance per worker node.
     # start: before_workers, critical: true (defaults): a dead server fails the run.
@@ -68,6 +69,8 @@ services:
       - "2"
       - --eviction-policy
       - LRU
+    env:
+      PYTHONHASHSEED: "0"    # services do not inherit the top-level environment
     preamble: |
       ulimit -l unlimited
 

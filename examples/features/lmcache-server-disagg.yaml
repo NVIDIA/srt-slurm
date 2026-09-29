@@ -1,9 +1,10 @@
 # An LMCache DRAM tier on the prefill side of a disaggregated vLLM job.
 #
 # Prefill keeps NIXL for the P/D transfer and adds LMCache for prefix reuse, so its
-# kv-transfer-config is a hand-written MultiConnector (srtctl passes raw JSON through
-# untouched; the `lmcache-mp` shorthand covers the single-connector case). Decode is
-# NIXL only. The server is placed on prefill nodes only (`placement.node: prefill`).
+# connector is a hand-written MultiConnector (a raw JSON `connector` passes through as
+# the --kv-transfer-config; the `lmcache-mp` shorthand covers the single-connector case
+# and implies the server). Decode is NIXL only. The server is declared here and placed
+# on prefill nodes only (`placement.node: prefill`).
 #
 # Aliases (`qwen3-0.6b`, `vllm-lmcache`) resolve through srtslurm.yaml; see
 # examples/README.md and examples/features/lmcache-server.yaml.
@@ -47,8 +48,8 @@ roles:
       DYN_HEALTH_CHECK_ENABLED: "false"
       PYTHONUNBUFFERED: "1"
     args:
-      # NIXL to decode plus LMCache MP on this node; a raw string here replaces the connector preset.
-      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"LMCacheMPConnector","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":8750}}]}}'
+      # NIXL to decode plus LMCache MP on this node; raw JSON replaces the nixl preset for this role.
+      connector: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"LMCacheMPConnector","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":8750}}]}}'
       served-model-name: "Qwen/Qwen3-0.6B"
       tensor-parallel-size: 1
       gpu-memory-utilization: 0.5
@@ -71,6 +72,8 @@ services:
     type: lmcache-server
     placement:
       node: prefill          # decode nodes get no server; with `colocate` that is still this one node
+    env:
+      PYTHONHASHSEED: "0"    # services do not inherit the top-level environment
     args:
       - --l1-size-gb
       - "16"

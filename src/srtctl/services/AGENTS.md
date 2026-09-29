@@ -4,7 +4,7 @@ Rules for `src/srtctl/services/` and `cli/mixins/service_stage.py`. `docs/servic
 
 ## Services (etcd, NATS, Mooncake master, exporters)
 
-Everything that is not a worker or the frontend is a service (`src/srtctl/services/`, launched by `ServiceStageMixin`). The Dynamo frontend implies `etcd` and `nats`, `backend.mooncake_kv_store` implies `mooncake-master`, tachometer implies `dcgm-exporter` and `node-exporter` on every worker node (`services/implicit.py`). A recipe declares one by name only to change it:
+Everything that is not a worker or the frontend is a service (`src/srtctl/services/`, launched by `ServiceStageMixin`). The Dynamo frontend implies `etcd` and `nats`, `backend.mooncake_kv_store` implies `mooncake-master`, a vLLM connector row with `service_type` (`lmcache-mp`) implies that service on its roles' nodes, tachometer implies `dcgm-exporter` and `node-exporter` on every worker node (`services/implicit.py`). A recipe declares one by name only to change it:
 
 ```yaml
 services:
