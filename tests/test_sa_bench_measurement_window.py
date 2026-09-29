@@ -136,7 +136,7 @@ def _samples(start, end, *, step=1.0, devices=(("node-a", 0, "GPU-a0"),), pad=No
     return derive_observed_devices(rows)
 
 
-def _validate(logs, observed, expected=(("sa-bench", 4),), errors=None):
+def _validate(logs, observed, expected=(("sa-bench", 4),), errors=None, sample_interval_seconds=1.0):
     return validate_expected_windows(
         power_dir=logs / "power",
         result_root=logs,
@@ -144,6 +144,7 @@ def _validate(logs, observed, expected=(("sa-bench", 4),), errors=None):
         expected_device_keys={device.key for device in observed},
         observed_devices=observed,
         artifact_errors=errors if errors is not None else [],
+        sample_interval_seconds=sample_interval_seconds,
     )
 
 
@@ -309,6 +310,49 @@ class TestCoverageValidation:
         _write_result(logs, start=start, end=end, duration=result_duration if result_duration is not None else duration)
         return start, end
 
+    def test_sustained_sample_loss_is_checked_per_gpu(self, logs):
+        start, end = self._completed(logs, end=1100.0, duration=100.0)
+        sparse = _samples(start, end, step=2.0)
+        healthy = _samples(start, end, devices=(("node-b", 0, "GPU-b0"),))
+        result = _validate(logs, sparse + healthy)[0]
+        assert result.power_coverage_valid is False
+        assert result.reason_codes == (Reason.SAMPLE_LOSS_EXCEEDED,)
+
+    @pytest.mark.parametrize(("missing_per_hundred", "valid"), [(5, True), (6, False)])
+    def test_cumulative_sample_loss_boundary(self, logs, missing_per_hundred, valid):
+        start, end = self._completed(logs, end=4600.0, duration=3600.0)
+        observed = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start) - 2, int(end) + 3))
+                if not (start < t < end and (t - start) % 100 in range(10, 10 * missing_per_hundred + 1, 10))
+            ]
+        )
+        result = _validate(logs, observed)[0]
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+        assert Reason.SAMPLE_GAP_EXCEEDED not in result.reason_codes
+
+    def test_cadence_jitter_does_not_accumulate_as_missing_samples(self, logs):
+        start, end = self._completed(logs, end=1100.0, duration=100.0)
+        observed = derive_observed_devices(
+            [
+                SampleRow(t + (0.4 if seq % 2 else -0.4), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start) - 2, int(end) + 3))
+            ]
+        )
+        assert _validate(logs, observed)[0].power_coverage_valid is True
+
+    def test_short_window_edge_jitter_does_not_lose_a_sample(self, logs):
+        self._completed(logs, start=1000.0, end=1000.6, duration=0.6)
+        observed = derive_observed_devices(
+            [
+                SampleRow(t, seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate([999.9999, 1000.2001, 1000.4001, 1000.6001])
+            ]
+        )
+        assert _validate(logs, observed, sample_interval_seconds=0.2)[0].power_coverage_valid is True
+
     def test_bracketed_window_with_small_gaps_is_valid(self, logs):
         start, end = self._completed(logs)
 
@@ -340,7 +384,9 @@ class TestCoverageValidation:
     def test_gap_exactly_at_the_threshold_passes(self, logs):
         start, end = self._completed(logs)
 
-        rows = _validate(logs, _samples(start, end, step=MAX_SAMPLE_GAP_SECONDS))
+        rows = _validate(
+            logs, _samples(start, end, step=MAX_SAMPLE_GAP_SECONDS), sample_interval_seconds=MAX_SAMPLE_GAP_SECONDS
+        )
 
         assert rows[0].power_coverage_valid is True
 

@@ -471,6 +471,7 @@ class PowerTelemetrySession:
             expected_device_keys={device.key for device in self._manifest.expected_devices},
             observed_devices=observed,
             artifact_errors=self._manifest.artifact_errors,
+            sample_interval_seconds=self._settings.sample_interval_seconds,
         )
         reasons.extend(reason for validation in self._manifest.window_validations for reason in validation.reason_codes)
         # NOTE: an unusable artifact file is itself a publication gate, not something to ignore.

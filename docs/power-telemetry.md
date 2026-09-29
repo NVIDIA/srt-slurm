@@ -127,3 +127,19 @@ consistency instead. Exit status is `0` only when the recomputed package is
 publishable, the stored verdict is `true`, and the two agree; otherwise it is
 `1` and every failure is printed. The `--expect-*` flags optionally assert an
 expected job shape for hardware canaries.
+
+### Cumulative sample coverage
+
+Each expected GPU must also retain at least 95% of the expected sampling
+intervals across its nearest bracketing samples. Expected intervals are
+`floor((last_bracket - first_bracket) / sample_interval_seconds)`; observed
+intervals are the number of samples in that same span minus one. This avoids
+counting ordinary cadence jitter as repeated loss or allowing warmup samples
+to hide missing measurements. More than 5% missing intervals records
+`sample_loss_exceeded`, even when every individual gap is below 3 seconds.
+For example, sampling every 2 seconds with a recorded 1-second cadence fails.
+
+The 3-second maximum gap and boundary checks still apply. Session finalization
+and offline validation use the recorded cadence and the same coverage rule.
+Previously accepted sparse packages can fail revalidation; their files are
+not rewritten. This limits sample loss, not the numerical error in energy.
