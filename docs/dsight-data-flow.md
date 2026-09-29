@@ -18,7 +18,7 @@ flowchart LR
 
     T["Tachometer capture<br/>Parquet / Arrow"] --> MP["Catalog all metric families<br/>preserve labels; align and deduplicate"]
     MP --> MU["Metrics panel<br/>Frontend, Router, Workers, GPU, Host<br/>observations + paired capacity limits"]
-    MP --> MQ["Agent API / queries<br/>all imported metric series"]
+    MP --> MQ["Agent API / queries<br/>imported metrics + unmatched OTel spans"]
 
     W["Worker .out logs"] --> IP["Correlate client / Dynamo IDs<br/>and worker / process bindings"]
     F["Frontend .out logs"] --> IP
@@ -29,7 +29,7 @@ flowchart LR
     BP --> BU["Batch context tab<br/>shared scheduler and step-time context"]
 
     O["Lifecycle OTel<br/>flat or per-collector traces.jsonl"] --> LP["Correlate request / trace IDs<br/>build lifecycle with client boundaries"]
-    LP --> SU["Unjoined server activity<br/>when no client request matches"]
+    LP -->|"Spans without a matching client"| MQ
     LP --> LU["Expand lifecycle + Request tab<br/>progress milestones"]
 
     C["Client request JSONL<br/>AIPerf / AgentPerf"] --> CP["Read request timing, TTFT<br/>sessions and token counts"]
@@ -38,18 +38,20 @@ flowchart LR
     classDef source fill:#edf4ff,stroke:#42638c,color:#1c3553;
     classDef ui fill:#edf8ef,stroke:#36784c,color:#1c3c28;
     class N,T,W,F,O,C source;
-    class NU,MU,MQ,IU,BU,LU,SU,CU ui;
+    class NU,MU,MQ,IU,BU,LU,CU ui;
 ```
 
 The Python readers produce one normalized dataset containing requests, sessions,
-workers, metrics, profiles, batch observations and unjoined server activity,
+workers, metrics, profiles, batch observations and unmatched OTel spans,
 with references back to source files and rows. Log metric generators and Tachometer
 share the metric series representation; log evidence does not need an intermediate
 Parquet file. The [metric source/schema guide](dsight-log-metrics.md) documents the
 raw columns, normalized points and capacity relationships. The builder writes `trace-data.json.gz` and embeds the same data in
 `index.html`, with metric samples split into independently compressed families.
 The browser reads the catalog immediately and decompresses metric points when
-selected or queried. It does not open the original SQLite, Parquet or log files.
+selected or queried. Unmatched OTel spans remain queryable and exportable as
+`server_spans`; they have no dedicated timeline section. The browser does not
+open the original SQLite, Parquet or log files.
 
 All views share a time origin: the first selected client request, or the earliest
 recorded source timestamp when no client export is available. Nsight uses its

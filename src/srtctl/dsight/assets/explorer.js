@@ -765,18 +765,6 @@
     if (!hasLifecycle(r)) return "";
     return '<div class="row-note"><strong>Request breakdown · Progress milestones</strong></div>' + milestoneRows(r);
   }
-  function serverTracks() {
-    if (!available.server_activity) return "";
-    const rows = D.server_spans.filter((s) => overlap(s.start,s.end));
-    return `<details class="server-activity" ${available.requests ? "" : "open"}><summary class="section-head">Unjoined server activity <small>${fmt(rows.length)} intervals in range</small></summary>
-      <div class="row-note">Recorded spans without a matching measured client request. First 100 intervals shown; zoom in to inspect. No client TTFT is inferred.</div>` +
-      rows.slice(0,100).map((s) => track(labelText(s.label), bar(s.start,s.end,s.label,`phase ${s.role}`,"",
-        `${s.name}
-${s.host}
-Request ${s.request ?? "unknown"}
-${ms(s.end-s.start)}
-${s.description}`))).join("") + "</details>";
-  }
   function clientTracks() {
     if (!available.requests) return "";
     const list = sessionList(),
@@ -1362,8 +1350,8 @@ ${s.description}`))).join("") + "</details>";
       (_, i) =>
         `<span class="tick" style="left:${i * 20}%">${fmt(state.from + ((state.to - state.from) * i) / 5, state.to - state.from < 1 ? 6 : 3)} s</span>`,
     ).join("");
-    $("tracks").innerHTML = clientTracks() + serverTracks() + workerTracks() + nsysTracks() ||
-      '<div class="loading">No supported timed observations are available. Source coverage is listed in Evidence.</div>';
+    $("tracks").innerHTML = clientTracks() + workerTracks() + nsysTracks() ||
+      '<div class="loading">No timeline tracks are available. Imported data and source coverage are available in Agent API and Evidence.</div>';
     mountMetricCharts();
     $("tracks").scrollTop = scroll;
     if ($("workerMetric")) $("workerMetric").value = state.metric;
@@ -1792,13 +1780,13 @@ ${s.description}`))).join("") + "</details>";
     if (button.dataset.tab === "iterations") button.textContent = "Batch context";
   });
   document.querySelector(".timeline-controls").hidden = !available.requests;
-  document.querySelector(".legend").hidden = !available.requests && !available.nsight && !available.server_activity;
+  document.querySelector(".legend").hidden = !available.requests && !available.nsight;
   document.querySelector(".legend").innerHTML = [
     ...(available.requests ? ['<span><i class="dot" style="background:var(--amber)"></i>Client TTFT</span>',
       '<span><i class="dot" style="background:var(--teal)"></i>Output reception</span>'] : []),
     ...(D.requests.some((r) => !Number.isFinite(r.first) || r.first < r.start || r.first > r.end)
       ? ['<span><i class="dot" style="background:#b7c2cd"></i>First-token timing unavailable</span>'] : []),
-    ...(available.request_breakdown || available.server_activity ? ['<span><i class="dot" style="background:var(--violet)"></i>OTel activity</span>'] : []),
+    ...(available.request_breakdown ? ['<span><i class="dot" style="background:var(--violet)"></i>OTel activity</span>'] : []),
     ...(available.nsight ? ['<span><i class="dot" style="background:var(--violet)"></i>Host NVTX</span>'] : []),
     '<span class="muted">Shared time axis</span>',
   ].join("");

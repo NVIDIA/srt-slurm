@@ -77,8 +77,10 @@ keeps available controls and reports that no observations overlap the window.
 Client-only, metrics-only, Nsight-only, OTel-only and timestamped-batch-only
 captures are supported. Without a client export (or with an empty export), the
 window is the union of recorded source timestamps. DSight does not synthesize
-client requests or TTFT. Unjoined server spans have a separate section and query,
-including in runs that also contain measured clients. A nonempty client export
+client requests or TTFT. Unjoined server spans remain available through
+`queryServerSpans()` and evidence export, without separate timeline rows.
+OTel-only captures retain source coverage and query access; their timeline shows
+an empty-state message. A nonempty client export
 whose rows all fail the requested phase filter remains an error. Missing explicitly
 supplied paths, malformed inputs and captures without a positive recorded time
 range remain errors, rather than silently appearing complete.

@@ -128,6 +128,14 @@ async def run(output: Path, port: int) -> None:
             )
             url = Path(report["html"]).as_uri()
             await navigate(url, mode)
+            assert not await js("Boolean(document.querySelector('.server-activity'))")
+            if mode == "unjoined":
+                # Spans without a measured client remain queryable and exportable.
+                spans = await js("traceExplorer.queryServerSpans()")
+                assert spans["total"] > 0 and spans["items"]
+                exported = await js("traceExplorer.exportSelection()")
+                assert exported["server_spans"] == spans
+                assert not await js("document.querySelector('.legend').innerText.includes('OTel activity')")
             await check_request("client-only", False)
             assert not await js(
                 "/Recorded request path|Identity bridge/.test(document.querySelector('#inspectorBody').innerText)"
@@ -151,6 +159,7 @@ async def run(output: Path, port: int) -> None:
             assert "client-only" not in state["expandedRequests"], state
             assert (CLIENT in state["expandedRequests"]) is available, state
             assert (state["span"] is not None) is available, state
+            assert not await js("Boolean(document.querySelector('.server-activity'))")
             await js("document.querySelector('#rangeFrom').value=0;document.querySelector('#rangeTo').value=4")
             await click("#applyRange")
             state = await js("traceExplorer.getState()")

@@ -116,6 +116,7 @@ async def run(output: Path, port: int) -> None:
               const shown = (q) => [...document.querySelectorAll(q)].some(e => e.getClientRects().length);
               return {requestTab:shown('.tabs [data-tab=request]'), nsightTab:shown('.tabs [data-tab=nsys]'),
                 batchesTab:shown('.tabs [data-tab=iterations]'), clientTracks:!!document.querySelector('#clientTracks'),
+                unjoinedTracks:!!document.querySelector('.server-activity'), legend:shown('.legend'),
                 hardware:shown('#hardwareToggle'), metrics:shown('#workerMetric'), cpu:/CPU sample hotspots/.test(document.body.innerText)};
             })()""")
             assert visibility["requestTab"] == cap["requests"], (mode, visibility, cap)
@@ -125,6 +126,11 @@ async def run(output: Path, port: int) -> None:
             assert not visibility["hardware"], (mode, visibility, cap)  # Hardware lives in the catalog selector.
             assert visibility["metrics"] == cap["metrics"], (mode, visibility, cap)
             assert not visibility["cpu"]
+            assert not visibility["unjoinedTracks"], (mode, visibility)
+            assert visibility["legend"] == (cap["requests"] or cap["nsight"]), (mode, visibility, cap)
+            if mode == "otel-only":
+                empty = await js("document.querySelector('#tracks').innerText")
+                assert "No timeline tracks" in empty and "Agent API and Evidence" in empty, empty
             assert (await js("traceExplorer.describe().available")) == cap
             if cap["metrics"]:
                 await js("traceExplorer.whenMetricsReady()")
@@ -238,7 +244,6 @@ async def run(output: Path, port: int) -> None:
             assert bool(exported["server_spans"]["total"]) == cap["server_activity"]
             assert bool(exported["batch_observations"]["total"]) == cap["iterations"]
             if cap["server_activity"]:
-                assert await js("document.querySelector('.server-activity') !== null")
                 page1 = await js("traceExplorer.queryServerSpans({limit:1})")
                 page2 = await js("traceExplorer.queryServerSpans({offset:1,limit:1})")
                 assert page1["items"][0]["id"] != page2["items"][0]["id"]
@@ -264,6 +269,7 @@ async def run(output: Path, port: int) -> None:
             state = await js("traceExplorer.getState()")
             assert state["request"] is None and state["span"] is None and state["expandedRequests"] == [], state
             assert state["nsys"] == cap["nsight"] and state["hardware"] == cap["hardware_metrics"], state
+            assert not await js("Boolean(document.querySelector('.server-activity'))")
             assert not await js("/CPU sample hotspots/.test(document.body.innerText)")
             if not cap["nsight"]:
                 assert state["tab"] != "nsys"
