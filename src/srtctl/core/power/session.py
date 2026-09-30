@@ -106,8 +106,6 @@ class _EndpointResult:
     reason_codes: list[str]
     duration_seconds: float | None
     timing: dict[str, Any] | None = None
-    # Monotonic start stays out of `timing`: the file records instants on the
-    # unix clock and intervals on the monotonic one, never a raw monotonic instant.
     started_monotonic: float | None = None
 
 
@@ -370,8 +368,6 @@ class PowerTelemetrySession:
                             ),
                         }
                     )
-                # The batch is written once per cycle, so its timing lives on one
-                # record rather than being repeated on every endpoint's.
                 self._diagnostics.record(
                     {
                         "event": "cycle_write",
@@ -442,8 +438,6 @@ class PowerTelemetrySession:
         """Collector thread: fixed-cadence cycles that never overlap."""
         interval = self._settings.sample_interval_seconds
         try:
-            # One anchor pair maps each monotonic slot to wall-clock time, so the
-            # cadence never drifts with time.time() adjustments.
             anchor_unix, anchor_monotonic = time.time(), time.monotonic()
             next_cycle = anchor_monotonic
             while not self._stop.is_set():
