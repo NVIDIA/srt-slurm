@@ -12,6 +12,7 @@ Supported frontend types:
 - dynamo: Dynamo frontend with NATS/etcd communication
 - sglang: Direct sglang.launch_server for a single aggregate worker (no router)
 - sglang-router: SGLang Model Gateway router in front of static workers
+- tilert-router: TileRT P/D router in front of vLLM prefill and TileRT decode
 - trtllm_serve: Direct trtllm-serve worker or the disaggregated orchestrator
 - vllm: Direct vLLM OpenAI server for aggregate jobs
 - vllm-router: Official vLLM Router with static aggregate or P/D workers
@@ -29,6 +30,7 @@ from srtctl.frontends.dynamic_frontend import DynamicFrontend
 from srtctl.frontends.dynamo import DynamoFrontend
 from srtctl.frontends.sglang import SGLangRouterFrontend
 from srtctl.frontends.sglang_direct import SGLangFrontend
+from srtctl.frontends.tilert_router import TileRTRouterFrontend
 from srtctl.frontends.trtllm_serve import TRTLLMServeFrontend
 from srtctl.frontends.vllm import VLLMFrontend
 from srtctl.frontends.vllm_router import VLLMRouterFrontend
@@ -42,6 +44,7 @@ __all__ = [
     "SGLangFrontend",
     "SGLangRouterFrontend",
     "TRTLLMServeFrontend",
+    "TileRTRouterFrontend",
     "VLLMFrontend",
     "VLLMRouterFrontend",
     "get_frontend",

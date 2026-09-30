@@ -51,6 +51,42 @@ def test_ui_has_no_external_resources_and_uses_documented_routes():
     assert "history.replaceState" in html  # the #token= fragment is removed from the URL
 
 
+def test_ui_reads_logs_and_captures_through_the_documented_routes():
+    html = (UI_DIR / "index.html").read_text()
+    for route in (
+        "${jobPath(log.job)}/logs`",
+        "/logs?file=${encodeURIComponent(log.file)}&offset=${from}`",
+        "${jobPath(id)}/captures`",
+        "/captures?file=${encodeURIComponent(file)}`",
+    ):
+        assert route in html, route
+
+
+def test_log_tail_can_open_mid_chunk(auth_url):
+    """The UI opens a large log at ``size - TAIL_BYTES``, which is rarely a chunk boundary."""
+    _create_with(auth_url, "tail")
+    body = b"line one\nline two\nline three\n"
+    response = requests.post(
+        f"{auth_url}/api/jobs/tail/logs?file=worker.out&offset=0",
+        data=body,
+        headers={**_bearer(WRITE), "Content-Type": "application/octet-stream"},
+        timeout=5,
+    )
+    assert response.status_code == 200, response.text
+    tail = requests.get(f"{auth_url}/api/jobs/tail/logs?file=worker.out&offset=12", headers=_bearer(READ), timeout=5)
+    assert tail.json()["data"] == body[12:].decode()
+    assert tail.json()["next_offset"] == len(body)
+
+
+def _create_with(url: str, job_id: str) -> None:
+    requests.post(
+        f"{url}/api/jobs",
+        json={"job_id": job_id, "job_name": "ui", "submitted_at": "2026-01-01T00:00:00Z"},
+        headers=_bearer(WRITE),
+        timeout=5,
+    ).raise_for_status()
+
+
 def test_api_next_to_the_ui_still_requires_a_token(auth_url):
     assert requests.get(f"{auth_url}/api/jobs", timeout=5).status_code == 401
     assert requests.get(f"{auth_url}/api/events", timeout=5).status_code == 401

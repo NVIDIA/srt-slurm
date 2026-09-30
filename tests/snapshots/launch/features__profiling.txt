@@ -13,11 +13,6 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     CUDA_VISIBLE_DEVICES: 0
-    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
-    DYN_REQUEST_PLANE: tcp
-    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
-    DYN_SYSTEM_PORT: 7500
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
     PROFILE_AGG_START_STEP: 0
     PROFILE_AGG_STOP_STEP: 20

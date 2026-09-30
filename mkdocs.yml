@@ -59,6 +59,7 @@ nav:
       - Architecture: architecture.md
       - SGLang Router: sglang-router.md
       - vLLM Router: vllm-router.md
+      - TileRT: tilert.md
       - Mooncake KV Store: mooncake-kv-store.md
       - Services: services.md
       - Pools: pools.md
@@ -74,7 +75,6 @@ nav:
       - Monitoring: monitoring.md
       - Component Performance Dashboard: component-dashboard.md
       - DSight Trace Explorer: dsight.md
-      - Router Post-Processing (ruter): ruter.md
       - SLURM FAQ: slurm-faq.md
   - Reference:
       - Status API Spec: status-api-spec.md

@@ -13,7 +13,7 @@ Top-level keys of a recipe YAML.
 | `name` | str | required |  |
 | `model` | [ModelConfig](#modelconfig) | required |  |
 | `resources` | [ResourceConfig](#resourceconfig) | required |  |
-| `engine` | str \| mapping | required | The engine type (`atom`, `sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
+| `engine` | str \| mapping | optional when every role sets `engine` | The engine type (`atom`, `sglang`, `tilert`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
 | `roles` | mapping of role -> [Role](#roles) | required | One block per worker role (`prefill`, `decode`, `agg`): topology, env, and engine args. |
 | `schema` | int | `2` | Recipe schema version. Write `schema: 2` for this layout. |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` |  |
@@ -44,7 +44,8 @@ Three vocabularies are specific to the 2.0 layout. They are normalized into the 
 
 ### engine
 
-`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `tilert`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+Use either one top-level engine or an explicit engine on every role, never both. Role engines do not inherit options from each other.
 
 ### roles
 
@@ -58,7 +59,8 @@ Three vocabularies are specific to the 2.0 layout. They are normalized into the 
 | `env` | dict[str, str] | `{}` | Environment for every worker of this role. |
 | `args` | mapping | `{}` | The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`). |
 | `extra_args` | list[str] | `[]` | Raw extra CLI arguments (TRT-LLM). |
-| `engine` | str | top-level `engine` | Optional; must equal the top-level engine type. |
+| `engine` | str \| mapping | mutually exclusive with top-level `engine` | Engine type or mapping with engine options. Set on every role when no top-level engine is declared. |
+| `container` | str | `model.container` | Optional role image; accepts cluster container aliases. |
 | `kv_events` | bool \| mapping | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
 | `sidecar` | bool | `False` | Run the native engine with a Dynamo sidecar; every role must agree. |
 | `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
@@ -116,7 +118,7 @@ Frontend/router configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway) and "vllm-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). In schema 1 recipes "sglang" still means the router and loads as "sglang-router". |
+| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway), "vllm-router", "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). In schema 1 recipes "sglang" still means the router and loads as "sglang-router". |
 | `enable_multiple_frontends` | bool | `True` | Scale with nginx + multiple routers. When ``True`` (default), srtctl stands up nginx and fans out to ``num_additional_frontends + 1`` router replicas. When ``False``, there is NO nginx proxy — the benchmark must target the single master router (or a worker) directly at ``http://localhost:<port>``. ``benchmark.command`` has no placeholder substitution, so write the URL out literally. |
 | `num_additional_frontends` | int | `9` | Additional routers beyond master (default: 9) |
 | `nginx_container` | str | `'nginx:1.27.4'` | Custom nginx container image (default: nginx:1.27.4) |
@@ -516,6 +518,7 @@ Status reporting configuration.
 | `endpoint` | str \| None | `None` |  |
 | `endpoints` | list[str] \| None | `None` |  |
 | `token_env` | str \| None | `None` | Name of the environment variable holding the bearer token the reporter sends as ``Authorization: Bearer`` on every request (default SRTCTL_STATUS_TOKEN). Only the variable name belongs in a recipe: the resolved config is written to the lockfile and the log directory, so a literal token there would leak. |
+| `logging-stream-interval` | float \| None | `None` | Seconds between uploads of raw logs and Tachometer captures to every endpoint. Unset disables streaming; lifecycle events are unaffected. |
 
 ### AIAnalysisConfig
 
@@ -597,6 +600,17 @@ SGLang protocol - implements BackendProtocol.
 |---|---|---|---|
 | `type` | one of `'sglang'` | `'sglang'` |  |
 | `gpu_type` | str \| None | `None` |  |
+
+### TileRTProtocol
+
+`engine.type: tilert`
+
+Launch TileRT's decode server with recipe-owned model and transport settings.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `type` | one of `'tilert'` | `'tilert'` |  |
+| `served_model_name` | str \| None | `None` |  |
 
 ### TRTLLMProtocol
 

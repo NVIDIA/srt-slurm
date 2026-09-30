@@ -39,6 +39,7 @@ class DynamicFrontend:
     type: ClassVar[str]
     # Registration does not care which engine registers.
     required_backend: ClassVar[str | None] = None
+    model_name_role: ClassVar[str | None] = None
     expands_node_local_dp: ClassVar[bool] = False
     metrics_path: ClassVar[str] = "/metrics"
 

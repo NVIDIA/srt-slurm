@@ -74,6 +74,7 @@ _DISK_DERIVED_REASON_CODES = frozenset(
         Reason.MEASUREMENT_WINDOW_CLOCK_MISMATCH,
         Reason.MEASUREMENT_WINDOW_NOT_BRACKETED,
         Reason.SAMPLE_GAP_EXCEEDED,
+        Reason.SAMPLE_LOSS_EXCEEDED,
     }
 )
 
@@ -176,6 +177,7 @@ def validate_power_artifacts(
         expected_device_keys={device.key for device in expected_devices},
         observed_devices=observed,
         artifact_errors=artifact_errors,
+        sample_interval_seconds=manifest.get("sample_interval_seconds"),
     )
     if not expected_windows:
         failures.append("no expected measurement window")

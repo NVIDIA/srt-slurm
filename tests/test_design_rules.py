@@ -137,7 +137,6 @@ RULES = [
                 ("benchmarks/router.py", "frontend.type vs 'sglang-router'"),
                 ("cli/mixins/benchmark_stage.py", "frontend.type vs 'sglang-router'"),
                 ("cli/mixins/frontend_stage.py", "frontend.type vs 'dynamo'"),
-                ("cli/mixins/postprocess_stage.py", "frontend.type vs 'dynamo'"),
                 ("cli/submit.py", "frontend.type vs 'dynamo'"),
                 ("cli/submit.py", "frontend.type vs 'vllm'"),
                 ("core/schema.py", "frontend.type vs 'dynamo'"),

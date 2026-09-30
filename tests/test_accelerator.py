@@ -39,6 +39,7 @@ def test_worker_mask_uses_cluster_setting(indices, enabled, sidecar, expected):
         backend=VLLMProtocol(set_visible_devices=enabled),
         dynamo=SimpleNamespace(sidecar=sidecar),
     )
+    mixin.config.backend_for_role = lambda mode: mixin.config.backend
     mixin.runtime = SimpleNamespace(visible_devices_env="ROCR_VISIBLE_DEVICES", gpus_per_node=8)
     assert mixin._visible_device_environment(process) == expected
 

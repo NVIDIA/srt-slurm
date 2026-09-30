@@ -598,3 +598,189 @@ class TestJobStageEnum:
         assert JobStage.FRONTEND.value == "frontend"
         assert JobStage.BENCHMARK.value == "benchmark"
         assert JobStage.CLEANUP.value == "cleanup"
+
+
+class TestTachometerStreaming:
+    """The collector stores segments verbatim and owns text decoding."""
+
+    @staticmethod
+    def _store(tmp_path):
+        from srtctl.status_server.store import StatusStore
+
+        store = StatusStore(tmp_path / "collector.sqlite3")
+        store.init()
+        return store
+
+    @staticmethod
+    def _segment(tmp_path, rows):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        path = tmp_path / "segment.parquet"
+        pq.write_table(pa.Table.from_pylist(rows), path)
+        return path.read_bytes()
+
+    @staticmethod
+    def _upload(store, data, file="out-1.parquet"):
+        result = None
+        for offset in range(0, len(data), 127):
+            chunk = data[offset : offset + 127]
+            result = store.append_capture("8", file, offset, len(data), chunk)
+            assert result["next_offset"] == offset + len(chunk)
+        assert result["complete"]
+
+    def test_segments_are_stored_verbatim_and_served_once_complete(self, tmp_path):
+        store = self._store(tmp_path)
+        data = self._segment(tmp_path, [{"metric_name": "a", "metric_value": 1.0}])
+        store.append_capture("8", "out-1.parquet", 0, len(data), data[:100])
+        assert store.read_capture("8", "out-1.parquet") is None
+        assert [f["complete"] for f in store.list_captures("8")] == [False]
+        store.append_capture("8", "out-1.parquet", 100, len(data), data[100:])
+        assert store.read_capture("8", "out-1.parquet") == data
+        self._upload(store, data, "out-2.parquet")
+        assert [(f["file"], f["size"], f["complete"]) for f in store.list_captures("8")] == [
+            ("out-1.parquet", len(data), True),
+            ("out-2.parquet", len(data), True),
+        ]
+        assert store.read_capture("8", "out-3.parquet") is None
+
+    def test_exact_retry_after_lost_response_is_acknowledged_again(self, tmp_path):
+        store = self._store(tmp_path)
+        data = self._segment(tmp_path, [{"metric_name": "a", "metric_value": 1}])
+        first = store.append_capture("8", "out-1.parquet", 0, len(data), data[:100])
+        final = store.append_capture("8", "out-1.parquet", 100, len(data), data[100:])
+        assert store.append_capture("8", "out-1.parquet", 0, len(data), data[:100]) == first
+        assert store.append_capture("8", "out-1.parquet", 100, len(data), data[100:]) == final
+        assert store.read_capture("8", "out-1.parquet") == data
+
+    def test_capture_conflicts_and_out_of_order_chunks(self, tmp_path):
+        import pytest
+
+        from srtctl.status_server.store import LogChunkConflict
+
+        store = self._store(tmp_path)
+        args = ("8", "out-1.parquet")
+        store.append_capture(*args, 0, 1000, b"first")
+        assert store.append_capture(*args, 0, 1000, b"first")["next_offset"] == 5
+        for offset, total, data in ((0, 1000, b"other"), (0, 1001, b"first"), (9, 1000, b"gap"), (2, 1000, b"overlap")):
+            with pytest.raises(LogChunkConflict):
+                store.append_capture(*args, offset, total, data)
+        with pytest.raises(LogChunkConflict):
+            store.append_capture("8", "out-2.parquet", 5, 1000, b"late")
+        assert store.read_capture(*args) is None
+
+    def test_raw_log_decodes_split_utf8_and_final_invalid_tail(self, tmp_path):
+        store = self._store(tmp_path)
+        raw = "hello €!".encode()
+        assert store.append_raw_log("8", "worker.log", 0, raw[:7]) == 1
+        assert store.read_log("8", "worker.log") == ("hello ", 6)
+        assert store.append_raw_log("8", "worker.log", 0, raw[:7]) == 0
+        store.append_raw_log("8", "worker.log", 7, raw[7:] + b"\xe2")
+        assert store.read_log("8", "worker.log", offset=6) == ("€!", len(raw))
+        store.append_raw_log("8", "worker.log", len(raw) + 1, b"", final=True)
+        assert store.read_log("8", "worker.log", offset=len(raw)) == ("�", len(raw) + 1)
+
+    def test_raw_log_partial_reads_resume_within_chunk(self, tmp_path):
+        store = self._store(tmp_path)
+        raw = "a€b".encode()
+        store.append_raw_log("8", "worker.log", 0, raw)
+        assert store.read_log("8", "worker.log", max_bytes=3) == ("a", 1)
+        assert store.read_log("8", "worker.log", offset=1, max_bytes=4) == ("€b", 5)
+
+    def test_delete_removes_capture_state(self, tmp_path):
+        store = self._store(tmp_path)
+        store.create_job("8", "test")
+        self._upload(store, self._segment(tmp_path, [{"metric_name": "a", "metric_value": 1}]))
+        store.append_raw_log("8", "worker.log", 0, b"done", final=True)
+        assert store.delete_job("8")
+        with store._connect() as conn:
+            for table in ("job_captures", "capture_chunks", "job_logs", "job_log_ends"):
+                assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+    def test_raw_routes_validate_bounds_and_paths(self, tmp_path):
+        from urllib.parse import urlencode
+
+        import pytest
+
+        from srtctl.status_server.server import ApiError, _raw_upload
+
+        store = self._store(tmp_path)
+        params = {"file": "out-1.parquet", "offset": 0, "total": 10}
+        for invalid in (
+            {"file": "../out-1.parquet"},
+            {"file": "/out-1.parquet"},
+            {"file": "worker.log"},
+            {"file": "current.arrow"},
+            {"offset": -1},
+            {"offset": 10},
+            {"total": 0},
+            {"total": 1 << 63},
+        ):
+            with pytest.raises(ApiError) as error:
+                _raw_upload(store, "/api/jobs/8/captures?" + urlencode({**params, **invalid}), b"data")
+            assert error.value.status == 422
+
+    def test_binary_http_upload_requires_write_token_and_serves_segments(self, tmp_path):
+        import socket
+        import threading
+        from urllib.parse import urlencode
+
+        import requests
+
+        from srtctl.status_server.server import AuthPolicy, make_server
+
+        store = self._store(tmp_path)
+        server = make_server(store, port=0, auth=AuthPolicy(write_token="secret", read_token="viewer"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_port}/api/jobs/8"
+            data = self._segment(tmp_path, [{"metric_name": "a", "metric_value": 1}])
+            path = (
+                base
+                + "/captures?"
+                + urlencode(
+                    {
+                        "file": "out-1.parquet",
+                        "offset": 0,
+                        "total": len(data),
+                        "cluster": "test-cluster",
+                    }
+                )
+            )
+            headers = {"Content-Type": "application/octet-stream"}
+            assert requests.post(path, data=data, headers=headers, timeout=5).status_code == 401
+            assert (
+                requests.post(
+                    path, data=data, headers={**headers, "Authorization": "Bearer viewer"}, timeout=5
+                ).status_code
+                == 403
+            )
+            # A disconnected sender must not leave a shorter acknowledged chunk.
+            with socket.create_connection(("127.0.0.1", server.server_port), timeout=5) as connection:
+                connection.sendall(
+                    b"POST /api/jobs/8/logs?file=truncated.log&offset=0 HTTP/1.1\r\n"
+                    b"Host: localhost\r\nAuthorization: Bearer secret\r\n"
+                    b"Content-Type: application/octet-stream\r\nContent-Length: 10\r\n\r\nabc"
+                )
+                connection.shutdown(socket.SHUT_WR)
+                assert b"400" in connection.recv(4096).split(b"\r\n")[0]
+            assert store.read_log("8", "truncated.log") == ("", 0)
+            headers["Authorization"] = "Bearer secret"
+            result = requests.post(path, data=data, headers=headers, timeout=5)
+            assert result.status_code == 200
+            assert result.json() == {"job_id": "8", "next_offset": len(data), "complete": True}
+            listing = requests.get(base + "/captures", headers=headers, timeout=5).json()["files"]
+            assert [(f["file"], f["size"], f["complete"]) for f in listing] == [("out-1.parquet", len(data), True)]
+            result = requests.get(base + "/captures?file=out-1.parquet", headers=headers, timeout=5)
+            assert result.status_code == 200
+            assert result.headers["Content-Type"] == "application/octet-stream"
+            assert result.content == data
+            assert requests.get(base + "/captures?file=out-2.parquet", headers=headers, timeout=5).status_code == 404
+            log = base + "/logs?file=worker.log&offset=0&final=1"
+            assert requests.post(log, data=b"raw log", headers=headers, timeout=5).json()["stored"] == 1
+            assert requests.get(base + "/logs?file=worker.log", headers=headers, timeout=5).json()["data"] == "raw log"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)

@@ -27,13 +27,24 @@ Configuration (in srtslurm.yaml or recipe YAML):
         endpoint: "https://status.example.com"
         endpoints:
           - "https://status2.example.com"
+
+    # Also push new log and metric output every 10 seconds
+    reporting:
+      status:
+        endpoint: "https://status.example.com"
+        logging-stream-interval: 10
 """
 
 import logging
 import os
+import re
+import sys
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, BinaryIO
 
 import requests
 
@@ -427,3 +438,233 @@ def create_job_record(
             break
 
     return any_success
+
+
+# Append-only logs and structured output; contents are interpreted by the API.
+STREAM_SUFFIXES = (".out", ".err", ".log", ".csv", ".jsonl")
+STREAM_REQUEST_BYTES = 1 << 20
+STREAM_SHUTDOWN_SECONDS = 5.0
+# Sibling of the log directory, so neither the S3 sync nor dsight's capture
+# discovery sees segments that final.parquet already contains.
+TACHOMETER_OUTBOX = "tachometer-outbox"
+_SEGMENT_NAME = re.compile(r"out-(\d+)\.parquet")
+
+
+def log_stream_interval(reporting: "ReportingConfig | None") -> float | None:
+    """Seconds between live uploads, or None when streaming is off or has no endpoint."""
+    status = reporting.status if reporting else None
+    if status is None or not _resolve_endpoints(status):
+        return None
+    return status.logging_stream_interval
+
+
+def tachometer_outbox(log_dir: Path) -> Path:
+    """Where Tachometer links sealed segments for the streamer to upload and unlink."""
+    return log_dir.parent / TACHOMETER_OUTBOX
+
+
+def _segment_order(path: Path) -> tuple[int, str]:
+    match = _SEGMENT_NAME.fullmatch(path.name)
+    return (int(match[1]) if match else sys.maxsize, path.name)
+
+
+@dataclass
+class _SegmentUpload:
+    source: BinaryIO
+    total: int
+    offset: int = 0
+    pending: bytes | None = None
+
+
+class LogStreamer:
+    """Upload raw log deltas and sealed Tachometer segments; the collector does all decoding.
+
+    Segments in ``outbox_dir`` are immutable, so each is sent exactly once per
+    endpoint and unlinked after every endpoint has acknowledged it. Memory is
+    bounded to one chunk per pending file.
+    """
+
+    def __init__(self, reporter: StatusReporter, log_dir: Path, interval: float, outbox_dir: Path | None = None):
+        self.reporter = reporter
+        self.log_dir = log_dir
+        self.interval = interval
+        self.outbox_dir = outbox_dir
+        self._offsets: dict[tuple[str, str], int] = {}
+        self._pending: dict[tuple[str, str], bytes] = {}
+        self._finalized: set[tuple[str, str]] = set()
+        self._segments: dict[tuple[str, str], _SegmentUpload] = {}
+        self._delivered: dict[str, set[str]] = {}
+        self._cluster = _cluster_setting()
+        self._session = requests.Session()
+        self._shutdown_deadline: float | None = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="status-log-stream", daemon=True)
+
+    @classmethod
+    def from_config(
+        cls,
+        reporting: "ReportingConfig | None",
+        reporter: StatusReporter,
+        log_dir: Path,
+        outbox_dir: Path | None = None,
+    ) -> "LogStreamer | None":
+        interval = log_stream_interval(reporting)
+        if not reporter.enabled or interval is None:
+            return None
+        return cls(reporter, log_dir, interval, outbox_dir)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Give the worker a bounded final flush; telemetry cannot delay completion indefinitely."""
+        self._shutdown_deadline = time.monotonic() + STREAM_SHUTDOWN_SECONDS
+        self._stop.set()
+        if self._thread.ident is not None:
+            self._thread.join(timeout=STREAM_SHUTDOWN_SECONDS)
+            if self._thread.is_alive():
+                logger.warning(
+                    "Log streaming did not finish within %.1fs; local logs are retained", STREAM_SHUTDOWN_SECONDS
+                )
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.wait(self.interval):
+                self.flush()
+            self.flush()
+        finally:
+            for upload in self._segments.values():
+                upload.source.close()
+            self._segments.clear()
+            self._session.close()
+
+    def _expired(self) -> bool:
+        return self._shutdown_deadline is not None and time.monotonic() >= self._shutdown_deadline
+
+    def flush(self) -> None:
+        """Upload finite file snapshots, retaining failed chunks verbatim for retry."""
+        try:
+            if self._expired():
+                return
+            files = sorted(p for p in self.log_dir.rglob("*") if p.suffix in STREAM_SUFFIXES and p.is_file())
+            segments = sorted(self.outbox_dir.glob("out-*.parquet"), key=_segment_order) if self.outbox_dir else []
+            for endpoint in self.reporter.api_endpoints:
+                if self._flush_logs(endpoint, files):
+                    self._flush_segments(endpoint, segments)
+            self._release_segments(segments)
+        except Exception:
+            logger.warning("Log streaming flush failed; will retry", exc_info=True)
+
+    def _flush_logs(self, endpoint: str, files: list[Path]) -> bool:
+        for path in files:
+            if self._expired():
+                return False
+            rel = path.relative_to(self.log_dir).as_posix()
+            key = (endpoint, rel)
+            try:
+                with path.open("rb") as source:
+                    end = os.fstat(source.fileno()).st_size
+                    while not self._expired():
+                        offset = self._offsets.get(key, 0)
+                        data = self._pending.get(key)
+                        if data is None:
+                            if offset >= end:
+                                if self._stop.is_set() and key not in self._finalized:
+                                    ack = self._post(
+                                        endpoint, "logs", {"file": rel, "offset": str(offset), "final": "1"}, b""
+                                    )
+                                    if ack is None or ack.get("stored") not in (0, 1):
+                                        return False
+                                    self._finalized.add(key)
+                                break
+                            source.seek(offset)
+                            data = source.read(min(STREAM_REQUEST_BYTES, end - offset))
+                            if not data:
+                                break
+                            self._pending[key] = data
+                        params = {"file": rel, "offset": str(offset)}
+                        if self._stop.is_set() and offset + len(data) == end:
+                            params["final"] = "1"
+                        ack = self._post(endpoint, "logs", params, data)
+                        if ack is None or ack.get("stored") not in (0, 1):
+                            return False
+                        self._offsets[key] = offset + len(data)
+                        del self._pending[key]
+                        if params.get("final") == "1":
+                            self._finalized.add(key)
+            except OSError as exc:
+                logger.debug("Log stream skipped %s: %s", rel, exc)
+        return True
+
+    def _flush_segments(self, endpoint: str, segments: list[Path]) -> None:
+        for path in segments:
+            if endpoint in self._delivered.get(path.name, ()):
+                continue
+            key = (endpoint, path.name)
+            try:
+                upload = self._segments.get(key)
+                if upload is None:
+                    source = path.open("rb")
+                    upload = _SegmentUpload(source, os.fstat(source.fileno()).st_size)
+                    self._segments[key] = upload
+                while upload.offset < upload.total:
+                    if self._expired():
+                        return
+                    if upload.pending is None:
+                        upload.pending = upload.source.read(min(STREAM_REQUEST_BYTES, upload.total - upload.offset))
+                    if not upload.pending:
+                        raise OSError(f"{path.name} shrank while uploading")
+                    params = {"file": path.name, "offset": str(upload.offset), "total": str(upload.total)}
+                    ack = self._post(endpoint, "captures", params, upload.pending)
+                    next_offset = upload.offset + len(upload.pending)
+                    if (
+                        ack is None
+                        or ack.get("next_offset") != next_offset
+                        or ack.get("complete") is not (next_offset == upload.total)
+                    ):
+                        return
+                    upload.offset, upload.pending = next_offset, None
+                upload.source.close()
+                del self._segments[key]
+                self._delivered.setdefault(path.name, set()).add(endpoint)
+            except OSError as exc:
+                logger.debug("Segment upload skipped %s: %s", path.name, exc)
+                if key in self._segments:
+                    self._segments.pop(key).source.close()
+
+    def _release_segments(self, segments: list[Path]) -> None:
+        """Unlink segments every endpoint holds; the rest wait for the next flush."""
+        endpoints = set(self.reporter.api_endpoints)
+        if not endpoints:
+            return
+        for path in segments:
+            if self._delivered.get(path.name, set()) >= endpoints:
+                path.unlink(missing_ok=True)
+                del self._delivered[path.name]
+
+    def _post(self, endpoint: str, route: str, params: dict[str, str], data: bytes) -> dict | None:
+        if self._cluster:
+            params["cluster"] = self._cluster
+        timeout = self.reporter.timeout
+        if self._shutdown_deadline is not None:
+            timeout = min(timeout, self._shutdown_deadline - time.monotonic())
+            if timeout <= 0:
+                return None
+        try:
+            response = self._session.post(
+                f"{endpoint}/api/jobs/{self.reporter.job_id}/{route}",
+                params=params,
+                data=data,
+                headers={**_auth_headers(self.reporter.token_env), "Content-Type": "application/octet-stream"},
+                timeout=timeout,
+                allow_redirects=False,
+            )
+            if response.status_code != 200:
+                _log_rejection("Log stream", endpoint, response.status_code, self.reporter.token_env)
+                return None
+            ack = response.json()
+            if isinstance(ack, dict) and ack.get("job_id") == self.reporter.job_id:
+                return ack
+        except (requests.exceptions.RequestException, ValueError) as exc:
+            logger.debug("Log stream to %s failed: %s", endpoint, exc)
+        return None

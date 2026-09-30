@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -45,6 +46,33 @@ CREATE TABLE IF NOT EXISTS job_events (
     created_at TEXT NOT NULL
 );
 
+-- Streamed log and metric output. A chunk is keyed by where it sits in its file,
+-- so a resend after a lost response is a no-op.
+CREATE TABLE IF NOT EXISTS job_logs (
+    job_id TEXT NOT NULL,
+    file TEXT NOT NULL,
+    offset INTEGER NOT NULL,
+    size INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (job_id, file, offset)
+);
+
+-- Immutable Tachometer segments, stored verbatim; readers decode them.
+CREATE TABLE IF NOT EXISTS job_captures (
+    job_id TEXT NOT NULL, file TEXT NOT NULL,
+    total INTEGER NOT NULL, next_offset INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+    PRIMARY KEY (job_id, file)
+);
+CREATE TABLE IF NOT EXISTS capture_chunks (
+    job_id TEXT NOT NULL, file TEXT NOT NULL, offset INTEGER NOT NULL, data BLOB NOT NULL,
+    PRIMARY KEY (job_id, file, offset)
+);
+CREATE TABLE IF NOT EXISTS job_log_ends (
+    job_id TEXT NOT NULL, file TEXT NOT NULL, end INTEGER NOT NULL,
+    PRIMARY KEY (job_id, file)
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_cluster ON jobs(cluster);
 CREATE INDEX IF NOT EXISTS idx_jobs_submitted_at ON jobs(submitted_at DESC);
@@ -67,6 +95,10 @@ def now_iso() -> str:
 def placeholder_name(job_id: str) -> str:
     """The job_name a row gets when a PUT arrives for a job the collector never saw a POST for."""
     return f"job-{job_id}"
+
+
+class LogChunkConflict(ValueError):
+    """An incoming chunk disagrees with bytes already stored for the same file."""
 
 
 def _decode_job(row: sqlite3.Row) -> dict[str, Any]:
@@ -271,7 +303,83 @@ class StatusStore:
         with self._transaction() as conn:
             deleted = conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,)).rowcount
             conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
+            conn.execute("DELETE FROM job_logs WHERE job_id = ?", (job_id,))
+            for table in ("job_captures", "capture_chunks", "job_log_ends"):
+                conn.execute(f"DELETE FROM {table} WHERE job_id = ?", (job_id,))
         return deleted > 0
+
+    def append_logs(self, job_id: str, chunks: list[dict[str, Any]]) -> int:
+        """Store chunks atomically, accepting exact retries and rejecting conflicting ranges."""
+        now = now_iso()
+        with self._transaction() as conn:
+            stored = 0
+            for chunk in chunks:
+                overlapping = conn.execute(
+                    """SELECT offset, size, data FROM job_logs
+                    WHERE job_id = ? AND file = ? AND offset < ? ORDER BY offset DESC LIMIT 1""",
+                    (job_id, chunk["file"], chunk["offset"] + chunk["size"]),
+                ).fetchone()
+                if overlapping is not None and overlapping["offset"] + overlapping["size"] > chunk["offset"]:
+                    if all(overlapping[key] == chunk[key] for key in ("offset", "size", "data")):
+                        continue
+                    raise LogChunkConflict(f"Conflicting log chunk for {chunk['file']} at offset {chunk['offset']}")
+                conn.execute(
+                    "INSERT INTO job_logs (job_id, file, offset, size, data, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (job_id, chunk["file"], chunk["offset"], chunk["size"], chunk["data"], now),
+                )
+                stored += 1
+            return stored
+
+    def append_raw_log(self, job_id: str, file: str, offset: int, data: bytes, *, final: bool = False) -> int:
+        """Keep raw bytes intact; UTF-8 decoding happens when the API is read."""
+        stored = (
+            self.append_logs(job_id, [{"file": file, "offset": offset, "size": len(data), "data": data}]) if data else 0
+        )
+        if final:
+            with self._transaction() as conn:
+                conn.execute(
+                    "INSERT INTO job_log_ends VALUES (?, ?, ?) "
+                    "ON CONFLICT(job_id, file) DO UPDATE SET end = MAX(end, excluded.end)",
+                    (job_id, file, offset + len(data)),
+                )
+        return stored
+
+    def append_capture(self, job_id: str, file: str, offset: int, total: int, data: bytes) -> dict[str, Any]:
+        """Store one chunk of an immutable segment verbatim; nothing is decoded on upload.
+
+        Chunks must arrive in order. A retry of a stored chunk is accepted only if
+        its bytes are identical, so a lost response can be resent safely.
+        """
+        end = offset + len(data)
+        with self._transaction() as conn:
+            manifest = conn.execute(
+                "SELECT total, next_offset FROM job_captures WHERE job_id = ? AND file = ?", (job_id, file)
+            ).fetchone()
+            if manifest is None:
+                if offset != 0:
+                    raise LogChunkConflict("Capture upload must start at offset 0")
+                conn.execute("INSERT INTO job_captures VALUES (?, ?, ?, 0, ?)", (job_id, file, total, now_iso()))
+                next_offset = 0
+            elif manifest["total"] != total:
+                raise LogChunkConflict("Capture total changed")
+            else:
+                next_offset = manifest["next_offset"]
+            if offset < next_offset:
+                stored = conn.execute(
+                    "SELECT data FROM capture_chunks WHERE job_id = ? AND file = ? AND offset = ?",
+                    (job_id, file, offset),
+                ).fetchone()
+                if stored is None or stored["data"] != data:
+                    raise LogChunkConflict("Capture retry differs from stored bytes")
+            elif offset == next_offset:
+                conn.execute("INSERT INTO capture_chunks VALUES (?, ?, ?, ?)", (job_id, file, offset, data))
+                conn.execute(
+                    "UPDATE job_captures SET next_offset = ?, updated_at = ? WHERE job_id = ? AND file = ?",
+                    (end, now_iso(), job_id, file),
+                )
+            else:
+                raise LogChunkConflict("Capture chunks must be contiguous")
+        return {"job_id": job_id, "next_offset": end, "complete": end == total}
 
     # ------------------------------------------------------------------- reads
 
@@ -330,3 +438,77 @@ class StatusStore:
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def list_captures(self, job_id: str) -> list[dict[str, Any]]:
+        """Every Tachometer segment of a job; only complete ones can be downloaded."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT file, total AS size, next_offset = total AS complete, updated_at
+                FROM job_captures WHERE job_id = ? ORDER BY file
+                """,
+                (job_id,),
+            ).fetchall()
+        return [{**dict(row), "complete": bool(row["complete"])} for row in rows]
+
+    def read_capture(self, job_id: str, file: str) -> bytes | None:
+        """The exact bytes of a complete segment, or None while it is missing or partial."""
+        with self._connect() as conn:
+            manifest = conn.execute(
+                "SELECT total, next_offset FROM job_captures WHERE job_id = ? AND file = ?", (job_id, file)
+            ).fetchone()
+            if manifest is None or manifest["next_offset"] != manifest["total"]:
+                return None
+            rows = conn.execute(
+                "SELECT data FROM capture_chunks WHERE job_id = ? AND file = ? ORDER BY offset", (job_id, file)
+            )
+            return b"".join(row["data"] for row in rows)
+
+    def list_log_files(self, job_id: str) -> list[dict[str, Any]]:
+        """Every streamed file of a job with the bytes received so far."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT file, MAX(offset + size) AS size, MAX(created_at) AS updated_at
+                FROM job_logs WHERE job_id = ? GROUP BY file ORDER BY file
+                """,
+                (job_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def read_log(self, job_id: str, file: str, *, offset: int = 0, max_bytes: int = 1 << 20) -> tuple[str, int]:
+        """Contiguous content of ``file`` from ``offset``, stopping at a gap or after ``max_bytes``.
+
+        Returns ``(data, next_offset)``. ``offset`` is a chunk boundary, i.e. 0 or a
+        ``next_offset`` from an earlier read.
+        """
+        parts: list[str] = []
+        cursor = offset
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        with self._connect() as conn:
+            ending = conn.execute(
+                "SELECT end FROM job_log_ends WHERE job_id = ? AND file = ?", (job_id, file)
+            ).fetchone()
+            rows = conn.execute(
+                "SELECT offset, size, data FROM job_logs WHERE job_id = ? AND file = ? AND offset + size > ? ORDER BY offset",
+                (job_id, file, offset),
+            )
+            for row in rows:
+                if row["offset"] > cursor or cursor - offset >= max_bytes:
+                    break
+                if isinstance(row["data"], bytes):
+                    raw = row["data"][cursor - row["offset"] : cursor - row["offset"] + max_bytes - (cursor - offset)]
+                    parts.append(decoder.decode(raw))
+                    cursor += len(raw)
+                else:
+                    # Legacy JSON chunks use source byte sizes, which can differ
+                    # from the UTF-8 size of already-decoded replacement characters.
+                    if row["offset"] != cursor:
+                        break
+                    parts.append(row["data"])
+                    cursor += row["size"]
+            if ending is not None and cursor == ending["end"]:
+                parts.append(decoder.decode(b"", final=True))
+            else:
+                cursor -= len(decoder.getstate()[0])
+        return "".join(parts), cursor

@@ -12,11 +12,6 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
-    DYN_REQUEST_PLANE: tcp
-    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
-    DYN_SYSTEM_PORT: 7500
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0

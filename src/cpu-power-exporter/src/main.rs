@@ -261,7 +261,10 @@ fn discover_sensors(hwmon_root: &Path) -> Result<Vec<Sensor>> {
         if !node.starts_with("hwmon") {
             continue;
         }
-        if read_text(&hwmon_dir.join("name")).as_deref() != Some("power_meter") {
+        if ![hwmon_dir.join("name"), hwmon_dir.join("device/name")]
+            .iter()
+            .any(|path| read_text(path).as_deref() == Some("power_meter"))
+        {
             continue;
         }
         let node = node.to_owned();
@@ -681,6 +684,30 @@ mod tests {
         assert_eq!(sensors.len(), 1, "an alias is one sensor, not two");
         assert_eq!(sensors[0].oem_info, "CPU Power Socket 0");
         assert_eq!(sensors[0].kind, "cpu_rail");
+    }
+
+    #[test]
+    fn discover_sensors_accepts_legacy_registration_without_class_name() {
+        let dir = TempDir::new().unwrap();
+        // Legacy registration exposes attributes only on the parent ACPI device.
+        let device = dir.path().join("hwmon11").join("device");
+        fs::create_dir_all(&device).unwrap();
+        fs::write(device.join("name"), "power_meter").unwrap();
+        fs::write(device.join("power1_average"), "98029000").unwrap();
+        fs::write(device.join("power1_oem_info"), "Grace Power Socket 0").unwrap();
+        let other = dir.path().join("hwmon1").join("device");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("name"), "nvme").unwrap();
+        fs::write(other.join("power1_average"), "1000000").unwrap();
+
+        let sensors = discover_sensors(dir.path()).unwrap();
+        assert_eq!(sensors.len(), 1);
+        assert_eq!(sensors[0].oem_info, "Grace Power Socket 0");
+        assert_eq!(read_acpi_watts(&sensors[0].path), Some(98.029));
+        assert_eq!(
+            (sensors[0].kind, sensors[0].socket.as_str()),
+            ("total", "0")
+        );
     }
 
     #[test]

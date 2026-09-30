@@ -46,6 +46,7 @@ class TRTLLMServeFrontend:
     """
 
     required_backend: ClassVar[str | None] = "trtllm"
+    model_name_role: ClassVar[str | None] = None
     worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
     expands_node_local_dp: ClassVar[bool] = False
 

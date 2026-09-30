@@ -253,6 +253,9 @@ def show_config_details(config: SrtConfig) -> None:
     """
     visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
     console.print(f"GPU subset visibility variable: {visible_devices_env}")
+    if config.role_backends or config.role_containers:
+        for role, backend in config.active_role_backends():
+            console.print(f"{role}: engine={backend.type}, container={config.worker_container_for_role(role)}")
 
     if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
         from srtctl.backends.trtllm import TRTLLMProtocol
@@ -407,9 +410,9 @@ def show_config_details(config: SrtConfig) -> None:
     backend = config.backend
     mode_envs: list[tuple[str, dict[str, str]]] = []
     for mode_name, env in [
-        ("prefill", backend.prefill_environment),
-        ("decode", backend.decode_environment),
-        ("aggregated", backend.aggregated_environment),
+        ("prefill", config.backend_for_role("prefill").prefill_environment),
+        ("decode", config.backend_for_role("decode").decode_environment),
+        ("aggregated", config.backend_for_role("agg").aggregated_environment),
     ]:
         if env:
             has_env = True
@@ -913,6 +916,8 @@ def generate_minimal_sbatch_script(
         infra_dedicated=config.infra.etcd_nats_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
+    if het_components is not None and config.role_backends:
+        raise ValueError("Role engine overrides require resources.het_jobs: false")
     if het_components is not None and (config.frontend.dedicated_node or config.benchmark.client_dedicated_node):
         # SrtConfig validation only catches resources.het_jobs: true explicitly
         # set in the recipe — it can't see a cluster-level use_het_jobs default,
@@ -970,6 +975,15 @@ def _print_running_summary(config: SrtConfig, console: Console, *, serve_only: b
     console.print("[bold]Running:[/]")
     console.print(f"  Model:     {config.model.path}")
     console.print(f"  Container: {config.model.container}")
+    worker_counts = {
+        "prefill": config.resources.num_prefill,
+        "decode": config.resources.num_decode,
+        "agg": config.resources.num_agg,
+    }
+    for mode, count in worker_counts.items():
+        image = config.worker_container_for_role(mode)
+        if count and (image != config.model.container or config.role_backends):
+            console.print(f"  {mode.capitalize()}: {config.backend_for_role(mode).type} in {image}")
     console.print(f"  Backend:   {config.backend_type}")
     if serve_only:
         console.print("  Mode:      Serve only (no benchmark)")
@@ -1957,7 +1971,6 @@ def main():
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
-  srtctl view /path/to/run-output                # Local ruter route-decision viewer
   srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
   srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md + docs/legacy-v1.md
   srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
@@ -2108,13 +2121,6 @@ def main():
 
     monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
     monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
-
-    view_parser = subparsers.add_parser("view", help="Serve the local ruter route-decision viewer")
-    view_parser.add_argument(
-        "root", nargs="?", type=Path, default=Path("."), help="srt-slurm run directory or logs/.ruter"
-    )
-    view_parser.add_argument("--port", type=int, default=8877, help="Loopback port (default: 8877)")
-    view_parser.add_argument("--refresh", action="store_true", help="Reparse logs before loading the viewer")
 
     status_server_parser = subparsers.add_parser(
         "status-server",
@@ -2417,15 +2423,6 @@ def main():
 
         sys.argv = [sys.argv[0]] + (args.args or [])
         _monitor_main()
-        return
-
-    if args.command == "view":
-        from srtctl.ruter.view import main as _view_main
-
-        view_args = [str(args.root), "--port", str(args.port)]
-        if args.refresh:
-            view_args.append("--refresh")
-        _view_main(view_args)
         return
 
     if args.command == "status-server":
