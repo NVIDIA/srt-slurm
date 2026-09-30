@@ -2789,6 +2789,26 @@ class SrtConfig:
                     "one) so workers actually use the mooncake master srtslurm launches "
                     "for you."
                 )
+        elif isinstance(self.backend, TRTLLMProtocol):
+            prefill = self.backend.get_config_for_mode("prefill")
+            connector = prefill.get("kv_connector_config")
+            store = connector.get("mooncake_store") if isinstance(connector, dict) else None
+            if not isinstance(connector, dict) or connector.get("connector") != "mooncake-store":
+                raise ValidationError(
+                    "TRT-LLM Mooncake requires roles.prefill.args.kv_connector_config.connector: mooncake-store"
+                )
+            if not isinstance(store, dict) or store.get("master_server_address") != "file:///logs/mooncake_master.addr":
+                raise ValidationError(
+                    "TRT-LLM Mooncake requires roles.prefill.args.kv_connector_config.mooncake_store."
+                    "master_server_address: file:///logs/mooncake_master.addr"
+                )
+            cache = prefill.get("kv_cache_config")
+            if not isinstance(cache, dict) or cache.get("use_kv_cache_manager_v2") is not True:
+                raise ValidationError(
+                    "TRT-LLM Mooncake requires roles.prefill.args.kv_cache_config.use_kv_cache_manager_v2: true"
+                )
+            if cache.get("host_cache_size", 0) != 0 or cache.get("disk_cache_size", 0) != 0:
+                raise ValidationError("TRT-LLM Mooncake requires zero prefill host_cache_size and disk_cache_size")
 
     def _profiling_worker_ranks(self, mode: Literal["prefill", "decode", "agg"]) -> set[int]:
         """Derive selectable physical ranks from the configured worker layout."""

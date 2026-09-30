@@ -23,6 +23,47 @@ if TYPE_CHECKING:
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
 
+# Dynamo constructs LLM directly, bypassing serve.py's pool provisioning.
+# Reuse tekit 6b43a830f3's context manager inside the launcher rank-zero task;
+# externally launched ranks read mooncake.json from TRTLLM_MOONCAKE_RUN_DIR.
+_DYNAMO_MOONCAKE_ENTRYPOINT = """import runpy
+import sys
+import yaml
+from tensorrt_llm.llmapi.llm_args import KvCacheConnectorConfig
+from tensorrt_llm._torch.pyexecutor.connectors.mooncake_store import maybe_provision_pool
+
+with open(sys.argv.pop(1)) as handle:
+    config = yaml.safe_load(handle)
+connector = KvCacheConnectorConfig(**config["kv_connector_config"])
+with maybe_provision_pool(connector):
+    runpy.run_module("dynamo.trtllm", run_name="__main__", alter_sys=True)
+"""
+
+
+@dataclass(frozen=True)
+class TRTLLMMooncakeKVStoreConfig:
+    """Pool master settings for TRT-LLM's ``mooncake_store`` connector.
+
+    The master address file is generated in the shared ``/logs`` mount. The
+    connector reads it via ``file:///logs/mooncake_master.addr``.
+    """
+
+    container: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    master_extra_args: list[str] = field(default_factory=list)
+    eviction_ratio: float = 0.05
+    master_timeout_s: int = 60
+    store_role: Literal["both", "producer", "consumer"] = "both"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.master_timeout_s <= 0:
+            raise ValueError("mooncake_kv_store.master_timeout_s must be positive")
+        if not 0 < self.eviction_ratio < 1:
+            raise ValueError("mooncake_kv_store.eviction_ratio must be between 0 and 1")
+
+
 # Log lines that mean the engine behind a TRT-LLM worker step is gone while the
 # step itself may stay up. ``trtllm-llmapi-launch`` runs the engine as a child of
 # the rank-0 task and prints ``Rank<N> Task exit code: <code>`` when that child
@@ -102,6 +143,9 @@ class TRTLLMProtocol:
 
     trtllm_config: TRTLLMServerConfig | None = None
 
+    # Mooncake pool master; a declared mooncake-master service maps here in v2.
+    mooncake_kv_store: TRTLLMMooncakeKVStoreConfig | None = None
+
     # The name clients must use in a request's "model" field.
     # Defaults to the checkpoint directory name.
     #
@@ -142,11 +186,14 @@ class TRTLLMProtocol:
     # For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.
     sequential_node_start: int = 0
 
-    # Whether to prefix the trtllm worker command with `numactl -m 0,1`.
-    # None (default) enables it only for gb200/gb300/vrnvl72 prefill and decode
-    # workers (case-sensitive GPU type). True/False forces numactl on/off
-    # regardless of gpu_type or mode.
-    numa_memory_bind: bool | None = None
+    # Worker memory policy. None (default) uses `numactl -m 0,1` only for
+    # gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type).
+    # True uses nodes 0,1 for any GPU type or mode; False leaves the policy
+    # unchanged. CPU binding does not change these policies. "local" strictly
+    # binds memory to the task GPU's NUMA node independently of CPU binding.
+    # Local mode fails startup if GPU NUMA affinity is unknown. Local memory
+    # exhaustion can fail allocations; existing/shared pages are not migrated.
+    numa_memory_bind: bool | Literal["local"] | None = None
 
     # Optional stricter NUMA CPU affinity for the worker process, in addition
     # to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID`
@@ -163,6 +210,7 @@ class TRTLLMProtocol:
     #      SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two
     #      endpoints share a node (each gets its own srun step, so LOCALID
     #      restarts at 0 for both).
+    # Set numa_memory_bind="local" to also bind memory to that same NUMA node.
     numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
@@ -203,17 +251,17 @@ class TRTLLMProtocol:
         return TRTLLM_FATAL_LOG_PATTERNS
 
     @property
-    def mooncake_kv_store(self) -> None:
-        """TRT-LLM has no Mooncake KV store block."""
-        return None
-
-    @property
     def failover(self) -> None:
         """TRT-LLM has no shadow engine recovery."""
         return None
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        return {}
+        if self.mooncake_kv_store is None:
+            return {}
+        return {
+            **self.mooncake_kv_store.env,
+            "TRTLLM_MOONCAKE_MASTER_TIMEOUT": str(self.mooncake_kv_store.master_timeout_s),
+        }
 
     def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
         return {}
@@ -254,6 +302,8 @@ class TRTLLMProtocol:
         if base_env is None:
             return {}
         env = {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        if mode == "prefill" and self.mooncake_kv_store is not None:
+            env["TRTLLM_MOONCAKE_STORE_ROLE"] = self.mooncake_kv_store.store_role
         if self.numa_cpu_bind:
             env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
         return env
@@ -314,20 +364,23 @@ class TRTLLMProtocol:
         # the allocation is uniform and any rank could lead.
         return [replace(p, trtllm_dist_init_port=allocator.next(TRTLLM_DIST_INIT_PORTS)) for p in processes]
 
-    def _wrap_with_numa_cpu_bind(self, cmd: list[str]) -> list[str]:
-        """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which taskset-binds per task.
+    def _wrap_with_numa_bind(self, cmd: list[str], *, bind_memory: bool) -> list[str]:
+        """Resolve the task GPU's NUMA node for independent CPU and memory policies.
 
-        Applies to all worker modes (prefill/decode/agg) when numa_cpu_bind
-        is enabled. The CPU list depends on which physical GPU the task owns
+        Applies to all worker modes (prefill/decode/agg) when CPU binding or
+        local memory binding is enabled. Placement depends on which physical GPU the task owns
         (resolved from CUDA_VISIBLE_DEVICES and SLURM_LOCALID) and srun sets
         SLURM_LOCALID per-task at launch time — since the same argv is
         replicated across all ranks of the endpoint's srun (MPI-style
         launch), the lookup must happen in a script at runtime rather than
         being baked into the static command list.
         """
-        if not self.numa_cpu_bind:
+        if not self.numa_cpu_bind and not bind_memory:
             return cmd
-        return ["bash", "/configs/numa_cpu_bind.sh", *cmd]
+        memory_args = ["--bind-memory"] if bind_memory else []
+        if not self.numa_cpu_bind:
+            memory_args.append("--no-bind-cpu")
+        return ["bash", "/configs/numa_cpu_bind.sh", *memory_args, *cmd]
 
     def build_worker_command(
         self,
@@ -368,10 +421,16 @@ class TRTLLMProtocol:
         # For local models, model is mounted to /model in the container
         model_arg = runtime.worker_model_arg
 
-        if self.numa_memory_bind is None:
+        # Temporary A/B policy: keep decode on both NUMA nodes when testing local prefill memory.
+        memory_bind = self.numa_memory_bind
+        if memory_bind == "local" and mode == "decode":
+            memory_bind = True
+        if memory_bind is None:
             use_numactl = runtime.gpu_type in ("gb200", "gb300", "vrnvl72") and mode in ("prefill", "decode")
         else:
-            use_numactl = self.numa_memory_bind
+            use_numactl = memory_bind is True
+        # Only explicit local mode moves the memory policy into the CPU wrapper.
+        bind_local_memory = memory_bind == "local"
         numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
@@ -383,6 +442,7 @@ class TRTLLMProtocol:
                 container_config_path=container_config_path,
                 base_prefix=base_prefix,
                 sidecar_config=sidecar_config,
+                bind_memory=bind_local_memory,
             )
 
         # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
@@ -418,19 +478,24 @@ class TRTLLMProtocol:
             if self.served_model_name:
                 cmd.extend(["--served_model_name", self.served_model_name])
             cmd.extend(self.get_extra_args_for_mode(mode))
-            return self._wrap_with_numa_cpu_bind(cmd)
+            return self._wrap_with_numa_bind(cmd, bind_memory=bind_local_memory)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
-        cmd = base_prefix + [
-            "python3",
-            "-m",
-            "dynamo.trtllm",
-            "--model-path",
-            model_arg,
-            "--served-model-name",
-            self.get_served_model_name(runtime.model_path.name),
-        ]
+        entrypoint = ["python3", "-m", "dynamo.trtllm"]
+        connector = config.get("kv_connector_config") or {}
+        if connector.get("mooncake_store") is not None:
+            entrypoint = ["python3", "-c", _DYNAMO_MOONCAKE_ENTRYPOINT, str(container_config_path)]
+        cmd = (
+            base_prefix
+            + entrypoint
+            + [
+                "--model-path",
+                model_arg,
+                "--served-model-name",
+                self.get_served_model_name(runtime.model_path.name),
+            ]
+        )
 
         # Only add disaggregation mode for prefill/decode, not for agg
         if mode != "agg":
@@ -447,7 +512,7 @@ class TRTLLMProtocol:
 
         cmd.extend(self.dynamo_metrics_flags)
 
-        return self._wrap_with_numa_cpu_bind(cmd)
+        return self._wrap_with_numa_bind(cmd, bind_memory=bind_local_memory)
 
     def _build_sidecar_command(
         self,
@@ -458,10 +523,11 @@ class TRTLLMProtocol:
         container_config_path: Path,
         base_prefix: list[str],
         sidecar_config: "DynamoConfig",
+        bind_memory: bool,
     ) -> list[str]:
         """Build a lifecycle-coupled TensorRT-LLM native-gRPC and sidecar launch."""
         grpc_port = sidecar_grpc_port(process)
-        engine = self._wrap_with_numa_cpu_bind(
+        engine = self._wrap_with_numa_bind(
             base_prefix
             + [
                 "python3",
@@ -475,7 +541,8 @@ class TRTLLMProtocol:
                 str(grpc_port),
                 "--extra_llm_api_options",
                 str(container_config_path),
-            ]
+            ],
+            bind_memory=bind_memory,
         )
 
         sidecar = (

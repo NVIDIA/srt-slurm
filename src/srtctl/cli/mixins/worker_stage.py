@@ -13,6 +13,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
+from srtctl.backends.trtllm import TRTLLMProtocol
 from srtctl.backends.vllm import VLLMFailoverConfig, VLLMProtocol
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
@@ -593,6 +594,13 @@ class WorkerStageMixin:
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
         bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
+
+        if isinstance(self.backend, TRTLLMProtocol) and self.backend.mooncake_kv_store is not None:
+            # Every rank of an MPI endpoint must read the client config that
+            # its leader writes into this shared run directory.
+            run_dir = f"/logs/mooncake/{mode}-{index}"
+            mooncake_preamble = f'export TRTLLM_MOONCAKE_RUN_DIR="{run_dir}"; mkdir -p "$TRTLLM_MOONCAKE_RUN_DIR"'
+            bash_preamble = f"{mooncake_preamble} && {bash_preamble}"
 
         if node_gpu_setup:
             bash_preamble = f"{node_gpu_setup} && {bash_preamble}" if bash_preamble else node_gpu_setup

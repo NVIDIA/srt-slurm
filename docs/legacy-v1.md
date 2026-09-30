@@ -119,6 +119,7 @@ These keys exist in both layouts, but the value means something else in 2.0. A s
 | `decode_extra_args` | list[str] | `[]` |  |
 | `aggregated_extra_args` | list[str] | `[]` |  |
 | `trtllm_config` | [TRTLLMServerConfig](#trtllmserverconfig) \| None | `None` |  |
+| `mooncake_kv_store` | [TRTLLMMooncakeKVStoreConfig](#trtllmmooncakekvstoreconfig) \| None | `None` | Mooncake pool master; a declared mooncake-master service maps here in v2. |
 
 ### VLLMProtocol
 
@@ -173,6 +174,19 @@ SGLang server CLI configuration per mode (prefill/decode/aggregated).
 | `prefill` | dict[str, Any] \| None | `None` |  |
 | `decode` | dict[str, Any] \| None | `None` |  |
 | `aggregated` | dict[str, Any] \| None | `None` |  |
+
+### TRTLLMMooncakeKVStoreConfig
+
+Pool master settings for TRT-LLM's ``mooncake_store`` connector.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `container` | str \| None | `None` |  |
+| `env` | dict[str, str] | `{}` |  |
+| `master_extra_args` | list[str] | `[]` |  |
+| `eviction_ratio` | float | `0.05` |  |
+| `master_timeout_s` | int | `60` |  |
+| `store_role` | one of `'both'`, `'producer'`, `'consumer'` | `'both'` |  |
 
 ### VLLMServerConfig
 

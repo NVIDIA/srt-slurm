@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from srtctl.backends.sglang import MooncakeKVStoreConfig
+    from srtctl.backends.trtllm import TRTLLMMooncakeKVStoreConfig
     from srtctl.backends.vllm import VLLMFailoverConfig, VLLMMooncakeKVStoreConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
@@ -74,7 +75,9 @@ class BackendProtocol(Protocol):
         ...
 
     @property
-    def mooncake_kv_store(self) -> "MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | None":
+    def mooncake_kv_store(
+        self,
+    ) -> "MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | TRTLLMMooncakeKVStoreConfig | None":
         """The recipe's Mooncake KV store block, or None when the engine has none.
 
         Set, it implies the mooncake-master service and the MOONCAKE_* worker

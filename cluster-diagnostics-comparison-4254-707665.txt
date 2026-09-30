@@ -1,0 +1,127 @@
+Comparison of Raplab job 4254 and Hecate job 707665
+
+The completed host/GPU copy tests do not reproduce a Raplab-specific throughput
+regression. Network isolation/routing and fabric topology are the strongest
+cluster-specific differences found. Neither is a demonstrated TTFT root cause.
+
+Samples: Raplab vr-r42-cn04 and vr-r42-cn16; Hecate hecate0281 and hecate0288.
+These were idle diagnostic jobs, not simultaneous serving measurements, and the
+nodes differ from the earlier RDMA bandwidth jobs.
+
+Copy test results below use NUMA0 CPU and memory binding. Each number is the
+arithmetic mean of four per-GPU median bandwidths (two nodes, two GPUs per class).
+Each test copies a total of 64 MiB; chunk size changes the number of submissions.
+Units are GiB/s, not Gbit/s. Five measured repetitions follow two warmups.
+
+Direction | GPU placement | Chunk size | Raplab GiB/s | Hecate GiB/s
+H2D | GPU0/1, local to NUMA0 | 65536 KiB | 319.75 | 319.18
+H2D | GPU0/1, local to NUMA0 | 1024 KiB | 157.63 | 157.36
+H2D | GPU0/1, local to NUMA0 | 64 KiB | 26.75 | 27.25
+H2D | GPU2/3, remote from NUMA0 | 65536 KiB | 35.84 | 35.86
+H2D | GPU2/3, remote from NUMA0 | 1024 KiB | 33.19 | 33.25
+H2D | GPU2/3, remote from NUMA0 | 64 KiB | 15.50 | 15.51
+D2H | GPU0/1, local to NUMA0 | 65536 KiB | 308.80 | 304.64
+D2H | GPU0/1, local to NUMA0 | 1024 KiB | 226.37 | 236.69
+D2H | GPU0/1, local to NUMA0 | 64 KiB | 29.22 | 28.50
+D2H | GPU2/3, remote from NUMA0 | 65536 KiB | 28.81 | 28.79
+D2H | GPU2/3, remote from NUMA0 | 1024 KiB | 27.56 | 27.63
+D2H | GPU2/3, remote from NUMA0 | 64 KiB | 16.76 | 17.08
+
+CPU/NUMA diagnostic limitation
+
+All four tasks were restricted to CPUs 0-3,176-179. Memory nodes 0 and 1 were
+allowed, but CPU NUMA1 was unavailable. All four NUMA1 copy tests therefore
+failed with sched_setaffinity: Invalid argument. Unrestricted tests also ran on
+CPU NUMA0, and the pinned-buffer mappings show N0 allocation for every GPU.
+Local H2D copies reach roughly 319 GiB/s; remote H2D copies reach roughly 36
+GiB/s in both clusters. This demonstrates a large placement penalty, not a
+Raplab-only defect. It does not establish the placement of serving workers.
+The eight-CPU exact job step caused the restriction despite the job owning
+352 CPUs per node. The script now requests the allocated per-node CPUs.
+Equal and unequal allocation parsing was checked with mocked srun calls;
+the revised NUMA1 test still needs a cluster run.
+Evidence: allocation.txt, container/cgroup-limits.txt, copy-1.stderr,
+container/copy-0.jsonl and copy-unrestricted.jsonl in each extracted bundle.
+Slurm semantics: https://slurm.schedmd.com/srun.html#OPT_exact
+
+Network differences to investigate
+
+Raplab exposes eth0 as a veth, MTU 8980, and a default route through 169.254.1.1.
+Its nominal eth0 speed is 10000 Mb/s; veth speed is not a reliable physical
+bandwidth limit. Hecate exposes physical os_p1s0 (400000 Mb/s), storage interfaces
+and eight IPoIB interfaces, with explicit subnet routes. Raplab's host-pass
+network sysfs also sees the virtual interface: this isolation extends beyond
+just the Pyxis container. The underlay and actual RPC latency were not measured.
+
+The Mooncake prefix existence lookup and save existence probe are synchronous
+calls in tekit. Their latency and any UCX/TCP traffic warrant comparison under
+serving load. These bundles do not prove that KV payloads used TCP; RDMA is
+available and raw RDMA testing previously worked. The transport environment in
+settings.txt is for diagnostics, not the serving recipe. Diagnostic UCX config
+also differs: Raplab UCX_NET_DEVICES=all; Hecate=os_p1s0. Worker recipes explicitly
+override device settings, so do not treat this as their effective configuration.
+Evidence: container/net.txt, routes.txt, ucx-config.txt, host/proc-sysfs.txt.
+
+RDMA topology is different even though NIC specifications match. On both Raplab
+nodes mlx5_0/1/2/5 report fe80:0000:0000:0000 and SM LID 1; mlx5_6/7/8/11 report
+fec0:0000:0000:0001 and SM LID 35. All eight Hecate NICs report fe80 and SM LID 1.
+Matching mlx5_0 and mlx5_6 names map to matching subnet prefixes across the two
+sampled Raplab nodes. Subnet prefixes alone do not prove end-to-end reachability
+or congestion. Verify selected source/destination NIC pairs in actual serving
+logs and benchmark each intended same-subnet pair in both directions.
+Evidence: container/rdma-links.txt for all four nodes.
+
+Hardware/software similarities and differences
+
+All selected IB NICs report 800 Gb/s XDR, PCIe 64.0 GT/s x16, and firmware
+82.48.4036 on all four nodes. All active IB ports use MTU 4096. The ibv_devinfo
+active_speed field says 200 Gb/s with active_width 4X; the sysfs aggregate rate
+is 800 Gb/s. CPU model Olympus, 352 logical CPUs, two CPU/memory NUMA nodes,
+64 KiB base pages and kernel 7.0.0-2015-nvidia-bos-64k match. NUMA balancing and
+zone reclaim are disabled on all four nodes; THP policy is madvise.
+
+All collected Python package lists match. Mooncake is 0.3.13, TRT-LLM is
+1.3.0rc25, and PyTorch is 2.14.0a0+4fdf77b940.nvinternal.rubin.0.8dev.63969804.
+Hashes of utils.py, Mooncake worker.py and staging.py match across all nodes.
+This verifies those files, not every binary in the two images.
+
+Raplab GPU kernel driver: 620.47; VBIOS: 99.00.16.47.12.
+Hecate GPU kernel driver: 620.43; VBIOS: 99.00.16.47.0F.
+Both report max SM clock 2424 MHz, max memory clock 4752 MHz, and 2300 W power
+limits where applicable. Both report fabric Healthy/Full, no route recovery,
+and successful fabric initialization. Observed idle clocks/P-states differ,
+but these snapshots cannot establish clocks during prefill computation.
+Driver/VBIOS differences remain candidates for a controlled comparison.
+
+Both have substantial available memory and no swap. Diagnostic cgroups show
+no CPU throttling or OOM events. Hecate's memory cap is lower than Raplab's.
+Idle-node memory availability cannot exclude memory pressure from large donor
+and worker segments during serving.
+
+Missing evidence
+
+Raplab NIC counters and hw_counters are absent from both scopes. There are zero
+readable numeric counters in the host snapshots. Hecate has 604 numeric counter
+values per node and no error/wait deltas in this idle interval. Therefore these
+bundles cannot rule out Raplab transport errors, retries, or congestion.
+Kernel messages were denied on all four nodes. PCI extended capabilities are
+access denied, so ACS/IOMMU behavior cannot be fully compared. Container modinfo
+and ofed_info failed; loaded NVIDIA driver versions are independently available.
+
+Next checks, in order
+
+1. Capture actual serving-rank Cpus_allowed_list, Mems_allowed_list and pinned
+   staging NUMA mappings on both clusters. A NUMA0-only restriction in one
+   serving job could materially affect GPU2/3, but these diagnostic jobs do not
+   prove that restriction exists in serving.
+2. Time Mooncake batch_is_exist RPCs, GET duration, CUDA copy submission/sync,
+   loader queue wait and reused tokens/request during matched serving runs.
+   Separately measure prefill-to-decode transfer duration and chosen transport.
+3. Check RPC latency over the actual Raplab pod route. Obtain underlay NIC and
+   fabric counters through the cluster administrator, since they are hidden.
+4. Verify both intended IB subnets under load and match driver/VBIOS versions
+   in a controlled experiment if the preceding measurements do not explain it.
+5. Re-run the revised diagnostic to complete NUMA1 tests. It still allocates
+   no more than two nodes and does not change clocks or host configuration.
+
+Raw bundles were extracted to /tmp/cluster-diagnostics-comparison/.

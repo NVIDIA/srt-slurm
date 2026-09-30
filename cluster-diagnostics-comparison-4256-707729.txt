@@ -1,0 +1,124 @@
+Comparison of Raplab job 4256 and Hecate job 707729
+
+All twelve copy-policy runs completed successfully, including NUMA1. Each task
+now had 352 CPUs before binding, and 176 CPUs when bound to either CPU NUMA node.
+NUMA0 allocations show N0 pages; NUMA1 allocations show N1 pages. Both clusters
+have GPU0/1 local to NUMA0 and GPU2/3 local to NUMA1.
+
+CPU/memory-bound host-GPU performance is similar across clusters. The most
+interesting new observation is slower unrestricted bulk H2D on Raplab even
+when pinned pages are local to the GPU; binding CPU and memory largely removes
+that difference. This is a candidate mechanism, not a proven serving root cause.
+
+Nodes: Raplab vr-r42-cn04 and vr-r42-cn16; Hecate hecate0272 and hecate0283.
+Hecate nodes differ from job 707665. This remains an idle, sequential copy test.
+
+Bound measurements (GiB/s)
+
+Each number is the mean of eight per-GPU median results: two nodes, two NUMA
+policies and two GPUs of the specified locality. Each result has five measured
+repetitions after two warmups. Every test transfers 64 MiB total; chunk size
+changes the number of submissions. Local/remote is relative to the GPU's NUMA
+node. These are not aggregate all-GPU bandwidths or RDMA rates.
+
+Direction | Placement | Chunk | Raplab | Hecate
+H2D | local | 64 MiB | 311.18 | 315.69
+H2D | local | 1 MiB | 150.11 | 153.80
+H2D | local | 64 KiB | 27.34 | 27.50
+H2D | remote | 64 MiB | 35.82 | 35.92
+H2D | remote | 1 MiB | 33.18 | 33.24
+H2D | remote | 64 KiB | 15.47 | 15.54
+D2H | local | 64 MiB | 309.86 | 304.79
+D2H | local | 1 MiB | 226.68 | 236.12
+D2H | local | 64 KiB | 29.02 | 28.95
+D2H | remote | 64 MiB | 28.78 | 28.84
+D2H | remote | 1 MiB | 27.57 | 27.68
+D2H | remote | 64 KiB | 16.72 | 17.07
+
+The remote H2D penalty is roughly 8.7-8.8x for a single bulk copy on both clusters.
+At 64 KiB per submission, local H2D is about 27.3-27.5 GiB/s and remote H2D is
+15.5 GiB/s. The local 1024-copy test spends about 2.26-2.28 ms submitting copies,
+with about 0.01 ms of final synchronization wait. Both clusters incur that
+small-copy submission cost. This test uses PyTorch copy_ on prebuilt views;
+Mooncake staging uses direct CUDA runtime calls and its own page geometry.
+
+Unrestricted bulk H2D with GPU-local physical pages
+
+Cluster/node/GPU | Buffer NUMA | Unrestricted GiB/s | GPU-local bound GiB/s
+Raplab/vr-r42-cn04/GPU0 | 0 | 205.93 | 298.35
+Raplab/vr-r42-cn04/GPU1 | 0 | 134.67 | 309.53
+Raplab/vr-r42-cn16/GPU2 | 1 | 149.90 | 314.14
+Raplab/vr-r42-cn16/GPU3 | 1 | 157.28 | 316.27
+Hecate/hecate0272/GPU2 | 1 | 261.46 | 318.00
+Hecate/hecate0272/GPU3 | 1 | 266.73 | 319.56
+Hecate/hecate0283/GPU0 | 0 | 309.35 | 296.48
+Hecate/hecate0283/GPU1 | 0 | 316.39 | 316.27
+
+In Raplab the unrestricted local cases are 134.7-205.9 GiB/s versus 298.4-316.3
+GiB/s when GPU-local CPU and memory binding is applied. Hecate unrestricted
+local cases are 261.5-316.4 GiB/s. On Raplab, CPU submission is still about
+12-13 microseconds, while CUDA event elapsed time is about 288-449 microseconds
+unrestricted versus roughly 184-195 microseconds after binding. Thus the
+observed bulk-copy gap is not explained by the measured CPU submission time
+alone. The five samples generally reproduce the slower behavior within these
+cases, but there is only one diagnostic job per cluster with a fixed test order.
+
+Binding changes CPU affinity and memory policy together. The test cannot tell
+which component matters, or separate allocator/cache/clock/order effects.
+Furthermore, it uses one process sequentially across four GPUs and PyTorch can
+reuse the same pinned allocation. Unrestricted buffer placement remains on
+one NUMA node across those GPUs; it does not model four independent serving
+ranks allocating GPU-local buffers. No tensor correctness check or serving
+workload was performed, and clocks were only sampled around the test.
+
+Connection to the current recipes and tekit
+
+The Hecate c448 recipe has engine.numa_cpu_bind=true. The Raplab c448 recipe
+omits it, giving the backend's default false. Both enable numa_memory_bind,
+which produces numactl -m 0,1 and allows either memory node rather than ensuring
+GPU-local allocation. This is a concrete configuration difference worth a
+controlled serving comparison. Recipe settings alone do not establish actual
+worker placement: tekit also has automatic affinity logic.
+
+In tekit's configure_cpu_affinity, an inherited constrained mask and an unset
+TLLM_NUMA_AWARE_WORKER_AFFINITY cause an attempt to remove constraints; that
+branch does not then perform automatic GPU-local pinning. Explicit value 1
+selects GPU-local affinity. A kernel cgroup CPU restriction still limits which
+CPUs the process can use. The explicit srt-slurm wrapper instead disables
+tekit's auto mode and taskset-binds per physical GPU before startup. Inspect
+all-thread masks and pinned-page placement in the running workers before
+concluding that either recipe actually has correct or incorrect placement.
+
+Sources: recipes/trtllm/vr200-fp4/glm5.2/dynamo-1004/disagg-3p-dep-1d-dep-c448.yaml;
+recipes/trtllm/vr200-fp4/glm5.2/raplab-dyanmo-1004/disagg-3p-dep-1d-dep-c448.yaml;
+src/srtctl/backends/trtllm.py; configs/numa_cpu_bind.sh;
+/Users/rihuo/workspace/tekit/tensorrt_llm/llmapi/utils.py.
+
+Other observations confirmed in these new bundles
+
+All four Python package lists and hashes of the three sampled TRT-LLM files
+match. Raplab still uses GPU driver 620.47 / VBIOS 99.00.16.47.12; Hecate uses
+620.43 / 99.00.16.47.0F. Both report Healthy/Full NVLink fabric and no route
+recovery. CPU frequencies in these snapshots overlap around 3.3-3.4 GHz.
+
+Raplab routes TCP through veth eth0 / 169.254.1.1; Hecate exposes physical and
+IPoIB interfaces. Raplab's selected IB NICs span two reported subnets; Hecate's
+span one. These are unchanged network differences, not newly proven causes.
+Raplab NIC counters remain absent, preventing a transport-error/retry comparison.
+Hecate has 604 readable numeric counters per host and no error/wait deltas in
+this interval. Both diagnostic cgroups show zero CPU throttling and OOM events.
+Idle snapshots do not exclude pressure or congestion during serving.
+
+Next discriminating measurement
+
+Check actual serving-rank CPU masks and pinned staging-page NUMA placement first.
+Then compare identical serving runs with verified per-rank GPU-local affinity,
+recording Mooncake queue wait, GET duration and host-to-GPU copy/sync duration,
+along with cache-reused tokens/request and prefill-to-decode transfer time.
+For a copy-only control, keep memory fixed on the GPU-local node and vary only
+CPU affinity; run a fresh process per GPU and repeat/reorder the tests. Capture
+clocks during the copies. That isolates the unrestricted-copy clue before
+attributing it to NUMA scheduling, driver differences or network behavior.
+
+Extracted evidence: /tmp/cluster-diagnostics-comparison/cluster-diagnostics-4256/
+and /tmp/cluster-diagnostics-comparison/cluster-diagnostics-707729/.

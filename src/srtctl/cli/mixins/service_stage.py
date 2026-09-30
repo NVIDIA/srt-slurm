@@ -28,6 +28,7 @@ through ``scancel --signal`` and they get to flush state before exit.
 
 Phases, in run order: ``start_services("infra")`` (the discovery plane),
 ``start_services("before_workers")`` (after infra, before any worker),
+``start_services("with_workers")`` (defer probes until workers launch),
 ``start_services("after_frontend")`` (once workers and the frontend are
 healthy). See ``docs/services.md``.
 """
@@ -37,13 +38,14 @@ from __future__ import annotations
 import logging
 import shlex
 import subprocess
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.core.processes import ManagedProcess, ProcessRegistry, terminate_and_reap
 from srtctl.core.readiness import ProcessDied, wait_until_ready
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
-from srtctl.services.config import ServiceReadinessConfig, TcpProbe
+from srtctl.services.config import FileProbe, ServiceReadinessConfig, TcpProbe
 from srtctl.services.implicit import discovery_env, effective_services
 from srtctl.services.registry import ServiceLaunchContext, get_service_kind
 
@@ -63,7 +65,15 @@ SERVICE_TERMINATE_TIMEOUT_SECONDS = 30.0
 _DISCOVERY_KINDS = frozenset({"etcd", "nats"})
 # Cleanup stops lower tiers first: sidecars with the workers, then what workers
 # register with (the Mooncake master, stores), then the discovery plane.
-_SHUTDOWN_TIER = {"after_frontend": 0, "before_workers": 1, "infra": 2}
+_SHUTDOWN_TIER = {"after_frontend": 0, "with_workers": 1, "before_workers": 1, "infra": 2}
+
+
+@dataclass(frozen=True)
+class PendingServiceReadiness:
+    """A launched service fleet whose probes run after workers are launched."""
+
+    service: ServiceConfig
+    instances: list[tuple[ManagedProcess, ServiceLaunchContext]] = field(default_factory=list)
 
 
 def render_placeholders(value: str, replacements: dict[str, str]) -> str:
@@ -337,7 +347,7 @@ class ServiceStageMixin:
             bash_preamble=("; ".join(preamble_parts) or None) if kind.use_bash_wrapper else None,
             cpus_per_task=service.cpus_per_task,
             cpu_bind=service.cpu_bind,
-            srun_options={**self.runtime.srun_options, **service.srun_options},
+            srun_options={**self.runtime.srun_options, **kind.srun_options(service, ctx), **service.srun_options},
             het_group=self.runtime.nodes.het_group_for(ctx.node),
             use_bash_wrapper=kind.use_bash_wrapper,
             step_name=step_name,
@@ -380,19 +390,41 @@ class ServiceStageMixin:
 
     def _wait_service_ready(self, proc: ManagedProcess, service: ServiceConfig, ctx: ServiceLaunchContext) -> None:
         """The recipe's ``readiness`` probe, else the kind's per-instance probe, else each default port in turn."""
-        if service.readiness is not None:
-            self._wait_ready(proc, service, service.readiness)
-            return
         kind = get_service_kind(service.type)
-        instance_probe = kind.readiness(service, ctx)
+        instance_probe = service.readiness or kind.readiness(service, ctx)
         if instance_probe is not None:
+            if instance_probe.file is not None:
+                instance_probe = replace(
+                    instance_probe,
+                    file=FileProbe(path=render_placeholders(instance_probe.file.path, ctx.template_vars())),
+                )
             self._wait_ready(proc, service, instance_probe)
             return
         for port in kind.default_readiness_ports:
             probe = ServiceReadinessConfig(tcp=TcpProbe(port=port), timeout_seconds=kind.default_readiness_timeout)
             self._wait_ready(proc, service, probe)
 
-    def start_services(self, start: str, registry: ProcessRegistry | None = None) -> list[ManagedProcess]:
+    def wait_services_ready(self, pending: list[PendingServiceReadiness]) -> None:
+        """Gate the frontend on services launched alongside workers.
+
+        Every process is already registered, so the orchestrator cleans up the
+        entire job if any readiness check fails.
+        """
+        for fleet in pending:
+            for proc, ctx in fleet.instances:
+                self._wait_service_ready(proc, fleet.service, ctx)
+            get_service_kind(fleet.service.type).wait_fleet_ready(
+                fleet.service, self.runtime, [proc for proc, _ in fleet.instances]
+            )
+            logger.info("Service %s ready: %d instance(s)", fleet.service.name, len(fleet.instances))
+
+    def start_services(
+        self,
+        start: str,
+        registry: ProcessRegistry | None = None,
+        *,
+        deferred_readiness: list[PendingServiceReadiness] | None = None,
+    ) -> list[ManagedProcess]:
         """Launch every effective service whose ``start`` phase matches: implicit ones first, then declared.
 
         Each process is added to ``registry`` as soon as its srun exists, so a
@@ -400,6 +432,8 @@ class ServiceStageMixin:
         A readiness gate that fails terminates every process this call started
         and raises. The started processes are also returned. A service with
         ``external`` set launches nothing; its address is injected instead.
+        With ``deferred_readiness``, launch the entire phase without readiness
+        waits and append its fleets for ``wait_services_ready`` after workers.
         """
         effective = [entry for entry in effective_services(self.config) if not entry.service.external]
         phase = [entry for entry in effective if entry.service.effective_start == start]
@@ -443,6 +477,7 @@ class ServiceStageMixin:
                     )
                     continue
                 instances: list[ManagedProcess] = []
+                fleet = PendingServiceReadiness(service)
                 for index, (node, process) in enumerate(placed):
                     ctx = ServiceLaunchContext(
                         runtime=self.runtime,
@@ -461,12 +496,19 @@ class ServiceStageMixin:
                     instances.append(proc)
                     if registry is not None:
                         registry.add_process(proc)
-                    self._wait_service_ready(proc, service, ctx)
+                    if deferred_readiness is None:
+                        self._wait_service_ready(proc, service, ctx)
+                    else:
+                        fleet.instances.append((proc, ctx))
                     if service.terminal:
                         # The manual loop in BenchmarkStageMixin ends the job when these exit.
                         self.terminal_processes.setdefault(service.name, []).append(proc)
-                kind.wait_fleet_ready(service, self.runtime, instances)
-                logger.info("Service %s ready: %d instance(s) on %d node(s)", service.name, len(placed), len(nodes))
+                if deferred_readiness is None:
+                    kind.wait_fleet_ready(service, self.runtime, instances)
+                    logger.info("Service %s ready: %d instance(s) on %d node(s)", service.name, len(placed), len(nodes))
+                else:
+                    deferred_readiness.append(fleet)
+                    logger.info("Service %s launched; readiness deferred until workers launch", service.name)
         except BaseException:
             # Belt and braces: the registry already tracks these, but terminate
             # here too so a failure inside this stage never depends on the caller.

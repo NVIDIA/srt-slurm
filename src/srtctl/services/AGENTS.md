@@ -26,6 +26,8 @@ services:
 
 The top-level `services:` list declares long-running processes launched next to the job (see `docs/services.md`). Each entry has a `type` that selects a `ServiceKind` registered in `src/srtctl/services/` with `@register_service("<name>")`; the kind supplies defaults (command, start phase, criticality) and the env it injects, and `ServiceStageMixin` (`src/srtctl/cli/mixins/service_stage.py`) launches every kind the same way: resolve `placement.node` to physical nodes, optional clone/build of `source`, one `srun` per node, optional TCP `readiness` gate, `ManagedProcess` into the shared registry. `start_services("before_workers")` runs after the Mooncake master; `start_services("after_frontend")` runs after the frontend is healthy.
 
+`mooncake-donor` is a TRT-LLM service placed on decode nodes. Set `start: with_workers` on master and donor to launch all instances before workers without serial readiness gates; probes run after worker launch and before the frontend. The default remains blocking `before_workers`. It needs `options.size` and defaults to RDMA; the master and donor run with `srun --mpi=none` and clear inherited MPI launcher variables.
+
 ```yaml
 services:
   - name: store

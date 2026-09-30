@@ -11,6 +11,7 @@ change, not a code change.
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Memory diagnostics during a run](#memory-diagnostics-during-a-run)
 - [Configuration Reference](#configuration-reference)
 - [Implicit Services](#implicit-services)
 - [Placement](#placement)
@@ -43,6 +44,60 @@ the job container on the head node, starts once workers and the frontend are hea
 waits until port 9000 answers before moving on. Its log is `service_my-sidecar.out` in the job's log
 directory. `examples/features/services.yaml` is a runnable version of this.
 
+## Memory diagnostics during a run
+
+The standard-library collector in `configs/collect_memory.py` can run as a generic
+service before workers and Mooncake donors start:
+
+```yaml
+services:
+  - name: memory-monitor
+    type: generic
+    start: before_workers
+    critical: false
+    placement:
+      node: workers
+    command: [python3, /configs/collect_memory.py, --interval, '5']
+```
+
+The repository's `configs/` directory is mounted at `/configs`. Each node writes
+timestamped JSONL samples to `service_memory-monitor_<node>.out` in the job log
+directory (a single instance uses `service_memory-monitor.out`). Samples include
+host `/proc/meminfo`, per-NUMA-node counters, the 20 highest-RSS processes plus all
+visible Mooncake/TRT-LLM/Dynamo processes, their memory counters, allowed NUMA
+nodes and locked-memory limits, and readable memory cgroup counters and ancestor
+limits. Memory counters with a `_bytes` suffix are bytes; cgroup files retain
+their Linux text representation, including `max` for unlimited limits.
+
+The service stops with job cleanup. `--top` adjusts the process count, and
+`--samples 1` produces a single diagnostic sample. Missing or unreadable files
+are omitted. Processes are limited to the container's visible PID namespace and
+permissions; cgroup paths unavailable in its mount namespace cannot be inspected.
+The collector's own limits are included separately and may differ from a donor's
+limits. RSS can double-count shared pages; `VmLck` does not describe all RDMA
+pinning accounting. These samples help distinguish cache use, NUMA pressure,
+cgroup limits and process limits; NIC registration failures still need kernel
+logs. See `examples/trtllm/trtllm-serve-mooncake.yaml` for a complete recipe.
+
+The built-in `mooncake-donor` command also runs through a diagnostic launcher in
+the donor's own launch context. Its service log includes `[donor-memory]` JSON
+records before startup, every five seconds while running, and after exit: the
+process cgroup path and resource limits, plus `memory.current`, `memory.max`,
+`memory.high`, `memory.peak`, `memory.events`, and `cpuset.mems.effective` from
+that launch context's `/sys/fs/cgroup`. This avoids reading a separate monitor
+service's cgroup counters. These cgroup files require a cgroup v2 mount exposing
+the donor's cgroup at its root; ancestor limits outside the namespace remain
+unavailable.
+
+Before startup and after exit, `[donor-kernel]` records contain the last 100
+`dmesg -T` lines matching `mlx5`, `mkey`, `umem`, `allocation failure`, `oom`, or
+`out of memory`. The snapshots can contain messages from before this run; use
+their timestamps to correlate failures. Unavailable files, denied kernel-log
+access, and five-second kernel-log command timeouts are reported without failing
+the donor. No privileges are elevated and the kernel ring buffer is not cleared.
+The launcher forwards SIGTERM/SIGINT and preserves the donor's exit status.
+An explicit donor `command` override bypasses the diagnostic launcher.
+
 ## Configuration Reference
 
 ```yaml
@@ -66,7 +121,7 @@ services:
       node: head                 # head | infra | dedicated | prefill | decode | agg | workers | compute | all
       pool: train                # or: ride on the nodes another service owns (replaces node)
     nodes: 2                     # own whole nodes: a pool added to the allocation next to the roles' nodes
-    start: after_frontend        # infra | before_workers | after_frontend
+    start: after_frontend        # infra | before_workers | with_workers | after_frontend
     readiness:                   # optional probe, checked on every service node; typed kinds have default ports
       port: 9000                 # or tcp: {port} / http: {port, path, status} / log: {pattern}
       timeout_seconds: 120
@@ -208,19 +263,37 @@ services:
 
 ## Start Order and Readiness
 
-Services launch in three phases; within a phase, implied services first, then declared ones in
+Services launch in four phases; within a phase, implied services first, then declared ones in
 declaration order:
 
 - `infra`: the discovery plane (etcd, NATS). Nothing else should need this phase.
 - `before_workers`: after the discovery plane, before any worker. The Mooncake master, standalone
   stores, anything workers connect to at startup.
+- `with_workers`: launch every service instance just before workers, without waiting for
+  readiness between launches. After all workers are launched, check service readiness
+  before starting the frontend. Use this for helpers whose clients already retry during
+  startup, such as TRT-LLM Mooncake masters and donors. Readiness timeouts begin when
+  each deferred probe runs; process failures remain monitored throughout startup.
 - `after_frontend`: once workers and the frontend are healthy, before the scraper. The exporters,
   sidecars that register into a running job.
 
-Within a phase, a service with `readiness` blocks until its probe passes on each of its nodes. The
+Except for `with_workers`, a service with `readiness` blocks until its probe passes on each of its nodes. The
 typed kinds gate on their well-known ports by default (etcd 2379, NATS 4222, the Mooncake master
 8700, 8701, and 8702, the exporters none); a `generic` service without a probe is considered started
-when its `srun` is launched. Three probes are available, and a `readiness` block names exactly one:
+when its `srun` is launched. Four probes are available, and a `readiness` block names exactly one:
+
+```yaml
+readiness:
+  file:
+    path: "mooncake/donor-{node}.ready"
+  timeout_seconds: 900
+```
+
+File probes require a nonempty regular file visible to the host orchestrator.
+Relative paths resolve under the shared job log directory (the container's
+`/logs` mount); absolute paths are host paths. Service placeholders such as
+`{node}` are expanded per instance. The launcher must remove stale markers
+before starting a new instance; the built-in Mooncake donor does this automatically.
 
 ```yaml
 readiness:
@@ -298,7 +371,8 @@ environment its process needs; the launch path is shared by every kind. Register
 | `generic` | none (required) | `after_frontend` | `false` | Launches exactly what you wrote. |
 | `etcd` | `/configs/etcd` from the job container, advertising the node's IP | `infra` | `true` | Implied by the Dynamo frontend. Placement `head`, `infra`, or `dedicated`; supports `external`. Fresh data dir on node-local `/tmp` each job. |
 | `nats` | `/configs/nats-server -js` from the job container | `infra` | `true` | Implied by the Dynamo frontend. `options.max_payload_mb` writes a server config. Same placements as etcd; supports `external`. |
-| `mooncake-master` | `mooncake_master` with the RPC, HTTP metadata, and metrics ports srtctl owns | `before_workers` | `true` | Declared by name; see [Mooncake KV Store](mooncake-kv-store.md). `args` are appended; `options.store_config` is the vLLM connector JSON. Container falls back to the job container. Supports `dedicated` and `external`. |
+| `mooncake-master` | `mooncake_master` with the ports srtctl owns (TRT-LLM uses `--rpc_port`; SGLang/vLLM also enable HTTP metadata) | `before_workers` | `true` | Declared by name; see [Mooncake KV Store](mooncake-kv-store.md). `args` are appended; `options.store_config` is the vLLM connector JSON. Container falls back to the job container. Supports `dedicated` and `external`. |
+| `mooncake-donor` | `trtllm-serve mooncake_donor` with the generated master address file | `before_workers` | `true` | One per decode node for a TRT-LLM Mooncake pool; requires `options.size`, accepts `options.protocol` (default `rdma`). |
 | `dcgm-exporter` | `dcgm-exporter --collect-interval=<ms> --address :9401` in `nvcr.io/nvidia/k8s/dcgm-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less (distroless image). `options`: `port`, `collect_interval_ms`. |
 | `node-exporter` | `/bin/node_exporter` with the cpu, infiniband, and meminfo collectors on 9101 in `quay.io/prometheus/node-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less. `options`: `port`. |
 | `process-exporter` | `configs/process-exporter -config.path <log_dir>/process-exporter.yml -web.listen-address=:9256 -threads=true ...` on the bare node | `after_frontend` | `false` | Implied on every allocated node (`placement.node: all`) while tachometer runs. Host-native from the static binary `make setup` installs; skipped with a warning when it is missing. A declared `container` switches to the image's `/bin/process-exporter` with the group file under `/logs`. `options`: `port`, `binary`. |

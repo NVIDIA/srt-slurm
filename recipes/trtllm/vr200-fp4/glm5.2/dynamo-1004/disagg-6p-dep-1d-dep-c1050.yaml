@@ -1,0 +1,325 @@
+# Converted from agentx/glm_5.2/verarubin/e2e_pareto/pareto07.yaml on 2026-10-06.
+# Dynamo setup, model/image paths, mounts, caches, and AgentX installation follow ../dynamo-0930.
+# Workers run python3 -m dynamo.trtllm; results are written to /logs/agentx.
+# Source TRT-LLM frontend timeouts, message-history options, and tool_parser have no mapping here.
+# CI-only rollup_upload is omitted; configure cluster networking/segment in srtslurm.yaml.
+# AgentX client requires PyPI/HF access. Synthetic MTP acceptance uses thinking_on AL(depth) - 1.
+# Least-loaded Dynamo routing follows the reference pool recipes.
+# Mooncake initializes alongside workers; donor sizes follow decode-node order.
+schema: 2
+name: disagg-6p-dep-1d-dep-c1050
+model:
+  path: /lustre/share/coreai_dlalgo_ci/artifacts/model/nvidia_glm-5.2-nvfp4/hf/hf-b0b2b68_orig
+  container: /lustre/share/coreai_comparch_inferencex/rihuo/trtllm-release-4dece7f-user_imant_glm5-rubin-arm64.sqsh
+  precision: nvfp4
+resources:
+  gpu_type: vrnvl72
+  gpus_per_node: 4
+  het_jobs: false
+extra_mount:
+- /lustre:/lustre
+- /lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels
+setup_script: install_dynamo_wheel.sh
+dynamo:
+  install: false
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: least-loaded
+  numa_bind: true
+  env:
+    ETCD_LEASE_TTL: '120'
+    DYN_ROUTER_TEMPERATURE: '0'
+    DYN_TOKENIZER_CACHE: '1'
+    DYN_TOKENIZER_CACHE_BYTES: '8000000000'
+    DYN_TOKENIZER: fastokens
+    DYN_TCP_REQUEST_TIMEOUT: '30'
+    DYN_REQUEST_PLANE: tcp
+    DYN_FRONTEND_ENABLE_KV_EVENTS: '0'
+    DYN_LOGGING_JSONL: 'false'
+    OTEL_EXPORT_ENABLED: 'false'
+  placement:
+    node: dedicated
+engine:
+  numa_cpu_bind: true
+  type: trtllm
+  served_model_name: GLM-5.2
+  numa_memory_bind: true
+roles:
+  prefill:
+    nodes: 6
+    workers: 6
+    gpus: 4
+    args:
+      backend: pytorch
+      cache_transceiver_config:
+        backend: NIXL
+        kv_cache_bounce_size_mb: 5120
+        kv_transfer_sender_future_timeout_ms: 20
+        kv_transfer_timeout_ms: 600000
+        max_tokens_in_buffer: 1048576
+        transceiver_runtime: PYTHON
+      speculative_config:
+        decoding_type: MTP
+        num_nextn_predict_layers: 5
+      disable_overlap_scheduler: false
+      enable_attention_dp: true
+      kv_cache_config:
+        enable_block_reuse: true
+        host_cache_size: 0
+        dtype: nvfp4
+        free_gpu_memory_fraction: 0.75
+        event_buffer_max_size: 0
+        use_kv_cache_manager_v2: true
+        tokens_per_block: 64
+      enable_chunked_prefill: true
+      attention_dp_config:
+        enable_kv_cache_aware_routing: false
+        kv_cache_routing_conversation_affinity: false
+        kv_cache_routing_max_sessions: 65536
+      max_batch_size: 256
+      max_num_tokens: 8192
+      max_seq_len: 1048576
+      moe_expert_parallel_size: 4
+      num_postprocess_workers: 8
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      sparse_attention_config:
+        algorithm: dsa
+        enable_heuristic_topk: true
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+      perf_metrics_max_requests: 100000
+      return_perf_metrics: true
+      moe_config:
+        backend: MEGAMOE_CUTEDSL
+      kv_connector_config:
+        connector: mooncake-store
+        mooncake_store:
+          master_server_address: file:///logs/mooncake_master.addr
+          metadata_server: P2PHANDSHAKE
+          protocol: rdma
+          global_segment_size: 224GiB
+          local_buffer_size: 1GiB
+          transfer_batch_size: 512
+          stage_through_host: true
+          staging_buffer_bytes: 2GiB
+          async_load: true
+          async_load_workers: 2
+      tensor_parallel_size: 4
+      trust_remote_code: true
+      cuda_graph_config: null
+    env:
+      CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
+      FLASHINFER_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache/flashinfer_cache
+      FLASHINFER_WORKSPACE_BASE: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache/flashinfer_cache
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+      HF_HUB_OFFLINE: '1'
+      MIMALLOC_PURGE_DELAY: '0'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: '0.10'
+      TLLM_ADP_TOKEN_AWARE_PLACEMENT: '1'
+      TLLM_LOG_LEVEL: INFO
+      TLLM_PREFIX_TOKEN_CACHE: '1'
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '2.61'
+      TQDM_DISABLE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      TRTLLM_DSA_INDEXER_BF16: '1'
+      TRTLLM_DSA_KV_NORM_PACK: '1'
+      TRTLLM_ENABLE_PDL: '1'
+      TRTLLM_FUSED_DSA_METADATA: '1'
+      TRTLLM_KVCACHE_RECV_BUFFER_COUNT: '1'
+      TRTLLM_KVCACHE_SEND_BUFFER_COUNT: '1'
+      TRTLLM_KV_CACHE_TRANSFER_TIMEOUT_SEC: '600'
+      TRTLLM_MLA_CTX_Q_GRID: '1'
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      UCX_CUDA_IPC_ENABLE_MNNVL: y
+      UCX_NET_DEVICES: all
+      UCX_RNDV_SCHEME: put_zcopy
+      UCX_TLS: all
+      HF_HOME: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache
+      DYN_ENGINE_CONV_AFFINITY: '1'
+  decode:
+    nodes: 8
+    workers: 1
+    gpus: 32
+    args:
+      backend: pytorch
+      cache_transceiver_config:
+        backend: NIXL
+        kv_cache_bounce_size_mb: 5120
+        kv_transfer_timeout_ms: 600000
+        max_tokens_in_buffer: 1048576
+        transceiver_runtime: PYTHON
+      cuda_graph_config:
+        batch_sizes:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        enable_padding: true
+      speculative_config:
+        decoding_type: MTP
+        max_draft_len: 5
+      enable_attention_dp: true
+      kv_cache_config:
+        enable_block_reuse: false
+        host_cache_size: 0
+        dtype: nvfp4
+        free_gpu_memory_fraction: 0.9
+        event_buffer_max_size: 0
+        tokens_per_block: 64
+      enable_lm_head_tp_in_adp: true
+      max_batch_size: 8
+      max_num_tokens: 128
+      max_seq_len: 1048576
+      moe_expert_parallel_size: 32
+      moe_config:
+        use_low_precision_moe_combine: true
+        backend: MEGAMOE_CUTEDSL
+      num_postprocess_workers: 4
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      sparse_attention_config:
+        algorithm: dsa
+        enable_heuristic_topk: true
+        use_cute_dsl_paged_mqa_logits: true
+      perf_metrics_max_requests: 100000
+      return_perf_metrics: true
+      scheduler_config:
+        capacity_scheduler_policy: GUARANTEED_NO_EVICT
+      stream_interval: 20
+      tensor_parallel_size: 32
+      trust_remote_code: true
+    env:
+      CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
+      FLASHINFER_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache/flashinfer_cache
+      FLASHINFER_WORKSPACE_BASE: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache/flashinfer_cache
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+      HF_HUB_OFFLINE: '1'
+      MIMALLOC_PURGE_DELAY: '0'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: '0.10'
+      TLLM_LOG_LEVEL: INFO
+      TLLM_PREFIX_TOKEN_CACHE: '1'
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '2.61'
+      TQDM_DISABLE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      TRTLLM_DSA_GROUP_REMAP_SORT: '1'
+      TRTLLM_DSA_INDEXER_BF16: '1'
+      TRTLLM_DSA_KV_NORM_PACK: '1'
+      TRTLLM_DSA_LOGITS_FULL_QUERY: '1'
+      TRTLLM_DSA_NVFP4_OWNER_WORKLIST: group
+      TRTLLM_ENABLE_PDL: '1'
+      TRTLLM_FUSED_DSA_METADATA: '1'
+      TRTLLM_KVCACHE_RECV_BUFFER_COUNT: '1'
+      TRTLLM_KVCACHE_SEND_BUFFER_COUNT: '1'
+      TRTLLM_KV_CACHE_TRANSFER_TIMEOUT_SEC: '600'
+      TRTLLM_LOW_M_GEMM_BACKEND: splitk_default
+      TRTLLM_MLA_CTX_Q_GRID: '1'
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      UCX_CUDA_IPC_ENABLE_MNNVL: y
+      UCX_NET_DEVICES: all
+      UCX_RNDV_SCHEME: put_zcopy
+      UCX_TLS: all
+      HF_HOME: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache
+      DYN_ENGINE_CONV_AFFINITY: '1'
+      DYN_ROUTER_MODE: least-loaded
+health_check:
+  max_attempts: 270
+  interval_seconds: 10
+services:
+- name: mooncake-master
+  type: mooncake-master
+  start: with_workers
+  command:
+  - mooncake_master
+  - --rpc_port={master_port}
+  - --metrics_port=8702
+  - --default_kv_lease_ttl=60000
+  - --eviction_ratio=0.02
+  - --allocation_strategy=random
+  env:
+    GLOG_logtostderr: '1'
+  preamble: printf '%s\n' '{node_ip}:{master_port}' > /logs/mooncake_master.addr
+  options:
+    eviction_ratio: 0.02
+    master_timeout_s: 900
+    store_role: both
+- name: mooncake-donor
+  type: mooncake-donor
+  env:
+    TLLM_LOG_LEVEL: INFO
+  start: with_workers
+  readiness:
+    file:
+      path: mooncake/donor-{node}.ready
+    timeout_seconds: 900
+  placement:
+    node: decode
+  options:
+    size: 768GiB
+    protocol: rdma
+benchmark:
+  placement:
+    node: dedicated
+  colocate_with_frontend: true
+  type: custom
+  env:
+    AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache/aiperf_mmap_cache
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
+    HF_HUB_DISABLE_PROGRESS_BARS: '1'
+    TQDM_DISABLE: '1'
+    HF_HOME: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache
+    OPENAI_API_KEY: EMPTY
+    AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES: '0'
+    AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
+    AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
+    AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
+  command: |
+    set -euo pipefail
+    # AgentX treats any nonempty offline flag (including '0') as enabled.
+    unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
+    # Install the local AgentX checkout in an isolated environment with pinned dependencies.
+    agentx_venv=$(mktemp -d /tmp/glm52-agentx.XXXXXX)
+    trap 'rm -rf "$agentx_venv"' EXIT
+    python3 -m venv "$agentx_venv"
+    "$agentx_venv/bin/pip" install --disable-pip-version-check \
+      '/lustre/fsw/coreai_comparch_inferencex/rihuo/agentx-harness' \
+      'tiktoken==0.13.0' 'datasets==5.0.0' 'huggingface_hub[cli]==1.22.0' \
+      'urllib3==2.7.0' 'requests==2.34.2'
+    "$agentx_venv/bin/hf" download --repo-type dataset semianalysisai/cc-traces-weka-062126
+    "$agentx_venv/bin/aiperf" profile \
+      --scenario inferencex-agentx-mvp \
+      --url "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}" \
+      --endpoint /v1/chat/completions \
+      --endpoint-type chat \
+      --model GLM-5.2 \
+      --tokenizer /model \
+      --benchmark-duration 3600 \
+      --concurrency 1050 \
+      --failed-request-threshold 0.1 \
+      --max-context-length 1048576 \
+      --no-gpu-telemetry \
+      --num-dataset-entries 393 \
+      --public-dataset semianalysis_cc_traces_weka_062126 \
+      --random-seed 42 \
+      --slice-duration 1.0 \
+      --streaming \
+      --tokenizer-trust-remote-code \
+      --trajectory-start-max-ratio 0.75 \
+      --trajectory-start-min-ratio 0.25 \
+      --use-server-token-count \
+      --warmup-requests-per-lane 10 --warmup-grace-period 1800 --stats-interval 30 --trace-idle-gap-cap-seconds 300 \
+      --output-artifact-dir /logs/agentx

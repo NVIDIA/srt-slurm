@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from srtctl.backends.trtllm import TRTLLMMooncakeKVStoreConfig
 from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
@@ -145,6 +146,12 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                 options["store_config"] = dict(mooncake_cfg.store_config)
             if mooncake_cfg.device_names_by_gpu:
                 options["device_names_by_gpu"] = list(mooncake_cfg.device_names_by_gpu)
+        elif isinstance(mooncake_cfg, TRTLLMMooncakeKVStoreConfig):
+            options.update(
+                eviction_ratio=mooncake_cfg.eviction_ratio,
+                master_timeout_s=mooncake_cfg.master_timeout_s,
+                store_role=mooncake_cfg.store_role,
+            )
         implied.append(
             EffectiveService(
                 ServiceConfig(
