@@ -67,7 +67,7 @@ def validate_expected_windows(
     expected_device_keys: set[DeviceKey],
     observed_devices: Sequence[ObservedDevice],
     artifact_errors: list[ArtifactError],
-    sample_interval_seconds: float,
+    sample_interval_seconds: float | None,
 ) -> list[WindowValidation]:
     """Emit exactly one validation row per expected window.
 
@@ -271,7 +271,7 @@ def _validate_one(
     result_root: Path,
     expected_device_keys: set[DeviceKey],
     observed_devices: Sequence[ObservedDevice],
-    sample_interval_seconds: float,
+    sample_interval_seconds: float | None,
 ) -> WindowValidation:
     if window is None:
         reasons = [Reason.MEASUREMENT_WINDOW_DUPLICATE] if duplicated else [Reason.MEASUREMENT_WINDOW_MISSING]
@@ -349,7 +349,7 @@ def _check_coverage(
     end: float,
     expected_device_keys: set[DeviceKey],
     observed_devices: Sequence[ObservedDevice],
-    sample_interval_seconds: float,
+    sample_interval_seconds: float | None,
 ) -> tuple[dict[str, float], list[str]]:
     """Every expected device must bracket the window with small enough gaps."""
     by_key = {device.key: device for device in observed_devices}
@@ -379,8 +379,8 @@ def _check_coverage(
     return gaps, reasons
 
 
-def _sample_loss_within_policy(sequence: Sequence[float], sample_interval_seconds: float) -> bool:
-    """Compare counts and elapsed time over the same nearest-bracket span."""
+def _sample_loss_within_policy(sequence: Sequence[float], sample_interval_seconds: float | None) -> bool:
+    """Compare counts and elapsed time over the same nearest-bracket span; an unknown cadence fails closed."""
     if not is_finite_number(sample_interval_seconds) or sample_interval_seconds <= 0:
         return False
     expected = (sequence[-1] - sequence[0]) / sample_interval_seconds
