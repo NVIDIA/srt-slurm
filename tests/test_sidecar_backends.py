@@ -332,24 +332,27 @@ def test_headless_follower_termination_reaps_engine(tmp_path: Path) -> None:
             child.wait(timeout=15)
 
 
-def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path) -> None:
-    process = _process()
+@pytest.mark.parametrize("mode", ["agg", "prefill", "decode"])
+def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, mode: str) -> None:
+    process = _process(mode=mode)
     backend = TRTLLMProtocol(
-        trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 4, "max_seq_len": 4096}),
+        served_model_name="deepseek-ai/DeepSeek-V4-Pro",
+        trtllm_config=TRTLLMServerConfig(
+            **{"aggregated" if mode == "agg" else mode: {"tensor_parallel_size": 4, "max_seq_len": 4096}}
+        ),
     )
 
     command = backend.build_worker_command(process, [process], _runtime(tmp_path))
 
     script = command[2]
     assert "trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /model" in script
-    assert "--grpc --host 127.0.0.1 --port 50051" in script
+    assert "--grpc --grpc-protocol openengine --host 127.0.0.1 --port 50051" in script
     assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path /model" in script
     assert "--context-length 4096" in script
     assert "${SLURM_PROCID:-0}" in script
-
-
-def test_trtllm_sidecar_rejects_disaggregated_workers(tmp_path: Path) -> None:
-    backend = TRTLLMProtocol()
-
-    with pytest.raises(ValueError, match="supports aggregated workers only"):
-        backend.build_worker_command(_process(mode="prefill"), [], _runtime(tmp_path))
+    assert "--served_model_name deepseek-ai/DeepSeek-V4-Pro" in script
+    assert "--tensor_parallel_size 4" in script
+    if mode != "agg":
+        assert f"--disaggregation-mode {mode}" in script
+    else:
+        assert "--disaggregation-mode" not in script
