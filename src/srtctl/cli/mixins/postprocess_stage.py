@@ -30,7 +30,6 @@ from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import DEFAULT_S3_ARCHIVE, DEFAULT_S3_EXCLUDE, AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
-from srtctl.ruter import normalize_run
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -234,9 +233,6 @@ class PostProcessStageMixin:
         # Compare against previous lockfile if this was a lockfile re-run
         self._compare_against_previous_lock()
 
-        # Keep the prepared bundle inside logs/ so the existing S3 sync below
-        # transfers it with the raw benchmark artifacts.
-        self._normalize_ruter()
         # Build the component perf dashboard. Deliberately ordered BEFORE the S3 sync
         # below: the sync ships the whole log dir, so building here is what gets
         # perf_dashboard.{html,json} and its bundle off the cluster. Building after
@@ -266,26 +262,6 @@ class PostProcessStageMixin:
             if ai_config and ai_config.enabled:
                 logger.info("Running AI-powered failure analysis...")
                 self._run_ai_analysis(ai_config)
-
-    def _normalize_ruter(self) -> None:
-        """Best-effort Dynamo post-processing shared with the direct Bash lifecycle."""
-        if self.config.frontend.type != "dynamo" or not self.config.observability.enabled:
-            return
-        try:
-            report = normalize_run(
-                self.runtime.log_dir.parent,
-                output_dir=self.runtime.log_dir / ".ruter",
-            )
-            logger.info(
-                "ruter normalized router_events=%d worker_events=%d worker_logs=%d",
-                report.router_events,
-                report.worker_events,
-                report.worker_logs,
-            )
-            for warning in report.warnings:
-                logger.warning("ruter: %s", warning)
-        except Exception as error:  # noqa: BLE001
-            logger.warning("ruter normalization failed: %s", error)
 
     def _build_perf_dashboard(self) -> None:
         """Render the component perf dashboard from this run's own artifacts.

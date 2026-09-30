@@ -1971,7 +1971,6 @@ def main():
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
-  srtctl view /path/to/run-output                # Local ruter route-decision viewer
   srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
   srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md + docs/legacy-v1.md
   srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
@@ -2122,13 +2121,6 @@ def main():
 
     monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
     monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
-
-    view_parser = subparsers.add_parser("view", help="Serve the local ruter route-decision viewer")
-    view_parser.add_argument(
-        "root", nargs="?", type=Path, default=Path("."), help="srt-slurm run directory or logs/.ruter"
-    )
-    view_parser.add_argument("--port", type=int, default=8877, help="Loopback port (default: 8877)")
-    view_parser.add_argument("--refresh", action="store_true", help="Reparse logs before loading the viewer")
 
     status_server_parser = subparsers.add_parser(
         "status-server",
@@ -2431,15 +2423,6 @@ def main():
 
         sys.argv = [sys.argv[0]] + (args.args or [])
         _monitor_main()
-        return
-
-    if args.command == "view":
-        from srtctl.ruter.view import main as _view_main
-
-        view_args = [str(args.root), "--port", str(args.port)]
-        if args.refresh:
-            view_args.append("--refresh")
-        _view_main(view_args)
         return
 
     if args.command == "status-server":
