@@ -570,7 +570,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Use tokio's cross-platform signal handler
     // Create a task per endpoint with its own collect interval
-    let mut tasks = Vec::new();
+    let mut scrape_tasks = Vec::new();
     for endpoint in endpoints {
         let writer_clone = writer.clone();
         let endpoint_name = endpoint.name.clone();
@@ -596,17 +596,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::time::sleep(sleep_duration).await;
             }
         });
-        tasks.push(task);
+        scrape_tasks.push(task);
     }
 
     // Spawn periodic sync task if enabled
+    let mut sync_task = None;
     if sync_interval_secs > 0 {
         let sync_local_dir = local_dir.clone();
         let sync_storage = storage.clone();
         let sync_remote_path = remote_path.clone();
         let sync_interval = std::time::Duration::from_secs(sync_interval_secs);
 
-        let sync_task = tokio::spawn(async move {
+        sync_task = Some(tokio::spawn(async move {
             // Wait for initial interval before first sync
             tokio::time::sleep(sync_interval).await;
 
@@ -630,8 +631,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 tokio::time::sleep(sync_interval).await;
             }
-        });
-        tasks.push(sync_task);
+        }));
     }
 
     // Set up signal handlers for graceful shutdown
@@ -641,9 +641,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("Failed to register SIGTERM handler: {}", e))?;
 
         // Create a future that waits for all tasks
-        let tasks_future = async {
-            futures::future::join_all(tasks).await;
-        };
+        let tasks_future =
+            futures::future::join_all(scrape_tasks.iter_mut().chain(sync_task.iter_mut()));
 
         tokio::select! {
             _ = tasks_future => {
@@ -661,9 +660,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(unix))]
     {
         // Create a future that waits for all tasks
-        let tasks_future = async {
-            futures::future::join_all(tasks).await;
-        };
+        let tasks_future =
+            futures::future::join_all(scrape_tasks.iter_mut().chain(sync_task.iter_mut()));
 
         tokio::select! {
             _ = tasks_future => {
@@ -675,14 +673,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Note: When select! exits due to a signal, tasks are still running.
-    // They will be dropped when the function exits, but we want to abort them
-    // explicitly for cleaner shutdown. However, since tasks were moved into
-    // the async block, we can't access them here. The tasks will continue
-    // until the process exits, but the writer shutdown below will still
-    // flush any pending data.
-    // Wait a moment for tasks to finish cancellation
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Stop scraping before the final flush so every row reaches final.parquet.
+    for task in &scrape_tasks {
+        task.abort();
+    }
+    for task in scrape_tasks {
+        let _ = task.await;
+    }
 
     // Graceful shutdown: flush remaining data to local disk
     info!("Shutting down writer...");
