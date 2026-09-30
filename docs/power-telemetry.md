@@ -140,12 +140,13 @@ retain timing records, with null parse duration and sample timestamp, without
 inventing power samples. Requests still unsettled when the cycle deadline
 expires have no timing record.
 
+Instants are unix timestamps; durations come from the monotonic clock.
 `schedule_lag_seconds` measures request start against the background cycle's
-scheduled time; manual and final bracketing scrapes use null. All durations
-use the monotonic clock. The collector writes a cycle's endpoints together, so
-the `cycle_write` record keyed by `scrape_seq` carries the batch's
-`writer_lock_wait_seconds`, `sample_write_seconds` and attempted `row_count`
-once. Its `sample_write_completed` reports whether the batch was appended and
+scheduled slot, which `cycle_write` records as `scheduled_at_unix`; manual and
+final bracketing scrapes use null for both. The collector writes a cycle's
+endpoints together, so the `cycle_write` record keyed by `scrape_seq` carries
+the batch's `writer_lock_wait_seconds`, `sample_write_seconds` and attempted
+`row_count` once. Its `sample_write_completed` reports whether the batch was appended and
 flushed; when it is false, `sample_write_error` names the exception class if
 the append raised, or is null when the session was already finalizing and
 refused the batch.

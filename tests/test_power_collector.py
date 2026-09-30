@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -225,9 +226,11 @@ class TestScrapeDiagnostics:
     def test_write_wait_and_schedule_lag_have_separate_monotonic_timings(self, tmp_path):
         session = _session(tmp_path, [], windows=[])
         session.initialize()
-        result = _EndpointResult("node-a", [], [], None, timing={"request_started_monotonic": 90.0})
+        result = _EndpointResult("node-a", [], [], None, started_monotonic=90.0)
         with patch("srtctl.core.power.session.time.monotonic", side_effect=[100.0, 101.0, 103.0]):
-            session._persist_cycle([result], [], scrape_seq=0, scheduled_monotonic=89.0)
+            session._persist_cycle(
+                [result], [], scrape_seq=0, scheduled_monotonic=89.0, scheduled_at_unix=1_700_000_000.0
+            )
         session.stop_and_finalize()
         scrape, cycle, _ = [
             json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()
@@ -235,8 +238,10 @@ class TestScrapeDiagnostics:
         assert scrape["event"] == "scrape"
         assert scrape["schedule_lag_seconds"] == 1.0
         assert "writer_lock_wait_seconds" not in scrape
+        assert "request_started_monotonic" not in scrape
         assert cycle["event"] == "cycle_write"
         assert cycle["scrape_seq"] == 0
+        assert cycle["scheduled_at_unix"] == 1_700_000_000.0
         assert cycle["writer_lock_wait_seconds"] == 1.0
         assert cycle["sample_write_seconds"] == 2.0
 
@@ -367,8 +372,10 @@ class TestScrapeDiagnostics:
         a, b = exporters(_body("a")), exporters(_body("b"))
         session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), windows=[])
         session.initialize()
+        started = time.time()
         assert session.start_and_wait_for_readiness()
         session.stop_and_finalize()
+        finished = time.time()
 
         records = [json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()]
         assert records[-1]["event"] == "diagnostic_summary"
@@ -380,8 +387,14 @@ class TestScrapeDiagnostics:
         assert all(r["schedule_lag_seconds"] is None for r in bracket)
         (bracket_write,) = [r for r in records if r["event"] == "cycle_write" and r["scrape_seq"] == last_seq]
         assert bracket_write["sample_write_completed"]
+        assert bracket_write["scheduled_at_unix"] is None
         scheduled = [r for r in scrapes if r["scrape_seq"] < last_seq]
         assert scheduled and all(r["schedule_lag_seconds"] is not None for r in scheduled)
+        assert all("request_started_monotonic" not in r for r in scrapes)
+        slots = [r["scheduled_at_unix"] for r in records if r["event"] == "cycle_write" and r["scrape_seq"] < last_seq]
+        assert slots and all(started <= slot <= finished for slot in slots)
+        interval = session._settings.sample_interval_seconds
+        assert all(later - earlier == pytest.approx(interval) for earlier, later in pairwise(slots))
 
     def test_diagnostic_write_failure_preserves_samples(self, tmp_path, exporters, monkeypatch):
         real_open = Path.open

@@ -106,6 +106,9 @@ class _EndpointResult:
     reason_codes: list[str]
     duration_seconds: float | None
     timing: dict[str, Any] | None = None
+    # Monotonic start stays out of `timing`: the file records instants on the
+    # unix clock and intervals on the monotonic one, never a raw monotonic instant.
+    started_monotonic: float | None = None
 
 
 class PowerTelemetrySession:
@@ -266,7 +269,7 @@ class PowerTelemetrySession:
         self.record_reason(Reason.EXPORTER_STARTUP_TIMEOUT)
         return False
 
-    def collect_once(self, *, scheduled_monotonic: float | None = None) -> int:
+    def collect_once(self, *, scheduled_monotonic: float | None = None, scheduled_at_unix: float | None = None) -> int:
         """Run one logical cycle: poll every endpoint concurrently, append rows."""
         with self._writer_lock:
             if self._mutation_disabled:
@@ -308,14 +311,15 @@ class PowerTelemetrySession:
             if durations:
                 self._max_scrape_duration = max(durations + [self._max_scrape_duration or 0.0])
 
-        return self._persist_cycle(settled, rows, scrape_seq, scheduled_monotonic)
+        return self._persist_cycle(settled, rows, scrape_seq, scheduled_monotonic, scheduled_at_unix)
 
     def _persist_cycle(
         self,
         results: Sequence[_EndpointResult],
         rows: list[SampleRow],
         scrape_seq: int,
-        scheduled_monotonic: float | None,
+        scheduled_monotonic: float | None = None,
+        scheduled_at_unix: float | None = None,
     ) -> int:
         waiting_at = time.monotonic()
         acquired_at = waiting_at
@@ -348,12 +352,11 @@ class PowerTelemetrySession:
             finished_at = time.monotonic()
             if self._diagnostics is not None:
                 for result in results:
-                    timing = result.timing or {}
-                    request_started = timing.get("request_started_monotonic")
+                    request_started = result.started_monotonic
                     self._diagnostics.record(
                         {
                             "event": "scrape",
-                            **timing,
+                            **(result.timing or {}),
                             "job_id": self._settings.job_id,
                             "run_name": self._settings.run_name,
                             "hostname": result.hostname,
@@ -375,6 +378,7 @@ class PowerTelemetrySession:
                         "job_id": self._settings.job_id,
                         "run_name": self._settings.run_name,
                         "scrape_seq": scrape_seq,
+                        "scheduled_at_unix": scheduled_at_unix,
                         "row_count": len(rows),
                         "writer_lock_wait_seconds": acquired_at - waiting_at,
                         "sample_write_seconds": finished_at - acquired_at,
@@ -422,10 +426,10 @@ class PowerTelemetrySession:
             rows=rows,
             reason_codes=list(scrape.reason_codes) if scrape is not None else reasons,
             duration_seconds=settled_monotonic - started_monotonic if body is not None else None,
+            started_monotonic=started_monotonic,
             timing={
                 "request_started_at_unix": started_unix,
                 "request_finished_at_unix": settled_unix,
-                "request_started_monotonic": started_monotonic,
                 "request_duration_seconds": settled_monotonic - started_monotonic,
                 "parse_seconds": time.monotonic() - settled_monotonic if body is not None else None,
                 "sample_timestamp_unix": timestamp_unix if rows else None,
@@ -438,9 +442,15 @@ class PowerTelemetrySession:
         """Collector thread: fixed-cadence cycles that never overlap."""
         interval = self._settings.sample_interval_seconds
         try:
-            next_cycle = time.monotonic()
+            # One anchor pair maps each monotonic slot to wall-clock time, so the
+            # cadence never drifts with time.time() adjustments.
+            anchor_unix, anchor_monotonic = time.time(), time.monotonic()
+            next_cycle = anchor_monotonic
             while not self._stop.is_set():
-                self.collect_once(scheduled_monotonic=next_cycle)
+                self.collect_once(
+                    scheduled_monotonic=next_cycle,
+                    scheduled_at_unix=anchor_unix + (next_cycle - anchor_monotonic),
+                )
                 self._check_exporters()
                 next_cycle += interval
                 self._stop.wait(max(0.0, next_cycle - time.monotonic()))
