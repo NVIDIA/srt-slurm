@@ -351,6 +351,24 @@ class TestScrapeDiagnostics:
         assert refused["sample_write_error"] is None
         assert summary["event"] == "diagnostic_summary"
 
+    def test_final_bracket_scrape_records_null_lag_on_last_seq(self, tmp_path, exporters):
+        a, b = exporters(_body("a")), exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), windows=[])
+        session.initialize()
+        assert session.start_and_wait_for_readiness()
+        session.stop_and_finalize()
+
+        records = [json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()]
+        assert records[-1]["event"] == "diagnostic_summary"
+        rows, _ = read_samples(session.samples_path)
+        last_seq = max(row.scrape_seq for row in rows)
+        bracket = [r for r in records[:-1] if r["scrape_seq"] == last_seq]
+        assert {r["hostname"] for r in bracket} == {"node-a", "node-b"}
+        assert all(r["schedule_lag_seconds"] is None for r in bracket)
+        assert all(r["sample_write_completed"] for r in bracket)
+        scheduled = [r for r in records[:-1] if r["scrape_seq"] < last_seq]
+        assert scheduled and all(r["schedule_lag_seconds"] is not None for r in scheduled)
+
     def test_diagnostic_write_failure_preserves_samples(self, tmp_path, exporters, monkeypatch):
         real_open = Path.open
 
