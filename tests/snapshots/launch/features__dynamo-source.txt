@@ -1,6 +1,6 @@
 # examples/features/dynamo-source.yaml
 # exit_code: 0
-# srun calls: 12
+# srun calls: 10
 
 ## service_etcd
 nodelist: node-01
@@ -98,51 +98,6 @@ bash_preamble: |
 command: |
     python3 -m dynamo.frontend --http-port=8000 --router-mode kv
 
-## service_dcgm-exporter_node-01
-nodelist: node-01
-output: <output>/logs/service_dcgm-exporter_node-01.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
-## service_dcgm-exporter_node-02
-nodelist: node-02
-output: <output>/logs/service_dcgm-exporter_node-02.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
-## service_dcgm-exporter_node-03
-nodelist: node-03
-output: <output>/logs/service_dcgm-exporter_node-03.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
 ## service_node-exporter_node-01
 nodelist: node-01
 output: <output>/logs/service_node-exporter_node-01.out
@@ -188,6 +143,21 @@ use_bash_wrapper: False
 command: |
     /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
 
+## <unnamed>
+nodes: 3
+ntasks: 3
+nodelist: node-01 node-02 node-03
+output: <output>/logs/telemetry_dcgm_exporter.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
 ## tachometer
 nodelist: node-01
 output: <output>/logs/tachometer.out
@@ -210,5 +180,6 @@ env_to_set:
     SRTCTL_FRONTEND_TYPE: dynamo
     SRT_FRONTEND_HOST: 127.0.0.1
     SRT_FRONTEND_PORT: 8000
+    SRT_MEASUREMENT_WINDOW_DIR: /logs/power/windows
 command: |
     bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4x8 inf /model Qwen/Qwen3-0.6B false 8 0 0 0.8 10 2 '' true random '' false

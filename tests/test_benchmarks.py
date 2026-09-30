@@ -293,6 +293,7 @@ class TestCustomBenchmarkRunner:
             profiling=SimpleNamespace(enabled=False),
             resources=SimpleNamespace(num_agg=sum(p.endpoint_mode == "agg" and p.is_leader for p in processes)),
             telemetry=SimpleNamespace(enabled=False),
+            telemetry_enabled=False,
         )
         stage.runtime = SimpleNamespace(
             environment=environment or {},
@@ -1218,17 +1219,13 @@ class TestAgentPerfRunner:
     def test_validate_missing_client_dir(self):
         """Validates that agentperf_client_dir is required."""
         runner = get_runner("agentperf")
-        errors = runner.validate_config(
-            self._config(agentperf_config="/workload/agentperf.yaml", concurrency=1010)
-        )
+        errors = runner.validate_config(self._config(agentperf_config="/workload/agentperf.yaml", concurrency=1010))
         assert any("agentperf_client_dir" in e for e in errors)
 
     def test_validate_missing_config(self):
         """Validates that agentperf_config is required."""
         runner = get_runner("agentperf")
-        errors = runner.validate_config(
-            self._config(agentperf_client_dir="/agentperf-client", concurrency=1010)
-        )
+        errors = runner.validate_config(self._config(agentperf_client_dir="/agentperf-client", concurrency=1010))
         assert any("agentperf_config" in e for e in errors)
 
     def test_validate_missing_concurrency(self):

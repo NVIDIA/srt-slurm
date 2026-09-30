@@ -719,6 +719,8 @@ class TestSessionOwnership:
             def __init__(self):
                 self.config = MagicMock()
                 self.config.telemetry.enabled = True
+                self.config.telemetry_enabled = True
+                self.config.telemetry_auto_resolved = False
                 self.config.telemetry.storage_subdir = "power"
                 self.config.telemetry.collect_interval_ms = 50
                 self.config.telemetry.startup_timeout_seconds = 0.2
@@ -729,6 +731,7 @@ class TestSessionOwnership:
                 self.config.telemetry.dcgm_exporter = TelemetryExporterConfig(
                     container_image="dcgm-exporter", port=9401
                 )
+                self.config.telemetry_dcgm_exporter = self.config.telemetry.dcgm_exporter
                 self.config.benchmark.type = "sa-bench"
                 self.config.benchmark.get_concurrency_list.return_value = [4]
                 self.runtime = MagicMock()
@@ -800,6 +803,7 @@ class TestRequiredReadinessGate:
     def _orchestrator(self, tmp_path, *, required, ready):
         config = MagicMock()
         config.telemetry.enabled = True
+        config.telemetry_enabled = True
         config.telemetry.required = required
         config.telemetry.cpu_power_exporter = None
         config.frontend.type = "dynamo"

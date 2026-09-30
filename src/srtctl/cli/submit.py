@@ -609,7 +609,8 @@ def show_config_details(config: SrtConfig) -> None:
         or config.benchmark.container_image
         or config.observability.enabled
         or config.observability.tachometer.enabled
-        or config.telemetry.enabled
+        or config.telemetry_enabled
+        or config.telemetry_auto_disabled_reason
         or mooncake_cfg is not None
         or config.profiling.enabled
         or config.frontend.worker_selection is not None
@@ -716,7 +717,7 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("observability", "storage_subdir", tachometer.storage_subdir)
             details.add_row("observability", "collect_interval_ms", str(tachometer.collect_interval_ms))
             details.add_row("observability", "binary_path", tachometer.binary_path)
-            if config.telemetry.enabled:
+            if config.telemetry_enabled and config.telemetry_dcgm_exporter is not None:
                 details.add_row("observability", "dcgm_exporter", "shared with power telemetry")
             elif tachometer.resolved_dcgm_exporter is not None:
                 dcgm = tachometer.resolved_dcgm_exporter
@@ -729,13 +730,20 @@ def show_config_details(config: SrtConfig) -> None:
                 launch = f"host binary {proc.binary}" if proc.binary else proc.container_image
                 details.add_row("observability", "process_exporter", f"{launch} :{proc.port}")
 
-        if config.telemetry.enabled:
-            exporter = config.telemetry.dcgm_exporter
-            details.add_row("telemetry", "provider", "dcgm-power")
+        auto_reason = config.telemetry_auto_disabled_reason
+        if auto_reason:
+            details.add_row("telemetry", "dcgm-power", f"off by default: {auto_reason}")
+        if config.telemetry_enabled:
+            exporter = config.telemetry_dcgm_exporter
+            if exporter is not None:
+                details.add_row("telemetry", "provider", "dcgm-power")
+                if config.telemetry_auto_resolved:
+                    details.add_row("telemetry", "enabled", "default (telemetry.enabled unset)")
             details.add_row("telemetry", "required", str(config.telemetry.required))
             details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
             if exporter is not None:
-                details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
+                launch = f"host binary {exporter.binary}" if exporter.binary else exporter.container_image
+                details.add_row("telemetry", "dcgm_exporter", f"{launch} (port {exporter.port})")
 
             cpu_exporter = config.telemetry.cpu_power_exporter
             if cpu_exporter is not None:
@@ -833,7 +841,7 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
     if not (srtctl_source / "bin" / "tachometer-scraper").exists():
         missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
     cpu_power_enabled = (
-        config is not None and config.telemetry.enabled and config.telemetry.cpu_power_exporter is not None
+        config is not None and config.telemetry_enabled and config.telemetry.cpu_power_exporter is not None
     )
     if cpu_power_enabled:
         problem = _cpu_power_exporter_problem(srtctl_source)

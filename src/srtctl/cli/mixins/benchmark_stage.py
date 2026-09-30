@@ -708,7 +708,7 @@ class BenchmarkStageMixin:
         path and the host path the collector reads are the same directory.
         """
         telemetry = self.config.telemetry
-        if not telemetry.enabled:
+        if not self.config.telemetry_enabled:
             return {}
         windows_dir = self.runtime.container_log_dir / telemetry.storage_subdir / WINDOWS_DIRNAME
         return {MEASUREMENT_WINDOW_DIR_ENV: str(windows_dir)}
@@ -809,7 +809,7 @@ class BenchmarkStageMixin:
 
         # Add CPU power exporter endpoints (one per worker node) when configured.
         cpu_power_exporter = getattr(self.config.telemetry, "cpu_power_exporter", None)
-        if self.config.telemetry.enabled and cpu_power_exporter is not None:
+        if self.config.telemetry_enabled and cpu_power_exporter is not None:
             worker_nodes = sorted({process.node for process in self.backend_processes})
             for node in worker_nodes:
                 host = get_hostname_ip(node, self.runtime.network_interface)
