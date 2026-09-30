@@ -36,7 +36,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
 
-from srtctl.backends import VLLMMooncakeKVStoreConfig, VLLMProtocol
+from srtctl.backends import TRTLLMMooncakeKVStoreConfig, VLLMMooncakeKVStoreConfig, VLLMProtocol
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -524,8 +524,10 @@ def show_config_details(config: SrtConfig) -> None:
     # --- services (see docs/services.md) ---
     # Plain lines, not a Table: repo URLs and long argv overflow a narrow console and a
     # Table would wrap or truncate them. crop=False keeps each value intact on one line.
+    from dataclasses import replace
+
     from srtctl.services.implicit import effective_services
-    from srtctl.services.registry import get_service_kind
+    from srtctl.services.registry import ServiceLaunchContext, get_service_kind
 
     effective = effective_services(config)
     if effective:
@@ -547,7 +549,7 @@ def show_config_details(config: SrtConfig) -> None:
             if service.external:
                 console.print(f"    [yellow]external:[/] {service.external} (not launched)", crop=False)
                 continue
-            console.print(f"    [yellow]command:[/] {shlex.join(service.preview_command())}", crop=False)
+            console.print(f"    [yellow]command:[/] {shlex.join(service.preview_command(config))}", crop=False)
             container = service.container or get_service_kind(service.type).container_fallback(config)
             console.print(f"    [yellow]container:[/] {container or '<job container>'}")
             if service.source is not None:
@@ -558,11 +560,23 @@ def show_config_details(config: SrtConfig) -> None:
                 console.print(f"    [yellow]build_command:[/] {shlex.join(service.build_command)}", crop=False)
             if service.readiness is not None:
                 console.print(f"    [yellow]readiness:[/] {service.readiness.describe()}")
-            elif get_service_kind(service.type).default_readiness_ports:
-                ports = ", ".join(f"tcp/{p}" for p in get_service_kind(service.type).default_readiness_ports)
-                console.print(f"    [yellow]readiness:[/] {ports} (kind default)")
+            else:
+                kind = get_service_kind(service.type)
+                probe = kind.readiness(service, replace(ServiceLaunchContext.preview(), config=config))
+                if probe is not None:
+                    console.print(f"    [yellow]readiness:[/] {probe.describe()} (kind default)")
+                elif kind.default_readiness_ports:
+                    ports = ", ".join(f"tcp/{p}" for p in kind.default_readiness_ports)
+                    console.print(f"    [yellow]readiness:[/] {ports} (kind default)")
             if service.options:
                 console.print(f"    [yellow]options:[/] {service.options}", crop=False)
+            service_ctx = replace(ServiceLaunchContext.preview(), config=config)
+            service_srun_options = {
+                **get_service_kind(service.type).srun_options(service, service_ctx),
+                **service.srun_options,
+            }
+            if service_srun_options:
+                console.print(f"    [yellow]srun_options:[/] {service_srun_options}", crop=False)
             if service.preamble:
                 console.print(f"    [yellow]preamble:[/] {service.preamble.strip()}", crop=False)
             if service.type not in ("etcd", "nats"):  # the discovery plane never gets its own address
@@ -765,6 +779,10 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
+            if isinstance(mooncake_cfg, TRTLLMMooncakeKVStoreConfig):
+                details.add_row("mooncake", "TRTLLM_MOONCAKE_MASTER_TIMEOUT", str(mooncake_cfg.master_timeout_s))
+                details.add_row("mooncake", "TRTLLM_MOONCAKE_RUN_DIR", "/logs/mooncake/<role>-<worker>-<node>-<rank>")
+                details.add_row("mooncake", "master address", "file:///logs/mooncake_master.addr (auto)")
             if isinstance(backend, VLLMProtocol):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON

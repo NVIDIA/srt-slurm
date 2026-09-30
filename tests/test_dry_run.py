@@ -760,6 +760,28 @@ class TestDryRunServices:
         assert "refs/pull/14000/head" in output
         assert "maturin develop" in output
 
+    def test_concurrent_service_phase_is_visible(self, capsys):
+        config = _make_config(
+            {"services": [{"name": "helper", "command": ["sleep", "infinity"], "start": "with_workers"}]}
+        )
+        show_config_details(config)
+        assert "start=with_workers" in capsys.readouterr().out
+
+    def test_file_readiness_is_visible(self, capsys):
+        config = _make_config(
+            {
+                "services": [
+                    {
+                        "name": "helper",
+                        "command": ["sleep", "infinity"],
+                        "readiness": {"file": {"path": "helper-{node}.ready"}},
+                    }
+                ]
+            }
+        )
+        show_config_details(config)
+        assert "nonempty file helper-{node}.ready" in capsys.readouterr().out
+
     def test_mooncake_store_shows_type_defaults(self, capsys):
         config = _make_config(
             {
@@ -1109,3 +1131,14 @@ def test_explicit_profiling_explains_observability_precedence(capsys):
     output = capsys.readouterr().out
     assert "superseded by profiling" in output
     assert "nsys targets" not in output
+
+
+def test_trtllm_mooncake_pool_is_visible_in_dry_run(capsys):
+    example = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-mooncake.yaml"
+    show_config_details(SrtConfig.from_yaml(example))
+    output = capsys.readouterr().out
+    assert "--rpc_port 8700" in output
+    assert "mooncake_donor" in output
+    assert "file:///logs/mooncake_master.addr" in output
+    assert "mpi': 'none" in output
+    assert "TRTLLM_MOONCAKE_RUN_DIR" in output

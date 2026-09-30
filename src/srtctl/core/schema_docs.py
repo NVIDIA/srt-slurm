@@ -49,6 +49,7 @@ from srtctl.backends import (
     MockerServerConfig,
     SGLangProtocol,
     SGLangServerConfig,
+    TRTLLMMooncakeKVStoreConfig,
     TRTLLMProtocol,
     TRTLLMServerConfig,
     VLLMProtocol,
@@ -425,6 +426,7 @@ LEGACY_CLASSES: frozenset[type] = frozenset(
         VLLMServerConfig,
         MockerServerConfig,
         MooncakeKVStoreConfig,
+        TRTLLMMooncakeKVStoreConfig,
         VLLMMooncakeKVStoreConfig,
     }
 )

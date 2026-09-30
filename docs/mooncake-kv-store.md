@@ -1,5 +1,58 @@
 # Mooncake KV Store
 
+## TensorRT-LLM Mooncake pool
+
+The TensorRT-LLM Mooncake implementation in the private tekit checkout keeps
+NIXL for prefill-to-decode transfer while registering prefill KV segments with
+Mooncake and lending decode-node host memory through `trtllm-serve
+mooncake_donor`. Its `trtllm-serve` CLI also provides `mooncake_master`. Use a
+build containing those commands and the `mooncake-store` connector. See the
+[`trtllm-serve-mooncake.yaml`](../examples/trtllm/trtllm-serve-mooncake.yaml)
+recipe.
+
+Declare `mooncake-master` and `mooncake-donor` services. The master runs on the
+infra node. Set `start: with_workers` on both services to initialize the master,
+all donors, and workers concurrently. Their readiness checks run after worker
+launch, before the frontend starts. The donor runs once
+per decode node. `trtllm-serve mooncake_master --address_file` writes
+`/logs/mooncake_master.addr` as `host:port` after the master is ready;
+the prefill `kv_connector_config.mooncake_store.master_server_address` must be
+`file:///logs/mooncake_master.addr`. The prefill role gets
+`TRTLLM_MOONCAKE_STORE_ROLE`, both roles get
+`TRTLLM_MOONCAKE_MASTER_TIMEOUT`, and every rank of an MPI endpoint shares
+one `TRTLLM_MOONCAKE_RUN_DIR` under `/logs/mooncake`.
+
+With `frontend.type: dynamo`, srt-slurm invokes tekit's `maybe_provision_pool`
+inside the launcher's rank-zero task before running `dynamo.trtllm`. Dynamo
+constructs the engine directly and does not perform the `trtllm-serve` CLI's
+pool setup. This context manager waits for the master, selects the RDMA devices,
+writes `mooncake.json` into the shared endpoint run directory, and exports
+`MOONCAKE_CONFIG_PATH` for the worker's lifetime. Externally launched MPI ranks
+read the same JSON from `TRTLLM_MOONCAKE_RUN_DIR`. An explicitly supplied
+`MOONCAKE_CONFIG_PATH` takes precedence, as it does in `trtllm-serve`.
+To use the example with Dynamo, change its frontend type to `dynamo` and use an
+image with Dynamo and the tekit Mooncake connector installed.
+
+The master service's `options` accept `eviction_ratio` (default 0.05),
+`master_timeout_s` (default 60), and `store_role` (`both`, `producer`, or
+`consumer`, default `both`). The donor's `options.size` is required; its
+`options.protocol` defaults to `rdma`. Set a service `container` if the
+Mooncake binaries live in a different image from the job container.
+The master and donor run with `srun --mpi=none` and clear inherited MPI/Slurm
+launcher variables before importing TensorRT-LLM. The donor defaults
+`TLLM_LOG_LEVEL` to `INFO` for diagnostics. Readiness checks the nonempty file
+`mooncake/donor-{node}.ready` under the shared job log directory, independently
+of logging level. The donor writes it after registering its segment; stale donor
+markers are removed before launching the fleet. For large segments, set
+`readiness: {file: {path: "mooncake/donor-{node}.ready"}, timeout_seconds: 900}`
+on the donor and `options.master_timeout_s: 900` on the master. This allows
+model loading to overlap memory registration while still requiring the pool to
+be ready before benchmarking. Services without `start: with_workers` retain
+the default blocking `before_workers` behavior. The prefill config must set
+`kv_connector_config.connector: mooncake-store` and
+`kv_cache_config.use_kv_cache_manager_v2: true`; its host and disk cache tiers
+must be zero.
+
 ## Per-process vLLM device selection
 
 For nodes with a known physical-GPU-to-HCA mapping, opt in through the v2 `mooncake-master` service options:

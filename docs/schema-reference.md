@@ -302,8 +302,8 @@ One entry of the top-level ``services:`` list.
 | `build_command` | list[str] \| None | `None` | Argv run once inside the service container, from the clone, before ``command`` starts. Only meaningful with ``source``. |
 | `placement` | [ServicePlacementConfig](#serviceplacementconfig) \| None | `None` | Where the service runs. Defaults to the kind's placement (``head`` for generic services, ``infra`` for etcd/nats/mooncake-master, ``workers`` for the exporters). |
 | `nodes` | int \| None | `None` | Whole nodes this service owns: its pool. Pools add to the allocation next to the engine roles' nodes and are carved after them in declaration order, so a Ray cluster, a sandbox fleet and an engine role can each have their own nodes in one recipe. An owner is placed on its own pool (``placement.node: workers``); other services join it with ``placement.pool: <name>``. |
-| `start` | str \| None | `None` | ``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``). |
-| `readiness` | [ServiceReadinessConfig](#servicereadinessconfig) \| None | `None` | Optional TCP port gate; the job waits for it on every service node before continuing. |
+| `start` | str \| None | `None` | ``after_frontend`` (default for ``generic``), ``before_workers`` (default for ``mooncake-store``), or ``with_workers`` to launch before workers and defer readiness until all workers are launched. |
+| `readiness` | [ServiceReadinessConfig](#servicereadinessconfig) \| None | `None` | Optional TCP, HTTP, log, or file gate; the job waits for it on every service node before continuing. |
 | `inherit_discovery_env` | bool | `True` | Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so the service can register with the job's Dynamo discovery plane. |
 | `critical` | bool \| None | `None` | When true a crash fails the run, like a worker dying. Default false for ``generic`` (a dead sidecar costs its own log, not the run) and true for ``mooncake-store``. Set true for anything in the live request path. |
 | `terminal` | bool | `False` | This service is the job's run: the job ends when every instance of every terminal service has exited, and the worst exit code becomes the job's. A recipe with a terminal service has no benchmark step (``benchmark.type`` stays ``manual``); a torchrun pool that trains to completion is the shape. |
@@ -476,6 +476,7 @@ Readiness gate: the launch blocks until the probe passes on every service node.
 | `tcp` | [TcpProbe](#tcpprobe) \| None | `None` | TCP connect probe. |
 | `http` | [HttpProbe](#httpprobe) \| None | `None` | HTTP GET probe. |
 | `log` | [LogProbe](#logprobe) \| None | `None` | Log-pattern probe against ``service_<name>.out``. |
+| `file` | [FileProbe](#fileprobe) \| None | `None` | Nonempty-file probe on the host shared filesystem. Relative paths use the job log directory; service placeholders such as ``{node}`` are expanded. |
 | `timeout_seconds` | int | `120` | How long to wait per node before failing the job. |
 | `interval_seconds` | int | `2` | Seconds between probe attempts. |
 
@@ -570,6 +571,14 @@ Ready when the service's log file contains a line matching the regular expressio
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `pattern` | str | required |  |
+
+### FileProbe
+
+Ready when a regular file is nonempty. Relative paths use the job log directory.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `path` | str | required |  |
 
 ## Engine types
 

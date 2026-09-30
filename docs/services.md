@@ -66,7 +66,7 @@ services:
       node: head                 # head | infra | dedicated | prefill | decode | agg | workers | compute | all
       pool: train                # or: ride on the nodes another service owns (replaces node)
     nodes: 2                     # own whole nodes: a pool added to the allocation next to the roles' nodes
-    start: after_frontend        # infra | before_workers | after_frontend
+    start: after_frontend        # infra | before_workers | with_workers | after_frontend
     readiness:                   # optional probe, checked on every service node; typed kinds have default ports
       port: 9000                 # or tcp: {port} / http: {port, path, status} / log: {pattern}
       timeout_seconds: 120
@@ -208,19 +208,37 @@ services:
 
 ## Start Order and Readiness
 
-Services launch in three phases; within a phase, implied services first, then declared ones in
+Services launch in four phases; within a phase, implied services first, then declared ones in
 declaration order:
 
 - `infra`: the discovery plane (etcd, NATS). Nothing else should need this phase.
 - `before_workers`: after the discovery plane, before any worker. The Mooncake master, standalone
   stores, anything workers connect to at startup.
+- `with_workers`: launch every service instance just before workers, without waiting for
+  readiness between launches. After all workers are launched, check service readiness
+  before starting the frontend. Use this for helpers whose clients already retry during
+  startup, such as TRT-LLM Mooncake masters and donors. Readiness timeouts begin when
+  each deferred probe runs; process failures remain monitored throughout startup.
 - `after_frontend`: once workers and the frontend are healthy, before the scraper. The exporters,
   sidecars that register into a running job.
 
-Within a phase, a service with `readiness` blocks until its probe passes on each of its nodes. The
+Except for `with_workers`, a service with `readiness` blocks until its probe passes on each of its nodes. The
 typed kinds gate on their well-known ports by default (etcd 2379, NATS 4222, the Mooncake master
 8700, 8701, and 8702, the exporters none); a `generic` service without a probe is considered started
-when its `srun` is launched. Three probes are available, and a `readiness` block names exactly one:
+when its `srun` is launched. Four probes are available, and a `readiness` block names exactly one:
+
+```yaml
+readiness:
+  file:
+    path: "mooncake/donor-{node}.ready"
+  timeout_seconds: 900
+```
+
+File probes require a nonempty regular file visible to the host orchestrator.
+Relative paths resolve under the shared job log directory (the container's
+`/logs` mount); absolute paths are host paths. Service placeholders such as
+`{node}` are expanded per instance. The launcher must remove stale markers
+before starting a new instance; the built-in Mooncake donor does this automatically.
 
 ```yaml
 readiness:
@@ -298,7 +316,8 @@ environment its process needs; the launch path is shared by every kind. Register
 | `generic` | none (required) | `after_frontend` | `false` | Launches exactly what you wrote. |
 | `etcd` | `/configs/etcd` from the job container, advertising the node's IP | `infra` | `true` | Implied by the Dynamo frontend. Placement `head`, `infra`, or `dedicated`; supports `external`. Fresh data dir on node-local `/tmp` each job. |
 | `nats` | `/configs/nats-server -js` from the job container | `infra` | `true` | Implied by the Dynamo frontend. `options.max_payload_mb` writes a server config. Same placements as etcd; supports `external`. |
-| `mooncake-master` | `mooncake_master` with the RPC, HTTP metadata, and metrics ports srtctl owns | `before_workers` | `true` | Declared by name; see [Mooncake KV Store](mooncake-kv-store.md). `args` are appended; `options.store_config` is the vLLM connector JSON. Container falls back to the job container. Supports `dedicated` and `external`. |
+| `mooncake-master` | `mooncake_master` with the ports srtctl owns (TRT-LLM uses `--rpc_port`; SGLang/vLLM also enable HTTP metadata) | `before_workers` | `true` | Declared by name; see [Mooncake KV Store](mooncake-kv-store.md). `args` are appended; `options.store_config` is the vLLM connector JSON. Container falls back to the job container. Supports `dedicated` and `external`. |
+| `mooncake-donor` | `trtllm-serve mooncake_donor` with the generated master address file | `before_workers` | `true` | One per decode node for a TRT-LLM Mooncake pool; requires `options.size`, accepts `options.protocol` (default `rdma`). |
 | `dcgm-exporter` | `dcgm-exporter --collect-interval=<ms> --address :9401` in `nvcr.io/nvidia/k8s/dcgm-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less (distroless image). `options`: `port`, `collect_interval_ms`. |
 | `node-exporter` | `/bin/node_exporter` with the cpu, infiniband, and meminfo collectors on 9101 in `quay.io/prometheus/node-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less. `options`: `port`. |
 | `process-exporter` | `configs/process-exporter -config.path <log_dir>/process-exporter.yml -web.listen-address=:9256 -threads=true ...` on the bare node | `after_frontend` | `false` | Implied on every allocated node (`placement.node: all`) while tachometer runs. Host-native from the static binary `make setup` installs; skipped with a warning when it is missing. A declared `container` switches to the image's `/bin/process-exporter` with the group file under `/logs`. `options`: `port`, `binary`. |

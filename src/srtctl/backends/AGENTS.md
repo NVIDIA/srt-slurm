@@ -23,7 +23,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
 **Current backends:**
 - **ATOM**: Native ROCm servers behind AToMesh, with one Slurm node per logical worker and allocator-owned Mooncake handshake ports
 - **SGLang**: Per-process srun launching, supports prefill/decode/aggregated modes
-- **TRTLLM**: MPI-style launching (one srun per endpoint with all nodes), prefill/decode only
+- **TRTLLM**: MPI-style launching (one srun per endpoint with all nodes), prefill/decode, Mooncake pool via master and donor services
 - **vLLM**: Per-process srun launching, prefill/decode/aggregated, `per_node` DP; `frontend_type` selects Dynamo registration or a direct `vllm serve` server, and `_CONNECTOR_MAP` owns the KV connector table
 
 ## Mooncake KV Store
@@ -31,7 +31,8 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
 `docs/mooncake-kv-store.md` is the reference, including the schema 2 recipe shape. Rules for code:
 
 - The master is the `mooncake-master` service (`services/`); a v1 `backend.mooncake_kv_store` block is normalized onto it by `services/normalize.py` before schema load.
-- srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, and `MOONCAKE_LOCAL_HOSTNAME` on every worker; `MOONCAKE_LOCAL_HOSTNAME` is the worker's own IP on `runtime.network_interface`. A value in a role's `env` pins the NIC; `MOONCAKE_MASTER` is never set by hand.
+- For SGLang and vLLM, srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, and `MOONCAKE_LOCAL_HOSTNAME` on every worker; `MOONCAKE_LOCAL_HOSTNAME` is the worker's own IP on `runtime.network_interface`. A value in a role's `env` pins the NIC; `MOONCAKE_MASTER` is never set by hand.
+- TRT-LLM reads `file:///logs/mooncake_master.addr` from the prefill `kv_connector_config.mooncake_store.master_server_address`. The tekit `trtllm-serve mooncake_master` command writes that address file and srt-slurm gives every rank of one MPI endpoint a shared run directory. A donor service may lend host memory on each decode node.
 - vLLM reads its store config from JSON: `store_config` is rendered into the file `MOONCAKE_CONFIG_PATH` names.
 - SGLang disaggregated recipes must set `disaggregation-transfer-backend: mooncake` in the prefill and decode `args`; the validator rejects a master without it, because workers would silently fall back to the default transport.
 - Consumers read `backend.mooncake_kv_store` / `backend.get_mooncake_worker_env(...)`; a backend without Mooncake returns `None` / `{}`.
