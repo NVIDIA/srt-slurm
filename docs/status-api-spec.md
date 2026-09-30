@@ -283,33 +283,43 @@ uploader restarts is not guaranteed. Logs remain on disk if uploads fail.
 
 ### POST /api/jobs/{job_id}/captures
 
-Tachometer captures are sent unchanged from `tachometer/local`:
+While streaming is on, Tachometer seals its buffer into a new immutable
+`out-N.parquet` every save interval (instead of rewriting `current.arrow`) and
+links it into `tachometer-outbox/`, a sibling of the log directory that neither
+the S3 sync nor dsight reads. The sweep uploads each segment once, unchanged:
 
 ```http
-POST /api/jobs/12345/captures?file=tachometer/local/current.arrow&generation=<uuid-hex>&offset=0&total=8192&cluster=b200
+POST /api/jobs/12345/captures?file=out-7.parquet&offset=0&total=8192&cluster=b200
 Content-Type: application/octet-stream
 Authorization: Bearer <token>
 
-<raw Arrow or Parquet bytes>
+<raw Parquet bytes>
 ```
 
-`generation` identifies one file version; `total` is its byte length. Chunks are
-sequential and exact retries are idempotent. The response is
-`{"job_id": "12345", "next_offset": 8192, "complete": true}` once the complete
-capture has been processed. Incomplete generations never produce metric rows.
+`total` is the segment's byte length. Chunks are sequential and exact retries
+are idempotent; a different byte range or total for a stored segment returns
+409. The response is `{"job_id": "12345", "next_offset": 8192, "complete": true}`
+once every byte is stored. The sweep unlinks the outbox entry only after every
+endpoint has acknowledged the whole segment, so a failed upload is retried on
+the next flush and compaction cannot delete a segment before it is sent.
 
-The collector decodes captures, removes observations repeated by snapshots or
-compaction, and exposes the result as `tachometer_rows.jsonl` through the log
-read API. The cluster does no decoding, row hashing, JSON conversion, or local
-indexing for streaming. Tachometer publishes Arrow snapshots atomically so an
-open upload can finish even when the next snapshot replaces the file.
-Unchanged captures are skipped; changed Arrow snapshots are uploaded in full,
-so polling still uses disk bandwidth and network bandwidth.
+The collector stores the bytes verbatim and acknowledges without decoding; each
+row therefore crosses the network once. The cluster does no decoding, row
+hashing, JSON conversion, or local indexing. `final.parquet` in the S3 upload
+remains the complete, sorted capture.
 
 When configured, `cluster` accompanies every raw upload. Shared collectors must
 use `(cluster, job_id)` for identity; the built-in collector retains its existing
 job-ID scope. Custom collectors must implement both binary upload routes before
 enabling streaming. These routes use the existing write bearer token.
+
+### GET /api/jobs/{job_id}/captures
+
+Without `file`: `{"job_id": "12345", "files": [{"file": "out-7.parquet", "size": 8192, "complete": true, "updated_at": "..."}]}`.
+
+With `file`: the raw bytes of a complete segment as `application/octet-stream`,
+or 404 while it is missing or partial. Readers decode segments themselves, for
+example with `srtctl.dsight.metrics.batches`.
 
 ### GET /api/jobs/{job_id}/logs
 
@@ -319,7 +329,7 @@ With `file` (and optional `offset`, default 0): the contiguous content from `off
 
 ### DELETE /api/jobs/{job_id}
 
-Remove a job, its events and its streamed logs. `200 {"deleted": true, "job_id": ...}` or `404`.
+Remove a job, its events and its streamed logs and captures. `200 {"deleted": true, "job_id": ...}` or `404`.
 
 ### GET /api/health
 

@@ -12,7 +12,6 @@ agree with each other with nothing patched in between.
 from __future__ import annotations
 
 import http.client
-import json
 import logging
 import sys
 import threading
@@ -30,7 +29,7 @@ from srtctl.contract import JobStage, JobStatus, JobSummary
 from srtctl.core.schema import ReportingConfig, ReportingStatusConfig
 from srtctl.core.status import StatusReporter, create_job_record
 from srtctl.status_server import StatusStore, make_server
-from srtctl.status_server.server import MAX_BODY_BYTES, AuthPolicy, resolve_auth
+from srtctl.status_server.server import MAX_BODY_BYTES, AuthPolicy, CorsPolicy, resolve_auth
 
 NOW = "2026-01-01T00:00:00Z"
 WRITE = "w-secret-token"
@@ -984,36 +983,60 @@ class TestLogStreaming:
     def test_unknown_job_logs_404(self, base_url):
         assert _get(base_url, "/api/jobs/nope/logs").status_code == 404
 
-    def test_tachometer_rows_stream_once_as_json_lines(self, base_url, tmp_path):
+    def test_outbox_segments_upload_once_and_are_released(self, base_url, tmp_path, monkeypatch):
         import pyarrow as pa
-        from pyarrow import ipc
+        import pyarrow.parquet as pq
 
-        from srtctl.core.status import TACHOMETER_STREAM_FILE, LogStreamer
+        from srtctl.core.status import LogStreamer
 
-        log_dir, capture = tmp_path / "logs", tmp_path / "logs" / "tachometer" / "local"
-        capture.mkdir(parents=True)
+        log_dir, outbox = tmp_path / "logs", tmp_path / "tachometer-outbox"
+        log_dir.mkdir()
+        outbox.mkdir()
 
-        def snapshot(values: list[float]) -> None:  # tachometer rewrites current.arrow with its whole buffer
-            table = pa.table(
-                {
-                    "metric_name": ["tok_s"] * len(values),
-                    "metric_value": values,
-                    "timestamp_ns": list(range(1, len(values) + 1)),
-                }
-            )
-            with ipc.new_file(capture / "current.arrow", table.schema) as writer:
-                writer.write_table(table)
+        def seal(index: int, value: float) -> bytes:  # tachometer links each sealed segment here once
+            path = outbox / f"out-{index}.parquet"
+            pq.write_table(pa.table({"metric_name": ["tok_s"], "metric_value": [value]}), path)
+            return path.read_bytes()
 
-        streamer = LogStreamer(StatusReporter(job_id="8", api_endpoints=(base_url,)), log_dir, 60, capture)
-        snapshot([1.0])
+        real_post = requests.Session.post
+        sent = []
+
+        def record(session, url, **kwargs):
+            if url.endswith("/captures"):
+                sent.append(kwargs["params"]["file"])
+            return real_post(session, url, **kwargs)
+
+        monkeypatch.setattr("srtctl.core.status.STREAM_REQUEST_BYTES", 128)
+        monkeypatch.setattr(requests.Session, "post", record)
+        streamer = LogStreamer(StatusReporter(job_id="8", api_endpoints=(base_url,)), log_dir, 60, outbox)
+        first = seal(1, 1.0)
         streamer.flush()
-        snapshot([1.0, 2.0])
+        second = seal(2, 2.0)
+        streamer.flush()
         streamer.flush()
 
-        log = _get(base_url, f"/api/jobs/8/logs?file={TACHOMETER_STREAM_FILE}").json()
-        assert [json.loads(line)["metric_value"] for line in log["data"].splitlines()] == [1.0, 2.0]
-        assert not (log_dir / TACHOMETER_STREAM_FILE).exists()
-        assert not (log_dir / ".tachometer-stream.sqlite3").exists()
+        chunks = -(-len(first) // 128)
+        assert sent[:chunks] == ["out-1.parquet"] * chunks and set(sent[chunks:]) == {"out-2.parquet"}
+        assert list(outbox.iterdir()) == []
+        assert _get(base_url, "/api/jobs/8/captures?file=out-1.parquet").content == first
+        assert _get(base_url, "/api/jobs/8/captures?file=out-2.parquet").content == second
+        assert not streamer._segments and not streamer._delivered
+
+    def test_segment_stays_in_outbox_until_every_endpoint_acknowledges(self, base_url, tmp_path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from srtctl.core.status import LogStreamer
+
+        path = tmp_path / "out-1.parquet"
+        pq.write_table(pa.table({"metric_name": ["x"], "metric_value": [1.0]}), path)
+        streamer = LogStreamer(
+            StatusReporter(job_id="fanout", api_endpoints=(base_url, "http://127.0.0.1:1")), tmp_path, 60, tmp_path
+        )
+        streamer.flush()
+        assert path.exists()
+        assert _get(base_url, "/api/jobs/fanout/captures?file=out-1.parquet").content == path.read_bytes()
+        assert streamer._delivered == {"out-1.parquet": {base_url}}
 
     def test_lost_response_retries_identical_bytes_after_file_grows(self, base_url, tmp_path, monkeypatch):
         from srtctl.core.status import LogStreamer
@@ -1141,15 +1164,13 @@ class TestLogStreaming:
         final = _get(base_url, "/api/jobs/eof/logs?file=worker.log&offset=4").json()
         assert (final["data"], final["next_offset"]) == ("\ufffd", 5)
 
-    def test_capture_retry_keeps_raw_bytes_after_compaction_unlinks_source(self, base_url, tmp_path, monkeypatch):
+    def test_segment_retry_resends_identical_bytes_then_unlinks(self, base_url, tmp_path, monkeypatch):
         import pyarrow as pa
         import pyarrow.parquet as pq
 
         from srtctl.core.status import LogStreamer
 
-        capture = tmp_path / "tachometer" / "local"
-        capture.mkdir(parents=True)
-        path = capture / "out-1.parquet"
+        path = tmp_path / "out-1.parquet"
         pq.write_table(pa.table({"metric_name": ["x"], "metric_value": [3.0]}), path)
         original = path.read_bytes()
         sent = []
@@ -1160,92 +1181,25 @@ class TestLogStreaming:
                 sent.append((dict(kwargs["params"]), kwargs["data"]))
                 response = real_post(session, url, **kwargs)
                 if len(sent) == 1:
-                    path.unlink()
                     raise requests.Timeout("lost capture acknowledgment")
                 return response
             return real_post(session, url, **kwargs)
 
         monkeypatch.setattr(requests.Session, "post", lose_response)
-        streamer = LogStreamer(StatusReporter(job_id="capture-retry", api_endpoints=(base_url,)), tmp_path, 60, capture)
+        streamer = LogStreamer(
+            StatusReporter(job_id="capture-retry", api_endpoints=(base_url,)), tmp_path, 60, tmp_path
+        )
         streamer.flush()
+        assert path.exists()
         streamer.flush()
         assert len(sent) == 2
         assert sent[0] == sent[1]
         assert sent[0][1] == original
-        log = _get(base_url, "/api/jobs/capture-retry/logs?file=tachometer_rows.jsonl").json()
-        assert len(log["data"].splitlines()) == 1
-        assert not streamer._captures
+        assert not path.exists()
+        assert _get(base_url, "/api/jobs/capture-retry/captures?file=out-1.parquet").content == original
+        assert not streamer._segments
 
-    def test_capture_replacement_finishes_old_generation_without_copying(self, base_url, tmp_path, monkeypatch):
-        import pyarrow as pa
-        from pyarrow import ipc
+    def test_collector_disables_nagle(self, store):
+        from srtctl.status_server.server import _handler_class
 
-        from srtctl.core.status import LogStreamer
-
-        capture = tmp_path / "tachometer" / "local"
-        capture.mkdir(parents=True)
-        path = capture / "current.arrow"
-
-        def write_snapshot(destination, value):
-            table = pa.table({"metric_name": ["x"], "metric_value": [value]})
-            with ipc.new_stream(destination, table.schema) as writer:
-                writer.write_table(table)
-
-        write_snapshot(path, 1.0)
-        original = path.read_bytes()
-        replacement = capture / "next.tmp"
-        write_snapshot(replacement, 2.0)
-        real_post = requests.Session.post
-        raw_chunks = []
-
-        def replace_during_upload(session, url, **kwargs):
-            if url.endswith("/captures"):
-                raw_chunks.append(kwargs["data"])
-                if len(raw_chunks) == 1:
-                    replacement.replace(path)
-            return real_post(session, url, **kwargs)
-
-        monkeypatch.setattr("srtctl.core.status.STREAM_REQUEST_BYTES", 128)
-        monkeypatch.setattr(requests.Session, "post", replace_during_upload)
-        streamer = LogStreamer(StatusReporter(job_id="replace", api_endpoints=(base_url,)), tmp_path, 60, capture)
-        streamer.flush()
-        assert b"".join(raw_chunks) == original
-        streamer.flush()
-        log = _get(base_url, "/api/jobs/replace/logs?file=tachometer_rows.jsonl").json()
-        assert [json.loads(row)["metric_value"] for row in log["data"].splitlines()] == [1.0, 2.0]
-
-    def test_rewritten_capture_never_commits_mixed_generations(self, base_url, tmp_path, monkeypatch):
-        import pyarrow as pa
-        from pyarrow import ipc
-
-        from srtctl.core.status import LogStreamer
-
-        capture = tmp_path / "tachometer" / "local"
-        capture.mkdir(parents=True)
-        path = capture / "current.arrow"
-
-        def write_snapshot(value):
-            table = pa.table({"metric_name": ["x"], "metric_value": [value]})
-            with ipc.new_stream(path, table.schema) as writer:
-                writer.write_table(table)
-
-        write_snapshot(1.0)
-        real_post = requests.Session.post
-        sent = []
-
-        def rewrite_during_upload(session, url, **kwargs):
-            if url.endswith("/captures"):
-                sent.append(dict(kwargs["params"]))
-                if len(sent) == 1:
-                    write_snapshot(2.0)
-            return real_post(session, url, **kwargs)
-
-        monkeypatch.setattr("srtctl.core.status.STREAM_REQUEST_BYTES", 128)
-        monkeypatch.setattr(requests.Session, "post", rewrite_during_upload)
-        streamer = LogStreamer(StatusReporter(job_id="rewrite", api_endpoints=(base_url,)), tmp_path, 60, capture)
-        streamer.flush()
-        assert _get(base_url, "/api/jobs/rewrite/logs?file=tachometer_rows.jsonl").json()["data"] == ""
-        streamer.flush()
-        assert sent[0]["generation"] != sent[1]["generation"]
-        log = _get(base_url, "/api/jobs/rewrite/logs?file=tachometer_rows.jsonl").json()
-        assert [json.loads(row)["metric_value"] for row in log["data"].splitlines()] == [2.0]
+        assert _handler_class(store, AuthPolicy(), CorsPolicy()).disable_nagle_algorithm is True

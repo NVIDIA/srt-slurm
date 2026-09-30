@@ -52,6 +52,7 @@ from pydantic import ValidationError
 
 from srtctl.contract import (
     EventFeedResponse,
+    JobCapturesResponse,
     JobCreatePayload,
     JobDetail,
     JobEventListResponse,
@@ -259,6 +260,8 @@ def route(store: StatusStore, method: str, raw_path: str, body: dict[str, Any] |
             return _append_logs(store, match["job_id"], body)
         if method == "GET":
             return _job_logs(store, match["job_id"], query)
+    if (match := _JOB_CAPTURES_ROUTE.match(path)) and method == "GET":
+        return _job_captures(store, match["job_id"])
     if match := _JOB_ROUTE.match(path):
         if method == "GET":
             return _get_job(store, match["job_id"])
@@ -362,18 +365,35 @@ def _raw_upload(store: StatusStore, path: str, raw: bytes) -> Response:
             stored = store.append_raw_log(match["job_id"], file, offset, raw, final=bool(final))
             return HTTPStatus.OK, {"job_id": match["job_id"], "stored": stored}
         if match := _JOB_CAPTURES_ROUTE.fullmatch(normalized):
-            generation = query.get("generation", "")
-            if not re.fullmatch(r"[0-9a-f]{32}", generation):
-                raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "generation must be 32 lowercase hex characters")
-            if Path(file).suffix not in (".arrow", ".parquet"):
-                raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "capture must be an Arrow or Parquet file")
+            if Path(file).suffix != ".parquet":
+                raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "capture must be a Parquet segment")
             total = _int_param(query, "total", 0, minimum=1, maximum=(1 << 63) - 1)
             if not raw or offset + len(raw) > total:
                 raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "capture chunk must be nonempty and within total")
-            return HTTPStatus.OK, store.append_capture(match["job_id"], file, generation, offset, total, raw)
+            return HTTPStatus.OK, store.append_capture(match["job_id"], file, offset, total, raw)
     except LogChunkConflict as exc:
         raise ApiError(HTTPStatus.CONFLICT, str(exc)) from exc
     raise ApiError(HTTPStatus.NOT_FOUND, "No raw upload route")
+
+
+def _job_captures(store: StatusStore, job_id: str) -> Response:
+    files = store.list_captures(job_id)
+    if not files and store.get_job(job_id) is None:
+        raise ApiError(HTTPStatus.NOT_FOUND, "Job not found")
+    return HTTPStatus.OK, JobCapturesResponse(job_id=job_id, files=files).model_dump()
+
+
+def _capture_download(store: StatusStore, raw_path: str) -> bytes | None:
+    """Raw bytes for ``GET .../captures?file=...``; None for every other request."""
+    url = urlparse(raw_path)
+    match = _JOB_CAPTURES_ROUTE.fullmatch(url.path.rstrip("/"))
+    file = parse_qs(url.query).get("file", [None])[-1]
+    if match is None or file is None:
+        return None
+    data = store.read_capture(match["job_id"], file)
+    if data is None:
+        raise ApiError(HTTPStatus.NOT_FOUND, "Capture not found or incomplete")
+    return data
 
 
 def _job_logs(store: StatusStore, job_id: str, query: dict[str, str]) -> Response:
@@ -447,6 +467,8 @@ def _handler_class(store: StatusStore, auth: AuthPolicy, cors: CorsPolicy) -> ty
     class Handler(BaseHTTPRequestHandler):
         server_version = "srtctl-status-server"
         protocol_version = "HTTP/1.1"
+        # Small acknowledgements go out immediately instead of waiting on the peer's delayed ACK.
+        disable_nagle_algorithm = True
 
         def log_message(self, format: str, *args: Any) -> None:
             # Access log at DEBUG; the INFO lines are the lifecycle transitions in route().
@@ -501,6 +523,9 @@ def _handler_class(store: StatusStore, auth: AuthPolicy, cors: CorsPolicy) -> ty
                 auth.check(effective, path, self.headers.get("Authorization"))
                 if effective == "POST" and self.headers.get_content_type() == "application/octet-stream":
                     status, body = _raw_upload(store, self.path, raw or b"")
+                elif effective == "GET" and (capture := _capture_download(store, self.path)) is not None:
+                    self._send(HTTPStatus.OK, capture, "application/octet-stream", cors_headers, head_only)
+                    return
                 else:
                     status, body = route(store, effective, self.path, _parse_json(raw))
             except ApiError as exc:

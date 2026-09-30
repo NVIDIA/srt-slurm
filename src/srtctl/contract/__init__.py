@@ -19,7 +19,9 @@ Usage (server, e.g. srtctl.status_server):
 from srtctl.contract.enums import JobStage, JobStatus
 from srtctl.contract.requests import JobCreatePayload, JobUpdatePayload, LogAppendPayload, LogChunk
 from srtctl.contract.responses import (
+    CaptureFileSummary,
     EventFeedResponse,
+    JobCapturesResponse,
     JobDetail,
     JobEventListResponse,
     JobEventRecord,
@@ -32,7 +34,9 @@ from srtctl.contract.responses import (
 )
 
 __all__ = [
+    "CaptureFileSummary",
     "EventFeedResponse",
+    "JobCapturesResponse",
     "JobCreatePayload",
     "JobDetail",
     "JobEventListResponse",

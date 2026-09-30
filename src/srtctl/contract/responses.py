@@ -111,3 +111,22 @@ class JobLogResponse(BaseModel):
     offset: int
     next_offset: int
     data: str
+
+
+class CaptureFileSummary(BaseModel):
+    """One uploaded Tachometer segment. ``complete`` once every byte has arrived."""
+
+    file: str
+    size: int
+    complete: bool
+    updated_at: str
+
+
+class JobCapturesResponse(BaseModel):
+    """GET /api/jobs/{job_id}/captures: every Tachometer segment of a job.
+
+    ``GET /api/jobs/{job_id}/captures?file=...`` returns a complete segment's raw bytes.
+    """
+
+    job_id: str
+    files: list[CaptureFileSummary]

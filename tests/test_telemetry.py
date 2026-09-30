@@ -5,6 +5,7 @@
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +25,8 @@ from srtctl.core.schema import (
     InfraConfig,
     ModelConfig,
     ObservabilityConfig,
+    ReportingConfig,
+    ReportingStatusConfig,
     ResourceConfig,
     SrtConfig,
     TachometerConfig,
@@ -1250,6 +1253,19 @@ class TestTachometerStageMixin:
         # tear down the benchmark via the critical-process check.
         assert procs[-1].name == "tachometer"
         assert procs[-1].critical is False
+
+        # Live streaming seals immutable segments into an outbox outside the log tree.
+        harness.config = replace(
+            harness.config,
+            reporting=ReportingConfig(
+                status=ReportingStatusConfig(endpoint="http://collector:8080", logging_stream_interval=5)
+            ),
+        )
+        harness.start_tachometer()
+        assert mock_srun.call_args_list[-1].kwargs["command"][-2:] == [
+            "--outbox-dir",
+            str(tmp_path.parent / "tachometer-outbox"),
+        ]
 
     def test_resolve_tachometer_binary(self, tmp_path, monkeypatch):
         """Explicit paths are respected verbatim; the default bare name

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import codecs
-import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -14,7 +13,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
 
 from srtctl.contract import JobStatus
@@ -60,22 +58,16 @@ CREATE TABLE IF NOT EXISTS job_logs (
     PRIMARY KEY (job_id, file, offset)
 );
 
--- Raw uploads remain staged until every byte of one immutable generation arrives.
+-- Immutable Tachometer segments, stored verbatim; readers decode them.
 CREATE TABLE IF NOT EXISTS job_captures (
-    job_id TEXT NOT NULL, file TEXT NOT NULL, generation TEXT NOT NULL,
-    total INTEGER NOT NULL, next_offset INTEGER NOT NULL DEFAULT 0,
-    processed INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (job_id, file, generation)
+    job_id TEXT NOT NULL, file TEXT NOT NULL,
+    total INTEGER NOT NULL, next_offset INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+    PRIMARY KEY (job_id, file)
 );
 CREATE TABLE IF NOT EXISTS capture_chunks (
-    job_id TEXT NOT NULL, file TEXT NOT NULL, generation TEXT NOT NULL,
-    offset INTEGER NOT NULL, size INTEGER NOT NULL, digest BLOB NOT NULL, data BLOB,
-    PRIMARY KEY (job_id, file, generation, offset)
+    job_id TEXT NOT NULL, file TEXT NOT NULL, offset INTEGER NOT NULL, data BLOB NOT NULL,
+    PRIMARY KEY (job_id, file, offset)
 );
-CREATE TABLE IF NOT EXISTS metric_observations (
-    job_id TEXT NOT NULL, identity BLOB NOT NULL,
-    PRIMARY KEY (job_id, identity)
-) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS job_log_ends (
     job_id TEXT NOT NULL, file TEXT NOT NULL, end INTEGER NOT NULL,
     PRIMARY KEY (job_id, file)
@@ -312,7 +304,7 @@ class StatusStore:
             deleted = conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,)).rowcount
             conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM job_logs WHERE job_id = ?", (job_id,))
-            for table in ("job_captures", "capture_chunks", "metric_observations", "job_log_ends"):
+            for table in ("job_captures", "capture_chunks", "job_log_ends"):
                 conn.execute(f"DELETE FROM {table} WHERE job_id = ?", (job_id,))
         return deleted > 0
 
@@ -352,112 +344,42 @@ class StatusStore:
                 )
         return stored
 
-    def append_capture(
-        self, job_id: str, file: str, generation: str, offset: int, total: int, data: bytes
-    ) -> dict[str, Any]:
-        """Stage raw chunks durably, then decode complete captures on the collector.
+    def append_capture(self, job_id: str, file: str, offset: int, total: int, data: bytes) -> dict[str, Any]:
+        """Store one chunk of an immutable segment verbatim; nothing is decoded on upload.
 
-        Digests remain after processing so a lost response can be retried exactly.
-        A new generation removes abandoned partial uploads for that same file.
+        Chunks must arrive in order. A retry of a stored chunk is accepted only if
+        its bytes are identical, so a lost response can be resent safely.
         """
-        key = (job_id, file, generation)
-        digest = hashlib.sha256(data).digest()
+        end = offset + len(data)
         with self._transaction() as conn:
             manifest = conn.execute(
-                "SELECT * FROM job_captures WHERE job_id = ? AND file = ? AND generation = ?", key
+                "SELECT total, next_offset FROM job_captures WHERE job_id = ? AND file = ?", (job_id, file)
             ).fetchone()
             if manifest is None:
                 if offset != 0:
-                    raise LogChunkConflict("Capture generation must start at offset 0")
-                abandoned = conn.execute(
-                    "SELECT generation FROM job_captures WHERE job_id = ? AND file = ? AND next_offset < total",
-                    (job_id, file),
-                ).fetchall()
-                for old in abandoned:
-                    for table in ("job_captures", "capture_chunks"):
-                        conn.execute(
-                            f"DELETE FROM {table} WHERE job_id = ? AND file = ? AND generation = ?",
-                            (job_id, file, old["generation"]),
-                        )
-                conn.execute("INSERT INTO job_captures VALUES (?, ?, ?, ?, 0, 0)", (*key, total))
-                next_offset, processed = 0, False
+                    raise LogChunkConflict("Capture upload must start at offset 0")
+                conn.execute("INSERT INTO job_captures VALUES (?, ?, ?, 0, ?)", (job_id, file, total, now_iso()))
+                next_offset = 0
+            elif manifest["total"] != total:
+                raise LogChunkConflict("Capture total changed")
             else:
-                if manifest["total"] != total:
-                    raise LogChunkConflict("Capture generation total changed")
-                next_offset, processed = manifest["next_offset"], bool(manifest["processed"])
-            existing = conn.execute(
-                "SELECT size, digest FROM capture_chunks WHERE job_id = ? AND file = ? AND generation = ? AND offset = ?",
-                (*key, offset),
-            ).fetchone()
-            if existing is not None:
-                if existing["size"] != len(data) or existing["digest"] != digest:
-                    raise LogChunkConflict("Capture retry differs from stored bytes")
-            else:
-                if offset != next_offset or processed:
-                    raise LogChunkConflict("Capture chunks must be contiguous")
-                conn.execute(
-                    "INSERT INTO capture_chunks VALUES (?, ?, ?, ?, ?, ?, ?)", (*key, offset, len(data), digest, data)
-                )
-                next_offset += len(data)
-                conn.execute(
-                    "UPDATE job_captures SET next_offset = ? WHERE job_id = ? AND file = ? AND generation = ?",
-                    (next_offset, *key),
-                )
-        if next_offset == total and not processed:
-            self._process_capture(key)
-        return {"job_id": job_id, "next_offset": offset + len(data), "complete": offset + len(data) == total}
-
-    def _process_capture(self, key: tuple[str, str, str]) -> None:
-        """Decode with bounded Python batches and atomically deduplicate each output batch.
-
-        Retrying after a decoder or database failure cannot duplicate committed
-        observations. Raw bytes are deleted only after the entire decode succeeds.
-        """
-        from srtctl.dsight.metrics import batches  # lazy: pyarrow is only needed by the collector
-
-        with NamedTemporaryFile(suffix=Path(key[1]).suffix) as capture:
-            with self._connect() as conn:
-                manifest = conn.execute(
-                    "SELECT processed FROM job_captures WHERE job_id = ? AND file = ? AND generation = ?", key
+                next_offset = manifest["next_offset"]
+            if offset < next_offset:
+                stored = conn.execute(
+                    "SELECT data FROM capture_chunks WHERE job_id = ? AND file = ? AND offset = ?",
+                    (job_id, file, offset),
                 ).fetchone()
-                if manifest is None or manifest["processed"]:
-                    return
-                for row in conn.execute(
-                    "SELECT data FROM capture_chunks WHERE job_id = ? AND file = ? AND generation = ? ORDER BY offset",
-                    key,
-                ):
-                    capture.write(row["data"])
-            capture.flush()
-            for batch in batches(Path(capture.name)):
-                for start in range(0, batch.num_rows, 4096):
-                    with self._transaction() as conn:
-                        output = []
-                        for row in batch.slice(start, 4096).to_pylist():
-                            row.pop("metric_name_clean", None)
-                            line = json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
-                            inserted = conn.execute(
-                                "INSERT OR IGNORE INTO metric_observations VALUES (?, ?)",
-                                (key[0], hashlib.sha256(line.encode()).digest()),
-                            ).rowcount
-                            if inserted:
-                                output.append(line)
-                        if output:
-                            text = "".join(output)
-                            offset = conn.execute(
-                                "SELECT COALESCE(MAX(offset + size), 0) FROM job_logs WHERE job_id = ? AND file = ?",
-                                (key[0], "tachometer_rows.jsonl"),
-                            ).fetchone()[0]
-                            conn.execute(
-                                "INSERT INTO job_logs VALUES (?, ?, ?, ?, ?, ?)",
-                                (key[0], "tachometer_rows.jsonl", offset, len(text.encode()), text, now_iso()),
-                            )
-            with self._transaction() as conn:
+                if stored is None or stored["data"] != data:
+                    raise LogChunkConflict("Capture retry differs from stored bytes")
+            elif offset == next_offset:
+                conn.execute("INSERT INTO capture_chunks VALUES (?, ?, ?, ?)", (job_id, file, offset, data))
                 conn.execute(
-                    "UPDATE job_captures SET processed = 1 WHERE job_id = ? AND file = ? AND generation = ?", key
+                    "UPDATE job_captures SET next_offset = ?, updated_at = ? WHERE job_id = ? AND file = ?",
+                    (end, now_iso(), job_id, file),
                 )
-                conn.execute(
-                    "UPDATE capture_chunks SET data = NULL WHERE job_id = ? AND file = ? AND generation = ?", key
-                )
+            else:
+                raise LogChunkConflict("Capture chunks must be contiguous")
+        return {"job_id": job_id, "next_offset": end, "complete": end == total}
 
     # ------------------------------------------------------------------- reads
 
@@ -516,6 +438,31 @@ class StatusStore:
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def list_captures(self, job_id: str) -> list[dict[str, Any]]:
+        """Every Tachometer segment of a job; only complete ones can be downloaded."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT file, total AS size, next_offset = total AS complete, updated_at
+                FROM job_captures WHERE job_id = ? ORDER BY file
+                """,
+                (job_id,),
+            ).fetchall()
+        return [{**dict(row), "complete": bool(row["complete"])} for row in rows]
+
+    def read_capture(self, job_id: str, file: str) -> bytes | None:
+        """The exact bytes of a complete segment, or None while it is missing or partial."""
+        with self._connect() as conn:
+            manifest = conn.execute(
+                "SELECT total, next_offset FROM job_captures WHERE job_id = ? AND file = ?", (job_id, file)
+            ).fetchone()
+            if manifest is None or manifest["next_offset"] != manifest["total"]:
+                return None
+            rows = conn.execute(
+                "SELECT data FROM capture_chunks WHERE job_id = ? AND file = ? ORDER BY offset", (job_id, file)
+            )
+            return b"".join(row["data"] for row in rows)
 
     def list_log_files(self, job_id: str) -> list[dict[str, Any]]:
         """Every streamed file of a job with the bytes received so far."""

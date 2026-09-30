@@ -29,6 +29,7 @@ pub struct DatasetWriter {
     row_count: Arc<Mutex<usize>>,
     parquet_index: Arc<Mutex<usize>>,
     rows_per_parquet: usize,
+    outbox_dir: Option<PathBuf>,
     save_handle: tokio::task::JoinHandle<()>,
     start_time: Instant,
     /// Wall-clock time at writer start, as nanoseconds since UNIX_EPOCH.
@@ -175,6 +176,28 @@ impl DatasetWriter {
         save_interval_secs: u64,
         extra_column_names: Vec<String>,
     ) -> Result<Self> {
+        Self::with_outbox(
+            local_dir,
+            rows_per_parquet,
+            save_interval_secs,
+            extra_column_names,
+            None,
+        )
+    }
+
+    /// Like [`DatasetWriter::new`], but with an outbox for live streaming.
+    ///
+    /// Every save interval seals the buffered rows into the next immutable
+    /// `out-N.parquet` instead of rewriting `current.arrow`, and links it into
+    /// `outbox_dir`. Compaction may delete `out-N.parquet` from `local_dir`; the
+    /// outbox link belongs to the uploader, which unlinks it once delivered.
+    pub fn with_outbox(
+        local_dir: PathBuf,
+        rows_per_parquet: usize,
+        save_interval_secs: u64,
+        extra_column_names: Vec<String>,
+        outbox_dir: Option<PathBuf>,
+    ) -> Result<Self> {
         // Create the local directory if it doesn't exist
         std::fs::create_dir_all(&local_dir).map_err(|e| {
             crate::NoMoreError::Io(std::io::Error::other(format!(
@@ -183,6 +206,10 @@ impl DatasetWriter {
                 e
             )))
         })?;
+
+        if let Some(outbox) = &outbox_dir {
+            std::fs::create_dir_all(outbox)?;
+        }
 
         let buffer = Arc::new(Mutex::new(RecordBatchBuffer::new(extra_column_names)));
         let row_count = Arc::new(Mutex::new(0));
@@ -201,11 +228,16 @@ impl DatasetWriter {
             })?
             .as_nanos() as i64;
 
-        let buffer_clone = buffer.clone();
-        let local_dir_clone = local_dir.clone();
+        let segments = SegmentState {
+            buffer: buffer.clone(),
+            row_count: row_count.clone(),
+            parquet_index: parquet_index.clone(),
+            local_dir: local_dir.clone(),
+            outbox_dir: outbox_dir.clone(),
+        };
 
         let save_handle = tokio::spawn(async move {
-            periodic_save_task(buffer_clone, local_dir_clone, save_interval_secs).await;
+            periodic_save_task(segments, save_interval_secs).await;
         });
 
         Ok(Self {
@@ -214,6 +246,7 @@ impl DatasetWriter {
             row_count,
             parquet_index,
             rows_per_parquet,
+            outbox_dir,
             save_handle,
             start_time,
             start_epoch_ns,
@@ -237,16 +270,13 @@ impl DatasetWriter {
 
         // Check if we need to create a numbered parquet file
         if *row_count >= self.rows_per_parquet {
-            let batch = buffer.to_record_batch()?;
             let mut parquet_idx = self.parquet_index.lock().await;
-            let filename = format!("out-{}.parquet", *parquet_idx);
-            *parquet_idx += 1;
-            drop(parquet_idx);
-
-            let num_rows = batch.num_rows();
-            write_parquet_file_local(&self.local_dir, &filename, &batch)?;
-            info!("Saved parquet file {} with {} rows", filename, num_rows);
-            buffer.clear();
+            seal_segment(
+                &mut buffer,
+                &mut parquet_idx,
+                &self.local_dir,
+                self.outbox_dir.as_deref(),
+            )?;
             *row_count = 0;
         }
 
@@ -267,31 +297,38 @@ impl DatasetWriter {
 
         // Check if we need to create a numbered parquet file
         if *row_count >= self.rows_per_parquet {
-            let batch = buffer.to_record_batch()?;
             let mut parquet_idx = self.parquet_index.lock().await;
-            let filename = format!("out-{}.parquet", *parquet_idx);
-            *parquet_idx += 1;
-            drop(parquet_idx);
-
-            let num_rows = batch.num_rows();
-            write_parquet_file_local(&self.local_dir, &filename, &batch)?;
-            info!("Saved parquet file {} with {} rows", filename, num_rows);
-            buffer.clear();
+            seal_segment(
+                &mut buffer,
+                &mut parquet_idx,
+                &self.local_dir,
+                self.outbox_dir.as_deref(),
+            )?;
             *row_count = 0;
         }
 
         Ok(())
     }
 
-    /// Shutdown the writer, flushing any remaining data to current.arrow.
+    /// Shutdown the writer, flushing any remaining data to current.arrow, or to
+    /// a final segment when streaming to an outbox.
     /// Returns the local directory path for subsequent compaction.
     pub async fn shutdown(&self) -> Result<PathBuf> {
         // Stop the periodic save task
         self.save_handle.abort();
 
-        // Flush any remaining data to current.arrow
-        let buffer = self.buffer.lock().await;
-        if buffer.len() > 0 {
+        let mut buffer = self.buffer.lock().await;
+        if buffer.len() > 0 && self.outbox_dir.is_some() {
+            let mut row_count = self.row_count.lock().await;
+            let mut parquet_idx = self.parquet_index.lock().await;
+            seal_segment(
+                &mut buffer,
+                &mut parquet_idx,
+                &self.local_dir,
+                self.outbox_dir.as_deref(),
+            )?;
+            *row_count = 0;
+        } else if buffer.len() > 0 {
             let batch = buffer.to_record_batch()?;
             let num_rows = batch.num_rows();
             write_arrow_file_local(&self.local_dir, "current.arrow", &batch)?;
@@ -302,19 +339,92 @@ impl DatasetWriter {
     }
 }
 
-async fn periodic_save_task(
+/// Shared writer state for the periodic save task.
+struct SegmentState {
     buffer: Arc<Mutex<RecordBatchBuffer>>,
+    row_count: Arc<Mutex<usize>>,
+    parquet_index: Arc<Mutex<usize>>,
     local_dir: PathBuf,
-    save_interval_secs: u64,
-) {
+    outbox_dir: Option<PathBuf>,
+}
+
+/// Write the buffered rows to the next `out-N.parquet` and clear the buffer.
+///
+/// The caller holds the buffer lock throughout, so shutdown cannot observe a
+/// half-sealed segment. A failed outbox link is logged: the rows still reach
+/// final.parquet through compaction.
+fn seal_segment(
+    buffer: &mut RecordBatchBuffer,
+    parquet_index: &mut usize,
+    local_dir: &Path,
+    outbox_dir: Option<&Path>,
+) -> Result<()> {
+    let batch = buffer.to_record_batch()?;
+    let filename = format!("out-{}.parquet", *parquet_index);
+    *parquet_index += 1;
+
+    write_parquet_file_local(local_dir, &filename, &batch)?;
+    info!(
+        "Saved parquet file {} with {} rows",
+        filename,
+        batch.num_rows()
+    );
+    buffer.clear();
+    if let Some(outbox) = outbox_dir {
+        if let Err(e) = link_into_outbox(local_dir, outbox, &filename) {
+            error!("Error publishing {} to outbox: {}", filename, e);
+        }
+    }
+    Ok(())
+}
+
+/// Publish a sealed segment to the outbox, hard-linking when possible. A copy
+/// is renamed into place so the uploader never observes a partial file.
+fn link_into_outbox(local_dir: &Path, outbox_dir: &Path, filename: &str) -> Result<()> {
+    let source = local_dir.join(filename);
+    let target = outbox_dir.join(filename);
+    if std::fs::hard_link(&source, &target).is_ok() {
+        return Ok(());
+    }
+    let pending = tempfile::Builder::new()
+        .prefix(".tachometer-")
+        .suffix(".tmp")
+        .tempfile_in(outbox_dir)?;
+    std::fs::copy(&source, pending.path())?;
+    pending
+        .persist(&target)
+        .map_err(|e| crate::NoMoreError::Io(e.error))?;
+    Ok(())
+}
+
+async fn periodic_save_task(state: SegmentState, save_interval_secs: u64) {
     let mut interval = tokio::time::interval(Duration::from_secs(save_interval_secs));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         interval.tick().await;
 
+        if state.outbox_dir.is_some() {
+            let mut buffer = state.buffer.lock().await;
+            if buffer.len() == 0 {
+                continue;
+            }
+            let mut row_count = state.row_count.lock().await;
+            let mut parquet_idx = state.parquet_index.lock().await;
+            match seal_segment(
+                &mut buffer,
+                &mut parquet_idx,
+                &state.local_dir,
+                state.outbox_dir.as_deref(),
+            ) {
+                Ok(()) => *row_count = 0,
+                Err(e) => error!("Error sealing segment: {}", e),
+            }
+            continue;
+        }
+
         let batch = {
-            let buffer_guard = buffer.lock().await;
+            let buffer_guard = state.buffer.lock().await;
             if buffer_guard.len() == 0 {
                 continue;
             }
@@ -328,7 +438,7 @@ async fn periodic_save_task(
         };
 
         // Save to current.arrow on local disk
-        if let Err(e) = write_arrow_file_local(&local_dir, "current.arrow", &batch) {
+        if let Err(e) = write_arrow_file_local(&state.local_dir, "current.arrow", &batch) {
             error!("Error saving current.arrow: {}", e);
         } else {
             info!("Saved current.arrow with {} rows", batch.num_rows());

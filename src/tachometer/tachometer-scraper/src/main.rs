@@ -61,6 +61,11 @@ struct Args {
     /// Compacts current out-*.parquet files into incomplete-N.parquet and uploads to remote
     #[arg(long = "sync-interval", default_value = "0")]
     sync_interval_secs: u64,
+
+    /// Directory receiving each immutable out-N.parquet segment for a live uploader.
+    /// Seals the buffer every save interval instead of rewriting current.arrow.
+    #[arg(long = "outbox-dir", value_name = "PATH")]
+    outbox_dir: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -550,17 +555,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if sync_interval_secs > 0 {
         info!("Periodic sync to remote: every {}s", sync_interval_secs);
     }
+    if let Some(outbox) = &args.outbox_dir {
+        info!("Streaming sealed segments to outbox: {}", outbox);
+    }
     if !extra_column_names.is_empty() {
         info!("Extra columns: {:?}", extra_column_names);
     }
 
     // Create dataset writer with local directory for intermediate files
     let writer = Arc::new(
-        DatasetWriter::new(
+        DatasetWriter::with_outbox(
             local_dir.clone(),
             rows_per_parquet,
             save_interval_secs,
             extra_column_names,
+            args.outbox_dir.map(PathBuf::from),
         )
         .map_err(|e| format!("Failed to create dataset writer: {}", e))?,
     );
