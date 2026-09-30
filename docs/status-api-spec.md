@@ -44,6 +44,8 @@ Behaviors of the native collector on top of the contract:
 
 `GET /` serves a single-page UI with no external dependencies: a jobs table (filter by text, status and cluster; elapsed time ticks for active jobs), a detail pane per job (cluster, exit code, duration, model, resources, head node, recipe, log dir, logs URL, the event timeline with deltas, and the raw metadata), and a live global event feed that follows `/api/events` with the cursor. Poll interval is selectable (2 s, 5 s, 15 s, paused). Arrow keys move between jobs; clicking a job id in the feed opens it.
 
+The detail pane has three tabs. **overview** is the view above. **logs** lists the job's streamed files and tails one through `GET /api/jobs/{id}/logs?file=...&offset=...`: a file opens at its last 256 KiB (from the start with *from start*), follows new bytes on the poll interval, keeps the newest 20,000 lines, strips ANSI color codes, filters lines by substring, and *download* fetches the whole file. **tachometer** lists the streamed Parquet segments with size and upload state and downloads complete ones; nothing is decoded in the browser.
+
 The page itself needs no token (it is static and reveals nothing). It sends the read token the viewer pastes once as `Authorization: Bearer` on every API call and keeps it in the browser's `localStorage`. Opening `/#token=<read token>` seeds it and strips the fragment from the URL; fragments are never sent to the server. `HEAD` is answered like `GET` without a body, for uptime checkers.
 
 ### Hosting the page elsewhere
