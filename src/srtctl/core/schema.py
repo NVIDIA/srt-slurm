@@ -3369,9 +3369,9 @@ class SrtConfig:
             role = get_frontend(self.frontend.type).model_name_role or role
         backend = self.backend_for_role(role)
         if isinstance(backend, AtomProtocol):
-            # ATOM advertises the literal --model argument; unlike SGLang/vLLM,
-            # it has no separate served-model-name alias. Match the worker's
-            # HF ID or container-visible path, including node-local staging.
+            # Without served-model-name, ATOM advertises the literal --model
+            # argument: the worker's HF ID or container-visible path, including
+            # node-local staging.
             model_path = os.path.expandvars(self.model.path)
             if model_path.startswith("hf:"):
                 default = model_path[3:]

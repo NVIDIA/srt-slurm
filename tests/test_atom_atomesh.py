@@ -133,6 +133,14 @@ def test_atom_served_name_matches_worker_model_argument(tmp_path: Path, layout: 
     assert config.served_model_name == expected
 
 
+def test_atom_served_name_follows_served_model_name() -> None:
+    """A role's served-model-name is the name ATOM and AToMesh serve, so evals must send it."""
+    data = _config()
+    for role in ("prefill", "decode"):
+        data["roles"][role].setdefault("args", {})["served-model-name"] = "qwen3-served"
+    assert _load(data).served_model_name == "qwen3-served"
+
+
 def test_atom_builds_native_aggregate_command() -> None:
     """Recipe flags keep ATOM's mixed hyphen/underscore spelling and follow the managed arguments."""
     backend = AtomProtocol(

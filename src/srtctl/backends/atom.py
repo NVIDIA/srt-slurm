@@ -82,6 +82,13 @@ class AtomProtocol:
         return {}
 
     def get_served_model_name(self, default: str) -> str:
+        """The name ATOM serves: a role's ``served-model-name``, else its literal ``--model``."""
+        if self.atom_config:
+            for cfg in [self.atom_config.prefill, self.atom_config.aggregated, self.atom_config.decode]:
+                if cfg:
+                    name = cfg.get("served-model-name") or cfg.get("served_model_name")
+                    if name:
+                        return name
         return default
 
     @property
