@@ -229,10 +229,16 @@ class TestScrapeDiagnostics:
         with patch("srtctl.core.power.session.time.monotonic", side_effect=[100.0, 101.0, 103.0]):
             session._persist_cycle([result], [], scrape_seq=0, scheduled_monotonic=89.0)
         session.stop_and_finalize()
-        record = json.loads((session.power_dir / "scrape-timings.jsonl").read_text().splitlines()[0])
-        assert record["schedule_lag_seconds"] == 1.0
-        assert record["cycle_writer_lock_wait_seconds"] == 1.0
-        assert record["cycle_sample_write_seconds"] == 2.0
+        scrape, cycle, _ = [
+            json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()
+        ]
+        assert scrape["event"] == "scrape"
+        assert scrape["schedule_lag_seconds"] == 1.0
+        assert "writer_lock_wait_seconds" not in scrape
+        assert cycle["event"] == "cycle_write"
+        assert cycle["scrape_seq"] == 0
+        assert cycle["writer_lock_wait_seconds"] == 1.0
+        assert cycle["sample_write_seconds"] == 2.0
 
     @pytest.mark.parametrize("failure", ["timeout", "http_error"])
     def test_failed_request_and_recovery_keep_timing_and_sample_identity(self, tmp_path, exporters, failure):
@@ -247,7 +253,7 @@ class TestScrapeDiagnostics:
         session.stop_and_finalize()
 
         records = [json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()]
-        failed, recovered, summary = records
+        failed, failed_write, recovered, recovered_write, summary = records
         assert failed["error_type"] == ("ReadTimeout" if failure == "timeout" else "HTTPError")
         assert failed["request_duration_seconds"] > 0
         assert failed["sample_timestamp_unix"] is None
@@ -256,7 +262,9 @@ class TestScrapeDiagnostics:
         assert recovered["http_status"] == 200
         assert recovered["parse_seconds"] >= 0
         assert recovered["error_type"] is None
-        assert recovered["sample_write_completed"]
+        assert failed_write["row_count"] == 0
+        assert recovered_write["sample_write_completed"]
+        assert recovered_write["row_count"] == GPUS_PER_NODE
         assert recovered["job_id"] == "12345"
         rows, _ = read_samples(session.samples_path)
         assert {(r.hostname, r.scrape_seq, r.timestamp_unix) for r in rows} == {
@@ -344,7 +352,9 @@ class TestScrapeDiagnostics:
         session.stop_and_finalize()
 
         records = [json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()]
-        failed, refused, summary = records
+        assert all("sample_write_completed" not in r for r in records if r["event"] == "scrape")
+        failed, refused, summary = [r for r in records if r["event"] != "scrape"]
+        assert failed["event"] == refused["event"] == "cycle_write"
         assert failed["row_count"] == GPUS_PER_NODE
         assert failed["sample_write_completed"] is False
         assert failed["sample_write_error"] == "OSError"
@@ -364,11 +374,13 @@ class TestScrapeDiagnostics:
         assert records[-1]["event"] == "diagnostic_summary"
         rows, _ = read_samples(session.samples_path)
         last_seq = max(row.scrape_seq for row in rows)
-        bracket = [r for r in records[:-1] if r["scrape_seq"] == last_seq]
+        scrapes = [r for r in records if r["event"] == "scrape"]
+        bracket = [r for r in scrapes if r["scrape_seq"] == last_seq]
         assert {r["hostname"] for r in bracket} == {"node-a", "node-b"}
         assert all(r["schedule_lag_seconds"] is None for r in bracket)
-        assert all(r["sample_write_completed"] for r in bracket)
-        scheduled = [r for r in records[:-1] if r["scrape_seq"] < last_seq]
+        (bracket_write,) = [r for r in records if r["event"] == "cycle_write" and r["scrape_seq"] == last_seq]
+        assert bracket_write["sample_write_completed"]
+        scheduled = [r for r in scrapes if r["scrape_seq"] < last_seq]
         assert scheduled and all(r["schedule_lag_seconds"] is not None for r in scheduled)
 
     def test_diagnostic_write_failure_preserves_samples(self, tmp_path, exporters, monkeypatch):

@@ -131,22 +131,24 @@ expected job shape for hardware canaries.
 ## Diagnosing slow scrapes
 
 The collector writes best-effort `scrape-timings.jsonl` beside `samples.csv`.
-Join an endpoint record to its GPU rows using `(hostname, scrape_seq)`.
-Each settled request records its start/end times, HTTP status or exception,
-request and parse durations, sample timestamp, row count and reason codes.
-Failed HTTP requests retain timing records, with null parse duration and
-sample timestamp, without inventing power samples.
-Requests still unsettled when the cycle deadline expires have no timing record.
+Every line carries an `event`: `scrape` per settled endpoint request,
+`cycle_write` per collection cycle, and one closing `diagnostic_summary`.
+Join a `scrape` record to its GPU rows using `(hostname, scrape_seq)`.
+Each records its start/end times, HTTP status or exception, request and parse
+durations, sample timestamp, row count and reason codes. Failed HTTP requests
+retain timing records, with null parse duration and sample timestamp, without
+inventing power samples. Requests still unsettled when the cycle deadline
+expires have no timing record.
 
 `schedule_lag_seconds` measures request start against the background cycle's
 scheduled time; manual and final bracketing scrapes use null. All durations
-use the monotonic clock. The collector writes a cycle's endpoints together:
-`cycle_writer_lock_wait_seconds` and `cycle_sample_write_seconds` therefore
-repeat that shared batch timing on each endpoint record, rather than assigning
-an individual endpoint's write cost. `sample_write_completed` reports whether
-the batch was appended and flushed; when it is false, `sample_write_error`
-names the exception class if the append raised, or is null when the session
-was already finalizing and refused the batch.
+use the monotonic clock. The collector writes a cycle's endpoints together, so
+the `cycle_write` record keyed by `scrape_seq` carries the batch's
+`writer_lock_wait_seconds`, `sample_write_seconds` and attempted `row_count`
+once. Its `sample_write_completed` reports whether the batch was appended and
+flushed; when it is false, `sample_write_error` names the exception class if
+the append raised, or is null when the session was already finalizing and
+refused the batch.
 
 Only a daemon writer performs diagnostic file I/O, outside the sample writer
 lock. Its queue holds at most 128 pending records; overflow drops diagnostics,

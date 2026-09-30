@@ -352,6 +352,7 @@ class PowerTelemetrySession:
                     request_started = timing.get("request_started_monotonic")
                     self._diagnostics.record(
                         {
+                            "event": "scrape",
                             **timing,
                             "job_id": self._settings.job_id,
                             "run_name": self._settings.run_name,
@@ -364,12 +365,23 @@ class PowerTelemetrySession:
                                 if request_started is not None and scheduled_monotonic is not None
                                 else None
                             ),
-                            "cycle_writer_lock_wait_seconds": acquired_at - waiting_at,
-                            "cycle_sample_write_seconds": finished_at - acquired_at,
-                            "sample_write_completed": written,
-                            "sample_write_error": write_error,
                         }
                     )
+                # The batch is written once per cycle, so its timing lives on one
+                # record rather than being repeated on every endpoint's.
+                self._diagnostics.record(
+                    {
+                        "event": "cycle_write",
+                        "job_id": self._settings.job_id,
+                        "run_name": self._settings.run_name,
+                        "scrape_seq": scrape_seq,
+                        "row_count": len(rows),
+                        "writer_lock_wait_seconds": acquired_at - waiting_at,
+                        "sample_write_seconds": finished_at - acquired_at,
+                        "sample_write_completed": written,
+                        "sample_write_error": write_error,
+                    }
+                )
 
     def _poll(self, endpoint: PowerEndpoint, scrape_seq: int) -> _EndpointResult:
         """One endpoint request, timestamped adjacently on the head-node clock."""
