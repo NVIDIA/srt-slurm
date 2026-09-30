@@ -131,6 +131,8 @@ def test_exporter_discovers_legacy_hwmon_without_class_name(tmp_path: Path) -> N
     (tmp_path / "hwmon0").mkdir()
     (tmp_path / "hwmon0" / "name").write_text("acpitz\n")
     hwmon = tmp_path / "hwmon11"
+    # Not a real legacy layout (the class node has no attributes there); the alias
+    # makes the same channel visible twice to exercise canonical-path dedup.
     (hwmon / "power1_average").symlink_to(hwmon / "device" / "power1_average")
 
     sensors = _find_power_meter_sensors(tmp_path)
