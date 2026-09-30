@@ -415,7 +415,7 @@ class PowerTelemetrySession:
                 "request_finished_at_unix": settled_unix,
                 "request_started_monotonic": started_monotonic,
                 "request_duration_seconds": settled_monotonic - started_monotonic,
-                "parse_seconds": time.monotonic() - settled_monotonic,
+                "parse_seconds": time.monotonic() - settled_monotonic if body is not None else None,
                 "sample_timestamp_unix": timestamp_unix if rows else None,
                 "http_status": http_status,
                 "error_type": error_type,

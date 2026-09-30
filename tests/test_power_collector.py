@@ -251,8 +251,10 @@ class TestScrapeDiagnostics:
         assert failed["error_type"] == ("ReadTimeout" if failure == "timeout" else "HTTPError")
         assert failed["request_duration_seconds"] > 0
         assert failed["sample_timestamp_unix"] is None
+        assert failed["parse_seconds"] is None
         assert failed["row_count"] == 0
         assert recovered["http_status"] == 200
+        assert recovered["parse_seconds"] >= 0
         assert recovered["error_type"] is None
         assert recovered["sample_write_completed"]
         assert recovered["job_id"] == "12345"

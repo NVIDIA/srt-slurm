@@ -134,7 +134,8 @@ The collector writes best-effort `scrape-timings.jsonl` beside `samples.csv`.
 Join an endpoint record to its GPU rows using `(hostname, scrape_seq)`.
 Each settled request records its start/end times, HTTP status or exception,
 request and parse durations, sample timestamp, row count and reason codes.
-Failed HTTP requests retain timing records without inventing power samples.
+Failed HTTP requests retain timing records, with null parse duration and
+sample timestamp, without inventing power samples.
 Requests still unsettled when the cycle deadline expires have no timing record.
 
 `schedule_lag_seconds` measures request start against the background cycle's
