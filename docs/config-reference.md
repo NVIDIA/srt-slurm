@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Configuration Reference
 
 Complete reference for job configuration YAML files in the 2.0 (`schema: 2`) layout.
@@ -1295,7 +1298,7 @@ dynamo:
 
 The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
 
-SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. srtctl also adds `--incremental-streaming-output` to every SGLang sidecar engine (and logs that it did): the sidecar treats each gRPC chunk as a delta, and without the flag current SGLang builds stream the cumulative text per chunk, which shows up as repeated prefixes in responses and inflated token counts. Set `incremental-streaming-output` in the role's `args` yourself to override. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from `roles.agg.args.max_seq_len`.
+SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. srtctl also adds `--incremental-streaming-output` to every SGLang sidecar engine (and logs that it did): the sidecar treats each gRPC chunk as a delta, and without the flag current SGLang builds stream the cumulative text per chunk, which shows up as repeated prefixes in responses and inflated token counts. Set `incremental-streaming-output` in the role's `args` yourself to override. TensorRT-LLM supports aggregated, prefill, and decode workers through the OpenEngine gRPC protocol. Each endpoint runs one sidecar on global MPI rank zero; prefill and decode sidecars register their respective disaggregation roles. The engine receives the configured parallelism and served model name, while the sidecar reads tokenizer artifacts from the model path. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from the corresponding role’s `args.max_seq_len`. For AgentX DSv4, configure conversation affinity and disable KV-event publication in the engine and frontend; this path does not require native KV-event streaming.
 
 For multi-node vLLM data parallelism, srtctl launches one Rust gRPC frontend and one Dynamo sidecar on **every node** using hybrid load balancing. All nodes receive the global `--data-parallel-size`, while `--data-parallel-size-local` and `--data-parallel-start-rank` restrict each frontend to its colocated engines. For example, DP12 on three four-GPU nodes launches local DP4 with starting ranks 0, 4, and 8. Dynamo registers three endpoints, each covering its four local ranks. No node runs `--headless`, and readiness requires all three sidecars. vLLM sidecars require `engine.dp_launch_mode: per_node` (the default; `backend.dp_launch_mode` in schema 1); `per_gpu` is rejected during configuration validation, including for single-rank jobs.
 

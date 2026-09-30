@@ -349,11 +349,8 @@ class TRTLLMProtocol:
         frontend = get_frontend(frontend_type)
 
         sidecar_config = get_dynamo_sidecar_config(runtime)
-        if sidecar_config is not None:
-            if frontend.worker_launch != "dynamo":
-                raise ValueError("TensorRT-LLM sidecar mode requires frontend.type: dynamo")
-            if mode != "agg":
-                raise ValueError("TensorRT-LLM sidecar mode supports aggregated workers only")
+        if sidecar_config is not None and frontend.worker_launch != "dynamo":
+            raise ValueError("TensorRT-LLM sidecar mode requires frontend.type: dynamo")
 
         # Write config to host path (log_dir)
         config_filename = f"trtllm_config_{mode}.yaml"
@@ -469,6 +466,8 @@ class TRTLLMProtocol:
                 "tensorrt_llm.commands.serve",
                 model_arg,
                 "--grpc",
+                "--grpc-protocol",
+                "openengine",
                 "--host",
                 "127.0.0.1",
                 "--port",
@@ -477,6 +476,16 @@ class TRTLLMProtocol:
                 str(container_config_path),
             ]
         )
+
+        if self.served_model_name:
+            engine.extend(["--served_model_name", self.served_model_name])
+        for flag, key in (
+            ("--tensor_parallel_size", "tensor_parallel_size"),
+            ("--moe_expert_parallel_size", "moe_expert_parallel_size"),
+            ("--pipeline_parallel_size", "pipeline_parallel_size"),
+        ):
+            if config.get(key) is not None:
+                engine.extend([flag, str(config[key])])
 
         sidecar = (
             [sidecar_config.sidecar_binary]
@@ -491,6 +500,8 @@ class TRTLLMProtocol:
                 model_arg,
             ]
         )
+        if process.endpoint_mode != "agg":
+            sidecar.extend(["--disaggregation-mode", process.endpoint_mode])
         context_length = sidecar_config.sidecar_context_length
         if context_length is None:
             context_length = config.get("max_seq_len") or config.get("max-seq-len")
