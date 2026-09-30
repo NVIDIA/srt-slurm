@@ -24,8 +24,9 @@ A recipe can group everything about a worker role under one block::
 instead of spreading it across ``resources.prefill_workers`` /
 ``resources.gpus_per_prefill``, ``backend.prefill_environment``, and
 ``backend.<engine>_config.prefill``. :func:`expand_roles` normalizes a
-``roles:`` block back into those existing internal fields before schema load, so
-no downstream consumer changes; :func:`roles_from_legacy` is the inverse, used to
+``roles:`` block back into those existing internal fields before schema load.
+Independent role engines additionally populate ``role_backends`` and role
+containers populate ``role_containers``; :func:`roles_from_legacy` is the inverse, used to
 migrate a v1 recipe and to prove the two forms are equivalent.
 
 Role names are ``prefill``, ``decode``, and ``agg``. The aggregated role is
@@ -41,7 +42,10 @@ colocated layout whose workers do not fit on the prefill nodes.
 
 The engine itself is a top-level ``engine:`` key in 2.0 (a string, or a mapping
 with ``type`` plus engine-wide knobs such as vLLM's ``connector``); it maps onto
-``backend``. Per-role ``kv_events`` maps onto ``backend.kv_events_config.<mode>``
+``backend`` for shared-engine recipes. Alternatively, every role declares its own
+``engine`` with no top-level engine. The two forms cannot be mixed.
+Per-role ``kv_events`` maps onto
+the selected backend's ``kv_events_config.<mode>``
 and per-role ``sidecar`` onto ``dynamo.sidecar`` (every role must agree); per-role
 ``critical`` maps onto ``resources.<role>_critical``. A v2
 recipe therefore needs no ``backend:`` block at all; a v1 recipe still loads.
@@ -56,6 +60,7 @@ from typing import Any
 ENGINE_CONFIG_KEY: dict[str, str] = {
     "atom": "atom_config",
     "sglang": "sglang_config",
+    "tilert": "tilert_config",
     "vllm": "vllm_config",
     "trtllm": "trtllm_config",
     "mocker": "mocker_config",
@@ -71,7 +76,7 @@ COLOCATE = "colocate"
 
 # Per-role spec keys.
 _ROLE_SPEC_KEYS = frozenset(
-    {"nodes", "workers", "gpus", "env", "args", "extra_args", "engine", "kv_events", "sidecar", "critical"}
+    {"nodes", "workers", "gpus", "env", "args", "extra_args", "engine", "container", "kv_events", "sidecar", "critical"}
 )
 
 
@@ -81,44 +86,26 @@ def _engine_key(config: dict[str, Any]) -> str:
     return ENGINE_CONFIG_KEY.get(btype, "sglang_config")
 
 
+def _engine_mapping(engine: Any) -> dict[str, Any]:
+    if isinstance(engine, str):
+        return {"type": engine}
+    if isinstance(engine, dict):
+        return copy.deepcopy(engine)
+    raise TypeError("engine must be a string (the engine type) or a mapping with a 'type' key")
+
+
 def expand_engine(config: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the top-level ``engine:`` key (and per-role ``engine``) into ``backend``, in place.
+    """Normalize engine selection into the internal job backend, in place.
 
     ``engine: sglang`` is shorthand for ``engine: {type: sglang}``; a mapping
     carries engine-wide knobs (``connector``, ``served_model_name``, ...) that
     are merged into ``backend``. ``backend.type`` may coexist only when it agrees.
     """
     engine = config.pop("engine", None)
-    roles = config.get("roles")
-    role_engines = {
-        str(spec["engine"])
-        for spec in (roles.values() if isinstance(roles, dict) else ())
-        if isinstance(spec, dict) and spec.get("engine") is not None
-    }
-    if engine is None and not role_engines:
-        return config
-
-    if isinstance(engine, str):
-        engine_map: dict[str, Any] = {"type": engine}
-    elif isinstance(engine, dict):
-        engine_map = dict(engine)
-    elif engine is None:
-        engine_map = {}
-    else:
-        raise TypeError("engine must be a string (the engine type) or a mapping with a 'type' key")
-
-    if len(role_engines) > 1:
-        raise ValueError(f"every role must use the same engine; got {', '.join(sorted(role_engines))}")
-    if role_engines:
-        (role_engine,) = role_engines
-        if engine_map.get("type") not in (None, role_engine):
-            raise ValueError(f"roles.*.engine {role_engine!r} conflicts with engine.type {engine_map['type']!r}")
-        engine_map.setdefault("type", role_engine)
-    for spec in roles.values() if isinstance(roles, dict) else ():
-        if isinstance(spec, dict):
-            spec.pop("engine", None)
-
     backend = config.get("backend")
+    if engine is None:
+        return config
+    engine_map = _engine_mapping(engine)
     if backend is None:
         backend = config["backend"] = {}
     if not isinstance(backend, dict):
@@ -187,6 +174,7 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
     A no-op when there is no ``roles:`` key. Rejects mixing ``roles:`` with the
     v1 ``prefill_*`` / ``<engine>_config`` fields it expands into.
     """
+    has_engine_default = config.get("engine") is not None or bool(config.get("backend"))
     expand_engine(config)
     roles = config.get("roles")
     if not isinstance(roles, dict):
@@ -200,9 +188,13 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
             + ". Use roles: or the legacy fields, not both."
         )
 
-    engine_key = _engine_key(config)
     resources = config.setdefault("resources", {})
-    backend = config.setdefault("backend", {})
+    default_backend = config.setdefault("backend", {})
+    if "role_backends" in config or "role_containers" in config:
+        raise ValueError("roles: cannot be combined with internal role_backends or role_containers")
+    per_role_engines = not has_engine_default and any(
+        isinstance(spec, dict) and spec.get("engine") is not None for spec in roles.values()
+    )
 
     for role_name, spec in roles.items():
         if role_name not in ROLE_TO_MODE:
@@ -212,6 +204,21 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
         unknown = set(spec) - _ROLE_SPEC_KEYS
         if unknown:
             raise ValueError(f"roles.{role_name} has unknown keys: {', '.join(sorted(unknown))}")
+
+        backend = default_backend
+        if has_engine_default and "engine" in spec:
+            raise ValueError(f"roles.{role_name}.engine cannot be combined with a top-level engine or backend")
+        if per_role_engines:
+            selected = _engine_mapping(spec["engine"]) if spec.get("engine") is not None else {}
+            if not selected.get("type"):
+                raise ValueError(f"roles.{role_name}.engine must name a type when no top-level engine is set")
+            backend = config.setdefault("role_backends", {})[role_name] = selected
+        engine_key = _engine_key({"backend": backend})
+        if "container" in spec:
+            container = spec["container"]
+            if not isinstance(container, str) or not container.strip():
+                raise ValueError(f"roles.{role_name}.container must be a non-empty string")
+            config.setdefault("role_containers", {})[role_name] = container
 
         mode = ROLE_TO_MODE[role_name]
         if "nodes" in spec:
@@ -254,6 +261,11 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
     if sidecars:
         config.setdefault("dynamo", {})["sidecar"] = sidecars.pop()
 
+    if per_role_engines:
+        # Existing job metadata uses the serving backend; workers resolve only
+        # through role_backends. This does not supply defaults to sibling roles.
+        serving_role = next(role for role in ("decode", "agg", "prefill") if role in roles)
+        config["backend"] = copy.deepcopy(config["role_backends"][serving_role])
     config.pop("roles", None)
     return config
 
@@ -291,6 +303,28 @@ def roles_from_legacy(config: dict[str, Any]) -> dict[str, Any]:
             spec["extra_args"] = backend[f"{mode}_extra_args"]
         if spec:
             roles[role_name] = spec
+
+    role_backends = result.pop("role_backends", {})
+    for role_name, selected in role_backends.items():
+        mode = ROLE_TO_MODE[role_name]
+        spec = roles.setdefault(role_name, {})
+        selected_key = _engine_key({"backend": selected})
+        mode_args = selected.get(selected_key, {})
+        if isinstance(mode_args, dict) and mode in mode_args:
+            spec["args"] = mode_args.pop(mode)
+            if not mode_args:
+                selected.pop(selected_key)
+        for key, role_key in ((f"{mode}_environment", "env"), (f"{mode}_extra_args", "extra_args")):
+            if key in selected:
+                spec[role_key] = selected.pop(key)
+        events = selected.get("kv_events_config")
+        if isinstance(events, dict) and mode in events:
+            spec["kv_events"] = events.pop(mode)
+            if not events:
+                selected.pop("kv_events_config")
+        spec["engine"] = selected["type"] if set(selected) == {"type"} else selected
+    for role_name, container in result.pop("role_containers", {}).items():
+        roles.setdefault(role_name, {})["container"] = container
 
     kv_events_config = backend.get("kv_events_config")
     if isinstance(kv_events_config, dict):
@@ -336,6 +370,11 @@ def roles_from_legacy(config: dict[str, Any]) -> dict[str, Any]:
         remaining = dict(result["backend"])
         engine_type = remaining.pop("type", None)
         if engine_type is not None or remaining:
-            result["engine"] = engine_type if not remaining else {"type": engine_type, **remaining}
+            engine = engine_type if not remaining else {"type": engine_type, **remaining}
+            if role_backends:
+                for spec in roles.values():
+                    spec.setdefault("engine", copy.deepcopy(engine))
+            else:
+                result["engine"] = engine
         result.pop("backend", None)
     return result

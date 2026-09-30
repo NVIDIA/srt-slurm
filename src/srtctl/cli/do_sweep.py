@@ -95,6 +95,8 @@ class SweepOrchestrator(
         """
         r = self.config.resources
         if self.runtime.nodes.het:
+            if self.config.role_backends:
+                raise ValueError("Role engine overrides do not support Slurm heterogeneous allocations")
             return allocate_endpoints_het(
                 num_prefill=r.num_prefill,
                 gpus_per_prefill=r.gpus_per_prefill,
@@ -105,17 +107,7 @@ class SweepOrchestrator(
                 gpus_per_node=r.gpus_per_node,
                 pack_multinode_workers=self.backend.type == "trtllm",
             )
-        return self.backend.allocate_endpoints(
-            num_prefill=r.num_prefill,
-            num_decode=r.num_decode,
-            num_agg=r.num_agg,
-            gpus_per_prefill=r.gpus_per_prefill,
-            gpus_per_decode=r.gpus_per_decode,
-            gpus_per_agg=r.gpus_per_agg,
-            gpus_per_node=r.gpus_per_node,
-            available_nodes=self.runtime.nodes.worker,
-            spread_workers=r.spread_workers,
-        )
+        return self.config.allocate_worker_endpoints(self.runtime.nodes.worker)
 
     @functools.cached_property
     def backend_processes(self) -> list[Process]:
@@ -125,12 +117,7 @@ class SweepOrchestrator(
         deterministically within a job.
         """
         allocator = NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: self.config.dynamo.sidecar_port})
-        return self.backend.endpoints_to_processes(
-            self.endpoints,
-            port_allocator=allocator,
-            frontend_type=self.config.frontend.type,
-            dynamo_sidecar=self.config.dynamo.sidecar,
-        )
+        return self.config.worker_processes(self.endpoints, port_allocator=allocator)
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> None:
         """Start the discovery plane (etcd, NATS) as services.

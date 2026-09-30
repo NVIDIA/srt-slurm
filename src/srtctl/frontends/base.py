@@ -54,6 +54,9 @@ class FrontendProtocol(Protocol):
     #: ``SrtConfig._validate_frontend`` enforces it at config load.
     required_backend: ClassVar[str | None]
 
+    #: Role that accepts the public request's model name; None uses decode/agg/prefill order.
+    model_name_role: ClassVar[str | None]
+
     #: How this frontend's workers are launched. ``dynamo`` workers are
     #: ``dynamo.<engine>`` processes that register with the Dynamo runtime;
     #: ``direct`` workers are the engine's own OpenAI server (``vllm serve``,

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Agent guidance (CLAUDE.md, AGENTS.md, REVIEW.md, .agents/skills) stays true to the code.
+"""Agent guidance and repository skills stay true to the code.
 
 Every inline-code file path must exist, and every inline-code Python symbol must
 still be defined somewhere in the repository. A failure names the file and the
@@ -33,6 +33,7 @@ _SYMBOL = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*(\(.*\))?$")
 def agent_files() -> list[Path]:
     files = [REPO_ROOT / "CLAUDE.md", REPO_ROOT / "AGENTS.md", REPO_ROOT / "REVIEW.md"]
     files += sorted(REPO_ROOT.glob(".agents/skills/*/SKILL.md"))
+    files += sorted(REPO_ROOT.glob("src/srtctl/dsight/skills/*/SKILL.md"))
     files += sorted(p for p in (REPO_ROOT / "src").rglob("AGENTS.md"))
     files += sorted((REPO_ROOT / "tests").rglob("AGENTS.md"))
     files += [REPO_ROOT / "docs" / "AGENTS.md"]

@@ -8,6 +8,18 @@ file to its UI view, request-identity joins, and the limits of each source.
 The [storage and query reference](dsight-storage.md) documents the SQLite schema,
 indexed query semantics, static detail format and browser API.
 
+## Agent skills
+
+Before using DSight, agents must read this guide and load the applicable skills
+below by reading their `SKILL.md` files. This applies when building or querying
+reports, analyzing existing results, preparing dashboard views, or changing
+DSight code. The skills are maintained alongside DSight; no global installation
+is required.
+
+| Skill | When to load it |
+| --- | --- |
+| [dsight-query](../src/srtctl/dsight/skills/dsight-query/SKILL.md) | Query an existing report, inspect source coverage, compare runs, or gather evidence for a dashboard view. Prefer the normalized SQLite cache through the read-only CLI, Python or MCP interface. |
+
 ## Generate on a cluster login node
 
 Run these commands manually on the login node after the run's artifacts have

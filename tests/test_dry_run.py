@@ -57,6 +57,26 @@ def test_cluster_gpu_visibility_is_visible(tmp_path, monkeypatch, capsys):
     assert "GPU subset visibility variable: ROCR_VISIBLE_DEVICES" in capsys.readouterr().out
 
 
+def test_role_engines_images_and_environments_are_visible(capsys):
+    from srtctl.core.roles import expand_roles
+
+    data = yaml.safe_load(Path("examples/vllm/vllm-router-disagg.yaml").read_text())
+    engine = data.pop("engine")
+    data["roles"]["prefill"]["engine"] = {**engine, "set_visible_devices": True}
+    data["roles"]["decode"]["engine"] = engine
+    data["roles"]["prefill"]["container"] = "prefill-image"
+    data["roles"]["prefill"]["env"] = {"PREFILL_ONLY": "1"}
+    data["roles"]["decode"]["env"] = {"DECODE_ONLY": "1"}
+    data["model"]["container"] = "decode-image"
+    config = SrtConfig.Schema().load(expand_roles(data))
+    show_config_details(config)
+    output = capsys.readouterr().out
+    assert "prefill: engine=vllm, container=prefill-image" in output
+    assert "decode: engine=vllm, container=decode-image" in output
+    assert "PREFILL_ONLY" in output
+    assert "DECODE_ONLY" in output
+
+
 class TestDryRunDynamoMetrics:
     @pytest.mark.parametrize(
         ("settings", "expected", "excluded"),

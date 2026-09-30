@@ -207,10 +207,11 @@ def test_dep4_expansion_and_health_counts_follow_upstream_per_node_topology() ->
     config = SimpleNamespace(
         frontend=SimpleNamespace(type="vllm-router"),
         backend=backend,
+        backend_for_role=lambda mode: backend,
         resources=SimpleNamespace(num_prefill=1, num_decode=2, num_agg=0),
     )
 
-    assert node_local_data_parallel_size(backend, processes) == 4
+    assert node_local_data_parallel_size(config, processes) == 4
     assert _get_health_expectations(config, processes) == (
         4,
         8,
@@ -236,10 +237,11 @@ def test_multinode_dep8_routes_node_local_hybrid_pools_without_rank_reexpansion(
     config = SimpleNamespace(
         frontend=SimpleNamespace(type="vllm-router"),
         backend=backend,
+        backend_for_role=lambda mode: backend,
         resources=SimpleNamespace(num_prefill=1, num_decode=1, num_agg=0),
     )
 
-    assert node_local_data_parallel_size(backend, processes) == 1
+    assert node_local_data_parallel_size(config, processes) == 1
     assert _get_health_expectations(config, processes) == (
         2,
         2,
@@ -297,6 +299,7 @@ def test_managed_args_derive_dp_and_startup_timeout_without_overriding_user_poli
     processes = [Process("n0", frozenset(range(4)), 7500, 6100, "agg", 0)]
     config = SimpleNamespace(
         frontend=SimpleNamespace(args={"policy": "consistent_hash"}),
+        backend_for_role=lambda mode: backend,
         health_check=SimpleNamespace(max_attempts=360, interval_seconds=10),
     )
 
@@ -333,6 +336,7 @@ def test_router_launch_uses_router_image_env_setup_and_captured_log() -> None:
     worker = Process("worker0", frozenset(range(4)), 7500, 6100, "agg", 0)
     backend = MagicMock()
     backend._get_dp_size.return_value = None
+    config.backend_for_role = lambda mode: backend
 
     with (
         patch("srtctl.frontends.static_router.get_hostname_ip", return_value="10.0.0.1"),

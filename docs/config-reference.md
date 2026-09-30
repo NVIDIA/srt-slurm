@@ -97,7 +97,7 @@ slurm:                         # Optional: SLURM overrides
 frontend:                      # Optional: router/frontend config
   type: dynamo
 
-engine: sglang                 # Required: sglang | vllm | trtllm | mocker
+engine: sglang                 # Default engine; omit when every role sets engine
 roles:                         # Required: one block per worker role
   prefill:
     nodes: 1
@@ -202,7 +202,7 @@ reporting:
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
-**containers**: A map from alias to image path or registry URI. One resolver walks the whole recipe and replaces any string under a `container`, `container_image`, `image`, or `nginx_container` key that matches an alias: `model.container`, `frontend.container_image`, `frontend.nginx_container`, `benchmark.container_image`, the Tachometer and power exporter images, `services[].container`, and any future block that names an image. Literal paths and registry URIs pass through untouched. Free-form maps (`environment`, `roles.<role>.env`, `roles.<role>.args`, `services[].env`, `container_mounts`) and the `identity` block are never rewritten.
+**containers**: A map from alias to image path or registry URI. One resolver replaces image aliases in `model.container`, `roles.<role>.container`, frontend/benchmark images, exporter images and `services[].container`. Literal paths and registry URIs pass through untouched. Free-form maps (`environment`, `roles.<role>.env`, `roles.<role>.args`, `services[].env`, `container_mounts`) and the `identity` block are never rewritten.
 
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl: workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
 
@@ -294,7 +294,7 @@ For vLLM builds without `--device-ids`, set `engine.set_visible_devices: true`.
 This is one explicit boolean, not automatic vLLM version detection. The default
 is false: vLLM binds devices with `--device-ids`. There is no CUDA-named alias.
 
-`engine:` names the inference engine that builds every worker role's command. A bare string is the common form; a mapping carries the engine-wide knobs, the fields that are not per role:
+`engine:` supplies the default inference engine for worker roles. It is optional when every role sets its own `engine`. A bare string is the common form; a mapping carries engine options:
 
 ```yaml
 engine: sglang
@@ -458,7 +458,24 @@ roles:
       tensor-parallel-size: 2
 ```
 
-Role names are `prefill`, `decode`, and `agg`. A recipe is disaggregated (prefill and decode) or aggregated (agg only), never both. Every role a recipe launches is declared here; the `roles.<role>.engine` key is optional and, when given, must equal the top-level [engine](#engine).
+Role names are `prefill`, `decode`, and `agg`. A recipe is disaggregated (prefill and decode) or aggregated (agg only), never both. Every role a recipe launches is declared here. Use either a shared top-level [engine](#engine) or `roles.<role>.engine` on every role, never both. Mixing the two forms fails preflight even when the engine types match. `roles.<role>.container` overrides `model.container`. Arguments and environment belong to the selected role engine. Different engines still need a compatible router and KV-transfer protocol.
+
+For mixed-engine recipes, declare both engines explicitly and omit the top-level `engine`. Missing role engines fail preflight; options on one role never become another role's defaults. `model.container` remains the shared image for non-worker tasks; each worker can select its own image.
+
+Per-role engines do not support Dynamo, sidecars, Slurm heterogeneous jobs,
+profiling, failover, implicit Mooncake stores, vLLM discovery connectors, or SGLang
+gRPC workers. Shared-engine SGLang gRPC recipes are unchanged.
+Multi-node workers must occupy whole nodes; multi-node TRT-LLM is unsupported.
+TileRT's point-to-point Mooncake transfer is supported; see [TileRT](tilert.md).
+
+These restrictions are checked when `SrtConfig` loads, before Slurm submission,
+including dry-run and preflight. `_validate_role_backends()` rejects per-role
+engines with Dynamo or sidecars. `_validate_frontend()` checks every active role
+against the frontend's `required_backend`, then calls its `validate(config)` hook.
+For example, vLLM prefill plus SGLang decode is rejected with Dynamo, SGLang Router,
+or vLLM Router. A frontend that permits mixed engines must define its own pairing
+rules; passing configuration validation does not prove KV-transfer compatibility
+between the installed engine versions.
 
 | Key | Type | Description |
 | --- | --- | --- |
@@ -471,7 +488,8 @@ Role names are `prefill`, `decode`, and `agg`. A recipe is disaggregated (prefil
 | `kv_events` | bool or dict | Publish KV cache events for the Dynamo router; see below |
 | `sidecar` | bool | Run the native engine with a Dynamo sidecar; see [Native sidecar mode](#native-sidecar-mode) |
 | `critical` | bool | Whether a worker of this role exiting fails the run (default `true`); see [critical](#critical) |
-| `engine` | string | Optional; must equal the top-level `engine` when both are given |
+| `engine` | string or mapping | Required on every role when there is no top-level engine; forbidden when a top-level engine is set |
+| `container` | string | Optional image override; accepts cluster container aliases |
 
 `env` and `args` are ordinary YAML mappings. Nothing needs JSON or inline `{}` syntax. Boolean flags are `flag-name: true`.
 

@@ -19,15 +19,17 @@ import logging
 import math
 import os
 import shlex
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import field
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import (
+    TYPE_CHECKING,
     Annotated,
     Any,
     ClassVar,
     Literal,
+    cast,
 )
 
 import yaml
@@ -39,6 +41,7 @@ from srtctl.backends import (
     BackendConfig,
     MockerProtocol,
     SGLangProtocol,
+    TileRTProtocol,
     TRTLLMProtocol,
     VLLMMooncakeKVStoreConfig,
     VLLMProtocol,
@@ -53,6 +56,9 @@ from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
 from srtctl.services.config import ServiceConfig
+
+if TYPE_CHECKING:
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process, WorkerMode
 
 logger = logging.getLogger(__name__)
 
@@ -460,7 +466,9 @@ class BackendConfigField(fields.Field):
             # Default to SGLang
             return SGLangProtocol()
 
-        if isinstance(value, AtomProtocol | SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol):
+        if isinstance(
+            value, AtomProtocol | SGLangProtocol | TileRTProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
+        ):
             return value
 
         if not isinstance(value, dict):
@@ -471,6 +479,8 @@ class BackendConfigField(fields.Field):
 
         if backend_type == "atom":
             return AtomProtocol.Schema().load(value)
+        elif backend_type == "tilert":
+            return TileRTProtocol.Schema().load(value)
         elif backend_type == "sglang":
             schema = SGLangProtocol.Schema()
             return schema.load(value)
@@ -485,7 +495,7 @@ class BackendConfigField(fields.Field):
             return schema.load(value)
         else:
             raise ValidationError(
-                f"Unknown backend type: {backend_type!r}. Supported types: atom, sglang, trtllm, vllm, mocker"
+                f"Unknown backend type: {backend_type!r}. Supported types: atom, sglang, tilert, trtllm, vllm, mocker"
             )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
@@ -494,6 +504,8 @@ class BackendConfigField(fields.Field):
             return None
         if isinstance(value, AtomProtocol):
             return AtomProtocol.Schema().dump(value)
+        if isinstance(value, TileRTProtocol):
+            return TileRTProtocol.Schema().dump(value)
         if isinstance(value, SGLangProtocol):
             return SGLangProtocol.Schema().dump(value)
         if isinstance(value, TRTLLMProtocol):
@@ -2128,7 +2140,7 @@ class FrontendConfig:
 
     Attributes:
         type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
-            Gateway) and "vllm-router" (static routers); "sglang", "vllm", and
+            Gateway), "vllm-router", "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and
             "trtllm_serve" (direct: the single aggregate worker binds the public
             port, no router process); "none" (services-only job: no router, no
             OpenAI endpoint, no worker-count health gate; requires no engine
@@ -2307,6 +2319,10 @@ class SrtConfig:
 
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
     backend: Annotated[BackendConfig, BackendConfigField()] = field(default_factory=SGLangProtocol)
+    # Internal normalized form of roles.<role>.engine/container. Legacy recipes
+    # keep these empty and retain their original backend allocation path.
+    role_backends: dict[str, Annotated[BackendConfig, BackendConfigField()]] = field(default_factory=dict)
+    role_containers: dict[str, str] = field(default_factory=dict)
     frontend: FrontendConfig = field(default_factory=FrontendConfig)
     dynamo: DynamoConfig = field(default_factory=DynamoConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
@@ -2356,6 +2372,7 @@ class SrtConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
+        self._validate_role_backends()
         self._validate_frontend_worker_selection()
         self._validate_profiling()
         self._validate_observability()
@@ -2373,6 +2390,82 @@ class SrtConfig:
         self._validate_services_only()
         self._validate_services()
         self._warn_dp_launch_mode()
+
+    @property
+    def has_role_backends(self) -> bool:
+        return bool(self.role_backends)
+
+    def backend_for_role(self, mode: str) -> BackendConfig:
+        """Resolve the concrete engine for an endpoint's role."""
+        from srtctl.core.worker_backends import role_name
+
+        return self.role_backends.get(role_name(mode), self.backend)
+
+    def worker_container_for_role(self, mode: str) -> str:
+        """Role-specific worker image, or the shared model image."""
+        from srtctl.core.worker_backends import role_name
+
+        image = os.path.expandvars(self.role_containers.get(role_name(mode), self.model.container))
+        return str(Path(image).resolve()) if image.startswith(("/", "./")) else image
+
+    def active_role_backends(self) -> list[tuple[str, BackendConfig]]:
+        return [
+            (role, self.backend_for_role(role))
+            for role, count in (
+                ("prefill", self.resources.num_prefill),
+                ("decode", self.resources.num_decode),
+                ("agg", self.resources.num_agg),
+            )
+            if count
+        ]
+
+    def allocate_worker_endpoints(self, nodes: Sequence[str]) -> list["Endpoint"]:
+        from srtctl.core.worker_backends import allocate_worker_endpoints
+
+        return allocate_worker_endpoints(self, nodes)
+
+    def worker_processes(
+        self, endpoints: list["Endpoint"], port_allocator: "NodePortAllocator | None" = None
+    ) -> list["Process"]:
+        from srtctl.core.worker_backends import worker_processes
+
+        return worker_processes(self, endpoints, port_allocator)
+
+    def _validate_role_backends(self) -> None:
+        """Reject job-wide orchestration that is not yet role-aware."""
+        allowed = {"prefill", "decode", "agg"}
+        unknown = (self.role_backends.keys() | self.role_containers.keys()) - allowed
+        if unknown:
+            raise ValidationError(f"Unknown worker role(s): {', '.join(sorted(unknown))}")
+        for role, container in self.role_containers.items():
+            if not isinstance(container, str) or not container.strip():
+                raise ValidationError(f"roles.{role}.container must be a non-empty string")
+        if not self.has_role_backends:
+            return
+        if self.frontend.type == "dynamo" or self.dynamo.sidecar:
+            raise ValidationError("role-specific engines do not yet support the Dynamo frontend or sidecars")
+        if self.resources.het_jobs is True:
+            raise ValidationError("role-specific engines do not yet support resources.het_jobs")
+        if self.profiling.enabled or self.observability_nsys_enabled:
+            raise ValidationError("role-specific engines do not yet support profiling or observability.nsys")
+        for role, backend in [("default", self.backend), *self.active_role_backends()]:
+            if isinstance(backend, VLLMProtocol) and backend.discovers_workers():
+                raise ValidationError("role-specific engines do not yet support vLLM discovery connectors")
+            if backend.mooncake_kv_store is not None or backend.failover is not None:
+                raise ValidationError(
+                    f"role-specific engines do not yet support implicit Mooncake stores or failover ({role})"
+                )
+            if role != "default":
+                if isinstance(backend, SGLangProtocol) and backend.is_grpc_mode(cast("WorkerMode", role)):
+                    raise ValidationError("role-specific engines do not yet support SGLang gRPC workers")
+                gpus = getattr(self.resources, f"gpus_per_{role}")
+                if gpus > self.resources.gpus_per_node and (
+                    backend.type == "trtllm" or gpus % self.resources.gpus_per_node
+                ):
+                    raise ValidationError(
+                        f"roles.{role}: role-specific engines require whole-node multi-node workers; "
+                        "multi-node TRT-LLM packing is not yet supported"
+                    )
 
     def _validate_services_only(self) -> None:
         """Rules for ``frontend.type: none`` and for services that own nodes (pools).
@@ -2632,9 +2725,12 @@ class SrtConfig:
                 f"Unknown frontend.type {self.frontend.type!r}. Available: {', '.join(list_frontend_types())}"
             ) from None
         required = frontend.required_backend
-        if required is not None and self.backend_type != required:
+        incompatible = [
+            f"{role}={backend.type}" for role, backend in self.active_role_backends() if backend.type != required
+        ]
+        if required is not None and incompatible:
             raise ValidationError(
-                f"frontend.type: {self.frontend.type} requires backend.type: {required}; got {self.backend_type!r}"
+                f"frontend.type: {self.frontend.type} requires backend.type: {required}; got {', '.join(incompatible)}"
             )
         try:
             frontend.validate(self)
@@ -2696,17 +2792,7 @@ class SrtConfig:
         if demand > capacity:
             raise ValidationError(f"colocated decode workers do not fit on the prefill nodes: {layout}")
         try:
-            self.backend.allocate_endpoints(
-                num_prefill=res.num_prefill,
-                num_decode=res.num_decode,
-                num_agg=0,
-                gpus_per_prefill=res.gpus_per_prefill,
-                gpus_per_decode=res.gpus_per_decode,
-                gpus_per_agg=res.gpus_per_agg,
-                gpus_per_node=res.gpus_per_node,
-                available_nodes=[f"node{i}" for i in range(prefill_nodes)],
-                spread_workers=res.spread_workers,
-            )
+            self.allocate_worker_endpoints([f"node{i}" for i in range(prefill_nodes)])
         except (ValueError, IndexError) as exc:
             # The packer raises ValueError when it runs out of nodes and IndexError when a
             # partial-node worker overflows the last node; both mean "does not fit".
@@ -3276,7 +3362,13 @@ class SrtConfig:
     def served_model_name(self) -> str:
         """Get the served model name from backend config or model path."""
         default = Path(self.model.path).name
-        if isinstance(self.backend, AtomProtocol):
+        role = "decode" if self.resources.num_decode else "agg" if self.resources.num_agg else "prefill"
+        if self.frontend.type != "none":
+            from srtctl.frontends import get_frontend
+
+            role = get_frontend(self.frontend.type).model_name_role or role
+        backend = self.backend_for_role(role)
+        if isinstance(backend, AtomProtocol):
             # ATOM advertises the literal --model argument; unlike SGLang/vLLM,
             # it has no separate served-model-name alias. Match the worker's
             # HF ID or container-visible path, including node-local staging.
@@ -3287,7 +3379,7 @@ class SrtConfig:
                 default = str(Path(os.path.expandvars(self.model.stage_dir)) / Path(model_path).resolve().name)
             else:
                 default = "/model"
-        return self.backend.get_served_model_name(default)
+        return backend.get_served_model_name(default)
 
     @property
     def pool_services(self) -> list[ServiceConfig]:
@@ -3319,6 +3411,8 @@ class SrtConfig:
 
     def _engine_total_nodes(self) -> int:
         """Worker node count of the engine roles, adjusted for backend-specific packing."""
+        if self.has_role_backends:
+            return self.resources.total_nodes
         if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
             num_prefill=self.resources.num_prefill,
             num_decode=self.resources.num_decode,

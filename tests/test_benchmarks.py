@@ -373,6 +373,50 @@ class TestCustomBenchmarkRunner:
             "http://ip-node-a:7500/metrics,http://ip-node-c:7502/metrics,http://ip-node-e:7504/metrics"
         )
 
+    def test_tilert_custom_metrics_exclude_decode_without_hiding_routing_endpoints(self):
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(8)), 7500, 6100, "prefill", 0),
+            Process("node-b", frozenset(range(4)), 7501, 6100, "decode", 0),
+            Process("node-b", frozenset(range(4, 8)), 7502, 6132, "decode", 1),
+        ]
+        stage = self._benchmark_stage("tilert-router", processes, backend_type="tilert")
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/metrics"
+        assert env["SRT_PREFILL_ENDPOINTS"] == "ip-node-a:6100"
+        assert env["SRT_DECODE_ENDPOINTS"] == "ip-node-b:6100,ip-node-b:6132"
+
+    def test_vllm_router_custom_metrics_retain_nonleader_node_local_dp_pools(self):
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(8)), 7500, 6100, "decode", 0, node_rank=0),
+            Process("node-b", frozenset(range(8)), 7501, 6100, "decode", 0, node_rank=1),
+        ]
+        stage = self._benchmark_stage("vllm-router", processes, backend_type="vllm")
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/metrics,http://ip-node-b:6100/metrics"
+        assert env["SRT_DECODE_ENDPOINTS"] == "ip-node-a:6100,ip-node-b:6100"
+
     def test_sidecar_worker_endpoints_use_native_sglang_http_ports(self):
         from unittest.mock import patch
 
