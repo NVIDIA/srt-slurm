@@ -133,13 +133,22 @@ expected job shape for hardware canaries.
 Each expected GPU must also retain at least 95% of the expected sampling
 intervals across its nearest bracketing samples. Expected intervals are
 `floor((last_bracket - first_bracket) / sample_interval_seconds)`; observed
-intervals are the number of samples in that same span minus one. This avoids
-counting ordinary cadence jitter as repeated loss or allowing warmup samples
-to hide missing measurements. More than 5% missing intervals records
-`sample_loss_exceeded`, even when every individual gap is below 3 seconds.
-For example, sampling every 2 seconds with a recorded 1-second cadence fails.
+intervals are the number of distinct sample times in that same span minus one,
+so a row written twice counts once. This avoids counting ordinary cadence
+jitter as repeated loss or allowing warmup samples to hide missing
+measurements. More than 5% missing intervals, more than one sample in twenty,
+records `sample_loss_exceeded`, even when every individual gap is below 3
+seconds. For example, sampling every 2 seconds with a recorded 1-second cadence
+fails. A manifest without a finite positive `sample_interval_seconds` fails this
+rule too, alongside the manifest field check.
 
-The 3-second maximum gap and boundary checks still apply. Session finalization
-and offline validation use the recorded cadence and the same coverage rule.
-Previously accepted sparse packages can fail revalidation; their files are
-not rewritten. This limits sample loss, not the numerical error in energy.
+The 3-second maximum gap and boundary checks still apply, but on short spans
+the loss rule is the stricter one. At a 1-second cadence one dropped sample
+passes only from 20 intervals, and one 3-second hole (two missing intervals)
+only from 40; a shorter window rejects on that single loss by design, because
+one lost second is a larger share of it. Formal sa-bench windows run for
+minutes, where a single gap at the limit passes both rules. Session
+finalization and offline validation use the recorded cadence and the same
+coverage rule. Previously accepted sparse packages can fail revalidation; their
+files are not rewritten. This limits sample loss, not the numerical error in
+energy.
