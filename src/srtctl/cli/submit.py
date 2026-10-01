@@ -282,7 +282,7 @@ def show_config_details(config: SrtConfig) -> None:
         # expand_observability). Shown for both frontends so a run that expects
         # the iteration-level trtllm_* gauges can see before submitting that
         # enable_iter_perf_stats is off.
-        modes = ("prefill", "decode") if config.resources.is_disaggregated else ("agg",)
+        modes = ("prefill", "decode") if config.topology.is_disaggregated else ("agg",)
         rows = []
         for mode in modes:
             section = config.backend.get_config_for_mode(mode)
@@ -375,7 +375,7 @@ def show_config_details(config: SrtConfig) -> None:
         )
 
     # --- SLURM heterogeneous job structure ---
-    het_components = config.resources.het_components(
+    het_components = config.topology.het_components(
         infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
@@ -907,7 +907,7 @@ def generate_minimal_sbatch_script(
     env = Environment(loader=FileSystemLoader(str(template_dir)))
     template = env.get_template("job_script_minimal.j2")
 
-    het_components = config.resources.het_components(
+    het_components = config.topology.het_components(
         infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
@@ -971,9 +971,9 @@ def _print_running_summary(config: SrtConfig, console: Console, *, serve_only: b
     console.print(f"  Model:     {config.model.path}")
     console.print(f"  Container: {config.model.container}")
     worker_counts = {
-        "prefill": config.resources.num_prefill,
-        "decode": config.resources.num_decode,
-        "agg": config.resources.num_agg,
+        "prefill": config.topology.num_prefill,
+        "decode": config.topology.num_decode,
+        "agg": config.topology.num_agg,
     }
     for mode, count in worker_counts.items():
         image = config.worker_container_for_role(mode)
@@ -1054,7 +1054,7 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
     same rules the orchestrator applies at job start; they are ``None`` for
     heterogeneous jobs, whose components are addressed differently.
     """
-    het = config.resources.het_components(
+    het = config.topology.het_components(
         infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
@@ -1289,15 +1289,15 @@ def submit_with_orchestrator(
             "resources": {
                 "gpu_type": config.resources.gpu_type,
                 "gpus_per_node": config.resources.gpus_per_node,
-                "prefill_nodes": config.resources.prefill_nodes,
-                "decode_nodes": config.resources.decode_nodes,
-                "agg_nodes": config.resources.agg_nodes,
-                "prefill_workers": config.resources.num_prefill,
-                "decode_workers": config.resources.num_decode,
-                "agg_workers": config.resources.num_agg,
-                "gpus_per_prefill": config.resources.gpus_per_prefill,
-                "gpus_per_decode": config.resources.gpus_per_decode,
-                "gpus_per_agg": config.resources.gpus_per_agg,
+                "prefill_nodes": config.topology.prefill_nodes,
+                "decode_nodes": config.topology.decode_nodes,
+                "agg_nodes": config.topology.agg_nodes,
+                "prefill_workers": config.topology.num_prefill,
+                "decode_workers": config.topology.num_decode,
+                "agg_workers": config.topology.num_agg,
+                "gpus_per_prefill": config.topology.gpus_per_prefill,
+                "gpus_per_decode": config.topology.gpus_per_decode,
+                "gpus_per_agg": config.topology.gpus_per_agg,
             },
             # Backend and frontend
             "backend_type": config.backend_type,

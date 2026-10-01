@@ -183,7 +183,8 @@ class TestRunAllValidations:
             {
                 "name": "test",
                 "model": {"path": "/nonexistent", "container": "/nonexistent.sqsh", "precision": "fp8"},
-                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+                "roles": {"prefill": {"nodes": 1}, "decode": {"nodes": 1}},
             }
         )
 
@@ -203,7 +204,8 @@ class TestRunAllValidations:
                     "container": "/nonexistent.sqsh",
                     "precision": "fp8",
                 },
-                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+                "roles": {"prefill": {"nodes": 1}, "decode": {"nodes": 1}},
                 "identity": {
                     "model": {"repo": "some/model"},
                 },
@@ -232,7 +234,8 @@ class TestBackgroundValidation:
             {
                 "name": "test",
                 "model": {"path": "/x", "container": "/x", "precision": "fp8"},
-                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+                "roles": {"prefill": {"nodes": 1}, "decode": {"nodes": 1}},
             }
         )
 

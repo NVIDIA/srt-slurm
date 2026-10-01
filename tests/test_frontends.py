@@ -206,7 +206,7 @@ class TestFrontendRegistry:
         from marshmallow import ValidationError
 
         from srtctl.backends import SGLangProtocol
-        from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 
         with pytest.raises(
             ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, none"
@@ -214,9 +214,10 @@ class TestFrontendRegistry:
             SrtConfig(
                 name="toy",
                 model={"path": "model", "container": "image", "precision": "fp8"},
-                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 frontend=FrontendConfig(type="toy-router", enable_multiple_frontends=False),
-                backend=SGLangProtocol(),
+                engine=SGLangProtocol(),
             )
 
     @pytest.mark.parametrize(
@@ -227,16 +228,17 @@ class TestFrontendRegistry:
         from marshmallow import ValidationError
 
         from srtctl.backends import TRTLLMProtocol
-        from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 
         assert get_frontend(frontend_type).required_backend == required
         with pytest.raises(ValidationError, match=f"frontend.type: {frontend_type} requires backend.type: {required}"):
             SrtConfig(
                 name="pairing",
                 model={"path": "model", "container": "image", "precision": "fp8"},
-                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 frontend=FrontendConfig(type=frontend_type, enable_multiple_frontends=False),
-                backend=TRTLLMProtocol(),
+                engine=TRTLLMProtocol(),
             )
 
 
@@ -432,8 +434,8 @@ class MockFrontendConfig:
 
 
 @dataclass
-class MockResourceConfig:
-    """Mock ResourceConfig for testing."""
+class MockWorkerCounts:
+    """Mock SrtConfig.topology (worker counts) for testing."""
 
     num_prefill: int = 0
     num_decode: int = 0
@@ -453,7 +455,7 @@ class MockConfig:
     """Mock SrtConfig for testing."""
 
     frontend: MockFrontendConfig
-    resources: MockResourceConfig
+    topology: MockWorkerCounts
     observability: MockObservabilityConfig = field(default_factory=MockObservabilityConfig)
     # None skips the pre-start worker probe; the probe has its own test with a real health_check.
     health_check: object | None = None
@@ -527,7 +529,7 @@ class TestSGLangGrpcScheme:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=2),
+            topology=MockWorkerCounts(num_agg=2),
         )
 
         # Mock backend without gRPC
@@ -568,7 +570,7 @@ class TestSGLangGrpcScheme:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
 
         # Mock SGLangProtocol backend with gRPC enabled
@@ -609,7 +611,7 @@ class TestSGLangGrpcScheme:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_prefill=1, num_decode=2),
+            topology=MockWorkerCounts(num_prefill=1, num_decode=2),
         )
 
         backend = MagicMock()
@@ -653,7 +655,7 @@ class TestSGLangGrpcScheme:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=2),
+            topology=MockWorkerCounts(num_agg=2),
         )
 
         backend = MagicMock()
@@ -699,7 +701,7 @@ class TestFrontendEnvHandling:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(env={"MY_VAR": "my_value", "ANOTHER": "123"}),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
 
         backend = MagicMock()
@@ -735,7 +737,7 @@ class TestFrontendEnvHandling:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
         backend = MagicMock()
         backend.is_grpc_mode.return_value = False
@@ -770,7 +772,7 @@ class TestFrontendEnvHandling:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(env=None),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
 
         backend = MagicMock()
@@ -805,7 +807,7 @@ class TestFrontendEnvHandling:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(args={"policy": "cache_aware", "verbose": True}),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
 
         backend = MagicMock()
@@ -844,7 +846,7 @@ class TestNumaBind:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(numa_bind=True),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
         backend = MagicMock()
         backend.is_grpc_mode.return_value = False
@@ -870,7 +872,7 @@ class TestNumaBind:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
         backend = MagicMock()
         backend.is_grpc_mode.return_value = False

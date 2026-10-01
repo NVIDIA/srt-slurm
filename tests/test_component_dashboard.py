@@ -451,7 +451,7 @@ def _stub_config(*, enabled=True, prefill=(1, 4), decode=(3, 8)):
     return SimpleNamespace(
         name="unit-test-run",
         observability=obs,
-        resources=SimpleNamespace(
+        topology=SimpleNamespace(
             num_prefill=prefill[0],
             gpus_per_prefill=prefill[1],
             num_decode=decode[0],
@@ -484,7 +484,7 @@ class TestPerfDashboardPipeline:
         from srtctl.analysis.perf_dashboard import _worker_specs
 
         cfg = _stub_config(prefill=(0, 0), decode=(0, 0))
-        cfg.resources.num_agg, cfg.resources.gpus_per_agg = 6, 4
+        cfg.topology.num_agg, cfg.topology.gpus_per_agg = 6, 4
         assert _worker_specs(cfg) == ["agg=tep:4:6"]
 
     def test_build_is_not_gated_on_observability(self, tmp_path: Path, monkeypatch):

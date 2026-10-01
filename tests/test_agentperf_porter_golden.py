@@ -152,5 +152,5 @@ class TestGoldenEndToEnd:
         raw = raw.replace("<FIXTURE>", str(FIXTURE)).replace("<WORKLOAD_OUT>", "/workloads/w.yaml")
         cfg = SrtConfig.Schema().load(resolve_config_with_defaults(yaml.safe_load(raw), None))
         assert cfg.benchmark.type == "agentperf"
-        assert cfg.resources.prefill_workers == 5
+        assert cfg.topology.prefill_workers == 5
         assert cfg.backend.numa_cpu_bind is False

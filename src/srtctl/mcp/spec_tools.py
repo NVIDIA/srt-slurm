@@ -119,9 +119,7 @@ def validate_config(
             errors.append(f"{suffix}: {exc}")
             continue
         normalized.append({"variant": suffix, "config": schema.dump(loaded)})
-        # Topology lives under roles: in the recipe; the resources block only carries
-        # it after expansion, so check the resolved dict (as preflight_config_variants does).
-        for issue in validate_topology(resolved.get("resources")):
+        for issue in validate_topology(resolved.get("roles")):
             errors.append(f"{suffix}: {issue.field}: {issue.message}")
 
     return {

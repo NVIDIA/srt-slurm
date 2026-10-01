@@ -88,12 +88,10 @@ def test_schema_reference_documents_only_the_recipe_layout() -> None:
     assert "| `schema` | int | required |" in text
 
 
-def test_internal_fields_are_exactly_the_keys_the_loader_rejects() -> None:
-    """The docs partition and the loader gate must name the same recipe keys."""
-    assert frozenset(LEGACY_TOP_LEVEL_KEYS) <= INTERNAL_TOP_LEVEL
-    assert {"role_backends", "role_containers"} <= INTERNAL_TOP_LEVEL  # per-role engines: internal, 2.0-era
-    for cls, section in ((ResourceConfig, "resources"),):
-        assert frozenset(LEGACY_SECTION_KEYS[section]) == INTERNAL_FIELDS[cls]
+def test_internal_fields_are_the_engines_per_mode_fields() -> None:
+    """The docs hide exactly the per-mode engine fields a recipe spells under roles.<role>."""
+    assert INTERNAL_TOP_LEVEL == frozenset(LEGACY_TOP_LEVEL_KEYS)
+    assert set(INTERNAL_FIELDS) == {cls for _, cls in BACKEND_TYPES}
     for _, cls in BACKEND_TYPES:
         assert INTERNAL_FIELDS[cls] <= {row.key for row in field_docs(cls)}
         assert {"prefill_environment", "decode_environment", "aggregated_environment"} <= INTERNAL_FIELDS[cls]
@@ -184,8 +182,8 @@ def test_every_rejected_key_is_rewritten_by_migrate_into_something_that_loads() 
     assert legacy_keys_present(migrated) == [], legacy_keys_present(migrated)
     assert migrated["roles"]["decode"]["nodes"] == "colocate"
     config = SrtConfig.Schema().load(resolve_config_with_defaults(migrated, None))
-    assert config.resources.decode_nodes == 0
-    assert config.resources.worker_critical("prefill") is False
+    assert config.topology.decode_nodes == 0
+    assert config.topology.worker_critical("prefill") is False
     assert config.dynamo.git_rev == "abc1234"
     assert config.dynamo.cargo_patches == ["x = 1"]
     assert config.nats_max_payload_mb == 16
@@ -203,15 +201,25 @@ def test_every_rejected_key_is_rewritten_by_migrate_into_something_that_loads() 
 
 def test_top_level_recipe_keys_are_documented() -> None:
     rows = {row.key for row in field_docs(SrtConfig)}
-    for key in ("name", "model", "resources", "backend", "frontend", "benchmark", "observability", "host_setup"):
+    for key in (
+        "name",
+        "model",
+        "resources",
+        "engine",
+        "roles",
+        "frontend",
+        "benchmark",
+        "observability",
+        "host_setup",
+    ):
         assert key in rows, key
 
 
 def test_marshmallow_data_key_wins_over_private_attribute_name() -> None:
+    rows = {row.key: row for row in field_docs(SrtConfig)}
+    assert "schema" in rows
+    assert "schema_version" not in rows
     rows = {row.key: row for row in field_docs(ResourceConfig)}
-    assert "gpus_per_prefill" in rows
-    assert "gpus_per_decode" in rows
-    assert "_explicit_gpus_per_prefill" not in rows
     assert rows["gpus_per_node"].default == "`4`"
     assert rows["gpu_type"].default == "`None`"
 

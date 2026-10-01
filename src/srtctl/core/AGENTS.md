@@ -20,4 +20,4 @@ Every long-running `srun` (workers, frontends, nginx, services, tachometer) is l
 
 ## ResourceConfig
 
-Recipes set worker shape per role (`roles.<role>.nodes`, `workers`, `gpus`, with `nodes: colocate` for decode on the prefill nodes); `docs/config-reference.md` shows the forms. `core/roles.py` (`expand_roles`) folds them into `ResourceConfig` in `core/schema.py`, whose computed properties (`gpus_per_prefill`, `num_decode`, `total_nodes`, ...) are what the rest of the code reads. Add a derived value as a property there instead of recomputing it in a consumer.
+Recipes set worker shape per role (`roles.<role>.nodes`, `workers`, `gpus`, with `nodes: colocate` for decode on the prefill nodes); `docs/config-reference.md` shows the forms. They load into `RoleConfig` entries on `SrtConfig.roles` (`core/schema.py`); `SrtConfig.topology` derives the per-role counts (`gpus_per_prefill`, `num_decode`, `total_nodes`, ...) that the rest of the code reads. Add a derived value as a property there instead of recomputing it in a consumer.

@@ -235,18 +235,13 @@ def write_lockfile(
             # Strip any existing lock: section (from re-runs of lockfiles)
             recipe_text = _strip_lock_section(recipe_text)
         else:
-            # Fallback: serialize the config. This is the resolved internal layout
-            # (backend:, resources.prefill_nodes, ...), not a recipe: it loses
-            # comments and will not load back through `srtctl apply` without
-            # `srtctl migrate`. `srtctl apply` always copies the recipe to
-            # config.yaml, so only a hand-submitted job lands here.
+            # Fallback: serialize the config. The dump is the recipe layout with every
+            # default and cluster value baked in, so it resubmits, but it loses the
+            # recipe's comments. `srtctl apply` always copies the recipe to config.yaml,
+            # so only a hand-submitted job lands here.
             from srtctl.core.schema import SrtConfig
 
-            logger.warning(
-                "%s not found; the lockfile embeds the resolved config instead of the recipe "
-                "(run `srtctl migrate` on it before resubmitting)",
-                recipe_path,
-            )
+            logger.warning("%s not found; the lockfile embeds the resolved config instead of the recipe", recipe_path)
             config_dict = SrtConfig.Schema().dump(config)
             config_dict.pop("lock", None)
             recipe_text = yaml.dump(config_dict, default_flow_style=False, sort_keys=False)

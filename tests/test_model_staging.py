@@ -76,8 +76,9 @@ class TestSchema:
         data = {
             "name": "publishing-test",
             "model": {"path": "/lustre/m", "container": "trtllm", "precision": "fp4"},
-            "resources": {"gpu_type": "gb300", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {"type": "trtllm", **publishing},
+            "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
+            "engine": {"type": "trtllm", **publishing},
         }
         schema = SrtConfig.Schema()
         config = schema.load(data)
@@ -86,8 +87,8 @@ class TestSchema:
 
         assert config.backend.publish_metrics is expected_metrics
         assert config.backend.publish_events_and_metrics is expected_events
-        assert dumped["backend"]["publish_metrics"] is expected_metrics
-        assert dumped["backend"]["publish_events_and_metrics"] is expected_events
+        assert dumped["engine"]["publish_metrics"] is expected_metrics
+        assert dumped["engine"]["publish_events_and_metrics"] is expected_events
         assert reloaded.backend.publish_metrics is expected_metrics
         assert reloaded.backend.publish_events_and_metrics is expected_events
         assert TRTLLMProtocol(**publishing).dynamo_metrics_flags == expected_flags

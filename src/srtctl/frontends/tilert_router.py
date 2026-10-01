@@ -45,7 +45,7 @@ class TileRTRouterFrontend(StaticRouterFrontend):
         _reject_router_args(config.frontend.args)
         if config.backend_for_role("decode").type != "tilert":
             raise ValueError("tilert-router requires a TileRT decode engine")
-        resources = config.resources
+        resources = config.topology
         if resources.num_agg or resources.num_prefill != 1 or resources.num_decode < 1:
             raise ValueError("TileRT router requires exactly one prefill worker and at least one decode worker")
         if config.backend_for_role("prefill").type != "vllm":

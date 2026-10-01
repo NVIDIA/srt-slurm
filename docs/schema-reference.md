@@ -2,7 +2,7 @@
 
 <!-- GENERATED FILE. Do not edit by hand. Regenerate with `srtctl schema-docs`; CI fails when this file is stale. -->
 
-Field-level reference for the recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from `srtctl.core.roles` and the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. The pre-2.0 (v1) layout no longer loads; its key-by-key mapping onto this layout is in [legacy-v1.md](legacy-v1.md) and `srtctl migrate` rewrites it. For prose, examples, and semantics see [config-reference.md](config-reference.md).
+Field-level reference for the recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. The pre-2.0 (v1) layout no longer loads; its key-by-key mapping onto this layout is in [legacy-v1.md](legacy-v1.md) and `srtctl migrate` rewrites it. For prose, examples, and semantics see [config-reference.md](config-reference.md).
 
 ## Recipe
 
@@ -13,10 +13,10 @@ Top-level keys of a recipe YAML.
 | `name` | str | required |  |
 | `model` | [ModelConfig](#modelconfig) | required |  |
 | `resources` | [ResourceConfig](#resourceconfig) | required |  |
-| `engine` | str \| mapping | optional when every role sets `engine` | The engine type (`atom`, `sglang`, `tilert`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
-| `roles` | mapping of role -> [Role](#roles) | required | One block per worker role (`prefill`, `decode`, `agg`): topology, env, and engine args. |
 | `schema` | int | required | Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`). |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` |  |
+| `engine` | str \| mapping | optional when every role sets `engine` | The engine type (`atom`, `sglang`, `tilert`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
+| `roles` | dict[str, [RoleConfig](#roleconfig)] | `{}` | One block per worker role (`prefill`, `decode`, `agg`): nodes, workers, GPUs, env, engine args. |
 | `frontend` | [FrontendConfig](#frontendconfig) | `FrontendConfig()` |  |
 | `dynamo` | [DynamoConfig](#dynamoconfig) | `DynamoConfig()` |  |
 | `benchmark` | [BenchmarkConfig](#benchmarkconfig) | `BenchmarkConfig()` |  |
@@ -40,7 +40,7 @@ Top-level keys of a recipe YAML.
 
 ## Authoring surface
 
-Three vocabularies carry the topology, the engine, and the placement. The loader expands them into internal fields before validation; those fields keep the names of the pre-2.0 layout, which no longer loads and is documented for migration in [legacy-v1.md](legacy-v1.md).
+Three vocabularies carry the engine, the topology, and the placement. `engine` and `roles` are fields of the recipe (the table above and [RoleConfig](#roleconfig) below); the engine dataclasses' per-mode fields are internal and receive each role's settings at load. The pre-2.0 layout no longer loads and is documented for migration in [legacy-v1.md](legacy-v1.md).
 
 ### engine
 
@@ -49,21 +49,7 @@ Use either one top-level engine or an explicit engine on every role, never both.
 
 ### roles
 
-`roles.<role>` for `prefill`, `decode`, `agg`. The `agg` role is the aggregated deployment.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `nodes` | int \| `colocate` | required | Nodes reserved for this role. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit. |
-| `workers` | int | required | Number of workers of this role. |
-| `gpus` | int | `nodes * gpus_per_node // workers` | GPUs per worker. Required when decode colocates. |
-| `env` | dict[str, str] | `{}` | Environment for every worker of this role. |
-| `args` | mapping | `{}` | The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`). |
-| `extra_args` | list[str] | `[]` | Raw extra CLI arguments (TRT-LLM). |
-| `engine` | str \| mapping | mutually exclusive with top-level `engine` | Engine type or mapping with engine options. Set on every role when no top-level engine is declared. |
-| `container` | str | `model.container` | Optional role image; accepts cluster container aliases. |
-| `kv_events` | bool \| mapping | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
-| `sidecar` | bool | `False` | Run the native engine with a Dynamo sidecar; every role must agree. |
-| `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
+`roles.<role>` for `prefill`, `decode`, `agg`. The `agg` role is the aggregated deployment; `prefill` and `decode` together are the disaggregated one. Each role is a [RoleConfig](#roleconfig): `nodes` (or `colocate` on decode, to share the prefill nodes), `workers`, `gpus`, `env`, `args`, and optionally its own `engine` and `container`.
 
 ### placement
 
@@ -90,7 +76,7 @@ Model configuration.
 
 ### ResourceConfig
 
-Resource allocation configuration.
+Cluster facts and allocation knobs; the worker topology is the `roles:` block.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -108,6 +94,24 @@ SLURM job settings.
 | `account` | str \| None | `None` |  |
 | `partition` | str \| None | `None` |  |
 | `time_limit` | str \| None | `None` |  |
+
+### RoleConfig
+
+One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `nodes` | int \| one of `'colocate'` \| None | `None` | Nodes reserved for this role. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit. |
+| `workers` | int \| None | `None` | Number of workers of this role. |
+| `gpus` | int \| None | `None` | GPUs per worker. Defaults to `nodes * gpus_per_node // workers`; required when decode colocates. |
+| `env` | dict[str, str] | `{}` | Environment for every worker of this role. |
+| `args` | dict[str, Any] | `{}` | The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`). |
+| `extra_args` | list[str] | `[]` | Raw extra CLI arguments (TRT-LLM only). |
+| `engine` | str \| mapping | `None` | Engine type or mapping with engine options. Set on every role when no top-level `engine` is declared; the two forms cannot be mixed, and role engines do not inherit options from each other. |
+| `container` | str \| None | `None` | Optional role image; accepts cluster container aliases. Defaults to `model.container`. |
+| `kv_events` | bool \| dict[str, Any] \| None | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
+| `sidecar` | bool \| None | `None` | Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree. |
+| `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
 
 ### FrontendConfig
 

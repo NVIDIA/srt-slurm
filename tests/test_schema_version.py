@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from marshmallow import ValidationError
 import yaml
 
 from srtctl.cli import submit as submit_cli
@@ -78,7 +79,7 @@ def test_only_the_current_schema_is_supported() -> None:
 def test_schema_2_is_accepted(tmp_path: Path) -> None:
     config = load_config(_write(tmp_path, PLAIN))
     assert config.schema_version == 2
-    assert config.resources.num_agg == 1
+    assert config.topology.num_agg == 1
 
 
 def test_absent_schema_key_is_rejected_as_pre_2_0(tmp_path: Path) -> None:
@@ -138,13 +139,13 @@ def test_top_of_tree_is_still_a_recipe_key() -> None:
 
 
 def test_engine_mapping_rejects_per_role_settings() -> None:
-    """The v1 per-mode keys cannot be smuggled back in through the engine mapping."""
+    """The per-mode engine fields cannot be smuggled back in through the engine mapping."""
     recipe = {**PLAIN, "engine": {"type": "sglang", "sglang_config": {"aggregated": {"tp": 1}}}}
-    with pytest.raises(ValueError, match="engine: carries per-role settings \\(sglang_config\\)"):
-        resolve_config_with_defaults(recipe, None)
+    with pytest.raises(ValidationError, match="per-role settings \\(sglang_config\\)"):
+        SrtConfig.Schema().load(resolve_config_with_defaults(recipe, None))
     recipe = {**PLAIN, "engine": {"type": "sglang", "aggregated_environment": {"A": "1"}}}
-    with pytest.raises(ValueError, match="per-role settings \\(aggregated_environment\\)"):
-        resolve_config_with_defaults(recipe, None)
+    with pytest.raises(ValidationError, match="per-role settings \\(aggregated_environment\\)"):
+        SrtConfig.Schema().load(resolve_config_with_defaults(recipe, None))
 
 
 def test_from_yaml_is_gated_like_load_config(tmp_path: Path) -> None:
@@ -254,7 +255,7 @@ def test_cli_migrate_in_place_rewrites_the_file_into_something_that_loads(tmp_pa
     assert "schema 1 -> 2" in capsys.readouterr().out
     config = load_config(path)
     assert config.schema_version == 2
-    assert config.resources.num_agg == 1
+    assert config.topology.num_agg == 1
 
 
 def test_cli_migrate_output_writes_a_new_file(tmp_path: Path, monkeypatch) -> None:

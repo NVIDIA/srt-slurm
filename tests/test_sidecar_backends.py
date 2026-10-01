@@ -273,7 +273,7 @@ def test_vllm_sidecar_multi_node_replica_has_one_frontend(parallelism: dict) -> 
         backend=backend,
         dynamo=runtime.dynamo,
         frontend=SimpleNamespace(type="dynamo"),
-        resources=SimpleNamespace(num_agg=1, num_prefill=0, num_decode=0),
+        topology=SimpleNamespace(num_agg=1, num_prefill=0, num_decode=0),
     )
     prefill, decode, _, total = _get_health_expectations(config, processes)
     assert (prefill, decode, total) == (0, 1, 1)

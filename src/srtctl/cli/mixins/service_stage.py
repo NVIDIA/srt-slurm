@@ -14,7 +14,7 @@ or log; or the kind's default ports), and a ``ManagedProcess`` for the shared
 
 The list launched is ``effective_services(config)``: what the recipe declares
 plus what it implies (etcd and NATS under the Dynamo frontend, the Mooncake
-master for ``backend.mooncake_kv_store``, tachometer's default exporters), with
+master for ``engine.mooncake_kv_store``, tachometer's default exporters), with
 a declared entry of the same name taking over the implicit one.
 
 Nothing a service launches may outlive the job. Every srun this stage starts,

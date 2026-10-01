@@ -266,9 +266,9 @@ class StatusReporter:
             "resources": {
                 "gpu_type": config.resources.gpu_type,
                 "gpus_per_node": config.resources.gpus_per_node,
-                "prefill_workers": config.resources.num_prefill,
-                "decode_workers": config.resources.num_decode,
-                "agg_workers": config.resources.num_agg,
+                "prefill_workers": config.topology.num_prefill,
+                "decode_workers": config.topology.num_decode,
+                "agg_workers": config.topology.num_agg,
                 "cpu_allocation": resource_snapshot.get("cpus"),
                 "cpu_check": resource_snapshot.get("cpu_check"),
             },

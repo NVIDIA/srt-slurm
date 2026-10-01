@@ -428,7 +428,7 @@ class WorkerStageMixin:
             node=process.node,
             # roles.<role>.critical: false keeps the run alive when this worker
             # exits, for probes that kill workers on purpose.
-            critical=self.config.resources.worker_critical(mode),
+            critical=self.config.topology.worker_critical(mode),
             # SIGTERM reaches the engine through the step so it deregisters and
             # frees the GPUs cleanly; a signalled srun would SIGKILL it instead.
             terminate_timeout=(
@@ -654,7 +654,7 @@ class WorkerStageMixin:
             popen=proc,
             log_file=worker_log,
             node=leader.node,
-            critical=self.config.resources.worker_critical(mode),
+            critical=self.config.topology.worker_critical(mode),
             # Signal every MPI task; profiler wrappers stop capture before the app.
             terminate_timeout=(
                 self.config.observability.nsys.terminate_timeout if automatic_nsys else WORKER_TERMINATE_TIMEOUT_SECONDS

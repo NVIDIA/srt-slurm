@@ -31,20 +31,20 @@ def role_name(mode: str) -> str:
 
 def allocate_worker_endpoints(config: SrtConfig, nodes: Sequence[str]) -> list[Endpoint]:
     """Allocate once for the job; retain the original engine packer without overrides."""
-    resources = config.resources
+    topology = config.topology
     allocate = config.backend.allocate_endpoints
     if config.has_role_backends:
-        allocate = partial(allocate_endpoints, allow_prefill_decode_colocation=resources.decode_nodes == 0)
+        allocate = partial(allocate_endpoints, allow_prefill_decode_colocation=topology.colocated_decode)
     return allocate(
-        num_prefill=resources.num_prefill,
-        num_decode=resources.num_decode,
-        num_agg=resources.num_agg,
-        gpus_per_prefill=resources.gpus_per_prefill,
-        gpus_per_decode=resources.gpus_per_decode,
-        gpus_per_agg=resources.gpus_per_agg,
-        gpus_per_node=resources.gpus_per_node,
+        num_prefill=topology.num_prefill,
+        num_decode=topology.num_decode,
+        num_agg=topology.num_agg,
+        gpus_per_prefill=topology.gpus_per_prefill,
+        gpus_per_decode=topology.gpus_per_decode,
+        gpus_per_agg=topology.gpus_per_agg,
+        gpus_per_node=topology.gpus_per_node,
         available_nodes=nodes,
-        spread_workers=resources.spread_workers,
+        spread_workers=config.resources.spread_workers,
     )
 
 

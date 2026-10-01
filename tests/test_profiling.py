@@ -267,6 +267,7 @@ class TestProfilingValidation:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -275,13 +276,8 @@ class TestProfilingValidation:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/container", precision="fp8"),
-                resources=ResourceConfig(
-                    gpu_type="h100",
-                    prefill_nodes=1,
-                    decode_nodes=1,
-                    prefill_workers=1,
-                    decode_workers=1,
-                ),
+                resources=ResourceConfig(gpu_type="h100"),
+                roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
                 profiling=ProfilingConfig(
                     type="torch",
                     prefill=ProfilingPhaseConfig(start_step=0, stop_step=50),
@@ -297,6 +293,7 @@ class TestProfilingValidation:
             ModelConfig,
             ProfilingConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -305,7 +302,8 @@ class TestProfilingValidation:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/container", precision="fp8"),
-                resources=ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100"),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 profiling=ProfilingConfig(
                     type="torch",
                     # Missing aggregated config
@@ -319,6 +317,7 @@ class TestProfilingValidation:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -326,13 +325,8 @@ class TestProfilingValidation:
         SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="h100",
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=2,
-                decode_workers=3,
-            ),
+            resources=ResourceConfig(gpu_type="h100"),
+            roles={"prefill": RoleConfig(nodes=1, workers=2), "decode": RoleConfig(nodes=1, workers=3)},
             profiling=ProfilingConfig(
                 type="torch",
                 prefill=ProfilingPhaseConfig(start_step=0, stop_step=50),
@@ -347,6 +341,7 @@ class TestProfilingValidation:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -354,11 +349,8 @@ class TestProfilingValidation:
         SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="h100",
-                agg_nodes=2,
-                agg_workers=2,
-            ),
+            resources=ResourceConfig(gpu_type="h100"),
+            roles={"agg": RoleConfig(nodes=2, workers=2)},
             profiling=ProfilingConfig(
                 type="torch",
                 aggregated=ProfilingPhaseConfig(start_step=0, stop_step=50),
@@ -372,6 +364,7 @@ class TestProfilingValidation:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -379,13 +372,8 @@ class TestProfilingValidation:
         config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="h100",
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=1,
-                decode_workers=1,
-            ),
+            resources=ResourceConfig(gpu_type="h100"),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
             profiling=ProfilingConfig(
                 type="torch",
                 prefill=ProfilingPhaseConfig(start_step=0, stop_step=50),
@@ -412,6 +400,7 @@ class TestProfilingValidation:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -419,7 +408,8 @@ class TestProfilingValidation:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/container", precision="fp8"),
-                resources=ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100"),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 profiling=ProfilingConfig(
                     type="nsys",
                     aggregated=ProfilingPhaseConfig(capture_scope="selected", start_step=0, stop_step=10, **phase),
@@ -434,7 +424,14 @@ class TestProfilingValidation:
         """Implicit and explicit all scope warn on ignored selectors without narrowing capture."""
         from srtctl.backends.sglang import SGLangProtocol
         from srtctl.backends.vllm import VLLMProtocol
-        from srtctl.core.schema import ModelConfig, ProfilingConfig, ProfilingPhaseConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ProfilingPhaseConfig,
+            ResourceConfig,
+            RoleConfig,
+            SrtConfig,
+        )
 
         phase = ProfilingPhaseConfig(
             start_step=0,
@@ -443,19 +440,18 @@ class TestProfilingValidation:
             **selector,
         )
         if phase_name == "aggregated":
-            resources = ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1)
+            roles = {"agg": RoleConfig(nodes=1, workers=1)}
             phases = {phase_name: phase}
         else:
-            resources = ResourceConfig(
-                gpu_type="h100", prefill_nodes=1, decode_nodes=1, prefill_workers=1, decode_workers=1
-            )
+            roles = {"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)}
             phases = {"prefill": ProfilingPhaseConfig(), "decode": ProfilingPhaseConfig(), phase_name: phase}
         with caplog.at_level("WARNING", logger="srtctl.core.schema"):
             config = SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/container", precision="fp8"),
-                resources=resources,
-                backend=VLLMProtocol() if backend_type == "vllm" else SGLangProtocol(),
+                resources=ResourceConfig(gpu_type="h100"),
+                roles=roles,
+                engine=VLLMProtocol() if backend_type == "vllm" else SGLangProtocol(),
                 profiling=ProfilingConfig(type="nsys", **phases),
             )
 
@@ -480,6 +476,7 @@ class TestProfilingValidation:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -487,7 +484,8 @@ class TestProfilingValidation:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/container", precision="fp8"),
-                resources=ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100"),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 profiling=ProfilingConfig(
                     type="nsys",
                     aggregated=ProfilingPhaseConfig(
@@ -508,18 +506,15 @@ class TestProfilingValidation:
             ProfilingPhaseConfig,
             ResourceConfig,
             SrtConfig,
+            RoleConfig,
         )
 
         def make_config(worker_rank):
             return SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/container", precision="fp8"),
-                resources=ResourceConfig(
-                    gpu_type="h100",
-                    gpus_per_node=4,
-                    agg_nodes=2,
-                    agg_workers=1,
-                ),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=4),
+                roles={"agg": RoleConfig(nodes=2, workers=1)},
                 profiling=ProfilingConfig(
                     type="nsys",
                     aggregated=ProfilingPhaseConfig(
@@ -553,6 +548,7 @@ class TestProfilingValidation:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -560,7 +556,8 @@ class TestProfilingValidation:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/container", precision="fp8"),
-                resources=ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100"),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 profiling=ProfilingConfig(
                     type="nsys",
                     aggregated=ProfilingPhaseConfig(start_step=0, stop_step=10),
@@ -575,6 +572,7 @@ class TestProfilingValidation:
             ModelConfig,
             ProfilingConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -582,13 +580,8 @@ class TestProfilingValidation:
         config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="gb200",
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=1,
-                decode_workers=1,
-            ),
+            resources=ResourceConfig(gpu_type="gb200"),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
             profiling=ProfilingConfig(type="nsys-time", delay_secs=120, duration_secs=30),
         )
         assert config.profiling.is_nsys_time
@@ -604,6 +597,7 @@ class TestProfilingValidation:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -611,14 +605,9 @@ class TestProfilingValidation:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/container", precision="fp8"),
-                resources=ResourceConfig(
-                    gpu_type="gb200",
-                    prefill_nodes=1,
-                    decode_nodes=1,
-                    prefill_workers=1,
-                    decode_workers=1,
-                ),
-                backend=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"profiler-config.profiler": "cuda"})),
+                resources=ResourceConfig(gpu_type="gb200"),
+                roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
+                engine=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"profiler-config.profiler": "cuda"})),
                 profiling=ProfilingConfig(
                     type="nsys",
                     prefill=ProfilingPhaseConfig(start_step=0, stop_step=10),
@@ -634,6 +623,7 @@ class TestProfilingValidation:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -641,14 +631,9 @@ class TestProfilingValidation:
         config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="gb200",
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=1,
-                decode_workers=1,
-            ),
-            backend=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"tensor-parallel-size": 1})),
+            resources=ResourceConfig(gpu_type="gb200"),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
+            engine=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"tensor-parallel-size": 1})),
             profiling=ProfilingConfig(
                 type="nsys",
                 prefill=ProfilingPhaseConfig(start_step=0, stop_step=10),
@@ -769,7 +754,14 @@ class TestProfilingTargetSelection:
         from srtctl.cli.mixins import benchmark_stage
         from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
         from srtctl.cli.mixins.worker_stage import WorkerStageMixin
-        from srtctl.core.schema import ModelConfig, ProfilingConfig, ProfilingPhaseConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ProfilingPhaseConfig,
+            ResourceConfig,
+            RoleConfig,
+            SrtConfig,
+        )
         from srtctl.core.topology import allocate_endpoints
 
         class Stage(BenchmarkStageMixin, WorkerStageMixin):
@@ -785,8 +777,9 @@ class TestProfilingTargetSelection:
         config = SrtConfig(
             name="profiling-default",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
-            resources=ResourceConfig(gpu_type="h100", gpus_per_node=4, agg_nodes=4, agg_workers=2),
-            backend=backend,
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=4),
+            roles={"agg": RoleConfig(nodes=4, workers=2)},
+            engine=backend,
             profiling=ProfilingConfig(type="nsys", aggregated=phase),
         )
         endpoints = allocate_endpoints(
@@ -1081,6 +1074,7 @@ class TestProfilingIntegration:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -1088,13 +1082,8 @@ class TestProfilingIntegration:
         config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="h100",
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=1,
-                decode_workers=1,
-            ),
+            resources=ResourceConfig(gpu_type="h100"),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
             benchmark=BenchmarkConfig(type="sa-bench"),
             profiling=ProfilingConfig(
                 type="torch",
@@ -1118,6 +1107,7 @@ class TestProfilingIntegration:
             ProfilingConfig,
             ProfilingPhaseConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
         )
 
@@ -1126,13 +1116,8 @@ class TestProfilingIntegration:
         config_missing = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="h100",
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=1,
-                decode_workers=1,
-            ),
+            resources=ResourceConfig(gpu_type="h100"),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
             benchmark=BenchmarkConfig(type="sglang-bench"),
             profiling=ProfilingConfig(
                 type="torch",
@@ -1149,7 +1134,7 @@ class TestProfilingIntegration:
     def test_sglang_bench_runner_build_command(self):
         from types import SimpleNamespace
 
-        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, RoleConfig, SrtConfig
 
         runner = get_runner("sglang-bench")
         runtime = SimpleNamespace(frontend_port=8000)
@@ -1157,13 +1142,8 @@ class TestProfilingIntegration:
         config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="h100",
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=1,
-                decode_workers=1,
-            ),
+            resources=ResourceConfig(gpu_type="h100"),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
             benchmark=BenchmarkConfig(type="sglang-bench", isl=1024, osl=128, concurrencies=[1, 2]),
         )
 

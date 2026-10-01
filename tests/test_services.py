@@ -34,34 +34,6 @@ WAIT = "srtctl.cli.mixins.service_stage.wait_until_ready"
 HOST_IP = "srtctl.cli.mixins.service_stage.get_hostname_ip"
 
 DISAGG_HEAD = """
-name: services-test
-model:
-  path: /model
-  container: /job.sqsh
-  precision: bf16
-resources:
-  gpu_type: b200
-  gpus_per_node: 8
-  prefill_nodes: 1
-  decode_nodes: 2
-  prefill_workers: 1
-  decode_workers: 2
-  gpus_per_prefill: 8
-  gpus_per_decode: 8
-benchmark:
-  type: manual
-observability:
-  tachometer:
-    enabled: false
-"""
-
-# Same cluster, tachometer left at its default (on): the exporters are implied.
-TACHOMETER_HEAD = DISAGG_HEAD.replace("observability:\n  tachometer:\n    enabled: false\n", "")
-assert TACHOMETER_HEAD != DISAGG_HEAD
-
-# DISAGG_HEAD as a 2.0 recipe (schema: 2, engine:, roles:), for tests that go through the real
-# loader (``_from_yaml``). ``_load`` feeds the internal layout straight to the marshmallow schema.
-DISAGG_RECIPE = """
 schema: 2
 name: services-test
 model:
@@ -71,7 +43,6 @@ model:
 resources:
   gpu_type: b200
   gpus_per_node: 8
-engine: sglang
 roles:
   prefill:
     nodes: 1
@@ -88,9 +59,23 @@ observability:
     enabled: false
 """
 
+# Same cluster, tachometer left at its default (on): the exporters are implied.
+TACHOMETER_HEAD = DISAGG_HEAD.replace("observability:\n  tachometer:\n    enabled: false\n", "")
+assert TACHOMETER_HEAD != DISAGG_HEAD
 
-def _load(services_yaml: str, head: str = DISAGG_HEAD, backend: str = "backend:\n  type: sglang\n") -> SrtConfig:
-    return SrtConfig.Schema().load(yaml.safe_load(head + backend + services_yaml))
+# Both roles move KV through Mooncake (the mooncake-master consumers check for it).
+MOONCAKE_HEAD = DISAGG_HEAD.replace(
+    "    gpus: 8\n", "    gpus: 8\n    args:\n      disaggregation-transfer-backend: mooncake\n"
+)
+assert MOONCAKE_HEAD.count("disaggregation-transfer-backend") == 2
+
+# DISAGG_HEAD with its engine, for tests that go through the real loader (``_from_yaml``);
+# ``_load`` feeds the same document straight to the marshmallow schema.
+DISAGG_RECIPE = DISAGG_HEAD + "engine: sglang\n"
+
+
+def _load(services_yaml: str, head: str = DISAGG_HEAD, engine: str = "engine: sglang\n") -> SrtConfig:
+    return SrtConfig.Schema().load(yaml.safe_load(head + engine + services_yaml))
 
 
 def _runtime(tmp_path: Path) -> RuntimeContext:
@@ -232,7 +217,7 @@ def test_lmcache_server_defaults_and_command() -> None:
 
 
 def test_mooncake_store_defaults_and_requires_master() -> None:
-    with pytest.raises(ValidationError, match="requires backend.mooncake_kv_store"):
+    with pytest.raises(ValidationError, match="requires engine.mooncake_kv_store"):
         _load("services:\n  - name: store\n    type: mooncake-store\n    placement:\n      node: workers\n")
 
     config = _load(
@@ -243,9 +228,8 @@ services:
     placement:
       node: workers
 """,
-        backend="backend:\n  type: sglang\n  mooncake_kv_store:\n    container: /mooncake.sqsh\n"
-        "  sglang_config:\n    prefill:\n      disaggregation-transfer-backend: mooncake\n"
-        "    decode:\n      disaggregation-transfer-backend: mooncake\n",
+        head=MOONCAKE_HEAD,
+        engine="engine:\n  type: sglang\n  mooncake_kv_store:\n    container: /mooncake.sqsh\n",
     )
     (svc,) = config.services
     assert svc.effective_command == ["python", "-m", "mooncake.mooncake_store_service"]
@@ -463,15 +447,10 @@ services:
     assert all(not call.args[0].critical for call in registry.add_process.call_args_list)
 
 
-MOONCAKE_BACKEND = """backend:
+MOONCAKE_ENGINE = """engine:
   type: sglang
   mooncake_kv_store:
     container: /mooncake-master.sqsh
-  sglang_config:
-    prefill:
-      disaggregation-transfer-backend: mooncake
-    decode:
-      disaggregation-transfer-backend: mooncake
 """
 
 STORES = """
@@ -510,7 +489,7 @@ services:
 
 
 def test_mooncake_stores_launch_once_per_role_node_with_master_env(tmp_path: Path) -> None:
-    orchestrator = _orchestrator(_load(STORES, backend=MOONCAKE_BACKEND), tmp_path)
+    orchestrator = _orchestrator(_load(STORES, head=MOONCAKE_HEAD, engine=MOONCAKE_ENGINE), tmp_path)
     ips = {"node0": "10.0.0.10", "node1": "10.0.0.11", "node2": "10.0.0.12", "node3": "10.0.0.13"}
     with (
         patch(SRUN, side_effect=lambda **_: _proc()) as srun,
@@ -567,7 +546,7 @@ def test_mooncake_stores_launch_once_per_role_node_with_master_env(tmp_path: Pat
 
 
 def test_colocated_roles_with_same_port_rejected_before_launch(tmp_path: Path) -> None:
-    orchestrator = _orchestrator(_load(STORES, backend=MOONCAKE_BACKEND), tmp_path)
+    orchestrator = _orchestrator(_load(STORES, head=MOONCAKE_HEAD, engine=MOONCAKE_ENGINE), tmp_path)
     orchestrator.__dict__["endpoints"] = [
         Endpoint(mode="prefill", index=0, nodes=("node1",)),
         Endpoint(mode="decode", index=0, nodes=("node1",)),
@@ -581,7 +560,8 @@ def test_workers_placement_deduplicates_shared_nodes(tmp_path: Path) -> None:
     config = _load(
         "services:\n  - name: store\n    type: mooncake-store\n    placement:\n      node: workers\n"
         "    readiness:\n      port: 8800\n",
-        backend=MOONCAKE_BACKEND,
+        head=MOONCAKE_HEAD,
+        engine=MOONCAKE_ENGINE,
     )
     orchestrator = _orchestrator(config, tmp_path)
     with (
@@ -927,7 +907,7 @@ def _lmcache_entries(config: SrtConfig) -> list[tuple[str, bool, str, str]]:
 
 
 def test_lmcache_mp_connector_implies_lmcache_server_on_the_roles_that_use_it() -> None:
-    every_role = _load("", backend="backend:\n  type: vllm\n  connector: lmcache-mp\n")
+    every_role = _load("", engine="engine:\n  type: vllm\n  connector: lmcache-mp\n")
     assert _lmcache_entries(every_role) == [
         ("lmcache-server", True, "workers", "prefill connector lmcache-mp, decode connector lmcache-mp")
     ]
@@ -935,20 +915,23 @@ def test_lmcache_mp_connector_implies_lmcache_server_on_the_roles_that_use_it() 
     # A role override goes through the same resolver: only prefill nodes get a server.
     prefill_only = _load(
         "",
-        backend="backend:\n  type: vllm\n  connector: nixl\n  vllm_config:\n    prefill:\n      connector: lmcache-mp\n",
+        head=DISAGG_HEAD.replace(
+            "    gpus: 8\n  decode:", "    gpus: 8\n    args:\n      connector: lmcache-mp\n  decode:"
+        ),
+        engine="engine:\n  type: vllm\n  connector: nixl\n",
     )
     assert _lmcache_entries(prefill_only) == [("lmcache-server", True, "prefill", "prefill connector lmcache-mp")]
 
-    assert _lmcache_entries(_load("", backend="backend:\n  type: vllm\n  connector: nixl\n")) == []
+    assert _lmcache_entries(_load("", engine="engine:\n  type: vllm\n  connector: nixl\n")) == []
 
 
 def test_declared_lmcache_server_replaces_the_implied_one_under_any_name() -> None:
-    backend = "backend:\n  type: vllm\n  connector: lmcache-mp\n"
+    engine = "engine:\n  type: vllm\n  connector: lmcache-mp\n"
     declared = _load(
-        "services:\n  - name: cache\n    type: lmcache-server\n    placement:\n      node: decode\n", backend=backend
+        "services:\n  - name: cache\n    type: lmcache-server\n    placement:\n      node: decode\n", engine=engine
     )
     assert _lmcache_entries(declared) == [("cache", False, "decode", "")]
     disabled = _load(
-        "services:\n  - name: lmcache-server\n    type: lmcache-server\n    enabled: false\n", backend=backend
+        "services:\n  - name: lmcache-server\n    type: lmcache-server\n    enabled: false\n", engine=engine
     )
     assert _lmcache_entries(disabled) == []

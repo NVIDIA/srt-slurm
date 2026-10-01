@@ -292,7 +292,7 @@ class TestCustomBenchmarkRunner:
             dynamo=SimpleNamespace(sidecar=dynamo_sidecar),
             frontend=SimpleNamespace(type=frontend_type, placement=PlacementConfig()),
             profiling=SimpleNamespace(enabled=False),
-            resources=SimpleNamespace(num_agg=sum(p.endpoint_mode == "agg" and p.is_leader for p in processes)),
+            topology=SimpleNamespace(num_agg=sum(p.endpoint_mode == "agg" and p.is_leader for p in processes)),
             telemetry=SimpleNamespace(enabled=False),
         )
         stage.runtime = SimpleNamespace(
@@ -1409,7 +1409,7 @@ class TestGSM8KRunner:
             name="test",
             model=ModelConfig(path="/model", container="/image", precision="fp4"),
             resources=ResourceConfig(gpu_type="gb200"),
-            backend=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"served-model-name": served_model_name})),
+            engine=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"served-model-name": served_model_name})),
             benchmark=BenchmarkConfig(type="gsm8k", **benchmark_kwargs),
         )
 
@@ -1745,6 +1745,7 @@ class TestRunPostEval:
             ModelConfig,
             ObservabilityConfig,
             ResourceConfig,
+            RoleConfig,
             SrtConfig,
             TachometerConfig,
         )
@@ -1755,14 +1756,8 @@ class TestRunPostEval:
             # These tests exercise the eval flow, not telemetry; opt out of the
             # default-on Tachometer so run() needs no scraper mocks.
             observability=ObservabilityConfig(tachometer=TachometerConfig(enabled=False)),
-            resources=ResourceConfig(
-                gpu_type="h100",
-                gpus_per_node=8,
-                prefill_nodes=1,
-                decode_nodes=2,
-                prefill_workers=1,
-                decode_workers=2,
-            ),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=2, workers=2)},
             benchmark=BenchmarkConfig(type="sa-bench", isl=1024, osl=1024, concurrencies="128x256x512"),
             health_check=HealthCheckConfig(max_attempts=3, interval_seconds=1),
             frontend=FrontendConfig(type="dynamo"),

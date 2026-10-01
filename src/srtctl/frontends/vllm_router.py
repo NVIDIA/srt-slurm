@@ -81,7 +81,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
         (``per_node`` DP), its GPU count must equal DP*TP*PP*PCP, and every pool
         must derive the same ``--intra-node-data-parallel-size``.
         """
-        resources = config.resources
+        resources = config.topology
         endpoint_gpu_counts: dict[str, int] = {
             "prefill": resources.gpus_per_prefill if resources.num_prefill else 0,
             "decode": resources.gpus_per_decode if resources.num_decode else 0,
@@ -174,7 +174,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
                 "a discovery connector must be set on both prefill and decode so the roles find each other "
                 f"through the Router; got {names}"
             )
-        if config.resources.num_agg:
+        if config.topology.num_agg:
             raise ValueError(
                 "a discovery connector requires a prefill/decode topology; aggregate workers transfer no KV"
             )

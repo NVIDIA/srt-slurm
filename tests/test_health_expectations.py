@@ -28,7 +28,7 @@ def _config(
     return SimpleNamespace(
         frontend=SimpleNamespace(type=frontend_type),
         backend=backend,
-        resources=SimpleNamespace(num_prefill=num_prefill, num_decode=num_decode, num_agg=num_agg),
+        topology=SimpleNamespace(num_prefill=num_prefill, num_decode=num_decode, num_agg=num_agg),
     )
 
 

@@ -65,8 +65,8 @@ def test_services_only_job_takes_its_node_count_from_the_owning_service() -> Non
     assert config.services[0].nodes == 2
     assert config.services_node_count == 2
     assert config.total_nodes == 2, "the sbatch node count is the service's"
-    assert config.resources.has_engine_workers is False
-    assert config.resources.num_prefill == config.resources.num_decode == config.resources.num_agg == 0
+    assert config.topology.has_engine_workers is False
+    assert config.topology.num_prefill == config.topology.num_decode == config.topology.num_agg == 0
 
 
 def test_without_a_node_owner_the_job_is_one_node_and_agg_recipes_are_untouched() -> None:
@@ -74,9 +74,9 @@ def test_without_a_node_owner_the_job_is_one_node_and_agg_recipes_are_untouched(
     del data["services"][0]["nodes"]
     assert SrtConfig.Schema().load(data).total_nodes == 1
     data = _data(frontend={"type": "sglang-router"})
-    data["resources"] = {"gpu_type": "b200", "gpus_per_node": 8, "agg_nodes": 3, "agg_workers": 3}
+    data["roles"] = {"agg": {"nodes": 3, "workers": 3}}
     del data["services"][0]["nodes"]
-    data["backend"] = {"type": "sglang"}
+    data["engine"] = "sglang"
     assert SrtConfig.Schema().load(data).total_nodes == 3
 
 
@@ -98,14 +98,14 @@ def test_service_nodes_rules() -> None:
 
     # Owners next to engine roles are pools too (see tests/test_pools.py); frontend none is still engine-free.
     data = _data(frontend={"type": "sglang-router"})
-    data["resources"] = {"gpu_type": "b200", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1}
-    data["backend"] = {"type": "sglang"}
+    data["roles"] = {"agg": {"nodes": 1, "workers": 1}}
+    data["engine"] = "sglang"
     assert SrtConfig.Schema().load(data).total_nodes == 3
 
 
 def test_frontend_none_rejects_engine_workers_and_dedicated_node() -> None:
     data = _data()
-    data["resources"] = {"gpu_type": "b200", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1}
+    data["roles"] = {"agg": {"nodes": 1, "workers": 1}}
     del data["services"][0]["nodes"]
     with pytest.raises(ValidationError, match="only supported without engine roles"):
         SrtConfig.Schema().load(data)
@@ -131,12 +131,12 @@ def test_dry_run_renders_services_only_job(capsys) -> None:
 def test_preflight_topology_accepts_a_service_node_count() -> None:
     from srtctl.core.validation import validate_topology
 
-    assert validate_topology({"gpu_type": "b200", "gpus_per_node": 8}, service_nodes=2) == []
+    assert validate_topology(None, service_nodes=2) == []
     assert validate_topology({}, service_nodes=2) == []
-    assert validate_topology({"agg_nodes": 1, "agg_workers": 1}, service_nodes=2) == [], "pools next to roles"
-    (issue,) = validate_topology({"agg_nodes": 1}, service_nodes=2)
+    assert validate_topology({"agg": {"nodes": 1, "workers": 1}}, service_nodes=2) == [], "pools next to roles"
+    (issue,) = validate_topology({"agg": {"nodes": 1}}, service_nodes=2)
     assert issue.code == "topology-no-workers", "the roles are still validated"
-    (issue,) = validate_topology({"gpu_type": "b200"})
+    (issue,) = validate_topology(None)
     assert issue.code == "topology-missing", "no service node count and no roles is still an error"
 
 

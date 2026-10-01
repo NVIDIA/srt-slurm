@@ -5,7 +5,7 @@
 
 Three things used to be launched by bespoke stages with their own placement
 knobs, readiness loops, and no dry-run output: etcd and NATS for the Dynamo
-frontend, the Mooncake master for ``backend.mooncake_kv_store``, and the DCGM and
+frontend, the Mooncake master for ``engine.mooncake_kv_store``, and the DCGM and
 node exporters tachometer scrapes. They are services now. This module derives
 the implicit ones from the rest of the recipe, lets a declared entry of the same
 name take over (or drop it with ``enabled: false``), and hands the effective
@@ -90,7 +90,7 @@ def connector_services(config: SrtConfig) -> list[EffectiveService]:
     backend = config.backend
     if not isinstance(backend, VLLMProtocol):
         return []
-    resources = config.resources
+    resources = config.topology
     workers: dict[WorkerMode, int] = {
         "prefill": resources.num_prefill,
         "decode": resources.num_decode,
@@ -156,7 +156,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     options=options,
                 ),
                 implicit=True,
-                reason="backend.mooncake_kv_store",
+                reason="engine.mooncake_kv_store",
             )
         )
 

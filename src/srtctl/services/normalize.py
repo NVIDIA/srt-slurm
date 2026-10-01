@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pre-schema normalizer: a declared ``mooncake-master`` service sets the internal field the runtime reads.
+"""Pre-schema normalizer: a declared ``mooncake-master`` service sets ``engine.mooncake_kv_store``.
 
-Like ``expand_roles``, this runs on the raw recipe dict before ``SrtConfig``
-loads it: the recipe declares the master under ``services:``, and the consumers
-of ``backend.mooncake_kv_store`` read the field this fills. The declared entry
-stays in the list: ``effective_services`` then treats it as an override of the
+This runs on the raw recipe dict before ``SrtConfig`` loads it: the recipe
+declares the master under ``services:``, and the consumers of
+``engine.mooncake_kv_store`` read the field this fills. The declared entry stays
+in the list: ``effective_services`` then treats it as an override of the
 implicit one.
 """
 
@@ -16,7 +16,7 @@ from typing import Any
 
 
 def expand_services(config: dict[str, Any]) -> dict[str, Any]:
-    """Map a declared ``mooncake-master`` service onto ``backend.mooncake_kv_store``, in place."""
+    """Map a declared ``mooncake-master`` service onto ``engine.mooncake_kv_store``, in place."""
     services = config.get("services")
     if not isinstance(services, list):
         return config
@@ -27,9 +27,24 @@ def expand_services(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("only one mooncake-master service is supported")
     if masters:
         master = masters[0]
-        backend = config.setdefault("backend", {})
-        if not isinstance(backend, dict):
-            raise TypeError("backend must be a mapping")
+        engine_raw = config.get("engine")
+        engine: dict[str, Any]
+        if engine_raw is None:
+            roles = config.get("roles")
+            if isinstance(roles, dict) and any(
+                isinstance(spec, dict) and spec.get("engine") is not None for spec in roles.values()
+            ):
+                raise ValueError(
+                    "a mooncake-master service needs a top-level engine; role-specific engines do not support it"
+                )
+            engine = {"type": "sglang"}
+        elif isinstance(engine_raw, str):
+            engine = {"type": engine_raw}
+        elif isinstance(engine_raw, dict):
+            engine = engine_raw
+        else:
+            raise TypeError("engine must be a type string or a mapping")
+        config["engine"] = engine
         mapped: dict[str, Any] = {}
         if master.get("container"):
             mapped["container"] = master["container"]
@@ -41,5 +56,5 @@ def expand_services(config: dict[str, Any]) -> dict[str, Any]:
         options = master.get("options") or {}
         if "device_names_by_gpu" in options:
             mapped["device_names_by_gpu"] = options["device_names_by_gpu"]
-        backend["mooncake_kv_store"] = mapped
+        engine["mooncake_kv_store"] = mapped
     return config

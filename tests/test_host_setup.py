@@ -15,7 +15,7 @@ from marshmallow import ValidationError
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import HostSetupConfig, ResourceConfig, SrtConfig
+from srtctl.core.schema import HostSetupConfig, ResourceConfig, RoleConfig, SrtConfig
 
 LOCK_CLOCKS = "sudo -n nvidia-smi -lmc <min>,<max>"
 RESET_CLOCKS = "sudo -n nvidia-smi -rmc"
@@ -44,7 +44,8 @@ def _config(**host_setup_kwargs) -> SrtConfig:
     return SrtConfig(
         name="host-setup-test",
         model={"path": "/models/test", "container": "test.sqsh", "precision": "fp8"},
-        resources=ResourceConfig(gpu_type="gb200", gpus_per_node=4, prefill_nodes=1, decode_nodes=1),
+        resources=ResourceConfig(gpu_type="gb200", gpus_per_node=4),
+        roles={"prefill": RoleConfig(nodes=1), "decode": RoleConfig(nodes=1)},
         host_setup=HostSetupConfig(**host_setup_kwargs),
     )
 

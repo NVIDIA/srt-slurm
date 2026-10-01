@@ -134,7 +134,7 @@ def _worker_specs(config: SrtConfig) -> list[str]:
     Parallelism is reported as a label only; it is not used in any arithmetic, so an
     imprecise tag cannot corrupt a number.
     """
-    res = config.resources
+    res = config.topology
     specs: list[str] = []
     for role, count_attr, gpus_attr, label in (
         ("prefill", "num_prefill", "gpus_per_prefill", "dep"),

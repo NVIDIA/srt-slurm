@@ -62,8 +62,10 @@ from .schema import (
     ProfilingConfig,
     ProfilingPhaseConfig,
     ResourceConfig,
+    RoleConfig,
     SlurmConfig,
     SrtConfig,
+    Topology,
 )
 from .slurm import (
     get_container_mounts_str,
@@ -110,6 +112,7 @@ __all__ = [
     "ProfilingConfig",
     "ProfilingPhaseConfig",
     "ResourceConfig",
+    "RoleConfig",
     "RuntimeContext",
     # Backend configs (re-exported from backends)
     "SGLangProtocol",
@@ -117,6 +120,7 @@ __all__ = [
     "SlurmConfig",
     # Schema types (frozen dataclasses)
     "SrtConfig",
+    "Topology",
     "WorkerHealthResult",
     "allocate_endpoints",
     "check_dynamo_health",

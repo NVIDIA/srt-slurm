@@ -54,8 +54,8 @@ def test_every_known_container_key_resolves_in_one_pass() -> None:
     assert resolved["observability"]["tachometer"]["node_exporter"]["container_image"] == "/sqsh/node.sqsh"
     assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/sqsh/dcgm.sqsh"
     # The Mooncake master container used to be the one image key no block resolved; it is
-    # declared as a service and mapped onto backend.mooncake_kv_store before the walker runs.
-    assert resolved["backend"]["mooncake_kv_store"]["container"] == "/sqsh/mooncake.sqsh"
+    # declared as a service and mapped onto engine.mooncake_kv_store before the walker runs.
+    assert resolved["engine"]["mooncake_kv_store"]["container"] == "/sqsh/mooncake.sqsh"
 
 
 def test_free_form_maps_and_identity_are_never_touched() -> None:
@@ -69,8 +69,8 @@ def test_free_form_maps_and_identity_are_never_touched() -> None:
 
     assert resolved["identity"] == {"container": {"image": "sglang"}}
     assert resolved["environment"] == {"image": "sglang", "container": "nginx"}
-    assert resolved["backend"]["aggregated_environment"] == {"container_image": "sglang"}
-    assert resolved["backend"]["sglang_config"] == {"aggregated": {"image": "sglang"}}
+    assert resolved["roles"]["agg"]["env"] == {"container_image": "sglang"}
+    assert resolved["roles"]["agg"]["args"] == {"image": "sglang"}
     assert resolved["services"][0]["env"] == {"image": "sglang"}
 
 

@@ -145,13 +145,8 @@ class TestStatusReporterReport:
         config = SimpleNamespace(
             name="b300-agg-smoke",
             model=SimpleNamespace(path="/model", precision="fp8"),
-            resources=SimpleNamespace(
-                gpu_type="b300",
-                gpus_per_node=8,
-                num_prefill=0,
-                num_decode=0,
-                num_agg=1,
-            ),
+            resources=SimpleNamespace(gpu_type="b300", gpus_per_node=8),
+            topology=SimpleNamespace(num_prefill=0, num_decode=0, num_agg=1),
             benchmark=SimpleNamespace(type="sa-bench"),
             backend_type="vllm",
             frontend=SimpleNamespace(type="dynamo"),

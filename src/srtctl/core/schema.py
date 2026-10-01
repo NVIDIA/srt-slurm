@@ -22,6 +22,7 @@ import shlex
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import field
 from enum import Enum
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import (
     TYPE_CHECKING,
@@ -38,13 +39,19 @@ from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
     AtomProtocol,
+    AtomServerConfig,
     BackendConfig,
     MockerProtocol,
+    MockerServerConfig,
     SGLangProtocol,
+    SGLangServerConfig,
     TileRTProtocol,
+    TileRTServerConfig,
     TRTLLMProtocol,
+    TRTLLMServerConfig,
     VLLMMooncakeKVStoreConfig,
     VLLMProtocol,
+    VLLMServerConfig,
 )
 from srtctl.core.formatting import (
     FormattablePath,
@@ -53,6 +60,7 @@ from srtctl.core.formatting import (
 
 # Leaf module (stdlib-only imports), so this cannot cycle back into schema.
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
+from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
 from srtctl.services.config import ServiceConfig
@@ -451,8 +459,30 @@ class ProfilingType(str, Enum):
 # ============================================================================
 
 
+def _is_empty(value: Any) -> bool:
+    """None, or a mapping / list whose every value is empty by the same rule."""
+    if value is None:
+        return True
+    if isinstance(value, dict):
+        return all(_is_empty(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return len(value) == 0
+    return False
+
+
 class BackendConfigField(fields.Field):
-    """Marshmallow field for polymorphic backend deserialization based on type."""
+    """Marshmallow field for the polymorphic engine: a type string or a mapping with ``type``.
+
+    ``reject_per_role_keys`` is set on the recipe's engine fields (top-level ``engine`` and
+    ``roles.<role>.engine``): an engine mapping carries engine-wide knobs only, so the
+    per-mode fields the engine dataclasses still declare (``sglang_config``,
+    ``prefill_environment``, ``kv_events_config``, ...) are refused there. A recipe spells
+    them under ``roles.<role>`` (``env``, ``args``, ``extra_args``, ``kv_events``).
+    """
+
+    def __init__(self, *, reject_per_role_keys: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.reject_per_role_keys = reject_per_role_keys
 
     def _deserialize(
         self,
@@ -461,9 +491,8 @@ class BackendConfigField(fields.Field):
         data: Mapping[str, Any] | None,
         **kwargs,
     ) -> BackendConfig:
-        """Deserialize backend config based on 'type' field."""
+        """Deserialize an engine from its type string or its mapping's ``type`` key."""
         if value is None:
-            # Default to SGLang
             return SGLangProtocol()
 
         if isinstance(
@@ -471,10 +500,22 @@ class BackendConfigField(fields.Field):
         ):
             return value
 
+        if isinstance(value, str):
+            value = {"type": value}
         if not isinstance(value, dict):
-            raise ValidationError(f"Expected dict for backend config, got {type(value).__name__}")
+            raise ValidationError(f"Expected an engine type or a mapping with 'type', got {type(value).__name__}")
 
-        # Get backend type from the value dict
+        if self.reject_per_role_keys:
+            # A dumped engine carries its empty per-mode fields (None / {} / []); only a
+            # populated one is a per-role setting spelled in the wrong place.
+            per_role = sorted(key for key in set(value) & PER_ROLE_ENGINE_KEYS if not _is_empty(value[key]))
+            if per_role:
+                raise ValidationError(
+                    "an engine mapping carries engine-wide knobs only; per-role settings ("
+                    + ", ".join(per_role)
+                    + ") live under roles.<role> (env, args, extra_args, kv_events)"
+                )
+
         backend_type = value.get("type", "sglang")
 
         if backend_type == "atom":
@@ -495,13 +536,18 @@ class BackendConfigField(fields.Field):
             return schema.load(value)
         else:
             raise ValidationError(
-                f"Unknown backend type: {backend_type!r}. Supported types: atom, sglang, tilert, trtllm, vllm, mocker"
+                f"Unknown engine type: {backend_type!r}. Supported types: atom, sglang, tilert, trtllm, vllm, mocker"
             )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
-        """Serialize backend config to dict."""
+        """Serialize the engine to a dict; empty per-mode fields are left out (``roles`` carries them)."""
         if value is None:
             return None
+        dumped = self._dump(value)
+        return {key: item for key, item in dumped.items() if key not in PER_ROLE_ENGINE_KEYS or not _is_empty(item)}
+
+    @staticmethod
+    def _dump(value: Any) -> dict[str, Any]:
         if isinstance(value, AtomProtocol):
             return AtomProtocol.Schema().dump(value)
         if isinstance(value, TileRTProtocol):
@@ -675,8 +721,74 @@ class HetComponent:
 
 
 @dataclass(frozen=True)
+class RoleConfig:
+    """One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
+
+    Everything about a role lives here: the nodes and workers it gets, the GPUs per
+    worker, its environment and engine arguments, and optionally its own engine and
+    image. ``SrtConfig.topology`` derives the per-role counts the launch path reads;
+    ``SrtConfig.backend`` binds ``env`` / ``args`` / ``extra_args`` / ``kv_events`` onto
+    the engine's per-mode fields.
+    """
+
+    # Nodes reserved for this role. `colocate` (decode only) reserves none and packs the
+    # decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both
+    # roles and the loader rejects a split that does not fit.
+    nodes: int | Literal["colocate"] | None = None
+    # Number of workers of this role.
+    workers: int | None = None
+    # GPUs per worker. Defaults to `nodes * gpus_per_node // workers`; required when decode colocates.
+    gpus: int | None = None
+    # Environment for every worker of this role.
+    env: dict[str, str] = field(default_factory=dict)
+    # The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`).
+    args: dict[str, Any] = field(default_factory=dict)
+    # Raw extra CLI arguments (TRT-LLM only).
+    extra_args: list[str] = field(default_factory=list)
+    # Engine type or mapping with engine options. Set on every role when no top-level
+    # `engine` is declared; the two forms cannot be mixed, and role engines do not inherit
+    # options from each other.
+    engine: Annotated[BackendConfig | None, BackendConfigField(allow_none=True, reject_per_role_keys=True)] = None
+    # Optional role image; accepts cluster container aliases. Defaults to `model.container`.
+    container: str | None = None
+    # `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`.
+    kv_events: bool | dict[str, Any] | None = None
+    # Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree.
+    sidecar: bool | None = field(
+        default=None,
+        metadata={"marshmallow_field": fields.Boolean(truthy={True}, falsy={False}, allow_none=True)},
+    )
+    # A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers.
+    critical: bool = field(
+        default=True,
+        metadata={"marshmallow_field": fields.Boolean(truthy={True}, falsy={False})},
+    )
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        nodes = self.nodes
+        if isinstance(nodes, bool) or not (nodes is None or isinstance(nodes, int) or nodes == COLOCATE):
+            raise ValidationError(f"nodes must be a positive integer or {COLOCATE!r}; got {nodes!r}")
+        if self.container is not None and not self.container.strip():
+            raise ValidationError("container must be a non-empty string")
+
+    @property
+    def colocated(self) -> bool:
+        """``nodes: colocate``: the role shares the prefill nodes instead of reserving its own."""
+        return self.nodes == COLOCATE
+
+    @property
+    def node_count(self) -> int | None:
+        """Nodes this role reserves: ``0`` when it colocates, ``None`` when unset."""
+        if isinstance(self.nodes, int):
+            return self.nodes
+        return 0 if self.colocated else None
+
+
+@dataclass(frozen=True)
 class ResourceConfig:
-    """Resource allocation configuration."""
+    """Cluster facts and allocation knobs; the worker topology is the `roles:` block."""
 
     # GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional:
     # a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and
@@ -684,24 +796,6 @@ class ResourceConfig:
     # setting in a recipe so it is self-describing for result rollups.
     gpu_type: str | None = None
     gpus_per_node: int = 4
-
-    # Disaggregated mode
-    prefill_nodes: int | None = None
-    decode_nodes: int | None = None
-    prefill_workers: int | None = None
-    decode_workers: int | None = None
-
-    # Aggregated mode
-    agg_nodes: int | None = None
-    agg_workers: int | None = None
-
-    # A worker exit normally fails the run (the process monitor tears the job
-    # down). A role's flag set to False keeps the run alive when one of its
-    # workers exits, for workloads that kill workers on purpose (migration or
-    # fault-tolerance probes). The per-role spelling is ``roles.<role>.critical``.
-    prefill_critical: bool = True  # A prefill worker exiting fails the run. False keeps the run alive.
-    decode_critical: bool = True  # A decode worker exiting fails the run. False keeps the run alive.
-    agg_critical: bool = True  # An aggregated worker exiting fails the run. False keeps the run alive.
 
     # If True, place each partial-node worker on its own node instead of
     # packing multiple onto the same node. Caller must reserve enough nodes
@@ -715,46 +809,91 @@ class ResourceConfig:
     # `--segment`. See HetComponent above and docs/slurm-faq.md.
     het_jobs: bool | None = None
 
-    # Explicit GPUs per worker (override computed values)
-    # Use data_key to map from YAML field names to internal attribute names
-    _explicit_gpus_per_prefill: int | None = field(
-        default=None,
-        metadata={
-            "marshmallow_field": fields.Integer(
-                data_key="gpus_per_prefill",
-                load_default=None,
-                allow_none=True,
-            )
-        },
-    )
-    _explicit_gpus_per_decode: int | None = field(
-        default=None,
-        metadata={
-            "marshmallow_field": fields.Integer(
-                data_key="gpus_per_decode",
-                load_default=None,
-                allow_none=True,
-            )
-        },
-    )
-    _explicit_gpus_per_agg: int | None = field(
-        default=None,
-        metadata={
-            "marshmallow_field": fields.Integer(
-                data_key="gpus_per_agg",
-                load_default=None,
-                allow_none=True,
-            )
-        },
-    )
+    Schema: ClassVar[type[Schema]] = Schema
 
-    @property
-    def is_disaggregated(self) -> bool:
-        return self.prefill_nodes is not None or self.decode_nodes is not None
+
+@dataclasses.dataclass(frozen=True)
+class Topology:
+    """The worker layout ``roles:`` describes, on nodes of ``gpus_per_node`` GPUs.
+
+    One derivation of every per-role count the launch path, the frontends and the
+    validators read (``num_prefill``, ``gpus_per_decode``, ``total_nodes``, ...), built
+    once per config as ``SrtConfig.topology``. A role that is not declared has no nodes
+    and no workers. ``prefill`` or ``decode`` present means a disaggregated deployment;
+    ``agg`` alone is the aggregated one.
+    """
+
+    roles: Mapping[str, RoleConfig]
+    gpus_per_node: int
+    het_jobs: bool | None = None
+
+    def role(self, name: str) -> RoleConfig | None:
+        return self.roles.get(name)
+
+    def nodes(self, name: str) -> int | None:
+        """Nodes the role reserves (``0`` for a colocated decode), None when the role is absent or unsized."""
+        spec = self.roles.get(name)
+        return None if spec is None else spec.node_count
+
+    def workers(self, name: str) -> int:
+        spec = self.roles.get(name)
+        return (spec.workers or 0) if spec is not None else 0
+
+    def gpus_per_worker(self, name: str) -> int:
+        """GPUs per worker of the role: its ``gpus``, else its nodes' GPUs split over its workers."""
+        spec = self.roles.get(name)
+        if spec is None:
+            return self.gpus_per_node
+        if spec.gpus is not None:
+            return spec.gpus
+        if spec.node_count and spec.workers:
+            return (spec.node_count * self.gpus_per_node) // spec.workers
+        if name == "decode" and spec.colocated and spec.workers:
+            # A colocated decode shares the prefill nodes and inherits the prefill worker size.
+            return self.gpus_per_worker("prefill")
+        return self.gpus_per_node
 
     def worker_critical(self, mode: str) -> bool:
         """Whether a worker of ``mode`` (``prefill``, ``decode``, ``agg``) failing fails the run."""
-        return {"prefill": self.prefill_critical, "decode": self.decode_critical, "agg": self.agg_critical}[mode]
+        spec = self.roles.get(mode)
+        return True if spec is None else spec.critical
+
+    @property
+    def is_disaggregated(self) -> bool:
+        return "prefill" in self.roles or "decode" in self.roles
+
+    @property
+    def colocated_decode(self) -> bool:
+        """``roles.decode.nodes: colocate``: the decode workers live on the prefill nodes."""
+        decode = self.roles.get("decode")
+        return decode is not None and decode.colocated
+
+    @property
+    def prefill_nodes(self) -> int | None:
+        return self.nodes("prefill")
+
+    @property
+    def decode_nodes(self) -> int | None:
+        return self.nodes("decode")
+
+    @property
+    def agg_nodes(self) -> int | None:
+        return self.nodes("agg")
+
+    @property
+    def prefill_workers(self) -> int | None:
+        spec = self.roles.get("prefill")
+        return None if spec is None else spec.workers
+
+    @property
+    def decode_workers(self) -> int | None:
+        spec = self.roles.get("decode")
+        return None if spec is None else spec.workers
+
+    @property
+    def agg_workers(self) -> int | None:
+        spec = self.roles.get("agg")
+        return None if spec is None else spec.workers
 
     @property
     def total_nodes(self) -> int:
@@ -769,49 +908,27 @@ class ResourceConfig:
 
     @property
     def num_prefill(self) -> int:
-        return self.prefill_workers or 0
+        return self.workers("prefill")
 
     @property
     def num_decode(self) -> int:
-        return self.decode_workers or 0
+        return self.workers("decode")
 
     @property
     def num_agg(self) -> int:
-        return self.agg_workers or 0
+        return self.workers("agg")
 
     @property
     def gpus_per_prefill(self) -> int:
-        # Use explicit value if set
-        if self._explicit_gpus_per_prefill is not None:
-            return self._explicit_gpus_per_prefill
-        # Fall back to computed value
-        if self.prefill_nodes and self.prefill_workers:
-            return (self.prefill_nodes * self.gpus_per_node) // self.prefill_workers
-        return self.gpus_per_node
+        return self.gpus_per_worker("prefill")
 
     @property
     def gpus_per_decode(self) -> int:
-        # Use explicit value if set
-        if self._explicit_gpus_per_decode is not None:
-            return self._explicit_gpus_per_decode
-        # Fall back to computed value
-        if self.decode_nodes and self.decode_workers:
-            return (self.decode_nodes * self.gpus_per_node) // self.decode_workers
-        # decode_nodes=0 with decode_workers means "share nodes with prefill"
-        # Inherit TP from prefill in this case
-        if self.decode_nodes == 0 and self.decode_workers:
-            return self.gpus_per_prefill
-        return self.gpus_per_node
+        return self.gpus_per_worker("decode")
 
     @property
     def gpus_per_agg(self) -> int:
-        # Use explicit value if set
-        if self._explicit_gpus_per_agg is not None:
-            return self._explicit_gpus_per_agg
-        # Fall back to computed value
-        if self.agg_nodes and self.agg_workers:
-            return (self.agg_nodes * self.gpus_per_node) // self.agg_workers
-        return self.gpus_per_node
+        return self.gpus_per_worker("agg")
 
     @property
     def prefill_gpus(self) -> int:
@@ -863,7 +980,59 @@ class ResourceConfig:
             ),
         )
 
-    Schema: ClassVar[type[Schema]] = Schema
+
+# Engine type -> the engine dataclass's per-mode config field and that field's class. The
+# engine dataclasses still carry the per-mode fields (`prefill_environment`,
+# `<engine>_config.prefill`, ...) that `roles.<role>` binds onto; `_bind_role_settings` is
+# the one place that binding happens.
+_ENGINE_SECTIONS: dict[str, tuple[str, type]] = {
+    "atom": ("atom_config", AtomServerConfig),
+    "sglang": ("sglang_config", SGLangServerConfig),
+    "tilert": ("tilert_config", TileRTServerConfig),
+    "trtllm": ("trtllm_config", TRTLLMServerConfig),
+    "vllm": ("vllm_config", VLLMServerConfig),
+    "mocker": ("mocker_config", MockerServerConfig),
+}
+
+
+def _bind_role_settings(engine: BackendConfig, roles: Mapping[str, RoleConfig]) -> BackendConfig:
+    """``engine`` with each role's ``env`` / ``args`` / ``extra_args`` / ``kv_events`` on its per-mode fields.
+
+    ``roles.<role>`` is the recipe's only spelling of a per-role setting; the engine
+    dataclasses read them from their per-mode fields, so they are bound here, once per
+    config. Settings already on ``engine`` (an engine constructed in code) are kept, with
+    the role's values merged over them.
+    """
+    config_field, section_cls = _ENGINE_SECTIONS[engine.type]
+    section_modes = {item.name for item in dataclasses.fields(section_cls)}
+    current = getattr(engine, config_field)
+    sections = {mode: getattr(current, mode, None) if current is not None else None for mode in section_modes}
+    changes: dict[str, Any] = {}
+    sections_changed = False
+    for role, spec in roles.items():
+        mode = ROLE_TO_MODE[role]
+        if spec.env:
+            changes[f"{mode}_environment"] = {**getattr(engine, f"{mode}_environment"), **spec.env}
+        if spec.args:
+            if mode not in section_modes:
+                raise ValidationError(f"roles.{role}.args: the {engine.type} engine takes no {mode} arguments")
+            sections[mode] = {**(sections[mode] or {}), **spec.args}
+            sections_changed = True
+        if spec.extra_args:
+            name = f"{mode}_extra_args"
+            if not hasattr(engine, name):
+                raise ValidationError(f"roles.{role}.extra_args is only supported by the trtllm engine")
+            changes[name] = list(spec.extra_args)
+        if spec.kv_events is not None:
+            if not hasattr(engine, "kv_events_config"):
+                raise ValidationError(f"roles.{role}.kv_events is not supported by the {engine.type} engine")
+            kv_events = changes.get("kv_events_config", engine.kv_events_config)  # type: ignore[union-attr]
+            if isinstance(kv_events, bool):
+                raise ValidationError("roles.*.kv_events cannot be combined with engine.kv_events_config: true/false")
+            changes["kv_events_config"] = {**(kv_events or {}), mode: spec.kv_events}
+    if sections_changed:
+        changes[config_field] = section_cls(**sections)
+    return dataclasses.replace(engine, **changes) if changes else engine
 
 
 @dataclass(frozen=True)
@@ -2270,10 +2439,9 @@ SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (CURRENT_SCHEMA_VERSION,)
 class SrtConfig:
     """Complete srtctl job configuration (frozen, immutable).
 
-    This is the main configuration type returned by load_config().
-
-    The backend field supports polymorphic deserialization:
-    - type: sglang -> SGLangProtocol
+    This is the main configuration type returned by load_config(). ``engine`` selects the
+    engine (polymorphic on ``type``), ``roles`` carries the worker topology and every
+    per-role setting; ``topology`` and ``backend`` are derived from them once.
     """
 
     name: str
@@ -2296,11 +2464,11 @@ class SrtConfig:
     )
 
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
-    backend: Annotated[BackendConfig, BackendConfigField()] = field(default_factory=SGLangProtocol)
-    # Internal normalized form of roles.<role>.engine/container. Recipes with one
-    # shared engine keep these empty and use the single-backend allocation path.
-    role_backends: dict[str, Annotated[BackendConfig, BackendConfigField()]] = field(default_factory=dict)
-    role_containers: dict[str, str] = field(default_factory=dict)
+    # The engine every role runs: a type (`sglang`) or a mapping with `type` plus engine-wide
+    # knobs (see the engine types). Omit it when every role declares its own `engine`.
+    engine: Annotated[BackendConfig | None, BackendConfigField(allow_none=True, reject_per_role_keys=True)] = None
+    # One block per worker role (`prefill`, `decode`, `agg`): nodes, workers, GPUs, env, engine args.
+    roles: dict[str, RoleConfig] = field(default_factory=dict)
     frontend: FrontendConfig = field(default_factory=FrontendConfig)
     dynamo: DynamoConfig = field(default_factory=DynamoConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
@@ -2349,6 +2517,8 @@ class SrtConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
+        self._validate_roles()
+        _ = self.backend  # bind the roles onto the engine now, so a bad role setting fails at load
         self._validate_role_backends()
         self._validate_frontend_worker_selection()
         self._validate_profiling()
@@ -2366,6 +2536,40 @@ class SrtConfig:
         self._validate_services_only()
         self._validate_services()
         self._warn_dp_launch_mode()
+
+    @cached_property
+    def topology(self) -> Topology:
+        """The worker layout: every per-role count, derived once from ``roles`` and ``resources``."""
+        return Topology(roles=self.roles, gpus_per_node=self.resources.gpus_per_node, het_jobs=self.resources.het_jobs)
+
+    @cached_property
+    def role_backends(self) -> dict[str, BackendConfig]:
+        """Per-role engines (``roles.<role>.engine``), each bound to its role's settings; empty with one shared engine."""
+        if self.engine is not None or all(spec.engine is None for spec in self.roles.values()):
+            return {}
+        return {
+            role: _bind_role_settings(spec.engine, {role: spec})
+            for role, spec in self.roles.items()
+            if spec.engine is not None
+        }
+
+    @cached_property
+    def backend(self) -> BackendConfig:
+        """The serving engine, with every role's ``env`` / ``args`` / ``extra_args`` / ``kv_events`` bound.
+
+        With one shared ``engine`` this is that engine (SGLang when none is declared). With
+        per-role engines it is the serving role's (decode, else agg, else prefill); workers
+        resolve their own through ``backend_for_role``.
+        """
+        if self.role_backends:
+            serving = next(role for role in ("decode", "agg", "prefill") if role in self.role_backends)
+            return self.role_backends[serving]
+        return _bind_role_settings(self.engine if self.engine is not None else SGLangProtocol(), self.roles)
+
+    @property
+    def role_containers(self) -> dict[str, str]:
+        """Role images from ``roles.<role>.container``."""
+        return {role: spec.container for role, spec in self.roles.items() if spec.container is not None}
 
     @property
     def has_role_backends(self) -> bool:
@@ -2388,9 +2592,9 @@ class SrtConfig:
         return [
             (role, self.backend_for_role(role))
             for role, count in (
-                ("prefill", self.resources.num_prefill),
-                ("decode", self.resources.num_decode),
-                ("agg", self.resources.num_agg),
+                ("prefill", self.topology.num_prefill),
+                ("decode", self.topology.num_decode),
+                ("agg", self.topology.num_agg),
             )
             if count
         ]
@@ -2407,15 +2611,57 @@ class SrtConfig:
 
         return worker_processes(self, endpoints, port_allocator)
 
+    def _validate_roles(self) -> None:
+        """Rules of ``roles:`` that need the whole recipe.
+
+        Role names, node counts, the engine form (one shared ``engine`` or one on every
+        role), the colocated split, and the job-wide sidecar flag.
+        """
+        for role, spec in self.roles.items():
+            if role not in ROLE_TO_MODE:
+                raise ValidationError(f"unknown role {role!r}; valid roles are {', '.join(ROLE_NAMES)}")
+            if spec.colocated and role != "decode":
+                raise ValidationError(f"roles.{role}.nodes: only the decode role can colocate (on the prefill nodes)")
+            if isinstance(spec.nodes, int):
+                if spec.nodes == 0 and role == "decode":
+                    raise ValidationError(
+                        "roles.decode.nodes: 0 is not accepted; write nodes: colocate to share the prefill nodes"
+                    )
+                if spec.nodes < 1:
+                    raise ValidationError(f"roles.{role}.nodes must be at least 1; got {spec.nodes}")
+            if spec.engine is not None and self.engine is not None:
+                raise ValidationError(f"roles.{role}.engine cannot be combined with a top-level engine")
+        if self.engine is None and any(spec.engine is not None for spec in self.roles.values()):
+            for role, spec in self.roles.items():
+                if spec.engine is None:
+                    raise ValidationError(f"roles.{role}.engine must name a type when no top-level engine is set")
+
+        decode = self.roles.get("decode")
+        if decode is not None and decode.colocated:
+            # A colocated split cannot be derived: the per-node formula would hand prefill every GPU
+            # and the decode size would silently inherit it. Both roles must state their worker size.
+            missing = [
+                role for role in ("prefill", "decode") if self.roles.get(role) is None or self.roles[role].gpus is None
+            ]
+            if missing:
+                raise ValidationError(
+                    "roles.decode.nodes: colocate requires an explicit gpus: on both prefill and decode "
+                    f"(missing on {', '.join(missing)}); the GPU split is validated against the prefill nodes at load"
+                )
+
+        sidecars = {spec.sidecar for spec in self.roles.values() if spec.sidecar is not None}
+        if len(sidecars) > 1:
+            raise ValidationError("roles.*.sidecar must agree across roles (the Dynamo sidecar mode is job-wide)")
+        if sidecars:
+            wanted = sidecars.pop()
+            if self.dynamo.sidecar and not wanted:
+                raise ValidationError("roles.*.sidecar: false disagrees with dynamo.sidecar: true")
+            if wanted and not self.dynamo.sidecar:
+                # The sidecar mode is job-wide: a role asking for it turns it on for the job.
+                object.__setattr__(self, "dynamo", dataclasses.replace(self.dynamo, sidecar=True))
+
     def _validate_role_backends(self) -> None:
         """Reject job-wide orchestration that is not yet role-aware."""
-        allowed = {"prefill", "decode", "agg"}
-        unknown = (self.role_backends.keys() | self.role_containers.keys()) - allowed
-        if unknown:
-            raise ValidationError(f"Unknown worker role(s): {', '.join(sorted(unknown))}")
-        for role, container in self.role_containers.items():
-            if not isinstance(container, str) or not container.strip():
-                raise ValidationError(f"roles.{role}.container must be a non-empty string")
         if not self.has_role_backends:
             return
         if self.frontend.type == "dynamo" or self.dynamo.sidecar:
@@ -2424,6 +2670,7 @@ class SrtConfig:
             raise ValidationError("role-specific engines do not yet support resources.het_jobs")
         if self.profiling.enabled or self.observability_nsys_enabled:
             raise ValidationError("role-specific engines do not yet support profiling or observability.nsys")
+        gpus_per_node = self.resources.gpus_per_node
         for role, backend in [("default", self.backend), *self.active_role_backends()]:
             if isinstance(backend, VLLMProtocol) and backend.discovers_workers():
                 raise ValidationError("role-specific engines do not yet support vLLM discovery connectors")
@@ -2434,10 +2681,8 @@ class SrtConfig:
             if role != "default":
                 if isinstance(backend, SGLangProtocol) and backend.is_grpc_mode(cast("WorkerMode", role)):
                     raise ValidationError("role-specific engines do not yet support SGLang gRPC workers")
-                gpus = getattr(self.resources, f"gpus_per_{role}")
-                if gpus > self.resources.gpus_per_node and (
-                    backend.type == "trtllm" or gpus % self.resources.gpus_per_node
-                ):
+                gpus = self.topology.gpus_per_worker(role)
+                if gpus > gpus_per_node and (backend.type == "trtllm" or gpus % gpus_per_node):
                     raise ValidationError(
                         f"roles.{role}: role-specific engines require whole-node multi-node workers; "
                         "multi-node TRT-LLM packing is not yet supported"
@@ -2471,7 +2716,7 @@ class SrtConfig:
                     f"(pools: {', '.join(sorted(owner_names)) or 'none'})"
                 )
         if self.frontend.type == "none":
-            if self.resources.has_engine_workers:
+            if self.topology.has_engine_workers:
                 raise ValidationError(
                     "frontend.type: none is only supported without engine roles (no prefill/decode/agg workers); "
                     "pick a frontend for the workers or drop them"
@@ -2486,7 +2731,7 @@ class SrtConfig:
 
         Per-entry checks (empty command, moving-branch source rev, ...) live on
         ``ServiceConfig.__post_init__``; a kind's ``validate`` sees the full
-        recipe (a ``mooncake-store`` needs ``backend.mooncake_kv_store``).
+        recipe (a ``mooncake-store`` needs ``engine.mooncake_kv_store``).
         """
         from srtctl.services.registry import get_service_kind
 
@@ -2725,12 +2970,13 @@ class SrtConfig:
         """
         if self.resources.het_jobs is not True:
             return
-        if not self.resources.is_disaggregated:
+        topology = self.topology
+        if not topology.is_disaggregated:
             raise ValidationError(
-                "het_jobs=true requires a disaggregated layout (set resources.prefill_nodes and resources.decode_nodes)"
+                "het_jobs=true requires a disaggregated layout (declare roles.prefill and roles.decode)"
             )
-        if (self.resources.prefill_nodes or 0) < 1 or (self.resources.decode_nodes or 0) < 1:
-            raise ValidationError("het_jobs=true requires prefill_nodes >= 1 and decode_nodes >= 1")
+        if (topology.prefill_nodes or 0) < 1 or (topology.decode_nodes or 0) < 1:
+            raise ValidationError("het_jobs=true requires roles.prefill.nodes >= 1 and roles.decode.nodes >= 1")
         if self.backend_type != "sglang":
             raise ValidationError(
                 f"het_jobs=true is only supported on the sglang backend; got backend.type={self.backend_type!r}"
@@ -2742,29 +2988,27 @@ class SrtConfig:
             )
 
     def _validate_colocated_decode(self) -> None:
-        """A colocated decode layout (``decode_nodes: 0``, ``roles.decode.nodes: colocate``)
-        reserves no nodes of its own, so every decode worker has to fit on the GPUs the
-        prefill workers leave free. Run the backend's real packer against a placeholder
-        node list of ``prefill_nodes`` entries and turn its failure into a load-time error
-        instead of a ``Not enough nodes`` crash inside the SLURM job.
+        """``roles.decode.nodes: colocate`` reserves no nodes of its own, so every decode worker
+        has to fit on the GPUs the prefill workers leave free. Run the backend's real packer
+        against a placeholder node list of the prefill nodes and turn its failure into a
+        load-time error instead of a ``Not enough nodes`` crash inside the SLURM job.
         """
-        res = self.resources
-        if not res.is_disaggregated or res.decode_nodes != 0 or not res.num_decode:
+        topology = self.topology
+        if not topology.colocated_decode or not topology.num_decode:
             return
-        prefill_nodes = res.prefill_nodes or 0
-        if prefill_nodes < 1 or not res.num_prefill:
+        prefill_nodes = topology.prefill_nodes or 0
+        if prefill_nodes < 1 or not topology.num_prefill:
             raise ValidationError(
-                "decode colocation (roles.decode.nodes: colocate / resources.decode_nodes: 0) needs at least "
-                "one prefill node and one prefill worker to share"
+                "roles.decode.nodes: colocate needs at least one prefill node and one prefill worker to share"
             )
-        if self.total_nodes != res.total_nodes:
+        if self.total_nodes != topology.total_nodes:
             return  # the backend packs prefill and decode across extra nodes itself (vLLM)
-        capacity = prefill_nodes * res.gpus_per_node
-        demand = res.prefill_gpus + res.decode_gpus
+        capacity = prefill_nodes * topology.gpus_per_node
+        demand = topology.prefill_gpus + topology.decode_gpus
         layout = (
-            f"{res.num_prefill} prefill x {res.gpus_per_prefill} GPU(s) + "
-            f"{res.num_decode} decode x {res.gpus_per_decode} GPU(s) = {demand} GPU(s) on "
-            f"{prefill_nodes} node(s) x {res.gpus_per_node} GPU(s) = {capacity} GPU(s)"
+            f"{topology.num_prefill} prefill x {topology.gpus_per_prefill} GPU(s) + "
+            f"{topology.num_decode} decode x {topology.gpus_per_decode} GPU(s) = {demand} GPU(s) on "
+            f"{prefill_nodes} node(s) x {topology.gpus_per_node} GPU(s) = {capacity} GPU(s)"
         )
         if demand > capacity:
             raise ValidationError(f"colocated decode workers do not fit on the prefill nodes: {layout}")
@@ -2795,7 +3039,7 @@ class SrtConfig:
                 mooncake_cfg.validate_device_mapping(self.resources.gpus_per_node)
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
-        if not self.resources.is_disaggregated:
+        if not self.topology.is_disaggregated:
             return
 
         if isinstance(self.backend, SGLangProtocol):
@@ -2855,7 +3099,7 @@ class SrtConfig:
         """Derive selectable physical ranks from the configured worker layout."""
         from srtctl.core.topology import Endpoint
 
-        resources = self.resources
+        resources = self.topology
         gpus_per_worker = {
             "prefill": resources.gpus_per_prefill,
             "decode": resources.gpus_per_decode,
@@ -2915,7 +3159,7 @@ class SrtConfig:
                 )
             return
 
-        r = self.resources
+        r = self.topology
         is_disaggregated = r.is_disaggregated
         has_prefill_prof = prof.prefill is not None
         has_decode_prof = prof.decode is not None
@@ -3094,7 +3338,7 @@ class SrtConfig:
         if self.frontend.type == "none" or get_frontend(self.frontend.type).worker_launch != "dynamo":
             return set()
 
-        resources = self.resources
+        resources = self.topology
         nodes = [f"validation-worker-{index}" for index in range(self.total_nodes)]
         endpoints = self.backend.allocate_endpoints(
             num_prefill=resources.num_prefill,
@@ -3105,7 +3349,7 @@ class SrtConfig:
             gpus_per_agg=resources.gpus_per_agg,
             gpus_per_node=resources.gpus_per_node,
             available_nodes=nodes,
-            spread_workers=resources.spread_workers,
+            spread_workers=self.resources.spread_workers,
         )
         processes = self.backend.endpoints_to_processes(
             endpoints,
@@ -3307,9 +3551,8 @@ class SrtConfig:
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
         """Load a recipe file without cluster defaults (``load_config`` applies them).
 
-        Runs the same gate and expansions as ``load_config``: a pre-2.0 recipe
-        is rejected, and the 2.0 vocabularies are normalized into the internal
-        fields before the schema loads the document.
+        Runs the same gate and engine-default expansions as ``load_config``: a
+        pre-2.0 recipe is rejected before the schema loads the document.
         """
         from srtctl.core.config import expand_engine_config_defaults, resolve_config_with_defaults
 
@@ -3324,7 +3567,7 @@ class SrtConfig:
     def served_model_name(self) -> str:
         """Get the served model name from backend config or model path."""
         default = Path(self.model.path).name
-        role = "decode" if self.resources.num_decode else "agg" if self.resources.num_agg else "prefill"
+        role = "decode" if self.topology.num_decode else "agg" if self.topology.num_agg else "prefill"
         if self.frontend.type != "none":
             from srtctl.frontends import get_frontend
 
@@ -3362,7 +3605,7 @@ class SrtConfig:
     @property
     def engine_node_count(self) -> int:
         """Nodes the engine roles own; zero when the recipe has no engine workers."""
-        if not self.resources.has_engine_workers:
+        if not self.topology.has_engine_workers:
             return 0
         return self._engine_total_nodes()
 
@@ -3373,24 +3616,21 @@ class SrtConfig:
 
     def _engine_total_nodes(self) -> int:
         """Worker node count of the engine roles, adjusted for backend-specific packing."""
+        topology = self.topology
         if self.has_role_backends:
-            return self.resources.total_nodes
+            return topology.total_nodes
         if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
-            num_prefill=self.resources.num_prefill,
-            num_decode=self.resources.num_decode,
-            num_agg=self.resources.num_agg,
-            gpus_per_prefill=self.resources.gpus_per_prefill,
-            gpus_per_decode=self.resources.gpus_per_decode,
-            gpus_per_agg=self.resources.gpus_per_agg,
-            gpus_per_node=self.resources.gpus_per_node,
+            num_prefill=topology.num_prefill,
+            num_decode=topology.num_decode,
+            num_agg=topology.num_agg,
+            gpus_per_prefill=topology.gpus_per_prefill,
+            gpus_per_decode=topology.gpus_per_decode,
+            gpus_per_agg=topology.gpus_per_agg,
+            gpus_per_node=topology.gpus_per_node,
         ):
-            total_worker_gpus = (
-                self.resources.prefill_gpus
-                + self.resources.decode_gpus
-                + self.resources.num_agg * self.resources.gpus_per_agg
-            )
-            return (total_worker_gpus + self.resources.gpus_per_node - 1) // self.resources.gpus_per_node
-        return self.resources.total_nodes
+            total_worker_gpus = topology.prefill_gpus + topology.decode_gpus + topology.num_agg * topology.gpus_per_agg
+            return (total_worker_gpus + topology.gpus_per_node - 1) // topology.gpus_per_node
+        return topology.total_nodes
 
     @property
     def backend_type(self) -> str:

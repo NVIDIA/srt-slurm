@@ -75,9 +75,14 @@ def display_config_summary(config: dict[str, Any], title: str = "Configuration")
         res_branch = tree.add("[bold]🖥️  Resources[/]")
         r = config["resources"]
         res_branch.add(f"gpu_type: [cyan]{r.get('gpu_type', 'N/A')}[/]")
-        res_branch.add(f"prefill: [green]{r.get('prefill_workers', r.get('prefill_nodes', 'N/A'))}[/] workers")
-        res_branch.add(f"decode: [green]{r.get('decode_workers', r.get('decode_nodes', 'N/A'))}[/] workers")
         res_branch.add(f"gpus_per_node: [yellow]{r.get('gpus_per_node', 'N/A')}[/]")
+        roles = config.get("roles") or {}
+        for role in ("prefill", "decode", "agg"):
+            spec = roles.get(role)
+            if isinstance(spec, dict):
+                res_branch.add(
+                    f"{role}: [green]{spec.get('workers', 'N/A')}[/] workers on {spec.get('nodes', 'N/A')} node(s)"
+                )
 
     # Benchmark
     if "benchmark" in config:
@@ -217,8 +222,8 @@ def modify_config_interactive(config: dict) -> dict:
     # Modifiable fields
     modifiable = [
         ("name", "Job name"),
-        ("resources.prefill_workers", "Prefill workers"),
-        ("resources.decode_workers", "Decode workers"),
+        ("roles.prefill.workers", "Prefill workers"),
+        ("roles.decode.workers", "Decode workers"),
         ("benchmark.isl", "Input sequence length"),
         ("benchmark.osl", "Output sequence length"),
     ]

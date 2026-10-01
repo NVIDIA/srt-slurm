@@ -98,7 +98,7 @@ def test_frontend_config_accepts_single_aggregate_worker(tmp_path: Path):
     config_path.write_text(yaml.safe_dump(_aggregate_config(agg_workers=1)))
     config = SrtConfig.from_yaml(config_path)
 
-    assert config.resources.num_agg == 1
+    assert config.topology.num_agg == 1
 
 
 @pytest.mark.parametrize("agg_workers", [0, 2])
@@ -115,7 +115,7 @@ def test_aggregate_frontend_uses_worker_directly():
     topology = SimpleNamespace(uses_nginx=False, frontend_nodes=["node0"], public_port=8000)
     config = SimpleNamespace(
         backend=SimpleNamespace(type="trtllm"),
-        resources=SimpleNamespace(is_disaggregated=False),
+        topology=SimpleNamespace(is_disaggregated=False),
     )
     worker = SimpleNamespace(endpoint_mode="agg", is_leader=True)
 

@@ -22,6 +22,7 @@ from srtctl.core.schema import (
     ProfilingConfig,
     ProfilingPhaseConfig,
     ResourceConfig,
+    RoleConfig,
     SrtConfig,
 )
 from srtctl.core.topology import Process
@@ -121,16 +122,17 @@ def test_worker_launch_uses_rendered_config(
     if capture_scope is not None:
         phase = ProfilingPhaseConfig(start_step=2, stop_step=5, capture_scope=capture_scope, worker_index=1)
         profiling = ProfilingConfig(type="nsys", nsys_library_paths=["/host/lib64"], **dict.fromkeys(roles, phase))
-    resources = (
-        ResourceConfig(gpus_per_node=4, prefill_nodes=2, prefill_workers=4, decode_nodes=2, decode_workers=4)
+    role_specs = (
+        {"prefill": RoleConfig(nodes=2, workers=4), "decode": RoleConfig(nodes=2, workers=4)}
         if disaggregated
-        else ResourceConfig(gpus_per_node=4, agg_nodes=2, agg_workers=4)
+        else {"agg": RoleConfig(nodes=2, workers=4)}
     )
     config = SrtConfig(
         name="mooncake-launch-test",
         model=ModelConfig(path="/model", container="/container.sqsh", precision="bf16"),
-        resources=resources,
-        backend=b,
+        resources=ResourceConfig(gpus_per_node=4),
+        roles=role_specs,
+        engine=b,
         dynamo=DynamoConfig(install=False),
         profiling=profiling,
     )

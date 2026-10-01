@@ -97,8 +97,7 @@ def test_preflight_config_reports_missing_container(tmp_path) -> None:
 def test_validate_config_rejects_disagg_with_zero_prefill_workers() -> None:
     """Reproduces the reported bad config: disagg-style block that should be aggregated.
 
-    The topology check runs on the resolved resources (roles: expanded), so the
-    advice names the internal prefill_workers field and the aggregated fix.
+    The topology check reads the roles block and names the aggregated fix.
     """
     result = validate_config(
         config={
@@ -119,9 +118,8 @@ def test_validate_config_rejects_disagg_with_zero_prefill_workers() -> None:
     assert result["valid"] is False
     assert len(result["errors"]) == 1
     message = result["errors"][0]
-    assert "prefill_workers" in message
-    assert "agg_nodes: 1" in message
-    assert "agg_workers: 1" in message
+    assert "roles.prefill.workers" in message
+    assert "roles.agg (nodes: 1, workers: 1)" in message
 
 
 def test_validate_config_reports_a_pre_2_0_recipe_instead_of_raising() -> None:
@@ -175,7 +173,7 @@ def test_validate_config_rejects_mixed_disagg_and_agg() -> None:
         },
     )
     assert result["valid"] is False
-    assert "Mixes disaggregated fields" in result["errors"][0]
+    assert "Mixes the disaggregated roles" in result["errors"][0]
 
 
 def test_resolve_config_returns_variants() -> None:

@@ -122,7 +122,7 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
     assert keys.index("roles") == keys.index("engine") + 1
 
     (config,) = _migrated_loads_and_v1_does_not(LEGACY)
-    assert config.resources.num_prefill == 2
+    assert config.topology.num_prefill == 2
     assert config.frontend.placement.location == "first_decode"
     assert config.infra_dedicated_node is True
     assert config.dynamo.git_rev == "abc1234"
@@ -144,9 +144,9 @@ def test_migrate_spells_shared_node_decode_as_colocate() -> None:
     assert "decode_nodes" not in doc.get("resources", {})
     assert any("nodes: colocate" in note for note in result.notes)
     (config,) = _migrated_loads_and_v1_does_not(legacy)
-    assert config.resources.decode_nodes == 0
-    assert config.resources.gpus_per_prefill == 4
-    assert config.resources.gpus_per_decode == 4
+    assert config.topology.decode_nodes == 0
+    assert config.topology.gpus_per_prefill == 4
+    assert config.topology.gpus_per_decode == 4
 
 
 def test_migrate_is_idempotent_and_layout_folds_apply_to_schema_2_documents() -> None:
@@ -211,7 +211,7 @@ zip_override_ctx:
     # And the variants still combine: a partially migrated file would collide on roles vs internal fields.
     configs = _migrated_loads_and_v1_does_not(text)
     assert len(configs) == 3
-    assert configs[0].resources.num_agg == 1 and configs[0].resources.gpus_per_agg == 2
+    assert configs[0].topology.num_agg == 1 and configs[0].topology.gpus_per_agg == 2
     assert [c.backend.sglang_config.aggregated["context-length"] for c in configs[1:]] == [2048, 8192]
 
 
@@ -416,5 +416,5 @@ def test_migrate_folds_worker_criticality_into_roles() -> None:
     assert "critical" not in doc["roles"]["prefill"]
     assert "decode_critical" not in doc.get("resources", {})
     (config,) = _migrated_loads_and_v1_does_not(legacy)
-    assert config.resources.worker_critical("decode") is False
-    assert config.resources.worker_critical("prefill") is True
+    assert config.topology.worker_critical("decode") is False
+    assert config.topology.worker_critical("prefill") is True

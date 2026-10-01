@@ -28,6 +28,7 @@ from srtctl.core.schema import (
     ReportingConfig,
     ReportingStatusConfig,
     ResourceConfig,
+    RoleConfig,
     SrtConfig,
     TachometerConfig,
     TelemetryConfig,
@@ -643,7 +644,8 @@ class TestCpuPowerExporterConfig:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/image", precision="fp4"),
-                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 benchmark=_sa_bench(),
                 frontend=FrontendConfig(type="dynamo"),
                 telemetry=TelemetryConfig(

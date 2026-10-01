@@ -13,7 +13,7 @@ import pytest
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import HealthCheckConfig, ObservabilityConfig, ResourceConfig
+from srtctl.core.schema import HealthCheckConfig, ObservabilityConfig, ResourceConfig, Topology
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
 
 
@@ -192,6 +192,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
+        topology=Topology(roles={}, gpus_per_node=4),
         health_check=HealthCheckConfig(),
         backend=backend,
         backend_for_role=lambda _mode: backend,
@@ -263,6 +264,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
+        topology=Topology(roles={}, gpus_per_node=4),
         health_check=HealthCheckConfig(),
         backend=backend,
         backend_for_role=lambda _mode: backend,
@@ -698,6 +700,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
+        topology=Topology(roles={}, gpus_per_node=4),
         health_check=HealthCheckConfig(),
         backend=backend,
         backend_for_role=lambda _mode: backend,

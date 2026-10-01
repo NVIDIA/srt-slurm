@@ -12,7 +12,6 @@ from marshmallow import ValidationError
 
 from srtctl.backends import SGLangProtocol, VLLMProtocol
 from srtctl.cli.do_sweep import SweepOrchestrator
-from srtctl.core.roles import expand_roles
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import NodePortAllocator
@@ -54,7 +53,7 @@ def recipe():
 
 
 def load(data):
-    return SrtConfig.Schema().load(expand_roles(copy.deepcopy(data)))
+    return SrtConfig.Schema().load(copy.deepcopy(data))
 
 
 def test_independent_engine_arguments_environments_and_images():
@@ -98,7 +97,7 @@ def test_no_default_requires_an_engine_on_every_role(missing_role):
     data = recipe()
     data["roles"]["decode"]["engine"] = "sglang"
     data["roles"][missing_role].pop("engine")
-    with pytest.raises(ValueError, match=rf"roles\.{missing_role}\.engine must name a type"):
+    with pytest.raises(ValidationError, match=rf"roles\.{missing_role}\.engine must name a type"):
         load(data)
 
 
@@ -107,17 +106,14 @@ def test_roles_without_any_engine_share_the_default_backend():
     for spec in data["roles"].values():
         spec.pop("engine")
         spec.pop("container", None)
-    expanded = expand_roles(copy.deepcopy(data))
-    assert "role_backends" not in expanded
-    config = SrtConfig.Schema().load(expanded)
+    config = load(data)
     assert not config.has_role_backends
     assert config.backend_for_role("prefill") is config.backend_for_role("decode")
 
 
 def test_role_mapping_and_containers_survive_a_schema_round_trip():
-    expanded = expand_roles(recipe())
-    assert set(expanded["role_backends"]) == {"prefill", "decode"}
     config = load(recipe())
+    assert set(config.role_backends) == {"prefill", "decode"}
     dumped = SrtConfig.Schema().dump(config)
     reloaded = SrtConfig.Schema().load(dumped)
     assert reloaded.role_backends == config.role_backends

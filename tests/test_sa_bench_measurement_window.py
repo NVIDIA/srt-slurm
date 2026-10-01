@@ -41,6 +41,7 @@ from srtctl.core.schema import (
     ProfilingConfig,
     ProfilingPhaseConfig,
     ResourceConfig,
+    RoleConfig,
     SrtConfig,
     TelemetryConfig,
     TelemetryExporterConfig,
@@ -706,13 +707,8 @@ class TestArtifactErrors:
         harness.config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/image", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="gb200",
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=1,
-                decode_workers=1,
-            ),
+            resources=ResourceConfig(gpu_type="gb200"),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
             benchmark=BenchmarkConfig(
                 type="sa-bench",
                 concurrencies=[4],

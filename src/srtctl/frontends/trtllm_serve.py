@@ -102,10 +102,10 @@ class TRTLLMServeFrontend:
             raise ValueError(
                 "frontend.type: trtllm_serve uses one public endpoint; set frontend.enable_multiple_frontends: false"
             )
-        if not config.resources.is_disaggregated and config.resources.num_agg != 1:
+        if not config.topology.is_disaggregated and config.topology.num_agg != 1:
             raise ValueError(
                 "frontend.type: trtllm_serve aggregate mode requires exactly one "
-                "aggregate worker (set resources.agg_workers: 1)"
+                "aggregate worker (set roles.agg.workers: 1)"
             )
 
     def get_backend_health_urls(
@@ -170,7 +170,7 @@ class TRTLLMServeFrontend:
                 "frontend.enable_multiple_frontends: false"
             )
 
-        if not config.resources.is_disaggregated:
+        if not config.topology.is_disaggregated:
             agg_leaders = [
                 process for process in backend_processes if process.endpoint_mode == "agg" and process.is_leader
             ]

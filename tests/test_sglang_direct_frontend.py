@@ -39,7 +39,7 @@ def _load(recipe: dict) -> SrtConfig:
 def test_direct_single_worker_loads() -> None:
     cfg = _load(_recipe())
     assert cfg.frontend.type == "sglang"
-    assert cfg.resources.num_agg == 1
+    assert cfg.topology.num_agg == 1
     assert isinstance(get_frontend(cfg.frontend.type), SGLangFrontend)
 
 
@@ -118,7 +118,7 @@ def test_migrate_renames_the_router_and_the_result_loads_as_the_router() -> None
     assert any("frontend.type: sglang -> sglang-router" in note for note in result.notes)
     cfg = _load(doc)
     assert cfg.frontend.type == "sglang-router"
-    assert cfg.resources.num_agg == 2
+    assert cfg.topology.num_agg == 2
     assert isinstance(get_frontend(cfg.frontend.type), SGLangRouterFrontend)
 
 

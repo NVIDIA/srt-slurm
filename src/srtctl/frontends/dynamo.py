@@ -184,7 +184,7 @@ class DynamoFrontend(DynamicFrontend):
         logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
         if not isinstance(config.backend, VLLMProtocol):
             return logical_prefill, logical_decode, worker_desc
-        if config.resources.num_agg > 0:
+        if config.topology.num_agg > 0:
             n_prefill = 0
             n_decode = vllm_health_entries(config, "aggregated", logical_decode, processes)
         else:

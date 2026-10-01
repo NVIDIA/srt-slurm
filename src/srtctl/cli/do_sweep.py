@@ -93,7 +93,7 @@ class SweepOrchestrator(
         from their own component nodelists so neither side bleeds into the
         other's topology segment.
         """
-        r = self.config.resources
+        r = self.config.topology
         if self.runtime.nodes.het:
             if self.config.role_backends:
                 raise ValueError("Role engine overrides do not support Slurm heterogeneous allocations")
@@ -652,7 +652,7 @@ class SweepOrchestrator(
                 logger.info("No discovery plane for frontend.type=%s", self.config.frontend.type)
 
             # Stage 1b: services workers depend on: the Mooncake master (implied by
-            # backend.mooncake_kv_store), standalone Mooncake stores, anything with
+            # engine.mooncake_kv_store), standalone Mooncake stores, anything with
             # start: before_workers. The stage registers each process as it
             # launches. See docs/services.md.
             self._write_mooncake_store_config()

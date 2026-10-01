@@ -223,7 +223,7 @@ def numactl_prefix(config: Any) -> list[str]:
 
 def logical_health_expectations(config: Any) -> tuple[int, int, str]:
     """Expected counts in logical workers: aggregate workers count as decode."""
-    r = config.resources
+    r = config.topology
     if r.num_agg > 0:
         return 0, r.num_agg, f"{r.num_agg} agg"
     return r.num_prefill, r.num_decode, f"{r.num_prefill}P + {r.num_decode}D"

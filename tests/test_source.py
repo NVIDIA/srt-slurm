@@ -226,9 +226,12 @@ model:
 resources:
   gpu_type: h100
   gpus_per_node: 8
-  agg_nodes: 1
-  agg_workers: 2
-  gpus_per_agg: 1
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
 frontend:
   type: dynamo
 dynamo:
@@ -236,8 +239,6 @@ dynamo:
     git: https://github.com/ai-dynamo/dynamo
     rev: v1.4.2
     sha: 2ecbdfdf192c69c02c6d21e931d20d3b4a0bb64a
-backend:
-  type: sglang
 benchmark:
   type: manual
 """

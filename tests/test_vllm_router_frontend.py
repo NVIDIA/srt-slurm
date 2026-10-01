@@ -12,7 +12,7 @@ from marshmallow import ValidationError
 
 from srtctl.backends import VLLMProtocol, VLLMServerConfig
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
-from srtctl.core.schema import FrontendConfig, PlacementConfig, ResourceConfig, SrtConfig
+from srtctl.core.schema import FrontendConfig, PlacementConfig, ResourceConfig, RoleConfig, SrtConfig
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 from srtctl.frontends import VLLMRouterFrontend, get_frontend
 from srtctl.frontends.static_router import RouterWorker
@@ -118,16 +118,10 @@ def test_discovery_connector_recipe_rules(recipe: dict, message: str) -> None:
         SrtConfig(
             name="moriio",
             model={"path": "model", "container": "image", "precision": "bf16"},
-            resources=ResourceConfig(
-                gpu_type="mi300x",
-                gpus_per_node=8,
-                prefill_nodes=1,
-                prefill_workers=1,
-                decode_nodes=1,
-                decode_workers=1,
-            ),
+            resources=ResourceConfig(gpu_type="mi300x", gpus_per_node=8),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
             frontend=FrontendConfig(**frontend),
-            backend=VLLMProtocol(
+            engine=VLLMProtocol(
                 connector="moriio",
                 vllm_config=VLLMServerConfig(prefill={"tensor-parallel-size": 1}, decode=decode_args),
             ),
@@ -208,7 +202,7 @@ def test_dep4_expansion_and_health_counts_follow_upstream_per_node_topology() ->
         frontend=SimpleNamespace(type="vllm-router"),
         backend=backend,
         backend_for_role=lambda mode: backend,
-        resources=SimpleNamespace(num_prefill=1, num_decode=2, num_agg=0),
+        topology=SimpleNamespace(num_prefill=1, num_decode=2, num_agg=0),
     )
 
     assert node_local_data_parallel_size(config, processes) == 4
@@ -238,7 +232,7 @@ def test_multinode_dep8_routes_node_local_hybrid_pools_without_rank_reexpansion(
         frontend=SimpleNamespace(type="vllm-router"),
         backend=backend,
         backend_for_role=lambda mode: backend,
-        resources=SimpleNamespace(num_prefill=1, num_decode=1, num_agg=0),
+        topology=SimpleNamespace(num_prefill=1, num_decode=1, num_agg=0),
     )
 
     assert node_local_data_parallel_size(config, processes) == 1
@@ -256,20 +250,12 @@ def test_multinode_hybrid_pool_schema_matches_router_expansion(expansion: int) -
     data = {
         "name": "hybrid-pools",
         "model": {"path": "/model", "container": "vllm", "precision": "bf16"},
-        "resources": {
-            "gpus_per_node": 4,
-            "prefill_nodes": 2,
-            "decode_nodes": 2,
-            "prefill_workers": 1,
-            "decode_workers": 1,
+        "resources": {"gpus_per_node": 4},
+        "roles": {
+            "prefill": {"nodes": 2, "workers": 1, "args": {"data-parallel-size": 8}},
+            "decode": {"nodes": 2, "workers": 1, "args": {"data-parallel-size": 8}},
         },
-        "backend": {
-            "type": "vllm",
-            "vllm_config": {
-                "prefill": {"data-parallel-size": 8},
-                "decode": {"data-parallel-size": 8},
-            },
-        },
+        "engine": "vllm",
         "frontend": {
             "type": "vllm-router",
             "enable_multiple_frontends": False,
@@ -368,15 +354,16 @@ def test_schema_rejects_backend_mismatch_and_deprecated_per_gpu_dp() -> None:
     common = {
         "name": "router",
         "model": {"path": "model", "container": "image", "precision": "fp8"},
-        "resources": ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+        "resources": ResourceConfig(gpu_type="h100", gpus_per_node=8),
+        "roles": {"agg": RoleConfig(nodes=1, workers=1)},
         "frontend": FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
     }
     with pytest.raises(ValidationError, match="requires backend.type: vllm"):
-        SrtConfig(**common, backend=SGLangProtocol())
+        SrtConfig(**common, engine=SGLangProtocol())
     with pytest.raises(ValidationError, match="requires backend.dp_launch_mode: per_node"):
         SrtConfig(
             **common,
-            backend=VLLMProtocol(
+            engine=VLLMProtocol(
                 dp_launch_mode="per_gpu",
                 vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 8}),
             ),
@@ -453,14 +440,15 @@ def test_router_validates_pcp_as_part_of_the_vllm_world_size() -> None:
     common = {
         "name": "router-pcp",
         "model": {"path": "model", "container": "image", "precision": "fp8"},
-        "resources": ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+        "resources": ResourceConfig(gpu_type="h100", gpus_per_node=8),
+        "roles": {"agg": RoleConfig(nodes=1, workers=1)},
         "frontend": FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
     }
 
     with pytest.raises(ValidationError, match=r"DP\*TP\*PP\*PCP=2\*8=16 GPUs"):
         SrtConfig(
             **common,
-            backend=VLLMProtocol(
+            engine=VLLMProtocol(
                 vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 2, "prefill-context-parallel-size": 8})
             ),
         )
