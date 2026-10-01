@@ -690,7 +690,7 @@ class TestCustomBenchmarkRunner:
             ({"publish_metrics": False, "publish_events_and_metrics": None}, False),
             ({"publish_metrics": True, "publish_events_and_metrics": None}, True),
             ({"publish_metrics": False, "publish_events_and_metrics": False}, False),
-            ({"publish_metrics": True, "publish_events_and_metrics": False}, False),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, True),
             ({"publish_metrics": False, "publish_events_and_metrics": True}, True),
             ({"publish_metrics": True, "publish_events_and_metrics": True}, True),
         ],

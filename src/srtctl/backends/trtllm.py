@@ -128,10 +128,9 @@ class TRTLLMProtocol:
     # per-request perf metrics only.
     publish_metrics: bool = True
 
-    # None means unspecified: metrics default on, events off (observability
-    # promotes this to True). Explicit False is a master opt-out of BOTH
-    # publication flags, even when publish_metrics is True. Preserve None in
-    # schema round-trips so an omitted value never becomes an explicit opt-out.
+    # Legacy compatibility flag for Dynamo builds without --publish-metrics.
+    # True emits only --publish-events-and-metrics, regardless of publish_metrics.
+    # False or None uses publish_metrics instead. Observability does not enable it.
     publish_events_and_metrics: bool | None = None
 
     # Controls batched startup of workers that share the same node.
@@ -169,15 +168,10 @@ class TRTLLMProtocol:
 
     @property
     def dynamo_metrics_flags(self) -> tuple[str, ...]:
-        """Effective publication flags, preserving the explicit legacy opt-out."""
-        if self.publish_events_and_metrics is False:
-            return ()
-        flags = []
-        if self.publish_metrics:
-            flags.append("--publish-metrics")
+        """Select the legacy combined flag or the metrics-only flag exclusively."""
         if self.publish_events_and_metrics:
-            flags.append("--publish-events-and-metrics")
-        return tuple(flags)
+            return ("--publish-events-and-metrics",)
+        return ("--publish-metrics",) if self.publish_metrics else ()
 
     # =========================================================================
     # BackendProtocol Implementation

@@ -772,10 +772,8 @@ def expand_observability(cfg: dict) -> dict:
     One knob, six effects -- see :class:`~srtctl.core.schema.ObservabilityConfig`
     for the rationale and the full list. Mutates ``cfg`` in place and returns it.
 
-    Defaults preserve explicit recipe values. The tri-state combined publishing
-    setting treats null as unset, while explicit False remains a master opt-out.
-    Enabling observability never overrides a recipe that deliberately disables
-    publication.
+    Defaults preserve explicit recipe values. Observability leaves publication
+    settings unchanged; the legacy combined flag requires an explicit true.
 
     No-op unless ``observability.enabled`` is truthy.
     """
@@ -812,20 +810,9 @@ def expand_observability(cfg: dict) -> dict:
     _setdefault_nested(frontend, "env", ANALYTICS_REQUEST_TRACE_ENV)
 
     # --- metrics leg: engine metrics on the worker /metrics surface ----------
-    # Metrics-only publication defaults on independently of observability.
-    # Keep observability as the existing superset that also enables KV events.
+    # Publication uses the backend's metrics-only default. The legacy combined
+    # flag is enabled only by an explicit recipe setting, not observability.
     if backend.get("type", "sglang") == "trtllm":
-        # None preserves an omitted setting through schema dumps; treat it as
-        # unset here too. An explicit False must remain the master opt-out.
-        if backend.get("publish_events_and_metrics") is None:
-            backend["publish_events_and_metrics"] = True
-        if frontend.get("type", "dynamo") == "dynamo" and backend["publish_events_and_metrics"] is False:
-            logger.warning(
-                "observability.enabled but backend.publish_events_and_metrics is explicitly false "
-                "— srt-slurm will enable neither metrics nor KV-event publication. "
-                "This opt-out takes precedence over backend.publish_metrics."
-            )
-
         # Sections for the modes the layout uses are created when the recipe has
         # none, so a recipe without trtllm_config still gets the iteration-level
         # gauges the capture reads. expand_trtllm_engine_defaults runs after
@@ -849,8 +836,7 @@ def expand_observability(cfg: dict) -> dict:
             )
 
     logger.info(
-        "observability.enabled: expanded span-event env (prefill/decode/frontend), "
-        "publish_events_and_metrics and per-iteration engine stats"
+        "observability.enabled: expanded span-event env (prefill/decode/frontend), and per-iteration engine stats"
     )
     return cfg
 

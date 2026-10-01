@@ -1451,10 +1451,9 @@ class ObservabilityConfig:
     having to remember six independent flags. It expands (at config-load time,
     via :func:`srtctl.core.config.expand_observability`) into:
 
-    * ``backend.publish_events_and_metrics: true`` -- enable KV-cache events
-      and TRT-LLM engine metrics. Metrics-only publication already defaults on
-      independently via ``backend.publish_metrics``. An explicit
-      ``publish_events_and_metrics: false`` disables both publication flags.
+    * TRT-LLM engine metrics publication defaults on via ``backend.publish_metrics``.
+      The legacy ``publish_events_and_metrics`` flag is selected only when the
+      recipe explicitly sets it to true, for backward compatibility.
     * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
       config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
       histograms appear on that surface.

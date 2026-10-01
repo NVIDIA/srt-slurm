@@ -31,6 +31,9 @@ frontend:
 
 engine:
   type: trtllm
+  publish_metrics: true
+  # Legacy compatibility with older Dynamo builds; includes KV events for KV-aware routing.
+  publish_events_and_metrics: true  # Emits only --publish-events-and-metrics.
   served_model_name: "Qwen/Qwen3-0.6B"
 roles:
   agg:

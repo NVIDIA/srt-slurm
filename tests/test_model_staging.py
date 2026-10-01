@@ -54,7 +54,7 @@ class TestSchema:
             ({"publish_metrics": False}, False, None, ()),
             ({"publish_metrics": True, "publish_events_and_metrics": None}, True, None, ("--publish-metrics",)),
             ({"publish_metrics": False, "publish_events_and_metrics": None}, False, None, ()),
-            ({"publish_metrics": True, "publish_events_and_metrics": False}, True, False, ()),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, True, False, ("--publish-metrics",)),
             ({"publish_metrics": False, "publish_events_and_metrics": False}, False, False, ()),
             (
                 {"publish_metrics": False, "publish_events_and_metrics": True},
@@ -66,7 +66,7 @@ class TestSchema:
                 {"publish_metrics": True, "publish_events_and_metrics": True},
                 True,
                 True,
-                ("--publish-metrics", "--publish-events-and-metrics"),
+                ("--publish-events-and-metrics",),
             ),
         ],
     )
@@ -194,12 +194,12 @@ class TestWorkerCommandUsesStagedPath:
             ({"publish_metrics": False}, []),
             ({"publish_metrics": True, "publish_events_and_metrics": None}, ["--publish-metrics"]),
             ({"publish_metrics": False, "publish_events_and_metrics": None}, []),
-            ({"publish_metrics": True, "publish_events_and_metrics": False}, []),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, ["--publish-metrics"]),
             ({"publish_metrics": False, "publish_events_and_metrics": False}, []),
             ({"publish_metrics": False, "publish_events_and_metrics": True}, ["--publish-events-and-metrics"]),
             (
                 {"publish_metrics": True, "publish_events_and_metrics": True},
-                ["--publish-metrics", "--publish-events-and-metrics"],
+                ["--publish-events-and-metrics"],
             ),
         ],
     )

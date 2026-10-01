@@ -53,7 +53,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name Qwen/Qwen3-0.6B --extra-engine-args /logs/trtllm_config_agg.yaml --request-plane tcp --publish-metrics
+    trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name Qwen/Qwen3-0.6B --extra-engine-args /logs/trtllm_config_agg.yaml --request-plane tcp --publish-events-and-metrics
 
 ## agg_1_node-01
 nodes: 1
@@ -91,7 +91,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name Qwen/Qwen3-0.6B --extra-engine-args /logs/trtllm_config_agg.yaml --request-plane tcp --publish-metrics
+    trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name Qwen/Qwen3-0.6B --extra-engine-args /logs/trtllm_config_agg.yaml --request-plane tcp --publish-events-and-metrics
 
 ## frontend_0
 nodelist: node-01

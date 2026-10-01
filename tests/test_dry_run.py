@@ -83,11 +83,11 @@ class TestDryRunDynamoMetrics:
         [
             ({}, "--publish-metrics", "--publish-events-and-metrics"),
             ({"publish_events_and_metrics": None}, "--publish-metrics", "--publish-events-and-metrics"),
-            ({"publish_events_and_metrics": False}, "No publication flag", "--publish-"),
+            ({"publish_events_and_metrics": False}, "--publish-metrics", "--publish-events-and-metrics"),
             (
                 {"publish_metrics": True, "publish_events_and_metrics": False},
-                "No publication flag",
-                "--publish-",
+                "--publish-metrics",
+                "--publish-events-and-metrics",
             ),
             ({"publish_metrics": False}, "No publication flag", "--publish-metrics"),
             (
@@ -114,17 +114,17 @@ class TestDryRunDynamoMetrics:
         show_config_details(config)
         assert "Dynamo TRT-LLM Metrics" not in capsys.readouterr().out
 
-    def test_both_flags_are_visible(self, capsys):
+    def test_legacy_flag_excludes_metrics_only_flag(self, capsys):
         config = _make_config(
             {"backend": {"type": "trtllm", "publish_events_and_metrics": True}, "frontend": {"type": "dynamo"}}
         )
         show_config_details(config)
         output = capsys.readouterr().out
-        assert "--publish-metrics" in output
+        assert "--publish-metrics" not in output
         assert "--publish-events-and-metrics" in output
 
     @pytest.mark.parametrize("enabled", [False, True])
-    def test_explicit_combined_false_wins_over_observability(self, capsys, enabled):
+    def test_explicit_combined_false_uses_metrics_with_observability(self, capsys, enabled):
         config = _make_config(
             {
                 "backend": {"type": "trtllm", "publish_events_and_metrics": False},
@@ -134,9 +134,8 @@ class TestDryRunDynamoMetrics:
         )
         show_config_details(config)
         output = capsys.readouterr().out
-        assert "No publication flag" in output
-        assert "backend.publish_events_and_metrics: false" in output
-        assert "--publish-" not in output
+        assert "--publish-metrics" in output
+        assert "--publish-events-and-metrics" not in output
 
     def test_sidecar_has_no_dynamo_trtllm_publication_panel(self, capsys):
         config = _make_config(
