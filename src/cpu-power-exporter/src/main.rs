@@ -530,7 +530,7 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
                 if acpi_only {
                     anyhow::bail!("{reason}");
                 }
-                tracing::info!(%reason, "ACPI unavailable; falling back to DCGM");
+                tracing::warn!(%reason, "ACPI unavailable; falling back to DCGM");
             }
             Ok(sensors) => {
                 match probe_acpi_live(&sensors, ACPI_PROBE_RETRIES, ACPI_PROBE_RETRY_DELAY) {
@@ -560,7 +560,7 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
                 if acpi_only {
                     return Err(e);
                 }
-                tracing::info!(reason = %e, "ACPI unavailable; falling back to DCGM");
+                tracing::warn!(reason = %e, "ACPI unavailable; falling back to DCGM");
             }
         }
     }
