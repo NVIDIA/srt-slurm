@@ -5,7 +5,8 @@
 
 Runs the actual bench.sh script with aiperf against a mock OpenAI-compatible server.
 These tests are slow and require aiperf to be installed, so they are marked with
-@pytest.mark.integration and skipped by default (use `uv run pytest -m integration`).
+@pytest.mark.integration and skipped by default. aiperf lives in the `integration`
+dependency group: `uv sync --dev --group integration && uv run pytest -m integration`.
 """
 
 import json

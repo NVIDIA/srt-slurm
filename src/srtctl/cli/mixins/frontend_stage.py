@@ -86,18 +86,16 @@ class FrontendStageMixin:
         fe_config = self.config.frontend
 
         # Single node or multiple frontends disabled: single frontend, no nginx.
-        # The orchestrator node honors frontend.orchestrator_placement (default
-        # "head" -> unchanged; "first_decode" -> first GEN worker-leader node).
+        # The orchestrator node honors frontend.placement.node (default "head" ->
+        # unchanged; "first_decode" -> first GEN worker-leader node).
         if len(nodes) == 1 or not fe_config.enable_multiple_frontends:
-            placement = getattr(fe_config, "orchestrator_placement", "head")
+            placement = fe_config.placement.location
             if placement == "head":
                 orchestrator_node = head
             else:
                 from srtctl.core.topology import placed_node
 
-                orchestrator_node = placed_node(
-                    self.backend_processes, placement, head, kind="frontend.orchestrator_placement"
-                )
+                orchestrator_node = placed_node(self.backend_processes, placement, head, kind="frontend.placement.node")
             return FrontendTopology(
                 nginx_node=None,
                 frontend_nodes=[orchestrator_node],
@@ -167,6 +165,7 @@ class FrontendStageMixin:
                 "container-remap-root": "",
             },
             het_group=self.runtime.nodes.het_group_for(topology.nginx_node),
+            step_name="nginx",
         )
 
         return ManagedProcess(
@@ -175,6 +174,7 @@ class FrontendStageMixin:
             log_file=nginx_log,
             node=topology.nginx_node,
             critical=True,
+            step_name="nginx",
         )
 
     def _generate_nginx_config(self, topology: FrontendTopology) -> str:
@@ -211,7 +211,16 @@ class FrontendStageMixin:
         Returns:
             List of ManagedProcess instances for all frontend processes.
         """
+        if self.config.frontend.type == "none":
+            logger.info("frontend.type none: no frontend layer (services-only job)")
+            return []
         logger.info("Starting frontend layer")
+        if self.config.frontend.type == "dynamo" and self.config.observability.enabled:
+            trace_path = (self.config.frontend.env or {}).get("DYN_REQUEST_TRACE_FILE_PATH")
+            logger.info(
+                "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: %s)",
+                trace_path or "configured trace path",
+            )
         topology = self._compute_frontend_topology()
         processes: list[ManagedProcess] = []
 

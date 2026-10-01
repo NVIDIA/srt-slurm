@@ -1,6 +1,6 @@
 # Status API Specification v1
 
-srtslurm can optionally report job status to an external HTTP API via fire-and-forget POST/PUT requests.
+srtslurm can optionally report job status to one or more HTTP collectors via fire-and-forget POST/PUT requests. `srtctl status-server` is a collector that ships with srtctl; any server implementing the endpoints below works.
 
 ## Configuration
 
@@ -9,10 +9,108 @@ In `srtslurm.yaml` or recipe YAML:
 ```yaml
 reporting:
   status:
-    endpoint: "https://status.example.com"
+    endpoint: "http://login-node:8080"
+    # Optional: several collectors, each receives every request
+    endpoints:
+      - "http://login-node:8080"
+      - "https://status.example.com"
+    # Optional: which environment variable holds the bearer token (default SRTCTL_STATUS_TOKEN)
+    token_env: SRTCTL_STATUS_TOKEN
+    # Optional: push new log and metric output every N seconds (off when unset)
+    logging-stream-interval: 10
 ```
 
 If not configured, status reporting is disabled and jobs run normally.
+
+## Running the native collector
+
+```bash
+srtctl status-server                                  # loopback only, port 8080
+srtctl status-server --host 0.0.0.0                   # reachable from compute nodes
+srtctl status-server --port 9000 --db /lustre/shared/srtctl-status.db
+```
+
+Jobs and events live in one SQLite file (default `~/.local/state/srtctl/status.db`). It survives restarts and other tools can read it directly. The process logs one line per lifecycle transition, so leaving it in a terminal or under systemd gives a live feed of every job pointed at it. Run it where the cluster can reach it: `srtctl apply` POSTs from the submitting host, and the sweep PUTs from the head node of the allocation.
+
+Behaviors of the native collector on top of the contract:
+
+- A PUT for a job that was never POSTed creates a placeholder row, so a run whose submit-time POST was lost still lands every later update. The started report repeats the job's identity in `metadata` (`job_name`, `cluster`), and the placeholder takes its name and cluster from there; only if that is missing too does the row show as `job-<id>` with no cluster.
+- A repeated or late POST never rewinds status. It completes identity instead: a placeholder name is replaced, a null `cluster` or `recipe` is filled, `submitted_at` is moved earlier to the real submit time (never later, so a repair POST stamped "now" cannot reset a running job's elapsed time), `metadata` is merged. Existing non-null identity is never overwritten. This also makes re-posting a job the way to repair a row that came in without its POST.
+- An event is appended whenever `(status, stage, message)` differs from the job's last event. Same-status transitions are kept (`frontend / Starting frontend`, then `frontend / Inference endpoint ready`); pure `artifacts` or `metadata` patches emit nothing.
+- `status` and `stage` are validated against `srtctl.contract.JobStatus` and `JobStage`; anything else is HTTP 422.
+- Bodies over 1 MiB are rejected with 413 before they are read.
+
+## Web UI
+
+`GET /` serves a single-page UI with no external dependencies: a jobs table (filter by text, status and cluster; elapsed time ticks for active jobs), a detail pane per job (cluster, exit code, duration, model, resources, head node, recipe, log dir, logs URL, the event timeline with deltas, and the raw metadata), and a live global event feed that follows `/api/events` with the cursor. Poll interval is selectable (2 s, 5 s, 15 s, paused). Arrow keys move between jobs; clicking a job id in the feed opens it.
+
+The detail pane has three tabs. **overview** is the view above. **logs** lists the job's streamed files and tails one through `GET /api/jobs/{id}/logs?file=...&offset=...`: a file opens at its last 256 KiB (from the start with *from start*), follows new bytes on the poll interval, keeps the newest 20,000 lines, strips ANSI color codes, filters lines by substring, and *download* fetches the whole file. **tachometer** lists the streamed Parquet segments with size and upload state and downloads complete ones; nothing is decoded in the browser.
+
+The page itself needs no token (it is static and reveals nothing). It sends the read token the viewer pastes once as `Authorization: Bearer` on every API call and keeps it in the browser's `localStorage`. Opening `/#token=<read token>` seeds it and strips the fragment from the URL; fragments are never sent to the server. `HEAD` is answered like `GET` without a body, for uptime checkers.
+
+### Hosting the page elsewhere
+
+The same `index.html` can be served by any static web server (a Caddy on a corporate network, `python -m http.server`) or opened from a file, and pointed at a collector on another host: set the API base in the header field or open the page with `#api=https://collector.example.com` (also remembered in `localStorage`). Browsers then need the collector's permission for that origin, which is off by default:
+
+```bash
+srtctl status-server --host 0.0.0.0 --cors-origin https://zhongshan.example      # repeatable
+srtctl status-server --host 0.0.0.0 --cors-origin '*'                            # any origin, including a page opened from a file
+```
+
+With a matching `Origin`, GET and HEAD responses (errors included, so the page can show a 401) carry `Access-Control-Allow-Origin`, and the `OPTIONS` preflight is answered before auth with `Access-Control-Allow-Headers: Authorization` and `Access-Control-Allow-Methods: GET, HEAD, OPTIONS`. Writes are never offered cross-origin. This is safe to enable because the API uses no cookies and a token stored by one origin's `localStorage` cannot be read by another; a page from an origin that is not listed simply cannot call the API from the browser, and every call still needs the token.
+
+**Zero-setup variant: proxy the API next to the page.** With no API base stored, the page assumes the API lives beside it: `/api/...` when the collector serves the page from `/`, `/status/api/...` when a web server hosts it under `/status/`. So a web server that proxies `<prefix>/api/*` to the collector and injects the read token on the way needs no CORS on the collector and no token in the browser at all. Caddy, with the token in a `0600` snippet:
+
+```caddyfile
+handle_path /status/api/* {
+    rewrite * /api{uri}
+    reverse_proxy https://collector.example.com {
+        header_up Host {upstream_hostport}
+        import /home/me/.config/caddy/secrets/status-read-token.caddy   # header_up Authorization "Bearer ..."
+    }
+}
+handle_path /status/* {
+    root * /srv/srtctl-status-ui
+    file_server
+}
+```
+
+The proxy replaces any client `Authorization` header, so writes through it are refused (the read token gets 403). The trade-off is explicit: whoever can reach the web server can read the collector, so this belongs on a network you already trust for read access, such as a corporate LAN.
+
+## Authentication
+
+Tokens are bearer tokens read from the environment on both sides. Nothing token-shaped ever goes into a recipe or `srtslurm.yaml`: the resolved config is written to the lockfile and copied into the log directory that `reporting.s3` uploads.
+
+| Side | Variable | Effect |
+|------|----------|--------|
+| Server | `SRTCTL_STATUS_TOKEN` (`--token-env`) | Write token. Required for POST, PUT and DELETE; also grants GET |
+| Server | `SRTCTL_STATUS_READ_TOKEN` (`--read-token-env`) | Optional read-only token for GET routes (dashboards, humans) |
+| Reporter | `SRTCTL_STATUS_TOKEN` (`reporting.status.token_env` renames it) | Sent as `Authorization: Bearer` on every POST and PUT |
+
+Rules:
+
+- `GET /api/health` never needs a token and returns only `{"status": "ok"}`. `GET /` and `/index.html` (the UI) are static and open too.
+- Authentication runs before body parsing and routing, so an unauthenticated caller gets 401 and learns nothing else: not whether a job exists, not whether the body parsed.
+- Missing or wrong token: 401 with `WWW-Authenticate: Bearer`. Read token on a write route: 403. Tokens are compared in constant time.
+- With no write token the server is open. That is only allowed on loopback, or with `--allow-unauthenticated` for a network that is trusted end to end (a cluster login node reachable only from its compute nodes). A read token without a write token is a startup error.
+- The reporter never follows redirects (`allow_redirects=False`). A 3xx means the endpoint is behind a login page or proxy and is logged at WARNING as a failure; so are 401 and 403. Network errors stay at DEBUG because reporting is fire-and-forget.
+
+The reporter reads the token from the shell that runs `srtctl apply`; SLURM's default `--export=ALL` carries it to the orchestrator on the head node, which runs outside the container.
+
+```bash
+# collector host
+export SRTCTL_STATUS_TOKEN=$(openssl rand -hex 32)
+export SRTCTL_STATUS_READ_TOKEN=$(openssl rand -hex 32)
+srtctl status-server --host 0.0.0.0 --port 8080
+
+# login node, before srtctl apply (same write token)
+export SRTCTL_STATUS_TOKEN=<write token>
+
+# reading
+curl -H "Authorization: Bearer $SRTCTL_STATUS_READ_TOKEN" https://collector.example.com/api/events
+```
+
+Exposing the collector on the public internet also needs TLS in front of it (a reverse proxy, or a platform that terminates TLS) and, where possible, a source allow-list for the cluster's egress addresses on the write path. The collector itself never speaks TLS.
 
 ## Endpoints
 
@@ -60,29 +158,28 @@ Update job status. Called during execution and at completion.
 ```json
 {
   "status": "completed",
+  "stage": "cleanup",
   "exit_code": 0,
   "logs_url": "s3://bucket/outputs/12345/",
-  "benchmark_results": {
-    "throughput": 1250.5,
-    "latency_p50_ms": 42.1,
-    "latency_p99_ms": 128.7
-  }
+  "updated_at": "2025-01-26T11:02:00Z",
+  "completed_at": "2025-01-26T11:02:00Z"
 }
 ```
 
-All fields except `status` are optional.
+All fields except `status` and `updated_at` are optional.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `status` | string | **Required.** New job status |
+| `updated_at` | string | **Required.** ISO 8601 timestamp of this update |
 | `stage` | string | Current execution stage |
 | `message` | string | Human-readable status message |
-| `updated_at` | string | ISO 8601 timestamp (server defaults to now) |
 | `started_at` | string | Job start timestamp |
 | `completed_at` | string | Job completion timestamp |
 | `exit_code` | int | Process exit code |
-| `logs_url` | string | S3 URL where logs were uploaded |
-| `benchmark_results` | object | Parsed benchmark metrics |
+| `logs_url` | string | URL where logs were uploaded (S3 today) |
+| `benchmark_results` | object | Parsed benchmark metrics (replaces) |
+| `artifacts` | object | Collector-side artifact pointers (merged with existing) |
 | `metadata` | object | Additional metadata (merged with existing) |
 
 **Response:** `200 OK`
@@ -95,11 +192,36 @@ All fields except `status` are optional.
 
 ### GET /api/jobs/{job_id}
 
-Get full job details including event history.
+Full job record with its ordered event history.
+
+```json
+{
+  "job_id": "12345",
+  "job_name": "benchmark-run",
+  "status": "completed",
+  "stage": "cleanup",
+  "cluster": "gpu-cluster-01",
+  "recipe": "configs/benchmark.yaml",
+  "message": "Benchmark completed successfully",
+  "submitted_at": "2025-01-26T10:30:00Z",
+  "started_at": "2025-01-26T10:33:00Z",
+  "completed_at": "2025-01-26T11:02:00Z",
+  "updated_at": "2025-01-26T11:02:00Z",
+  "exit_code": 0,
+  "logs_url": "s3://bucket/outputs/12345/",
+  "benchmark_results": null,
+  "artifacts": null,
+  "metadata": {"tags": ["suite:kv-router-comparison"], "head_node": "node-01", "log_dir": "/lustre/outputs/12345/logs/12345_1P_4D"},
+  "events": [
+    {"id": 1, "job_id": "12345", "status": "submitted", "stage": null, "message": null, "created_at": "2025-01-26T10:30:00Z"},
+    {"id": 2, "job_id": "12345", "status": "starting", "stage": "starting", "message": "Job started on node-01", "created_at": "2025-01-26T10:33:00Z"}
+  ]
+}
+```
 
 ### GET /api/jobs
 
-List jobs with pagination and filters.
+List jobs, newest first, with pagination and filters.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -107,6 +229,113 @@ List jobs with pagination and filters.
 | `per_page` | int | 50 | Results per page (max 100) |
 | `status` | string | - | Filter by status |
 | `cluster` | string | - | Filter by cluster |
+
+Response: `{"jobs": [JobSummary, ...], "total": N, "page": 1, "per_page": 50}`.
+
+### GET /api/jobs/{job_id}/events
+
+Incremental event feed for one job. Events carry a monotonically increasing `id`; pass the last one you saw as `after` to resume.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `after` | int | 0 | Return events with `id > after` |
+| `limit` | int | 100 | Max events per response (max 1000) |
+
+```json
+{
+  "job_id": "12345",
+  "events": [
+    {"id": 7, "job_id": "12345", "status": "benchmark", "stage": "benchmark", "message": "Running benchmark", "created_at": "2025-01-26T10:40:00Z"}
+  ],
+  "next_cursor": 7
+}
+```
+
+`next_cursor` is the last `id` returned, or the `after` you passed when nothing new arrived (null on an empty feed). A poll loop is `after = next_cursor` between requests.
+
+### GET /api/events
+
+Same as above across every job, with an optional `job_id` filter. This is the feed for dashboards and agents that want to react to job transitions without polling each job.
+
+### POST /api/jobs/{job_id}/logs
+
+Streaming is opt-in with `reporting.status.logging-stream-interval`. The sweep
+uploads new bytes from `.out`, `.err`, `.log`, `.csv` and `.jsonl` files, using
+persistent HTTP connections and chunks of at most 1 MiB. Shutdown gives the
+worker up to five seconds for a final best-effort flush.
+
+```http
+POST /api/jobs/12345/logs?file=worker.out&offset=4096&cluster=b200
+Content-Type: application/octet-stream
+Authorization: Bearer <token>
+
+<raw file bytes>
+```
+
+`file` is a relative path and `offset` is the source byte position. The API
+stores the bytes and decodes UTF-8 when read, including characters split across
+chunks. `final=1` marks EOF at shutdown; an empty body can finalize bytes already
+sent. Response: `{"job_id": "12345", "stored": 1}` (`stored: 0` for a resend).
+Exact retries are idempotent; conflicting overlaps return 409. The legacy JSON
+`{"chunks": [{"file", "offset", "size", "data"}], "metadata": {"cluster": "b200"}}`
+format is also accepted.
+
+Files must be append-only. Uploader offsets are in memory; delivery across
+uploader restarts is not guaranteed. Logs remain on disk if uploads fail.
+
+### POST /api/jobs/{job_id}/captures
+
+While streaming is on, Tachometer seals its buffer into a new immutable
+`out-N.parquet` every save interval (instead of rewriting `current.arrow`) and
+links it into `tachometer-outbox/`, a sibling of the log directory that neither
+the S3 sync nor dsight reads. The sweep uploads each segment once, unchanged:
+
+```http
+POST /api/jobs/12345/captures?file=out-7.parquet&offset=0&total=8192&cluster=b200
+Content-Type: application/octet-stream
+Authorization: Bearer <token>
+
+<raw Parquet bytes>
+```
+
+`total` is the segment's byte length. Chunks are sequential and exact retries
+are idempotent; a different byte range or total for a stored segment returns
+409. The response is `{"job_id": "12345", "next_offset": 8192, "complete": true}`
+once every byte is stored. The sweep unlinks the outbox entry only after every
+endpoint has acknowledged the whole segment, so a failed upload is retried on
+the next flush and compaction cannot delete a segment before it is sent.
+
+The collector stores the bytes verbatim and acknowledges without decoding; each
+row therefore crosses the network once. The cluster does no decoding, row
+hashing, JSON conversion, or local indexing. `final.parquet` in the S3 upload
+remains the complete, sorted capture.
+
+When configured, `cluster` accompanies every raw upload. Shared collectors must
+use `(cluster, job_id)` for identity; the built-in collector retains its existing
+job-ID scope. Custom collectors must implement both binary upload routes before
+enabling streaming. These routes use the existing write bearer token.
+
+### GET /api/jobs/{job_id}/captures
+
+Without `file`: `{"job_id": "12345", "files": [{"file": "out-7.parquet", "size": 8192, "complete": true, "updated_at": "..."}]}`.
+
+With `file`: the raw bytes of a complete segment as `application/octet-stream`,
+or 404 while it is missing or partial. Readers decode segments themselves, for
+example with `srtctl.dsight.metrics.batches`.
+
+### GET /api/jobs/{job_id}/logs
+
+Without `file`: `{"job_id": "12345", "files": [{"file": "...", "size": 4608, "updated_at": "..."}]}`, `size` being the bytes received so far.
+
+With `file` (and optional `offset`, default 0): the contiguous content from `offset`, up to about 1 MiB, as `{"job_id", "file", "offset", "next_offset", "data"}`. Tail a file by polling with `offset = next_offset`.
+
+### DELETE /api/jobs/{job_id}
+
+Remove a job, its events and its streamed logs and captures. `200 {"deleted": true, "job_id": ...}` or `404`.
+
+### GET /api/health
+
+`200 {"status": "ok"}`.
 
 ## Status Values
 
@@ -116,25 +345,39 @@ submitted -> starting -> workers -> frontend -> benchmark -> completed | failed
 
 Status reflects which stage is currently executing, not readiness.
 
+## Started metadata
+
+The first PUT of a run (`StatusReporter.report_started`) carries `metadata` with the model path and precision, the resource shape (`gpu_type`, worker counts, CPU allocation), the benchmark type, `backend_type`, `frontend_type`, `head_node`, and `log_dir`, the run's log directory on the cluster filesystem. A collector on the same filesystem can open the logs from `log_dir` straight away; `logs_url` is only set later, and only when `reporting.s3` uploads the directory.
+
+It also repeats `job_name` and `cluster`. The submit-time POST is the only other carrier of those, and it is a single request from the login node (two attempts, 5 s each) whose path to a collector on the internet can be flaky, while the head node's path usually is not. With the identity in the started report, a lost POST costs only the `recipe` field.
+
 ## Contract Models
 
 The canonical Pydantic models live in `srtctl.contract`:
 
 ```python
 from srtctl.contract import (
-    JobStatus,          # Status enum
-    JobStage,           # Stage enum
-    JobCreatePayload,   # POST request body
-    JobUpdatePayload,   # PUT request body
-    JobResponse,        # POST/PUT response
-    JobSummary,         # List endpoint item
-    JobDetail,          # GET endpoint response
-    JobListResponse,    # List endpoint wrapper
+    JobStatus,              # Status enum
+    JobStage,               # Stage enum
+    JobCreatePayload,       # POST request body
+    JobUpdatePayload,       # PUT request body
+    JobResponse,            # POST/PUT response
+    JobSummary,             # List endpoint item
+    JobDetail,              # GET endpoint response
+    JobListResponse,        # List endpoint wrapper
+    JobEventRecord,         # One event in either feed
+    JobEventListResponse,   # Per-job events response
+    EventFeedResponse,      # Global events response
 )
 ```
 
 ## Behavior
 
+Every status update includes `metadata.cluster` when set in `srtslurm.yaml`.
+Shared collectors can use `(cluster, job_id)` to distinguish runs; the built-in
+collector still keys records by job ID alone.
+
 - All requests have a 5-second timeout
-- Failures are logged at DEBUG level and ignored
+- Redirects are never followed; a 3xx, 401 or 403 is logged at WARNING and counts as a failure
+- Other failures are logged at DEBUG level and ignored
 - Job execution is never blocked by status reporting failures

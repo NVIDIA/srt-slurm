@@ -14,17 +14,18 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import requests
+from marshmallow import ValidationError as MarshmallowValidationError
 
 from srtctl.core.config import (
     generate_override_configs,
     resolve_config_with_defaults,
 )
-from srtctl.core.schema import TelemetryProvider
 
 if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
@@ -275,10 +276,12 @@ def _preflight_container(
     )
 
 
-_TELEMETRY_IMAGE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("telemetry.container_image", ("container_image",)),
+_TACHOMETER_IMAGE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("observability.tachometer.dcgm_exporter.container_image", ("dcgm_exporter", "container_image")),
+    ("observability.tachometer.node_exporter.container_image", ("node_exporter", "container_image")),
+)
+_POWER_IMAGE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("telemetry.dcgm_exporter.container_image", ("dcgm_exporter", "container_image")),
-    ("telemetry.node_exporter.container_image", ("node_exporter", "container_image")),
 )
 
 
@@ -287,121 +290,121 @@ def _preflight_telemetry(
     resolved_config: dict[str, Any],
     cluster_config: dict[str, Any] | None,
 ) -> list[PreflightIssue]:
-    telemetry = resolved_config.get("telemetry") or {}
-    if not telemetry.get("enabled"):
-        return []
-
     aliases = (cluster_config or {}).get("containers") or {}
-    raw_telemetry = raw_config.get("telemetry") or {}
     issues: list[PreflightIssue] = []
 
-    # NOTE: dcgm-power launches only the exporter, so the other images are never referenced.
-    fields = _TELEMETRY_IMAGE_FIELDS
-    if telemetry.get("provider") == TelemetryProvider.DCGM_POWER.value:
-        fields = tuple(field for field in fields if field[1][0] == "dcgm_exporter")
+    raw_observability = raw_config.get("observability") or {}
+    resolved_observability = resolved_config.get("observability") or {}
+    sources = (
+        (
+            "Tachometer",
+            raw_observability.get("tachometer") if isinstance(raw_observability, dict) else None,
+            resolved_observability.get("tachometer") if isinstance(resolved_observability, dict) else None,
+            _TACHOMETER_IMAGE_FIELDS,
+            "tachometer-container-not-available",
+        ),
+        (
+            "Telemetry",
+            raw_config.get("telemetry"),
+            resolved_config.get("telemetry"),
+            _POWER_IMAGE_FIELDS,
+            "telemetry-container-not-available",
+        ),
+    )
 
-    for field, path in fields:
-        resolved_value: Any = telemetry
-        raw_value: Any = raw_telemetry
-        for key in path:
-            resolved_value = (resolved_value or {}).get(key) if isinstance(resolved_value, dict) else None
-            raw_value = (raw_value or {}).get(key) if isinstance(raw_value, dict) else None
-        if not resolved_value:
-            continue  # schema-level validator handles required-when-enabled
-        # NOTE: a registry URI is pulled at srun time, so there is no local file to stat.
-        if _is_registry_uri(str(resolved_value)):
+    for label, raw_block, resolved_block, fields, code in sources:
+        if not isinstance(resolved_block, dict) or not resolved_block.get("enabled"):
             continue
+        raw_block = raw_block if isinstance(raw_block, dict) else {}
+        for field, path in fields:
+            resolved_value: Any = resolved_block
+            raw_value: Any = raw_block
+            for key in path:
+                resolved_value = (resolved_value or {}).get(key) if isinstance(resolved_value, dict) else None
+                raw_value = (raw_value or {}).get(key) if isinstance(raw_value, dict) else None
+            if not resolved_value or _is_registry_uri(str(resolved_value)):
+                continue
 
-        ok, _ = _check_path(_expand_path(resolved_value), expect="file")
-        if ok:
-            continue
+            ok, _ = _check_path(_expand_path(resolved_value), expect="file")
+            if ok:
+                continue
 
-        if raw_value in aliases:
-            message = (
-                f"Telemetry alias '{raw_value}' resolved to '{resolved_value}', but that file is unavailable. "
-                "Provide or register the container yourself before submitting."
-            )
-        else:
-            message = (
-                f"Telemetry container '{resolved_value}' is not a local container path and is not defined "
-                "in srtslurm.yaml containers. Provide or register the container yourself before submitting."
-            )
-        issues.append(PreflightIssue(code="telemetry-container-not-available", field=field, message=message))
+            if raw_value in aliases:
+                message = (
+                    f"{label} alias '{raw_value}' resolved to '{resolved_value}', but that file is unavailable. "
+                    "Provide or register the container yourself before submitting."
+                )
+            else:
+                message = (
+                    f"{label} container '{resolved_value}' is not a local container path and is not defined "
+                    "in srtslurm.yaml containers. Provide or register the container yourself before submitting."
+                )
+            issues.append(PreflightIssue(code=code, field=field, message=message))
 
     return issues
 
 
-def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
-    """Catch semantically wrong resources blocks that pass the marshmallow schema.
+def validate_topology(roles: Mapping[str, Any] | None, *, service_nodes: int | None = None) -> list[PreflightIssue]:
+    """Catch semantically wrong ``roles:`` blocks that pass the marshmallow schema.
 
-    The schema accepts any combination of prefill_*, decode_*, and agg_* fields,
-    so configs like ``prefill_workers: 0`` with ``decode_workers: 1`` look valid
-    but express "disaggregated with no prefill" — which is really aggregated and
-    should use agg_nodes/agg_workers instead.
+    The schema accepts any mix of the prefill, decode, and agg roles, so a recipe
+    with a prefill role of 0 workers next to a decode role looks valid but
+    expresses "disaggregated with no prefill", which is really an aggregated
+    deployment and should declare ``roles.agg`` instead.
     """
-    if not resources:
+    present = (
+        {role: spec for role, spec in roles.items() if isinstance(spec, dict)} if isinstance(roles, Mapping) else {}
+    )
+    # Services that own nodes (pools) add to the allocation next to the roles. A
+    # recipe with pools and no roles is a services-only job and needs no topology here.
+    if not present:
+        if service_nodes is not None:
+            return []
         return [
             PreflightIssue(
                 code="topology-missing",
-                field="resources",
+                field="roles",
                 message=(
-                    "resources block is empty. Set either disaggregated "
-                    "(prefill_nodes/prefill_workers + decode_nodes/decode_workers) "
-                    "or aggregated (agg_nodes + agg_workers)."
+                    "No roles declared. Set roles.prefill and roles.decode (nodes + workers) for a "
+                    "disaggregated deployment, or roles.agg (nodes + workers) for an aggregated one."
                 ),
             )
         ]
 
-    prefill_nodes = resources.get("prefill_nodes")
-    decode_nodes = resources.get("decode_nodes")
-    prefill_workers = resources.get("prefill_workers")
-    decode_workers = resources.get("decode_workers")
-    agg_nodes = resources.get("agg_nodes")
-    agg_workers = resources.get("agg_workers")
+    def count(spec: dict[str, Any], key: str) -> int:
+        value = spec.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
-    disagg_fields = {
-        "prefill_nodes": prefill_nodes,
-        "decode_nodes": decode_nodes,
-        "prefill_workers": prefill_workers,
-        "decode_workers": decode_workers,
-    }
-    agg_fields = {"agg_nodes": agg_nodes, "agg_workers": agg_workers}
-
-    has_disagg = any(v is not None for v in disagg_fields.values())
-    has_agg = any(v is not None for v in agg_fields.values())
-
-    if has_disagg and has_agg:
-        set_disagg = sorted(k for k, v in disagg_fields.items() if v is not None)
-        set_agg = sorted(k for k, v in agg_fields.items() if v is not None)
+    disagg = [role for role in ("prefill", "decode") if role in present]
+    agg = present.get("agg")
+    if disagg and agg is not None:
         return [
             PreflightIssue(
                 code="topology-mixed",
-                field="resources",
+                field="roles",
                 message=(
-                    f"Mixes disaggregated fields ({', '.join(set_disagg)}) with aggregated fields "
-                    f"({', '.join(set_agg)}). Use disaggregated (prefill_*/decode_*) "
-                    "or aggregated (agg_*), not both."
+                    f"Mixes the disaggregated roles ({', '.join(disagg)}) with the aggregated role (agg). "
+                    "Declare prefill and decode, or agg, not both."
                 ),
             )
         ]
 
     issues: list[PreflightIssue] = []
 
-    if has_disagg:
-        pf_workers = prefill_workers or 0
-        dc_workers = decode_workers or 0
-        pf_nodes = prefill_nodes or 0
-        dc_nodes = decode_nodes or 0
+    if disagg:
+        prefill = present.get("prefill", {})
+        decode = present.get("decode", {})
+        pf_workers = count(prefill, "workers")
+        dc_workers = count(decode, "workers")
 
         if pf_workers == 0 and dc_workers == 0:
             issues.append(
                 PreflightIssue(
                     code="topology-no-workers",
-                    field="resources",
+                    field="roles",
                     message=(
-                        "Disaggregated resources block has no workers: prefill_workers and "
-                        "decode_workers are both 0/null. Set both, or switch to aggregated "
-                        "mode with agg_nodes + agg_workers."
+                        "The disaggregated roles have no workers: roles.prefill.workers and "
+                        "roles.decode.workers are both 0/null. Set both, or declare roles.agg instead."
                     ),
                 )
             )
@@ -409,12 +412,11 @@ def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
             issues.append(
                 PreflightIssue(
                     code="topology-aggregated-style",
-                    field="resources.prefill_workers",
+                    field="roles.prefill.workers",
                     message=(
-                        "prefill_workers is 0 in a disaggregated-style resources block. "
-                        f"For a single-side topology on {dc_nodes} node(s) with {dc_workers} "
-                        f"worker(s), use aggregated mode: `agg_nodes: {dc_nodes}, "
-                        f"agg_workers: {dc_workers}` (remove prefill_*/decode_*)."
+                        "roles.prefill has no workers next to a decode role. For a single-side deployment "
+                        f"on {decode.get('nodes')} node(s) with {dc_workers} worker(s), declare roles.agg "
+                        f"(nodes: {decode.get('nodes')}, workers: {dc_workers}) and drop prefill/decode."
                     ),
                 )
             )
@@ -422,49 +424,46 @@ def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
             issues.append(
                 PreflightIssue(
                     code="topology-aggregated-style",
-                    field="resources.decode_workers",
+                    field="roles.decode.workers",
                     message=(
-                        "decode_workers is 0 in a disaggregated-style resources block. "
-                        f"For a single-side topology on {pf_nodes} node(s) with {pf_workers} "
-                        f"worker(s), use aggregated mode: `agg_nodes: {pf_nodes}, "
-                        f"agg_workers: {pf_workers}` (remove prefill_*/decode_*)."
+                        "roles.decode has no workers next to a prefill role. For a single-side deployment "
+                        f"on {prefill.get('nodes')} node(s) with {pf_workers} worker(s), declare roles.agg "
+                        f"(nodes: {prefill.get('nodes')}, workers: {pf_workers}) and drop prefill/decode."
                     ),
                 )
             )
         return issues
 
-    if has_agg:
-        ag_workers = agg_workers or 0
-        ag_nodes = agg_nodes or 0
-        if ag_workers == 0:
-            issues.append(
-                PreflightIssue(
-                    code="topology-no-workers",
-                    field="resources.agg_workers",
-                    message="agg_workers must be > 0 in aggregated mode.",
-                )
+    assert agg is not None
+    if count(agg, "workers") == 0:
+        issues.append(
+            PreflightIssue(
+                code="topology-no-workers",
+                field="roles.agg.workers",
+                message="roles.agg.workers must be > 0.",
             )
-        if ag_nodes == 0:
-            issues.append(
-                PreflightIssue(
-                    code="topology-no-nodes",
-                    field="resources.agg_nodes",
-                    message="agg_nodes must be > 0 in aggregated mode.",
-                )
-            )
-        return issues
-
-    return [
-        PreflightIssue(
-            code="topology-missing",
-            field="resources",
-            message=(
-                "No topology set. Set either disaggregated "
-                "(prefill_nodes/prefill_workers + decode_nodes/decode_workers) "
-                "or aggregated (agg_nodes + agg_workers)."
-            ),
         )
-    ]
+    if count(agg, "nodes") == 0:
+        issues.append(
+            PreflightIssue(
+                code="topology-no-nodes",
+                field="roles.agg.nodes",
+                message="roles.agg.nodes must be > 0.",
+            )
+        )
+    return issues
+
+
+def _declared_service_nodes(services: Any) -> int | None:
+    """Nodes the recipe's services own through ``services[].nodes``, summed; None when none do."""
+    if not isinstance(services, list):
+        return None
+    counts = [entry["nodes"] for entry in services if isinstance(entry, dict) and entry.get("nodes") is not None]
+    return sum(counts) if counts else None
+    for entry in services:
+        if isinstance(entry, dict) and entry.get("nodes") is not None:
+            return entry["nodes"]
+    return None
 
 
 def preflight_config_variants(
@@ -477,12 +476,34 @@ def preflight_config_variants(
     variants = (
         generate_override_configs(raw_config, selector=selector) if "base" in raw_config else [("base", raw_config)]
     )
+    from srtctl.core.schema import SrtConfig
+
     results: list[PreflightResult] = []
     for suffix, variant in variants:
-        resolved = resolve_config_with_defaults(variant, active_cluster_config)
+        try:
+            resolved = resolve_config_with_defaults(variant, active_cluster_config)
+            SrtConfig.Schema().load(resolved)
+        except (TypeError, ValueError, MarshmallowValidationError) as exc:
+            # A pre-2.0 layout, a malformed block, or any rule the schema enforces is a
+            # finding for this variant, not a crash of the whole preflight.
+            unresolved = PreflightResolution(
+                field="recipe", raw=None, resolved=None, source="unresolved", ok=False, message=str(exc)
+            )
+            results.append(
+                PreflightResult(
+                    variant=suffix,
+                    ok=False,
+                    model=unresolved,
+                    container=unresolved,
+                    errors=[PreflightIssue(code="recipe-rejected", field="schema", message=str(exc))],
+                )
+            )
+            continue
         model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
         container, container_issues = _preflight_container(variant, resolved, active_cluster_config)
-        topology_issues = validate_topology(variant.get("resources"))
+        topology_issues = validate_topology(
+            resolved.get("roles"), service_nodes=_declared_service_nodes(resolved.get("services"))
+        )
         telemetry_issues = _preflight_telemetry(variant, resolved, active_cluster_config)
         issues = [*model_issues, *container_issues, *topology_issues, *telemetry_issues]
         results.append(
@@ -499,6 +520,7 @@ def preflight_config_variants(
 
 def validate_local_path(name: str, path: str) -> ValidationResult:
     """Check that a local file or directory exists."""
+
     try:
         p = Path(path)
         if not p.exists():

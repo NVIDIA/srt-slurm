@@ -23,18 +23,15 @@ import yaml
 from srtctl.cli import submit as submit_cli
 
 MINIMAL_CONFIG = {
+    "schema": 2,
     "name": "apply-mock-smoke",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "agg_nodes": 1,
-        "agg_workers": 1,
-    },
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "roles": {"agg": {"nodes": 1, "workers": 1}},
     "benchmark": {"type": "custom", "command": "echo apply-mock"},
 }
 

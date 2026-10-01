@@ -11,7 +11,6 @@ import sys
 import types
 from pathlib import Path
 
-
 SA_BENCH_DIR = (
     Path(__file__).resolve().parents[1]
     / "src"

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 from srtctl.benchmarks.base import BenchmarkRunner, register_benchmark
 from srtctl.core.runtime import RuntimeContext
@@ -42,6 +43,9 @@ class CustomBenchmarkRunner(BenchmarkRunner):
       intentionally excluded; see ``docs/config-reference.md`` for the full
       contract.
     """
+
+    # BenchmarkConfig fields this runner reads (beyond the shared ones); see benchmark_config_fields().
+    config_fields: ClassVar[frozenset[str]] = frozenset({"command", "container_image", "env"})
 
     @property
     def name(self) -> str:

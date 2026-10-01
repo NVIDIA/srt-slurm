@@ -41,6 +41,7 @@ from srtctl.core.schema import (
     ProfilingConfig,
     ProfilingPhaseConfig,
     ResourceConfig,
+    RoleConfig,
     SrtConfig,
     TelemetryConfig,
     TelemetryExporterConfig,
@@ -49,17 +50,12 @@ from srtctl.core.schema import (
 SA_BENCH_DIR = Path(__file__).resolve().parents[1] / "src/srtctl/benchmarks/scripts/sa-bench"
 
 
-def _benchmark_harness(tmp_path, *, provider="dcgm-power", enabled=True):
+def _benchmark_harness(tmp_path, *, enabled=True):
     telemetry = TelemetryConfig(
         enabled=enabled,
-        provider=provider,
-        default_frequency=1.0,
+        collect_interval_ms=1000,
         storage_subdir="power",
-        container_image="scraper" if provider == "scraper" else None,
         dcgm_exporter=TelemetryExporterConfig(container_image="dcgm-exporter", port=9401),
-        node_exporter=TelemetryExporterConfig(container_image="node-exporter", port=9101)
-        if provider == "scraper"
-        else None,
     )
     harness = BenchmarkStageMixin()
     harness.config = SrtConfig(
@@ -72,6 +68,7 @@ def _benchmark_harness(tmp_path, *, provider="dcgm-power", enabled=True):
     harness.runtime = MagicMock()
     harness.runtime.log_dir = tmp_path
     harness.runtime.container_mounts = {tmp_path: Path("/logs")}
+    harness.runtime.container_log_dir = Path("/logs")
     return harness
 
 
@@ -140,7 +137,7 @@ def _samples(start, end, *, step=1.0, devices=(("node-a", 0, "GPU-a0"),), pad=No
     return derive_observed_devices(rows)
 
 
-def _validate(logs, observed, expected=(("sa-bench", 4),), errors=None):
+def _validate(logs, observed, expected=(("sa-bench", 4),), errors=None, sample_interval_seconds=1.0):
     return validate_expected_windows(
         power_dir=logs / "power",
         result_root=logs,
@@ -148,6 +145,7 @@ def _validate(logs, observed, expected=(("sa-bench", 4),), errors=None):
         expected_device_keys={device.key for device in observed},
         observed_devices=observed,
         artifact_errors=errors if errors is not None else [],
+        sample_interval_seconds=sample_interval_seconds,
     )
 
 
@@ -313,6 +311,133 @@ class TestCoverageValidation:
         _write_result(logs, start=start, end=end, duration=result_duration if result_duration is not None else duration)
         return start, end
 
+    def test_sustained_sample_loss_is_checked_per_gpu(self, logs):
+        start, end = self._completed(logs, end=1100.0, duration=100.0)
+        sparse = _samples(start, end, step=2.0)
+        healthy = _samples(start, end, devices=(("node-b", 0, "GPU-b0"),))
+        result = _validate(logs, sparse + healthy)[0]
+        assert result.power_coverage_valid is False
+        assert result.reason_codes == (Reason.SAMPLE_LOSS_EXCEEDED,)
+
+    @pytest.mark.parametrize(("missing_per_hundred", "valid"), [(5, True), (6, False)])
+    def test_cumulative_sample_loss_boundary(self, logs, missing_per_hundred, valid):
+        start, end = self._completed(logs, end=4600.0, duration=3600.0)
+        observed = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start) - 2, int(end) + 3))
+                if not (start < t < end and (t - start) % 100 in range(10, 10 * missing_per_hundred + 1, 10))
+            ]
+        )
+        result = _validate(logs, observed)[0]
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+        assert Reason.SAMPLE_GAP_EXCEEDED not in result.reason_codes
+
+    def test_cadence_jitter_does_not_accumulate_as_missing_samples(self, logs):
+        start, end = self._completed(logs, end=1100.0, duration=100.0)
+        observed = derive_observed_devices(
+            [
+                SampleRow(t + (0.4 if seq % 2 else -0.4), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start) - 2, int(end) + 3))
+            ]
+        )
+        assert _validate(logs, observed)[0].power_coverage_valid is True
+
+    def test_short_window_edge_jitter_does_not_lose_a_sample(self, logs):
+        self._completed(logs, start=1000.0, end=1000.6, duration=0.6)
+        observed = derive_observed_devices(
+            [
+                SampleRow(t, seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate([999.9999, 1000.2001, 1000.4001, 1000.6001])
+            ]
+        )
+        assert _validate(logs, observed, sample_interval_seconds=0.2)[0].power_coverage_valid is True
+
+    @pytest.mark.parametrize(("window_seconds", "valid"), [(19, False), (20, True)])
+    def test_one_lost_sample_needs_at_least_twenty_intervals(self, logs, window_seconds, valid):
+        """At 1 s cadence a single dropped sample is 1/N of the span: 5.26% at N=19, 5.0% at N=20."""
+        start, end = self._completed(logs, end=1000.0 + window_seconds, duration=float(window_seconds))
+        observed = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start), int(end) + 1))
+                if t != int(start) + window_seconds // 2
+            ]
+        )
+        result = _validate(logs, observed)[0]
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+        assert Reason.SAMPLE_GAP_EXCEEDED not in result.reason_codes
+
+    @pytest.mark.parametrize(("window_seconds", "valid"), [(39, False), (40, True)])
+    def test_one_gap_at_the_per_gap_threshold_needs_forty_intervals(self, logs, window_seconds, valid):
+        """A single 3 s hole at 1 s cadence passes the per-gap rule but is two missing intervals: 5.1% at N=39."""
+        start, end = self._completed(logs, end=1000.0 + window_seconds, duration=float(window_seconds))
+        hole = {int(start) + 10, int(start) + 11}
+        observed = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start) - 2, int(end) + 3))
+                if t not in hole
+            ]
+        )
+        result = _validate(logs, observed)[0]
+        assert result.per_device_max_sample_gap_seconds["node-a/GPU-a0"] == pytest.approx(MAX_SAMPLE_GAP_SECONDS)
+        assert Reason.SAMPLE_GAP_EXCEEDED not in result.reason_codes
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+
+    def test_duplicate_timestamps_do_not_mask_sample_loss(self, logs):
+        """Every other sample dropped, then each survivor written twice: still 50% loss."""
+        start, end = self._completed(logs, end=1100.0, duration=100.0)
+        observed = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(list(range(int(start) - 2, int(end) + 3, 2)) * 2)
+            ]
+        )
+        result = _validate(logs, observed)[0]
+        assert result.power_coverage_valid is False
+        assert Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes
+
+    @pytest.mark.parametrize(("sparse_missing_per_hundred", "valid"), [(4, True), (6, False)])
+    def test_sample_loss_is_judged_per_device_not_pooled(self, logs, sparse_missing_per_hundred, valid):
+        """A healthy GPU must neither rescue nor condemn a sibling; pooled counting would give 2% / 3%."""
+        start, end = self._completed(logs, end=1100.0, duration=100.0)
+        dropped = {int(start) + 10 * k for k in range(1, sparse_missing_per_hundred + 1)}
+        sparse = derive_observed_devices(
+            [
+                SampleRow(float(t), seq, "node-a", 0, "GPU-a0", 400.0)
+                for seq, t in enumerate(range(int(start) - 2, int(end) + 3))
+                if t not in dropped
+            ]
+        )
+        healthy = _samples(start, end, devices=(("node-b", 0, "GPU-b0"),))
+        result = _validate(logs, sparse + healthy)[0]
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+
+    @pytest.mark.parametrize(("actual_cadence", "valid"), [(1.02, True), (1.06, False)])
+    def test_monotone_cadence_drift_is_loss_only_past_the_threshold(self, logs, actual_cadence, valid):
+        """Unlike alternating jitter, drift accumulates: 1.06 s per cycle over 1000 s is ~5.7% fewer samples."""
+        start, _end = self._completed(logs, end=2000.0, duration=1000.0)
+        count = int(1004 / actual_cadence) + 2
+        observed = derive_observed_devices(
+            [SampleRow(start - 2.0 + actual_cadence * i, i, "node-a", 0, "GPU-a0", 400.0) for i in range(count)]
+        )
+        result = _validate(logs, observed)[0]
+        assert Reason.SAMPLE_GAP_EXCEEDED not in result.reason_codes
+        assert result.power_coverage_valid is valid
+        assert (Reason.SAMPLE_LOSS_EXCEEDED in result.reason_codes) is not valid
+
+    def test_unknown_cadence_fails_closed_as_sample_loss(self, logs):
+        """A manifest without sample_interval_seconds cannot prove coverage; today it reads as loss."""
+        start, end = self._completed(logs)
+        result = _validate(logs, _samples(start, end), sample_interval_seconds=None)[0]
+        assert result.power_coverage_valid is False
+        assert result.reason_codes == (Reason.SAMPLE_LOSS_EXCEEDED,)
+
     def test_bracketed_window_with_small_gaps_is_valid(self, logs):
         start, end = self._completed(logs)
 
@@ -344,7 +469,9 @@ class TestCoverageValidation:
     def test_gap_exactly_at_the_threshold_passes(self, logs):
         start, end = self._completed(logs)
 
-        rows = _validate(logs, _samples(start, end, step=MAX_SAMPLE_GAP_SECONDS))
+        rows = _validate(
+            logs, _samples(start, end, step=MAX_SAMPLE_GAP_SECONDS), sample_interval_seconds=MAX_SAMPLE_GAP_SECONDS
+        )
 
         assert rows[0].power_coverage_valid is True
 
@@ -565,29 +692,23 @@ class TestArtifactErrors:
         assert Reason.MEASUREMENT_WINDOW_RESULT_PATH_INVALID in errors[0].reason_codes
 
     def test_benchmark_stage_injects_the_container_windows_dir(self, tmp_path):
-        harness = _benchmark_harness(tmp_path, provider="dcgm-power")
+        harness = _benchmark_harness(tmp_path)
 
         env = harness._get_measurement_window_env()
 
         assert env == {"SRT_MEASUREMENT_WINDOW_DIR": f"/logs/power/{WINDOWS_DIRNAME}"}
 
     def test_other_providers_get_no_window_dir(self, tmp_path):
-        assert _benchmark_harness(tmp_path, provider="scraper")._get_measurement_window_env() == {}
         assert _benchmark_harness(tmp_path, enabled=False)._get_measurement_window_env() == {}
 
     def test_sa_bench_env_keeps_window_after_logical_endpoint_refactor(self, tmp_path):
         """One benchmark env must carry logical endpoints, slow_down, and the window dir together."""
-        harness = _benchmark_harness(tmp_path, provider="dcgm-power")
+        harness = _benchmark_harness(tmp_path)
         harness.config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/image", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="gb200",
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=1,
-                decode_workers=1,
-            ),
+            resources=ResourceConfig(gpu_type="gb200"),
+            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
             benchmark=BenchmarkConfig(
                 type="sa-bench",
                 concurrencies=[4],
@@ -597,14 +718,33 @@ class TestArtifactErrors:
                 slow_down_wait_time=1.0,
             ),
             telemetry=harness.config.telemetry,
-            frontend=FrontendConfig(type="sglang"),
+            frontend=FrontendConfig(type="sglang-router"),
             profiling=ProfilingConfig(
                 type="nsys",
                 prefill=ProfilingPhaseConfig(start_step=1, stop_step=2),
                 decode=ProfilingPhaseConfig(start_step=1, stop_step=2),
             ),
         )
-        processes = [SimpleNamespace(is_leader=True, endpoint_mode="decode", node="node-d", http_port=1234, sys_port=0)]
+        processes = [
+            SimpleNamespace(
+                is_leader=True,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=0,
+                node="node-p",
+                http_port=1233,
+                sys_port=0,
+            ),
+            SimpleNamespace(
+                is_leader=True,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+                node="node-d",
+                http_port=1234,
+                sys_port=0,
+            ),
+        ]
         harness.runtime.environment = {}
         harness.runtime.network_interface = "eth0"
         runner = SimpleNamespace(name="SA-Bench")

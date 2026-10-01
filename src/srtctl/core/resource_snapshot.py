@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Capture the CPU and GPU allocation visible to a running SLURM job."""
@@ -111,13 +111,13 @@ def _cpu_model() -> str | None:
 
 
 def _worker_gpu_count(config: SrtConfig) -> int:
-    resources = config.resources
+    resources = config.topology
     return resources.prefill_gpus + resources.decode_gpus + resources.num_agg * resources.gpus_per_agg
 
 
 def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[str, int]:
     """Return backend GPU demand by node, using the same endpoint placement as workers."""
-    resources = config.resources
+    resources = config.topology
     try:
         if runtime.nodes.het:
             from srtctl.core.topology import allocate_endpoints_het
@@ -130,27 +130,18 @@ def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[st
                 gpus_per_decode=resources.gpus_per_decode,
                 decode_nodes=runtime.nodes.decode_group,
                 gpus_per_node=resources.gpus_per_node,
+                pack_multinode_workers=config.backend.type == "trtllm",
             )
         else:
-            endpoints = config.backend.allocate_endpoints(
-                num_prefill=resources.num_prefill,
-                num_decode=resources.num_decode,
-                num_agg=resources.num_agg,
-                gpus_per_prefill=resources.gpus_per_prefill,
-                gpus_per_decode=resources.gpus_per_decode,
-                gpus_per_agg=resources.gpus_per_agg,
-                gpus_per_node=resources.gpus_per_node,
-                available_nodes=runtime.nodes.worker,
-                spread_workers=resources.spread_workers,
-            )
+            endpoints = config.allocate_worker_endpoints(runtime.nodes.worker)
     except Exception:
         logger.debug("Failed to derive backend node GPU allocation", exc_info=True)
         return {}
 
     gpu_counts: dict[str, int] = {}
     for endpoint in endpoints:
-        for node in endpoint.nodes:
-            gpu_counts[node] = gpu_counts.get(node, 0) + len(endpoint.gpu_indices)
+        for node_rank, node in enumerate(endpoint.nodes):
+            gpu_counts[node] = gpu_counts.get(node, 0) + len(endpoint.gpus_on_node(node_rank))
     return gpu_counts
 
 
@@ -184,7 +175,10 @@ def collect_resource_snapshot(
 ) -> dict[str, Any]:
     """Build a JSON-serializable snapshot of the job's effective resources."""
     env = os.environ if environ is None else environ
-    node_names = tuple(dict.fromkeys((runtime.nodes.infra, *runtime.nodes.worker)))
+    from srtctl.version import package_version, source_commit
+
+    tool = {"srtctl_version": package_version(), "srtctl_commit": source_commit()}
+    node_names = tuple(dict.fromkeys((runtime.nodes.infra, *runtime.nodes.compute)))
     node_count = len(node_names)
     configured_gpu_count = node_count * config.resources.gpus_per_node
     worker_gpu_count = _worker_gpu_count(config)
@@ -269,6 +263,7 @@ def collect_resource_snapshot(
         "version": 1,
         "captured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "job_id": runtime.job_id,
+        "tool": tool,
         "hardware": {
             "architecture": platform.machine(),
             "cpu_model": _cpu_model(),

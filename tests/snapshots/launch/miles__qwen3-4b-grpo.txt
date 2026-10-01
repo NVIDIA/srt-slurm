@@ -1,0 +1,169 @@
+# examples/miles/qwen3-4b-grpo.yaml
+# exit_code: 0
+# srun calls: 8
+
+## service_train_node-01
+nodelist: node-01
+output: <output>/logs/service_train_node-01.out
+container_image: miles
+container_mounts:
+    /data/home/idhanani/datasets: /data/home/idhanani/datasets
+    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
+    /data/home/idhanani/models: /data/home/idhanani/models
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    RAY_memory_monitor_refresh_ms: 0
+use_bash_wrapper: True
+bash_preamble: |
+    cd /root/miles
+command: |
+    ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --node-ip-address=127.0.0.1 --num-gpus=8 --disable-usage-stats --block
+
+## service_train_node-02
+nodelist: node-02
+output: <output>/logs/service_train_node-02.out
+container_image: miles
+container_mounts:
+    /data/home/idhanani/datasets: /data/home/idhanani/datasets
+    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
+    /data/home/idhanani/models: /data/home/idhanani/models
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    RAY_memory_monitor_refresh_ms: 0
+use_bash_wrapper: True
+bash_preamble: |
+    cd /root/miles
+command: |
+    bash -c 'for i in $(seq 1 60); do (exec 3<>/dev/tcp/127.0.0.1/6379) 2>/dev/null && break; echo "ray worker: waiting for head 127.0.0.1:6379 ($i/60)"; sleep 5; done; exec ray start --address=127.0.0.1:6379 --node-ip-address=127.0.0.1 --num-gpus=8 --disable-usage-stats --block'
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    /data/home/idhanani/datasets: /data/home/idhanani/datasets
+    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
+    /data/home/idhanani/models: /data/home/idhanani/models
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    /data/home/idhanani/datasets: /data/home/idhanani/datasets
+    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
+    /data/home/idhanani/models: /data/home/idhanani/models
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    /data/home/idhanani/datasets: /data/home/idhanani/datasets
+    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
+    /data/home/idhanani/models: /data/home/idhanani/models
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    /data/home/idhanani/datasets: /data/home/idhanani/datasets
+    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
+    /data/home/idhanani/models: /data/home/idhanani/models
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: miles
+container_mounts:
+    /data/home/idhanani/datasets: /data/home/idhanani/datasets
+    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
+    /data/home/idhanani/models: /data/home/idhanani/models
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    GLOO_SOCKET_IFNAME: bond0
+    MILES_RECIPE: scripts/run_qwen3_dense.py
+    MILES_SCRIPT_DATA_DIR: /data/home/idhanani/datasets
+    MILES_SCRIPT_ENABLE_EVAL: true
+    MILES_SCRIPT_EXTRA_ARGS: --num-rollout 20 --colocate --actor-num-nodes 2 --actor-num-gpus-per-node 8 --rollout-num-gpus-per-engine 2 --sglang-router-port 31000 --use-prometheus --prometheus-port 9090 --prometheus-run-name qwen3-4b-grpo
+    MILES_SCRIPT_EXTRA_ENV_VARS: {"PYTHONNOUSERSITE": "1"}
+    MILES_SCRIPT_MODEL_DIR: /data/home/idhanani/models
+    MILES_SCRIPT_MODEL_NAME: Qwen3-4B
+    MILES_SCRIPT_OUTPUT_DIR: /data/home/idhanani/miles-runs/qwen3-4b-grpo
+    NCCL_SOCKET_IFNAME: bond0
+    SRTCTL_FRONTEND_TYPE: none
+    SRT_GPUS_PER_NODE: 8
+    SRT_SERVICE_DCGM_EXPORTER_IPS: 127.0.0.1,127.0.0.1
+    SRT_SERVICE_DCGM_EXPORTER_NODES: node-01,node-02
+    SRT_SERVICE_DCGM_EXPORTER_NODE_COUNT: 2
+    SRT_SERVICE_NODE_EXPORTER_IPS: 127.0.0.1,127.0.0.1
+    SRT_SERVICE_NODE_EXPORTER_NODES: node-01,node-02
+    SRT_SERVICE_NODE_EXPORTER_NODE_COUNT: 2
+    SRT_SERVICE_PROCESS_EXPORTER_IPS: 127.0.0.1,127.0.0.1
+    SRT_SERVICE_PROCESS_EXPORTER_NODES: node-01,node-02
+    SRT_SERVICE_PROCESS_EXPORTER_NODE_COUNT: 2
+    SRT_SERVICE_TRAIN_IPS: 127.0.0.1,127.0.0.1
+    SRT_SERVICE_TRAIN_NODES: node-01,node-02
+    SRT_SERVICE_TRAIN_NODE_COUNT: 2
+    SRT_WORKER_NODES:
+command: |
+    bash -lc /benchmarks/rl/miles/launch.sh

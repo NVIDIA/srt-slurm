@@ -41,6 +41,7 @@ srtctl dry-run -f config.yaml     # preview without submitting
 Each `override_*` section is **deep-merged** with `base`, producing one job per section.
 
 ```yaml
+schema: 2
 base:
   name: "my-job"
   model:
@@ -49,9 +50,15 @@ base:
     precision: "fp8"
   resources:
     gpu_type: "gb200"
-    prefill_nodes: 1
-    decode_nodes: 1
     gpus_per_node: 8
+  engine: sglang
+  roles:
+    prefill:
+      nodes: 1
+      workers: 1
+    decode:
+      nodes: 1
+      workers: 1
   benchmark:
     type: "sa-bench"
     isl: 1024
@@ -60,11 +67,12 @@ base:
 
 # Variant 1: lower memory usage
 override_lowmem:
-  backend:
-    sglang_config:
-      prefill:
+  roles:
+    prefill:
+      args:
         mem-fraction-static: 0.75
-      decode:
+    decode:
+      args:
         mem-fraction-static: 0.75
 
 # Variant 2: higher concurrency
@@ -109,12 +117,13 @@ base:
 
 zip_override_tp_sweep:
   name: ["my-job-tp4", "my-job-tp8", "my-job-tp16"]
-  backend:
-    sglang_config:
-      prefill:
+  roles:
+    prefill:
+      args:
         tensor-parallel-size: [4, 8, 16]
         mem-fraction-static: [0.85]      # length-1 → broadcast to all 3
-      decode:
+    decode:
+      args:
         tensor-parallel-size: [4, 8, 16]
   benchmark:
     concurrencies: [[4, 8], [4, 8], [4]] # list-of-list → literal list per variant
@@ -154,7 +163,7 @@ concurrencies: [[4, 8], [4, 8, 16]]   # variant 0 gets [4,8], variant 1 gets [4,
 ```yaml
 # ERROR: lengths 2 and 3 are incompatible
 tensor-parallel-size: [4, 8]
-decode-nodes: [1, 2, 3]
+nodes: [1, 2, 3]
 ```
 
 ### Auto-naming
@@ -162,9 +171,9 @@ decode-nodes: [1, 2, 3]
 If `name` is not a zip dimension, variant names are auto-generated as `{base_name}_{group}_{i}`:
 ```yaml
 zip_override_tp_sweep:
-  backend:
-    sglang_config:
-      prefill:
+  roles:
+    prefill:
+      args:
         tensor-parallel-size: [4, 8]
 # generates: my-job_tp_sweep_0, my-job_tp_sweep_1
 ```
@@ -173,9 +182,9 @@ Provide a `name` list to set names explicitly:
 ```yaml
 zip_override_tp_sweep:
   name: ["job-tp4", "job-tp8"]
-  backend:
-    sglang_config:
-      prefill:
+  roles:
+    prefill:
+      args:
         tensor-parallel-size: [4, 8]
 ```
 
@@ -233,19 +242,21 @@ base:
   ...
 
 override_lowmem:
-  backend:
-    sglang_config:
-      prefill:
+  roles:
+    prefill:
+      args:
         mem-fraction-static: 0.75
-      decode:
+    decode:
+      args:
         mem-fraction-static: 0.75
 
 zip_override_tp_sweep:
-  backend:
-    sglang_config:
-      prefill:
+  roles:
+    prefill:
+      args:
         tensor-parallel-size: [4, 8]
-      decode:
+    decode:
+      args:
         tensor-parallel-size: [4, 8]
 ```
 
@@ -308,6 +319,7 @@ outputs/6717/
 - Use `dry-run` before any real submission to verify expansion
 - Put shared defaults in `base` to keep variants minimal
 - Use `zip_override_*` when parameters belong together (e.g. tp-size + node count)
+- Override files are `schema: 2` documents like any other recipe; the v1 layout is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it, variants included
 - Use `override_*` for one-off named configurations
 - Broadcast (`[value]`) avoids repeating the same value across all list entries
 - Use `override_<glob>*` to run a named subset without listing each variant explicitly

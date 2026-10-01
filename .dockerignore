@@ -1,0 +1,9 @@
+.git
+.venv
+.venv-compute
+bin
+logs
+outputs
+target
+**/__pycache__
+*.pyc

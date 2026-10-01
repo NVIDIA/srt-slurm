@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -23,13 +23,15 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from srtctl.ports import (
+    BOOTSTRAP_PORTS,
     DYN_SYSTEM_PORT_BASE,
-    KV_EVENTS_PORT_BASE,
-    SGLANG_BOOTSTRAP_PORT_BASE,
-    SGLANG_HTTP_PORT_BASE,
-    SGLANG_HTTP_PORT_STRIDE,
-    VLLM_DATA_PARALLEL_RPC_PORT,
-    VLLM_NIXL_PORT_BASE,
+    HTTP_PORTS,
+    KV_EVENTS_PORTS,
+    KVBM_ZMQ_PORTS,
+    NIXL_PORTS,
+    SIDECAR_GRPC_PORTS,
+    SYS_PORTS,
+    PortKind,
 )
 
 # Worker mode type
@@ -38,112 +40,51 @@ WorkerMode = Literal["prefill", "decode", "agg"]
 
 @dataclass
 class NodePortAllocator:
-    """Allocates unique ports per node to avoid conflicts.
+    """Hands out every port a worker process binds, one counter per port kind.
 
-    When multiple workers share a node (e.g., 2 decode workers with 4 GPUs each
-    on an 8-GPU node), they need unique ports. This allocator tracks port
-    assignments per node and hands out the next available port.
+    A ``PortKind`` (``srtctl.ports``) says where its range starts, how far apart
+    consecutive allocations sit, and whether its counter is per node (the port is
+    bound on that node only: HTTP, bootstrap, DP RPC, dist-init) or global (a side
+    channel that peers on other nodes address: system, KV events, NIXL, NCCL).
+    Two workers sharing a node therefore never collide, and global kinds never
+    repeat across the job.
 
-    Default port ranges (non-overlapping):
-        - kv_events_port: 5200+ (global) - ZMQ port for kv-events publishing
-        - nixl_port:      5400+ (global) - NIXL side channel for KV transfers (vLLM)
-        - dp_rpc_port:    8400+ (per node) - DP coordination port (vLLM data-parallel)
-        - http_port:      6100+ (per node) - HTTP serving port
-        - bootstrap_port: 7200+ (per node) - P/D coordination port (prefill only)
+    Allocation happens once, in ``endpoints_to_processes``, and the results ride
+    on ``Process``; command builders and stages read those fields and never
+    derive one port from another. ``bases`` overrides a kind's first port by
+    kind name: the system-status base for tests, the Dynamo sidecar gRPC base
+    from ``dynamo.sidecar_port``.
 
     Example:
         allocator = NodePortAllocator()
-
-        # Two workers on same node get different ports
-        port1 = allocator.next_http_port("node0")  # 6100
-        port2 = allocator.next_http_port("node0")  # 6132
-
-        # Different node starts fresh
-        port3 = allocator.next_http_port("node1")  # 6100
+        allocator.next(HTTP_PORTS, "node0")  # 6100
+        allocator.next(HTTP_PORTS, "node0")  # 6132: a second worker on the node
+        allocator.next(HTTP_PORTS, "node1")  # 6100: per node, so node1 starts over
+        allocator.next(NIXL_PORTS, size=4)   # 5400, and the next NIXL allocation is 5404
     """
 
-    base_http_port: int = SGLANG_HTTP_PORT_BASE
-    base_bootstrap_port: int = SGLANG_BOOTSTRAP_PORT_BASE
-    base_kv_events_port: int = KV_EVENTS_PORT_BASE
-    base_nixl_port: int = VLLM_NIXL_PORT_BASE
-    base_dp_rpc_port: int = VLLM_DATA_PARALLEL_RPC_PORT
+    bases: dict[str, int] = field(default_factory=dict)
+    _next: dict[tuple[str, str | None], int] = field(default_factory=dict, repr=False)
 
-    _http_ports: dict[str, int] = field(default_factory=dict, repr=False)
-    _bootstrap_ports: dict[str, int] = field(default_factory=dict, repr=False)
-    _dp_rpc_ports: dict[str, int] = field(default_factory=dict, repr=False)
-    _next_kv_events_port: int = field(default=0, repr=False)  # Global counter
-    _next_nixl_port: int = field(default=0, repr=False)  # Global counter for NIXL
+    def next(self, kind: PortKind, node: str | None = None, size: int = 1) -> int:
+        """Reserve ``size`` consecutive slots of ``kind`` and return the first port.
 
-    def next_http_port(self, node: str) -> int:
-        """Get next available HTTP port for a node."""
-        if node not in self._http_ports:
-            self._http_ports[node] = self.base_http_port
-        port = self._http_ports[node]
-        self._http_ports[node] += SGLANG_HTTP_PORT_STRIDE
-        return port
-
-    def next_bootstrap_port(self, node: str) -> int:
-        """Get next available bootstrap port for a node (prefill only)."""
-        if node not in self._bootstrap_ports:
-            self._bootstrap_ports[node] = self.base_bootstrap_port
-        port = self._bootstrap_ports[node]
-        self._bootstrap_ports[node] += 1
-        return port
-
-    def next_kv_events_port(self) -> int:
-        """Get next available kv-events ZMQ port (globally unique across all nodes)."""
-        if self._next_kv_events_port == 0:
-            self._next_kv_events_port = self.base_kv_events_port
-        port = self._next_kv_events_port
-        self._next_kv_events_port += 1
-        return port
-
-    def next_kv_events_port_block(self, size: int) -> int:
-        """Reserve consecutive KV-event ports and return the base port.
-
-        A vLLM hybrid-DP process opens one publisher per local DP rank, so
-        adjacent worker processes must receive non-overlapping port ranges.
+        ``size > 1`` is for engines that add a rank offset to the port they are
+        given (vLLM adds ``data_parallel_rank`` to its NIXL side-channel port and
+        opens one KV-event publisher per local DP rank), so the next allocation
+        starts past the whole block.
         """
         if size < 1:
-            raise ValueError("KV-event port block size must be at least 1")
-        if self._next_kv_events_port == 0:
-            self._next_kv_events_port = self.base_kv_events_port
-        port = self._next_kv_events_port
-        self._next_kv_events_port += size
-        return port
-
-    def next_nixl_port(self) -> int:
-        """Get next available NIXL side channel port (globally unique across all nodes)."""
-        if self._next_nixl_port == 0:
-            self._next_nixl_port = self.base_nixl_port
-        port = self._next_nixl_port
-        self._next_nixl_port += 1
-        return port
-
-    def next_nixl_port_block(self, size: int) -> int:
-        """Reserve a block of consecutive NIXL ports, return the base port.
-
-        Used in DP mode where vLLM computes:
-            actual_port = VLLM_NIXL_SIDE_CHANNEL_PORT + data_parallel_rank
-        All DP ranks within an endpoint share the same base port, so we
-        must reserve `size` ports to avoid collisions with other endpoints.
-        """
-        if self._next_nixl_port == 0:
-            self._next_nixl_port = self.base_nixl_port
-        port = self._next_nixl_port
-        self._next_nixl_port += size
-        return port
-
-    def next_dp_rpc_port(self, node: str) -> int:
-        """Get next available DP RPC port for a node.
-
-        When multiple DP endpoints share a node, each needs a unique
-        data-parallel-rpc-port to avoid bind collisions.
-        """
-        if node not in self._dp_rpc_ports:
-            self._dp_rpc_ports[node] = self.base_dp_rpc_port
-        port = self._dp_rpc_ports[node]
-        self._dp_rpc_ports[node] += 1
+            raise ValueError(f"{kind.name}: size must be at least 1, got {size}")
+        if kind.per_node and node is None:
+            raise ValueError(f"{kind.name} ports are allocated per node; pass the node")
+        key = (kind.name, node if kind.per_node else None)
+        ordinal = self._next.get(key, 0)
+        self._next[key] = ordinal + size
+        port = self.bases.get(kind.name, kind.base) + ordinal * kind.stride
+        last = port + (size - 1) * kind.stride
+        if last > 65535:
+            raise ValueError(f"{kind.name} port range exhausted at {port}..{last}")
         return port
 
 
@@ -173,6 +114,12 @@ class Endpoint:
     # as "omit --het-group".
     het_group: int | None = None
 
+    # Optional per-node allocation for workers spanning partially occupied nodes.
+    node_gpu_indices: tuple[frozenset[int], ...] = ()
+
+    def gpus_on_node(self, node_rank: int) -> frozenset[int]:
+        return self.node_gpu_indices[node_rank] if self.node_gpu_indices else self.gpu_indices
+
     @property
     def leader_node(self) -> str:
         """The first node in the endpoint (used for distributed init)."""
@@ -186,7 +133,7 @@ class Endpoint:
     @property
     def total_gpus(self) -> int:
         """Total GPUs used by this endpoint across all nodes."""
-        return self.num_nodes * len(self.gpu_indices)
+        return sum(len(self.gpus_on_node(i)) for i in range(self.num_nodes))
 
     @property
     def is_multi_node(self) -> bool:
@@ -212,6 +159,21 @@ class Process:
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
         node_rank: Rank within the endpoint (0 for leader)
+        engine_id: Which engine of the worker this is. 0 is the one every job has;
+            under ``backend.failover`` (vLLM shadow engine recovery) engines 1.. are
+            the standbys, sharing node, GPUs and node_rank with engine 0 but with
+            their own ports and their own srun step.
+        kvbm_zmq_port: KVBM leader ZMQ pub port (ack is the next port); the leader's is used
+        sidecar_grpc_port: Dynamo sidecar gRPC listener, allocated when the job runs sidecars
+        nccl_port: SGLang local TP rendezvous port, one per server process
+        dist_init_port: SGLang multi-node dist-init port; the same value on every process of an endpoint
+        vllm_scan_port: first port of this vLLM process's private ``get_open_port()`` scan range
+        moriio_handshake_port: MoRI-IO handshake listener of a vLLM discovery-connector worker
+        moriio_notify_port: first port of that worker's MoRI-IO notify block (one port per local rank)
+        trtllm_dist_init_port: TRT-LLM torch.distributed bootstrap port; the leader's is used
+
+    Every port is allocated by ``NodePortAllocator`` in ``endpoints_to_processes``;
+    consumers read these fields and never derive one port from another.
     """
 
     node: str
@@ -227,11 +189,25 @@ class Process:
     dp_rpc_port: int | None = None
     # Inherited from the parent Endpoint when the job is heterogeneous.
     het_group: int | None = None
+    engine_id: int = 0
+    kvbm_zmq_port: int | None = None
+    sidecar_grpc_port: int | None = None
+    nccl_port: int | None = None
+    dist_init_port: int | None = None
+    vllm_scan_port: int | None = None
+    trtllm_dist_init_port: int | None = None
+    moriio_handshake_port: int | None = None
+    moriio_notify_port: int | None = None
 
     @property
     def is_leader(self) -> bool:
         """Whether this is the leader process for the endpoint."""
         return self.node_rank == 0
+
+    @property
+    def engine_suffix(self) -> str:
+        """Step-name and log-name suffix that tells a shadow engine apart from engine 0 (``""`` for it)."""
+        return f"_e{self.engine_id}" if self.engine_id else ""
 
     @property
     def cuda_visible_devices(self) -> str:
@@ -287,6 +263,7 @@ def allocate_endpoints(
     available_nodes: Sequence[str],
     spread_workers: bool = False,
     allow_prefill_decode_colocation: bool = False,
+    pack_multinode_workers: bool = False,
 ) -> list[Endpoint]:
     """Allocate endpoints to nodes based on GPU requirements.
 
@@ -304,6 +281,8 @@ def allocate_endpoints(
         spread_workers: If True, place each partial-node worker on its own
             node instead of packing multiple onto the same node. Requires the
             caller to reserve enough nodes (one per worker per mode).
+        pack_multinode_workers: Preserve exact per-node GPU allocations for MPI
+            workers, allowing adjacent workers to share a partially filled node.
         allow_prefill_decode_colocation: If True, decode workers may use
             remaining GPUs on a node already used by prefill workers.
 
@@ -406,7 +385,43 @@ def allocate_endpoints(
         nodes_per_worker = (gpus_per_worker + gpus_per_node - 1) // gpus_per_node
 
         for i in range(count):
-            if nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
+            if pack_multinode_workers:
+                if gpus_per_worker <= 0:
+                    raise ValueError("GPUs per worker must be positive")
+                if gpus_per_worker <= gpus_per_node and gpu_offset + gpus_per_worker > gpus_per_node:
+                    node_idx += 1
+                    gpu_offset = 0
+                worker_nodes = []
+                node_gpus = []
+                remaining = gpus_per_worker
+                while remaining:
+                    if node_idx >= len(available_nodes):
+                        raise ValueError("Not enough nodes for GPU allocation")
+                    take = min(remaining, gpus_per_node - gpu_offset)
+                    worker_nodes.append(available_nodes[node_idx])
+                    node_gpus.append(frozenset(range(gpu_offset, gpu_offset + take)))
+                    remaining -= take
+                    gpu_offset += take
+                    if gpu_offset == gpus_per_node:
+                        node_idx += 1
+                        gpu_offset = 0
+                # MPI model mappings expect full nodes before a partial tail.
+                allocations = sorted(zip(worker_nodes, node_gpus, strict=True), key=lambda item: -len(item[1]))
+                worker_nodes, node_gpus = zip(*allocations, strict=True)
+                result.append(
+                    Endpoint(
+                        mode=mode,
+                        index=i,
+                        nodes=tuple(worker_nodes),
+                        gpu_indices=node_gpus[0],
+                        node_gpu_indices=tuple(node_gpus),
+                        gpus_per_node=gpus_per_node,
+                    )
+                )
+                if spread_workers and gpu_offset:
+                    node_idx += 1
+                    gpu_offset = 0
+            elif nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
                 # Multi-node or full-node worker
                 worker_nodes = tuple(available_nodes[node_idx + j] for j in range(nodes_per_worker))
                 node_idx += nodes_per_worker
@@ -476,6 +491,7 @@ def allocate_endpoints_het(
     gpus_per_decode: int,
     decode_nodes: Sequence[str],
     gpus_per_node: int,
+    pack_multinode_workers: bool = False,
 ) -> list[Endpoint]:
     """Allocate endpoints for a SLURM heterogeneous job.
 
@@ -498,6 +514,7 @@ def allocate_endpoints_het(
         gpus_per_agg=0,
         gpus_per_node=gpus_per_node,
         available_nodes=prefill_nodes,
+        pack_multinode_workers=pack_multinode_workers,
     )
     decode_eps = allocate_endpoints(
         num_prefill=0,
@@ -508,6 +525,7 @@ def allocate_endpoints_het(
         gpus_per_agg=0,
         gpus_per_node=gpus_per_node,
         available_nodes=decode_nodes,
+        pack_multinode_workers=pack_multinode_workers,
     )
     # Endpoint is frozen; re-emit with het_group set.
     tagged: list[Endpoint] = []
@@ -518,6 +536,7 @@ def allocate_endpoints_het(
                 index=ep.index,
                 nodes=ep.nodes,
                 gpu_indices=ep.gpu_indices,
+                node_gpu_indices=ep.node_gpu_indices,
                 gpus_per_node=ep.gpus_per_node,
                 het_group=0,
             )
@@ -529,6 +548,7 @@ def allocate_endpoints_het(
                 index=ep.index,
                 nodes=ep.nodes,
                 gpu_indices=ep.gpu_indices,
+                node_gpu_indices=ep.node_gpu_indices,
                 gpus_per_node=ep.gpus_per_node,
                 het_group=1,
             )
@@ -536,68 +556,81 @@ def allocate_endpoints_het(
     return tagged
 
 
+def port_allocator_for(
+    port_allocator: NodePortAllocator | None,
+    base_sys_port: int = DYN_SYSTEM_PORT_BASE,
+) -> NodePortAllocator:
+    """The allocator a topology builder uses: the caller's, or a fresh one whose system base is ``base_sys_port``."""
+    if port_allocator is not None:
+        return port_allocator
+    return NodePortAllocator(bases={SYS_PORTS.name: base_sys_port})
+
+
 def endpoints_to_processes(
     endpoints: list[Endpoint],
     base_sys_port: int = DYN_SYSTEM_PORT_BASE,
     port_allocator: NodePortAllocator | None = None,
+    engines_per_process: int = 1,
+    sidecar_grpc: bool = False,
 ) -> list[Process]:
-    """Convert endpoints to physical processes.
+    """Convert endpoints to physical processes, one per node of each endpoint.
 
-    For SGLang, we create one process per node in each endpoint.
-    Each process gets a unique DYN_SYSTEM_PORT and ports from the allocator.
-
-    Ports are assigned per-node to avoid conflicts when multiple workers
-    share a node (e.g., 2 decode workers with 4 GPUs each on an 8-GPU node).
+    Every port a process binds is allocated here through ``port_allocator``:
+    the system-status port, the leader's HTTP port, the prefill bootstrap port,
+    the KV-events publisher, the NIXL side channel, the KVBM ZMQ pair, and the
+    sidecar gRPC listener when the job runs Dynamo sidecars. Backends add their
+    engine-specific kinds on top (``Process.with_ports``).
 
     Args:
         endpoints: List of Endpoint objects
-        base_sys_port: Starting port for DYN_SYSTEM_PORT assignment
-        port_allocator: NodePortAllocator for HTTP/bootstrap ports (created if None)
+        base_sys_port: System-status base when no allocator is passed
+        port_allocator: The job's allocator (created if None)
+        engines_per_process: Engines launched per (endpoint, node). 1 is the usual
+            layout; vLLM shadow engine recovery asks for ``1 + shadows``, and every
+            engine of a node then gets its own Process (same GPUs and node_rank,
+            distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
+        sidecar_grpc: Allocate a Dynamo sidecar gRPC port for every process.
 
     Returns:
         List of Process objects
     """
+    if engines_per_process < 1:
+        raise ValueError(f"engines_per_process must be at least 1, got {engines_per_process}")
+    allocator = port_allocator_for(port_allocator, base_sys_port)
     processes: list[Process] = []
-    current_sys_port = base_sys_port
-
-    if port_allocator is None:
-        port_allocator = NodePortAllocator()
 
     for endpoint in endpoints:
-        # Allocate bootstrap port once per prefill endpoint (shared by all processes)
+        # Allocate bootstrap ports once per prefill endpoint (shared by all of an
+        # engine's processes); each engine of a worker binds its own.
         leader_node = endpoint.nodes[0]
-        endpoint_bootstrap_port = (
-            port_allocator.next_bootstrap_port(leader_node) if endpoint.mode == "prefill" else None
-        )
+        endpoint_bootstrap_ports = [
+            allocator.next(BOOTSTRAP_PORTS, leader_node) if endpoint.mode == "prefill" else None
+            for _ in range(engines_per_process)
+        ]
 
         for node_rank, node in enumerate(endpoint.nodes):
             is_leader = node_rank == 0
 
-            # Only leaders need http_port (for router to connect to)
-            http_port = port_allocator.next_http_port(node) if is_leader else 0
-
-            # Allocate kv_events port for each node in the endpoint (globally unique)
-            # Each node publishes KV events independently
-            node_kv_events_port = port_allocator.next_kv_events_port()
-
-            # Allocate NIXL side channel port (globally unique, used by vLLM)
-            node_nixl_port = port_allocator.next_nixl_port()
-
-            processes.append(
-                Process(
-                    node=node,
-                    gpu_indices=endpoint.gpu_indices,
-                    sys_port=current_sys_port,
-                    http_port=http_port,
-                    endpoint_mode=endpoint.mode,
-                    endpoint_index=endpoint.index,
-                    node_rank=node_rank,
-                    bootstrap_port=endpoint_bootstrap_port,
-                    kv_events_port=node_kv_events_port,
-                    nixl_port=node_nixl_port,
-                    het_group=endpoint.het_group,
+            for engine_id in range(engines_per_process):
+                processes.append(
+                    Process(
+                        node=node,
+                        gpu_indices=endpoint.gpus_on_node(node_rank),
+                        sys_port=allocator.next(SYS_PORTS),
+                        # Only leaders serve HTTP (for a router to connect to).
+                        http_port=allocator.next(HTTP_PORTS, node) if is_leader else 0,
+                        endpoint_mode=endpoint.mode,
+                        endpoint_index=endpoint.index,
+                        node_rank=node_rank,
+                        bootstrap_port=endpoint_bootstrap_ports[engine_id],
+                        # Every process publishes KV events and opens a NIXL side channel of its own.
+                        kv_events_port=allocator.next(KV_EVENTS_PORTS),
+                        nixl_port=allocator.next(NIXL_PORTS),
+                        het_group=endpoint.het_group,
+                        engine_id=engine_id,
+                        kvbm_zmq_port=allocator.next(KVBM_ZMQ_PORTS),
+                        sidecar_grpc_port=allocator.next(SIDECAR_GRPC_PORTS) if sidecar_grpc else None,
+                    )
                 )
-            )
-            current_sys_port += 1
 
     return processes

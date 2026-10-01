@@ -1,0 +1,68 @@
+# Prepared ROCm images and preconverted weights; see docs/tilert.md.
+# Configure visible_devices_env: ROCR_VISIBLE_DEVICES in srtslurm.yaml.
+schema: 2
+name: glm5.3-tilert-rocm-disagg
+model:
+  path: glm5.3
+  container: ghcr.io/tile-ai/tilert-rocm-decode:0.1.6
+  precision: fp8
+resources:
+  gpu_type: mi355x
+  gpus_per_node: 8
+environment:
+  RDMAV_FORK_SAFE: "1"
+roles:
+  prefill:
+    engine: vllm
+    container: ghcr.io/tile-ai/tilert-rocm-prefill:0.1.6
+    nodes: 1
+    workers: 1
+    gpus: 8
+    env:
+      VLLM_ROCM_USE_AITER: "1"
+      VLLM_ROCM_USE_AITER_MOE: "1"
+      VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS: "1"
+      VLLM_ENGINE_READY_TIMEOUT_S: "10800"
+    args:
+      served-model-name: glm5_2
+      tensor-parallel-size: 8
+      max-model-len: 1048576
+      return-tokens-as-token-ids: true
+      kv-cache-dtype: bfloat16
+      kv-transfer-config: >-
+        {"kv_connector":"TileRTConnector","kv_connector_module_path":"tilert.pd_vllm.prefill_connector",
+         "kv_role":"kv_producer","kv_connector_extra_config":{
+           "tilert_model":"glm5_2","tilert_max_seq_len":1048576,"tilert_transport":"mooncake"}}
+      speculative-config: '{"method":"mtp","num_speculative_tokens":1}'
+      enforce-eager: true
+      trust-remote-code: true
+      gpu-memory-utilization: 0.85
+      block-size: 64
+  decode:
+    engine: tilert
+    container: ghcr.io/tile-ai/tilert-rocm-decode:0.1.6
+    nodes: 1
+    workers: 1
+    gpus: 8
+    env:
+      GLM5_AR_N: "2"
+    args:
+      model: glm5_2
+      model-weights-dir: /models/GLM-5.3-tilert-tp8
+      max-seq-len: 1048576
+      kv-cache-dtype: bf16
+      transport: mooncake
+      with-mtp: true
+      num-mtp: 3
+frontend:
+  type: tilert-router
+  enable_multiple_frontends: false
+  args:
+    parser: none
+    model-path: /model
+    queue-timeout: 1800
+health_check:
+  max_attempts: 2160
+  interval_seconds: 10
+benchmark:
+  type: manual

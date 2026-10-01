@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -24,12 +24,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.backends.sglang import SGLangProtocol
 from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
     PostProcessStageMixin,
+    ServiceStageMixin,
     TelemetryStageMixin,
     WorkerStageMixin,
 )
@@ -37,45 +37,24 @@ from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
-    ManagedProcess,
     ProcessRegistry,
     setup_signal_handlers,
     start_process_monitor,
 )
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
-from srtctl.core.schema import SrtConfig, TelemetryProvider
+from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
-from srtctl.core.status import JobStage, JobStatus, StatusReporter
+from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
 from srtctl.ports import (
-    ETCD_CLIENT_PORT,
     FRONTEND_PUBLIC_PORT,
-    MOONCAKE_HTTP_METADATA_PORT,
-    MOONCAKE_MASTER_PORT,
-    MOONCAKE_METRICS_PORT,
-    NATS_PORT,
+    SIDECAR_GRPC_PORTS,
 )
+from srtctl.services.implicit import uses_discovery_plane
 
 logger = logging.getLogger(__name__)
-
-
-def _build_mooncake_master_command(mooncake_cfg: object) -> list[str]:
-    """Build the master command, including recipe-provided version-specific flags."""
-    command = [
-        "mooncake_master",
-        f"--port={MOONCAKE_MASTER_PORT}",
-        "--enable_http_metadata_server=true",
-        f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
-        "--eviction_high_watermark_ratio=0.9",
-        "--default_kv_lease_ttl=10000",
-        "--rpc_thread_num=16",
-        "--enable_metric_reporting=true",
-        f"--metrics_port={MOONCAKE_METRICS_PORT}",
-    ]
-    command.extend(getattr(mooncake_cfg, "master_extra_args", []) or [])
-    return command
 
 
 @dataclass
@@ -83,6 +62,7 @@ class SweepOrchestrator(
     WorkerStageMixin,
     FrontendStageMixin,
     TelemetryStageMixin,
+    ServiceStageMixin,
     BenchmarkStageMixin,
     PostProcessStageMixin,
 ):
@@ -97,6 +77,7 @@ class SweepOrchestrator(
 
     config: SrtConfig
     runtime: RuntimeContext
+    serve_only: bool = False
 
     @property
     def backend(self):
@@ -112,8 +93,10 @@ class SweepOrchestrator(
         from their own component nodelists so neither side bleeds into the
         other's topology segment.
         """
-        r = self.config.resources
+        r = self.config.topology
         if self.runtime.nodes.het:
+            if self.config.role_backends:
+                raise ValueError("Role engine overrides do not support Slurm heterogeneous allocations")
             return allocate_endpoints_het(
                 num_prefill=r.num_prefill,
                 gpus_per_prefill=r.gpus_per_prefill,
@@ -122,18 +105,9 @@ class SweepOrchestrator(
                 gpus_per_decode=r.gpus_per_decode,
                 decode_nodes=self.runtime.nodes.decode_group,
                 gpus_per_node=r.gpus_per_node,
+                pack_multinode_workers=self.backend.type == "trtllm",
             )
-        return self.backend.allocate_endpoints(
-            num_prefill=r.num_prefill,
-            num_decode=r.num_decode,
-            num_agg=r.num_agg,
-            gpus_per_prefill=r.gpus_per_prefill,
-            gpus_per_decode=r.gpus_per_decode,
-            gpus_per_agg=r.gpus_per_agg,
-            gpus_per_node=r.gpus_per_node,
-            available_nodes=self.runtime.nodes.worker,
-            spread_workers=r.spread_workers,
-        )
+        return self.config.allocate_worker_endpoints(self.runtime.nodes.worker)
 
     @functools.cached_property
     def backend_processes(self) -> list[Process]:
@@ -142,160 +116,45 @@ class SweepOrchestrator(
         Port defaults come from ``srtctl.ports`` and are allocated
         deterministically within a job.
         """
-        allocator = NodePortAllocator()
-        return self.backend.endpoints_to_processes(
-            self.endpoints,
-            port_allocator=allocator,
-            frontend_type=self.config.frontend.type,
-        )
+        allocator = NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: self.config.dynamo.sidecar_port})
+        return self.config.worker_processes(self.endpoints, port_allocator=allocator)
 
-    def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
-        """Start NATS and etcd on the infra node.
+    def start_head_infrastructure(self, registry: ProcessRegistry) -> None:
+        """Start the discovery plane (etcd, NATS) as services.
 
-        When etcd_nats_dedicated_node is enabled, services run on a dedicated node.
-        Otherwise, they run on the head node (default behavior).
+        They are implied by ``frontend.type: dynamo`` and placed on the infra node
+        (a dedicated node when a declared etcd or nats service asks for it). A recipe may declare them to change
+        the container or point at an external instance. See docs/services.md.
         """
-        infra_node = self.runtime.nodes.infra
-        logger.info("Starting infrastructure services (NATS, etcd)")
-        logger.info("Infra node: %s", infra_node)
+        self.start_services("infra", registry)
 
-        setup_script = Path(__file__).parent / "setup_head.py"
-        if not setup_script.exists():
-            raise RuntimeError(f"setup_head.py not found at {setup_script}")
+    def _write_mooncake_store_config(self) -> None:
+        """vLLM's MooncakeStoreConnector reads its config from a JSON file, not env.
 
-        setup_script_container = Path("/tmp/setup_head.py")
-        infra_log = self.runtime.log_dir / "infra.out"
-
-        cmd = [
-            "python3",
-            str(setup_script_container),
-            "--name",
-            self.config.name,
-            "--log-dir",
-            str(self.runtime.log_dir),
-        ]
-        if self.config.infra.nats_max_payload_mb is not None:
-            cmd += ["--nats-max-payload-mb", str(self.config.infra.nats_max_payload_mb)]
-
-        mounts = dict(self.runtime.container_mounts)
-        mounts[setup_script] = setup_script_container
-        # Mount host /tmp to container /host-tmp for etcd/nats data on local storage
-        # This ensures etcd WAL writes go to fast local disk, not network storage
-        mounts[Path("/tmp")] = Path("/host-tmp")
-
-        proc = start_srun_process(
-            command=cmd,
-            nodelist=[infra_node],
-            output=str(infra_log),
-            container_image=str(self.runtime.container_image),
-            container_mounts=mounts,
-            het_group=self.runtime.nodes.het_group_for(infra_node),
-        )
-
-        managed = ManagedProcess(
-            name="infra_services",
-            popen=proc,
-            log_file=infra_log,
-            node=infra_node,
-            critical=True,
-        )
-
-        # 300s timeout to handle slow container imports on first run
-        logger.info("Waiting for NATS (port %d) on %s...", NATS_PORT, infra_node)
-        if not wait_for_port(infra_node, NATS_PORT, timeout=300):
-            raise RuntimeError("NATS failed to start")
-        logger.info("NATS is ready")
-
-        logger.info("Waiting for etcd (port %d) on %s...", ETCD_CLIENT_PORT, infra_node)
-        if not wait_for_port(infra_node, ETCD_CLIENT_PORT, timeout=300):
-            raise RuntimeError("etcd failed to start")
-        logger.info("etcd is ready")
-
-        return managed
-
-    def start_mooncake_master(self, registry: ProcessRegistry) -> ManagedProcess | None:
-        """Launch mooncake_master on the infra node if mooncake_kv_store is configured.
-
-        Runs on the same node as etcd/nats. Uses mooncake_kv_store.container if set,
-        otherwise falls back to the job container.
-
-        Both SGLang and vLLM share the same launch command and port pair
-        (see ``srtctl.ports`` for the values). We always start the master with
-        its embedded HTTP metadata server enabled
-        (``--enable_http_metadata_server=true``) so:
-
-        1. Workers can use ``MOONCAKE_TE_META_DATA_SERVER=http://infra:<metadata-port>/metadata``
-           without a separate metadata service.
-        2. Dynamo's KV router shared-cache path
-           (`lib/llm/src/kv_router/shared_cache.rs`) can call the master's
-           ``/batch_query_keys`` endpoint for L3 reach when
-           ``--shared-cache-type hicache`` is set on the frontend.
+        Written into log_dir (mounted at /logs in every worker) before workers
+        start, pointing at the Mooncake master on the infra node.
         """
         backend = self.config.backend
-        if not isinstance(backend, (SGLangProtocol, VLLMProtocol)):
-            return None
-        mooncake_cfg = backend.mooncake_kv_store
-        if mooncake_cfg is None:
-            return None
-
-        infra_node = self.runtime.nodes.infra
-        container = mooncake_cfg.container or str(self.runtime.container_image)
-        mooncake_log = self.runtime.log_dir / "mooncake_master.out"
-
-        # vLLM's MooncakeStoreConnector reads its config from a JSON file
-        # (MOONCAKE_CONFIG_PATH), not env vars. Write that JSON into log_dir
-        # before workers start; log_dir is mounted at /logs in every worker.
-        if isinstance(backend, VLLMProtocol):
-            store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
-            store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
-            store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
-            logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
-
-        logger.info(
-            "Starting mooncake_master on %s (rpc=%d, http_metadata=%d, metrics=%d)",
-            infra_node,
-            MOONCAKE_MASTER_PORT,
-            MOONCAKE_HTTP_METADATA_PORT,
-            MOONCAKE_METRICS_PORT,
-        )
-
-        proc = start_srun_process(
-            command=_build_mooncake_master_command(mooncake_cfg),
-            nodelist=[infra_node],
-            output=str(mooncake_log),
-            container_image=container,
-            container_mounts=self.runtime.container_mounts,
-            het_group=self.runtime.nodes.het_group_for(infra_node),
-        )
-
-        managed = ManagedProcess(
-            name="mooncake_master",
-            popen=proc,
-            log_file=mooncake_log,
-            node=infra_node,
-            critical=True,
-        )
-
-        logger.info("Waiting for mooncake_master RPC (port %d) on %s...", MOONCAKE_MASTER_PORT, infra_node)
-        if not wait_for_port(infra_node, MOONCAKE_MASTER_PORT, timeout=120):
-            raise RuntimeError("mooncake_master RPC failed to start")
-        logger.info(
-            "Waiting for mooncake_master HTTP metadata (port %d) on %s...",
-            MOONCAKE_HTTP_METADATA_PORT,
-            infra_node,
-        )
-        if not wait_for_port(infra_node, MOONCAKE_HTTP_METADATA_PORT, timeout=120):
-            raise RuntimeError("mooncake_master HTTP metadata server failed to start")
-        logger.info(
-            "Waiting for mooncake_master metrics (port %d) on %s...",
-            MOONCAKE_METRICS_PORT,
-            infra_node,
-        )
-        if not wait_for_port(infra_node, MOONCAKE_METRICS_PORT, timeout=120):
-            raise RuntimeError("mooncake_master metrics server failed to start")
-        logger.info("mooncake_master is ready")
-
-        return managed
+        if not isinstance(backend, VLLMProtocol) or backend.mooncake_kv_store is None:
+            return
+        store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
+        store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
+        store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
+        logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
+        if not backend.mooncake_kv_store.device_names_by_gpu:
+            return
+        # Render only GPU subsets actually launched, rather than all 2**N subsets.
+        written: set[str] = set()
+        for process in self.backend_processes:
+            local_config = backend.build_mooncake_process_config(
+                process, self.runtime.infra_node_ip, self.runtime.gpus_per_node
+            )
+            if local_config is not None:
+                filename, payload = local_config
+                if filename not in written:
+                    (self.runtime.log_dir / filename).write_text(json.dumps(payload, indent=2))
+                    logger.info("Wrote process-local Mooncake config %s: %s", filename, payload)
+                    written.add(filename)
 
     def _print_connection_info(self) -> None:
         """Print srun commands for connecting to nodes."""
@@ -308,7 +167,8 @@ class SweepOrchestrator(
         logger.info("=" * 60)
         logger.info("Connection Commands")
         logger.info("=" * 60)
-        logger.info("Frontend URL: http://%s:%d", self.runtime.nodes.head, FRONTEND_PUBLIC_PORT)
+        if self.config.frontend.type != "none":
+            logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
         logger.info("")
         logger.info("To connect to head node (%s):", self.runtime.nodes.head)
         logger.info(
@@ -319,7 +179,7 @@ class SweepOrchestrator(
         )
 
         # Print worker node connection commands
-        for node in self.runtime.nodes.worker:
+        for node in self.runtime.nodes.compute:
             if node != self.runtime.nodes.head:
                 logger.info("")
                 logger.info("To connect to worker node (%s):", node)
@@ -386,6 +246,104 @@ class SweepOrchestrator(
         if removed > 0:
             logger.info("Cleaned %d stale .lock files from HF cache: %s", removed, hf_home)
 
+    def _host_setup_nodes(self) -> list[str]:
+        """Nodes targeted by host_setup, deduped and stable in allocation order."""
+        nodes = list(self.runtime.nodes.compute)
+        if self.config.host_setup.nodes == "all":
+            nodes = [self.runtime.nodes.head, self.runtime.nodes.infra, *nodes]
+        return list(dict.fromkeys(nodes))
+
+    def _run_host_commands(self, commands: list[str], *, phase: str) -> list[str]:
+        """Run commands on each node's bare host, one srun per node, in parallel.
+
+        Passing container_image=None keeps these on the host: the orchestrator
+        already runs outside the container, so this is the only launch path that
+        can touch node state the container cannot reach (GPU clocks, modules).
+
+        Returns the nodes that failed; the caller decides whether that is fatal.
+        """
+        nodes = self._host_setup_nodes()
+        script = " && ".join(commands)
+        timeout = self.config.host_setup.timeout_seconds
+        logger.info("host_setup (%s): running on %d node(s): %s", phase, len(nodes), script)
+
+        procs = []
+        for node in nodes:
+            log = self.runtime.log_dir / f"host_{phase}_{node}.out"
+            proc = start_srun_process(
+                command=["bash", "-c", script],
+                nodelist=[node],
+                output=str(log),
+                container_image=None,  # bare host, not the job container
+                het_group=self.runtime.nodes.het_group_for(node),
+            )
+            procs.append((node, proc, log))
+
+        failures = []
+        for node, proc, log in procs:
+            try:
+                returncode = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # A sudo that prompts for a password hangs here rather than failing,
+                # so kill it instead of stalling the whole allocation.
+                proc.kill()
+                proc.wait()
+                logger.error(
+                    "host_setup (%s) timed out after %ds on %s (see %s); a command that prompts for input will do this",
+                    phase,
+                    timeout,
+                    node,
+                    log,
+                )
+                failures.append(node)
+                continue
+            if returncode != 0:
+                logger.error("host_setup (%s) failed with exit %d on %s (see %s)", phase, returncode, node, log)
+                failures.append(node)
+        return failures
+
+    def _run_host_setup(self) -> None:
+        """Prepare each node's bare host before any worker starts."""
+        setup = self.config.host_setup
+        if not setup.enabled:
+            return
+        # Marks that the job reached this stage, which is what arms teardown --
+        # including for a teardown-only block, where there is nothing to run here.
+        self._host_setup_ran = True
+        if not setup.commands:
+            return
+        failures = self._run_host_commands(setup.commands, phase="setup")
+        if not failures:
+            logger.info("host_setup complete on %d node(s)", len(self._host_setup_nodes()))
+            return
+        if setup.ignore_failure:
+            logger.warning("host_setup failed on %s (ignore_failure: true, continuing)", ", ".join(failures))
+            return
+        raise RuntimeError(f"host_setup failed on: {', '.join(failures)}")
+
+    def _run_host_teardown(self) -> None:
+        """Undo host_setup after workers stop.
+
+        Runs on the way out of every job, successful or not: state set by
+        host_setup (locked clocks, loaded modules) outlives the allocation and
+        would otherwise be inherited by whoever gets the node next. Never raises
+        -- a failed teardown must not overwrite the job's real exit code.
+        """
+        setup = self.config.host_setup
+        if not setup.teardown or not getattr(self, "_host_setup_ran", False):
+            return
+        try:
+            failures = self._run_host_commands(setup.teardown, phase="teardown")
+        except Exception:
+            # Cleanup path: a teardown failure must never mask the job's result.
+            logger.exception("host_setup teardown raised; node state may need manual cleanup")
+            return
+        if failures:
+            logger.error(
+                "host_setup teardown failed on %s; those nodes may be left in a modified state",
+                ", ".join(failures),
+            )
+
     def _stage_model(self) -> None:
         """Copy the model from shared storage to node-local storage on every
         worker node before workers start (model.stage_dir). One srun per node,
@@ -437,7 +395,7 @@ class SweepOrchestrator(
             logger.warning(
                 "HF model '%s' specified but HF_HOME is not set in backend environment config. "
                 "Workers will use the default HuggingFace cache (~/.cache/huggingface) which may not "
-                "be shared across nodes. Set HF_HOME in prefill_environment/decode_environment to use "
+                "be shared across nodes. Set HF_HOME in roles.<role>.env to use "
                 "a shared cache directory (e.g., HF_HOME: /lustre/fsw/.../common/cache).",
                 self.runtime.model_path,
             )
@@ -461,7 +419,7 @@ class SweepOrchestrator(
         except Exception:  # noqa: BLE001
             logger.debug("Model '%s' not fully cached, will pre-download", model_id)
 
-        download_node = self.runtime.nodes.worker[0]
+        download_node = (self.runtime.nodes.compute or (self.runtime.nodes.head,))[0]
 
         logger.info("Ensuring model '%s' is cached on %s (cache: %s)", model_id, download_node, hf_home)
 
@@ -536,51 +494,48 @@ class SweepOrchestrator(
     def _run_post_eval(self, stop_event: threading.Event) -> int:
         """Run lm-eval after the main benchmark completes (or directly in eval-only mode)."""
         from srtctl.benchmarks import get_runner
-        from srtctl.core.health import wait_for_model
 
         # In eval-only mode the benchmark health check was skipped, so do the
         # full model-ready wait here.  In post-benchmark mode a quick port
         # check is sufficient since the server already served traffic.
         if os.environ.get("EVAL_ONLY", "false").lower() == "true":
-            r = self.config.resources
-            n_prefill = 0 if r.num_agg > 0 else r.num_prefill
-            n_decode = r.num_agg if r.num_agg > 0 else r.num_decode
-            hc = self.config.health_check
             logger.info("EVAL_ONLY: Waiting for server health before eval...")
-            if not wait_for_model(
-                host=self.runtime.nodes.head,
-                port=FRONTEND_PUBLIC_PORT,
-                n_prefill=n_prefill,
-                n_decode=n_decode,
-                poll_interval=float(hc.interval_seconds),
-                timeout=float(hc.max_attempts * hc.interval_seconds),
-                report_every=60.0,
-                frontend_type=self.config.frontend.type,
-                stop_event=stop_event,
-            ):
+            if not self._wait_for_service_ready(stop_event):
                 logger.error("Server did not become healthy for eval")
                 return 1
         else:
-            if not wait_for_port(self.runtime.nodes.head, FRONTEND_PUBLIC_PORT, timeout=30):
+            if not wait_for_port(self._public_api_node(), FRONTEND_PUBLIC_PORT, timeout=30):
                 logger.error("Server health check failed before eval - skipping")
                 return 1
 
-        try:
-            runner = get_runner("lm-eval")
-        except ValueError as e:
-            logger.error("lm-eval runner not available: %s", e)
-            return 1
-
         eval_log = self.runtime.log_dir / "eval.out"
-        cmd = runner.build_command(self.config, self.runtime)
+        if self.config.post_eval.command is not None:
+            # Recipe-provided dispatch (post_eval.command), with the same placeholders
+            # the lm-eval runner fills in itself.
+            placeholders = {
+                "{endpoint}": f"http://localhost:{self.runtime.frontend_port}",
+                "{infmax_workspace}": "/infmax-workspace",
+            }
+            cmd = list(self.config.post_eval.command)
+            for token, value in placeholders.items():
+                cmd = [part.replace(token, value) for part in cmd]
+        else:
+            try:
+                runner = get_runner("lm-eval")
+            except ValueError as e:
+                logger.error("lm-eval runner not available: %s", e)
+                return 1
+            cmd = runner.build_command(self.config, self.runtime)
 
         logger.info("Eval command: %s", " ".join(cmd))
         logger.info("Eval log: %s", eval_log)
 
         # Pass through eval-related env vars. InferenceX writes multi-node
-        # metadata from these variables in append_lm_eval_summary().
+        # metadata from these variables in append_lm_eval_summary(). The recipe
+        # extends this list with post_eval.passthrough_env.
         env_to_set = {}
         for var in [
+            *self.config.post_eval.passthrough_env,
             "RUN_EVAL",
             "EVAL_ONLY",
             "IS_MULTINODE",
@@ -634,6 +589,7 @@ class SweepOrchestrator(
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
+            srun_options=self.runtime.srun_options,
             het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
         )
 
@@ -654,7 +610,9 @@ class SweepOrchestrator(
         logger.info("Config: %s", self.config.name)
         logger.info("Infra node: %s", self.runtime.nodes.infra)
         logger.info("Head node: %s", self.runtime.nodes.head)
-        logger.info("Worker nodes: %s", ", ".join(self.runtime.nodes.worker))
+        logger.info("Worker nodes: %s", ", ".join(self.runtime.nodes.worker) or "(none: no engine roles)")
+        for pool, nodes in self.runtime.nodes.pools.items():
+            logger.info("Pool %s: %s", pool, ", ".join(nodes))
         if self.config.profiling.enabled:
             logger.info("Profiling: %s", self.config.profiling.type)
 
@@ -674,20 +632,31 @@ class SweepOrchestrator(
 
         exit_code = 1
 
-        try:
-            # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
-            # plane uses it; static/direct frontends skip it.
-            if self.config.frontend.type in {"trtllm_serve", "vllm"}:
-                logger.info("Skipping NATS/etcd infrastructure (frontend.type=%s)", self.config.frontend.type)
-            else:
-                reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
-                head_proc = self.start_head_infrastructure(registry)
-                registry.add_process(head_proc)
+        # Live log/metric streaming to the status API (reporting.status.logging-stream-interval)
+        outbox_dir = tachometer_outbox(self.runtime.log_dir) if self.config.observability.tachometer_enabled else None
+        log_streamer = LogStreamer.from_config(self.config.reporting, reporter, self.runtime.log_dir, outbox_dir)
+        if log_streamer is not None:
+            log_streamer.start()
 
-            # Stage 1b: Mooncake master (optional, co-located with infra node).
-            mooncake_proc = self.start_mooncake_master(registry)
-            if mooncake_proc is not None:
-                registry.add_process(mooncake_proc)
+        try:
+            # Stage 0: Bare-host node setup (GPU clocks, kernel modules). Runs
+            # before anything containerized so workers see the prepared node.
+            self._run_host_setup()
+
+            # Stage 1: the discovery plane (etcd, NATS) as services. Implied by the
+            # dynamo frontend; static/direct frontends imply nothing here.
+            if uses_discovery_plane(self.config):
+                reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
+                self.start_head_infrastructure(registry)
+            else:
+                logger.info("No discovery plane for frontend.type=%s", self.config.frontend.type)
+
+            # Stage 1b: services workers depend on: the Mooncake master (implied by
+            # engine.mooncake_kv_store), standalone Mooncake stores, anything with
+            # start: before_workers. The stage registers each process as it
+            # launches. See docs/services.md.
+            self._write_mooncake_store_config()
+            self.start_services("before_workers", registry)
 
             # Pre-worker: Ensure HF model is cached before starting workers.
             # 1. Clean stale lock files from previous crashed downloads
@@ -712,8 +681,11 @@ class SweepOrchestrator(
             for proc in frontend_procs:
                 registry.add_process(proc)
 
-            telemetry_config = self.config.telemetry
-            if telemetry_config.enabled and telemetry_config.provider == TelemetryProvider.DCGM_POWER:
+            # Stage 3b: sidecar services (start: after_frontend, the default),
+            # once workers and the frontend are healthy and before telemetry.
+            self.start_services("after_frontend", registry)
+
+            if self.config.telemetry.enabled:
                 if os.environ.get("EVAL_ONLY", "false").lower() == "true":
                     # Eval-only runs skip the benchmark stage, so every expected
                     # measurement window would be missing and required telemetry
@@ -721,14 +693,27 @@ class SweepOrchestrator(
                     logger.info("EVAL_ONLY=true: skipping dcgm-power telemetry (no benchmark to measure)")
                 else:
                     self.start_power_telemetry(registry)
-            else:
-                telemetry_procs = self.start_telemetry()
-                for proc in telemetry_procs:
+                    self.start_cpu_power_telemetry(registry)
+                    self.start_cpu_power_host_telemetry(registry)
+                    self.start_incremental_power_report()
+
+            # Tachometer capture aligns with the load window: benchmark runs
+            # start it inside run_benchmark once the server is healthy and
+            # stop it gracefully when the client exits (see
+            # BenchmarkStageMixin.run_benchmark). Only runs WITHOUT a discrete
+            # load window — serve-only, manual, eval-only — keep the
+            # whole-session capture, started here.
+            eval_only = os.environ.get("EVAL_ONLY", "false").lower() == "true"
+            if self.serve_only or eval_only or self.config.benchmark.type == "manual":
+                tachometer_procs = self.start_tachometer()
+                for proc in tachometer_procs:
                     registry.add_process(proc)
 
             self._print_connection_info()
 
-            if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+            if self.serve_only:
+                exit_code = self.run_benchmark(registry, stop_event, reporter)
+            elif os.environ.get("EVAL_ONLY", "false").lower() == "true":
                 reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running eval-only evaluation")
                 logger.info("EVAL_ONLY=true: Skipping benchmark stage and running lm-eval evaluation...")
                 exit_code = self._run_post_eval(stop_event)
@@ -763,14 +748,30 @@ class SweepOrchestrator(
             logger.info("Cleanup")
             # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
+            exit_code = self.finalize_cpu_power_telemetry(exit_code, interrupted=stop_event.is_set())
+            exit_code = self.finalize_cpu_power_host_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
+            # After cleanup so the GPUs are idle before node state is reverted.
+            self._run_host_teardown()
             if exit_code != 0:
                 registry.print_failure_details()
+            # Deliberately AFTER _run_host_teardown(): the final pass plus its
+            # thread-join can take up to DEFAULT_JOIN_TIMEOUT_SECONDS, and on
+            # the SLURM walltime-kill path this feature exists to survive
+            # there's a fixed grace clock running -- node-state reversion must
+            # not wait behind it. Its own ordering requirement (run after
+            # finalize_power_telemetry / finalize_cpu_power_telemetry so it
+            # reads closed, durable CSVs) is still satisfied since both of
+            # those already ran above. Never rebinds exit_code: incremental
+            # power emission is best-effort.
+            self.finalize_incremental_power_report()
             # Post-process first: generate rollup, upload logs to S3, eagerly
             # push logs_url to the status API. Runs before report_completed so
             # the final PUT can reassert the artifact pointer.
             self.run_postprocess(exit_code, reporter=reporter)
+            if log_streamer is not None:
+                log_streamer.stop()
             reporter.report_completed(
                 exit_code,
                 logs_url=getattr(self, "_last_logs_url", None),
@@ -785,6 +786,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="Run benchmark sweep")
     parser.add_argument("config", type=str, help="Path to YAML configuration file")
+    parser.add_argument(
+        "--serve-only",
+        action="store_true",
+        help="Keep the inference endpoint running without launching a benchmark.",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -811,7 +817,7 @@ def main():
         # Type narrowing: job_id is str after the check above
         assert job_id is not None
         runtime = RuntimeContext.from_config(config, job_id)
-        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime, serve_only=args.serve_only)
         exit_code = orchestrator.run()
 
         sys.exit(exit_code)

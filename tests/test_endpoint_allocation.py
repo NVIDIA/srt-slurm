@@ -1,7 +1,9 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for endpoint allocation logic."""
+
+from pathlib import Path
 
 import pytest
 
@@ -319,11 +321,11 @@ class TestEndpointsToProcesses:
         assert "node1" in nodes
 
         # Only leader gets http_port, child gets 0
-        leader = [p for p in processes if p.is_leader][0]
+        leader = next(p for p in processes if p.is_leader)
         assert leader.http_port == SGLANG_HTTP_PORT_BASE
         assert leader.bootstrap_port == SGLANG_BOOTSTRAP_PORT_BASE  # prefill gets bootstrap port
 
-        child = [p for p in processes if not p.is_leader][0]
+        child = next(p for p in processes if not p.is_leader)
         assert child.http_port == 0
         # All processes in prefill endpoint share the same bootstrap port
         assert child.bootstrap_port == leader.bootstrap_port
@@ -436,17 +438,21 @@ class TestDefaultPorts:
     """Tests for centralized default port values."""
 
     def test_allocator_uses_centralized_defaults(self):
+        from srtctl.ports import BOOTSTRAP_PORTS, HTTP_PORTS, KV_EVENTS_PORTS, NIXL_PORTS
+
         allocator = NodePortAllocator()
-        assert allocator.base_http_port == SGLANG_HTTP_PORT_BASE
-        assert allocator.base_bootstrap_port == SGLANG_BOOTSTRAP_PORT_BASE
-        assert allocator.base_kv_events_port == KV_EVENTS_PORT_BASE
-        assert allocator.base_nixl_port == VLLM_NIXL_PORT_BASE
+        assert allocator.next(HTTP_PORTS, "node0") == SGLANG_HTTP_PORT_BASE
+        assert allocator.next(BOOTSTRAP_PORTS, "node0") == SGLANG_BOOTSTRAP_PORT_BASE
+        assert allocator.next(KV_EVENTS_PORTS) == KV_EVENTS_PORT_BASE
+        assert allocator.next(NIXL_PORTS) == VLLM_NIXL_PORT_BASE
 
     def test_http_ports_use_centralized_stride(self):
+        from srtctl.ports import HTTP_PORTS
+
         allocator = NodePortAllocator()
-        assert allocator.next_http_port("node0") == SGLANG_HTTP_PORT_BASE
-        assert allocator.next_http_port("node0") == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
-        assert allocator.next_http_port("node1") == SGLANG_HTTP_PORT_BASE
+        assert allocator.next(HTTP_PORTS, "node0") == SGLANG_HTTP_PORT_BASE
+        assert allocator.next(HTTP_PORTS, "node0") == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
+        assert allocator.next(HTTP_PORTS, "node1") == SGLANG_HTTP_PORT_BASE
 
     def test_endpoints_to_processes_uses_default_sys_port(self):
         endpoints = allocate_endpoints(
@@ -549,3 +555,187 @@ class TestAllocateEndpointsHet:
         assert len(prefill_ep.nodes) == 2
         for node in prefill_ep.nodes:
             assert node in prefill_nodes
+
+
+@pytest.mark.parametrize("gpu_count, expected_counts", [(6, [4, 2]), (5, [4, 1]), (12, [4, 4, 4]), (32, [4] * 8)])
+def test_multinode_exact_gpu_count(gpu_count: int, expected_counts: list[int]) -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    nodes = len(expected_counts)
+    endpoints = TRTLLMProtocol().allocate_endpoints(
+        num_prefill=1,
+        num_decode=1,
+        num_agg=0,
+        gpus_per_prefill=gpu_count,
+        gpus_per_decode=4,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=tuple(f"node{i}" for i in range(nodes + 1)),
+    )
+    prefill, decode = endpoints
+    assert prefill.total_gpus == gpu_count
+    assert decode.nodes == (f"node{nodes}",)
+    processes = endpoints_to_processes(endpoints)
+    assert [len(p.gpu_indices) for p in processes if p.endpoint_mode == "prefill"] == expected_counts
+
+
+@pytest.mark.parametrize("gpu_count", [0, -1])
+def test_trtllm_rejects_nonpositive_worker_gpu_count(gpu_count: int) -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    with pytest.raises(ValueError, match="GPUs per worker must be positive"):
+        TRTLLMProtocol().allocate_endpoints(
+            num_prefill=1,
+            num_decode=0,
+            num_agg=0,
+            gpus_per_prefill=gpu_count,
+            gpus_per_decode=0,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0",),
+        )
+
+
+def test_trtllm_partial_workers_stay_on_single_nodes() -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    endpoints = TRTLLMProtocol().allocate_endpoints(
+        num_prefill=2,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=3,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=("node0", "node1"),
+    )
+    assert [ep.nodes for ep in endpoints] == [("node0",), ("node1",)]
+    assert [ep.total_gpus for ep in endpoints] == [3, 3]
+    assert [(p.node, sorted(p.gpu_indices)) for p in endpoints_to_processes(endpoints)] == [
+        ("node0", [0, 1, 2]),
+        ("node1", [0, 1, 2]),
+    ]
+
+
+def test_two_dep6_workers_reject_insufficient_nodes() -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    with pytest.raises(ValueError, match="Not enough nodes for GPU allocation"):
+        TRTLLMProtocol().allocate_endpoints(
+            num_prefill=2,
+            num_decode=0,
+            num_agg=0,
+            gpus_per_prefill=6,
+            gpus_per_decode=0,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+        )
+
+
+def test_two_dep6_workers_spread_across_four_nodes() -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    endpoints = TRTLLMProtocol().allocate_endpoints(
+        num_prefill=2,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=6,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=("node0", "node1", "node2", "node3"),
+        spread_workers=True,
+    )
+    assert [ep.nodes for ep in endpoints] == [("node0", "node1"), ("node2", "node3")]
+    assert [ep.total_gpus for ep in endpoints] == [6, 6]
+    assert [(p.node, sorted(p.gpu_indices)) for p in endpoints_to_processes(endpoints)] == [
+        ("node0", [0, 1, 2, 3]),
+        ("node1", [0, 1]),
+        ("node2", [0, 1, 2, 3]),
+        ("node3", [0, 1]),
+    ]
+
+
+@pytest.mark.parametrize("heterogeneous", [False, True])
+def test_two_dep6_workers_share_three_nodes(heterogeneous: bool) -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    if heterogeneous:
+        endpoints = allocate_endpoints_het(
+            num_prefill=2,
+            gpus_per_prefill=6,
+            prefill_nodes=("node0", "node1", "node2"),
+            num_decode=1,
+            gpus_per_decode=4,
+            decode_nodes=("node3",),
+            gpus_per_node=4,
+            pack_multinode_workers=True,
+        )
+    else:
+        endpoints = TRTLLMProtocol().allocate_endpoints(
+            num_prefill=2,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=6,
+            gpus_per_decode=4,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1", "node2", "node3"),
+        )
+    assert [e.total_gpus for e in endpoints] == [6, 6, 4]
+    processes = endpoints_to_processes(endpoints)
+    assert [(p.node, sorted(p.gpu_indices)) for p in processes] == [
+        ("node0", [0, 1, 2, 3]),
+        ("node1", [0, 1]),
+        ("node2", [0, 1, 2, 3]),
+        ("node1", [2, 3]),
+        ("node3", [0, 1, 2, 3]),
+    ]
+    slots = [(p.node, gpu) for p in processes for gpu in p.gpu_indices]
+    assert len(slots) == len(set(slots)) == 16
+    if heterogeneous:
+        assert [e.het_group for e in endpoints] == [0, 0, 1]
+
+
+def test_dep6_recipe_preserves_gpu_demand(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from srtctl.core.config import load_config
+    from srtctl.core.resource_snapshot import _backend_gpus_by_node
+
+    recipe = tmp_path / "dep6.yaml"
+    recipe.write_text("""schema: 2
+name: dep6
+model:
+  path: /model
+  container: /container.sqsh
+  precision: fp8
+resources:
+  gpu_type: gb200
+  gpus_per_node: 4
+engine: trtllm
+frontend:
+  type: trtllm_serve
+  enable_multiple_frontends: false
+roles:
+  prefill:
+    nodes: 3
+    workers: 2
+    gpus: 6
+    args:
+      tensor_parallel_size: 6
+      moe_expert_parallel_size: 6
+      enable_attention_dp: true
+  decode:
+    nodes: 1
+    workers: 1
+    gpus: 4
+    args:
+      tensor_parallel_size: 4
+      moe_expert_parallel_size: 4
+""")
+    config = load_config(recipe)
+    runtime = SimpleNamespace(nodes=SimpleNamespace(het=False, worker=("A", "B", "C", "D")))
+    assert config.total_nodes == 4
+    assert _backend_gpus_by_node(config, runtime) == {"A": 4, "B": 4, "C": 4, "D": 4}

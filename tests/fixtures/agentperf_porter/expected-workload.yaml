@@ -1,0 +1,20 @@
+base_url: http://placeholder:8000/v1
+api_key: dummy
+model: placeholder
+server_type: trtllm
+concurrencies:
+- 1010
+phase_timeout_seconds: 2400.0
+settling_time_seconds: 240.0
+trajectory_path: <FIXTURE>/c1010/datasets/aa-rwlt_coding-agent-scenario_tuning_v2_500traj.jsonl
+user_assignments_path: <FIXTURE>/c1010/datasets/500-sample-user-trajectory-assignments-20k.json
+max_starting_line_offset: 10
+seed: 42
+timeout_seconds: 300.0
+max_workers: 8
+max_tokens: 2000
+reasoning_effort: high
+client_impl: rust
+send_conversation_routing_headers: true
+use_dynamo_conv_aware_routing: true
+power_dcgm_url: null

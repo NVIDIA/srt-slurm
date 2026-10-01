@@ -8,18 +8,23 @@ This module provides the single source of truth for all runtime values,
 replacing scattered bash variables and Jinja templating with typed Python.
 """
 
+import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 from .config import get_srtslurm_setting
 from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
-    from srtctl.core.schema import SrtConfig
+    from srtctl.core.schema import DynamoConfig, SrtConfig
 
 
 @dataclass(frozen=True)
@@ -31,7 +36,10 @@ class Nodes:
         bench: Benchmark node hostname (runs the benchmark client)
         infra: Infrastructure node hostname (runs NATS, etcd). Same as head unless
                etcd_nats_dedicated_node is enabled.
-        worker: Tuple of all worker node hostnames (prefill + decode)
+        worker: Tuple of the engine worker node hostnames (prefill + decode + agg)
+        pools: Nodes owned by services (``services[].nodes``), by service name, in
+             declaration order. Carved after the engine worker nodes. Empty for
+             recipes without node-owning services.
         het: True when the job was submitted as a SLURM heterogeneous job. In
              this mode worker srun calls need ``--het-group=<group>`` so SLURM
              routes them to the right component.
@@ -48,6 +56,15 @@ class Nodes:
     het: bool = False
     prefill_group: tuple[str, ...] = ()
     decode_group: tuple[str, ...] = ()
+    pools: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @property
+    def compute(self) -> tuple[str, ...]:
+        """Every node that runs work: the engine worker nodes, then each pool, in allocation order."""
+        seen: dict[str, None] = dict.fromkeys(self.worker)
+        for nodes in self.pools.values():
+            seen.update(dict.fromkeys(nodes))
+        return tuple(seen)
 
     def het_group_for(self, node: str) -> int | None:
         """Return the het component (0 or 1) a node belongs to, or None.
@@ -70,46 +87,187 @@ class Nodes:
     @classmethod
     def from_slurm(
         cls,
-        benchmark_on_separate_node: bool = False,
+        frontend_dedicated_node: bool = False,
+        client_dedicated_node: bool = False,
         etcd_nats_dedicated_node: bool = False,
+        colocate_dedicated_nodes: bool = True,
+        engine_nodes: int | None = None,
+        pools: Sequence[tuple[str, int]] = (),
     ) -> "Nodes":
         """Create Nodes from SLURM environment.
 
         Args:
-            benchmark_on_separate_node: If True, first node is benchmark-only,
-                                        second is head, rest are workers.
-            etcd_nats_dedicated_node: If True, dedicate first node for etcd/nats,
-                                      second node is head, rest are workers.
+            frontend_dedicated_node: If True, reserve a node exclusively for the
+                                     frontend/orchestrator; it is excluded from
+                                     the worker pool.
+            client_dedicated_node: If True, reserve a node exclusively for the
+                                   benchmark client; it is excluded from the
+                                   worker pool. Reserved from the tail of the
+                                   nodelist (never the first node), since SLURM
+                                   runs the do_sweep batch script unsandboxed
+                                   on the first node and co-locating the
+                                   benchmark client there would undermine the
+                                   isolation this flag exists to provide.
+            etcd_nats_dedicated_node: If True, reserve a node exclusively for
+                                      etcd/nats.
+            colocate_dedicated_nodes: Governs how the dedicated-node flags above
+                                      combine when more than one is set. If True
+                                      (default), every requested role (infra,
+                                      frontend, client) shares a single reserved
+                                      node. If False, each requested role gets
+                                      its own reserved node. A role that is not
+                                      requested keeps its normal default
+                                      placement (frontend/client fall back to
+                                      colocating with whichever node ends up
+                                      being head; infra falls back to head).
+            engine_nodes: How many of the non-reserved nodes the engine roles
+                          own. Required when ``pools`` is given; None keeps
+                          every non-reserved node a worker node (a recipe
+                          without pools).
+            pools: ``(service name, node count)`` pairs for services that own
+                   nodes, carved after the engine worker nodes in this order.
         """
+        dedicated_roles = [
+            role
+            for role, wanted in (
+                ("infra", etcd_nats_dedicated_node),
+                ("frontend", frontend_dedicated_node),
+                ("client", client_dedicated_node),
+            )
+            if wanted
+        ]
+
         het_lists = get_slurm_het_nodelists()
         if het_lists is not None:
+            if frontend_dedicated_node or client_dedicated_node:
+                raise ValueError(
+                    "frontend_dedicated_node/client_dedicated_node are not supported for heterogeneous SLURM jobs"
+                )
+            if pools:
+                raise ValueError("services[].nodes (pools) are not supported for heterogeneous SLURM jobs")
             return cls._from_het_slurm(het_lists, etcd_nats_dedicated_node)
 
         nodelist = get_slurm_nodelist()
         if not nodelist:
             raise RuntimeError("SLURM_NODELIST not set - are we running in SLURM?")
 
-        if etcd_nats_dedicated_node:
-            if len(nodelist) < 2:
-                raise ValueError("etcd_nats_dedicated_node requires at least 2 nodes")
-            infra = nodelist[0]
-            head = nodelist[1]
-            bench = head
-            worker = tuple(nodelist[1:])
-        elif benchmark_on_separate_node:
-            if len(nodelist) < 2:
-                raise ValueError("benchmark_on_separate_node requires at least 2 nodes")
-            bench = nodelist[0]
-            head = nodelist[1]
-            infra = head
-            worker = tuple(nodelist[1:])
-        else:
-            head = nodelist[0]
-            bench = head
-            infra = head
-            worker = tuple(nodelist[:])
+        if not dedicated_roles:
+            head = bench = infra = nodelist[0]
+            worker, carved = cls._carve_pools(tuple(nodelist), engine_nodes, pools)
+            return cls(head=head, bench=bench, infra=infra, worker=worker, pools=carved)
 
-        return cls(head=head, bench=bench, infra=infra, worker=worker)
+        num_reserved = 1 if colocate_dedicated_nodes else len(dedicated_roles)
+        if len(nodelist) <= num_reserved:
+            raise ValueError(
+                f"dedicated node(s) for {'+'.join(dedicated_roles)} require at least {num_reserved + 1} nodes"
+            )
+
+        # SLURM runs the batch script (the do_sweep orchestrator) on the first
+        # node of the allocation, unsandboxed. A dedicated *client* node exists
+        # to isolate benchmark measurements from noisy neighbors, so it must
+        # never land on that first node — reserve it from the tail instead.
+        # Non-client roles (infra, frontend) keep the front-of-list reservation.
+        has_client = "client" in dedicated_roles
+        if colocate_dedicated_nodes:
+            if has_client:
+                shared = nodelist[-1]
+                worker = tuple(nodelist[:-1])
+            else:
+                shared = nodelist[0]
+                worker = tuple(nodelist[1:])
+            reserved = {role: shared for role in dedicated_roles}
+        else:
+            front_roles = [role for role in dedicated_roles if role != "client"]
+            reserved = dict(zip(front_roles, nodelist, strict=False))
+            if has_client:
+                reserved["client"] = nodelist[-1]
+                worker = tuple(nodelist[len(front_roles) : -1])
+            else:
+                worker = tuple(nodelist[len(front_roles) :])
+
+        worker, carved = cls._carve_pools(tuple(worker), engine_nodes, pools)
+        first_compute = (worker or tuple(n for nodes in carved.values() for n in nodes))[0]
+        head = reserved.get("frontend", first_compute)
+        bench = reserved.get("client", head)
+        infra = reserved.get("infra", head)
+
+        return cls(head=head, bench=bench, infra=infra, worker=worker, pools=carved)
+
+    @staticmethod
+    def planned_role_indices(
+        total_nodes: int,
+        *,
+        frontend_dedicated_node: bool = False,
+        client_dedicated_node: bool = False,
+        etcd_nats_dedicated_node: bool = False,
+        colocate_dedicated_nodes: bool = True,
+    ) -> tuple[int, int]:
+        """Where ``from_slurm`` will put the head (frontend) and the benchmark client.
+
+        Positions in the allocation's nodelist, before the job exists: the same carving
+        rules as :meth:`from_slurm`, applied to indices instead of hostnames, so a
+        launcher that submits a rendered script can tell its own client where the
+        endpoint is. Pools are not modelled (the head is the first engine node either
+        way). Returns ``(head_index, client_index)``.
+        """
+        dedicated_roles = [
+            role
+            for role, wanted in (
+                ("infra", etcd_nats_dedicated_node),
+                ("frontend", frontend_dedicated_node),
+                ("client", client_dedicated_node),
+            )
+            if wanted
+        ]
+        if not dedicated_roles:
+            return 0, 0
+        num_reserved = 1 if colocate_dedicated_nodes else len(dedicated_roles)
+        if total_nodes <= num_reserved:
+            raise ValueError(
+                f"dedicated node(s) for {'+'.join(dedicated_roles)} require at least {num_reserved + 1} nodes"
+            )
+        last = total_nodes - 1
+        has_client = "client" in dedicated_roles
+        if colocate_dedicated_nodes:
+            shared = last if has_client else 0
+            reserved = {role: shared for role in dedicated_roles}
+            first_worker = 0 if has_client else 1
+        else:
+            front_roles = [role for role in dedicated_roles if role != "client"]
+            reserved = dict(zip(front_roles, range(len(front_roles)), strict=False))
+            if has_client:
+                reserved["client"] = last
+            first_worker = len(front_roles)
+        head = reserved.get("frontend", first_worker)
+        return head, reserved.get("client", head)
+
+    @staticmethod
+    def _carve_pools(
+        remaining: tuple[str, ...], engine_nodes: int | None, pools: Sequence[tuple[str, int]]
+    ) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+        """Split the non-reserved nodes into the engine worker nodes and the service pools.
+
+        Recipes without pools keep every node as a worker node. With pools,
+        the engine roles take the first ``engine_nodes`` nodes and each pool the
+        next ``count`` in declaration order; the allocation must be large enough.
+        """
+        if not pools:
+            return remaining, {}
+        if engine_nodes is None:
+            raise ValueError("engine_nodes is required when pools are declared")
+        needed = engine_nodes + sum(count for _, count in pools)
+        if len(remaining) < needed:
+            raise ValueError(
+                f"allocation has {len(remaining)} non-reserved node(s) but the recipe needs {needed}: "
+                f"{engine_nodes} for engine roles plus pools " + ", ".join(f"{n}={c}" for n, c in pools)
+            )
+        worker = remaining[:engine_nodes]
+        carved: dict[str, tuple[str, ...]] = {}
+        cursor = engine_nodes
+        for name, count in pools:
+            carved[name] = remaining[cursor : cursor + count]
+            cursor += count
+        return worker, carved
 
     @classmethod
     def _from_het_slurm(
@@ -184,6 +342,7 @@ class RuntimeContext:
     # HuggingFace model support - True if model.path was "hf:model/name"
     is_hf_model: bool = False
     gpu_type: str | None = None
+    visible_devices_env: str = "CUDA_VISIBLE_DEVICES"
 
     # Container mounts: host_path -> container_path
     container_mounts: dict[Path, Path] = field(default_factory=dict)
@@ -202,6 +361,21 @@ class RuntimeContext:
     staged_model_path: Path | None = None
     # Request plane for dynamo workers
     request_plane: str = "tcp"
+    # Full Dynamo configuration for native sidecar launch settings.
+    dynamo: "DynamoConfig | None" = None
+
+    @property
+    def container_log_dir(self) -> Path:
+        """``log_dir`` as processes inside the container see it.
+
+        ``from_config`` mounts the run's log directory at ``CONTAINER_LOG_DIR``;
+        this follows that mount so a remapped log mount needs no other change.
+        Every path handed to a containerized process (config dumps, profiler
+        output, fingerprints, benchmark artifacts) is built from this, never
+        from the host ``log_dir``, which is not visible in the container on
+        every cluster.
+        """
+        return self.container_mounts.get(self.log_dir, Path(CONTAINER_LOG_DIR))
 
     @classmethod
     def from_config(
@@ -220,17 +394,25 @@ class RuntimeContext:
             log_dir_base: Base directory for logs (default: ./outputs)
         """
         # Get nodes from SLURM
+        pools = [(svc.name, svc.nodes) for svc in config.pool_services if svc.nodes is not None]
         nodes = Nodes.from_slurm(
-            benchmark_on_separate_node=False,
-            etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+            frontend_dedicated_node=config.frontend.placement.dedicated,
+            client_dedicated_node=config.benchmark.placement.dedicated,
+            etcd_nats_dedicated_node=config.infra_dedicated_node,
+            colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
+            engine_nodes=config.engine_node_count if pools else None,
+            pools=pools,
         )
 
         # Compute run_name
         run_name = f"{config.name}_{job_id}"
 
-        # Resolve node IPs
-        head_node_ip = get_hostname_ip(nodes.head)
-        infra_node_ip = get_hostname_ip(nodes.infra)
+        # Resolve node IPs on the cluster-selected fabric. Some systems expose
+        # a public default route and a separate private control/data plane; the
+        # latter is what containers on peer Slurm nodes can reliably reach.
+        network_interface = get_srtslurm_setting("network_interface", "eth0")
+        head_node_ip = get_hostname_ip(nodes.head, network_interface)
+        infra_node_ip = get_hostname_ip(nodes.infra, network_interface)
 
         # Compute log directory using FormattablePath or default logic
         # Check for SRTCTL_OUTPUT_DIR from sbatch script first (ensures consistency)
@@ -281,7 +463,7 @@ class RuntimeContext:
 
         # Build container mounts
         container_mounts: dict[Path, Path] = {
-            log_dir: Path("/logs"),
+            log_dir: Path(CONTAINER_LOG_DIR),
         }
         # Only mount local model paths - HF models are downloaded at runtime
         if not is_hf_model:
@@ -306,6 +488,13 @@ class RuntimeContext:
             if configs_dir.exists():
                 container_mounts[configs_dir.resolve()] = Path("/configs")
 
+            # Repo-root benchmarks/: launchers and clients that are not core (RL frameworks
+            # under benchmarks/rl/). Recipes run them as custom benchmark commands by their
+            # container path, /benchmarks/<folder>/launch.sh.
+            benchmarks_dir = Path(source_dir) / "benchmarks"
+            if benchmarks_dir.exists():
+                container_mounts[benchmarks_dir.resolve()] = Path("/benchmarks")
+
             wheelhouse_dir = Path(source_dir) / "wheelhouse" / "dynamo"
             if wheelhouse_dir.exists():
                 container_mounts[wheelhouse_dir.resolve()] = Path("/srtctl-wheels")
@@ -327,12 +516,24 @@ class RuntimeContext:
                 expanded_host = os.path.expandvars(host_path)
                 container_mounts[Path(expanded_host).resolve()] = Path(container_path)
 
-        # Add extra mounts from config
+        # Add extra mounts from config. Sources are resolved, so two entries can collapse
+        # into one (on clusters where e.g. /lustre is a symlink onto /scratch) and a later
+        # entry silently replaces an earlier one's container path. Say so instead.
         if config.extra_mount:
             for mount_spec in config.extra_mount:
                 host_path, container_path = mount_spec.split(":", 1)
                 expanded_host = os.path.expandvars(host_path)
-                container_mounts[Path(expanded_host).expanduser().resolve()] = Path(container_path)
+                resolved_host = Path(expanded_host).expanduser().resolve()
+                previous = container_mounts.get(resolved_host)
+                if previous is not None and previous != Path(container_path):
+                    logger.warning(
+                        "extra_mount %r resolves to %s, already mounted at %s; the container will see it at %s only",
+                        mount_spec,
+                        resolved_host,
+                        previous,
+                        container_path,
+                    )
+                container_mounts[resolved_host] = Path(container_path)
 
         # Mount InferenceX workspace if available (for lm-eval support).
         # Skip exists() check: the orchestrator runs on the SLURM head node
@@ -348,6 +549,7 @@ class RuntimeContext:
         environment = config.dynamo.get_wheel_environment()
         environment.update(config.environment)
 
+        visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
         temp_context = cls(
             job_id=job_id,
             run_name=run_name,
@@ -359,12 +561,14 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            network_interface=network_interface,
+            visible_devices_env=visible_devices_env,
             container_mounts={},
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
             request_plane=config.dynamo.request_plane,
+            dynamo=config.dynamo,
         )
 
         # Expand FormattablePath mounts
@@ -384,7 +588,8 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            network_interface=network_interface,
+            visible_devices_env=visible_devices_env,
             container_mounts=container_mounts,
             srun_options=dict(config.srun_options),
             environment=environment,
@@ -392,6 +597,7 @@ class RuntimeContext:
             stage_dir=stage_dir,
             staged_model_path=staged_model_path,
             request_plane=config.dynamo.request_plane,
+            dynamo=config.dynamo,
         )
 
     @property

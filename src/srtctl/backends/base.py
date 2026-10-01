@@ -5,16 +5,20 @@
 Base types and protocols for backend configurations.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Protocol
+
+from marshmallow import ValidationError, fields
 
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from srtctl.backends.sglang import MooncakeKVStoreConfig
+    from srtctl.backends.vllm import VLLMFailoverConfig, VLLMMooncakeKVStoreConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
@@ -27,6 +31,8 @@ class BackendType(str, Enum):
     TRTLLM = "trtllm"
     VLLM = "vllm"
     MOCKER = "mocker"
+    ATOM = "atom"
+    TILERT = "tilert"
 
 
 @dataclass
@@ -39,12 +45,86 @@ class SrunConfig:
         launch_per_endpoint: If True, launch one srun per endpoint (all nodes together).
                             If False, launch one srun per process (per node).
         cpu_bind: CPU binding mode (e.g., "verbose,none" for TRTLLM). None to omit.
+        sequential_node_start: With launch_per_endpoint, how many endpoints that share a
+                               leader node start at once, each batch gated on readiness.
+                               0 starts every endpoint in parallel.
+        kill_on_bad_exit: Pass ``--kill-on-bad-exit=1`` on every endpoint step, so one task
+                          exiting non-zero ends the whole step (and srun exits) instead of
+                          leaving the other ranks up with no engine behind them.
     """
 
     mpi: str | None = None
     oversubscribe: bool = False
     launch_per_endpoint: bool = False
     cpu_bind: str | None = None
+    sequential_node_start: int = 0
+    kill_on_bad_exit: bool = False
+
+
+class RoleSettings(Protocol):
+    """What an engine reads from one role of the recipe (``roles.<role>``).
+
+    ``srtctl.core.schema.RoleConfig`` satisfies this. Engines depend on the shape
+    only, so the schema can import the engines without a cycle.
+    """
+
+    @property
+    def env(self) -> Mapping[str, str]:
+        """Environment for every worker of the role."""
+        ...
+
+    @property
+    def args(self) -> Mapping[str, Any]:
+        """The engine's own CLI flags for the role."""
+        ...
+
+    @property
+    def extra_args(self) -> Sequence[str]:
+        """Raw extra CLI arguments (TRT-LLM only)."""
+        ...
+
+    @property
+    def kv_events(self) -> "bool | Mapping[str, Any] | None":
+        """``true`` for the default publisher, a mapping of publisher settings, or None."""
+        ...
+
+
+class BoundRolesField(fields.Field):
+    """Marshmallow field for an engine's ``roles``: bound by SrtConfig, never read from a recipe, never dumped."""
+
+    def _deserialize(self, value: Any, attr: str | None, data: Mapping[str, Any] | None, **kwargs: Any) -> Any:
+        raise ValidationError("roles are declared at the recipe's top level (roles.<role>), not on the engine")
+
+    def _serialize(self, value: Any, attr: str | None, obj: Any, **kwargs: Any) -> None:
+        return None
+
+
+def role_for_mode(roles: Mapping[str, RoleSettings], mode: str) -> RoleSettings | None:
+    """The role a worker mode runs under (``aggregated`` and ``agg`` are both the agg role)."""
+    return roles.get("agg" if mode == "aggregated" else mode)
+
+
+def role_args(roles: Mapping[str, RoleSettings], mode: str) -> dict[str, Any]:
+    """``roles.<role>.args`` for a worker mode, as a fresh dict; empty when the role is absent."""
+    role = role_for_mode(roles, mode)
+    return dict(role.args) if role is not None else {}
+
+
+def role_env(roles: Mapping[str, RoleSettings], mode: str) -> dict[str, str]:
+    """``roles.<role>.env`` for a worker mode, as a fresh dict; empty when the role is absent."""
+    role = role_for_mode(roles, mode)
+    return dict(role.env) if role is not None else {}
+
+
+def role_kv_events(roles: Mapping[str, RoleSettings], mode: str, defaults: Mapping[str, Any]) -> dict[str, Any] | None:
+    """``roles.<role>.kv_events`` for a worker mode over ``defaults``; None when the role publishes none."""
+    role = role_for_mode(roles, mode)
+    kv_events = role.kv_events if role is not None else None
+    if not kv_events:
+        return None
+    if kv_events is True:
+        return dict(defaults)
+    return {**defaults, **kv_events}
 
 
 class BackendProtocol(Protocol):
@@ -62,6 +142,34 @@ class BackendProtocol(Protocol):
         """Backend type identifier."""
         ...
 
+    @property
+    def mooncake_kv_store(self) -> "MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | None":
+        """The recipe's Mooncake KV store block, or None when the engine has none.
+
+        Set, it implies the mooncake-master service and the MOONCAKE_* worker
+        environment from get_mooncake_worker_env.
+        """
+        ...
+
+    @property
+    def failover(self) -> "VLLMFailoverConfig | None":
+        """Shadow engine recovery, or None when the engine has none.
+
+        Set, it implies the gms service and the per-worker environment from
+        get_failover_environment.
+        """
+        ...
+
+    @property
+    def roles(self) -> Mapping[str, RoleSettings]:
+        """The roles this engine runs (``roles.<role>`` of the recipe), bound by SrtConfig.
+
+        Per-role environment, engine arguments, extra CLI arguments and KV-event
+        settings are read from here; ``get_environment_for_mode`` and
+        ``get_config_for_mode`` are the per-mode views.
+        """
+        ...
+
     def get_srun_config(self) -> SrunConfig:
         """Get srun configuration for this backend.
 
@@ -69,12 +177,23 @@ class BackendProtocol(Protocol):
         """
         ...
 
+    def fatal_log_patterns(self, mode: str) -> tuple[str, ...]:
+        """Regular expressions that, printed in a worker's log, mean the engine is gone.
+
+        The process monitor fails a critical worker whose srun step is still
+        running when a new log line matches one of these (see
+        ``ManagedProcess.fatal_log_patterns``). Engines whose step exits with the
+        engine answer ``()``; an engine behind a launcher that keeps the step
+        alive names the lines the launcher prints once the engine has died.
+        """
+        ...
+
     def get_config_for_mode(self, mode: str) -> dict[str, Any]:
-        """Get config dict for a worker mode (prefill/decode/agg)."""
+        """The role's engine arguments (``roles.<role>.args``) for a worker mode (prefill/decode/agg)."""
         ...
 
     def get_environment_for_mode(self, mode: str) -> dict[str, str]:
-        """Get environment variables for a worker mode."""
+        """The role's environment (``roles.<role>.env``) for a worker mode, before engine defaults."""
         ...
 
     def allocate_endpoints(
@@ -98,6 +217,7 @@ class BackendProtocol(Protocol):
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: Optional["NodePortAllocator"] = None,
         frontend_type: str = "dynamo",
+        dynamo_sidecar: bool = False,
     ) -> list["Process"]:
         """Convert logical endpoints to physical processes."""
         ...
@@ -127,6 +247,23 @@ class BackendProtocol(Protocol):
 
         Returns:
             Dict of environment variable names to values.
+        """
+        ...
+
+    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+        """MOONCAKE_* environment for a worker; empty when mooncake_kv_store is None."""
+        ...
+
+    def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
+        """Shadow engine recovery environment for a worker; empty when failover is None."""
+        ...
+
+    def should_set_visible_devices(self) -> bool:
+        """Whether the worker stage pins each process to its GPUs with the cluster's device mask.
+
+        The variable is the cluster's ``visible_devices_env`` (CUDA_VISIBLE_DEVICES,
+        ROCR_VISIBLE_DEVICES). True for engines that read the environment; an
+        engine that takes its devices on the command line answers False.
         """
         ...
 

@@ -1,0 +1,95 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Ordered pre-run / post-run command runner for srtctl, wired through the recipe's
+# host_setup block (see examples/features/node-hooks.yaml):
+#
+#   host_setup:
+#     commands: ["bash ${SRTCTL_SOURCE_DIR}/configs/node-hooks.sh pre"]
+#     teardown: ["bash ${SRTCTL_SOURCE_DIR}/configs/node-hooks.sh post"]
+#
+# The commands come from HOOK_PRE and HOOK_POST, one command per line, run top to bottom.
+# Blank lines and lines starting with # are skipped. Set them as YAML block scalars under the
+# recipe's `environment:` block (the job script exports them, so every host srun inherits
+# them) or pass KEY=VALUE arguments after the phase, which win over the environment:
+#
+#   environment:
+#     HOOK_PRE: |
+#       sudo -n nvidia-smi -lmc 2619,2619
+#       sync; echo 3 | sudo -n tee /proc/sys/vm/drop_caches
+#     HOOK_POST: |
+#       sudo -n nvidia-smi -rmc
+#
+#   node-hooks.sh post HOOK_SNAPSHOT=0
+#
+#
+# Other settings:
+#   HOOK_SNAPSHOT     1 (default) prints kernel, load, memory and GPU clocks after the commands
+#   HOOK_PRE_STRICT   1 (default) stops at the first failing pre command and exits with that
+#                     command's own status, so host_setup fails the job (or warns with
+#                     ignore_failure: true) and the log shows the real code; 0 logs and continues
+#
+# Post commands are always best effort: teardown must never mask the job's real exit code.
+set -uo pipefail
+
+phase="${1:-}"
+shift || true
+case "${phase}" in
+    pre|post) ;;
+    *) echo "usage: $0 pre|post [HOOK_KEY=VALUE ...]" >&2; exit 2 ;;
+esac
+
+for kv in "$@"; do
+    case "${kv}" in
+        HOOK_*=*) export "${kv}" ;;
+        *) echo "ignoring argument without HOOK_ prefix: ${kv}" >&2 ;;
+    esac
+done
+
+: "${HOOK_SNAPSHOT:=1}"
+: "${HOOK_PRE_STRICT:=1}"
+node="$(hostname -s)"
+log() { echo "[node-hooks ${phase} ${node}] $*"; }
+
+snapshot() {
+    [ "${HOOK_SNAPSHOT}" = "1" ] || return 0
+    log "kernel: $(uname -r)  load: $(cut -d' ' -f1-3 /proc/loadavg)"
+    log "memory: $(free -g | awk '/^Mem:/ {print $3 "G used / " $2 "G total, " $7 "G available"}')"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi --query-gpu=index,clocks.sm,clocks.mem,clocks.max.sm,clocks.max.mem,power.draw,memory.used \
+            --format=csv,noheader,nounits | while IFS= read -r line; do log "gpu: ${line}"; done
+    fi
+}
+
+block_var="HOOK_$(echo "${phase}" | tr '[:lower:]' '[:upper:]')"
+cmds=()
+while IFS= read -r line; do
+    [[ "${line}" =~ ^[[:space:]]*(#|$) ]] && continue
+    cmds+=("${line}")
+done <<< "${!block_var:-}"
+
+log "start $(date -Is)  job=${SLURM_JOB_ID:-?}  output=${SRTCTL_OUTPUT_DIR:-?}  commands=${#cmds[@]}"
+
+first_failure=0
+n=0
+for cmd in "${cmds[@]}"; do
+    n=$((n + 1))
+    log "[${n}/${#cmds[@]}] ${cmd}"
+    rc=0
+    bash -c "${cmd}" || rc=$?
+    [ "${rc}" = "0" ] && continue
+    log "[${n}/${#cmds[@]}] exited ${rc}"
+    [ "${first_failure}" = "0" ] && first_failure=${rc}
+    if [ "${phase}" = "pre" ] && [ "${HOOK_PRE_STRICT}" = "1" ]; then
+        break
+    fi
+done
+
+snapshot
+log "done $(date -Is)"
+
+if [ "${phase}" = "pre" ] && [ "${HOOK_PRE_STRICT}" = "1" ]; then
+    exit "${first_failure}"
+fi
+exit 0
