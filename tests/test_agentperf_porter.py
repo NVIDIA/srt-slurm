@@ -10,9 +10,7 @@ import yaml
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
 
-_spec = importlib.util.spec_from_file_location(
-    "port_harness_run", SCRIPTS_DIR / "agentperf" / "port_harness_run.py"
-)
+_spec = importlib.util.spec_from_file_location("port_harness_run", SCRIPTS_DIR / "agentperf" / "port_harness_run.py")
 porter = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(porter)
 
@@ -60,14 +58,14 @@ def make_run_dir(tmp_path: Path, with_taskset: bool = False) -> Path:
         'CONTAINER_IMAGE="/lustre/proj/images/dyn.sqsh"\n'
         'SERVER_BACKEND="dynamo"\n'
     )
-    (d / "ctx_config.yaml").write_text(
-        yaml.safe_dump({"tensor_parallel_size": 4, "kv_cache_config": {"dtype": "fp8"}})
-    )
+    (d / "ctx_config.yaml").write_text(yaml.safe_dump({"tensor_parallel_size": 4, "kv_cache_config": {"dtype": "fp8"}}))
     (d / "gen_config.yaml").write_text(
-        yaml.safe_dump({
-            "tensor_parallel_size": 12,
-            "moe_config": {"load_balancer": "/lustre/proj/eplb/gen.yaml"},
-        })
+        yaml.safe_dump(
+            {
+                "tensor_parallel_size": 12,
+                "moe_config": {"load_balancer": "/lustre/proj/eplb/gen.yaml"},
+            }
+        )
     )
     (d / "client_cmds_base.sh").write_text(
         "srun ... bash -c ' set -e; cd /lustre/proj/agentperf-client-worktrees/abc123; "
@@ -96,13 +94,14 @@ class TestAgentPerfPorter:
         assert recipe["model"]["container"] == "/scratch/proj/images/dyn.sqsh"
 
         # topology from job.log: 2 CTX single-node workers, 1 GEN over 3 nodes, 4 GPUs/node
-        r = recipe["resources"]
-        assert (r["prefill_workers"], r["prefill_nodes"]) == (2, 2)
-        assert (r["decode_workers"], r["decode_nodes"]) == (1, 3)
-        assert r["gpus_per_node"] == 4
+        assert recipe["schema"] == 2
+        roles = recipe["roles"]
+        assert (roles["prefill"]["workers"], roles["prefill"]["nodes"]) == (2, 2)
+        assert (roles["decode"]["workers"], roles["decode"]["nodes"]) == (1, 3)
+        assert recipe["resources"]["gpus_per_node"] == 4
 
         # env translation: rename, drop, passthrough
-        penv = recipe["backend"]["prefill_environment"]
+        penv = roles["prefill"]["env"]
         assert penv["DYN_TRTLLM_KV_BLOCK_SIZE"] == "128"
         assert penv["UCX_TLS"] == "cuda_ipc,sm,self,tcp"
         assert "DYN_KV_BLOCK_SIZE" not in penv
@@ -112,8 +111,8 @@ class TestAgentPerfPorter:
         assert recipe["frontend"]["env"]["HOME"] == "/tmp"  # image HOME is read-only
 
         # engine configs verbatim + rewritten paths
-        assert recipe["backend"]["trtllm_config"]["prefill"]["tensor_parallel_size"] == 4
-        assert recipe["backend"]["trtllm_config"]["decode"]["moe_config"]["load_balancer"] == "/scratch/proj/eplb/gen.yaml"
+        assert roles["prefill"]["args"]["tensor_parallel_size"] == 4
+        assert roles["decode"]["args"]["moe_config"]["load_balancer"] == "/scratch/proj/eplb/gen.yaml"
 
         # frontend args derived from env; parser flags must NOT be ported
         fargs = recipe["frontend"]["args"]
@@ -123,11 +122,12 @@ class TestAgentPerfPorter:
         assert "dyn-tool-call-parser" not in fargs
 
         # baseline: no cpu pinning detected
-        assert recipe["backend"]["numa_cpu_bind"] is False
+        assert recipe["engine"] == {"type": "trtllm", "numa_memory_bind": True, "numa_cpu_bind": False}
 
         # benchmark section
         b = recipe["benchmark"]
         assert b["type"] == "agentperf"
+        assert b["placement"] == {"node": "last_decode"}
         assert b["concurrency"] == 1010
         assert b["agentperf_client_dir"] == "/scratch/proj/agentperf-client-worktrees/abc123"
 
@@ -144,7 +144,7 @@ class TestAgentPerfPorter:
 
     def test_taskset_detection(self, tmp_path):
         recipe, _ = run_porter(make_run_dir(tmp_path, with_taskset=True), tmp_path)
-        assert recipe["backend"]["numa_cpu_bind"] is True
+        assert recipe["engine"]["numa_cpu_bind"] is True
 
     def test_dataset_root_resolution(self, tmp_path):
         root = tmp_path / "datasets"
@@ -161,10 +161,11 @@ class TestAgentPerfPorter:
         assert workload["user_assignments_path"].startswith("/TODO/")
 
     def test_recipe_is_schema_loadable(self, tmp_path):
-        """The generated recipe must at least round-trip through SrtConfig's schema."""
+        """The generated recipe must load the way `srtctl apply` loads it."""
         recipe, _ = run_porter(make_run_dir(tmp_path), tmp_path)
+        from srtctl.core.config import resolve_config_with_defaults
         from srtctl.core.schema import SrtConfig
 
-        cfg = SrtConfig.Schema().load(recipe)
+        cfg = SrtConfig.Schema().load(resolve_config_with_defaults(recipe, None))
         assert cfg.benchmark.type == "agentperf"
         assert cfg.backend.numa_cpu_bind is False

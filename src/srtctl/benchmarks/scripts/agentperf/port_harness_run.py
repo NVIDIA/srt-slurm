@@ -398,6 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     topo = joblog["topology"]
     model_path = rewrite(params.get("MODEL_PATH", "/TODO/model/path"), rewrites)
     recipe = {
+        "schema": 2,
         "name": re.sub(r"[^a-zA-Z0-9-]+", "-", run_dir.resolve().parent.name)[:64] or "agentperf-ported-run",
         "model": {
             "path": model_path,
@@ -407,20 +408,23 @@ def main(argv: list[str] | None = None) -> int:
         "resources": {
             "gpu_type": "gb300",  # TODO'd below — not recoverable from the run dir
             "gpus_per_node": topo.get("gpus_per_node") or 4,
-            "prefill_nodes": topo.get("prefill_nodes") or 1,
-            "prefill_workers": topo.get("prefill_workers") or 1,
-            "decode_nodes": topo.get("decode_nodes") or 1,
-            "decode_workers": topo.get("decode_workers") or 1,
         },
         "dynamo": {"install": False, "request_plane": joblog["frontend_env"].get("DYN_REQUEST_PLANE", "tcp"),
                    "event_plane": "zmq"},
-        "backend": {
-            "type": "trtllm",
-            "numa_memory_bind": True,
-            "numa_cpu_bind": cpu_pinned,
-            "prefill_environment": joblog["prefill_env"],
-            "decode_environment": joblog["decode_env"],
-            "trtllm_config": {"prefill": ctx, "decode": gen},
+        "engine": {"type": "trtllm", "numa_memory_bind": True, "numa_cpu_bind": cpu_pinned},
+        "roles": {
+            "prefill": {
+                "nodes": topo.get("prefill_nodes") or 1,
+                "workers": topo.get("prefill_workers") or 1,
+                "env": joblog["prefill_env"],
+                "args": ctx,
+            },
+            "decode": {
+                "nodes": topo.get("decode_nodes") or 1,
+                "workers": topo.get("decode_workers") or 1,
+                "env": joblog["decode_env"],
+                "args": gen,
+            },
         },
         "frontend": {
             "type": "dynamo",
@@ -428,11 +432,10 @@ def main(argv: list[str] | None = None) -> int:
             "args": build_frontend_args(joblog["frontend_env"]),
             "env": joblog["frontend_env"],
         },
-        "infra": {"etcd_nats_dedicated_node": False},
         "observability": {"enabled": False},
         "benchmark": {
             "type": "agentperf",
-            "client_placement": "last_decode",
+            "placement": {"node": "last_decode"},
             "concurrency": concurrencies[0] if concurrencies and len(concurrencies) == 1 else None,
             "concurrencies": concurrencies if concurrencies and len(concurrencies) > 1 else None,
             "agentperf_client_dir": rewrite(client_dir, rewrites) if client_dir else "/TODO/agentperf-client",
@@ -444,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     prov.todo("resources.gpu_type is guessed as gb300 — set it for your cluster")
     prov.todo(f"benchmark.agentperf_config is set to {args.workload_out.resolve()} — "
               "move the workload YAML somewhere container-visible and update the path")
-    prov.todo("review benchmark.client_placement (last_decode = client on the decode leader node, "
+    prov.todo("review benchmark.placement.node (last_decode = client on the decode leader node, "
               "matching the harness's client-on-GEN placement)")
 
     args.out.write_text(yaml.safe_dump(recipe, sort_keys=False))
