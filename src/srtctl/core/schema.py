@@ -75,7 +75,8 @@ def _dataclass_default(item: dataclasses.Field) -> Any:
 # Local copies of srtctl.core.power.contract values so that loading a config
 # never imports the power package; equality is pinned by tests.
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
-# Benchmark types DCGM power telemetry accepts. sa-bench stamps a measurement window per
+# Benchmark types an explicit `telemetry.enabled: true` accepts (default-on samples every
+# run and does not consult this list). sa-bench stamps a measurement window per
 # concurrency. `manual` holds the deployment for an external load generator; like
 # serve-only it has no load window, so telemetry captures the whole serve session,
 # best-effort. `agentperf` does not stamp windows yet either: its samples cover the whole
@@ -3083,11 +3084,12 @@ class SrtConfig:
                 )
 
     def _dcgm_power_ineligibility(self) -> str | None:
-        """Why this run cannot carry DCGM power telemetry, or None when it can.
+        """Why this run cannot carry a *publishable* DCGM power measurement, or None.
 
-        Single source of the structural rules: ``_validate_dcgm_power`` raises
-        the returned message for an explicit ``telemetry.enabled: true``; the
-        default-on properties below decline quietly with the same text.
+        These are the window rules an explicit ``telemetry.enabled: true``
+        enforces (``_validate_dcgm_power`` raises the returned message).
+        Default-on does not consult them: it samples every run best-effort and
+        leaves window validity to the artifact's reason codes.
         """
         if self.benchmark.type not in _DCGM_POWER_BENCHMARK_TYPES:
             supported = ", ".join(sorted(_DCGM_POWER_BENCHMARK_TYPES))
@@ -3122,19 +3124,24 @@ class SrtConfig:
     def telemetry_auto_disabled_reason(self) -> str | None:
         """Why default-on declined the GPU power leg; None when explicit or when it runs.
 
-        Power is on by default for the same reason Tachometer is: a benchmark
-        without watts cannot be placed on a tokens-per-joule axis afterwards,
-        and the collector is best-effort (``required`` stays false) and cheap
-        (one exporter per worker node that Tachometer scrapes anyway, at the
-        Tachometer rate). The exporter is the recipe's ``telemetry.dcgm_exporter``
-        or, when absent, the cluster-resolved default Tachometer would launch, so
-        an ``srtslurm.yaml`` ``default_gpu_exporter`` override applies to both.
+        Power is on by default for the same reason Tachometer is: a run without
+        watts cannot be placed on a tokens-per-joule axis afterwards, and the
+        collector is best-effort (``required`` stays false) and cheap (one
+        exporter per worker node that Tachometer scrapes anyway, at the
+        Tachometer rate). Default-on samples every run, whatever the benchmark
+        type or client placement; a measurement window is recorded where the
+        benchmark stamps one and otherwise the samples span the whole run. The
+        only thing that keeps it off is having nothing to launch: the exporter
+        is the recipe's ``telemetry.dcgm_exporter`` or, when absent, the
+        cluster-resolved default Tachometer would launch, so an ``srtslurm.yaml``
+        ``default_gpu_exporter`` override applies to both.
         """
         if not self.telemetry_auto_resolved:
             return None
-        reason = self._dcgm_power_ineligibility()
-        if reason is not None:
-            return reason
+        # A recipe that declares its own dcgm-exporter service owns the port; launching a second
+        # exporter beside it would clash, so default-on leaves the GPU leg to that service.
+        if any(getattr(svc, "type", None) == "dcgm-exporter" and svc.enabled for svc in self.services):
+            return "a dcgm-exporter service is declared in services:, which owns the exporter"
         exporter = self.telemetry.dcgm_exporter or self.observability.tachometer.resolved_dcgm_exporter
         if exporter is None:
             return "no DCGM exporter is configured (telemetry.dcgm_exporter or a Tachometer default)"
@@ -3169,13 +3176,15 @@ class SrtConfig:
         cpu_demand = telemetry.cpu_power.enabled or telemetry.cpu_power_exporter is not None
         return bool(cpu_demand or self.telemetry_dcgm_exporter is not None)
 
-    def _validate_dcgm_power(self, exporter: TelemetryExporterConfig):
+    def _validate_dcgm_power(self, exporter: TelemetryExporterConfig, *, strict: bool = True):
         """Validate DCGM power telemetry for the exporter the power session will own.
 
         It runs its collector in the orchestrator process, so it needs neither
-        the scraper image nor node_exporter. Sample and window timestamps must
-        share one host clock, which is why the benchmark client stays on the
-        head node.
+        the scraper image nor node_exporter. ``strict`` (an explicit
+        ``telemetry.enabled: true``) also enforces the measurement-window rules:
+        sample and window timestamps must share one host clock, which is why
+        the benchmark client stays on the head node. Default-on skips those and
+        samples best-effort.
         """
         telemetry = self.telemetry
         if not exporter.container_image and not exporter.binary:
@@ -3201,9 +3210,10 @@ class SrtConfig:
         if not _is_safe_relative_subpath(telemetry.storage_subdir):
             raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
 
-        reason = self._dcgm_power_ineligibility()
-        if reason is not None:
-            raise ValidationError(reason)
+        if strict:
+            reason = self._dcgm_power_ineligibility()
+            if reason is not None:
+                raise ValidationError(reason)
 
     def _frontend_profiling_control_is_leader_only(self) -> bool:
         """Whether the frontend's workers expose one profiler control server per logical endpoint."""
@@ -3422,7 +3432,7 @@ class SrtConfig:
             self._reject_inert_cpu_power_demand()
         exporter = self.telemetry_dcgm_exporter
         if exporter is not None:
-            self._validate_dcgm_power(exporter)
+            self._validate_dcgm_power(exporter, strict=not self.telemetry_auto_resolved)
         elif telemetry.cpu_power_exporter is None and not telemetry.cpu_power.enabled:
             raise ValidationError(
                 "telemetry.enabled requires telemetry.dcgm_exporter, telemetry.cpu_power_exporter, "

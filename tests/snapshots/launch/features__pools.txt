@@ -1,6 +1,6 @@
 # examples/features/pools.yaml
 # exit_code: 0
-# srun calls: 16
+# srun calls: 13
 
 ## agg_0_node-01
 nodelist: node-01
@@ -22,66 +22,6 @@ bash_preamble: |
     ) || true )
 command: |
     python3 -m sglang.launch_server --model-path /model --served-model-name model --host 0.0.0.0 --port 8000 --nccl-port 17500 --enable-metrics
-
-## service_dcgm-exporter_node-01
-nodelist: node-01
-output: <output>/logs/service_dcgm-exporter_node-01.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
-## service_dcgm-exporter_node-02
-nodelist: node-02
-output: <output>/logs/service_dcgm-exporter_node-02.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
-## service_dcgm-exporter_node-03
-nodelist: node-03
-output: <output>/logs/service_dcgm-exporter_node-03.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
-## service_dcgm-exporter_node-04
-nodelist: node-04
-output: <output>/logs/service_dcgm-exporter_node-04.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
 
 ## service_node-exporter_node-01
 nodelist: node-01
@@ -218,6 +158,21 @@ use_bash_wrapper: True
 command: |
     sleep infinity
 
+## <unnamed>
+nodes: 4
+ntasks: 4
+nodelist: node-01 node-02 node-03 node-04
+output: <output>/logs/telemetry_dcgm_exporter.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
 ## tachometer
 nodelist: node-01
 output: <output>/logs/tachometer.out
@@ -244,9 +199,7 @@ env_to_set:
     SRT_FRONTEND_HOST: 127.0.0.1
     SRT_FRONTEND_PORT: 8000
     SRT_GPUS_PER_NODE: 8
-    SRT_SERVICE_DCGM_EXPORTER_IPS: 127.0.0.1,127.0.0.1,127.0.0.1,127.0.0.1
-    SRT_SERVICE_DCGM_EXPORTER_NODES: node-01,node-02,node-03,node-04
-    SRT_SERVICE_DCGM_EXPORTER_NODE_COUNT: 4
+    SRT_MEASUREMENT_WINDOW_DIR: /logs/power/windows
     SRT_SERVICE_NAPPER_IPS: 127.0.0.1
     SRT_SERVICE_NAPPER_NODES: node-04
     SRT_SERVICE_NAPPER_NODE_COUNT: 1

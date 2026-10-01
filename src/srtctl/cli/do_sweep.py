@@ -688,11 +688,12 @@ class SweepOrchestrator(
             self.start_services("after_frontend", registry)
 
             if self.config.telemetry_enabled:
-                if eval_only_run():
+                if eval_only_run() and self.config.telemetry.required:
                     # Eval-only runs skip the benchmark stage, so every expected
                     # measurement window would be missing and required telemetry
-                    # would fail an otherwise successful evaluation.
-                    logger.info("EVAL_ONLY=true: skipping dcgm-power telemetry (no benchmark to measure)")
+                    # would fail an otherwise successful evaluation. Best-effort
+                    # (the default) still samples the evaluation.
+                    logger.info("EVAL_ONLY=true: skipping required dcgm-power telemetry (no benchmark to measure)")
                 else:
                     self.start_power_telemetry(registry)
                     self.start_cpu_power_telemetry(registry)

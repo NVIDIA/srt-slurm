@@ -195,6 +195,23 @@ class TelemetryStageMixin:
             return DCGM_EXPORTER_COMMAND_TEMPLATE
         return f"dcgm-exporter --collect-interval={interval_ms} --address :{{port}}"
 
+    def _expected_power_windows(self) -> list[ExpectedWindow]:
+        """One expected measurement window per concurrency level.
+
+        Default-on samples runs whose benchmark never stamps a window (or has no
+        concurrency list at all); those simply expect none and the samples span
+        the whole run. A malformed concurrency spec is the benchmark's problem
+        to report, not a reason to lose the power samples.
+        """
+        try:
+            concurrencies = self.config.benchmark.get_concurrency_list()
+        except (TypeError, ValueError):
+            concurrencies = []
+        return [
+            ExpectedWindow(benchmark_type=self.config.benchmark.type, concurrency=concurrency)
+            for concurrency in concurrencies
+        ]
+
     def start_power_telemetry(self, registry: ProcessRegistry) -> PowerTelemetrySession | None:
         """Start DCGM power telemetry when it is enabled.
 
@@ -231,10 +248,7 @@ class TelemetryStageMixin:
                 producer_git_commit=read_producer_commit(),
             ),
             expected_devices=build_expected_devices(self.backend_processes),
-            expected_windows=[
-                ExpectedWindow(benchmark_type=self.config.benchmark.type, concurrency=concurrency)
-                for concurrency in self.config.benchmark.get_concurrency_list()
-            ],
+            expected_windows=self._expected_power_windows(),
             nodes=worker_nodes,
         )
         # NOTE: stored before initialize() so a raise mid-startup still leaves a finalizable session.

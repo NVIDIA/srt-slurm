@@ -56,13 +56,14 @@ collector runs inside srtctl. Config loading validates the block and rejects
 inconsistent values with actionable messages; in particular
 `collect_interval_ms` must not exceed the 3-second max sample gap the validator
 accepts, or every window would fail `sample_gap_exceeded`. Telemetry is on by
-default: with `enabled` unset, every run that can carry a measurement window
-(supported `benchmark.type`, client on the head node, no dedicated infra node)
-collects best-effort with the Tachometer-resolved DCGM exporter sampling at
-the tighter of `telemetry.collect_interval_ms` and Tachometer's
-`collect_interval_ms` (1 s; the dense 100 ms template below applies only to an
-explicit `enabled: true`); runs that cannot stay off and `srtctl apply` prints why. `enabled: false` opts out;
-existing `provider: scraper` recipes are unchanged.
+default: with `enabled` unset, every run samples best-effort with the
+Tachometer-resolved DCGM exporter at the tighter of `telemetry.collect_interval_ms`
+and Tachometer's `collect_interval_ms` (1 s), whatever the benchmark type;
+windows are recorded where the benchmark stamps them and the samples span the
+whole run otherwise. The dense 100 ms template and the measurement-window
+validation below belong to an explicit `enabled: true`. The only thing that keeps
+default-on off is having no exporter to launch, and `srtctl apply` prints why.
+`enabled: false` opts out; existing `provider: scraper` recipes are unchanged.
 The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.

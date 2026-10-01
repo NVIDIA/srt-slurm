@@ -52,6 +52,9 @@ RECIPE = {
     ],
     "benchmark": {"type": "custom", "command": "echo"},
     "observability": {"tachometer": {"enabled": True}},
+    # These tests pin the implied Tachometer exporters; default-on power telemetry would own the
+    # DCGM one instead (covered by test_power_telemetry_owning_dcgm_replaces_the_implied_exporter).
+    "telemetry": {"enabled": False},
 }
 
 
