@@ -41,6 +41,27 @@ preparing dashboard views, and changing DSight code. These skills live under
 Write for a reviewer who knows the repository but has no access to the author's
 chat, agent session, or corporate environment.
 
+Use these three sections, in this order:
+
+```markdown
+## Summary
+
+In 2–3 lines, explain what changed and the goal.
+
+## User Impact
+
+List the specific metrics added, changed, or removed, using their exact names
+and noting changes to units or meaning where relevant. Explain changes to
+accepted inputs (such as log formats, fields, or configuration) and generated
+outputs (such as reports, queries, or APIs). State explicitly when metrics or
+inputs/outputs are unchanged.
+
+## Validation
+
+List the checks actually performed and their results, including relevant
+commands, comparisons, or reruns. Note any relevant checks not run and why.
+```
+
 - Explain the problem, the changes introduced by this PR, and their impact on
   users or behavior. Include a concrete before/after example when useful.
 - Keep the description scoped to the actual diff. Do not attribute existing
