@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from marshmallow import ValidationError
 
-from srtctl.backends import VLLMProtocol, VLLMServerConfig
+from srtctl.backends import VLLMProtocol
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
 from srtctl.core.schema import FrontendConfig, PlacementConfig, ResourceConfig, RoleConfig, SrtConfig
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process
@@ -119,12 +119,12 @@ def test_discovery_connector_recipe_rules(recipe: dict, message: str) -> None:
             name="moriio",
             model={"path": "model", "container": "image", "precision": "bf16"},
             resources=ResourceConfig(gpu_type="mi300x", gpus_per_node=8),
-            roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=1, workers=1)},
+            roles={
+                "prefill": RoleConfig(nodes=1, workers=1, args={"tensor-parallel-size": 1}),
+                "decode": RoleConfig(nodes=1, workers=1, args=decode_args),
+            },
             frontend=FrontendConfig(**frontend),
-            engine=VLLMProtocol(
-                connector="moriio",
-                vllm_config=VLLMServerConfig(prefill={"tensor-parallel-size": 1}, decode=decode_args),
-            ),
+            engine=VLLMProtocol(connector="moriio"),
         )
 
 
@@ -188,10 +188,10 @@ def test_collect_workers_uses_positive_http_ports_and_configured_interface() -> 
 
 def test_dep4_expansion_and_health_counts_follow_upstream_per_node_topology() -> None:
     backend = VLLMProtocol(
-        vllm_config=VLLMServerConfig(
-            prefill={"data-parallel-size": 4},
-            decode={"data-parallel-size": 4},
-        )
+        roles={
+            "prefill": RoleConfig(args={"data-parallel-size": 4}),
+            "decode": RoleConfig(args={"data-parallel-size": 4}),
+        }
     )
     processes = [
         Process("p0", frozenset(range(4)), 7500, 6100, "prefill", 0, nixl_port=5400),
@@ -217,10 +217,10 @@ def test_dep4_expansion_and_health_counts_follow_upstream_per_node_topology() ->
 def test_multinode_dep8_routes_node_local_hybrid_pools_without_rank_reexpansion() -> None:
     """A later node owns global ranks 4..7, not another local 0..3 namespace."""
     backend = VLLMProtocol(
-        vllm_config=VLLMServerConfig(
-            prefill={"data-parallel-size": 8},
-            decode={"data-parallel-size": 8},
-        )
+        roles={
+            "prefill": RoleConfig(args={"data-parallel-size": 8}),
+            "decode": RoleConfig(args={"data-parallel-size": 8}),
+        }
     )
     processes = [
         Process("p0", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
@@ -271,9 +271,7 @@ def test_multinode_hybrid_pool_schema_matches_router_expansion(expansion: int) -
 
 
 def test_cross_node_model_parallel_base_is_not_dp_expanded() -> None:
-    backend = VLLMProtocol(
-        vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 2, "tensor-parallel-size": 8})
-    )
+    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"data-parallel-size": 2, "tensor-parallel-size": 8})})
     process = Process("n0", frozenset(range(4)), 7500, 6100, "agg", 0)
 
     assert routed_process_dp_size(backend, process) == 1
@@ -281,7 +279,7 @@ def test_cross_node_model_parallel_base_is_not_dp_expanded() -> None:
 
 def test_managed_args_derive_dp_and_startup_timeout_without_overriding_user_policy() -> None:
     frontend = VLLMRouterFrontend()
-    backend = VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 4}))
+    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"data-parallel-size": 4})})
     processes = [Process("n0", frozenset(range(4)), 7500, 6100, "agg", 0)]
     config = SimpleNamespace(
         frontend=SimpleNamespace(args={"policy": "consistent_hash"}),
@@ -355,23 +353,20 @@ def test_schema_rejects_backend_mismatch_and_deprecated_per_gpu_dp() -> None:
         "name": "router",
         "model": {"path": "model", "container": "image", "precision": "fp8"},
         "resources": ResourceConfig(gpu_type="h100", gpus_per_node=8),
-        "roles": {"agg": RoleConfig(nodes=1, workers=1)},
         "frontend": FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
     }
     with pytest.raises(ValidationError, match="requires backend.type: vllm"):
-        SrtConfig(**common, engine=SGLangProtocol())
+        SrtConfig(**common, engine=SGLangProtocol(), roles={"agg": RoleConfig(nodes=1, workers=1)})
     with pytest.raises(ValidationError, match="requires backend.dp_launch_mode: per_node"):
         SrtConfig(
             **common,
-            engine=VLLMProtocol(
-                dp_launch_mode="per_gpu",
-                vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 8}),
-            ),
+            engine=VLLMProtocol(dp_launch_mode="per_gpu"),
+            roles={"agg": RoleConfig(nodes=1, workers=1, args={"data-parallel-size": 8})},
         )
 
 
 def test_vllm_router_preserves_upstream_multinode_tp_serve() -> None:
-    backend = VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 8}))
+    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"tensor-parallel-size": 8})})
     endpoint = Endpoint("agg", 0, ("n0", "n1"), frozenset(range(4)), gpus_per_node=4)
     processes = backend.endpoints_to_processes(
         [endpoint], port_allocator=NodePortAllocator(), frontend_type="vllm-router"
@@ -390,7 +385,7 @@ def test_vllm_router_preserves_upstream_multinode_tp_serve() -> None:
 
 
 def test_vllm_router_per_node_dep4_launches_one_api_per_node_pool() -> None:
-    backend = VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 8}))
+    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"data-parallel-size": 8})})
     endpoint = Endpoint("agg", 0, ("n0", "n1"), frozenset(range(4)), gpus_per_node=4)
     processes = backend.endpoints_to_processes(
         [endpoint], port_allocator=NodePortAllocator(), frontend_type="vllm-router"
@@ -411,9 +406,7 @@ def test_vllm_router_per_node_dep4_launches_one_api_per_node_pool() -> None:
 
 def test_single_node_dp_preserves_native_vllm_topology() -> None:
     """A single server owns local DP ranks; srt-slurm must not split it."""
-    backend = VLLMProtocol(
-        vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 2, "data-parallel-size": 2})
-    )
+    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"tensor-parallel-size": 2, "data-parallel-size": 2})})
     endpoint = Endpoint("agg", 0, ("n0",), frozenset(range(4)), gpus_per_node=4)
     processes = backend.endpoints_to_processes(
         [endpoint], port_allocator=NodePortAllocator(), frontend_type="vllm-router"
@@ -430,7 +423,7 @@ def test_single_node_dp_preserves_native_vllm_topology() -> None:
 
 
 def test_dp_size_one_is_not_a_distributed_launch_mode() -> None:
-    backend = VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 1}))
+    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"data-parallel-size": 1})})
 
     assert backend.find_dp_modes() == []
     assert backend._is_dp_mode("agg") is False
@@ -441,21 +434,23 @@ def test_router_validates_pcp_as_part_of_the_vllm_world_size() -> None:
         "name": "router-pcp",
         "model": {"path": "model", "container": "image", "precision": "fp8"},
         "resources": ResourceConfig(gpu_type="h100", gpus_per_node=8),
-        "roles": {"agg": RoleConfig(nodes=1, workers=1)},
         "frontend": FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
     }
 
     with pytest.raises(ValidationError, match=r"DP\*TP\*PP\*PCP=2\*8=16 GPUs"):
         SrtConfig(
             **common,
-            engine=VLLMProtocol(
-                vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 2, "prefill-context-parallel-size": 8})
-            ),
+            engine=VLLMProtocol(),
+            roles={
+                "agg": RoleConfig(
+                    nodes=1, workers=1, args={"data-parallel-size": 2, "prefill-context-parallel-size": 8}
+                )
+            },
         )
 
 
 def test_vllm_router_pd_worker_uses_direct_vllm_and_nixl_connector() -> None:
-    backend = VLLMProtocol(vllm_config=VLLMServerConfig(prefill={"tensor-parallel-size": 4}))
+    backend = VLLMProtocol(roles={"prefill": RoleConfig(args={"tensor-parallel-size": 4})})
     process = Process("p0", frozenset(range(4)), 7500, 6100, "prefill", 0, nixl_port=5400)
 
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):

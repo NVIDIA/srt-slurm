@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from srtctl.backends import MockerProtocol, MockerServerConfig
-from srtctl.core.schema import SrtConfig
+from srtctl.backends import MockerProtocol
+from srtctl.core.schema import SrtConfig, RoleConfig
 
 # ============================================================================
 # Helpers
@@ -150,8 +150,7 @@ class TestMockerConfigLoading:
     def test_mocker_with_environment(self):
         """Per-mode environment vars deserialize correctly."""
         backend = MockerProtocol(
-            prefill_environment={"FOO": "bar"},
-            decode_environment={"BAZ": "qux"},
+            roles={"prefill": RoleConfig(env={"FOO": "bar"}), "decode": RoleConfig(env={"BAZ": "qux"})}
         )
         assert backend.get_environment_for_mode("prefill") == {"FOO": "bar"}
         assert backend.get_environment_for_mode("decode") == {"BAZ": "qux"}
@@ -331,9 +330,7 @@ class TestMockerCommandConstruction:
     def test_per_mode_config_appended(self):
         """Per-mode mocker_config overrides are appended as CLI args."""
         backend = MockerProtocol(
-            mocker_config=MockerServerConfig(
-                prefill={"max-num-seqs": 512, "enable-prefix-caching": True},
-            ),
+            roles={"prefill": RoleConfig(args={"max-num-seqs": 512, "enable-prefix-caching": True})}
         )
         process = _make_process(mode="prefill", bootstrap_port=31000)
         runtime = _make_runtime(is_hf=False)

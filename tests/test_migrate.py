@@ -212,7 +212,7 @@ zip_override_ctx:
     configs = _migrated_loads_and_v1_does_not(text)
     assert len(configs) == 3
     assert configs[0].topology.num_agg == 1 and configs[0].topology.gpus_per_agg == 2
-    assert [c.backend.sglang_config.aggregated["context-length"] for c in configs[1:]] == [2048, 8192]
+    assert [c.backend.get_config_for_mode("agg")["context-length"] for c in configs[1:]] == [2048, 8192]
 
 
 def test_infra_false_is_dropped_and_payload_becomes_a_nats_option() -> None:
@@ -334,7 +334,7 @@ def test_mooncake_kv_store_becomes_a_master_service_and_role_env() -> None:
     (config,) = _migrated_loads_and_v1_does_not(MOONCAKE_LEGACY)
     assert config.backend.mooncake_kv_store is not None
     assert config.backend.mooncake_kv_store.container == "mooncake"
-    assert config.backend.prefill_environment["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "4gb"
+    assert config.backend.get_environment_for_mode("prefill")["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "4gb"
 
 
 def test_dynamo_version_and_wheel_and_top_of_tree() -> None:

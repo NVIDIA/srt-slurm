@@ -172,7 +172,7 @@ When adding new config fields that affect what gets passed to srun (environment 
 
 Config sources that feed into dry-run display:
 - **Mounts**: `config.extra_mount`, `config.container_mounts`, `default_mounts` from srtslurm.yaml
-- **Env vars**: `config.environment` (global), `roles.<role>.env` (bound onto the engine's per-mode environment fields at load)
+- **Env vars**: `config.environment` (global), `roles.<role>.env` (read by the engine from the roles bound onto it at load)
 - **srun options**: `config.srun_options`
 - **Host setup**: `config.host_setup`, `default_host_setup` from srtslurm.yaml
 

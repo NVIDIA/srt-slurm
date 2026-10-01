@@ -901,7 +901,7 @@ roles:
       kv-transfer-config: '{kv_transfer_cfg}'
 """)
         config = SrtConfig.Schema().load(raw)
-        assert "MooncakeStoreConnector" in config.backend.vllm_config.prefill["kv-transfer-config"]
+        assert "MooncakeStoreConnector" in config.backend.get_config_for_mode("prefill")["kv-transfer-config"]
 
     def test_vllm_mooncake_disagg_with_kv_transfer_config_passes(self):
         """vLLM disagg + mooncake_kv_store with MooncakeConnector kv-transfer-config validates clean."""
@@ -935,7 +935,7 @@ roles:
       kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)
-        assert config.backend.vllm_config.prefill["kv-transfer-config"]
+        assert config.backend.get_config_for_mode("prefill")["kv-transfer-config"]
 
     def test_vllm_mooncake_store_config_unset_yields_only_master_address(self):
         """No store_config from user → JSON only contains the auto-injected master_server_address."""

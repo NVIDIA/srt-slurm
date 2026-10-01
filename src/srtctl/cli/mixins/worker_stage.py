@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 # Engines shut down on SIGTERM (deregister, free GPUs, flush); give them longer than the default 10s.
 WORKER_TERMINATE_TIMEOUT_SECONDS = 30.0
 
-# Dynamo runtime (Rust) log filter for worker containers; YAML prefill_environment /
-# decode_environment / aggregated_environment override via the merge below.
+# Dynamo runtime (Rust) log filter for worker containers; a recipe's roles.<role>.env
+# overrides it via the merge below.
 _DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
 
 

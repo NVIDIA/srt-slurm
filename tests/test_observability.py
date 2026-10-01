@@ -516,7 +516,7 @@ class TestTrtllmServeDefaults:
         loaded = SrtConfig.from_yaml(config_path)
 
         for mode in ("prefill", "decode"):
-            section = getattr(loaded.backend.trtllm_config, mode)
+            section = loaded.backend.get_config_for_mode(mode)
             assert section["return_perf_metrics"] is True
 
     def test_load_config_applies_the_default(self, tmp_path, monkeypatch):

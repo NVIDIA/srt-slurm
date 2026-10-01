@@ -94,7 +94,7 @@ def test_internal_fields_are_the_engines_per_mode_fields() -> None:
     assert set(INTERNAL_FIELDS) == {cls for _, cls in BACKEND_TYPES}
     for _, cls in BACKEND_TYPES:
         assert INTERNAL_FIELDS[cls] <= {row.key for row in field_docs(cls)}
-        assert {"prefill_environment", "decode_environment", "aggregated_environment"} <= INTERNAL_FIELDS[cls]
+        assert "roles" in INTERNAL_FIELDS[cls]
 
 
 def test_mooncake_device_mapping_is_documented_as_a_v2_service_option() -> None:

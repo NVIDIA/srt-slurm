@@ -88,7 +88,7 @@ def test_a_dump_is_a_recipe_that_loads_back_to_the_same_config() -> None:
     dumped = schema.dump(cfg)
     assert set(dumped["roles"]) == {"prefill", "decode"}
     assert "backend" not in dumped
-    assert "sglang_config" not in dumped["engine"]  # per-role settings live under roles only
+    assert "roles" not in dumped["engine"]  # the bound roles are not engine fields; roles: carries them
     reloaded = schema.load(dumped)
     assert schema.dump(reloaded) == dumped
     assert reloaded.backend.get_config_for_mode("prefill") == cfg.backend.get_config_for_mode("prefill")
@@ -120,20 +120,18 @@ def test_agg_role_binds_to_the_aggregated_mode() -> None:
     assert (cfg.topology.num_agg, cfg.topology.gpus_per_agg, cfg.topology.agg_nodes) == (2, 1, 1)
     assert not cfg.topology.is_disaggregated
     assert cfg.backend.get_environment_for_mode("agg") == {"X": "1"}
-    assert cfg.backend.vllm_config.aggregated == {"tensor-parallel-size": 1}
+    assert cfg.backend.get_config_for_mode("agg") == {"tensor-parallel-size": 1}
 
 
-def test_role_args_bind_to_the_engines_own_config_field() -> None:
-    for engine_type, config_field in (
-        ("sglang", "sglang_config"),
-        ("vllm", "vllm_config"),
-        ("trtllm", "trtllm_config"),
-    ):
+def test_role_args_reach_every_engine() -> None:
+    for engine_type in ("sglang", "vllm", "trtllm", "mocker", "atom", "tilert"):
         cfg = SrtConfig.Schema().load(
-            _minimal(engine=engine_type, roles={"agg": {"nodes": 1, "workers": 1, "args": {"a": 1}}})
+            _minimal(engine=engine_type, roles={"agg": {"nodes": 1, "workers": 1, "args": {"a": 1}, "env": {"E": "1"}}})
         )
-        assert getattr(cfg.backend, config_field).aggregated == {"a": 1}
+        assert list(cfg.backend.roles) == ["agg"]
         assert cfg.backend.get_config_for_mode("agg") == {"a": 1}
+        assert cfg.backend.get_environment_for_mode("agg")["E"] == "1"  # trtllm adds its own EPLB variable
+        assert cfg.backend.get_config_for_mode("prefill") == {}
 
 
 def test_extra_args_are_trtllm_only() -> None:
@@ -315,7 +313,9 @@ def test_per_role_kv_events_and_sidecar() -> None:
             frontend={"type": "dynamo"},
         )
     )
-    assert cfg.backend.kv_events_config == {"prefill": True, "decode": {"publisher": "zmq", "topic": "kv"}}
+    assert cfg.backend.get_kv_events_config_for_mode("prefill") == {"publisher": "zmq", "topic": "kv-events"}
+    assert cfg.backend.get_kv_events_config_for_mode("decode") == {"publisher": "zmq", "topic": "kv"}
+    assert cfg.backend.get_kv_events_config_for_mode("agg") is None
     assert cfg.dynamo.sidecar is True
 
     with pytest.raises(ValidationError, match="sidecar must agree"):
@@ -338,13 +338,16 @@ def test_per_role_kv_events_and_sidecar() -> None:
                 frontend={"type": "dynamo"},
             )
         )
-    with pytest.raises(ValidationError, match="cannot be combined with engine.kv_events_config"):
+    with pytest.raises(ValidationError, match="roles.agg.kv_events is not supported by the trtllm engine"):
+        SrtConfig.Schema().load(_minimal(engine="trtllm", roles={"agg": {"nodes": 1, "workers": 1, "kv_events": True}}))
+    # The engine's roles are bound from the recipe; an engine constructed with roles of its own is refused.
+    with pytest.raises(ValidationError, match="engine.roles is bound from the recipe's roles block"):
         SrtConfig(
             name="k",
             model={"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
             resources={"gpu_type": "h100", "gpus_per_node": 8},
-            engine=SGLangProtocol(kv_events_config=True),
-            roles={"agg": RoleConfig(nodes=1, workers=1, kv_events=True)},
+            engine=SGLangProtocol(roles={"agg": RoleConfig(kv_events=True)}),
+            roles={"agg": RoleConfig(nodes=1, workers=1)},
         )
 
 

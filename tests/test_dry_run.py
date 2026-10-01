@@ -976,9 +976,9 @@ class TestDryRunVllmOrchestrationWarnings:
         show_config_details(config)
         output = capsys.readouterr().out
         assert "WARNING:" in output
-        assert "vllm_config.aggregated.headless" in output
-        assert "vllm_config.aggregated.master-addr" in output
-        assert "vllm_config.aggregated.master-port" not in output
+        assert "roles.agg.args.headless" in output
+        assert "roles.agg.args.master-addr" in output
+        assert "roles.agg.args.master-port" not in output
 
     def test_clean_recipe_has_no_orchestration_warnings(self, capsys):
         config = _make_config(
@@ -995,7 +995,7 @@ class TestDryRunVllmOrchestrationWarnings:
         )
         show_config_details(config)
         output = capsys.readouterr().out
-        assert "vllm_config.aggregated.headless" not in output
+        assert "roles.agg.args.headless" not in output
         assert "derives this from the job topology" not in output
 
     def test_dynamo_recipe_has_no_direct_vllm_orchestration_warning(self, capsys):
@@ -1013,7 +1013,7 @@ class TestDryRunVllmOrchestrationWarnings:
         )
         show_config_details(config)
         output = capsys.readouterr().out
-        assert "vllm_config.aggregated.master-addr" not in output
+        assert "roles.agg.args.master-addr" not in output
         assert "configured value is ignored" not in output
 
 

@@ -245,7 +245,7 @@ All configs are **frozen dataclasses** with marshmallow validation. The recipe a
 | `ResourceConfig`  | Cluster facts       | gpu_type, gpus_per_node, spread_workers, het_jobs     |
 | `RoleConfig`      | One worker role     | nodes (or `colocate`), workers, gpus, env, args, extra_args, engine, container, kv_events, critical |
 | `Topology`        | Derived worker layout | num_prefill, gpus_per_decode, total_nodes, het_components (from `roles` and `gpus_per_node`) |
-| `BackendConfig`   | Polymorphic engine  | type, engine-wide knobs; each role's args/env are bound onto its per-mode fields at load |
+| `BackendConfig`   | Polymorphic engine  | type, engine-wide knobs, and `roles` (the recipe's roles, bound at load; per-role args/env are read from them) |
 | `FrontendConfig`  | Router settings     | type, enable_multiple_frontends, nginx_raise_ulimit, args, env |
 | `BenchmarkConfig` | Benchmark params    | type, isl, osl, concurrencies, sweep                  |
 | `ProfilingConfig` | Profiling settings  | type (nsys/torch), phase configs                      |
@@ -343,11 +343,11 @@ roles:
       tensor-parallel-size: 4
 ```
 
-`roles:` loads into `SrtConfig.roles`, one `RoleConfig` per role. `SrtConfig.topology` derives the per-role node, worker, and GPU counts the launch path reads, and `SrtConfig.backend` binds each role's `args`, `env`, `extra_args`, and `kv_events` onto the engine's per-mode fields. `nodes: colocate` reserves no decode nodes, and the loader rejects a colocated split that does not fit on the prefill nodes. The pre-2.0 spelling of these settings is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites a v1 recipe into `roles:`.
+`roles:` loads into `SrtConfig.roles`, one `RoleConfig` per role. `SrtConfig.topology` derives the per-role node, worker, and GPU counts the launch path reads, and `SrtConfig.backend` binds the roles onto the engine, which reads each role's `args`, `env`, `extra_args`, and `kv_events` from them. `nodes: colocate` reserves no decode nodes, and the loader rejects a colocated split that does not fit on the prefill nodes. The pre-2.0 spelling of these settings is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites a v1 recipe into `roles:`.
 
 #### SGLangProtocol
 
-Implements BackendProtocol for SGLang with P/D disaggregation. Its per-mode fields receive each role's `env`, `args`, and `kv_events` from `roles.prefill`, `roles.decode`, and `roles.agg` at load; `get_config_for_mode(mode)` and `get_environment_for_mode(mode)` hand them to the launch path.
+Implements BackendProtocol for SGLang with P/D disaggregation. Its `roles` carry each role's `env`, `args`, and `kv_events` (`roles.prefill`, `roles.decode`, `roles.agg`, bound at load); `get_config_for_mode(mode)` and `get_environment_for_mode(mode)` hand them to the launch path.
 
 **Launch strategy**: Per-process srun launching (one srun per worker process).
 

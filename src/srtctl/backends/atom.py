@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import builtins
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, LMCACHE_SERVER_PORT
 
 if TYPE_CHECKING:
@@ -27,25 +28,13 @@ WorkerMode = Literal["prefill", "decode", "agg"]
 
 
 @dataclass(frozen=True)
-class AtomServerConfig:
-    """Native ATOM CLI arguments for each serving role."""
-
-    prefill: dict[str, Any] | None = None
-    decode: dict[str, Any] | None = None
-    aggregated: dict[str, Any] | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
 class AtomProtocol:
     """Launch ``atom.entrypoints.openai_server`` on ROCm workers."""
 
     type: Literal["atom"] = "atom"
-    prefill_environment: dict[str, str] = field(default_factory=dict)
-    decode_environment: dict[str, str] = field(default_factory=dict)
-    aggregated_environment: dict[str, str] = field(default_factory=dict)
-    atom_config: AtomServerConfig | None = None
+    # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
+    # never written on `engine:`. Per-role env and native ATOM CLI args are read from here.
+    roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
     connector: Literal["mooncake"] = "mooncake"
     mooncake_protocol: Literal["rdma", "tcp"] | None = None
 
@@ -61,34 +50,23 @@ class AtomProtocol:
         return ()
 
     def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        if self.atom_config is None:
-            return {}
-        values = {
-            "prefill": self.atom_config.prefill,
-            "decode": self.atom_config.decode,
-            "agg": self.atom_config.aggregated,
-        }
-        return dict(values.get(mode) or {})
+        """The role's native ATOM CLI arguments (``roles.<role>.args``)."""
+        return role_args(self.roles, mode)
 
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        values = {
-            "prefill": self.prefill_environment,
-            "decode": self.decode_environment,
-            "agg": self.aggregated_environment,
-        }
-        return dict(values.get(mode) or {})
+        """The role's environment (``roles.<role>.env``)."""
+        return role_env(self.roles, mode)
 
     def get_process_environment(self, process: Process) -> dict[str, str]:
         return {}
 
     def get_served_model_name(self, default: str) -> str:
         """The name ATOM serves: a role's ``served-model-name``, else its literal ``--model``."""
-        if self.atom_config:
-            for cfg in [self.atom_config.prefill, self.atom_config.aggregated, self.atom_config.decode]:
-                if cfg:
-                    name = cfg.get("served-model-name") or cfg.get("served_model_name")
-                    if name:
-                        return name
+        for mode in ("prefill", "agg", "decode"):
+            args = role_args(self.roles, mode)
+            name = args.get("served-model-name") or args.get("served_model_name")
+            if name:
+                return name
         return default
 
     @property

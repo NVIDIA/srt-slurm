@@ -302,10 +302,10 @@ def show_config_details(config: SrtConfig) -> None:
         if isinstance(config.backend, VLLMProtocol):
             orchestration_flags = find_vllm_orchestration_recipe_flags(config.backend)
             if orchestration_flags:
-                for mode_name, flag_name in orchestration_flags:
+                for role, flag_name in orchestration_flags:
                     console.print(
                         "[yellow]WARNING:[/] "
-                        f"vllm_config.{mode_name}.{flag_name} is set in the recipe but srtslurm "
+                        f"roles.{role}.args.{flag_name} is set in the recipe but srtslurm "
                         "derives this from the job topology at runtime; remove it from the recipe "
                         "to avoid confusion (the configured value is ignored)."
                     )
@@ -405,9 +405,8 @@ def show_config_details(config: SrtConfig) -> None:
     backend = config.backend
     mode_envs: list[tuple[str, dict[str, str]]] = []
     for mode_name, env in [
-        ("prefill", config.backend_for_role("prefill").prefill_environment),
-        ("decode", config.backend_for_role("decode").decode_environment),
-        ("aggregated", config.backend_for_role("agg").aggregated_environment),
+        (mode_name, config.roles[role].env if role in config.roles else {})
+        for mode_name, role in (("prefill", "prefill"), ("decode", "decode"), ("aggregated", "agg"))
     ]:
         if env:
             has_env = True
@@ -2000,7 +1999,7 @@ def main():
             dest="set_overrides",
             help=(
                 "Override a recipe value by dotted path before validation (repeatable), e.g. "
-                "--set health_check.max_attempts=720 or --set 'backend.sglang_config.prefill.dist-timeout=1800'. "
+                "--set health_check.max_attempts=720 or --set 'roles.prefill.args.dist-timeout=1800'. "
                 "Values parse as YAML scalars or lists; mappings stay literal strings. "
                 "On override files the value is written into base and every variant."
             ),

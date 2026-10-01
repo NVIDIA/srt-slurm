@@ -62,8 +62,8 @@ def test_independent_engine_arguments_environments_and_images():
     assert isinstance(config.backend_for_role("decode"), SGLangProtocol)
     assert config.backend_for_role("prefill").get_config_for_mode("prefill") == {"tensor-parallel-size": 2}
     assert config.backend_for_role("decode").get_config_for_mode("decode") == {"tp-size": 2}
-    assert config.backend_for_role("prefill").prefill_environment == {"PREFILL_ONLY": "1"}
-    assert config.backend_for_role("decode").prefill_environment == {}
+    assert config.backend_for_role("prefill").get_environment_for_mode("prefill") == {"PREFILL_ONLY": "1"}
+    assert config.backend_for_role("decode").get_environment_for_mode("prefill") == {}
     assert config.worker_container_for_role("prefill") == "prefill-image"
     assert config.worker_container_for_role("decode") == "default-image"
 

@@ -39,19 +39,13 @@ from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
     AtomProtocol,
-    AtomServerConfig,
     BackendConfig,
     MockerProtocol,
-    MockerServerConfig,
     SGLangProtocol,
-    SGLangServerConfig,
     TileRTProtocol,
-    TileRTServerConfig,
     TRTLLMProtocol,
-    TRTLLMServerConfig,
     VLLMMooncakeKVStoreConfig,
     VLLMProtocol,
-    VLLMServerConfig,
 )
 from srtctl.core.formatting import (
     FormattablePath,
@@ -459,25 +453,15 @@ class ProfilingType(str, Enum):
 # ============================================================================
 
 
-def _is_empty(value: Any) -> bool:
-    """None, or a mapping / list whose every value is empty by the same rule."""
-    if value is None:
-        return True
-    if isinstance(value, dict):
-        return all(_is_empty(item) for item in value.values())
-    if isinstance(value, list | tuple):
-        return len(value) == 0
-    return False
-
-
 class BackendConfigField(fields.Field):
     """Marshmallow field for the polymorphic engine: a type string or a mapping with ``type``.
 
     ``reject_per_role_keys`` is set on the recipe's engine fields (top-level ``engine`` and
     ``roles.<role>.engine``): an engine mapping carries engine-wide knobs only, so the
-    per-mode fields the engine dataclasses still declare (``sglang_config``,
-    ``prefill_environment``, ``kv_events_config``, ...) are refused there. A recipe spells
-    them under ``roles.<role>`` (``env``, ``args``, ``extra_args``, ``kv_events``).
+    pre-2.0 per-mode keys (``sglang_config``, ``prefill_environment``, ``kv_events_config``,
+    ...) are refused there with a pointer to ``roles.<role>`` (``env``, ``args``,
+    ``extra_args``, ``kv_events``). The engine's ``roles`` is bound by ``SrtConfig`` and
+    refused on load by its own field; it is left out of dumps.
     """
 
     def __init__(self, *, reject_per_role_keys: bool = False, **kwargs: Any) -> None:
@@ -506,9 +490,7 @@ class BackendConfigField(fields.Field):
             raise ValidationError(f"Expected an engine type or a mapping with 'type', got {type(value).__name__}")
 
         if self.reject_per_role_keys:
-            # A dumped engine carries its empty per-mode fields (None / {} / []); only a
-            # populated one is a per-role setting spelled in the wrong place.
-            per_role = sorted(key for key in set(value) & PER_ROLE_ENGINE_KEYS if not _is_empty(value[key]))
+            per_role = sorted(set(value) & PER_ROLE_ENGINE_KEYS)
             if per_role:
                 raise ValidationError(
                     "an engine mapping carries engine-wide knobs only; per-role settings ("
@@ -540,11 +522,12 @@ class BackendConfigField(fields.Field):
             )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
-        """Serialize the engine to a dict; empty per-mode fields are left out (``roles`` carries them)."""
+        """Serialize the engine to a dict; the bound ``roles`` are left out (the recipe's ``roles:`` carries them)."""
         if value is None:
             return None
         dumped = self._dump(value)
-        return {key: item for key, item in dumped.items() if key not in PER_ROLE_ENGINE_KEYS or not _is_empty(item)}
+        dumped.pop("roles", None)
+        return dumped
 
     @staticmethod
     def _dump(value: Any) -> dict[str, Any]:
@@ -727,8 +710,8 @@ class RoleConfig:
     Everything about a role lives here: the nodes and workers it gets, the GPUs per
     worker, its environment and engine arguments, and optionally its own engine and
     image. ``SrtConfig.topology`` derives the per-role counts the launch path reads;
-    ``SrtConfig.backend`` binds ``env`` / ``args`` / ``extra_args`` / ``kv_events`` onto
-    the engine's per-mode fields.
+    ``SrtConfig.backend`` binds the roles onto the engine, which reads ``env`` / ``args`` /
+    ``extra_args`` / ``kv_events`` from them.
     """
 
     # Nodes reserved for this role. `colocate` (decode only) reserves none and packs the
@@ -981,58 +964,11 @@ class Topology:
         )
 
 
-# Engine type -> the engine dataclass's per-mode config field and that field's class. The
-# engine dataclasses still carry the per-mode fields (`prefill_environment`,
-# `<engine>_config.prefill`, ...) that `roles.<role>` binds onto; `_bind_role_settings` is
-# the one place that binding happens.
-_ENGINE_SECTIONS: dict[str, tuple[str, type]] = {
-    "atom": ("atom_config", AtomServerConfig),
-    "sglang": ("sglang_config", SGLangServerConfig),
-    "tilert": ("tilert_config", TileRTServerConfig),
-    "trtllm": ("trtllm_config", TRTLLMServerConfig),
-    "vllm": ("vllm_config", VLLMServerConfig),
-    "mocker": ("mocker_config", MockerServerConfig),
-}
-
-
-def _bind_role_settings(engine: BackendConfig, roles: Mapping[str, RoleConfig]) -> BackendConfig:
-    """``engine`` with each role's ``env`` / ``args`` / ``extra_args`` / ``kv_events`` on its per-mode fields.
-
-    ``roles.<role>`` is the recipe's only spelling of a per-role setting; the engine
-    dataclasses read them from their per-mode fields, so they are bound here, once per
-    config. Settings already on ``engine`` (an engine constructed in code) are kept, with
-    the role's values merged over them.
-    """
-    config_field, section_cls = _ENGINE_SECTIONS[engine.type]
-    section_modes = {item.name for item in dataclasses.fields(section_cls)}
-    current = getattr(engine, config_field)
-    sections = {mode: getattr(current, mode, None) if current is not None else None for mode in section_modes}
-    changes: dict[str, Any] = {}
-    sections_changed = False
-    for role, spec in roles.items():
-        mode = ROLE_TO_MODE[role]
-        if spec.env:
-            changes[f"{mode}_environment"] = {**getattr(engine, f"{mode}_environment"), **spec.env}
-        if spec.args:
-            if mode not in section_modes:
-                raise ValidationError(f"roles.{role}.args: the {engine.type} engine takes no {mode} arguments")
-            sections[mode] = {**(sections[mode] or {}), **spec.args}
-            sections_changed = True
-        if spec.extra_args:
-            name = f"{mode}_extra_args"
-            if not hasattr(engine, name):
-                raise ValidationError(f"roles.{role}.extra_args is only supported by the trtllm engine")
-            changes[name] = list(spec.extra_args)
-        if spec.kv_events is not None:
-            if not hasattr(engine, "kv_events_config"):
-                raise ValidationError(f"roles.{role}.kv_events is not supported by the {engine.type} engine")
-            kv_events = changes.get("kv_events_config", engine.kv_events_config)  # type: ignore[union-attr]
-            if isinstance(kv_events, bool):
-                raise ValidationError("roles.*.kv_events cannot be combined with engine.kv_events_config: true/false")
-            changes["kv_events_config"] = {**(kv_events or {}), mode: spec.kv_events}
-    if sections_changed:
-        changes[config_field] = section_cls(**sections)
-    return dataclasses.replace(engine, **changes) if changes else engine
+def _bind_roles(engine: BackendConfig, roles: Mapping[str, RoleConfig]) -> BackendConfig:
+    """``engine`` with the recipe's roles bound; the engine reads per-role env, args, extra_args and kv_events from them."""
+    if engine.roles:
+        raise ValidationError("engine.roles is bound from the recipe's roles block; declare roles at the top level")
+    return dataclasses.replace(engine, roles=dict(roles)) if roles else engine
 
 
 @dataclass(frozen=True)
@@ -1638,7 +1574,7 @@ class ObservabilityConfig:
 
     OTEL_SERVICE_NAME defaults to "dynamo-{component}" (e.g. dynamo-prefill,
     dynamo-decode, dynamo-frontend) and can be overridden per-component via
-    prefill_environment, decode_environment, or frontend.env.
+    roles.<role>.env or frontend.env.
 
     ``enabled`` configures server-side analytics capture. It expands (at config-load time,
     via :func:`srtctl.core.config.expand_observability`) into:
@@ -2548,14 +2484,12 @@ class SrtConfig:
         if self.engine is not None or all(spec.engine is None for spec in self.roles.values()):
             return {}
         return {
-            role: _bind_role_settings(spec.engine, {role: spec})
-            for role, spec in self.roles.items()
-            if spec.engine is not None
+            role: _bind_roles(spec.engine, {role: spec}) for role, spec in self.roles.items() if spec.engine is not None
         }
 
     @cached_property
     def backend(self) -> BackendConfig:
-        """The serving engine, with every role's ``env`` / ``args`` / ``extra_args`` / ``kv_events`` bound.
+        """The serving engine with the recipe's roles bound (it reads per-role env, args, extra_args, kv_events).
 
         With one shared ``engine`` this is that engine (SGLang when none is declared). With
         per-role engines it is the serving role's (decode, else agg, else prefill); workers
@@ -2564,7 +2498,7 @@ class SrtConfig:
         if self.role_backends:
             serving = next(role for role in ("decode", "agg", "prefill") if role in self.role_backends)
             return self.role_backends[serving]
-        return _bind_role_settings(self.engine if self.engine is not None else SGLangProtocol(), self.roles)
+        return _bind_roles(self.engine if self.engine is not None else SGLangProtocol(), self.roles)
 
     @property
     def role_containers(self) -> dict[str, str]:
@@ -2635,6 +2569,13 @@ class SrtConfig:
             for role, spec in self.roles.items():
                 if spec.engine is None:
                     raise ValidationError(f"roles.{role}.engine must name a type when no top-level engine is set")
+        for role, spec in self.roles.items():
+            engine = spec.engine if spec.engine is not None else self.engine
+            engine_type = engine.type if engine is not None else "sglang"
+            if spec.extra_args and engine_type != "trtllm":
+                raise ValidationError(f"roles.{role}.extra_args is only supported by the trtllm engine")
+            if spec.kv_events is not None and engine_type not in ("sglang", "vllm"):
+                raise ValidationError(f"roles.{role}.kv_events is not supported by the {engine_type} engine")
 
         decode = self.roles.get("decode")
         if decode is not None and decode.colocated:
@@ -2858,16 +2799,12 @@ class SrtConfig:
         if dp_modes:
             names = ", ".join(mode for mode, _ in dp_modes)
             raise ValidationError(f"engine.failover does not support data-parallel-size (set on {names})")
-        for mode_name, mode_config in (
-            ("prefill", self.backend.vllm_config.prefill if self.backend.vllm_config else None),
-            ("decode", self.backend.vllm_config.decode if self.backend.vllm_config else None),
-            ("aggregated", self.backend.vllm_config.aggregated if self.backend.vllm_config else None),
-        ):
-            for key, value in (mode_config or {}).items():
+        for role, spec in self.roles.items():
+            for key, value in spec.args.items():
                 if str(key).replace("_", "-") == "load-format" and str(value) != "gms":
                     raise ValidationError(
                         f"engine.failover loads weights through the GPU Memory Service; "
-                        f"vllm_config.{mode_name}.load-format must be gms or unset, got {value!r}"
+                        f"roles.{role}.args.load-format must be gms or unset, got {value!r}"
                     )
         if installs_dynamo(self):
             logger.warning(
@@ -3043,7 +2980,6 @@ class SrtConfig:
             return
 
         if isinstance(self.backend, SGLangProtocol):
-            sglang_cfg = self.backend.sglang_config
 
             def _sglang_has_mooncake(mode_cfg: dict | None) -> bool:
                 if not mode_cfg:
@@ -3055,8 +2991,8 @@ class SrtConfig:
                         return True
                 return False
 
-            prefill_ok = sglang_cfg is not None and _sglang_has_mooncake(sglang_cfg.prefill)
-            decode_ok = sglang_cfg is not None and _sglang_has_mooncake(sglang_cfg.decode)
+            prefill_ok = _sglang_has_mooncake(self.backend.get_config_for_mode("prefill"))
+            decode_ok = _sglang_has_mooncake(self.backend.get_config_for_mode("decode"))
 
             if not (prefill_ok or decode_ok):
                 raise ValidationError(
@@ -3066,7 +3002,6 @@ class SrtConfig:
                     "actually use the mooncake master srtslurm launches for you."
                 )
         elif isinstance(self.backend, VLLMProtocol):
-            vllm_cfg = self.backend.vllm_config
 
             def _vllm_has_mooncake(mode_cfg: dict | None) -> bool:
                 if not mode_cfg:
@@ -3082,8 +3017,8 @@ class SrtConfig:
                         return True
                 return False
 
-            prefill_ok = vllm_cfg is not None and _vllm_has_mooncake(vllm_cfg.prefill)
-            decode_ok = vllm_cfg is not None and _vllm_has_mooncake(vllm_cfg.decode)
+            prefill_ok = _vllm_has_mooncake(self.backend.get_config_for_mode("prefill"))
+            decode_ok = _vllm_has_mooncake(self.backend.get_config_for_mode("decode"))
 
             if not (prefill_ok or decode_ok):
                 raise ValidationError(
@@ -3240,32 +3175,25 @@ class SrtConfig:
 
         # Iteration-based nsys (type: nsys) drives the vLLM engine profiler via
         # --profiler-config, derived from the profiling: block. Forbid duplicating
-        # it in vllm_config so the two can't diverge silently.
+        # it in roles.<role>.args so the two can't diverge silently.
         if prof.type == "nsys" and backend_type == "vllm":
             self._validate_vllm_nsys_profiler_config_not_set()
 
     def _validate_vllm_nsys_profiler_config_not_set(self):
-        """Reject profiler-config.* in vllm_config when nsys profiling is enabled.
+        """Reject profiler-config.* in a role's args when nsys profiling is enabled.
 
         srtctl injects --profiler-config from the profiling: block (single source
-        of truth), so a user-supplied profiler-config in vllm_config would either
-        be overwritten or conflict with a different step window. Fail fast at
-        recipe-read time instead.
+        of truth), so a user-supplied profiler-config in roles.<role>.args would
+        either be overwritten or conflict with a different step window. Fail fast
+        at recipe-read time instead.
         """
-        if not isinstance(self.backend, VLLMProtocol) or self.backend.vllm_config is None:
+        if not isinstance(self.backend, VLLMProtocol):
             return
-        vllm_cfg = self.backend.vllm_config
-        for mode_name, cfg in (
-            ("prefill", vllm_cfg.prefill),
-            ("decode", vllm_cfg.decode),
-            ("aggregated", vllm_cfg.aggregated),
-        ):
-            if not cfg:
-                continue
-            bad = [k for k in cfg if str(k).replace("_", "-").startswith("profiler-config")]
+        for role, spec in self.roles.items():
+            bad = [k for k in spec.args if str(k).replace("_", "-").startswith("profiler-config")]
             if bad:
                 raise ValidationError(
-                    f"vllm_config.{mode_name} sets {bad}, but profiler-config.* is derived automatically "
+                    f"roles.{role}.args sets {bad}, but profiler-config.* is derived automatically "
                     f"from the profiling: block when nsys profiling is enabled. Remove these keys."
                 )
 

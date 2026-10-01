@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from srtctl.backends import TRTLLMProtocol, TRTLLMServerConfig
+from srtctl.backends import TRTLLMProtocol
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import DynamoConfig, SrtConfig
+from srtctl.core.schema import DynamoConfig, SrtConfig, RoleConfig
 
 
 def _runtime(*, staged=None, hf=False, model="/lustre/DeepSeek-V4-Pro"):
@@ -154,7 +154,7 @@ class TestWorkerCommandUsesStagedPath:
         return rt
 
     def test_trtllm_serve_worker_uses_staged_path(self, tmp_path):
-        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))
+        backend = TRTLLMProtocol(roles={"decode": RoleConfig(args={"tensor_parallel_size": 4})})
         cmd = backend.build_worker_command(
             self._proc(),
             [self._proc()],
@@ -169,7 +169,7 @@ class TestWorkerCommandUsesStagedPath:
         process = replace(process, endpoint_mode="agg")
         runtime = self._runtime_mock(tmp_path, "/model")
         runtime.frontend_port = 8000
-        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 8}))
+        backend = TRTLLMProtocol(roles={"agg": RoleConfig(args={"tensor_parallel_size": 8})})
 
         cmd = backend.build_worker_command(
             process,
@@ -181,7 +181,7 @@ class TestWorkerCommandUsesStagedPath:
         assert cmd[cmd.index("--port") + 1] == "8000"
 
     def test_dynamo_worker_uses_staged_path(self, tmp_path):
-        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))
+        backend = TRTLLMProtocol(roles={"decode": RoleConfig(args={"tensor_parallel_size": 4})})
         cmd = backend.build_worker_command(
             self._proc(),
             [self._proc()],

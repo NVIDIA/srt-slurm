@@ -22,7 +22,6 @@ from srtctl.backends import (
     BackendProtocol,
     BackendType,
     SGLangProtocol,
-    SGLangServerConfig,
 )
 
 from .config import (
@@ -116,7 +115,6 @@ __all__ = [
     "RuntimeContext",
     # Backend configs (re-exported from backends)
     "SGLangProtocol",
-    "SGLangServerConfig",
     "SlurmConfig",
     # Schema types (frozen dataclasses)
     "SrtConfig",

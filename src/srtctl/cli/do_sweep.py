@@ -395,7 +395,7 @@ class SweepOrchestrator(
             logger.warning(
                 "HF model '%s' specified but HF_HOME is not set in backend environment config. "
                 "Workers will use the default HuggingFace cache (~/.cache/huggingface) which may not "
-                "be shared across nodes. Set HF_HOME in prefill_environment/decode_environment to use "
+                "be shared across nodes. Set HF_HOME in roles.<role>.env to use "
                 "a shared cache directory (e.g., HF_HOME: /lustre/fsw/.../common/cache).",
                 self.runtime.model_path,
             )
