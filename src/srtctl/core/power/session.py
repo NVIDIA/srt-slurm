@@ -207,6 +207,18 @@ class PowerTelemetrySession:
         with self._state_lock:
             self._reasons.append(reason)
 
+    def record_clock_sync_failures(self, nodes: Sequence[str]) -> None:
+        """Mark the artifacts unpublishable because ``nodes`` could not prove NTP synchronisation.
+
+        Called by the orchestrator on a best-effort run that continued past a
+        failed pre-server probe. The exit-code policy stays with ``required``;
+        the manifest must still tell the truth about comparability.
+        """
+        if not nodes:
+            return
+        self._manifest.clock_sync_failures = list(dict.fromkeys(nodes))
+        self.record_reason(Reason.CLOCK_SYNC_UNVERIFIED)
+
     def start_and_wait_for_readiness(self) -> bool:
         """Resolve endpoints and start collecting under one absolute deadline."""
         deadline = time.monotonic() + self._settings.startup_timeout_seconds
@@ -578,6 +590,8 @@ class PowerTelemetrySession:
             and not sample_reasons
             and self._manifest.samples_sha256 is not None
             and not self._manifest.artifact_errors
+            # NOTE: coverage math is meaningless when sample and window clocks were never shown to agree.
+            and not self._manifest.clock_sync_failures
         )
 
         self._manifest.reason_codes = list(dedupe(reasons))

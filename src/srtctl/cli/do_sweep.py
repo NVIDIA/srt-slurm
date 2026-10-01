@@ -353,7 +353,14 @@ class SweepOrchestrator(
         measure skew -- it asks each node's own time daemon whether it is
         locked -- but it catches the gross case (chrony down, misconfigured
         image) before GPU time is spent.
+
+        Under ``telemetry.required`` a failure aborts the job here. Otherwise
+        the failing nodes are kept in ``_clock_sync_failures`` and handed to
+        the power session when it starts, so the manifest records
+        ``clock_sync_unverified`` and ``publication_valid: false`` instead of
+        silently claiming an alignment nobody checked.
         """
+        self._clock_sync_failures: list[str] = []
         telemetry = self.config.telemetry
         if not (telemetry.enabled and telemetry.dcgm_exporter is not None and telemetry.clock_sync_check):
             return
@@ -397,7 +404,8 @@ class SweepOrchestrator(
         )
         if telemetry.required:
             raise RuntimeError(message)
-        logger.warning("%s (telemetry.required is false, continuing)", message)
+        self._clock_sync_failures = failures
+        logger.warning("%s (telemetry.required is false; continuing, artifacts will be marked unpublishable)", message)
 
     def _run_host_teardown(self) -> None:
         """Undo host_setup after workers stop.

@@ -1871,8 +1871,10 @@ class TelemetryConfig:
     # NTP-synchronised system clock. Sample timestamps (orchestrator host) and
     # window boundaries (benchmark client host) are compared directly, so an
     # unsynchronised node silently misaligns the measurement. Fails the job
-    # when ``required`` is true, warns otherwise. Set false on clusters where
-    # timedatectl/chronyc/ntpq are unavailable to unprivileged users.
+    # when ``required`` is true; otherwise the run continues and the manifest
+    # records ``clock_sync_unverified`` with ``publication_valid: false``.
+    # Set false on clusters where timedatectl/chronyc/ntpq are unavailable to
+    # unprivileged users.
     clock_sync_check: bool = True
     # Seconds to wait for the exporters to answer before giving up (DCGM and CPU legs).
     startup_timeout_seconds: float = 30.0

@@ -118,6 +118,33 @@ class TestGate:
             orch._check_clock_sync()  # must not raise
 
         assert "telemetry.required is false" in caplog.text
+        assert orch._clock_sync_failures == ["node0", "node1", "node2"]
+
+    def test_passing_probe_leaves_no_failures(self, tmp_path):
+        orch = SweepOrchestrator(config=_config(telemetry=_dcgm_power(required=False)), runtime=_runtime(tmp_path))
+
+        with patch("srtctl.cli.do_sweep.start_srun_process", return_value=_proc(0)):
+            orch._check_clock_sync()
+
+        assert orch._clock_sync_failures == []
+
+    def test_best_effort_failures_reach_the_power_session(self, tmp_path):
+        """The warning alone is not enough: the manifest must carry the unverified-clock reason."""
+        orch = SweepOrchestrator(config=_config(telemetry=_dcgm_power(required=False)), runtime=_runtime(tmp_path))
+        with patch("srtctl.cli.do_sweep.start_srun_process", return_value=_proc(1)):
+            orch._check_clock_sync()
+
+        session = MagicMock()
+        with (
+            patch("srtctl.cli.mixins.telemetry_stage.PowerTelemetrySession", return_value=session),
+            patch("srtctl.cli.mixins.telemetry_stage.build_expected_devices", return_value=[]),
+            patch.object(type(orch), "backend_processes", new_callable=lambda: property(lambda self: [])),
+            patch.object(orch, "_telemetry_nodes", return_value=["node1", "node2"]),
+            patch.object(orch, "_start_exporter_container", return_value=[]),
+        ):
+            orch.start_power_telemetry(MagicMock())
+
+        session.record_clock_sync_failures.assert_called_once_with(["node0", "node1", "node2"])
 
     def test_a_hung_probe_counts_as_a_failure(self, tmp_path):
         hung = MagicMock()

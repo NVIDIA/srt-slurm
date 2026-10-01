@@ -18,9 +18,12 @@ window themselves.
   aligned, so the client may run on any node (`benchmark.placement.node`,
   including `dedicated`). Before any server starts, the
   orchestrator probes every allocation node's bare host for a synchronised
-  clock (`timedatectl`, then `chronyc`, then `ntpq`); a node that cannot prove
-  synchronisation fails the job under `required: true` and warns otherwise.
-  Set `clock_sync_check: false` where those tools are unavailable.
+  clock (`timedatectl`, then `chronyc`, then `ntpq`). A node that cannot prove
+  synchronisation aborts the job under `required: true`; under
+  `required: false` the run continues but the manifest records the failing
+  hosts in `clock_sync_failures`, carries the `clock_sync_unverified` reason,
+  and sets `publication_valid: false` — the exit code stays that of the
+  benchmark. Set `clock_sync_check: false` where those tools are unavailable.
 - Only `DCGM_FI_DEV_POWER_USAGE` is parsed. Device identity comes from the
   `gpu` and `UUID` labels.
 - **No in-tree benchmark stamps measurement windows yet**, so every run is
