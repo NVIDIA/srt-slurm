@@ -13,12 +13,14 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from srtctl.core.power.contract import (
     CLOCK_SOURCE,
+    MAX_MISSING_SAMPLE_WINDOW_FRACTION,
     MAX_SAMPLE_GAP_SECONDS,
     SCHEMA_VERSION,
     WINDOWS_DIRNAME,
@@ -65,6 +67,7 @@ def validate_expected_windows(
     expected_device_keys: set[DeviceKey],
     observed_devices: Sequence[ObservedDevice],
     artifact_errors: list[ArtifactError],
+    sample_interval_seconds: float | None,
 ) -> list[WindowValidation]:
     """Emit exactly one validation row per expected window.
 
@@ -89,6 +92,7 @@ def validate_expected_windows(
             result_root=result_root,
             expected_device_keys=expected_device_keys,
             observed_devices=observed_devices,
+            sample_interval_seconds=sample_interval_seconds,
         )
         for expected in expected_windows
     ]
@@ -267,6 +271,7 @@ def _validate_one(
     result_root: Path,
     expected_device_keys: set[DeviceKey],
     observed_devices: Sequence[ObservedDevice],
+    sample_interval_seconds: float | None,
 ) -> WindowValidation:
     if window is None:
         reasons = [Reason.MEASUREMENT_WINDOW_DUPLICATE] if duplicated else [Reason.MEASUREMENT_WINDOW_MISSING]
@@ -290,7 +295,7 @@ def _validate_one(
             reasons.append(Reason.MEASUREMENT_WINDOW_MALFORMED)
         else:
             gaps, coverage_reasons = _check_coverage(
-                window.start_unix, window.end_unix, expected_device_keys, observed_devices
+                window.start_unix, window.end_unix, expected_device_keys, observed_devices, sample_interval_seconds
             )
             reasons.extend(coverage_reasons)
 
@@ -344,6 +349,7 @@ def _check_coverage(
     end: float,
     expected_device_keys: set[DeviceKey],
     observed_devices: Sequence[ObservedDevice],
+    sample_interval_seconds: float | None,
 ) -> tuple[dict[str, float], list[str]]:
     """Every expected device must bracket the window with small enough gaps."""
     by_key = {device.key: device for device in observed_devices}
@@ -367,13 +373,30 @@ def _check_coverage(
         gaps[f"{device.hostname}/{device.gpu_uuids[0]}"] = largest
         if largest > MAX_SAMPLE_GAP_SECONDS:
             reasons.append(Reason.SAMPLE_GAP_EXCEEDED)
+        if not _sample_loss_within_policy(sequence, sample_interval_seconds):
+            reasons.append(Reason.SAMPLE_LOSS_EXCEEDED)
 
     return gaps, reasons
 
 
+def _sample_loss_within_policy(sequence: Sequence[float], sample_interval_seconds: float | None) -> bool:
+    """Compare counts and elapsed time over the same nearest-bracket span; an unknown cadence fails closed."""
+    if not is_finite_number(sample_interval_seconds) or sample_interval_seconds <= 0:
+        return False
+    expected = (sequence[-1] - sequence[0]) / sample_interval_seconds
+    if not math.isfinite(expected):
+        return False
+    expected_intervals = math.floor(expected)
+    missing_intervals = expected_intervals - (len(sequence) - 1)
+    return missing_intervals <= expected_intervals * MAX_MISSING_SAMPLE_WINDOW_FRACTION
+
+
 def _bracketing_sequence(times: Sequence[float], start: float, end: float) -> list[float] | None:
-    """The last sample at or before start, every in-window sample, the first at or after end."""
-    ordered = sorted(times)
+    """The last sample at or before start, every in-window sample, the first at or after end.
+
+    Duplicate timestamps collapse to one: a row written twice is one instant sampled, not two.
+    """
+    ordered = sorted(set(times))
     before = [value for value in ordered if value <= start]
     after = [value for value in ordered if value >= end]
     if not before or not after:

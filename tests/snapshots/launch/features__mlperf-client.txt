@@ -1,0 +1,268 @@
+# examples/features/mlperf-client.yaml
+# exit_code: 0
+# srun calls: 12
+
+## service_etcd
+nodelist: node-01
+output: <output>/logs/service_etcd.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/etcd && mkdir -p /tmp/etcd
+command: |
+    /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_nats
+nodelist: node-01
+output: <output>/logs/service_nats.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/nats && mkdir -p /tmp/nats
+command: |
+    /configs/nats-server -js -sd /tmp/nats
+
+## agg_0_node-01
+nodes: 1
+ntasks: 4
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: nats
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7500
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    MASTER_ADDR: 127.0.0.1
+    MASTER_PORT: 29500
+    NATS_SERVER: nats://127.0.0.1:4222
+    NCCL_CUMEM_ENABLE: 1
+    NCCL_MNNVL_ENABLE: 1
+    TLLM_LOG_LEVEL: INFO
+    TRTLLM_ENABLE_PDL: 1
+    TRTLLM_EPLB_SHM_NAME: <random>
+srun_options:
+    kill-on-bad-exit: 1
+    ntasks-per-node: 4
+mpi: pmix
+oversubscribe: True
+cpu_bind: verbose,none
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name deepseek-ai/deepseek-r1 --extra-engine-args /logs/trtllm_config_agg.yaml --request-plane nats --publish-metrics
+
+## frontend_0
+nodelist: node-01
+output: <output>/logs/node-01_frontend_0.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_REQUEST_PLANE: nats
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+mpi: pmix
+command: |
+    python3 -m dynamo.frontend --http-port=8000
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: /path/to/images/endpoint_client.sqsh
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /path/to/ie-configs: /mlperf-configs
+    /path/to/mlperf/dataset: /work/dataset
+    /path/to/models/deepseek-r1-nvfp4: /model
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    AIPERF_SERVER_METRICS_URLS: http://127.0.0.1:7500/metrics
+    MLPERF_CLIENT_CONFIG: /mlperf-configs/client.yaml
+    MLPERF_MODE: both
+    MODEL_DIR: /model
+    SRTCTL_FRONTEND_TYPE: dynamo
+    SRT_AGG_ENDPOINTS: 127.0.0.1:7500
+    SRT_AGG_IPS: 127.0.0.1
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+    SRT_GPUS_PER_NODE: 4
+    SRT_SERVICE_DCGM_EXPORTER_IPS: 127.0.0.1,127.0.0.1,127.0.0.1
+    SRT_SERVICE_DCGM_EXPORTER_NODES: node-01,node-02,node-03
+    SRT_SERVICE_DCGM_EXPORTER_NODE_COUNT: 3
+    SRT_SERVICE_ETCD_IPS: 127.0.0.1
+    SRT_SERVICE_ETCD_NODES: node-01
+    SRT_SERVICE_ETCD_NODE_COUNT: 1
+    SRT_SERVICE_NATS_IPS: 127.0.0.1
+    SRT_SERVICE_NATS_NODES: node-01
+    SRT_SERVICE_NATS_NODE_COUNT: 1
+    SRT_SERVICE_NODE_EXPORTER_IPS: 127.0.0.1,127.0.0.1,127.0.0.1
+    SRT_SERVICE_NODE_EXPORTER_NODES: node-01,node-02,node-03
+    SRT_SERVICE_NODE_EXPORTER_NODE_COUNT: 3
+    SRT_SERVICE_PROCESS_EXPORTER_IPS: 127.0.0.1,127.0.0.1,127.0.0.1
+    SRT_SERVICE_PROCESS_EXPORTER_NODES: node-01,node-02,node-03
+    SRT_SERVICE_PROCESS_EXPORTER_NODE_COUNT: 3
+    SRT_WORKER_NODES: node-01,node-02,node-03
+command: |
+    bash -lc 'bash /srtctl-benchmarks/mlperf/bench.sh'

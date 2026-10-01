@@ -999,3 +999,64 @@ async fn test_timestamp_ns_and_f64_precision() {
 
     writer.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_outbox_receives_each_sealed_segment_once() {
+    let (_local_temp, _remote_temp, local_dir, remote_store, remote_path) =
+        create_test_setup().await;
+    let outbox_temp = TempDir::new().unwrap();
+    let outbox = outbox_temp.path().join("outbox");
+
+    let writer = Arc::new(
+        DatasetWriter::with_outbox(
+            local_dir.clone(),
+            1_000_000, // never reached: the save interval seals segments
+            1,
+            vec![],
+            Some(outbox.clone()),
+        )
+        .unwrap(),
+    );
+
+    writer
+        .append_rows(create_test_rows(3, "first"))
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+    writer
+        .append_rows(create_test_rows(2, "second"))
+        .await
+        .unwrap();
+    writer.shutdown().await.unwrap();
+
+    assert!(!local_dir.join("current.arrow").exists());
+    let mut segments: Vec<_> = std::fs::read_dir(&outbox)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    segments.sort();
+    assert_eq!(segments, vec!["out-1.parquet", "out-2.parquet"]);
+    let rows: Vec<usize> = segments
+        .iter()
+        .map(|name| {
+            read_local_parquet_file(&outbox.join(name))
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum()
+        })
+        .collect();
+    assert_eq!(rows, vec![3, 2]);
+
+    // Compaction owns local_dir; the outbox copies survive it untouched.
+    compact_and_upload(&local_dir, remote_store.clone(), &remote_path)
+        .await
+        .unwrap();
+    let final_path = format!("{}/final.parquet", remote_path);
+    let batches = read_parquet_file(&remote_store, &final_path).await;
+    assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 5);
+    assert!(!local_dir.join("out-1.parquet").exists());
+    assert_eq!(
+        read_local_parquet_file(&outbox.join("out-1.parquet"))[0].num_rows(),
+        3
+    );
+}

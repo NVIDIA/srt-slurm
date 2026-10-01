@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bounded read-only queries over the exact dataset embedded in the HTML."""
+"""Read-only queries over indexed or legacy normalized evidence."""
 
 from __future__ import annotations
 
@@ -9,29 +9,50 @@ import gzip
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from .capabilities import capabilities
 from .model import SCHEMA
 
-KINDS = ("summary", "requests", "request", "lifecycle", "metrics", "profiles", "nsys", "cpu", "iterations", "sources")
+if TYPE_CHECKING:
+    from .storage import TraceStore
+
+KINDS = (
+    "summary",
+    "requests",
+    "request",
+    "lifecycle",
+    "metrics",
+    "profiles",
+    "nsys",
+    "cpu",
+    "iterations",
+    "sources",
+    "server_spans",
+)
 
 
 class TraceDataset:
-    def __init__(self, data: dict[str, Any]) -> None:
+    def __init__(self, data: dict[str, Any], store: TraceStore | None = None) -> None:
         if data.get("schema") != SCHEMA:
             raise ValueError(f"Unsupported trace schema: {data.get('schema')!r}; expected {SCHEMA}")
         if not math.isfinite(data["meta"]["duration"]) or data["meta"]["duration"] <= 0:
             raise ValueError("Dataset has no positive finite duration")
         self.data = data
+        self.store = store
         self.requests = {r["id"]: r for r in data["requests"]}
         if len(self.requests) != len(data["requests"]):
             raise ValueError("Duplicate client request identities in dataset")
 
     @classmethod
     def from_path(cls, path: Path | str) -> TraceDataset:
-        path = Path(path)
-        if path.is_dir():
-            path /= "trace-data.json.gz"
+        from .storage import TraceStore
+
+        path = dataset_path(path)
+        with path.open("rb") as stream:
+            if stream.read(16) == b"SQLite format 3\x00":
+                store = TraceStore(path)
+                return cls(store.data, store)
         raw = path.read_bytes()
         return cls(json.loads(gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw))
 
@@ -66,6 +87,20 @@ class TraceDataset:
         if kind not in KINDS:
             raise ValueError(f"Unknown query kind {kind!r}; choose from {KINDS}")
 
+        if self.store and kind in ("metrics", "profiles", "nsys", "cpu"):
+            return self.store.query(
+                kind,
+                lo=lo,
+                hi=hi,
+                worker=worker,
+                rank=rank,
+                profile=profile,
+                name=name,
+                offset=offset,
+                limit=limit,
+                points=points,
+            )
+
         def overlaps(a: float, b: float) -> bool:
             return a <= hi and b >= lo
 
@@ -84,6 +119,7 @@ class TraceDataset:
                 "schema": data["schema"],
                 "meta": data["meta"],
                 "audit": data["audit"],
+                "capabilities": data.get("capabilities", capabilities(data)),
                 "counts": {
                     key: len(data[key])
                     for key in ("requests", "sessions", "workers", "metrics", "profiles", "iterations")
@@ -120,6 +156,8 @@ class TraceDataset:
                     | {"span_count": len(request["spans"])}
                 )
             return page(result)
+        if kind == "server_spans":
+            return page([s for s in data.get("server_spans", []) if overlaps(s["start"], s["end"])])
         if kind == "sources":
             return page(data["sources"])
         if kind == "metrics":
@@ -130,7 +168,7 @@ class TraceDataset:
                 if rank is not None and str(series["rank"]) != str(rank):
                     continue
                 selected = [p for p in series["points"] if lo <= p[0] <= hi]
-                values = [p[1] for p in selected]
+                values = [p[1] for p in selected if p[1] is not None]
                 item = {k: v for k, v in series.items() if k != "points"}
                 item.update(
                     samples=len(values),
@@ -139,6 +177,10 @@ class TraceDataset:
                     mean=sum(values) / len(values) if values else None,
                     last=values[-1] if values else None,
                 )
+                if series.get("temporal") == "setting":
+                    prior = [p for p in series["points"] if p[0] < lo]
+                    stamp = max((p[0] for p in prior), default=None)
+                    item["carried_setting"] = [p for p in prior if p[0] == stamp]
                 if points:
                     item.update(
                         points=selected[:1000], points_total=len(selected), points_truncated=len(selected) > 1000
@@ -164,12 +206,13 @@ class TraceDataset:
             rows = [
                 r
                 for r in data["iterations"]
-                if (not worker or r["worker"] == worker) and (rank is None or r["global_rank"] == rank)
+                if (not worker or r["worker"] == worker)
+                and (rank is None or (r["rank"] if "rank_kind" in r else r["global_rank"]) == rank)
             ]
             return page(
                 [r for r in rows if r["start"] is not None and overlaps(r["start"], r["end"])],
                 unaligned_rows=sum(r["start"] is None for r in rows),
-                attribution="Shared batches, one-second timestamps. Counters and timers are not mapped to requests or NVTX iterations.",
+                attribution="Shared batch observations with recorded timestamp precision and rank scope; not per-request execution time.",
             )
         if kind == "nsys":
             events = []
@@ -185,6 +228,9 @@ class TraceDataset:
                                 "end": event[1],
                                 "name": p["names"][event[2]],
                                 "global_tid": event[3],
+                                "pid": ((int(event[3]) >> 24) & 0xFFFFFF) if event[3].isdigit() else None,
+                                "tid": (int(event[3]) & 0xFFFFFF) if event[3].isdigit() else None,
+                                "definition": p["name_definitions"][event[2]] if p.get("name_definitions") else None,
                                 "rowid": event[4],
                                 "evidence_source": p["evidence_source"],
                             }
@@ -215,3 +261,13 @@ class TraceDataset:
             total_samples=count,
             attribution="Inclusive process samples; not per-request CPU time.",
         )
+
+
+def dataset_path(path: Path | str) -> Path:
+    """Prefer the indexed cache, retaining explicit legacy JSON/gzip support."""
+    from .storage import FILENAME
+
+    path = Path(path)
+    if path.is_dir():
+        path /= FILENAME if (path / FILENAME).is_file() else "trace-data.json.gz"
+    return path

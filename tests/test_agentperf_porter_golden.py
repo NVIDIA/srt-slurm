@@ -60,8 +60,13 @@ class TestRewriteUtils:
 class TestEnvTranslation:
     def test_drop_rename_passthrough(self):
         env = porter.translate_env(
-            ["CUDA_VISIBLE_DEVICES=0,1", "PATH=/x", "DYN_KV_BLOCK_SIZE=128",
-             "DYN_UCX_TLS=sm,tcp", "TLLM_LOG_LEVEL=INFO"]
+            [
+                "CUDA_VISIBLE_DEVICES=0,1",
+                "PATH=/x",
+                "DYN_KV_BLOCK_SIZE=128",
+                "DYN_UCX_TLS=sm,tcp",
+                "TLLM_LOG_LEVEL=INFO",
+            ]
         )
         assert "CUDA_VISIBLE_DEVICES" not in env and "PATH" not in env
         assert env["DYN_TRTLLM_KV_BLOCK_SIZE"] == "128"
@@ -91,8 +96,12 @@ class TestFrontendArgs:
 
     def test_env_driven_values(self):
         args = porter.build_frontend_args(
-            {"ROUTER_MODE": "round-robin", "DYN_FRONTEND_ENABLE_KV_EVENTS": "1",
-             "DYN_KV_BLOCK_SIZE": "64", "DYN_REQUEST_PLANE": "nats"}
+            {
+                "ROUTER_MODE": "round-robin",
+                "DYN_FRONTEND_ENABLE_KV_EVENTS": "1",
+                "DYN_KV_BLOCK_SIZE": "64",
+                "DYN_REQUEST_PLANE": "nats",
+            }
         )
         assert args["router-mode"] == "round-robin"
         assert args["no-router-kv-events"] is False
@@ -114,10 +123,17 @@ class TestGoldenEndToEnd:
 
     def test_golden_outputs(self, tmp_path):
         out, wl = tmp_path / "recipe.yaml", tmp_path / "workload.yaml"
-        rc = porter.main([
-            str(FIXTURE / "c1010"), "--out", str(out), "--workload-out", str(wl),
-            "--dataset-root", str(FIXTURE / "c1010" / "datasets"),
-        ])
+        rc = porter.main(
+            [
+                str(FIXTURE / "c1010"),
+                "--out",
+                str(out),
+                "--workload-out",
+                str(wl),
+                "--dataset-root",
+                str(FIXTURE / "c1010" / "datasets"),
+            ]
+        )
         assert rc == 0
         for generated, golden in ((out, "expected-recipe.yaml"), (wl, "expected-workload.yaml")):
             got = self._normalize(generated.read_text(), wl)
@@ -128,12 +144,13 @@ class TestGoldenEndToEnd:
             )
 
     def test_golden_recipe_loads_into_schema(self, tmp_path):
-        """The golden recipe (with placeholders filled) must satisfy SrtConfig's schema."""
+        """The golden recipe (with placeholders filled) must load the way `srtctl apply` loads it."""
+        from srtctl.core.config import resolve_config_with_defaults
         from srtctl.core.schema import SrtConfig
 
         raw = (FIXTURE / "expected-recipe.yaml").read_text()
         raw = raw.replace("<FIXTURE>", str(FIXTURE)).replace("<WORKLOAD_OUT>", "/workloads/w.yaml")
-        cfg = SrtConfig.Schema().load(yaml.safe_load(raw))
+        cfg = SrtConfig.Schema().load(resolve_config_with_defaults(yaml.safe_load(raw), None))
         assert cfg.benchmark.type == "agentperf"
-        assert cfg.resources.prefill_workers == 5
+        assert cfg.topology.prefill_workers == 5
         assert cfg.backend.numa_cpu_bind is False

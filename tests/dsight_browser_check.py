@@ -151,12 +151,10 @@ async def run(html, output, port, request_id):
         report["tests"].append("Human expansion appends one milestone per row and drills into provenance")
         await js("document.getElementById('tracks').scrollTop=0;document.getElementById('inspectorBody').scrollTop=0")
         await screenshot("11-cumulative-lifecycle.png")
-        await js("traceExplorer.setState({tab:'iterations'})")
         iterations = await js(
             "traceExplorer.queryIterations({worker:traceExplorer.getRequest(traceExplorer.getState().request).workers[0],rank:0,limit:3})"
         )
         assert iterations["items"] or iterations["unaligned_rows"]
-        await screenshot("12-iterations.png")
         report["tests"].append("Iteration context is queryable without claiming per-request batch ownership")
         # Exercise every imported rank via query, and a concrete worker through the UI.
         profiles = await js("traceExplorer.listProfiles()")
@@ -200,7 +198,7 @@ async def run(html, output, port, request_id):
         )
         assert rejects == 4
         report["tests"].append("Invalid ranges and missing identities fail explicitly")
-        metrics = await js("traceExplorer.queryMetrics({points:true})")
+        metrics = await js("traceExplorer.queryMetrics({name:traceExplorer.getState().metric,points:true})")
         state = await js("traceExplorer.getState()")
         assert all(state["from"] <= p[0] <= state["to"] for m in metrics for p in m.get("points", []))
         report["tests"].append("Metric API preserves labels and respects the selected range")
@@ -220,7 +218,7 @@ async def run(html, output, port, request_id):
         report["tests"].append("Saved selection restores range, identity, and expansions")
         await check_client_drag(call, js, click, screenshot, r, report)
         report["export"] = await js(
-            "(()=>{const x=traceExplorer.exportSelection();return {request:x.request.id,sources:x.sources.length,metrics:x.metrics.length,view:x.view}})()"
+            "(async()=>{const x=await traceExplorer.exportSelection();return {request:x.request.id,sources:x.sources.length,metrics:x.metrics.length,view:x.view}})()"
         )
         assert report["export"]["request"] == r["id"]
         report["errors"] = [e for e in events if e.get("method") == "Runtime.exceptionThrown"]

@@ -112,6 +112,8 @@ class SrtConfig:
     name: str
     model: ModelConfig
     resources: ResourceConfig
+    engine: BackendConfig | None
+    roles: dict[str, RoleConfig]
     # ... all fields immutable
 ```
 
@@ -234,14 +236,16 @@ src/srtctl/core/
 
 #### schema.py - Configuration Dataclasses
 
-All configs are **frozen dataclasses** with marshmallow validation. The recipe a user writes is the `schema: 2` layout (`engine:`, `roles:`, `placement:`, `services:`, `dynamo.source:`); `load_config` normalizes it into these dataclasses before validation (see [Config Loading Flow](#config-loading-flow)).
+All configs are **frozen dataclasses** with marshmallow validation. The recipe a user writes is the `schema: 2` layout (`engine:`, `roles:`, `placement:`, `services:`, `dynamo.source:`) and loads straight into these dataclasses; `SrtConfig.topology` and `SrtConfig.backend` are derived from `roles` and `engine` once (see [Config Loading Flow](#config-loading-flow)).
 
 | Class             | Purpose             | Key Fields                                            |
 | ----------------- | ------------------- | ----------------------------------------------------- |
-| `SrtConfig`       | Main job config     | name, model, resources, backend, frontend, benchmark, services |
+| `SrtConfig`       | Main job config     | name, model, resources, engine, roles, frontend, benchmark, services |
 | `ModelConfig`     | Model settings      | path, container, precision                            |
-| `ResourceConfig`  | GPU/node allocation | gpu_type, gpus_per_node, plus the per-role node/worker/GPU counts filled from `roles:` |
-| `BackendConfig`   | Polymorphic backend | type, engine-wide knobs, plus the per-role args/env filled from `roles:` |
+| `ResourceConfig`  | Cluster facts       | gpu_type, gpus_per_node, spread_workers, het_jobs     |
+| `RoleConfig`      | One worker role     | nodes (or `colocate`), workers, gpus, env, args, extra_args, engine, container, kv_events, critical |
+| `Topology`        | Derived worker layout | num_prefill, gpus_per_decode, total_nodes, het_components (from `roles` and `gpus_per_node`) |
+| `BackendConfig`   | Polymorphic engine  | type, engine-wide knobs, and `roles` (the recipe's roles, bound at load; per-role args/env are read from them) |
 | `FrontendConfig`  | Router settings     | type, enable_multiple_frontends, nginx_raise_ulimit, args, env |
 | `BenchmarkConfig` | Benchmark params    | type, isl, osl, concurrencies, sweep                  |
 | `ProfilingConfig` | Profiling settings  | type (nsys/torch), phase configs                      |
@@ -339,11 +343,11 @@ roles:
       tensor-parallel-size: 4
 ```
 
-`srtctl.core.roles.expand_roles` (with `expand_engine`, `srtctl.core.placement.expand_placement`, and `srtctl.services.normalize`) rewrites this into the internal fields the runtime reads: the per-role node, worker, and GPU counts on `ResourceConfig`, and per-mode `args`, `env`, `extra_args`, and `kv_events` on the engine's protocol dataclass. `nodes: colocate` becomes the internal shared-node sentinel, and the loader rejects a colocated split that does not fit on the prefill nodes. Those internal fields have the same names as the v1 recipe layout and are documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites a v1 recipe into `roles:`.
+`roles:` loads into `SrtConfig.roles`, one `RoleConfig` per role. `SrtConfig.topology` derives the per-role node, worker, and GPU counts the launch path reads, and `SrtConfig.backend` binds the roles onto the engine, which reads each role's `args`, `env`, `extra_args`, and `kv_events` from them. `nodes: colocate` reserves no decode nodes, and the loader rejects a colocated split that does not fit on the prefill nodes. The pre-2.0 spelling of these settings is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites a v1 recipe into `roles:`.
 
 #### SGLangProtocol
 
-Implements BackendProtocol for SGLang with P/D disaggregation. Its fields are the per-mode `env` and `args` from `roles.prefill`, `roles.decode`, and `roles.agg`, plus `kv_events`. `get_config_for_mode(mode)` and `get_environment_for_mode(mode)` hand them to the launch path.
+Implements BackendProtocol for SGLang with P/D disaggregation. Its `roles` carry each role's `env`, `args`, and `kv_events` (`roles.prefill`, `roles.decode`, `roles.agg`, bound at load); `get_config_for_mode(mode)` and `get_environment_for_mode(mode)` hand them to the launch path.
 
 **Launch strategy**: Per-process srun launching (one srun per worker process).
 
@@ -440,7 +444,7 @@ src/srtctl/core/
 |                              |                  |                 |
 | - SrtConfig (frozen)         | - load_config()  | - RuntimeContext|
 | - ModelConfig (frozen)       | - YAML parsing   | - from_config() |
-| - ResourceConfig (frozen)    | - Cluster defaults| - Path compute |
+| - RoleConfig / Topology      | - Cluster defaults| - Path compute |
 | - BackendConfig (polymorphic)| - Validation     |                 |
 +------------------------------------------------------------------+
                                 |
@@ -501,10 +505,9 @@ src/srtctl/core/
 
 ```
 +------------+     +-------------+     +------------------+     +--------------+
-| YAML Config| --> | load_config | --> | expand_engine    | --> | SrtConfig    |
-| (schema 2) |     +-------------+     | expand_roles     |     | (frozen DC)  |
-+------------+                         | expand_placement |     +--------------+
-                                       | normalize        |            |
+| YAML Config| --> | load_config | --> | cluster defaults | --> | SrtConfig    |
+| (schema 2) |     +-------------+     | engine defaults  |     | (frozen DC)  |
++------------+                         | normalize        |     +--------------+
                                        | services         |            |
                                        +------------------+            |
                                                                        v
@@ -853,7 +856,7 @@ class ProcessRegistry:
         """Add a process to the registry."""
 
     def check_failures(self) -> bool:
-        """Check if any critical process has failed."""
+        """A critical process exited non-zero, or its log matched one of its fatal_log_patterns while the step still runs."""
 
     def cleanup(self) -> None:
         """Terminate all registered processes."""
@@ -872,6 +875,7 @@ class ManagedProcess:
     log_file: Path | None
     node: str | None
     critical: bool = True  # Failure triggers cleanup
+    fatal_log_patterns: tuple[str, ...] = ()  # Log lines that mean the engine died behind a live srun step
 
     @property
     def is_running(self) -> bool: ...

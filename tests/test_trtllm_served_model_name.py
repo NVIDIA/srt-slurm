@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from srtctl.backends.trtllm import TRTLLMProtocol, TRTLLMServerConfig
-from srtctl.core.schema import DynamoConfig
+from srtctl.backends.trtllm import TRTLLMProtocol
+from srtctl.core.schema import DynamoConfig, RoleConfig
 from srtctl.core.topology import Process
 
 
@@ -37,8 +37,7 @@ class TestTRTLLMServedModelName:
         """trtllm_config becomes the engine's YAML file, and this is a launcher
         flag, so it must not leak in there."""
         backend = TRTLLMProtocol(
-            served_model_name="deepseek-ai/deepseek-r1",
-            trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 4}),
+            served_model_name="deepseek-ai/deepseek-r1", roles={"agg": RoleConfig(args={"tensor_parallel_size": 4})}
         )
         rendered = backend.get_config_for_mode("agg")
         assert "served_model_name" not in rendered

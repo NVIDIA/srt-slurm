@@ -5,7 +5,7 @@
 
 Three things used to be launched by bespoke stages with their own placement
 knobs, readiness loops, and no dry-run output: etcd and NATS for the Dynamo
-frontend, the Mooncake master for ``backend.mooncake_kv_store``, and the DCGM and
+frontend, the Mooncake master for ``engine.mooncake_kv_store``, and the DCGM and
 node exporters tachometer scrapes. They are services now. This module derives
 the implicit ones from the rest of the recipe, lets a declared entry of the same
 name take over (or drop it with ``enabled: false``), and hands the effective
@@ -17,13 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
+from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
+    from srtctl.core.topology import WorkerMode
 
 ETCD_SERVICE_NAME = "etcd"
 NATS_SERVICE_NAME = "nats"
@@ -45,7 +46,7 @@ class EffectiveService:
 
 def infra_placement(config: SrtConfig) -> ServicePlacementConfig:
     """Where the discovery plane and other infra services run: the infra node, or a dedicated one."""
-    return ServicePlacementConfig(node="dedicated" if config.infra.etcd_nats_dedicated_node else "infra")
+    return ServicePlacementConfig(node="dedicated" if config.infra_dedicated_node else "infra")
 
 
 def nats_implied_reasons(config: SrtConfig) -> list[str]:
@@ -53,12 +54,12 @@ def nats_implied_reasons(config: SrtConfig) -> list[str]:
 
     The request plane defaults to ``tcp`` and KV events default to direct ZMQ, so
     NATS is implied only by ``dynamo.request_plane: nats``, ``dynamo.event_plane: nats``,
-    or a v1 ``infra.nats_max_payload_mb`` (a knob that only means anything with NATS).
+    or a ``nats`` service entry with ``options.max_payload_mb`` (a knob that only means
+    anything with NATS).
     """
     if getattr(config.frontend, "type", None) != "dynamo":
         return []
     dynamo = getattr(config, "dynamo", None)
-    infra = getattr(config, "infra", None)
     reasons = [
         f"dynamo.{field} nats"
         for field, value in (
@@ -67,8 +68,8 @@ def nats_implied_reasons(config: SrtConfig) -> list[str]:
         )
         if value == "nats"
     ]
-    if getattr(infra, "nats_max_payload_mb", None) is not None:
-        reasons.append("infra.nats_max_payload_mb")
+    if getattr(config, "nats_max_payload_mb", None) is not None:
+        reasons.append("services[nats].options.max_payload_mb")
     return reasons
 
 
@@ -78,6 +79,42 @@ def runs_nats(config: SrtConfig) -> bool:
         if getattr(entry, "type", None) == "nats":
             return bool(getattr(entry, "enabled", True))
     return bool(nats_implied_reasons(config))
+
+
+def connector_services(config: SrtConfig) -> list[EffectiveService]:
+    """The service each vLLM role's KV connector needs on its nodes (``KVConnector.service_type``).
+
+    Placed on the one role that uses the connector, or on every worker node when
+    several do. A declared service of that type owns the placement instead.
+    """
+    backend = config.backend
+    if not isinstance(backend, VLLMProtocol):
+        return []
+    resources = config.topology
+    workers: dict[WorkerMode, int] = {
+        "prefill": resources.num_prefill,
+        "decode": resources.num_decode,
+        "agg": resources.num_agg,
+    }
+    modes_by_type: dict[str, list[WorkerMode]] = {}
+    for mode, count in workers.items():
+        row = backend.kv_connector_for_mode(mode)
+        if count and row is not None and row.service_type is not None:
+            modes_by_type.setdefault(row.service_type, []).append(mode)
+    declared = {service.type for service in config.services}
+    return [
+        EffectiveService(
+            ServiceConfig(
+                name=service_type,
+                type=service_type,
+                placement=ServicePlacementConfig(node=modes[0] if len(modes) == 1 else "workers"),
+            ),
+            implicit=True,
+            reason=", ".join(f"{mode} connector {backend.connector_for_mode(mode)}" for mode in modes),
+        )
+        for service_type, modes in modes_by_type.items()
+        if service_type not in declared
+    ]
 
 
 def implied_services(config: SrtConfig) -> list[EffectiveService]:
@@ -98,6 +135,8 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
             EffectiveService(ServiceConfig(name=GMS_SERVICE_NAME, type="gms"), implicit=True, reason="engine.failover")
         )
 
+    implied.extend(connector_services(config))
+
     mooncake_cfg = config.backend.mooncake_kv_store
     if mooncake_cfg is not None:
         options = {}
@@ -117,7 +156,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     options=options,
                 ),
                 implicit=True,
-                reason="backend.mooncake_kv_store",
+                reason="engine.mooncake_kv_store",
             )
         )
 

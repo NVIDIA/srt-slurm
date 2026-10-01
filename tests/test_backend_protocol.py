@@ -15,17 +15,19 @@ from pathlib import Path
 import pytest
 
 from srtctl.backends import (
+    AtomProtocol,
     MockerProtocol,
     MooncakeKVStoreConfig,
     SGLangProtocol,
     TRTLLMProtocol,
+    TileRTProtocol,
     VLLMFailoverConfig,
     VLLMProtocol,
 )
 from srtctl.core.topology import Process
 from srtctl.ports import MOONCAKE_MASTER_PORT
 
-BACKENDS = [SGLangProtocol, TRTLLMProtocol, VLLMProtocol, MockerProtocol]
+BACKENDS = [SGLangProtocol, TRTLLMProtocol, VLLMProtocol, MockerProtocol, TileRTProtocol]
 SRC = Path(__file__).resolve().parents[1] / "src" / "srtctl"
 DUCK_TYPED_BACKEND = re.compile(r"\b(getattr|hasattr)\((self\.|config\.|self\.config\.)?backend\b")
 
@@ -80,3 +82,58 @@ def test_no_module_probes_a_backend_with_getattr_or_hasattr():
         if DUCK_TYPED_BACKEND.search(line)
     ]
     assert offenders == [], "read the member on BackendProtocol instead:\n" + "\n".join(offenders)
+
+
+ALL_BACKENDS = [*BACKENDS, AtomProtocol]
+
+LAUNCHER_LINES_THAT_MEAN_THE_ENGINE_IS_GONE = [
+    "Rank0 Task exit code: 1",
+    "Rank7 Task exit code: 137",
+    "[TensorRT-LLM][ERROR] [executor][RANK 0] Failed to initialize executor",
+]
+
+LINES_A_HEALTHY_RUN_PRINTS = [
+    "Rank0 Task exit code: 0",
+    "Rank0 MPI Comm server exit code: 0",
+    "Rank0 run mgmn leader node with mpi_world_size: 8",
+    # Dynamo logs one of these per request the client cancels at EOS.
+    "Traceback (most recent call last):",
+    "RuntimeError: response stream is closed",
+    # Printed on ordinary teardown.
+    "[node:1] MPI_ABORT was invoked on rank 0 in communicator MPI_COMM_WORLD",
+]
+
+
+@pytest.mark.parametrize("backend_cls", ALL_BACKENDS, ids=lambda cls: cls.__name__)
+@pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
+def test_every_backend_names_its_fatal_log_patterns(backend_cls, mode):
+    patterns = backend_cls().fatal_log_patterns(mode)
+    assert isinstance(patterns, tuple)
+    for pattern in patterns:
+        re.compile(pattern)
+
+
+@pytest.mark.parametrize(
+    "backend_cls", [SGLangProtocol, VLLMProtocol, MockerProtocol, AtomProtocol, TileRTProtocol], ids=lambda c: c.__name__
+)
+def test_engines_whose_step_exits_with_the_engine_watch_nothing(backend_cls):
+    assert backend_cls().fatal_log_patterns("decode") == ()
+    assert backend_cls().get_srun_config().kill_on_bad_exit is False
+
+
+@pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
+def test_trtllm_fatal_log_patterns_match_the_launcher_exit_line_but_not_a_clean_run(mode):
+    regexes = [re.compile(pattern) for pattern in TRTLLMProtocol().fatal_log_patterns(mode)]
+    assert regexes, "TRT-LLM must name the lines its launcher prints when the engine dies"
+
+    def matches(line: str) -> bool:
+        return any(regex.search(line) for regex in regexes)
+
+    for line in LAUNCHER_LINES_THAT_MEAN_THE_ENGINE_IS_GONE:
+        assert matches(line), line
+    for line in LINES_A_HEALTHY_RUN_PRINTS:
+        assert not matches(line), line
+
+
+def test_trtllm_endpoint_steps_end_when_any_task_exits_badly():
+    assert TRTLLMProtocol().get_srun_config().kill_on_bad_exit is True

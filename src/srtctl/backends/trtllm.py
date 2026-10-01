@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import builtins
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -11,6 +11,7 @@ import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env, role_for_mode
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, TRTLLM_DIST_INIT_PORTS
 
@@ -23,20 +24,19 @@ if TYPE_CHECKING:
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
 
-
-@dataclass(frozen=True)
-class TRTLLMServerConfig:
-    """SGLang server CLI configuration per mode (prefill/decode/aggregated).
-
-    Each mode can have its own configuration dict that gets converted
-    to CLI flags when starting the worker.
-    """
-
-    prefill: dict[str, Any] | None = None
-    decode: dict[str, Any] | None = None
-    aggregated: dict[str, Any] | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
+# Log lines that mean the engine behind a TRT-LLM worker step is gone while the
+# step itself may stay up. ``trtllm-llmapi-launch`` runs the engine as a child of
+# the rank-0 task and prints ``Rank<N> Task exit code: <code>`` when that child
+# exits; the follower ranks block in ``MPICommExecutor`` with no timeout, so
+# neither srun nor the process registry hears about the death otherwise.
+# ``Failed to initialize executor`` is TRT-LLM's own terminal start-up line.
+# Deliberately absent: ``Traceback`` (Dynamo logs a "response stream is closed"
+# traceback for every request the client cancels at EOS) and ``MPI_Abort``
+# (printed on ordinary teardown). A bare-word marker here would fail healthy runs.
+TRTLLM_FATAL_LOG_PATTERNS: tuple[str, ...] = (
+    r"^Rank\d+ Task exit code: (?!0$)\d+$",
+    r"Failed to initialize executor",
+)
 
 
 @dataclass(frozen=True)
@@ -47,46 +47,40 @@ class TRTLLMProtocol:
     BackendProtocol methods for process allocation and launching.
 
     Example YAML:
-        backend:
-          type: trtllm
-          prefill_environment:
-            CUDA_LAUNCH_BLOCKING: "1"
-          trtllm_config:
-            prefill:
-              mem-fraction-static: 0.8
-              chunked-prefill-size: 8192
-            decode:
-              mem-fraction-static: 0.9
+        engine: trtllm
+        roles:
+          prefill:
+            env:
+              CUDA_LAUNCH_BLOCKING: "1"
+            args:
+              max_batch_size: 256
+          decode:
+            args:
+              max_batch_size: 64
     """
 
     type: Literal["trtllm"] = "trtllm"
 
-    prefill_environment: dict[str, str] = field(default_factory=dict)
-    decode_environment: dict[str, str] = field(default_factory=dict)
-    aggregated_environment: dict[str, str] = field(default_factory=dict)
-
-    # Extra `trtllm-serve` CLI flags per mode, appended verbatim to the worker
-    # command (frontend.type: trtllm_serve only -- dynamo.trtllm takes a
-    # different CLI).
+    # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
+    # never written on `engine:`. Per-role env and args (the engine YAML) are read from
+    # here, and so are `roles.<role>.extra_args`: extra `trtllm-serve` CLI flags appended
+    # verbatim to the worker command (frontend.type: trtllm_serve only -- dynamo.trtllm
+    # takes a different CLI).
     #
-    # `trtllm_config` already covers everything that belongs in the engine YAML,
-    # which is nearly everything: trtllm-serve merges that file into LlmArgs. But
-    # a few of its options configure the OpenAI SERVER layer rather than the
-    # engine and have no LlmArgs field, so no YAML key can reach them. The one
-    # that matters in practice is `--tool_parser` (a click.Choice consumed
-    # directly by the server constructor); note that its sibling
-    # `--reasoning_parser` IS forwarded into get_llm_args() and so remains
-    # settable from `trtllm_config`.
+    # `args` already covers everything that belongs in the engine YAML, which is nearly
+    # everything: trtllm-serve merges that file into LlmArgs. But a few of its options
+    # configure the OpenAI SERVER layer rather than the engine and have no LlmArgs field,
+    # so no YAML key can reach them. The one that matters in practice is `--tool_parser`
+    # (a click.Choice consumed directly by the server constructor); note that its sibling
+    # `--reasoning_parser` IS forwarded into get_llm_args() and so remains settable from
+    # `args`.
     #
-    #     backend:
-    #       type: trtllm
-    #       prefill_extra_args: ["--tool_parser", "glm47"]
-    #       decode_extra_args:  ["--tool_parser", "glm47"]
-    prefill_extra_args: list[str] = field(default_factory=list)
-    decode_extra_args: list[str] = field(default_factory=list)
-    aggregated_extra_args: list[str] = field(default_factory=list)
-
-    trtllm_config: TRTLLMServerConfig | None = None
+    #     roles:
+    #       prefill:
+    #         extra_args: ["--tool_parser", "glm47"]
+    #       decode:
+    #         extra_args: ["--tool_parser", "glm47"]
+    roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     # The name clients must use in a request's "model" field.
     # Defaults to the checkpoint directory name.
@@ -100,7 +94,7 @@ class TRTLLMProtocol:
     # it fixed in the benchmark definition, so the server must match or every
     # request 404s.
     #
-    # Top-level rather than a trtllm_config key because trtllm_config is dumped
+    # Top-level rather than a roles.<role>.args key because a role's args are dumped
     # straight into the engine's YAML file, and this is a launcher flag the
     # engine does not recognise.
     served_model_name: str | None = None
@@ -114,10 +108,9 @@ class TRTLLMProtocol:
     # per-request perf metrics only.
     publish_metrics: bool = True
 
-    # None means unspecified: metrics default on, events off (observability
-    # promotes this to True). Explicit False is a master opt-out of BOTH
-    # publication flags, even when publish_metrics is True. Preserve None in
-    # schema round-trips so an omitted value never becomes an explicit opt-out.
+    # Legacy compatibility flag for Dynamo builds without --publish-metrics.
+    # True emits only --publish-events-and-metrics, regardless of publish_metrics.
+    # False or None uses publish_metrics instead. Observability does not enable it.
     publish_events_and_metrics: bool | None = None
 
     # Controls batched startup of workers that share the same node.
@@ -128,11 +121,14 @@ class TRTLLMProtocol:
     # For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.
     sequential_node_start: int = 0
 
-    # Whether to prefix the trtllm worker command with `numactl -m 0,1`.
-    # None (default) enables it only for gb200/gb300/vrnvl72 prefill and decode
-    # workers (case-sensitive GPU type). True/False forces numactl on/off
-    # regardless of gpu_type or mode.
-    numa_memory_bind: bool | None = None
+    # Worker memory policy. None (default) uses `numactl -m 0,1` only for
+    # gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type).
+    # True uses nodes 0,1 for any GPU type or mode; False leaves the policy
+    # unchanged. CPU binding does not change these policies. "local" requires
+    # numa_cpu_bind=True and strictly binds memory to the task GPU's NUMA node.
+    # Local mode fails startup if GPU NUMA affinity is unknown. Local memory
+    # exhaustion can fail allocations; existing/shared pages are not migrated.
+    numa_memory_bind: bool | Literal["local"] | None = None
 
     # Optional stricter NUMA CPU affinity for the worker process, in addition
     # to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID`
@@ -149,21 +145,21 @@ class TRTLLMProtocol:
     #      SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two
     #      endpoints share a node (each gets its own srun step, so LOCALID
     #      restarts at 0 for both).
+    # Set numa_memory_bind="local" to also bind memory to that same NUMA node.
     numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
+    def __post_init__(self) -> None:
+        if self.numa_memory_bind == "local" and not self.numa_cpu_bind:
+            raise ValueError("numa_memory_bind: local requires numa_cpu_bind: true")
+
     @property
     def dynamo_metrics_flags(self) -> tuple[str, ...]:
-        """Effective publication flags, preserving the explicit legacy opt-out."""
-        if self.publish_events_and_metrics is False:
-            return ()
-        flags = []
-        if self.publish_metrics:
-            flags.append("--publish-metrics")
+        """Select the legacy combined flag or the metrics-only flag exclusively."""
         if self.publish_events_and_metrics:
-            flags.append("--publish-events-and-metrics")
-        return tuple(flags)
+            return ("--publish-events-and-metrics",)
+        return ("--publish-metrics",) if self.publish_metrics else ()
 
     # =========================================================================
     # BackendProtocol Implementation
@@ -179,7 +175,14 @@ class TRTLLMProtocol:
             launch_per_endpoint=True,
             cpu_bind="verbose,none",
             sequential_node_start=self.sequential_node_start,
+            # A rank exiting non-zero (or the rank-zero sidecar) must end the
+            # whole endpoint step; the launcher would otherwise keep it up.
+            kill_on_bad_exit=True,
         )
+
+    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
+        """The launcher's task-exit line and the executor's start-up failure, for every mode."""
+        return TRTLLM_FATAL_LOG_PATTERNS
 
     @property
     def mooncake_kv_store(self) -> None:
@@ -201,38 +204,17 @@ class TRTLLMProtocol:
         return True
 
     def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        if not self.trtllm_config:
-            return {}
-
-        if mode == "prefill":
-            return dict(self.trtllm_config.prefill or {})
-        elif mode == "decode":
-            return dict(self.trtllm_config.decode or {})
-        elif mode == "agg":
-            return dict(self.trtllm_config.aggregated or {})
-        return {}
+        """The role's engine arguments (``roles.<role>.args``), the engine YAML."""
+        return role_args(self.roles, mode)
 
     def get_extra_args_for_mode(self, mode: WorkerMode) -> list[str]:
-        """Extra trtllm-serve CLI flags for this mode (see the field docs)."""
-        by_mode: dict[WorkerMode, list[str]] = {
-            "prefill": self.prefill_extra_args,
-            "decode": self.decode_extra_args,
-            "agg": self.aggregated_extra_args,
-        }
-        return list(by_mode.get(mode) or [])
+        """Extra trtllm-serve CLI flags for this mode (``roles.<role>.extra_args``)."""
+        role = role_for_mode(self.roles, mode)
+        return list(role.extra_args) if role is not None else []
 
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
-
-        env_by_mode: dict[WorkerMode, dict[str, str]] = {
-            "prefill": self.prefill_environment,
-            "decode": self.decode_environment,
-            "agg": self.aggregated_environment,
-        }
-        base_env = env_by_mode.get(mode)
-        if base_env is None:
-            return {}
-        env = {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        env = {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
         if self.numa_cpu_bind:
             env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
         return env
@@ -293,7 +275,7 @@ class TRTLLMProtocol:
         # the allocation is uniform and any rank could lead.
         return [replace(p, trtllm_dist_init_port=allocator.next(TRTLLM_DIST_INIT_PORTS)) for p in processes]
 
-    def _wrap_with_numa_cpu_bind(self, cmd: list[str]) -> list[str]:
+    def _wrap_with_numa_cpu_bind(self, cmd: list[str], *, bind_memory: bool) -> list[str]:
         """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which taskset-binds per task.
 
         Applies to all worker modes (prefill/decode/agg) when numa_cpu_bind
@@ -306,7 +288,8 @@ class TRTLLMProtocol:
         """
         if not self.numa_cpu_bind:
             return cmd
-        return ["bash", "/configs/numa_cpu_bind.sh", *cmd]
+        memory_args = ["--bind-memory"] if bind_memory else []
+        return ["bash", "/configs/numa_cpu_bind.sh", *memory_args, *cmd]
 
     def build_worker_command(
         self,
@@ -350,7 +333,9 @@ class TRTLLMProtocol:
         if self.numa_memory_bind is None:
             use_numactl = runtime.gpu_type in ("gb200", "gb300", "vrnvl72") and mode in ("prefill", "decode")
         else:
-            use_numactl = self.numa_memory_bind
+            use_numactl = self.numa_memory_bind is True
+        # Only explicit local mode moves the memory policy into the CPU wrapper.
+        bind_local_memory = self.numa_memory_bind == "local"
         numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
@@ -362,6 +347,7 @@ class TRTLLMProtocol:
                 container_config_path=container_config_path,
                 base_prefix=base_prefix,
                 sidecar_config=sidecar_config,
+                bind_memory=bind_local_memory,
             )
 
         # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
@@ -397,7 +383,7 @@ class TRTLLMProtocol:
             if self.served_model_name:
                 cmd.extend(["--served_model_name", self.served_model_name])
             cmd.extend(self.get_extra_args_for_mode(mode))
-            return self._wrap_with_numa_cpu_bind(cmd)
+            return self._wrap_with_numa_cpu_bind(cmd, bind_memory=bind_local_memory)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
@@ -426,7 +412,7 @@ class TRTLLMProtocol:
 
         cmd.extend(self.dynamo_metrics_flags)
 
-        return self._wrap_with_numa_cpu_bind(cmd)
+        return self._wrap_with_numa_cpu_bind(cmd, bind_memory=bind_local_memory)
 
     def _build_sidecar_command(
         self,
@@ -437,6 +423,7 @@ class TRTLLMProtocol:
         container_config_path: Path,
         base_prefix: list[str],
         sidecar_config: "DynamoConfig",
+        bind_memory: bool,
     ) -> list[str]:
         """Build a lifecycle-coupled TensorRT-LLM native-gRPC and sidecar launch."""
         grpc_port = sidecar_grpc_port(process)
@@ -454,7 +441,8 @@ class TRTLLMProtocol:
                 str(grpc_port),
                 "--extra_llm_api_options",
                 str(container_config_path),
-            ]
+            ],
+            bind_memory=bind_memory,
         )
 
         sidecar = (

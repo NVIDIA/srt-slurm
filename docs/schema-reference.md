@@ -2,7 +2,7 @@
 
 <!-- GENERATED FILE. Do not edit by hand. Regenerate with `srtctl schema-docs`; CI fails when this file is stale. -->
 
-Field-level reference for the 2.0 recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from `srtctl.core.roles`, `srtctl.core.placement`, and the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. The v1 layout and the internal fields it maps onto are documented in [legacy-v1.md](legacy-v1.md); for prose, examples, and semantics see [config-reference.md](config-reference.md).
+Field-level reference for the recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. The pre-2.0 (v1) layout no longer loads; its key-by-key mapping onto this layout is in [legacy-v1.md](legacy-v1.md) and `srtctl migrate` rewrites it. For prose, examples, and semantics see [config-reference.md](config-reference.md).
 
 ## Recipe
 
@@ -13,10 +13,10 @@ Top-level keys of a recipe YAML.
 | `name` | str | required |  |
 | `model` | [ModelConfig](#modelconfig) | required |  |
 | `resources` | [ResourceConfig](#resourceconfig) | required |  |
-| `engine` | str \| mapping | required | The engine type (`atom`, `sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
-| `roles` | mapping of role -> [Role](#roles) | required | One block per worker role (`prefill`, `decode`, `agg`): topology, env, and engine args. |
-| `schema` | int | `2` | Recipe schema version. Write `schema: 2` for this layout. |
+| `schema` | int | required | Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`). |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` |  |
+| `engine` | str \| mapping | optional when every role sets `engine` | The engine type (`atom`, `sglang`, `tilert`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
+| `roles` | dict[str, [RoleConfig](#roleconfig)] | `{}` | One block per worker role (`prefill`, `decode`, `agg`): nodes, workers, GPUs, env, engine args. |
 | `frontend` | [FrontendConfig](#frontendconfig) | `FrontendConfig()` |  |
 | `dynamo` | [DynamoConfig](#dynamoconfig) | `DynamoConfig()` |  |
 | `benchmark` | [BenchmarkConfig](#benchmarkconfig) | `BenchmarkConfig()` |  |
@@ -40,28 +40,16 @@ Top-level keys of a recipe YAML.
 
 ## Authoring surface
 
-Three vocabularies are specific to the 2.0 layout. They are normalized into the internal fields before validation (see [legacy-v1.md](legacy-v1.md) for those fields), so they are exactly equivalent to the v1 spelling and cannot be combined with it for the same block.
+Three vocabularies carry the engine, the topology, and the placement. `engine` and `roles` are fields of the recipe (the table above and [RoleConfig](#roleconfig) below); the engine dataclasses' per-mode fields are internal and receive each role's settings at load. The pre-2.0 layout no longer loads and is documented for migration in [legacy-v1.md](legacy-v1.md).
 
 ### engine
 
-`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `tilert`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+Use either one top-level engine or an explicit engine on every role, never both. Role engines do not inherit options from each other.
 
 ### roles
 
-`roles.<role>` for `prefill`, `decode`, `agg`. The `agg` role is the aggregated deployment.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `nodes` | int \| `colocate` | required | Nodes reserved for this role. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit. |
-| `workers` | int | required | Number of workers of this role. |
-| `gpus` | int | `nodes * gpus_per_node // workers` | GPUs per worker. Required when decode colocates. |
-| `env` | dict[str, str] | `{}` | Environment for every worker of this role. |
-| `args` | mapping | `{}` | The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`). |
-| `extra_args` | list[str] | `[]` | Raw extra CLI arguments (TRT-LLM). |
-| `engine` | str | top-level `engine` | Optional; must equal the top-level engine type. |
-| `kv_events` | bool \| mapping | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
-| `sidecar` | bool | `False` | Run the native engine with a Dynamo sidecar; every role must agree. |
-| `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
+`roles.<role>` for `prefill`, `decode`, `agg`. The `agg` role is the aggregated deployment; `prefill` and `decode` together are the disaggregated one. Each role is a [RoleConfig](#roleconfig): `nodes` (or `colocate` on decode, to share the prefill nodes), `workers`, `gpus`, `env`, `args`, and optionally its own `engine` and `container`.
 
 ### placement
 
@@ -88,15 +76,12 @@ Model configuration.
 
 ### ResourceConfig
 
-Resource allocation configuration.
+Cluster facts and allocation knobs; the worker topology is the `roles:` block.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `gpu_type` | str \| None | `None` | GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional: a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth setting in a recipe so it is self-describing for result rollups. |
 | `gpus_per_node` | int | `4` |  |
-| `prefill_critical` | bool | `True` | A worker exit normally fails the run (the process monitor tears the job down). A role's flag set to False keeps the run alive when one of its workers exits, for workloads that kill workers on purpose (migration or fault-tolerance probes). The per-role spelling is ``roles.<role>.critical``. |
-| `decode_critical` | bool | `True` | A decode worker exiting fails the run. False keeps the run alive. |
-| `agg_critical` | bool | `True` | An aggregated worker exiting fails the run. False keeps the run alive. |
 | `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). |
 | `het_jobs` | bool \| None | `None` | SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster default `use_het_jobs` on ClusterConfig; True/False overrides per recipe. When effectively True (and we are in disaggregated mode), the prefill and decode sides are submitted as two het components each with their own `--segment`. See HetComponent above and docs/slurm-faq.md. |
 
@@ -110,13 +95,31 @@ SLURM job settings.
 | `partition` | str \| None | `None` |  |
 | `time_limit` | str \| None | `None` |  |
 
+### RoleConfig
+
+One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `nodes` | int \| one of `'colocate'` \| None | `None` | Nodes reserved for this role. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit. |
+| `workers` | int \| None | `None` | Number of workers of this role. |
+| `gpus` | int \| None | `None` | GPUs per worker. Defaults to `nodes * gpus_per_node // workers`; required when decode colocates. |
+| `env` | dict[str, str] | `{}` | Environment for every worker of this role. |
+| `args` | dict[str, Any] | `{}` | The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`). |
+| `extra_args` | list[str] | `[]` | Raw extra CLI arguments (TRT-LLM only). |
+| `engine` | str \| mapping | `None` | Engine type or mapping with engine options. Set on every role when no top-level `engine` is declared; the two forms cannot be mixed, and role engines do not inherit options from each other. |
+| `container` | str \| None | `None` | Optional role image; accepts cluster container aliases. Defaults to `model.container`. |
+| `kv_events` | bool \| dict[str, Any] \| None | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
+| `sidecar` | bool \| None | `None` | Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree. |
+| `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
+
 ### FrontendConfig
 
 Frontend/router configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway) and "vllm-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). In schema 1 recipes "sglang" still means the router and loads as "sglang-router". |
+| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway), "vllm-router", "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate`` rewrites that to "sglang-router". |
 | `enable_multiple_frontends` | bool | `True` | Scale with nginx + multiple routers. When ``True`` (default), srtctl stands up nginx and fans out to ``num_additional_frontends + 1`` router replicas. When ``False``, there is NO nginx proxy — the benchmark must target the single master router (or a worker) directly at ``http://localhost:<port>``. ``benchmark.command`` has no placeholder substitution, so write the URL out literally. |
 | `num_additional_frontends` | int | `9` | Additional routers beyond master (default: 9) |
 | `nginx_container` | str | `'nginx:1.27.4'` | Custom nginx container image (default: nginx:1.27.4) |
@@ -132,6 +135,7 @@ Frontend/router configuration.
 | `ctx_router` | dict[str, Any] \| None | `None` | trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends. |
 | `gen_router` | dict[str, Any] \| None | `None` | generation_servers.router |
 | `server_config_extra` | dict[str, Any] \| None | `None` | extra top-level ser.yaml keys |
+| `placement` | [PlacementConfig](#placementconfig) | `PlacementConfig()` | Where the frontend (trtllm_serve: the disaggregated orchestrator) runs. placement.node is "head" (default: the first prefill/CTX node), "first_decode" (the first decode/GEN worker-leader node), or "dedicated" (a node reserved for the frontend: needs at least 2 nodes, not supported with resources.het_jobs: true). |
 
 ### DynamoConfig
 
@@ -140,7 +144,8 @@ Dynamo installation configuration.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `install` | bool | `True` |  |
-| `source` | [DynamoSourceConfig](#dynamosourceconfig) \| None | `None` | Which Dynamo to install: exactly one of git+rev, pypi, or wheel. |
+| `top_of_tree` | bool | `False` | Clone and build Dynamo at HEAD (unpinned). No `source` equivalent; prefer a commit in `source.rev`. |
+| `source` | [DynamoSourceConfig](#dynamosourceconfig) \| None | `None` | Which Dynamo to install: exactly one of git+rev, pypi, or wheel. Unset, and not top_of_tree: the PyPI release DEFAULT_PYPI_VERSION. |
 | `request_plane` | str | `'tcp'` |  |
 | `event_plane` | str \| None | `None` |  |
 | `sidecar` | bool | `False` |  |
@@ -162,6 +167,7 @@ Benchmark configuration.
 | `osl` | int \| None | `None` |  |
 | `concurrencies` | list[int] \| str \| None | `None` |  |
 | `req_rate` | str \| int \| None | `'inf'` |  |
+| `placement` | [PlacementConfig](#placementconfig) | `PlacementConfig()` | Where the benchmark client runs. placement.node is "head" (default: the orchestrator's node), "last_decode" (the last decode/GEN worker-leader node, isolating the client off the CTX/orchestrator node; use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL), or "dedicated" (a node reserved for the client: needs at least 2 nodes, not supported with resources.het_jobs: true). |
 | `colocate_with_frontend` | bool | `True` | Governs how dedicated placements combine when more than one of the benchmark client, the frontend, and the etcd/nats services asks for placement.node: dedicated. If True (default), every requested role shares a single reserved node. If False, each requested role gets its own reserved node (requires enough total nodes: worker count + number of dedicated roles). |
 | `sweep` | [SweepConfig](#sweepconfig) \| None | `None` |  |
 | `num_examples` | int \| None | `None` | Accuracy benchmark fields |
@@ -233,8 +239,10 @@ Health check configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `max_attempts` | int | `180` | 30 minutes default (large models take time to load) |
-| `interval_seconds` | int | `10` |  |
+| `max_attempts` | int | `180` | Maximum readiness polls of the frontend before the run fails; 180 x 10 s = 30 minutes by default (large models take time to load). |
+| `interval_seconds` | int | `10` | Seconds between readiness polls. |
+| `fatal_log_markers` | bool | `True` | Fail the run as soon as a worker's log prints a line the engine names as fatal (for TRT-LLM, the launcher's ``Rank<N> Task exit code: <non-zero>`` and ``Failed to initialize executor``), even while its srun step is still running. Without it a worker whose engine died behind a live launcher is only noticed when this health window runs out. |
+| `extra_fatal_log_patterns` | list[str] | `[]` | Additional regular expressions, matched against every new worker log line, that fail the run the same way. |
 
 ### ObservabilityConfig
 
@@ -344,6 +352,14 @@ Reporting configuration for status updates, AI analysis, and log exports.
 | `status` | [ReportingStatusConfig](#reportingstatusconfig) \| None | `None` |  |
 | `ai_analysis` | [AIAnalysisConfig](#aianalysisconfig) \| None | `None` |  |
 | `s3` | [S3Config](#s3config) \| None | `None` |  |
+
+### PlacementConfig
+
+Where a component (the frontend or the benchmark client) runs.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `node` | str | `'head'` | A location name resolved against the worker topology (``head``, or a role-relative name such as ``first_decode`` / ``last_decode``), or ``dedicated`` to reserve a node for the component. A dedicated node is always the head location, so the two never combine. |
 
 ### DynamoSourceConfig
 
@@ -515,6 +531,7 @@ Status reporting configuration.
 | `endpoint` | str \| None | `None` |  |
 | `endpoints` | list[str] \| None | `None` |  |
 | `token_env` | str \| None | `None` | Name of the environment variable holding the bearer token the reporter sends as ``Authorization: Bearer`` on every request (default SRTCTL_STATUS_TOKEN). Only the variable name belongs in a recipe: the resolved config is written to the lockfile and the log directory, so a literal token there would leak. |
+| `logging-stream-interval` | float \| None | `None` | Seconds between uploads of raw logs and Tachometer captures to every endpoint. Unset disables streaming; lifecycle events are unaffected. |
 
 ### AIAnalysisConfig
 
@@ -597,6 +614,17 @@ SGLang protocol - implements BackendProtocol.
 | `type` | one of `'sglang'` | `'sglang'` |  |
 | `gpu_type` | str \| None | `None` |  |
 
+### TileRTProtocol
+
+`engine.type: tilert`
+
+Launch TileRT's decode server with recipe-owned model and transport settings.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `type` | one of `'tilert'` | `'tilert'` |  |
+| `served_model_name` | str \| None | `None` |  |
+
 ### TRTLLMProtocol
 
 `engine.type: trtllm`
@@ -606,12 +634,12 @@ TRTLLM protocol - implements BackendProtocol.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `type` | one of `'trtllm'` | `'trtllm'` |  |
-| `served_model_name` | str \| None | `None` | The name clients must use in a request's "model" field. Defaults to the checkpoint directory name. engine: type: trtllm served_model_name: "deepseek-ai/deepseek-r1" Set it when the client cannot be told which name to ask for. agentperf takes the name as a flag, so it never needs this; the MLPerf harness has it fixed in the benchmark definition, so the server must match or every request 404s. Top-level rather than a trtllm_config key because trtllm_config is dumped straight into the engine's YAML file, and this is a launcher flag the engine does not recognise. |
+| `served_model_name` | str \| None | `None` | The name clients must use in a request's "model" field. Defaults to the checkpoint directory name. engine: type: trtllm served_model_name: "deepseek-ai/deepseek-r1" Set it when the client cannot be told which name to ask for. agentperf takes the name as a flag, so it never needs this; the MLPerf harness has it fixed in the benchmark definition, so the server must match or every request 404s. Top-level rather than a roles.<role>.args key because a role's args are dumped straight into the engine's YAML file, and this is a launcher flag the engine does not recognise. |
 | `publish_metrics` | bool | `True` | Publish TRT-LLM engine metrics without enabling KV-cache events. Requires a Dynamo build supporting --publish-metrics; set False to omit the flag for older builds. Native trtllm-serve and sidecars are unaffected. Iteration statistics stay off regardless: srtctl bakes enable_iter_perf_stats: false into every engine section unless the recipe or observability sets it (TRTLLM_ENGINE_DEFAULTS), so this flag costs the per-request perf metrics only. |
-| `publish_events_and_metrics` | bool \| None | `None` | None means unspecified: metrics default on, events off (observability promotes this to True). Explicit False is a master opt-out of BOTH publication flags, even when publish_metrics is True. Preserve None in schema round-trips so an omitted value never becomes an explicit opt-out. |
+| `publish_events_and_metrics` | bool \| None | `None` | Legacy compatibility flag for Dynamo builds without --publish-metrics. True emits only --publish-events-and-metrics, regardless of publish_metrics. False or None uses publish_metrics instead. Observability does not enable it. |
 | `sequential_node_start` | int | `0` | Controls batched startup of workers that share the same node. 0 = start all workers in parallel (no constraint). 1 = fully sequential: one worker at a time, each must be ready before the next. N > 1 = start N workers simultaneously per batch, wait for all to be ready, then next batch. For trtllm_serve: readiness is an HTTP 200 on the worker's http_port. For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port. |
-| `numa_memory_bind` | bool \| None | `None` | Whether to prefix the trtllm worker command with `numactl -m 0,1`. None (default) enables it only for gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type). True/False forces numactl on/off regardless of gpu_type or mode. |
-| `numa_cpu_bind` | bool | `False` | Optional stricter NUMA CPU affinity for the worker process, in addition to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID` approach (see bind-b300-prefill-cpus.sh) only pins the leader PID *after* launch, so secondary threads spawned by Python/UCX/MPI/TRT-LLM can still land cross-socket. When true, srtctl instead: 1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own internal NUMA thread-pinning, which fights with the OS-level mask) 2. wraps the worker command (prefill/decode/agg) in `taskset -c <cpu_list>`, applied *before* exec so every spawned thread inherits the mask. The CPU list is discovered at runtime (configs/numa_cpu_bind.sh) from the physical GPU this task owns, not a static SLURM_LOCALID table — a static table assumes SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two endpoints share a node (each gets its own srun step, so LOCALID restarts at 0 for both). |
+| `numa_memory_bind` | bool \| one of `'local'` \| None | `None` | Worker memory policy. None (default) uses `numactl -m 0,1` only for gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type). True uses nodes 0,1 for any GPU type or mode; False leaves the policy unchanged. CPU binding does not change these policies. "local" requires numa_cpu_bind=True and strictly binds memory to the task GPU's NUMA node. Local mode fails startup if GPU NUMA affinity is unknown. Local memory exhaustion can fail allocations; existing/shared pages are not migrated. |
+| `numa_cpu_bind` | bool | `False` | Optional stricter NUMA CPU affinity for the worker process, in addition to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID` approach (see bind-b300-prefill-cpus.sh) only pins the leader PID *after* launch, so secondary threads spawned by Python/UCX/MPI/TRT-LLM can still land cross-socket. When true, srtctl instead: 1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own internal NUMA thread-pinning, which fights with the OS-level mask) 2. wraps the worker command (prefill/decode/agg) in `taskset -c <cpu_list>`, applied *before* exec so every spawned thread inherits the mask. The CPU list is discovered at runtime (configs/numa_cpu_bind.sh) from the physical GPU this task owns, not a static SLURM_LOCALID table — a static table assumes SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two endpoints share a node (each gets its own srun step, so LOCALID restarts at 0 for both). Set numa_memory_bind="local" to also bind memory to that same NUMA node. |
 
 ### VLLMProtocol
 
@@ -623,7 +651,7 @@ vLLM protocol - implements BackendProtocol.
 |---|---|---|---|
 | `type` | one of `'vllm'` | `'vllm'` |  |
 | `set_visible_devices` | bool | `False` | Use an environment mask instead of the engine's --device-ids option. |
-| `connector` | str \| None | `'nixl'` | Default KV connector: "nixl", "lmcache", "kvbm", "moriio", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode resolves it. "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed). |
+| `connector` | str \| None | `'nixl'` | Default KV connector: "nixl", "lmcache", "lmcache-mp", "kvbm", "moriio", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode resolves it. "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed). |
 | `failover` | [VLLMFailoverConfig](#vllmfailoverconfig) \| None | `None` | Shadow engine recovery: when set, every worker runs shadow_engines standby engines on its GPUs next to an implied `gms` service that owns the weights. Dynamo frontend only. |
 | `allow_prefill_decode_colocation` | bool | `False` | Allow prefill and decode workers to share one node when the combined GPU request fits within gpus_per_node. Defaults off to preserve existing P/D node separation. |
 | `allow_prefill_decode_colocation_across_nodes` | bool | `False` | Extend P/D colocation to multi-node topologies. When enabled together with allow_prefill_decode_colocation, workers are packed contiguously across the minimum number of nodes instead of reserving separate P/D node pools. Defaults off to preserve the original one-node-only policy. |

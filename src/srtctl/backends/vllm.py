@@ -13,7 +13,7 @@ from __future__ import annotations
 import builtins
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass as stdlib_dataclass
 from dataclasses import field, replace
 from pathlib import Path
@@ -27,6 +27,7 @@ from typing import (
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
@@ -35,6 +36,7 @@ from srtctl.ports import (
     HTTP_PORTS,
     KV_EVENTS_PORTS,
     KVBM_ZMQ_PORTS,
+    LMCACHE_SERVER_PORT,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     MORIIO_HANDSHAKE_PORTS,
@@ -83,7 +85,7 @@ _VLLM_API_SERVER_ONLY_FLAGS = frozenset({"api-server-count"})
 
 
 def normalize_vllm_config_key(key: str) -> str:
-    """Normalize a vllm_config dict key to kebab-case CLI flag form."""
+    """Normalize a roles.<role>.args key to kebab-case CLI flag form."""
     return str(key).replace("_", "-")
 
 
@@ -130,29 +132,20 @@ def _log_overridden_recipe_flags(
         f"--{flag}={value!s} -> {effective.get(flag, 'not passed')}" for flag, value in overridden.items()
     )
     logger.warning(
-        "Overriding topology-managed vllm_config flags on %s: %s. srtslurm derives these from the allocation.",
+        "Overriding topology-managed roles.<role>.args flags on %s: %s. srtslurm derives these from the allocation.",
         node,
         changes,
     )
 
 
 def find_vllm_orchestration_recipe_flags(backend: VLLMProtocol) -> list[tuple[str, str]]:
-    """Return ``(mode, flag)`` pairs set in recipe ``vllm_config``."""
-    if backend.vllm_config is None:
-        return []
-
+    """Return ``(role, flag)`` pairs set in the roles' ``args``."""
     findings: list[tuple[str, str]] = []
-    for mode_name, mode_config in (
-        ("prefill", backend.vllm_config.prefill),
-        ("decode", backend.vllm_config.decode),
-        ("aggregated", backend.vllm_config.aggregated),
-    ):
-        if not mode_config:
-            continue
-        for key in mode_config:
+    for role, spec in backend.roles.items():
+        for key in spec.args:
             normalized = normalize_vllm_config_key(key)
             if normalized in _VLLM_ORCHESTRATION_FLAGS:
-                findings.append((mode_name, normalized))
+                findings.append((role, normalized))
     return findings
 
 
@@ -294,22 +287,6 @@ def failover_worker_dir(shared_dir: str, job_id: str, process: Process) -> str:
 
 
 @dataclass(frozen=True)
-class VLLMServerConfig:
-    """vLLM server CLI configuration per mode (prefill/decode/aggregated).
-
-    Each mode can have its own configuration dict that gets converted
-    to CLI flags when starting the worker. These are passed directly to
-    vLLM's AsyncEngineArgs.
-    """
-
-    prefill: dict[str, Any] | None = None
-    decode: dict[str, Any] | None = None
-    aggregated: dict[str, Any] | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
 class VLLMProtocol:
     """vLLM protocol - implements BackendProtocol.
 
@@ -320,19 +297,21 @@ class VLLMProtocol:
     translated to ``--kv-transfer-config`` with the appropriate JSON payload.
 
     Example YAML:
-        backend:
+        engine:
           type: vllm
           connector: nixl  # translated to --kv-transfer-config JSON
           allow_prefill_decode_colocation: true  # pack P/D on one node when all workers fit
           allow_prefill_decode_colocation_across_nodes: true  # continue packing on later nodes
-          prefill_environment:
-            PYTHONUNBUFFERED: "1"
-          vllm_config:
-            prefill:
+        roles:
+          prefill:
+            env:
+              PYTHONUNBUFFERED: "1"
+            args:
               tensor-parallel-size: 2
               gpu-memory-utilization: 0.9
               connector: lmcache  # override connector for prefill
-            decode:
+          decode:
+            args:
               tensor-parallel-size: 2
               gpu-memory-utilization: 0.85
               # uses default connector (nixl)
@@ -340,18 +319,14 @@ class VLLMProtocol:
 
     type: Literal["vllm"] = "vllm"
 
-    # Environment variables per mode
-    prefill_environment: dict[str, str] = field(default_factory=dict)
-    decode_environment: dict[str, str] = field(default_factory=dict)
-    aggregated_environment: dict[str, str] = field(default_factory=dict)
-
-    # vLLM server CLI config per mode
-    vllm_config: VLLMServerConfig | None = None
+    # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
+    # never written on `engine:`. Per-role env, args and kv_events are read from here.
+    roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     # Use an environment mask instead of the engine's --device-ids option.
     set_visible_devices: bool = False
 
-    # Default KV connector: "nixl", "lmcache", "kvbm", "moriio", or a raw JSON string for --kv-transfer-config.
+    # Default KV connector: "nixl", "lmcache", "lmcache-mp", "kvbm", "moriio", or a raw JSON string for --kv-transfer-config.
     # Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode resolves it.
     # "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
@@ -365,12 +340,6 @@ class VLLMProtocol:
     # Shadow engine recovery: when set, every worker runs shadow_engines standby engines
     # on its GPUs next to an implied `gms` service that owns the weights. Dynamo frontend only.
     failover: VLLMFailoverConfig | None = None
-
-    # KV events config - enables --kv-events-config with auto-allocated ports.
-    # Required for Dynamo's event-driven KV-aware routing.
-    # Global true enables defaults for prefill and decode workers.
-    # Per-mode: {"prefill": true, "decode": {"topic": "custom"}}
-    kv_events_config: bool | dict[str, Any] | None = None
 
     # Allow prefill and decode workers to share one node when the combined GPU
     # request fits within gpus_per_node. Defaults off to preserve existing P/D
@@ -396,22 +365,12 @@ class VLLMProtocol:
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     def find_dp_modes(self) -> list[tuple[str, dict[str, Any]]]:
-        """Return modes whose configured data-parallel size is greater than one."""
-        if self.vllm_config is None:
-            return []
-
+        """Return the roles whose configured data-parallel size is greater than one, with their args."""
         dp_mode_configs: list[tuple[str, dict[str, Any]]] = []
-        for mode_name, mode_config in (
-            ("prefill", self.vllm_config.prefill),
-            ("decode", self.vllm_config.decode),
-            ("aggregated", self.vllm_config.aggregated),
-        ):
+        for role, spec in self.roles.items():
+            args = dict(spec.args)
             configured_dp_size = next(
-                (
-                    value
-                    for key, value in (mode_config or {}).items()
-                    if str(key).replace("_", "-") == "data-parallel-size"
-                ),
+                (value for key, value in args.items() if str(key).replace("_", "-") == "data-parallel-size"),
                 None,
             )
             if configured_dp_size is None:
@@ -420,15 +379,14 @@ class VLLMProtocol:
                 normalized_dp_size = int(configured_dp_size)
             except (TypeError, ValueError) as exc:
                 raise ValidationError(
-                    f"vllm_config.{mode_name}.data-parallel-size must be a positive integer; got {configured_dp_size!r}"
+                    f"roles.{role}.args.data-parallel-size must be a positive integer; got {configured_dp_size!r}"
                 ) from exc
             if normalized_dp_size < 1:
                 raise ValidationError(
-                    f"vllm_config.{mode_name}.data-parallel-size must be a positive integer; got {configured_dp_size!r}"
+                    f"roles.{role}.args.data-parallel-size must be a positive integer; got {configured_dp_size!r}"
                 )
             if normalized_dp_size > 1:
-                assert mode_config is not None
-                dp_mode_configs.append((mode_name, mode_config))
+                dp_mode_configs.append((role, args))
         return dp_mode_configs
 
     def __post_init__(self) -> None:
@@ -450,14 +408,14 @@ class VLLMProtocol:
                 hybrid_lb_modes.append(mode_name)
 
         if headless_modes:
-            fields = ", ".join(f"vllm_config.{mode}.headless" for mode in headless_modes)
+            fields = ", ".join(f"roles.{mode}.args.headless" for mode in headless_modes)
             raise ValidationError(
                 f"{fields} cannot be set when vLLM uses per-node DP. "
                 "srtslurm derives the head/headless layout; remove headless."
             )
 
         if hybrid_lb_modes:
-            fields = ", ".join(f"vllm_config.{mode}.data-parallel-hybrid-lb" for mode in hybrid_lb_modes)
+            fields = ", ".join(f"roles.{mode}.args.data-parallel-hybrid-lb" for mode in hybrid_lb_modes)
             logger.warning(
                 "%s is unnecessary when dp_launch_mode=per_node; "
                 "srtslurm derives --data-parallel-hybrid-lb from the topology and ignores the configured value",
@@ -474,66 +432,23 @@ class VLLMProtocol:
 
         return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
 
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """Get merged config dict for a worker mode."""
-        if not self.vllm_config:
-            return {}
+    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
+        """The srun step exits with the engine; its exit code is the whole story."""
+        return ()
 
-        if mode == "prefill":
-            return dict(self.vllm_config.prefill or {})
-        elif mode == "decode":
-            return dict(self.vllm_config.decode or {})
-        elif mode == "agg":
-            return dict(self.vllm_config.aggregated or {})
-        return {}
+    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
+        """The role's engine arguments (``roles.<role>.args``)."""
+        return role_args(self.roles, mode)
 
     def get_kv_events_config_for_mode(self, mode: WorkerMode) -> dict[str, Any] | None:
-        """Get --kv-events-config payload for a worker mode."""
-        if not self.kv_events_config:
-            return None
-
-        if self.kv_events_config is True:
-            if mode in ("prefill", "decode"):
-                return {
-                    "publisher": "zmq",
-                    "topic": "kv-events",
-                    "enable_kv_cache_events": True,
-                }
-            return None
-
-        if isinstance(self.kv_events_config, dict):
-            mode_cfg = self.kv_events_config.get("aggregated") if mode == "agg" else self.kv_events_config.get(mode)
-            if mode_cfg is None:
-                return None
-            if mode_cfg is True:
-                return {
-                    "publisher": "zmq",
-                    "topic": "kv-events",
-                    "enable_kv_cache_events": True,
-                }
-            if isinstance(mode_cfg, dict):
-                result = {
-                    "publisher": "zmq",
-                    "topic": "kv-events",
-                    "enable_kv_cache_events": True,
-                }
-                result.update(mode_cfg)
-                return result
-
-        return None
+        """``roles.<role>.kv_events`` for a worker mode over the vLLM defaults; None when it publishes none."""
+        return role_kv_events(
+            self.roles, mode, {"publisher": "zmq", "topic": "kv-events", "enable_kv_cache_events": True}
+        )
 
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        """Get environment variables for a worker mode."""
-        if mode == "prefill":
-            environment = dict(self.prefill_environment)
-        elif mode == "decode":
-            environment = dict(self.decode_environment)
-        elif mode == "agg":
-            environment = dict(self.aggregated_environment)
-        else:
-            environment = {}
-
-        return environment
+        """The role's environment (``roles.<role>.env``)."""
+        return role_env(self.roles, mode)
 
     def connector_for_mode(self, mode: WorkerMode) -> str | None:
         """The KV connector a worker mode runs: ``roles.<mode>.args.connector``, else ``engine.connector``."""
@@ -705,13 +620,12 @@ class VLLMProtocol:
         return filename, payload
 
     def get_served_model_name(self, default: str) -> str:
-        """Get served model name from vLLM config, or return default."""
-        if self.vllm_config:
-            for cfg in [self.vllm_config.prefill, self.vllm_config.aggregated, self.vllm_config.decode]:
-                if cfg:
-                    name = cfg.get("served-model-name") or cfg.get("served_model_name")
-                    if name:
-                        return name
+        """Get served model name from the roles' engine args, or return default."""
+        for mode in ("prefill", "agg", "decode"):
+            args = role_args(self.roles, mode)
+            name = args.get("served-model-name") or args.get("served_model_name")
+            if name:
+                return name
         return default
 
     def should_colocate_prefill_decode(
@@ -1278,9 +1192,10 @@ class VLLMProtocol:
             overridden = pop_vllm_orchestration_flags(config)
             config.setdefault("served-model-name", served_model_name)
 
-            # A prefill/decode worker gets its KV connector; an aggregate worker has none.
-            config.pop("connector", None)
-            if mode in {"prefill", "decode"}:
+            # A prefill/decode worker gets its KV connector. An aggregate worker gets
+            # only the one its role names (e.g. lmcache-mp offload), not the P/D default.
+            role_connector = config.pop("connector", None)
+            if mode in {"prefill", "decode"} or role_connector is not None:
                 kv_transfer_config = self.kv_transfer_config(mode, process, runtime)
                 if kv_transfer_config is not None:
                     config.setdefault("kv-transfer-config", kv_transfer_config)
@@ -1505,7 +1420,7 @@ class VLLMProtocol:
                     str(dp_rpc_port),
                 ]
             )
-            # Note: --data-parallel-size is added via _config_to_cli_args from vllm_config
+            # Note: --data-parallel-size is added via _config_to_cli_args from the role's args
         elif is_multi_node:
             # Standard TP+PP multi-node coordination flags
             node_rank = endpoint_nodes.index(process.node)
@@ -1539,7 +1454,7 @@ class VLLMProtocol:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             cmd.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
-        # Add all config flags from vllm_config
+        # Add all config flags from the role's args
         cmd.extend(_config_to_cli_args(config))
 
         return cmd
@@ -1756,6 +1671,10 @@ class KVConnector:
     kv_role: str | None = "kv_both"
     module_path: str | None = None
     discovery: bool = False
+    # Static ``kv_connector_extra_config``; a discovery row's topology-derived extras replace it.
+    extra_config: dict[str, Any] | None = None
+    # Service kind the connector talks to on its worker's node; implied when the recipe declares none.
+    service_type: str | None = None
 
     def transfer_config(self, mode: WorkerMode) -> dict[str, Any]:
         """The ``--kv-transfer-config`` payload for a worker mode, before any topology-derived extras."""
@@ -1763,6 +1682,8 @@ class KVConnector:
         if self.module_path is not None:
             payload["kv_connector_module_path"] = self.module_path
         payload["kv_role"] = self.kv_role or ("kv_producer" if mode == "prefill" else "kv_consumer")
+        if self.extra_config:
+            payload["kv_connector_extra_config"] = dict(self.extra_config)
         return payload
 
 
@@ -1770,6 +1691,13 @@ class KVConnector:
 _CONNECTOR_MAP: dict[str, KVConnector] = {
     "nixl": KVConnector("NixlConnector"),
     "lmcache": KVConnector("LMCacheConnectorV1"),
+    # Out-of-process LMCache MP server (services[].type: lmcache-server) on the worker's own node.
+    "lmcache-mp": KVConnector(
+        "LMCacheMPConnector",
+        module_path="lmcache.integration.vllm.lmcache_mp_connector",
+        extra_config={"lmcache.mp.host": "tcp://localhost", "lmcache.mp.port": LMCACHE_SERVER_PORT},
+        service_type="lmcache-server",
+    ),
     "kvbm": KVConnector("DynamoConnector", module_path="kvbm.vllm_integration.connector"),
     # AMD MoRI-IO (ROCm): prefill produces and decode consumes KV; workers register with the vLLM Router.
     "moriio": KVConnector("MoRIIOConnector", kv_role=None, discovery=True),

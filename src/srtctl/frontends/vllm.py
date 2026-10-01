@@ -37,6 +37,7 @@ class VLLMFrontend:
     """
 
     required_backend: ClassVar[str | None] = "vllm"
+    model_name_role: ClassVar[str | None] = None
     worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
     expands_node_local_dp: ClassVar[bool] = False
 
@@ -87,15 +88,15 @@ class VLLMFrontend:
             raise ValueError(
                 "frontend.type: vllm binds vllm serve directly; set frontend.enable_multiple_frontends: false"
             )
-        if config.resources.is_disaggregated:
+        if config.topology.is_disaggregated:
             raise ValueError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
-        if config.resources.num_agg != 1:
+        if config.topology.num_agg != 1:
             raise ValueError(
-                f"frontend.type: vllm supports exactly one aggregate worker, got {config.resources.num_agg}. "
+                f"frontend.type: vllm supports exactly one aggregate worker, got {config.topology.num_agg}. "
                 "vllm serve owns the public port directly and there is no router to load-balance "
                 "replicas, so extra workers would either idle or collide on the port. "
                 "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
-                "worker across nodes with resources.agg_nodes."
+                "worker across nodes with roles.agg.nodes."
             )
 
     def get_backend_health_urls(
@@ -128,11 +129,11 @@ class VLLMFrontend:
                 "frontend.type: vllm binds vllm serve directly to the public port; "
                 "set frontend.enable_multiple_frontends: false"
             )
-        if config.resources.is_disaggregated:
+        if config.topology.is_disaggregated:
             raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
-        if config.resources.num_agg != 1:
+        if config.topology.num_agg != 1:
             raise ValueError(
-                f"frontend.type: vllm supports exactly one aggregate worker, got {config.resources.num_agg}; "
+                f"frontend.type: vllm supports exactly one aggregate worker, got {config.topology.num_agg}; "
                 "use frontend.type: dynamo to route between multiple workers"
             )
 

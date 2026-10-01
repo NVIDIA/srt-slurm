@@ -36,6 +36,7 @@ from srtctl.core.power.cpu_rails import (
     sensor_name,
 )
 from srtctl.core.power.cpu_sample import CpuSample, RailReading, node_total_watts, pivot_socket_samples
+from srtctl.core.power.hwmon import is_power_meter
 
 CPU_POWER_FIELD_ID = 1130
 DCGM_PYTHON_BINDING_DIRS = (
@@ -166,10 +167,7 @@ class AcpiPowerMeterReader(CpuPowerReader):
         seen_paths: set[str] = set()
         seen_domains: set[tuple[int, str]] = set()
         for hwmon_dir in sorted(hwmon_root.glob("hwmon*")):
-            try:
-                if (hwmon_dir / "name").read_text().strip() != "power_meter":
-                    continue
-            except OSError:
+            if not is_power_meter(hwmon_dir):
                 continue
             for attribute_root in (hwmon_dir / "device", hwmon_dir):
                 channels = {

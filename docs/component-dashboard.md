@@ -21,10 +21,11 @@ from a repo checkout.
 
 ---
 
-## Quick start — nothing to turn on
+## Build a dashboard after the run
 
-**Every job builds its own dashboard.** There is no knob and nothing to remember:
-post-processing writes, into the run's log dir:
+Jobs no longer automatically ingest dashboard data or render a dashboard. Use the
+[manual commands below](#running-it-by-hand) against a retained run's artifacts.
+Choose output paths for these artifacts (`--dump-json` adds the JSON payload):
 
 ```
 perf_dashboard.html          self-contained page (D3 inlined, no network needed)
@@ -35,17 +36,10 @@ perf_dashboard_bundle/       the intermediate schemas, re-renderable in seconds
 `perf_dashboard.json` exists because the HTML is often unreadable where it lands — a
 headless cluster, a CI log, an S3 prefix. It is the machine-readable form of
 everything the page shows, so a run can be diffed against another, asserted on in a
-test, or simply read without a browser. It is built before the S3 sync, so all three
-artifacts ship with the rest of the log dir.
+test, or simply read without a browser. A build after the job finishes does not
+update its earlier S3 upload; copy generated outputs separately if needed remotely.
 
-Driven by `srtctl.analysis.perf_dashboard`, which is best-effort: a rendering failure
-is logged and never changes the outcome of a benchmark that already produced results.
-
-Nothing else is required. One `srtctl` submission collects the data, post-processes it
-and renders the page, in that order, inside the job.
-
-What `observability.enabled` changes is **which tabs the page carries**, not whether
-there is a page:
+`observability.enabled` determines which server-side inputs a later build can use:
 
 ```yaml
 observability:
@@ -55,8 +49,7 @@ observability:
 Without it the page is built from the client's own metrics export, the per-iteration
 worker logs and the frontend log: **Frontend / Router / Engine / Log-analysis**.
 Turning it on adds the scraped `/metrics` stream and the `SPAN_CLOSED` traces, and
-with them the **Overview** tab. Either way there is a dashboard, because the question
-it answers is asked *after* the run, when opting in is no longer possible.
+with them the **Overview** tab.
 
 ### Comparing two runs
 
@@ -92,7 +85,7 @@ the changed variables are **UNKNOWN** rather than implying the runs matched.
 
 ### Running a job against a modified checkout
 
-If you are testing dashboard changes, the compute node runs whatever `srtctl_root` in
+If you are testing capture changes, the compute node runs whatever `srtctl_root` in
 `srtslurm.yaml` points at -- not the tree you edited. Two things bite:
 
 * **`srtctl_root` is the only lever.** Staging a second checkout and `cd`-ing into it
@@ -107,12 +100,8 @@ If you are testing dashboard changes, the compute node runs whatever `srtctl_roo
 
 ### If the job hit its wall clock
 
-A SLURM `TIMEOUT` kills the job hard, so **post-processing never runs and no dashboard is
-written** — even though the capture itself completed. This matters because the runs most
-worth looking at are often the ones that ran out of time.
-
-Nothing is lost. Every raw input survives the kill, and the bundle rebuilds from the run
-directory in under a minute:
+A SLURM `TIMEOUT` can prevent finalization and upload. Build from the raw inputs
+persisted before the kill, checking the retained files for completeness:
 
 ```bash
 cd /path/to/srt-slurm
@@ -301,7 +290,7 @@ python3 -m src.visualization.build_dynamo_bench_dash <bundle> <out.html> [flags]
 | `--d3-cdn` | off | load D3 from the CDN instead (smaller file, needs network to view) |
 | `--max-batch-prefill / --max-batch-decode` | `128` / `256` | in-flight-batch ceilings drawn on the Engine tab. **Only used when the bundle has no `trtllm_config_*.yaml`** — ingest copies those in automatically, and the real values win. On AgentX run 2739690 the true decode ceiling is `1`, so the `256` default would misdraw that panel by 256x |
 | `--gpus N` | from `dashboard.yaml` | tok/s/GPU denominator |
-| `--dump-json PATH` | — | also write the DATA payload as indented JSON (what the automatic build produces as `perf_dashboard.json`) |
+| `--dump-json PATH` | — | also write the DATA payload as indented JSON, e.g. `perf_dashboard.json` |
 | `--include-warmup` | off | by default only the profiling phase is kept |
 
 The bundle argument is optional — with only `--frontend-log`, you get a

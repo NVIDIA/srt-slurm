@@ -113,15 +113,13 @@ class BenchmarkStageMixin:
         raise NotImplementedError
 
     def _orchestrator_node(self) -> str:
-        """Node the frontend/orchestrator runs on (honors frontend.orchestrator_placement)."""
-        placement = getattr(self.config.frontend, "orchestrator_placement", "head")
+        """Node the frontend/orchestrator runs on (honors frontend.placement.node)."""
+        placement = self.config.frontend.placement.location
         if placement == "head":
             return self.runtime.nodes.head
         from srtctl.core.topology import placed_node
 
-        return placed_node(
-            self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.orchestrator_placement"
-        )
+        return placed_node(self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.placement.node")
 
     @property
     def frontend(self) -> "FrontendProtocol | None":
@@ -139,20 +137,18 @@ class BenchmarkStageMixin:
         return self._orchestrator_node()
 
     def _benchmark_node(self) -> str:
-        """Node the benchmark client runs on (honors benchmark.client_placement).
+        """Node the benchmark client runs on (honors benchmark.placement.node).
 
         ``nodes.bench`` equals ``nodes.head`` unless a dedicated client node was
-        carved out (benchmark.client_dedicated_node), in which case it points at
-        that reserved node instead.
+        carved out (benchmark.placement.node: dedicated), in which case it points
+        at that reserved node instead.
         """
-        placement = getattr(self.config.benchmark, "client_placement", "head")
+        placement = self.config.benchmark.placement.location
         if placement == "head":
             return self.runtime.nodes.bench
         from srtctl.core.topology import placed_node
 
-        return placed_node(
-            self.backend_processes, placement, self.runtime.nodes.head, kind="benchmark.client_placement"
-        )
+        return placed_node(self.backend_processes, placement, self.runtime.nodes.head, kind="benchmark.placement.node")
 
     def _logical_worker_endpoints(self) -> list[tuple[str, str, int]]:
         """Return ``(mode, IP, port)`` for every routable worker endpoint.
@@ -733,6 +729,8 @@ class BenchmarkStageMixin:
             return {}
         backend = self.config.backend
         is_trtllm = self.config.backend_type == "trtllm"
+        # The combined setting also gates sidecar URL discovery; sidecars use
+        # native commands and do not consume dynamo_metrics_flags.
         dynamo_trtllm_metrics_disabled = (
             frontend.worker_launch == "dynamo"
             and isinstance(backend, TRTLLMProtocol)
@@ -742,12 +740,24 @@ class BenchmarkStageMixin:
         )
         metrics_path = frontend.metrics_path
         if logical_workers_only:
-            if logical_endpoints is None:
-                logical_endpoints = self._logical_worker_endpoints()
             # Sidecars use native worker commands, so publish_metrics does not
-            # control their existing logical-worker URL discovery.
-            if self.config.dynamo.sidecar or not dynamo_trtllm_metrics_disabled:
+            # control their existing logical-worker URL discovery. Their native
+            # HTTP metrics live on the logical endpoint, not the sidecar's port.
+            if self.config.dynamo.sidecar:
+                if logical_endpoints is None:
+                    logical_endpoints = self._logical_worker_endpoints()
                 urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
+            elif not dynamo_trtllm_metrics_disabled:
+                for process in self.backend_processes:
+                    if frontend.worker_endpoint_port(process, self.config, self.runtime) is None:
+                        continue
+                    # Routability does not imply metrics support. The frontend
+                    # owns both the supported ranks/roles and the metrics port.
+                    port = frontend.worker_metrics_port(process, self.runtime)
+                    if port is None:
+                        continue
+                    host = get_hostname_ip(process.node, self.runtime.network_interface)
+                    urls.append(f"http://{host}:{port}{metrics_path}")
         elif frontend.worker_launch == "direct":
             # Every rank the frontend says serves metrics. trtllm-serve mounts its
             # Prometheus route only when the engine runs with return_perf_metrics
@@ -827,8 +837,8 @@ class BenchmarkStageMixin:
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
 
         # Orchestrator endpoint for the benchmark command. When the client runs on
-        # a different node than the orchestrator (e.g. client_placement=last_decode
-        # with orchestrator_placement=first_decode), "localhost" is wrong — the
+        # a different node than the orchestrator (e.g. benchmark.placement.node: last_decode
+        # with frontend.placement.node: first_decode), "localhost" is wrong — the
         # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
         # A services-only job (frontend.type none) has no endpoint to point at.
         if self.config.frontend.type != "none":
