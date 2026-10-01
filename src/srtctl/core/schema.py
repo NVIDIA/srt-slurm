@@ -1961,44 +1961,37 @@ def _serialize_node_install(install_cmd: str) -> str:
 class DynamoConfig:
     """Dynamo installation configuration.
 
-    A recipe names the Dynamo to install through ``source`` (or ``top_of_tree``
-    for an unpinned HEAD build); without either, ``install: true`` pip-installs
-    the PyPI release ``version`` defaults to. ``version``, ``hash``, ``wheel``,
-    and ``cargo_patches`` are the internal fields ``source`` resolves into: the
-    install path reads them, and the pre-2.0 recipe layout set them directly
-    (``srtctl migrate`` rewrites that into ``source``).
+    ``source`` names the Dynamo to install: a git ref to build, a PyPI release,
+    or a staged wheel. ``top_of_tree`` builds HEAD unpinned instead. With
+    neither, ``install: true`` pip-installs the PyPI release
+    ``DEFAULT_PYPI_VERSION``. ``effective_source`` is what actually gets
+    installed; ``pypi_version``, ``git_rev``, ``wheel_version``, and
+    ``cargo_patches`` are read-only views of it for the install path.
 
     Options:
         install: Whether to install dynamo at all (default: True). Set to False
                  if your container already has dynamo pre-installed.
-        version: Internal: PyPI release to install (from ``source.pypi``; default "0.8.0").
-        hash: Internal: commit or ref to build from (from ``source.rev`` / ``source.sha``).
         top_of_tree: Clone repo at HEAD (latest). No immutable equivalent under
                      ``source``; prefer pinning a commit in ``source.rev``.
-        wheel: Internal: ai-dynamo package version to install via staged wheels
-               (from ``source.wheel``). The matching ai-dynamo-runtime wheel is
-               installed automatically.
         source: Which Dynamo to install: ``git`` + ``rev`` (commit, tag, or
                ``refs/pull/<n>/head``; ``srtctl apply`` pins it to ``sha``),
-               ``pypi``, or ``wheel``. Cannot be combined with the internal fields.
+               ``pypi``, or ``wheel``. Cannot be combined with ``top_of_tree``.
         request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
         event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
                      the Dynamo image's own default). Valid values: "nats", "zmq"
         sidecar: Replace the Python workers with native engines and Dynamo sidecars.
-
-    If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
 
+    # PyPI release installed when a recipe names no source and does not ask for top_of_tree.
+    DEFAULT_PYPI_VERSION: ClassVar[str] = "0.8.0"
     _VALID_REQUEST_PLANES: ClassVar[tuple[str, ...]] = ("nats", "tcp", "http")
     _VALID_EVENT_PLANES: ClassVar[tuple[str, ...]] = ("nats", "zmq")
 
     install: bool = True
-    version: str | None = "0.8.0"
-    hash: str | None = None
     # Clone and build Dynamo at HEAD (unpinned). No `source` equivalent; prefer a commit in `source.rev`.
     top_of_tree: bool = False
-    wheel: str | None = None
-    # Which Dynamo to install: exactly one of git+rev, pypi, or wheel.
+    # Which Dynamo to install: exactly one of git+rev, pypi, or wheel. Unset, and not
+    # top_of_tree: the PyPI release DEFAULT_PYPI_VERSION.
     source: DynamoSourceConfig | None = None
     request_plane: str = "tcp"
     event_plane: str | None = None
@@ -2008,61 +2001,12 @@ class DynamoConfig:
     sidecar_startup_timeout: int = 3600
     sidecar_context_length: int | None = None
     sidecar_args: list[str] = field(default_factory=list)
-    # Internal (from `source.patches`): dependency-declaration overrides applied to the dynamo
-    # Cargo.toml tree before a git source build. Each entry is a full `<crate> = <spec>` TOML line, e.g.
-    #   'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }'
-    # The crate's existing declaration is replaced tree-wide, letting a source build pull a crate
-    # from an unmerged branch without waiting for a crates.io release.
-    cargo_patches: list[str] | None = None
 
     def __post_init__(self) -> None:
-        if self.source is not None:
-            direct = [
-                name
-                for name, on in (
-                    ("hash", self.hash is not None),
-                    ("top_of_tree", self.top_of_tree),
-                    ("wheel", self.wheel is not None),
-                    ("cargo_patches", bool(self.cargo_patches)),
-                )
-                if on
-            ]
-            if direct:
-                raise ValueError(
-                    "dynamo.source already names the install target; it cannot be combined with dynamo."
-                    + ", dynamo.".join(direct)
-                )
-            if self.source.pypi is not None:
-                object.__setattr__(self, "version", self.source.pypi)
-            elif self.source.wheel is not None:
-                object.__setattr__(self, "wheel", self.source.wheel)
-            else:
-                object.__setattr__(self, "hash", self.source.checkout)
-                object.__setattr__(self, "cargo_patches", list(self.source.patches) if self.source.patches else None)
-
-        install_sources = [
-            ("hash", self.hash is not None),
-            ("top_of_tree", self.top_of_tree),
-            ("wheel", self.wheel is not None),
-        ]
-        enabled_sources = [name for name, enabled in install_sources if enabled]
-
-        # Auto-clear version if another install source is set.
-        if enabled_sources:
-            object.__setattr__(self, "version", None)
-
-        # Validate only one source option is set
-        if len(enabled_sources) > 1:
-            raise ValueError(f"Cannot specify both Dynamo install sources: {', '.join(enabled_sources)}")
-
-        if self.wheel is not None:
-            if not self.wheel.strip():
-                raise ValueError("dynamo.wheel must be a non-empty package version")
-            if Path(self.wheel).name.endswith(".whl") or "/" in self.wheel:
-                raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
-
-        if self.cargo_patches and self.hash is None:
-            raise ValueError("dynamo.cargo_patches requires a source build — set dynamo.hash to a commit")
+        if self.top_of_tree and self.source is not None:
+            raise ValueError(
+                "dynamo.top_of_tree cannot be combined with dynamo.source; pin a commit in source.rev or drop top_of_tree"
+            )
 
         if self.request_plane not in self._VALID_REQUEST_PLANES:
             raise ValueError(
@@ -2084,32 +2028,55 @@ class DynamoConfig:
             raise ValueError("dynamo.sidecar_context_length must be at least 1")
 
     @property
+    def effective_source(self) -> DynamoSourceConfig | None:
+        """What gets installed: ``source`` as written, the PyPI default when nothing was named, None for top_of_tree."""
+        if self.source is not None:
+            return self.source
+        if self.top_of_tree:
+            return None
+        return DynamoSourceConfig(pypi=self.DEFAULT_PYPI_VERSION)
+
+    @property
+    def pypi_version(self) -> str | None:
+        """PyPI release to pip-install, when the install is a PyPI release."""
+        source = self.effective_source
+        return source.pypi if source is not None else None
+
+    @property
+    def git_rev(self) -> str | None:
+        """Commit (or ref) to build from, when the install is a git source."""
+        source = self.effective_source
+        return source.checkout if source is not None and source.git is not None else None
+
+    @property
+    def cargo_patches(self) -> list[str] | None:
+        """Cargo dependency replacements applied before a git source build."""
+        source = self.effective_source
+        return list(source.patches) if source is not None and source.git is not None and source.patches else None
+
+    @property
     def needs_source_install(self) -> bool:
         """Whether this config requires a source install (git clone + maturin)."""
-        return self.wheel is None and (self.hash is not None or self.top_of_tree)
+        return self.top_of_tree or self.git_rev is not None
 
     @property
     def wheel_version(self) -> str | None:
         """Package version requested for staged wheel installation."""
-        return self.wheel
+        source = self.effective_source
+        return source.wheel if source is not None else None
 
     @property
     def wheel_name(self) -> str | None:
         """Return the ai-dynamo wheel filename for the requested package version."""
-        if not self.wheel:
-            return None
-        return f"ai_dynamo-{self.wheel}-py3-none-any.whl"
+        version = self.wheel_version
+        return f"ai_dynamo-{version}-py3-none-any.whl" if version else None
 
     def get_wheel_environment(self) -> dict[str, str]:
         """Environment variables consumed by ai-dynamo prefetch/setup scripts."""
-        if not self.wheel:
-            return {}
-        wheel_name = self.wheel_name
-        env = {"DYNAMO_WHEEL_NAME": wheel_name} if wheel_name else {}
         version = self.wheel_version
-        if version:
-            env["DYNAMO_VERSION"] = version
-        return env
+        if not version:
+            return {}
+        return {"DYNAMO_WHEEL_NAME": f"ai_dynamo-{version}-py3-none-any.whl", "DYNAMO_VERSION": version}
 
     def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo.
@@ -2123,11 +2090,8 @@ class DynamoConfig:
 
     def _build_install_commands(self) -> str:
         """Build the raw (unserialized) dynamo install command."""
-        if self.wheel is not None:
-            wheel_name = self.wheel_name or Path(self.wheel).name
-            version = self.wheel_version
-            if not version:
-                raise ValueError("dynamo.wheel must provide an exact package version")
+        wheel_name = self.wheel_name
+        if wheel_name is not None:
             start_message = shlex.quote(f"Installing ai-dynamo-runtime and ai-dynamo from wheel {wheel_name}...")
             done_message = shlex.quote(f"ai-dynamo-runtime and ai-dynamo install path completed for {wheel_name}")
             return (
@@ -2141,11 +2105,12 @@ class DynamoConfig:
                 f"echo {done_message}"
             )
 
-        if self.version is not None:
+        pypi_version = self.pypi_version
+        if pypi_version is not None:
             return (
-                f"echo 'Installing dynamo {self.version}...' && "
-                f"pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime=={self.version} ai-dynamo=={self.version} && "
-                f"echo 'Dynamo {self.version} installed'"
+                f"echo 'Installing dynamo {pypi_version}...' && "
+                f"pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime=={pypi_version} ai-dynamo=={pypi_version} && "
+                f"echo 'Dynamo {pypi_version} installed'"
             )
 
         # Source install. When pinned to an immutable hash, cache the build on
@@ -2154,11 +2119,10 @@ class DynamoConfig:
         # reuses the artifacts. Drops bootstrap from ~5 min + flaky github clone
         # to ~10 sec lustre access for repeat hashes. top_of_tree skips the
         # cache (no stable key) and always live-builds.
-        if self.hash is not None:
-            repo_url = (
-                self.source.git if self.source is not None and self.source.git else DynamoSourceConfig.DEFAULT_GIT
-            )
-            return _hash_cached_source_install(self.hash, self.cargo_patches, repo_url=repo_url)
+        git_rev = self.git_rev
+        if git_rev is not None:
+            assert self.source is not None and self.source.git is not None
+            return _hash_cached_source_install(git_rev, self.cargo_patches, repo_url=self.source.git)
 
         return _live_source_install_for_top_of_tree()
 

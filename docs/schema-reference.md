@@ -141,7 +141,7 @@ Dynamo installation configuration.
 |---|---|---|---|
 | `install` | bool | `True` |  |
 | `top_of_tree` | bool | `False` | Clone and build Dynamo at HEAD (unpinned). No `source` equivalent; prefer a commit in `source.rev`. |
-| `source` | [DynamoSourceConfig](#dynamosourceconfig) \| None | `None` | Which Dynamo to install: exactly one of git+rev, pypi, or wheel. |
+| `source` | [DynamoSourceConfig](#dynamosourceconfig) \| None | `None` | Which Dynamo to install: exactly one of git+rev, pypi, or wheel. Unset, and not top_of_tree: the PyPI release DEFAULT_PYPI_VERSION. |
 | `request_plane` | str | `'tcp'` |  |
 | `event_plane` | str \| None | `None` |  |
 | `sidecar` | bool | `False` |  |

@@ -125,7 +125,7 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
     assert config.resources.num_prefill == 2
     assert config.frontend.placement.location == "first_decode"
     assert config.infra_dedicated_node is True
-    assert config.dynamo.hash == "abc1234"
+    assert config.dynamo.git_rev == "abc1234"
     assert config.benchmark.placement.location == "last_decode"
 
 

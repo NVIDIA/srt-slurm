@@ -251,7 +251,7 @@ class DynamoFrontend(DynamicFrontend):
             env_to_set.update(nsys_env)
 
             # Add global recipe environment, including values derived from
-            # dynamo.wheel, before frontend-specific overrides.
+            # dynamo.source.wheel, before frontend-specific overrides.
             env_to_set.update(runtime.environment)
 
             # Add frontend env from config

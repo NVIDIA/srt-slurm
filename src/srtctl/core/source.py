@@ -169,6 +169,10 @@ class DynamoSourceConfig:
             value = getattr(self, name)
             if value is not None and not value.strip():
                 raise ValidationError(f"dynamo.source.{name} must be a non-empty version")
+        if self.wheel is not None and (self.wheel.endswith(".whl") or "/" in self.wheel):
+            raise ValidationError(
+                "dynamo.source.wheel must be a package version like '1.2.0.dev20260426', not a filename"
+            )
 
     @property
     def checkout(self) -> str | None:

@@ -223,20 +223,22 @@ class TestDynamoConfig:
 
     def test_default_version(self):
         """Default is version 0.8.0."""
+
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig()
-        assert config.version == "0.8.0"
-        assert config.hash is None
+        assert config.pypi_version == "0.8.0"
+        assert config.git_rev is None
         assert config.top_of_tree is False
-        assert config.wheel is None
+        assert config.wheel_version is None
         assert not config.needs_source_install
 
     def test_version_install_command(self):
         """Version config generates pip install command."""
-        from srtctl.core.schema import DynamoConfig
 
-        config = DynamoConfig(version="0.8.0")
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
+
+        config = DynamoConfig(source=DynamoSourceConfig(pypi="0.8.0"))
         cmd = config.get_install_commands()
         assert "pip install" in cmd
         assert "ai-dynamo-runtime==0.8.0" in cmd
@@ -244,12 +246,13 @@ class TestDynamoConfig:
 
     def test_wheel_install_command(self):
         """Wheel config installs ai-dynamo plus runtime without source build."""
-        from srtctl.core.schema import DynamoConfig
 
-        config = DynamoConfig(wheel="1.2.0.dev20260426")
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
+
+        config = DynamoConfig(source=DynamoSourceConfig(wheel="1.2.0.dev20260426"))
         cmd = config.get_install_commands()
 
-        assert config.version is None
+        assert config.pypi_version is None
         assert config.needs_source_install is False
         assert "/srtctl-runtime/dynamo_wheels.py" in cmd
         assert "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in cmd
@@ -269,11 +272,12 @@ class TestDynamoConfig:
         is anchored in the Python env (sys.prefix), NOT /tmp, so co-located
         containers with a bind-mounted /tmp don't collide.
         """
-        from srtctl.core.schema import DynamoConfig
+
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
 
         for config in (
-            DynamoConfig(version="0.8.0"),
-            DynamoConfig(wheel="1.2.0.dev20260426"),
+            DynamoConfig(source=DynamoSourceConfig(pypi="0.8.0")),
+            DynamoConfig(source=DynamoSourceConfig(wheel="1.2.0.dev20260426")),
         ):
             cmd = config.get_install_commands()
             # Lock dir resolved from the active Python env, not /tmp.
@@ -295,10 +299,11 @@ class TestDynamoConfig:
         flock if cold, (3) install from the cache regardless. Cache is keyed
         by hash so bumping the hash forces a rebuild.
         """
-        from srtctl.core.schema import DynamoConfig
 
-        config = DynamoConfig(hash="abc123")
-        assert config.version is None  # Auto-cleared
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
+
+        config = DynamoConfig(source=DynamoSourceConfig(rev="abc123"))
+        assert config.pypi_version is None
         assert config.needs_source_install
         cmd = config.get_install_commands()
 
@@ -341,10 +346,11 @@ class TestDynamoConfig:
         The cache key is suffixed with a digest so an overridden build never reuses/poisons
         the plain build of the same hash.
         """
-        from srtctl.core.schema import DynamoConfig
+
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
 
         patch = 'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "feat" }'
-        config = DynamoConfig(hash="abc123", cargo_patches=[patch])
+        config = DynamoConfig(source=DynamoSourceConfig(rev="abc123", patches=[patch]))
         assert config.needs_source_install
         cmd = config.get_install_commands()
 
@@ -360,17 +366,20 @@ class TestDynamoConfig:
 
     def test_cargo_patches_require_hash(self):
         """cargo_patches without a source build (hash) is rejected."""
-        from srtctl.core.schema import DynamoConfig
+        from marshmallow import ValidationError
 
-        with pytest.raises(ValueError, match="cargo_patches requires a source build"):
-            DynamoConfig(wheel="1.2.0.dev20260426", cargo_patches=["x = 1"])
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
+
+        with pytest.raises(ValidationError, match="only apply to a git source"):
+            DynamoConfig(source=DynamoSourceConfig(wheel="1.2.0.dev20260426", patches=["x = 1"]))
 
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
+
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(top_of_tree=True)
-        assert config.version is None  # Auto-cleared
+        assert config.pypi_version is None
         assert config.needs_source_install
         cmd = config.get_install_commands()
         assert "git clone" in cmd
@@ -390,37 +399,45 @@ class TestDynamoConfig:
 
     def test_hash_and_top_of_tree_not_allowed(self):
         """Cannot specify both hash and top_of_tree."""
-        from srtctl.core.schema import DynamoConfig
 
-        with pytest.raises(ValueError, match="Cannot specify both"):
-            DynamoConfig(hash="abc123", top_of_tree=True)
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
+
+        with pytest.raises(ValueError, match="top_of_tree cannot be combined with dynamo.source"):
+            DynamoConfig(source=DynamoSourceConfig(rev="abc123"), top_of_tree=True)
 
     def test_hash_and_wheel_not_allowed(self):
         """Cannot specify both hash and wheel."""
-        from srtctl.core.schema import DynamoConfig
+        from marshmallow import ValidationError
 
-        with pytest.raises(ValueError, match="Cannot specify both"):
-            DynamoConfig(hash="abc123", wheel="1.2.0.dev20260426")
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
+
+        with pytest.raises(ValidationError, match="exactly one of"):
+            DynamoConfig(source=DynamoSourceConfig(rev="abc123", wheel="1.2.0.dev20260426"))
 
     def test_wheel_filename_not_allowed(self):
         """Wheel config takes a package version, not an artifact filename."""
-        from srtctl.core.schema import DynamoConfig
+        from marshmallow import ValidationError
 
-        with pytest.raises(ValueError, match="package version"):
-            DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
+
+        with pytest.raises(ValidationError, match="package version"):
+            DynamoConfig(source=DynamoSourceConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"))
 
     def test_wheel_version_required(self):
         """Wheel config must provide an exact package version."""
-        from srtctl.core.schema import DynamoConfig
+        from marshmallow import ValidationError
 
-        with pytest.raises(ValueError, match="non-empty package version"):
-            DynamoConfig(wheel="")
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
+
+        with pytest.raises(ValidationError, match="exactly one of"):
+            DynamoConfig(source=DynamoSourceConfig(wheel=""))
 
     def test_wheel_environment_from_version(self):
         """Wheel version is converted to setup/prefetch environment."""
-        from srtctl.core.schema import DynamoConfig
 
-        config = DynamoConfig(wheel="1.2.0.dev20260426")
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig
+
+        config = DynamoConfig(source=DynamoSourceConfig(wheel="1.2.0.dev20260426"))
 
         assert config.wheel_version == "1.2.0.dev20260426"
         assert config.wheel_name == "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"
@@ -431,6 +448,7 @@ class TestDynamoConfig:
 
     def test_request_plane_default_tcp(self):
         """Default request_plane is 'tcp'."""
+
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig()
@@ -438,6 +456,7 @@ class TestDynamoConfig:
 
     def test_request_plane_override_default_to_nats(self):
         """request_plane='nats' overrides the TCP default."""
+
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(request_plane="nats")
@@ -445,6 +464,7 @@ class TestDynamoConfig:
 
     def test_request_plane_tcp(self):
         """request_plane='tcp' is accepted."""
+
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(request_plane="tcp")
@@ -452,6 +472,7 @@ class TestDynamoConfig:
 
     def test_request_plane_http(self):
         """request_plane='http' is accepted."""
+
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(request_plane="http")
@@ -459,6 +480,7 @@ class TestDynamoConfig:
 
     def test_request_plane_invalid(self):
         """Invalid request_plane raises ValueError."""
+
         from srtctl.core.schema import DynamoConfig
 
         with pytest.raises(ValueError, match="Invalid request_plane"):
@@ -466,6 +488,7 @@ class TestDynamoConfig:
 
     def test_event_plane_default_none(self):
         """Default event_plane is None (follow the image default)."""
+
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig()
@@ -473,6 +496,7 @@ class TestDynamoConfig:
 
     def test_event_plane_zmq(self):
         """event_plane='zmq' is accepted."""
+
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(event_plane="zmq")
@@ -480,6 +504,7 @@ class TestDynamoConfig:
 
     def test_event_plane_nats(self):
         """event_plane='nats' is accepted."""
+
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(event_plane="nats")
@@ -487,6 +512,7 @@ class TestDynamoConfig:
 
     def test_event_plane_invalid(self):
         """Invalid event_plane raises ValueError."""
+
         from srtctl.core.schema import DynamoConfig
 
         with pytest.raises(ValueError, match="Invalid event_plane"):
@@ -498,7 +524,7 @@ class TestSidecarValidation:
 
     @staticmethod
     def _config(*, frontend_type: str = "dynamo", backend=None, gpus_per_node: int = 1):
-        from srtctl.core.schema import DynamoConfig, FrontendConfig, ModelConfig, ResourceConfig
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig, FrontendConfig, ModelConfig, ResourceConfig
 
         return SrtConfig(
             name="sidecar",
@@ -506,14 +532,14 @@ class TestSidecarValidation:
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=gpus_per_node, agg_nodes=1, agg_workers=1),
             frontend=FrontendConfig(type=frontend_type),
             backend=backend or SGLangProtocol(),
-            dynamo=DynamoConfig(wheel="1.5.0.dev20260828", sidecar=True),
+            dynamo=DynamoConfig(source=DynamoSourceConfig(wheel="1.5.0.dev20260828"), sidecar=True),
         )
 
     def test_wheel_backed_sidecar_is_valid(self) -> None:
         config = self._config()
 
         assert config.dynamo.sidecar is True
-        assert config.dynamo.wheel == "1.5.0.dev20260828"
+        assert config.dynamo.wheel_version == "1.5.0.dev20260828"
 
     def test_sidecar_requires_dynamo_frontend(self) -> None:
         from marshmallow import ValidationError
@@ -1200,7 +1226,7 @@ class TestSetupScript:
         from pathlib import Path
 
         from srtctl.cli.submit import generate_minimal_sbatch_script
-        from srtctl.core.schema import DynamoConfig, ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import DynamoConfig, DynamoSourceConfig, ModelConfig, ResourceConfig, SrtConfig
 
         config = SrtConfig(
             name="test",
@@ -1208,7 +1234,7 @@ class TestSetupScript:
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
             dynamo=DynamoConfig(
                 install=True,
-                wheel="1.2.0.dev20260426",
+                source=DynamoSourceConfig(wheel="1.2.0.dev20260426"),
             ),
         )
 

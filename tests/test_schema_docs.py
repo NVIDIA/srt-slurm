@@ -186,7 +186,7 @@ def test_every_rejected_key_is_rewritten_by_migrate_into_something_that_loads() 
     config = SrtConfig.Schema().load(resolve_config_with_defaults(migrated, None))
     assert config.resources.decode_nodes == 0
     assert config.resources.worker_critical("prefill") is False
-    assert config.dynamo.hash == "abc1234"
+    assert config.dynamo.git_rev == "abc1234"
     assert config.dynamo.cargo_patches == ["x = 1"]
     assert config.nats_max_payload_mb == 16
     assert config.backend.get_kv_events_config_for_mode("prefill")

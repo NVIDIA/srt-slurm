@@ -13,7 +13,7 @@ The document describes the authoring surface only: the top-level ``engine:``,
 ``roles:``, and ``placement:`` vocabularies (from :mod:`srtctl.core.roles` and
 the placement dataclasses) plus every dataclass field a recipe may set. The
 2.0 vocabularies expand into internal fields (``resources.prefill_nodes``,
-``backend.<engine>_config``, ``infra``, ``dynamo.hash``, ``role_backends``, ...)
+``backend.<engine>_config``, ``role_backends``, ...)
 that keep the names of the pre-2.0 recipe layout; a recipe cannot set those
 directly (``srtctl.core.config.require_current_schema`` rejects them), so they
 are left out here. :data:`INTERNAL_FIELDS` names them, derived from the same
