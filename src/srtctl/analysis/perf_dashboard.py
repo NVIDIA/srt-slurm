@@ -3,13 +3,14 @@
 
 """Explicit post-run bridge: a finished run's log dir -> component perf dashboard.
 
-The sweep lifecycle does not invoke this module. Callers can use it to build a
-dashboard from retained artifacts after a job has finished; the standalone ingest
-and render commands are documented in ``docs/component-dashboard.md``.
+The sweep lifecycle does not invoke this module. Callers can build a dashboard
+from retained artifacts after a job has finished; the standalone ingest and render
+commands are documented in ``docs/component-dashboard.md``.
 
 ``observability.enabled`` decides which capture legs exist and therefore which tabs
-the page carries. Runs without server-side capture can still render from the
-client's metrics export, per-iteration log and frontend log.
+the page carries; it never decides whether the page exists. A run with no
+server-side capture at all still renders from the client's own metrics export, the
+per-iteration log and the frontend log -- which is the shape most runs have.
 
 It drives the two vendored layers as SUBPROCESSES:
 
@@ -227,16 +228,9 @@ def build(config: SrtConfig, runtime: RuntimeContext) -> Path | None:
 def try_build(config: SrtConfig, runtime: RuntimeContext) -> Path | None:
     """Build the dashboard for a finished run. Returns the HTML path, or None.
 
-    Single entry point for :class:`PostProcessStageMixin`, so the mixin stays free of
-    analysis-package internals -- the same contract as
-    :func:`srtctl.analysis.host_sampler.try_start_host_sampler`.
-
-    Unconditional: there is no opt-in to check. What differs between runs is which
-    legs :func:`build` finds, and that is the ingest's decision to make from the log
-    dir rather than a recipe's to declare in advance.
-
-    Rendering failures are logged and returned as ``None`` so callers can keep
-    using the retained benchmark artifacts even when a dashboard cannot be built.
+    Explicit callers can use this best-effort wrapper around :func:`build`.
+    Ingestion selects the available inputs from the retained log directory.
+    Rendering failures are logged and returned as ``None``.
     """
     try:
         return build(config, runtime)

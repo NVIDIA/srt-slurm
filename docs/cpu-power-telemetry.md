@@ -238,11 +238,6 @@ Differences from `cpu_power_exporter`:
   This bumped the samples schema to v3; v2 readers that select columns by
   name are unaffected.
 
-Energy reports are generated explicitly with
-`python -m srtctl.analysis.power_energy_report <log_dir>`; the sweep does not
-generate a final or incremental energy report automatically. Raw power samples
-and telemetry manifests are still finalized during cleanup.
-
 The energy report summarizes utilization per concurrency window as a mean and
 max of the samples inside the window, per socket and per node (and for the GPU
 leg's `gpu_util_pct`/`sm_active`, per GPU, node, and role). It is reported next

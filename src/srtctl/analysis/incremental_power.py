@@ -3,8 +3,6 @@
 
 """Incremental, per-case power/energy emission during a live benchmark.
 
-Available for explicit callers; the sweep does not start this watcher.
-
 Best-effort by design and strictly additive: the terminal
 ``power_energy_report.json`` remains authoritative and unchanged. Nothing here
 may affect the job exit code or block the sweep.

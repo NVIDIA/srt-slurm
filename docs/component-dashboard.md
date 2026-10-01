@@ -23,22 +23,10 @@ from a repo checkout.
 
 ## Build a dashboard after the run
 
-Jobs capture raw artifacts, finalize reproducibility files and upload the log
-directory when S3 is configured. They do not automatically generate analysis or
-dashboards. Build a dashboard explicitly from a retained run:
-
-```bash
-cd /path/to/srt-slurm
-python3 -m src.ingest.ingest \
-    --run-dir outputs/<job_id>/logs \
-    --out outputs/<job_id>/logs/perf_dashboard_bundle
-python3 -m src.visualization.build_dynamo_bench_dash \
-    outputs/<job_id>/logs/perf_dashboard_bundle \
-    outputs/<job_id>/logs/perf_dashboard.html \
-    --dump-json outputs/<job_id>/logs/perf_dashboard.json
-```
-
-These commands produce:
+Jobs no longer automatically ingest dashboard data or render a dashboard. Use the
+[manual commands below](#running-it-by-hand) against a retained run's artifacts.
+The `srtctl.analysis.perf_dashboard` Python helper is also available for explicit
+builds and writes these outputs into the run's log directory:
 
 ```
 perf_dashboard.html          self-contained page (D3 inlined, no network needed)
@@ -49,12 +37,11 @@ perf_dashboard_bundle/       the intermediate schemas, re-renderable in seconds
 `perf_dashboard.json` exists because the HTML is often unreadable where it lands — a
 headless cluster, a CI log, an S3 prefix. It is the machine-readable form of
 everything the page shows, so a run can be diffed against another, asserted on in a
-test, or simply read without a browser. A separate build after the job finishes
-does not update the job's earlier S3 upload; copy the generated outputs separately
-if they are needed remotely.
+test, or simply read without a browser. A build after the job finishes does not
+update its earlier S3 upload; copy generated outputs separately if needed remotely.
 
-`srtctl.analysis.perf_dashboard` also provides a best-effort Python helper for
-explicit builds. It is not invoked by the sweep lifecycle.
+Driven by `srtctl.analysis.perf_dashboard`, which is best-effort: a rendering failure
+is logged and never changes the outcome of a benchmark that already produced results.
 
 `observability.enabled` determines which server-side inputs a later build can use:
 
@@ -63,7 +50,7 @@ observability:
   enabled: true          # adds the server-side capture legs — see the table below
 ```
 
-Without those inputs the page is built from the client's own metrics export, the per-iteration
+Without it the page is built from the client's own metrics export, the per-iteration
 worker logs and the frontend log: **Frontend / Router / Engine / Log-analysis**.
 Turning it on adds the scraped `/metrics` stream and the `SPAN_CLOSED` traces, and
 with them the **Overview** tab.
@@ -100,7 +87,7 @@ report assumes: *were these two runs actually comparable?*
 Both degrade honestly: when either bundle lacks the provenance files the section says
 the changed variables are **UNKNOWN** rather than implying the runs matched.
 
-### Capturing a job against a modified checkout
+### Running a job against a modified checkout
 
 If you are testing capture changes, the compute node runs whatever `srtctl_root` in
 `srtslurm.yaml` points at -- not the tree you edited. Two things bite:
@@ -117,9 +104,8 @@ If you are testing capture changes, the compute node runs whatever `srtctl_root`
 
 ### If the job hit its wall clock
 
-A SLURM `TIMEOUT` can prevent finalization and upload. A dashboard can still be
-built from the raw inputs that were persisted before the kill; inspect the retained
-files for completeness before interpreting the result:
+A SLURM `TIMEOUT` can prevent finalization and upload. Build from the raw inputs
+persisted before the kill, checking the retained files for completeness:
 
 ```bash
 cd /path/to/srt-slurm
