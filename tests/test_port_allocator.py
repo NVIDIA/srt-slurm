@@ -26,6 +26,7 @@ from srtctl.ports import (
     NIXL_PORTS,
     SIDECAR_GRPC_PORTS,
     SYS_PORTS,
+    TOKENSPEED_PORTS,
     TRTLLM_DIST_INIT_PORTS,
     VLLM_SCAN_PORTS,
     PortKind,
@@ -35,6 +36,7 @@ TOPOLOGY_EXAMPLE_DIRS = (
     "examples/atom",
     "examples/sglang",
     "examples/tilert",
+    "examples/tokenspeed",
     "examples/vllm",
     "examples/trtllm",
     "examples/mocker",
@@ -92,6 +94,7 @@ class TestNodePortAllocator:
             MORIIO_HANDSHAKE_PORTS,
             MORIIO_NOTIFY_PORTS,
             TRTLLM_DIST_INIT_PORTS,
+            TOKENSPEED_PORTS,
             SIDECAR_GRPC_PORTS,
         ]
         assert len({kind.name for kind in kinds}) == len(kinds)
@@ -136,6 +139,7 @@ def test_example_topologies_bind_no_port_twice(recipe: Path):
             "moriio_handshake": process.moriio_handshake_port,
             "moriio_notify": process.moriio_notify_port,
             "trtllm_dist_init": process.trtllm_dist_init_port,
+            "tokenspeed": process.tokenspeed_port,
         }
         for kind, port in ports.items():
             if port is not None:

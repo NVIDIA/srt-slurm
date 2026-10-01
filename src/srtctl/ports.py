@@ -45,6 +45,11 @@ SMG_METRICS_PORT = 29000
 # TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
 TRTLLM_DIST_INIT_PORT_BASE = 29500
 
+# TokenSpeed --port, one per process: a follower node's health listener and the base
+# of the engine's own NCCL free-port scan, which starts 100 to 1000 ports above it.
+TOKENSPEED_PORT_BASE = 10000
+TOKENSPEED_PORT_STRIDE = 1024
+
 # Mooncake transfer-engine ports (shared by SGLang and vLLM backends).
 MOONCAKE_MASTER_PORT = 8700
 MOONCAKE_HTTP_METADATA_PORT = 8701
@@ -129,3 +134,4 @@ VLLM_SCAN_PORTS = PortKind("vllm_scan", VLLM_PORT_BASE, VLLM_PORT_STRIDE)
 MORIIO_HANDSHAKE_PORTS = PortKind("moriio_handshake", VLLM_MORIIO_HANDSHAKE_PORT_BASE)
 MORIIO_NOTIFY_PORTS = PortKind("moriio_notify", VLLM_MORIIO_NOTIFY_PORT_BASE)
 TRTLLM_DIST_INIT_PORTS = PortKind("trtllm_dist_init", TRTLLM_DIST_INIT_PORT_BASE)
+TOKENSPEED_PORTS = PortKind("tokenspeed", TOKENSPEED_PORT_BASE, TOKENSPEED_PORT_STRIDE, per_node=True)

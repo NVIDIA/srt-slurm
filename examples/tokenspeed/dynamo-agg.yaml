@@ -1,0 +1,51 @@
+# TokenSpeed aggregated behind the Dynamo frontend with KV-aware routing.
+#
+# Two TP1 `dynamo.tokenspeed` workers on one node register with etcd; the Dynamo
+# frontend routes with `--router-mode kv`. The `tokenspeed` container must ship
+# TokenSpeed and Dynamo's TokenSpeed backend (`python3 -m dynamo.tokenspeed`), so
+# Dynamo is not installed at job start. See docs/tokenspeed.md.
+#
+# Aliases (`qwen3-0.6b`, `tokenspeed`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-tokenspeed-dynamo-agg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "tokenspeed"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  install: false
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine: tokenspeed
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

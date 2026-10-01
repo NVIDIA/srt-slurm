@@ -48,6 +48,7 @@ from srtctl.backends import (
     MockerBackend,
     SGLangBackend,
     TileRTBackend,
+    TokenSpeedBackend,
     TRTLLMBackend,
     VLLMBackend,
 )
@@ -77,6 +78,7 @@ BACKEND_TYPES: tuple[tuple[str, type], ...] = (
     ("atom", AtomBackend),
     ("sglang", SGLangBackend),
     ("tilert", TileRTBackend),
+    ("tokenspeed", TokenSpeedBackend),
     ("trtllm", TRTLLMBackend),
     ("vllm", VLLMBackend),
     ("mocker", MockerBackend),
@@ -102,7 +104,7 @@ _ENGINE_ROW = FieldDoc(
     type_label="str \\| mapping",
     default="optional when every role sets `engine`",
     description=(
-        "The engine type (`atom`, `sglang`, `tilert`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` "
+        "The engine type (`atom`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` "
         "plus the engine-wide knobs listed under [Engine types](#engine-types)."
     ),
 )

@@ -37,6 +37,7 @@ class BackendType(str, Enum):
     MOCKER = "mocker"
     ATOM = "atom"
     TILERT = "tilert"
+    TOKENSPEED = "tokenspeed"
 
 
 @dataclass

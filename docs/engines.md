@@ -230,6 +230,15 @@ from Slurm's sorted node list. Explicit recipe environment values take precedenc
 
 **Other TRT-LLM launch facts**: TRT-LLM supports prefill, decode, and aggregated roles, uses MPI-style launching (one srun per endpoint with all of its nodes) through `trtllm-llmapi-launch`, and sets `TRTLLM_EPLB_SHM_NAME` to a unique UUID per endpoint.
 
+## TokenSpeed with Dynamo
+
+Use `engine: tokenspeed` with `frontend.type: dynamo` to launch
+`python3 -m dynamo.tokenspeed` workers, aggregated or prefill/decode. TokenSpeed flags
+go under `roles.<role>.args`; srtctl sets the model, host, ports and multi-node
+rendezvous. See [TokenSpeed](tokenspeed.md) and the
+[aggregated](../examples/tokenspeed/dynamo-agg.yaml) and
+[prefill/decode](../examples/tokenspeed/dynamo-disagg.yaml) recipes.
+
 ## ATOM with AToMesh
 
 Use `engine: atom` with `frontend.type: atomesh` to launch native
