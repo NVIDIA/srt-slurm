@@ -107,6 +107,23 @@ def test_partial_and_irrelevant_lines_do_not_invent_values():
 
 
 @pytest.mark.parametrize(
+    "body,name",
+    [
+        ("Prefill batch, #queue-req: 2, future field: 17, truncated", "log_sglang_queued_requests"),
+        (
+            "ReqTimeStats(type=prefill): queue_duration=2ms, future_field=17, truncated",
+            "log_sglang_request_queue_duration_ms",
+        ),
+    ],
+)
+def test_unknown_or_incomplete_fields_do_not_discard_valid_observations(body, name):
+    source = source_identity(Path("host_prefill_w0.out"))
+    assert source
+    event = SGLangLogMetrics().parse_line(f"[2026-09-24 01:47:50] {body}", source)
+    assert event and dict(event.values) == {name: 2}
+
+
+@pytest.mark.parametrize(
     "stamp,prefix,counter,rank,labels,resolution",
     [
         ("2026-09-24 01:47:50", "", "", None, {}, 1),
