@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from srtctl.backends.vllm import VLLMFailoverConfig, VLLMProtocol
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
+from srtctl.core.log_layout import FINGERPRINTS_DIRNAME, WORKERS_DIRNAME, workers_dir
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
@@ -271,8 +272,8 @@ class WorkerStageMixin:
             logger.info("Starting %s worker %d on %s", mode, index, process.node)
 
         # Log and config files
-        worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}{suffix}.out"
-        config_dump = self.runtime.container_log_dir / f"{process.node}_config{suffix}.json"
+        worker_log = workers_dir(self.runtime.log_dir) / f"{process.node}_{mode}_w{index}{suffix}.out"
+        config_dump = self.runtime.container_log_dir / WORKERS_DIRNAME / f"{process.node}_config{suffix}.json"
 
         # Profiling setup
         profiling = self.config.profiling
@@ -380,7 +381,9 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}{suffix}.json")
+        fp_cmd = generate_capture_script(
+            str(self.runtime.container_log_dir / FINGERPRINTS_DIRNAME / f"fingerprint_{mode}_w{index}{suffix}.json")
+        )
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
@@ -478,8 +481,8 @@ class WorkerStageMixin:
         )
 
         # Log and config files (use leader node in name)
-        worker_log = self.runtime.log_dir / f"{leader.node}_{mode}_w{index}.out"
-        config_dump = self.runtime.container_log_dir / f"{leader.node}_config.json"
+        worker_log = workers_dir(self.runtime.log_dir) / f"{leader.node}_{mode}_w{index}.out"
+        config_dump = self.runtime.container_log_dir / WORKERS_DIRNAME / f"{leader.node}_config.json"
 
         # Profiling setup
         profiling = self.config.profiling
@@ -595,7 +598,9 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}.json")
+        fp_cmd = generate_capture_script(
+            str(self.runtime.container_log_dir / FINGERPRINTS_DIRNAME / f"fingerprint_{mode}_w{index}.json")
+        )
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"

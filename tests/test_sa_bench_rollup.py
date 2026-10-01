@@ -326,7 +326,8 @@ def test_sa_bench_rollup_uses_metadata_for_name_gpu_counts_and_p90(tmp_path):
             }
         )
     )
-    (logs_dir / "b300-003_decode_w0.out").write_text(
+    (logs_dir / "workers").mkdir()
+    (logs_dir / "workers" / "b300-003_decode_w0.out").write_text(
         "\n".join(
             [
                 "[x] Decode batch, #running-req: 4, #token: 100",

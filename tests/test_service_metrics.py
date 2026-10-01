@@ -236,7 +236,7 @@ def test_generated_config_carries_the_targets(tmp_path: Path) -> None:
         patch.object(TelemetryStageMixin, "_resolve_tachometer_binary", return_value="/bin/tachometer"),
     ):
         orchestrator.start_tachometer()
-    toml = (tmp_path / "tachometer_config.toml").read_text()
+    toml = (tmp_path / "telemetry" / "tachometer_config.toml").read_text()
     assert 'name = "engines_node1"' in toml and 'url = "http://node1:9402/metrics"' in toml
     assert 'name = "envsrv_node2"' in toml and 'url = "http://node2:8003/prom"' in toml
     assert 'name = "dcgm_node1"' in toml and 'name = "node_exporter_node2"' in toml

@@ -29,6 +29,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from srtctl.core.log_layout import CONTAINER_LOG_DIR, TELEMETRY_DIRNAME, telemetry_dir
 from srtctl.services.config import ServiceMetricsConfig
 from srtctl.services.registry import ServiceKind, ServiceLaunchContext, register_service
 
@@ -251,7 +252,9 @@ class ProcessExporterService(_ExporterKind):
         return str(service.options.get("binary") or DEFAULT_PROCESS_EXPORTER_BINARY)
 
     def prepare(self, service: ServiceConfig, runtime: RuntimeContext) -> None:
-        (runtime.log_dir / PROCESS_EXPORTER_CONFIG_NAME).write_text(process_exporter_config_yaml())
+        config_path = telemetry_dir(runtime.log_dir) / PROCESS_EXPORTER_CONFIG_NAME
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(process_exporter_config_yaml())
 
     def skip_reason(self, service: ServiceConfig, runtime: RuntimeContext) -> str | None:
         if service.command is not None or not self.host_native(service):
@@ -273,13 +276,15 @@ class ProcessExporterService(_ExporterKind):
             executable = str(resolve_host_binary(configured) or Path(configured))
             log_dir = getattr(ctx.runtime, "log_dir", None)
             config_path = (
-                str(Path(log_dir) / PROCESS_EXPORTER_CONFIG_NAME)
+                str(telemetry_dir(Path(log_dir)) / PROCESS_EXPORTER_CONFIG_NAME)
                 if log_dir
-                else f"<log_dir>/{PROCESS_EXPORTER_CONFIG_NAME}"
+                else f"<log_dir>/{TELEMETRY_DIRNAME}/{PROCESS_EXPORTER_CONFIG_NAME}"
             )
         else:
             executable = PROCESS_EXPORTER_CONTAINER_BINARY
-            config_path = f"/logs/{PROCESS_EXPORTER_CONFIG_NAME}"
+            # Previews carry a bare namespace without the mount map; fall back to the default mount.
+            container_log_dir = getattr(ctx.runtime, "container_log_dir", None) or CONTAINER_LOG_DIR
+            config_path = str(Path(container_log_dir) / TELEMETRY_DIRNAME / PROCESS_EXPORTER_CONFIG_NAME)
         return [
             executable,
             "-config.path",

@@ -157,4 +157,4 @@ The implied dcgm and node exporters run on `compute`, so tachometer scrapes pool
 2. Run `srtctl dry-run -f <recipe>` and read the `Nodes:` map. The total is what `sbatch --nodes` requests.
 3. Give the owner a `readiness` probe that instance 0 passes on its own.
 4. Decide how the job ends: `terminal: true` on the pool that is the run (no benchmark block), or a benchmark step that drives the pool and reads `SRT_SERVICE_<NAME>_IPS`; never hardcode a hostname.
-5. Watch `outputs/<job>/logs/service_<name>_<node>.out` for each instance (`service_<name>.out` for a one-node pool) and `sweep_<job>.log`, which logs each pool's nodes at start.
+5. Watch `outputs/<job>/logs/services/logs/service_<name>_<node>.out` for each instance (`service_<name>.out` for a one-node pool) and `sweep_<job>.log`, which logs each pool's nodes at start.

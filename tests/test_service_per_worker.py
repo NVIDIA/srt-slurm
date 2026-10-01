@@ -166,7 +166,7 @@ services:
     assert calls[1]["env_to_set"]["CUDA_VISIBLE_DEVICES"] == "1"
     assert calls[0]["env_to_set"]["WATCH_GPUS"] == "1"
     assert calls[0]["step_name"] == "service_gpu-watch_agg_0_node1"
-    assert calls[1]["output"] == str(tmp_path / "service_gpu-watch_agg_1_node1.out")
+    assert calls[1]["output"] == str(tmp_path / "services" / "logs" / "service_gpu-watch_agg_1_node1.out")
     assert procs[0].node == "node1" and procs[0].shutdown_tier == 1
 
 

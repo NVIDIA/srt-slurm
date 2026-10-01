@@ -120,6 +120,21 @@ CLIENT_PATTERNS = [
     "artifacts/*/profile_export.jsonl",
 ]
 
+# srt-slurm fans a run's log directory out into fixed subdirectories (see
+# ``srtctl.core.log_layout``). Kept as literals: this module is vendored and must
+# not import ``srtctl``.
+WORKER_LOGS_SUBDIR = "workers"
+FINGERPRINTS_SUBDIR = "fingerprints"
+# Every directory that carries process stdout worth scanning for log-only signals.
+LOG_SCAN_SUBDIRS = (".", WORKER_LOGS_SUBDIR, "services/logs", "telemetry")
+
+DEFAULT_SPAN_LOG_PATTERNS = [f"{WORKER_LOGS_SUBDIR}/*.out"]
+DEFAULT_ITER_LOG_PATTERNS = [
+    f"{WORKER_LOGS_SUBDIR}/*_prefill_w*.out",
+    f"{WORKER_LOGS_SUBDIR}/*_decode_w*.out",
+    f"{WORKER_LOGS_SUBDIR}/*_agg_w*.out",
+]
+
 
 def resolve_inputs(pattern, run_dir: Path) -> list[str]:
     """Resolve a source flag to a sorted list of concrete files.
@@ -425,9 +440,9 @@ def run_traces(args, run_dir: Path, bundle: Path, profile_path: Path | None) -> 
         if profile_path is None or not profile_path.exists():
             _log("L2 traces", "WARN no profile_export.jsonl -> cannot resolve xids; skipping spanlog")
             return False
-        # srt-slurm names its worker/frontend logs <node>_<mode>_w<i>.out and
-        # <node>_frontend_<i>.out, so the SPAN_CLOSED lines land in *.out, not *.log.
-        patterns = args.span_logs or ["*.out"]
+        # srt-slurm names its worker/frontend logs workers/<node>_<mode>_w<i>.out and
+        # workers/<node>_frontend_<i>.out, so the SPAN_CLOSED lines land in *.out, not *.log.
+        patterns = args.span_logs or DEFAULT_SPAN_LOG_PATTERNS
         logs: list[str] = []
         for pat in patterns:
             logs.extend(resolve_inputs(pat, run_dir))
@@ -606,7 +621,7 @@ def run_iter_log(args, run_dir: Path, bundle: Path,
     if args.iter_log == "none":
         _log("L2 iter-log", "skipped (--iter-log none)")
         return False
-    patterns = args.iter_log_input or ["*_prefill_w*.out", "*_decode_w*.out", "*_agg_w*.out"]
+    patterns = args.iter_log_input or DEFAULT_ITER_LOG_PATTERNS
     logs: list[str] = []
     for pat in patterns:
         logs.extend(resolve_inputs(pat, run_dir))
@@ -857,7 +872,7 @@ def run_log_signals(run_dir: Path, bundle: Path, max_samples: int = 2) -> dict:
     # ISO-8601 or "YYYY-MM-DD HH:MM:SS"; whichever the emitting component uses.
     ts_re = _re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[.\d]*Z?|\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
 
-    logs = sorted(Path(run_dir).glob("*.out"))
+    logs = sorted(p for sub in LOG_SCAN_SUBDIRS for p in (Path(run_dir) / sub).glob("*.out"))
     for path in logs:
         name = path.name
         try:
@@ -1103,7 +1118,7 @@ def run_provenance(run_dir: Path, bundle: Path) -> list[str]:
     """
     copied: list[str] = []
     src_dir = Path(run_dir)
-    for pattern in ("config.yaml", "resource_snapshot.json", "fingerprint_*.json"):
+    for pattern in ("config.yaml", "resource_snapshot.json", f"{FINGERPRINTS_SUBDIR}/fingerprint_*.json"):
         for src in sorted(src_dir.glob(pattern)):
             shutil.copyfile(src, bundle / src.name)
             copied.append(src.name)
@@ -1189,7 +1204,7 @@ def build_parser() -> argparse.ArgumentParser:
     # traces axis
     p.add_argument("--traces", choices=["spanlog", "none"], default="spanlog")
     p.add_argument("--span-logs", action="append", default=[], metavar="GLOB",
-                   help="SPAN_CLOSED log path/glob, repeatable (default: *.out, srt-slurm worker/frontend logs)")
+                   help="SPAN_CLOSED log path/glob, repeatable (default: workers/*.out, srt-slurm worker/frontend logs)")
 
     # request-trace axis
     p.add_argument("--request-trace", choices=["dynamo", "none"], default="dynamo")
@@ -1200,7 +1215,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--iter-log", choices=["trtllm", "none"], default="trtllm")
     p.add_argument("--iter-log-input", action="append", default=[], metavar="GLOB",
                    help="worker log path/glob carrying print_iter_log lines "
-                        "(default: *_prefill_w*.out, *_decode_w*.out, *_agg_w*.out)")
+                        "(default: workers/*_prefill_w*.out, workers/*_decode_w*.out, workers/*_agg_w*.out)")
 
     # metrics axis
     p.add_argument("--metrics", choices=["auto", "tachometer", "aiperf-jsonl", "aiperf-json", "none"],

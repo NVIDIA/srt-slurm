@@ -93,23 +93,26 @@ def _isolated_cluster(model_dir: Path, container_file: Path) -> Iterator[None]:
         yield
 
 
-def _render_value(value: Any) -> str:
+def _render_value(value: Any, replacements: dict[str, str]) -> str:
     if isinstance(value, dict):
         if not value:
             return " {}"
-        return "".join(f"\n    {k}: {v}".rstrip() for k, v in sorted((str(k), str(v)) for k, v in value.items()))
+        # Sort on the placeholder-substituted key: the raw checkout path sorts differently on
+        # every machine, and the snapshot must not depend on where the repo lives.
+        items = sorted((_normalize(str(k), replacements), str(v)) for k, v in value.items())
+        return "".join(f"\n    {k}: {v}".rstrip() for k, v in items)
     if isinstance(value, list | tuple):
         return " " + " ".join(str(v) for v in value)
     return f" {value}"
 
 
-def _render_call(call: dict[str, Any]) -> str:
+def _render_call(call: dict[str, Any], replacements: dict[str, str]) -> str:
     lines = [f"## {call.get('step_name') or '<unnamed>'}"]
     for key in _RECORDED_KEYS:
         value = call.get(key)
         if value is None or value == [] or value == {} or value == ():
             continue
-        lines.append(f"{key}:{_render_value(value)}")
+        lines.append(f"{key}:{_render_value(value, replacements)}")
     preamble = call.get("bash_preamble")
     if preamble:
         preamble = _FINGERPRINT_SCRIPT.sub(r"\1<fingerprint script>\n\2", str(preamble))
@@ -156,18 +159,16 @@ def render_launch_plan(recipe: Path) -> str:
                 exit_code = run_mock_sweep(config_path=recipe, output_dir=output_dir, job_id=JOB_ID, options=options)
         finally:
             os.chdir(prior_cwd)
-        body = "\n\n".join(_render_call(c) for c in calls)
-        body = _normalize(
-            body,
-            {
-                str(model_dir): "<model>",
-                str(container_file): "<container>",
-                str(output_dir): "<output>",
-                str(tmp_path): "<tmp>",
-                str(REPO_ROOT): "<repo>",
-                str(Path.home()): "<home>",
-            },
-        )
+        replacements = {
+            str(model_dir): "<model>",
+            str(container_file): "<container>",
+            str(output_dir): "<output>",
+            str(tmp_path): "<tmp>",
+            str(REPO_ROOT): "<repo>",
+            str(Path.home()): "<home>",
+        }
+        body = "\n\n".join(_render_call(c, replacements) for c in calls)
+        body = _normalize(body, replacements)
     header = f"# {recipe.relative_to(REPO_ROOT).as_posix()}\n# exit_code: {exit_code}\n# srun calls: {len(calls)}\n"
     return header + "\n" + body + "\n"
 

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.cpu_power_session import CpuPowerSessionSettings as CpuPowerHostSessionSettings
 from srtctl.core.cpu_power_session import CpuPowerTelemetrySession
 from srtctl.core.git_state import head_commit
+from srtctl.core.log_layout import telemetry_dir
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
 from srtctl.core.power.manifest import ExpectedWindow
@@ -226,7 +227,7 @@ class TelemetryStageMixin:
                 exporter_config=exporter_config,
                 name="telemetry_dcgm_exporter",
                 nodelist=worker_nodes,
-                log_file=self.runtime.log_dir / "telemetry_dcgm_exporter.out",
+                log_file=telemetry_dir(self.runtime.log_dir) / "telemetry_dcgm_exporter.out",
                 default_command_template=DCGM_EXPORTER_COMMAND_TEMPLATE,
                 use_bash_wrapper=False,  # distroless exporter images have no shell
                 critical=False,  # an exit is telemetry invalidity, not a sweep-critical failure
@@ -299,7 +300,7 @@ class TelemetryStageMixin:
 
             for group_id, nodes in chunks:
                 suffix = "" if len(chunks) == 1 else f".g{group_id}"
-                log_file = self.runtime.log_dir / f"telemetry_cpu_power_exporter{suffix}.%N.out"
+                log_file = telemetry_dir(self.runtime.log_dir) / f"telemetry_cpu_power_exporter{suffix}.%N.out"
                 proc = start_srun_process(
                     command=exporter_command,
                     nodes=len(nodes),
@@ -389,7 +390,7 @@ class TelemetryStageMixin:
         try:
             for group_id, nodes in chunks:
                 suffix = "" if len(chunks) == 1 else f".g{group_id}"
-                log_file = self.runtime.log_dir / f"telemetry_cpu_power{suffix}.%N.out"
+                log_file = telemetry_dir(self.runtime.log_dir) / f"telemetry_cpu_power{suffix}.%N.out"
                 proc = start_srun_process(
                     command=command,
                     nodes=len(nodes),
@@ -619,7 +620,8 @@ class TelemetryStageMixin:
 
         power_telemetry = self.config.telemetry
         topology = self._compute_frontend_topology()
-        config_path = self.runtime.log_dir / "tachometer_config.toml"
+        config_path = telemetry_dir(self.runtime.log_dir) / "tachometer_config.toml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(
             generate_tachometer_config(
                 processes=self.backend_processes,
@@ -680,7 +682,7 @@ class TelemetryStageMixin:
                 popen=start_srun_process(
                     command=cmd,
                     nodelist=[self.runtime.nodes.head],
-                    output=str(self.runtime.log_dir / "tachometer.out"),
+                    output=str(telemetry_dir(self.runtime.log_dir) / "tachometer.out"),
                     # Shell-less on purpose: the scraper compacts final.parquet
                     # on SIGTERM, and srun forwards signals to the task it
                     # launched. Under the bash wrapper the task is bash, which
@@ -693,7 +695,7 @@ class TelemetryStageMixin:
                     het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
                     step_name=TACHOMETER_STEP_NAME,
                 ),
-                log_file=self.runtime.log_dir / "tachometer.out",
+                log_file=telemetry_dir(self.runtime.log_dir) / "tachometer.out",
                 node=self.runtime.nodes.head,
                 # Best-effort by contract: telemetry must never kill a
                 # benchmark. A dead scraper costs the capture, not the run;

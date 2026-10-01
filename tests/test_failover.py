@@ -395,7 +395,7 @@ def test_gms_service_launches_one_pinned_instance_per_worker(tmp_path: Path) -> 
     assert first["command"][:2] == ["bash", "-c"] and "gpu_memory_service --device" in first["command"][2]
     assert "seq 0 0" in first["command"][2]  # one GPU
     assert first["container_image"] == "/vllm-runtime.sqsh"
-    assert first["output"] == str(tmp_path / "service_gms_agg_0_node1.out")
+    assert first["output"] == str(tmp_path / "services" / "logs" / "service_gms_agg_0_node1.out")
     second = calls["service_gms_agg_1_node1"]
     assert second["env_to_set"]["CUDA_VISIBLE_DEVICES"] == "1"
     assert second["env_to_set"]["GMS_SOCKET_DIR"] == "/dev/shm/srtctl-15600/agg_1"
@@ -429,9 +429,9 @@ def test_worker_stage_launches_only_engines(tmp_path: Path) -> None:
     assert e0["env_to_set"]["ENGINE_ID"] == "0" and e1["env_to_set"]["ENGINE_ID"] == "1"
     assert e0["env_to_set"]["DYN_SYSTEM_PORT"] != e1["env_to_set"]["DYN_SYSTEM_PORT"]
     assert e0["env_to_set"]["VLLM_NIXL_SIDE_CHANNEL_PORT"] != e1["env_to_set"]["VLLM_NIXL_SIDE_CHANNEL_PORT"]
-    assert e1["output"] == str(tmp_path / "node1_agg_w0_e1.out")
-    assert e0["command"][e0["command"].index("--dump-config-to") + 1] == "/logs/node1_config.json"
-    assert e1["command"][e1["command"].index("--dump-config-to") + 1] == "/logs/node1_config_e1.json"
+    assert e1["output"] == str(tmp_path / "workers" / "node1_agg_w0_e1.out")
+    assert e0["command"][e0["command"].index("--dump-config-to") + 1] == "/logs/workers/node1_config.json"
+    assert e1["command"][e1["command"].index("--dump-config-to") + 1] == "/logs/workers/node1_config_e1.json"
     assert calls["agg_1_node1"]["env_to_set"]["GMS_SOCKET_DIR"] == "/dev/shm/srtctl-15600/agg_1"
     assert procs["agg_0_node1_e1"].step_name == "agg_0_node1_e1"
     assert procs["agg_0_node1"].shutdown_tier == 0
@@ -479,11 +479,11 @@ def test_mock_sweep_runs_the_failover_recipe_end_to_end(tmp_path: Path) -> None:
     assert exit_code == 0
     logs = output_dir / "logs"
     # Per worker: the gms service instance, engine 0, and the shadow, all through the fake srun.
-    assert (logs / "service_gms_agg_0_mock-node-01.out").is_file()
-    assert (logs / "service_gms_agg_1_mock-node-01.out").is_file()
-    assert (logs / "mock-node-01_agg_w0.out").is_file()
-    assert (logs / "mock-node-01_agg_w0_e1.out").is_file()
-    assert (logs / "mock-node-01_agg_w1_e1.out").is_file()
+    assert (logs / "services" / "logs" / "service_gms_agg_0_mock-node-01.out").is_file()
+    assert (logs / "services" / "logs" / "service_gms_agg_1_mock-node-01.out").is_file()
+    assert (logs / "workers" / "mock-node-01_agg_w0.out").is_file()
+    assert (logs / "workers" / "mock-node-01_agg_w0_e1.out").is_file()
+    assert (logs / "workers" / "mock-node-01_agg_w1_e1.out").is_file()
     assert (output_dir / "recipe.lock.yaml").is_file()
 
 

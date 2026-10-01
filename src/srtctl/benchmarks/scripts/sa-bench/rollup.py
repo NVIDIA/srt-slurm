@@ -185,7 +185,7 @@ def _extract_p90_decode_running_requests(log_dir: Path, metadata: dict[str, Any]
     counts: Counter[int] = Counter()
     total = 0
 
-    for decode_log in sorted(log_dir.glob("*decode*.out")):
+    for decode_log in sorted((log_dir / "workers").glob("*decode*.out")):
         try:
             with decode_log.open("r", errors="replace") as f:
                 for line in f:

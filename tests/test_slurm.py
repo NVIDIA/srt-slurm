@@ -311,7 +311,8 @@ def test_worker_config_dump_uses_container_log_mount(tmp_path: Path, launch_meth
         else:
             mixin.start_endpoint_worker([process])
 
-    assert mixin.backend.build_worker_command.call_args.kwargs["dump_config_path"] == Path("/logs/node-a_config.json")
+    dump_path = mixin.backend.build_worker_command.call_args.kwargs["dump_config_path"]
+    assert dump_path == Path("/logs/workers/node-a_config.json")
 
 
 def test_runtime_container_log_dir_follows_the_log_mount(tmp_path: Path) -> None:
@@ -364,9 +365,9 @@ def test_worker_container_paths_follow_a_remapped_log_mount(tmp_path: Path, laun
             mixin.start_endpoint_worker([process])
 
     dump_path = mixin.backend.build_worker_command.call_args.kwargs["dump_config_path"]
-    assert dump_path == Path("/run/logs/node-a_config.json")
+    assert dump_path == Path("/run/logs/workers/node-a_config.json")
     assert srun.call_args.kwargs["env_to_set"]["SGLANG_TORCH_PROFILER_DIR"] == "/run/logs/profiles/prefill"
-    assert capture.call_args.args[0] == "/run/logs/fingerprint_prefill_w0.json"
+    assert capture.call_args.args[0] == "/run/logs/fingerprints/fingerprint_prefill_w0.json"
     # srtctl still creates the profile directory on the host side of the mount.
     assert (tmp_path / "profiles" / "prefill").is_dir()
 

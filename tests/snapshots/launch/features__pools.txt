@@ -4,13 +4,13 @@
 
 ## agg_0_node-01
 nodelist: node-01
-output: <output>/logs/node-01_agg_w0.out
+output: <output>/logs/workers/node-01_agg_w0.out
 container_image: nvcr.io/nvidia/sglang:latest
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
@@ -25,13 +25,13 @@ command: |
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01
-output: <output>/logs/service_dcgm-exporter_node-01.out
+output: <output>/logs/services/logs/service_dcgm-exporter_node-01.out
 container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -40,13 +40,13 @@ command: |
 
 ## service_dcgm-exporter_node-02
 nodelist: node-02
-output: <output>/logs/service_dcgm-exporter_node-02.out
+output: <output>/logs/services/logs/service_dcgm-exporter_node-02.out
 container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -55,13 +55,13 @@ command: |
 
 ## service_dcgm-exporter_node-03
 nodelist: node-03
-output: <output>/logs/service_dcgm-exporter_node-03.out
+output: <output>/logs/services/logs/service_dcgm-exporter_node-03.out
 container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -70,13 +70,13 @@ command: |
 
 ## service_dcgm-exporter_node-04
 nodelist: node-04
-output: <output>/logs/service_dcgm-exporter_node-04.out
+output: <output>/logs/services/logs/service_dcgm-exporter_node-04.out
 container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -85,13 +85,13 @@ command: |
 
 ## service_node-exporter_node-01
 nodelist: node-01
-output: <output>/logs/service_node-exporter_node-01.out
+output: <output>/logs/services/logs/service_node-exporter_node-01.out
 container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -100,13 +100,13 @@ command: |
 
 ## service_node-exporter_node-02
 nodelist: node-02
-output: <output>/logs/service_node-exporter_node-02.out
+output: <output>/logs/services/logs/service_node-exporter_node-02.out
 container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -115,13 +115,13 @@ command: |
 
 ## service_node-exporter_node-03
 nodelist: node-03
-output: <output>/logs/service_node-exporter_node-03.out
+output: <output>/logs/services/logs/service_node-exporter_node-03.out
 container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -130,13 +130,13 @@ command: |
 
 ## service_node-exporter_node-04
 nodelist: node-04
-output: <output>/logs/service_node-exporter_node-04.out
+output: <output>/logs/services/logs/service_node-exporter_node-04.out
 container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -145,13 +145,13 @@ command: |
 
 ## service_train_node-02
 nodelist: node-02
-output: <output>/logs/service_train_node-02.out
+output: <output>/logs/services/logs/service_train_node-02.out
 container_image: ubuntu:24.04
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: True
@@ -160,13 +160,13 @@ command: |
 
 ## service_train_node-03
 nodelist: node-03
-output: <output>/logs/service_train_node-03.out
+output: <output>/logs/services/logs/service_train_node-03.out
 container_image: ubuntu:24.04
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: True
@@ -175,13 +175,13 @@ command: |
 
 ## service_napper
 nodelist: node-04
-output: <output>/logs/service_napper.out
+output: <output>/logs/services/logs/service_napper.out
 container_image: ubuntu:24.04
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: True
@@ -190,13 +190,13 @@ command: |
 
 ## service_watcher_node-02
 nodelist: node-02
-output: <output>/logs/service_watcher_node-02.out
+output: <output>/logs/services/logs/service_watcher_node-02.out
 container_image: nvcr.io/nvidia/sglang:latest
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: True
@@ -205,13 +205,13 @@ command: |
 
 ## service_watcher_node-03
 nodelist: node-03
-output: <output>/logs/service_watcher_node-03.out
+output: <output>/logs/services/logs/service_watcher_node-03.out
 container_image: nvcr.io/nvidia/sglang:latest
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: True
@@ -220,22 +220,22 @@ command: |
 
 ## tachometer
 nodelist: node-01
-output: <output>/logs/tachometer.out
+output: <output>/logs/telemetry/tachometer.out
 srun_export_env:
     POLARS_MAX_THREADS: 4
 use_bash_wrapper: False
 command: |
-    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+    tachometer-scraper --config <output>/logs/telemetry/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
 
 ## <unnamed>
 nodelist: node-01
 output: <output>/logs/benchmark.out
 container_image: nvcr.io/nvidia/sglang:latest
 container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
 env_to_set:
     AIPERF_SERVER_METRICS_URLS: http://127.0.0.1:8000/metrics
     SRTCTL_FRONTEND_TYPE: sglang

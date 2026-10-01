@@ -44,6 +44,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from srtctl.core.log_layout import WORKERS_DIRNAME
+
 try:
     import select as _select
     import termios
@@ -1187,7 +1189,7 @@ def _execute(args: argparse.Namespace) -> None:
                                 state.detail_panel_idx = 0
                                 logs_dir = outputs_dir / jid / "logs"
                                 worker_files = sorted(
-                                    (f for f in logs_dir.glob("*.out") if f.name != "benchmark.out"),
+                                    (logs_dir / WORKERS_DIRNAME).glob("*.out"),
                                     key=lambda p: p.name,
                                 )
                                 state.detail_worker_files = worker_files

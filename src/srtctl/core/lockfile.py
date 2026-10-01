@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from srtctl.core.fingerprint import load_fingerprint
+from srtctl.core.log_layout import fingerprints_dir
 from srtctl.core.resource_snapshot import load_resource_snapshot
 
 if TYPE_CHECKING:
@@ -123,7 +124,7 @@ def collect_slurm_context() -> dict[str, Any]:
 def collect_worker_fingerprints(log_dir: Path) -> dict[str, Any] | None:
     """Load per-worker fingerprint files into a dict keyed by worker name."""
     try:
-        fp_files = sorted(log_dir.glob("fingerprint_*.json"))
+        fp_files = sorted(fingerprints_dir(log_dir).glob("fingerprint_*.json"))
     except Exception as e:  # noqa: BLE001
         logger.debug("Failed to glob fingerprint files in %s: %s", log_dir, e)
         return None

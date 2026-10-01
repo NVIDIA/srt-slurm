@@ -17,6 +17,7 @@ from srtctl.core.health import (
     probe_json_health,
     wait_for_http_endpoints,
 )
+from srtctl.core.log_layout import workers_dir
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends.base import logical_health_expectations, numactl_prefix
 
@@ -286,7 +287,7 @@ class StaticRouterFrontend:
 
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):
-            router_log = runtime.log_dir / f"{node}_{self.log_label or self.type}_{idx}.out"
+            router_log = workers_dir(runtime.log_dir) / f"{node}_{self.log_label or self.type}_{idx}.out"
             cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port, backend)
             cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))

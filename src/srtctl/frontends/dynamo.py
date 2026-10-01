@@ -16,6 +16,7 @@ import yaml
 
 from srtctl.backends.vllm import VLLMProtocol
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
+from srtctl.core.log_layout import workers_dir
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
@@ -213,7 +214,7 @@ class DynamoFrontend(DynamicFrontend):
         for idx, node in enumerate(topology.frontend_nodes):
             logger.info("Starting dynamo frontend %d on %s", idx, node)
 
-            frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
+            frontend_log = workers_dir(runtime.log_dir) / f"{node}_frontend_{idx}.out"
             cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
             cmd.extend(self.get_frontend_args_list(frontend_args))
 
