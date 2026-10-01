@@ -281,7 +281,9 @@ services:
     size: 768GiB
     protocol: rdma
 benchmark:
-  client_placement: last_decode
+  placement:
+    node: dedicated
+  colocate_with_frontend: true
   type: custom
   env:
     AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache/aiperf_mmap_cache
