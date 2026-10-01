@@ -11,8 +11,14 @@ use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use url::Url;
 
+/// The release tag (without `v`) when built by the release workflow, else the crate version.
+const VERSION: &str = match option_env!("SRTCTL_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser, Debug)]
-#[command(name = "tachometer-scraper")]
+#[command(name = "tachometer-scraper", version = VERSION)]
 #[command(about = "Scrapes Prometheus metrics and logs them to Tachometer")]
 struct Args {
     #[command(subcommand)]
@@ -26,9 +32,9 @@ struct Args {
     #[arg(long = "endpoint", value_name = "NAME=URL", num_args = 0..)]
     endpoints: Vec<String>,
 
-    /// Polling frequency in Hz (e.g., 0.1 for 10 seconds) - used only with --endpoint
-    #[arg(long = "freq", default_value = "0.2")]
-    frequency: f64,
+    /// Milliseconds between scrapes (e.g., 5000 scrapes every 5 seconds) - used only with --endpoint
+    #[arg(long = "collect-interval-ms", default_value = "5000")]
+    collect_interval_ms: u64,
 
     /// Storage location (e.g., "s3://bucket/run_0" or "./local/path") - used only with --endpoint
     #[arg(long = "storage", value_name = "PATH")]
@@ -55,6 +61,11 @@ struct Args {
     /// Compacts current out-*.parquet files into incomplete-N.parquet and uploads to remote
     #[arg(long = "sync-interval", default_value = "0")]
     sync_interval_secs: u64,
+
+    /// Directory receiving each immutable out-N.parquet segment for a live uploader.
+    /// Seals the buffer every save interval instead of rewriting current.arrow.
+    #[arg(long = "outbox-dir", value_name = "PATH")]
+    outbox_dir: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -84,7 +95,7 @@ enum Commands {
 struct EndpointConfig {
     name: String,
     url: String,
-    frequency: f64,
+    collect_interval_ms: u64,
     filter: Option<Box<dyn MetricFilter>>,
 }
 
@@ -478,7 +489,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 endpoint_configs.push(EndpointConfig {
                     name: cfg_endpoint.name.clone(),
                     url: cfg_endpoint.url.clone(),
-                    frequency: cfg_endpoint.frequency.unwrap_or(2.0),
+                    collect_interval_ms: cfg_endpoint.collect_interval_ms.unwrap_or(500),
                     filter,
                 });
             }
@@ -512,7 +523,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 endpoint_configs.push(EndpointConfig {
                     name,
                     url,
-                    frequency: args.frequency,
+                    collect_interval_ms: args.collect_interval_ms,
                     filter,
                 });
             }
@@ -544,17 +555,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if sync_interval_secs > 0 {
         info!("Periodic sync to remote: every {}s", sync_interval_secs);
     }
+    if let Some(outbox) = &args.outbox_dir {
+        info!("Streaming sealed segments to outbox: {}", outbox);
+    }
     if !extra_column_names.is_empty() {
         info!("Extra columns: {:?}", extra_column_names);
     }
 
     // Create dataset writer with local directory for intermediate files
     let writer = Arc::new(
-        DatasetWriter::new(
+        DatasetWriter::with_outbox(
             local_dir.clone(),
             rows_per_parquet,
             save_interval_secs,
             extra_column_names,
+            args.outbox_dir.map(PathBuf::from),
         )
         .map_err(|e| format!("Failed to create dataset writer: {}", e))?,
     );
@@ -563,14 +578,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Press Ctrl+C or send SIGTERM to gracefully shutdown and compact data...");
 
     // Use tokio's cross-platform signal handler
-    // Create a task per endpoint with its own frequency
-    let mut tasks = Vec::new();
+    // Create a task per endpoint with its own collect interval
+    let mut scrape_tasks = Vec::new();
     for endpoint in endpoints {
         let writer_clone = writer.clone();
         let endpoint_name = endpoint.name.clone();
         let endpoint_url = endpoint.url.clone();
         let endpoint_filter = endpoint.filter;
-        let sleep_duration = std::time::Duration::from_secs_f64(1.0 / endpoint.frequency);
+        let sleep_duration = std::time::Duration::from_millis(endpoint.collect_interval_ms);
 
         let task = tokio::spawn(async move {
             loop {
@@ -590,17 +605,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::time::sleep(sleep_duration).await;
             }
         });
-        tasks.push(task);
+        scrape_tasks.push(task);
     }
 
     // Spawn periodic sync task if enabled
+    let mut sync_task = None;
     if sync_interval_secs > 0 {
         let sync_local_dir = local_dir.clone();
         let sync_storage = storage.clone();
         let sync_remote_path = remote_path.clone();
         let sync_interval = std::time::Duration::from_secs(sync_interval_secs);
 
-        let sync_task = tokio::spawn(async move {
+        sync_task = Some(tokio::spawn(async move {
             // Wait for initial interval before first sync
             tokio::time::sleep(sync_interval).await;
 
@@ -624,8 +640,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 tokio::time::sleep(sync_interval).await;
             }
-        });
-        tasks.push(sync_task);
+        }));
     }
 
     // Set up signal handlers for graceful shutdown
@@ -635,9 +650,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("Failed to register SIGTERM handler: {}", e))?;
 
         // Create a future that waits for all tasks
-        let tasks_future = async {
-            futures::future::join_all(tasks).await;
-        };
+        let tasks_future =
+            futures::future::join_all(scrape_tasks.iter_mut().chain(sync_task.iter_mut()));
 
         tokio::select! {
             _ = tasks_future => {
@@ -655,9 +669,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(unix))]
     {
         // Create a future that waits for all tasks
-        let tasks_future = async {
-            futures::future::join_all(tasks).await;
-        };
+        let tasks_future =
+            futures::future::join_all(scrape_tasks.iter_mut().chain(sync_task.iter_mut()));
 
         tokio::select! {
             _ = tasks_future => {
@@ -669,14 +682,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Note: When select! exits due to a signal, tasks are still running.
-    // They will be dropped when the function exits, but we want to abort them
-    // explicitly for cleaner shutdown. However, since tasks were moved into
-    // the async block, we can't access them here. The tasks will continue
-    // until the process exits, but the writer shutdown below will still
-    // flush any pending data.
-    // Wait a moment for tasks to finish cancellation
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Stop scraping before the final flush so every row reaches final.parquet.
+    for task in &scrape_tasks {
+        task.abort();
+    }
+    for task in scrape_tasks {
+        let _ = task.await;
+    }
 
     // Graceful shutdown: flush remaining data to local disk
     info!("Shutting down writer...");

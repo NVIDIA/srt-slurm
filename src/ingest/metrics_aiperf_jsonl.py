@@ -17,7 +17,7 @@ instant (observed schema, from a real 1.9 GB export)::
 Values are the raw scraped readings -- counters stay cumulative, histogram buckets stay
 cumulative (the "+Inf" bucket equals ``count``) -- so unlike the aggregate export there
 is NO cumulative/interval detection to do: everything is written through verbatim, the
-same way :mod:`.metrics_prometheus` treats a raw exposition body.
+same way :mod:`.metrics_tachometer` treats a raw exposition body.
 
 NAME SUFFIXES (same interchange contract as :mod:`.metrics_aiperf_json`): AIPerf keys a
 COUNTER family by its base name (``dynamo_component_router_requests_total`` arrives as
@@ -59,7 +59,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # pragma: no cover - only on the bare-script path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.ingest.metrics_prometheus import _dedup  # noqa: E402  (shared idempotent fold)
+from src.ingest.dedup import _dedup  # noqa: E402  (shared idempotent fold)
 
 logger = logging.getLogger("metrics_aiperf_jsonl")
 

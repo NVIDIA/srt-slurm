@@ -1,0 +1,37 @@
+name: PR title
+
+# The merged PR title decides the release bump (see release.yaml and
+# .github/scripts/next_version.sh), so it has to be a conventional commit.
+# Runs on every edit so a fix shows up at once.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+  statuses: write  # `wip: true` reports a pending commit status on WIP titles
+
+jobs:
+  conventional-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          # Keep in sync with next_version.sh: feat -> minor, "!" -> major, the rest -> patch.
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            perf
+            test
+            chore
+            ci
+            build
+            revert
+          requireScope: false
+          # A "(#123)"-style suffix or a leading ticket id is fine; the subject just has to exist.
+          subjectPattern: ^.+$
+          wip: true

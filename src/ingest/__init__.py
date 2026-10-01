@@ -5,7 +5,7 @@
 
 The component perf dashboard is built as three clean layers::
 
-    L1 srtctl.analysis.metrics_scraper   in-job scrapers  -> RAW bytes (unparsed)
+    L1 tachometer-scraper (in-job)        scrapes /metrics -> parquet under tachometer/
        + Dynamo SPAN_CLOSED worker/frontend logs
        + the benchmark client's own per-request export
     L2 src/ingest/                       processors       RAW -> intermediate schema
@@ -44,19 +44,15 @@ Intermediate schemas (L2 outputs, join key ``x_request_id``, timeline = wall-epo
 
 RAW L1->L2 contract (capture emits RAW; the processor parses)
 ------------------------------------------------------------------------------
-``raw_prometheus.jsonl`` -- written in-job by :mod:`srtctl.analysis.metrics_scraper`
-when ``observability.enabled`` is set. One JSON per line, the /metrics response
-body verbatim::
+The in-job capture is Tachometer's parquet (``tachometer/raw/scrape/final.parquet``
+under the run log dir): one row per (scrape, endpoint, metric sample), with the
+scraper's per-endpoint metadata (role, host, indexes) as columns.
 
-    {"timestamp_ns": int, "endpoint_url": str,
-     "role": "frontend"|"prefill"|"decode", "worker_id": str|null,
-     "text": "<raw Prometheus exposition text, UNPARSED>"}
-
-``metrics_prometheus.process`` is the parse half: it parses each ``text``, merges
-every endpoint sharing a ``timestamp_ns`` into one scrape sweep, injects
-``worker_id``/``dynamo_component`` from the line's role, and re-emits schema 2.
-Splitting capture (RAW) from parse (here) lets the same raw bytes be re-parsed
-offline without re-running the job.
+``metrics_tachometer.process`` is the parse half: it regroups rows per scrape
+timestamp, rebuilds histogram ``_sum``/``_count`` from the bucket rows, injects
+``worker_id``/``dynamo_component`` from the row's role, and emits schema 2. Keeping
+capture (parquet) and parse (here) apart lets the same capture be re-parsed offline
+without re-running the job.
 
 Processor registry
 ------------------
@@ -68,7 +64,6 @@ Processor registry
     traces  -> tempo_traces/<xid>.json
       "spanlog" Dynamo SPAN_CLOSED logs -> schema 3.         (traces_spanlog.process)
     metrics -> server_metrics_export.jsonl
-      "prometheus" raw_prometheus.jsonl -> schema 2.         (metrics_prometheus.process)
       "aiperf-json" AIPerf server_metrics_export.json -> schema 2.
                                                           (metrics_aiperf_json.process)
                    The only server-metrics source on runs predating
@@ -92,7 +87,7 @@ Sibling processor call contracts (used by ``ingest.py``; keep these stable):
     aiperf_passthrough(inputs, out_path) -> {"written", "shards"}  (defined here)
         inputs = a file path, a glob string, or a list of shard paths (stitched).
     traces_spanlog.process(out_dir, valid_xids: set[str], log_paths: list[str]) -> int
-    metrics_prometheus.process(raw_path, out_path) -> int
+    metrics_tachometer.process(parquet_or_run_dir, out_path) -> int
 
 Imports are LAZY (resolved on first call) so importing this registry never pulls
 in a sibling module's deps until that processor actually runs. Everything here is
@@ -167,7 +162,6 @@ PROCESSORS: dict[str, dict[str, Callable]] = {
         "spanlog": _lazy("traces_spanlog"),
     },
     "metrics": {
-        "prometheus": _lazy("metrics_prometheus"),
         "aiperf-json": _lazy("metrics_aiperf_json"),
         "aiperf-jsonl": _lazy("metrics_aiperf_jsonl"),
         "tachometer": _lazy("metrics_tachometer"),

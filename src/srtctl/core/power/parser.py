@@ -3,8 +3,11 @@
 
 """Strict DCGM exporter power parsing.
 
-Only ``DCGM_FI_DEV_POWER_USAGE`` is read. Device identity comes from the ``gpu``
-and ``UUID`` labels; the optional ``Hostname`` label is deliberately ignored
+``DCGM_FI_DEV_POWER_USAGE`` is mandatory and decides which GPUs produce a
+reading. The utilization fields listed in ``UTILIZATION_METRICS`` are optional
+riders: they attach to a GPU's power reading when present and valid, and are
+dropped silently otherwise. Device identity comes from the ``gpu`` and
+``UUID`` labels; the optional ``Hostname`` label is deliberately ignored
 because the collector already knows which allocated node it polled.
 """
 
@@ -15,18 +18,21 @@ from dataclasses import dataclass
 
 from prometheus_client.parser import text_string_to_metric_families
 
-from srtctl.core.power.contract import POWER_METRIC, Reason, dedupe
+from srtctl.core.power.contract import POWER_METRIC, UTILIZATION_METRICS, Reason, dedupe
 
 _MIG_LABELS = ("GPU_I_ID", "GPU_I_PROFILE")
+_UTILIZATION_BY_METRIC = {metric.metric: metric for metric in UTILIZATION_METRICS}
 
 
 @dataclass(frozen=True)
 class PowerReading:
-    """One physical GPU's power draw within a single scrape."""
+    """One physical GPU's power draw within a single scrape, with optional utilization."""
 
     gpu_index: int
     gpu_uuid: str
     power_w: float
+    gpu_util_pct: float | None = None
+    sm_active: float | None = None
 
 
 @dataclass(frozen=True)
@@ -49,51 +55,100 @@ def parse_power_scrape(text: str) -> ParsedScrape:
     except Exception:  # noqa: BLE001
         return ParsedScrape(reason_codes=(Reason.ENDPOINT_PARSE_ERROR,))
 
-    by_index: dict[int, PowerReading] = {}
-    duplicated: set[int] = set()
+    power_by_index: dict[int, tuple[str, float]] = {}
+    duplicated_power: set[int] = set()
     saw_power_sample = False
+    # column -> gpu_index -> value; a duplicate poisons that (column, gpu) pair.
+    utilization: dict[str, dict[int, float]] = {metric.column: {} for metric in UTILIZATION_METRICS}
+    duplicated_utilization: dict[str, set[int]] = {metric.column: set() for metric in UTILIZATION_METRICS}
 
     for family in families:
         for sample in family.samples:
-            if sample.name != POWER_METRIC:
+            if sample.name == POWER_METRIC:
+                saw_power_sample = True
+                _collect_power(sample.labels, sample.value, power_by_index, duplicated_power, reasons)
                 continue
-            saw_power_sample = True
-            labels = sample.labels
-
-            if any(labels.get(label) for label in _MIG_LABELS):
-                reasons.append(Reason.MIG_INSTANCE_UNSUPPORTED)
+            spec = _UTILIZATION_BY_METRIC.get(sample.name)
+            if spec is None:
                 continue
+            _collect_utilization(
+                sample.labels,
+                sample.value,
+                spec.max_value,
+                utilization[spec.column],
+                duplicated_utilization[spec.column],
+            )
 
-            gpu_index = _parse_index(labels.get("gpu"))
-            if gpu_index is None:
-                reasons.append(Reason.GPU_INDEX_MISSING)
-                continue
-
-            gpu_uuid = (labels.get("UUID") or "").strip()
-            if not gpu_uuid:
-                reasons.append(Reason.GPU_UUID_MISSING)
-                continue
-
-            value = sample.value
-            if not math.isfinite(value) or value < 0:
-                reasons.append(Reason.INVALID_POWER_VALUE)
-                continue
-
-            if gpu_index in by_index:
-                duplicated.add(gpu_index)
-                continue
-            by_index[gpu_index] = PowerReading(gpu_index=gpu_index, gpu_uuid=gpu_uuid, power_w=value)
-
-    if duplicated:
+    if duplicated_power:
         reasons.append(Reason.DUPLICATE_POWER_METRIC)
-        for gpu_index in duplicated:
-            by_index.pop(gpu_index, None)
+        for gpu_index in duplicated_power:
+            power_by_index.pop(gpu_index, None)
 
     if not saw_power_sample:
         reasons.append(Reason.POWER_METRIC_MISSING)
 
-    readings = tuple(by_index[index] for index in sorted(by_index))
-    return ParsedScrape(readings=readings, reason_codes=dedupe(reasons))
+    readings = []
+    for gpu_index in sorted(power_by_index):
+        gpu_uuid, power_w = power_by_index[gpu_index]
+        extras = {
+            column: values[gpu_index]
+            for column, values in utilization.items()
+            if gpu_index in values and gpu_index not in duplicated_utilization[column]
+        }
+        readings.append(PowerReading(gpu_index=gpu_index, gpu_uuid=gpu_uuid, power_w=power_w, **extras))
+    return ParsedScrape(readings=tuple(readings), reason_codes=dedupe(reasons))
+
+
+def _collect_power(
+    labels: dict[str, str],
+    value: float,
+    by_index: dict[int, tuple[str, float]],
+    duplicated: set[int],
+    reasons: list[str],
+) -> None:
+    if any(labels.get(label) for label in _MIG_LABELS):
+        reasons.append(Reason.MIG_INSTANCE_UNSUPPORTED)
+        return
+
+    gpu_index = _parse_index(labels.get("gpu"))
+    if gpu_index is None:
+        reasons.append(Reason.GPU_INDEX_MISSING)
+        return
+
+    gpu_uuid = (labels.get("UUID") or "").strip()
+    if not gpu_uuid:
+        reasons.append(Reason.GPU_UUID_MISSING)
+        return
+
+    if not math.isfinite(value) or value < 0:
+        reasons.append(Reason.INVALID_POWER_VALUE)
+        return
+
+    if gpu_index in by_index:
+        duplicated.add(gpu_index)
+        return
+    by_index[gpu_index] = (gpu_uuid, value)
+
+
+def _collect_utilization(
+    labels: dict[str, str],
+    value: float,
+    max_value: float,
+    by_index: dict[int, float],
+    duplicated: set[int],
+) -> None:
+    """Optional metric: every rejection is silent, so no reason list is threaded through."""
+    if any(labels.get(label) for label in _MIG_LABELS):
+        return
+    gpu_index = _parse_index(labels.get("gpu"))
+    if gpu_index is None:
+        return
+    if not math.isfinite(value) or value < 0 or value > max_value:
+        return
+    if gpu_index in by_index:
+        duplicated.add(gpu_index)
+        return
+    by_index[gpu_index] = value
 
 
 def _parse_index(raw: str | None) -> int | None:

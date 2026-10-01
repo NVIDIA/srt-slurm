@@ -4,7 +4,7 @@
 
 """L2 ingest orchestrator -- makes the layered flow explicit and stops at the bundle.
 
-    L1 srtctl.analysis.metrics_scraper  -> raw_prometheus.jsonl
+    L1 tachometer-scraper (in-job)      -> tachometer/raw/scrape/final.parquet
        Dynamo workers/frontend (stdout) -> SPAN_CLOSED lines in <node>_*.out
        the benchmark client              -> its own per-request profile_export.jsonl
     L2 src/ingest/  per-source processors     RAW -> the 3 fixed intermediate schemas
@@ -29,7 +29,7 @@ themselves::
     python3 -m src.visualization.build_dynamo_bench_dash <bundle> out.html
 
 For an srt-slurm run directory, ``--run-dir`` is the job's ``logs/`` directory: the
-scraper writes ``raw_prometheus.jsonl`` there, and the worker/frontend logs that
+Tachometer writes its parquet under ``tachometer/`` there, and the worker/frontend logs that
 carry the SPAN_CLOSED lines are the ``<node>_<mode>_w<i>.out`` / ``<node>_frontend_<i>.out``
 files beside it.
 
@@ -469,21 +469,17 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
     mode = args.metrics
     if mode == "auto":
         # Pick the source the run actually captured, best first: the tachometer
-        # parquet (whole-window, per-replica, every endpoint) wins over the in-job
-        # raw_prometheus.jsonl, which wins over AIPerf's own exports (per-scrape
-        # jsonl over the aggregate json). An `observability.enabled` run has
-        # raw_prometheus.jsonl; a run without it usually still has AIPerf's own export,
-        # because the frontend's /metrics surface exists regardless of that knob and
-        # the benchmark scrapes it. Choosing here rather than at every call site is
+        # parquet (whole-window, per-replica, every endpoint) wins over AIPerf's
+        # own exports (per-scrape jsonl over the aggregate json). Tachometer is on
+        # by default; a run that switched it off usually still has AIPerf's own
+        # export, because the frontend's /metrics surface exists regardless and the
+        # benchmark scrapes it. Choosing here rather than at every call site is
         # what lets one ingest command work on all of them.
         tach: list[str] = []
         for pat in ([args.tachometer_parquet] if args.tachometer_parquet else TACHOMETER_PATTERNS):
             tach.extend(resolve_inputs(pat, run_dir))
-        raw = resolve_inputs(args.raw_prometheus or "raw_prometheus.jsonl", run_dir)
         if tach:
             mode = "tachometer"
-        elif raw:
-            mode = "prometheus"
         else:
             found_jsonl: list[str] = []
             for pat in AIPERF_JSONL_PATTERNS:
@@ -494,8 +490,11 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
                 found: list[str] = []
                 for pat in AIPERF_METRIC_PATTERNS:
                     found.extend(resolve_inputs(pat, run_dir))
-                mode = "aiperf-json" if found else "prometheus"
+                mode = "aiperf-json" if found else "none"
         _log("L2 metrics", f"auto-selected source: {mode}")
+        if mode == "none":
+            _log("L2 metrics", "WARN no server metrics source found (no tachometer parquet, no AIPerf export); skipping")
+            return False
 
     if mode == "tachometer":
         # The in-job Tachometer scraper's parquet: the whole-window per-replica
@@ -560,20 +559,8 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
         _log("L2 metrics", f"aiperf-json -> {out.name}: {n} timestamps, dedup {nin} -> {nout} lines")
         return out.exists()
 
-    # metrics == prometheus: parse RAW -> schema 2.
-    pattern = args.raw_prometheus or "raw_prometheus.jsonl"
-    srcs = resolve_inputs(pattern, run_dir)
-    if not srcs:
-        _log("L2 metrics", f"WARN no raw prometheus matched {pattern!r} under {run_dir}; skipping")
-        return False
-    _log("L1", f"metrics raw: {srcs[0]} (raw_prometheus.jsonl contract)")
-    proc = get_processor("metrics", "prometheus")
-    n = proc(srcs[0], str(out))
-    # Idempotent dedup fold (render_fast Converter-C); the processor also dedups,
-    # this guarantees a clean artifact regardless of source.
-    nin, nout = dedup_server_metrics(out)
-    _log("L2 metrics", f"prometheus -> {out.name}: {n} scrapes, dedup {nin} -> {nout} lines")
-    return out.exists()
+    _log("L2 metrics", f"WARN unknown metrics source {mode!r}; skipping")
+    return False
 
 
 def run_request_trace(args, run_dir: Path, bundle: Path) -> bool:
@@ -1216,13 +1203,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "(default: *_prefill_w*.out, *_decode_w*.out, *_agg_w*.out)")
 
     # metrics axis
-    p.add_argument("--metrics", choices=["auto", "tachometer", "prometheus", "aiperf-jsonl", "aiperf-json", "none"],
+    p.add_argument("--metrics", choices=["auto", "tachometer", "aiperf-jsonl", "aiperf-json", "none"],
                    default="auto",
                    help="metrics source; 'auto' prefers the tachometer parquet, then "
-                        "raw_prometheus.jsonl, then AIPerf's per-scrape jsonl, then "
-                        "AIPerf's aggregate json")
-    p.add_argument("--raw-prometheus", default=None,
-                   help="raw_prometheus.jsonl path/glob (default: raw_prometheus.jsonl)")
+                        "AIPerf's per-scrape jsonl, then AIPerf's aggregate json")
     p.add_argument("--tachometer-parquet", default=None,
                    help="tachometer parquet path/glob for --metrics tachometer "
                         "(default: tachometer/raw/scrape/final.parquet, then shards/local leftovers)")

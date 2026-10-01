@@ -14,27 +14,24 @@ import yaml
 from srtctl.cli import submit as submit_cli
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
-from srtctl.core.config import load_config
+from srtctl.core.config import load_config, resolve_config_with_defaults
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import JobStage, JobStatus
 from srtctl.core.topology import Process
 
 CONFIG = {
+    "schema": 2,
     "name": "serve-only-test",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "agg_nodes": 1,
-        "agg_workers": 1,
-    },
-    "backend": {"type": "sglang"},
-    "frontend": {"type": "sglang", "enable_multiple_frontends": False},
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "engine": "sglang",
+    "roles": {"agg": {"nodes": 1, "workers": 1}},
+    "frontend": {"type": "sglang-router", "enable_multiple_frontends": False},
     "benchmark": {"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": [1]},
 }
 
@@ -80,7 +77,9 @@ def test_serve_only_is_forwarded_to_the_slurm_orchestrator(monkeypatch, tmp_path
 class _ServeOnlyHarness(BenchmarkStageMixin):
     def __init__(self, log_dir: Path) -> None:
         self.serve_only = True
-        self.config = SrtConfig.Schema().load(CONFIG)
+        # Expand the 2.0 engine:/roles: vocabularies into the internal fields the
+        # marshmallow schema reads; the dict is deep-copied, CONFIG is untouched.
+        self.config = SrtConfig.Schema().load(resolve_config_with_defaults(CONFIG, None))
         self.runtime = RuntimeContext(
             job_id="12345",
             run_name="serve-only-test",
@@ -152,8 +151,8 @@ def test_serve_only_takes_precedence_over_eval_only(monkeypatch, tmp_path: Path)
         patch("srtctl.cli.do_sweep.StatusReporter.from_config", return_value=reporter),
         patch("srtctl.cli.do_sweep.setup_signal_handlers"),
         patch("srtctl.cli.do_sweep.start_process_monitor"),
-        patch.object(orchestrator, "start_head_infrastructure", return_value=MagicMock()),
-        patch.object(orchestrator, "start_mooncake_master", return_value=None),
+        patch.object(orchestrator, "start_head_infrastructure"),
+        patch.object(orchestrator, "start_services", return_value=[]),
         patch.object(orchestrator, "start_all_workers", return_value={}),
         patch.object(orchestrator, "start_frontend", return_value=[]),
         patch.object(orchestrator, "start_tachometer", return_value=[]),

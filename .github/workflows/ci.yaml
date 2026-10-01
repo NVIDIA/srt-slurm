@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -29,10 +31,15 @@ jobs:
       - name: Run ruff format check
         run: uv run ruff format --check src/srtctl/
 
+      - name: Check docs/schema-reference.md is regenerated
+        run: uv run srtctl schema-docs --check
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -47,12 +54,13 @@ jobs:
 
       - name: Run ty
         run: uv run ty check src/srtctl/
-        continue-on-error: true # ty is still experimental
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -88,6 +96,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -112,6 +122,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/smoke.yaml <<'EOF'
+          schema: 2
           name: ci-smoke
           model:
             path: hf:fake/mock-model
@@ -120,8 +131,11 @@ jobs:
           resources:
             gpu_type: h100
             gpus_per_node: 8
-            agg_nodes: 1
-            agg_workers: 1
+          engine: sglang
+          roles:
+            agg:
+              nodes: 1
+              workers: 1
           benchmark:
             type: custom
             command: echo ci-smoke
@@ -182,11 +196,13 @@ jobs:
           print('worker standalone:', r)
           "
 
-  # Quick sanity check that recipes are valid
-  validate-recipes:
+  # Quick sanity check that curated examples are valid
+  validate-examples:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -199,27 +215,30 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
-      - name: Validate all recipes load
+      - name: Validate every example (sweep and override files are expanded)
         run: |
           uv run python -c "
           from pathlib import Path
           from srtctl.core.config import validate_config_file
 
-          recipes = list(Path('recipes').rglob('*.yaml'))
-          print(f'Found {len(recipes)} recipes')
+          examples = sorted(Path('examples').rglob('*.yaml'))
+          print(f'Found {len(examples)} examples')
+          if not examples:
+              print('No examples found')
+              exit(1)
 
           all_errors = []
-          for recipe in recipes:
-              errors = validate_config_file(recipe)
+          for example in examples:
+              errors = validate_config_file(example)
               if errors:
                   for e in errors:
                       print(f'✗ {e}')
                   all_errors.extend(errors)
               else:
-                  print(f'✓ {recipe.name}')
+                  print(f'✓ {example.name}')
 
           if all_errors:
               print(f'\n{len(all_errors)} validation error(s)')
               exit(1)
-          print(f'\nAll {len(recipes)} recipes valid')
+          print(f'\nAll {len(examples)} examples valid')
           "

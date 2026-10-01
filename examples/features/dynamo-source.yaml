@@ -1,0 +1,60 @@
+# Dynamo built from a git ref instead of installed from PyPI.
+#
+# `dynamo.source` is one block for where Dynamo comes from: `git` + `rev`
+# (a commit, a tag, or `refs/pull/<n>/head` for an unmerged PR), or `pypi`, or
+# `wheel`. `srtctl apply` resolves a non-commit `rev` to a commit with
+# `git ls-remote` and records it as `sha` in the submitted config.yaml, so the
+# job builds exactly what the lockfile names and the /configs build cache is
+# keyed by commit. The build (rustup if needed, maturin, pip install) runs once
+# per commit per cluster and is reused by later jobs.
+#
+# To test a Dynamo PR: --set dynamo.source.rev=refs/pull/<n>/head
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-dynamo-source"
+
+slurm:
+  time_limit: "01:00:00"    # a cold build takes longer than a PyPI install
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+dynamo:
+  source:
+    git: https://github.com/ai-dynamo/dynamo
+    rev: v1.4.2               # same release the PyPI examples install
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

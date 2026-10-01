@@ -8,6 +8,9 @@ Development guide for working on this codebase.
 # Run lint + tests (recommended)
 make check
 
+# Launch-plan snapshots for every example recipe (regenerate after an intended change)
+make snapshots
+
 # Just lint
 make lint
 
@@ -25,6 +28,32 @@ uv run ruff check --fix src/srtctl/
 uv run ruff format src/srtctl/
 ```
 
+## Using DSight
+
+Before using DSight, read [docs/dsight.md](docs/dsight.md) and load the applicable
+[DSight skills](docs/dsight.md#agent-skills) by reading the linked skill files.
+This includes building or querying reports, analyzing existing results,
+preparing dashboard views, and changing DSight code. These skills live under
+`src/srtctl/dsight/skills/` and are part of this repository.
+
+## Pull Request Descriptions
+
+Write for a reviewer who knows the repository but has no access to the author's
+chat, agent session, or corporate environment.
+
+- Explain the problem, the changes introduced by this PR, and their impact on
+  users or behavior. Include a concrete before/after example when useful.
+- Keep the description scoped to the actual diff. Do not attribute existing
+  features, unrelated work, or planned follow-ups to this PR. Explain necessary
+  dependencies and link to public repository issues or PRs.
+- Do not include corporate-internal links, private dashboards, internal hostnames,
+  local or cluster artifact paths, session IDs, or references to earlier chat.
+  Replace session-specific shorthand with enough plain-language context for an
+  independent reviewer. Summarize relevant evidence directly; use public code,
+  tests, documentation, or reproducible examples as supporting references.
+- State the validation actually performed and relevant limitations. Keep the
+  description concise, and update it when the PR's scope changes.
+
 ## Code Style
 
 - **Python 3.10+** - use modern syntax (`|` unions, `match` statements)
@@ -40,13 +69,55 @@ Follow these patterns when extending the codebase:
 - **Frozen dataclasses for config** - Use `@dataclass(frozen=True)` for all configuration objects. Immutability prevents accidental mutation and makes code easier to reason about.
 - **Protocol over ABC** - Prefer `typing.Protocol` for interface definitions (see `BackendProtocol`). Enables duck typing without inheritance coupling.
 - **marshmallow_dataclass for validation** - Combine dataclasses with marshmallow schemas for type-safe config loading with validation. Custom fields (e.g., `BackendConfigField`) handle polymorphic deserialization.
-- **Factory classmethods** - Use `@classmethod` named `from_*` for construction (e.g., `RuntimeContext.from_config()`, `RunMetadata.from_json()`). Keep `__init__` simple.
+- **Factory classmethods** - Use `@classmethod` named `from_*` for construction (e.g., `RuntimeContext.from_config()`, `SrtConfig.from_yaml()`). Keep `__init__` simple.
 - **TYPE_CHECKING guard** - Import type-only dependencies under `if TYPE_CHECKING:` to avoid circular imports. Use string annotations for forward refs.
-- **Computed properties** - Use `@property` for derived values instead of storing computed state. See `ResourceConfig.gpus_per_prefill`, `RunMetadata.topology_label`.
+- **Computed properties** - Use `@property` for derived values instead of storing computed state. See `Topology.gpus_per_prefill`, `RuntimeContext.container_log_dir`.
 - **Registry pattern** - Use decorators for extensible registration (`@register_benchmark("sa-bench")`). New implementations just decorate and import.
 - **TypedDict for external data** - Use `TypedDict` for typing dicts from JSON/external sources where you can't control the structure.
 - **Single source of truth** - Create context objects (like `RuntimeContext`) that compute all derived paths/values once at startup rather than recomputing.
 - **testing** - when we make a new significant feature change, we should always add a new test
+- **Unused parameters stay untouched** - A hook that ignores an argument just ignores it. Ruff's unused-argument rules are off, so `del name` lines add nothing but noise.
+
+## Design Rules
+
+Read these before adding a feature. Each rule names the existing pattern to reuse. The most common review finding in this repo is a new mechanism where one already exists.
+
+- **Names go in tables, never in branches.** A connector, vendor, router, exporter, or engine name is compared as a string in exactly one place: the table or registry that owns it (`_CONNECTOR_MAP` in `backends/vllm.py`, `@register_service`, `@register_benchmark`, `get_frontend`). Consumers read attributes of the row, not the name. If a change adds `if x == "<name>"` in two files, or repeats a `Literal["a", "b"]` across modules, it is a missing table row or a missing config field.
+- **Cluster differences live in `srtslurm.yaml`.** Anything that varies by cluster or hardware (NIC, visible-devices env var, default GPU exporter, sbatch directives, mounts, host setup) is a `ClusterConfig` field in `core/schema.py` following `network_interface` and the `default_*` blocks, read once into `RuntimeContext`. A vendor enum in Python is the wrong tool for this. Never call `load_cluster_config()` from a schema property or a stage: it is uncached and creates a second source of truth.
+- **One resolver per overridable setting.** A setting the recipe can set at engine level and override per role (`roles.<role>.args.connector`, DP size) has one accessor on the backend in the `get_config_for_mode` style (`VLLMProtocol.connector_for_mode`, with `kv_connector_for_mode` for the table row and `kv_transfer_config(mode)` for the flag), and every consumer uses it: command builder, process env, frontend, and schema validator. Two readers of the raw fields disagree the moment a role override appears.
+- **Frontends own readiness; backends own worker commands and ports.** `core/health.py` and the stage mixins contain no `frontend_type == "..."` checks and no `getattr(frontend, "hook", fallback)` probing. The frontend implements the protocol hook; if a hook is missing, add it to `FrontendProtocol`. A frontend asks a backend a question through a method (`backend.is_grpc_mode(mode)`), never by reading its fields by name.
+- **Backends answer through `BackendProtocol`, never through `getattr`.** The stage mixins, schema validators, services, and dry-run ask `backend.mooncake_kv_store`, `backend.failover`, `backend.get_environment_for_mode(mode)`, `backend.get_srun_config().sequential_node_start`; a backend without the feature returns `None` or `{}`. `getattr(backend, "x", default)` and `hasattr(backend, "f")` do not appear in `src/`: they pass on every backend, so a typo or a rename fails silently at runtime. Logic that is genuinely one engine's narrows with `isinstance(backend, VLLMProtocol)` and reads typed fields. When a consumer needs a new answer, add the member to `BackendProtocol` and implement it on every backend, including the neutral default.
+- **Every listener a process opens comes from the allocator.** Two processes can share a node in this repo (`nodes: colocate`, DP endpoints), so any port a worker binds (HTTP, bootstrap, side channel, handshake, notify, metrics) is allocated by `NodePortAllocator` and carried on `Process`. An upstream default port left in a generated config is a collision on the first colocated recipe. See Ports in `src/srtctl/core/AGENTS.md`.
+- **Modes are not types.** A new `frontend.type`, `services[].type`, or `engine.type` is for a different process with its own launch, health API, and registration model. A different CLI shape, transport, or discovery mode of the same binary is an override inside the existing class: `trtllm_serve` handles aggregate and disaggregated in one type, `sglang-router` picks http or grpc per mode. A new frontend type is one registered module; the only remaining name checks are for Dynamo- and sglang-router-specific features (request tracing, the gateway's own metrics listener, `slow_down`).
+- **Check upstream before working around it.** When a change encodes an upstream behavior (what a health endpoint returns, which keys a connector reads, what a flag does), read the upstream source at the version the container ships and cite the commit in the PR. Do not add a probe, shim, or port-scan workaround for something upstream already handles.
+- **Reuse the machinery before adding a mechanism.** Services plus `placement` before a bespoke launcher, `roles.<role>.restart` before a wrapper loop, `host_setup` before a setup script that needs the host. The smallest diff that rides existing machinery beats a self-contained new module.
+- **A user-visible feature ships complete.** A `tests/` case (dry-run for visible config, mock orchestrator for behavior), a `docs/` page or section, an example recipe under `examples/`, and regenerated `docs/schema-reference.md`. In a stacked PR, a test lives in the layer that introduces the behavior it asserts.
+
+## Where to look
+
+This file holds the rules for every change. Subsystem rules live next to the code in `AGENTS.md` files (read the one for each directory you touch), and the explanations live in `docs/`, which is the source of truth for behavior. Link to a doc page instead of copying it here.
+
+| Area | Rules | Reference |
+| --- | --- | --- |
+| Frontends, routers, readiness | `src/srtctl/frontends/AGENTS.md` | `docs/architecture.md` |
+| Backends, Mooncake, shadow engine recovery | `src/srtctl/backends/AGENTS.md` | `docs/mooncake-kv-store.md`, `docs/shadow-engine-recovery.md` |
+| Services, pools, services-only jobs | `src/srtctl/services/AGENTS.md` | `docs/services.md`, `docs/pools.md` |
+| Ports, liveness, cleanup, resources | `src/srtctl/core/AGENTS.md` | `docs/architecture.md` |
+| Orchestrator stages, host setup | `src/srtctl/cli/AGENTS.md` | `docs/cli.md` |
+| Status reporting | `src/srtctl/status_server/AGENTS.md` | `docs/monitoring.md` |
+| Benchmarks | `src/srtctl/benchmarks/AGENTS.md` | `docs/config-reference.md` |
+| DSight reports, queries and analysis | `src/srtctl/dsight/AGENTS.md` | `docs/dsight.md`, `docs/dsight-storage.md` |
+| Tests, mock orchestrator, snapshots | `tests/AGENTS.md` | `tests/README.md` |
+| Documentation | `docs/AGENTS.md` | `docs/README.md` |
+| Recipe fields | `docs/schema-reference.md` (generated) | `docs/config-reference.md` |
+
+Procedures that recur are skills under `.agents/skills/` (`add-config-field`, `validate-without-cluster`, `design-rule-sweep`). Review criteria are in `REVIEW.md`.
+
+When asked to write or refine a performance benchmark or optimization goal, use
+[perf-goal-writer](.agents/skills/perf-goal-writer/SKILL.md)
+to define its targets, baseline, change boundaries and evidence requirements.
+
+Several Design Rules are enforced by `tests/test_design_rules.py`. Its baselines list code that predates a rule and may only shrink: fix a baselined site and delete its entry, never add one to make a change pass.
 
 ## Key Concepts
 
@@ -75,198 +146,22 @@ endpoints = allocate_endpoints(
 # Returns List[Endpoint] with node assignments and GPU indices
 ```
 
-### Health Checks
+## Validating Without a Cluster
 
-Two patterns for checking worker readiness:
+Nothing here needs SLURM. From cheapest to most complete:
 
-```python
-# Dynamo backend
-check_dynamo_health(response_json, expected_prefill=2, expected_decode=4)
+1. `uv run srtctl dry-run -f <recipe>`: resolved config, mounts, env, srun options, and the sbatch script.
+2. `tests/test_dry_run.py`, `tests/test_render.py`: assertions on that output.
+3. `src/srtctl/mock.py` (`run_mock_sweep`): the real `SweepOrchestrator` with srun, health checks and hostnames faked; `tests/test_mock_sweep.py` and `tests/test_pools.py` use it.
+4. `tests/test_launch_snapshots.py`: every example recipe through the mock orchestrator, with each srun call (placement, env, mounts, command) compared to `tests/snapshots/launch/`. A change that alters what runs on the cluster must regenerate them with `make snapshots`, so the PR diff shows the launch change.
 
-# SGLang router
-check_sglang_router_health(response_json, expected_prefill=2, expected_decode=4)
-```
-
-For aggregated mode, pass `expected_prefill=0, expected_decode=num_agg`.
-
-### Status Reporting
-
-Optional fire-and-forget HTTP status reporting to external APIs. Configure in `srtslurm.yaml`:
-
-```yaml
-# Cluster-level config (srtslurm.yaml)
-cluster: "bruh"  # Cluster name for dashboard display
-reporting:
-  status:
-    endpoint: "test-endpoint.com"
-```
-
-**StatusReporter** - Used in `do_sweep.py` to report job lifecycle:
-
-```python
-from srtctl.core.status import StatusReporter, JobStatus, JobStage
-
-reporter = StatusReporter.from_config(config.reporting, job_id)
-reporter.report_started(runtime)  # Job started with metadata
-reporter.report(JobStatus.WORKERS_READY, JobStage.WORKERS, "All workers healthy")
-reporter.report_completed(exit_code)  # Final status
-```
-
-**Status lifecycle:**
-```
-submitted → starting → head_ready → workers_starting → workers_ready
-         → frontend_starting → frontend_ready → benchmark → completed | failed
-```
-
-**create_job_record()** - Standalone function for job submission:
-
-```python
-from srtctl.core.status import create_job_record
-
-# Called in submit.py after sbatch succeeds
-create_job_record(
-    reporting=config.reporting,
-    job_id=job_id,
-    job_name=config.name,
-    cluster=get_srtslurm_setting("cluster"),
-    recipe=str(config_path),
-    metadata=metadata,  # Tags go in metadata["tags"]
-)
-```
-
-**Key behaviors:**
-- All HTTP requests have 5-second timeout
-- Failures are logged at DEBUG and silently ignored
-- Job execution is never blocked by status reporting
-- Tags are passed via `metadata["tags"]` (not a separate field)
-
-### InfraConfig
-
-Controls infrastructure placement (etcd/nats):
-
-```python
-infra:
-  etcd_nats_dedicated_node: true  # Reserve first node for infra services
-```
-
-### Mooncake KV Store
-
-When `mooncake_kv_store` is set under an SGLang or vLLM backend, srtslurm:
-1. Launches `mooncake_master` on the infra node (same node as etcd/nats)
-2. Injects `MOONCAKE_MASTER=<infra_ip>:8700` on all workers automatically
-3. Passes through any env vars in `mooncake_kv_store.env` to all workers
-4. For vLLM, also renders `mooncake_kv_store.store_config` into the JSON file
-   pointed to by `MOONCAKE_CONFIG_PATH` (vLLM's `MooncakeStoreConnector` reads
-   its config from JSON, not env vars). See `docs/mooncake-kv-store.md`.
-
-```yaml
-backend:
-  type: sglang
-  mooncake_kv_store:
-    container: nvcr.io/nvidia/mooncake:latest  # optional, defaults to job container
-    env:                                        # direct MOONCAKE_* / SGLANG_* env vars
-      MOONCAKE_PROTOCOL: rdma
-      MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
-      MOONCAKE_DEVICE: mlx5_0
-  sglang_config:
-    prefill:
-      disaggregation-transfer-backend: mooncake  # user still sets this
-      disaggregation-ib-device: "mlx5_0,mlx5_1"
-    decode:
-      disaggregation-transfer-backend: mooncake
-      disaggregation-ib-device: "mlx5_0,mlx5_1"
-```
-
-`MOONCAKE_MASTER` is always computed from the runtime infra node IP — do not set it manually in `env`.
-
-`MOONCAKE_LOCAL_HOSTNAME` is auto-resolved per-worker to that worker's own IP (using `runtime.network_interface`), so multi-node peer transfers don't fall back to `localhost`. If you need a specific NIC IP, set `MOONCAKE_LOCAL_HOSTNAME` in `env` to override the default.
-
-**Validation:** In disaggregated mode, srtslurm rejects configs that set `mooncake_kv_store` without `disaggregation-transfer-backend: mooncake` on `sglang_config.prefill` or `sglang_config.decode`. This catches the common misconfiguration where the master process gets launched but workers fall back to default transport.
-
-### Host Setup
-
-`host_setup` runs commands on each node's **bare host, outside the container**, before any
-worker starts — the counterpart to `setup_script`, which runs *inside* the container. Use it
-for node state a container cannot reach (GPU clocks, kernel modules).
-
-```yaml
-host_setup:
-  commands: ["sudo -n nvidia-smi -lmc <min>,<max>"]
-  teardown: ["sudo -n nvidia-smi -rmc"]   # runs on the cleanup path, success or failure
-  nodes: all                              # all | workers
-```
-
-Implemented in `SweepOrchestrator._run_host_setup()` / `._run_host_teardown()` as one
-container-less `start_srun_process(container_image=None, ...)` per node. Cluster-wide default
-lives in `srtslurm.yaml` as `default_host_setup` (whole-block replace, like
-`default_health_check`). Commands run as the submitting user, so privileged ones need
-passwordless sudo. Always pair a `commands` entry that sets persistent state with a
-`teardown` — otherwise it leaks to the next job on that node.
-
-### ResourceConfig
-
-Supports explicit GPUs per worker (overrides computed values):
-
-```python
-resources:
-  gpu_type: "gb200"
-  prefill_nodes: 2
-  prefill_workers: 4
-  decode_nodes: 4
-  decode_workers: 8
-  gpus_per_prefill: 4  # Optional: explicit override
-  gpus_per_decode: 2   # Optional: explicit override
-```
-
-## Testing
-
-Tests are located in `tests/`. Run `make check` to run lint + all tests.
-
-### Mocking SLURM
-
-```python
-class H100Rack:
-    NUM_NODES = 13
-    GPUS_PER_NODE = 8
-
-    @classmethod
-    def slurm_env(cls):
-        return {
-            "SLURM_JOB_ID": "12345",
-            "SLURM_NODELIST": "h100-[01-13]",
-            ...
-        }
-
-with patch.dict(os.environ, H100Rack.slurm_env()):
-    with patch("subprocess.run", H100Rack.mock_scontrol()):
-        # Test code here
-```
+See `.agents/skills/validate-without-cluster/SKILL.md`.
 
 ## Common Tasks
 
-### Adding a New Backend
+### Adding or Changing Any Config Field
 
-1. Create `backends/mybackend.py` with a dataclass implementing `BackendProtocol`
-2. Implement required methods:
-   - `get_srun_config()` - MPI settings and launch strategy
-   - `get_config_for_mode(mode)` - Mode-specific configuration
-   - `get_environment_for_mode(mode)` - Environment variables
-   - `allocate_endpoints()` - Logical worker allocation
-   - `endpoints_to_processes()` - Physical process mapping
-   - `build_worker_command(process, runtime)` - Command construction
-3. Export from `backends/__init__.py`
-4. Add polymorphic deserialization in `BackendConfigField` in `schema.py`
-
-**Current backends:**
-- **SGLang**: Per-process srun launching, supports prefill/decode/aggregated modes
-- **TRTLLM**: MPI-style launching (one srun per endpoint with all nodes), prefill/decode only
-
-### Adding a New Benchmark
-
-1. Create `benchmarks/mybench.py` inheriting from `BenchmarkRunner`
-2. Implement `run(config, log_dir)` method
-3. Add bash script to `benchmarks/scripts/mybench/bench.sh`
-4. Register in benchmark type mapping
+`docs/schema-reference.md` is generated from the dataclasses in `core/schema.py` and `backends/`. After adding, renaming, or re-typing a field, run `uv run srtctl schema-docs` and commit the result; CI and `tests/test_schema_docs.py` fail when the file is stale. Put the field's description in the class docstring `Attributes:` block or in a `#` comment directly above the field so it lands in the generated table.
 
 ### Adding Config That Affects srun (Mounts, Env Vars, Options)
 
@@ -277,9 +172,15 @@ When adding new config fields that affect what gets passed to srun (environment 
 
 Config sources that feed into dry-run display:
 - **Mounts**: `config.extra_mount`, `config.container_mounts`, `default_mounts` from srtslurm.yaml
-- **Env vars**: `config.environment` (global), `backend.prefill_environment`, `backend.decode_environment`, `backend.aggregated_environment`
+- **Env vars**: `config.environment` (global), `roles.<role>.env` (read by the engine from the roles bound onto it at load)
 - **srun options**: `config.srun_options`
 - **Host setup**: `config.host_setup`, `default_host_setup` from srtslurm.yaml
+
+Adding a backend, frontend or router mode, service kind, or benchmark: follow the checklist in that package's `AGENTS.md`.
+
+## Testing
+
+Tests are in `tests/`; `make check` runs lint (Ruff and a blocking `ty check`), the schema-doc check, and all tests. See `tests/AGENTS.md` for which suite covers what.
 
 ## Debugging
 
@@ -300,4 +201,3 @@ tail -f outputs/<job_id>/logs/sweep_<job_id>.log | grep "srun command"
 ```
 
 Per-worker env vars and commands are also logged individually (search for `Env:` and `Command:` lines).
-

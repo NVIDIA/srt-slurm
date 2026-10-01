@@ -14,7 +14,7 @@ generates random tokens at configurable simulated latency.
 """
 
 import builtins
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import field
 from pathlib import Path
 from typing import (
@@ -27,6 +27,7 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
 
 if TYPE_CHECKING:
@@ -37,22 +38,6 @@ if TYPE_CHECKING:
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
-
-
-@dataclass(frozen=True)
-class MockerServerConfig:
-    """Mocker CLI configuration per mode (prefill/decode/aggregated).
-
-    Each mode can have its own configuration dict that gets converted
-    to CLI flags when starting the mocker. Use for per-mode overrides
-    of mocker-specific parameters.
-    """
-
-    prefill: dict[str, Any] | None = None
-    decode: dict[str, Any] | None = None
-    aggregated: dict[str, Any] | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
 
 
 @dataclass(frozen=True)
@@ -104,13 +89,9 @@ class MockerProtocol:
     enable_chunked_prefill: bool = True
     preemption_mode: str | None = None
 
-    # Environment variables per mode
-    prefill_environment: dict[str, str] = field(default_factory=dict)
-    decode_environment: dict[str, str] = field(default_factory=dict)
-    aggregated_environment: dict[str, str] = field(default_factory=dict)
-
-    # Per-mode CLI overrides
-    mocker_config: MockerServerConfig | None = None
+    # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
+    # never written on `engine:`. Per-role env and args (mocker CLI overrides) are read from here.
+    roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -124,28 +105,36 @@ class MockerProtocol:
 
         return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
 
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """Get merged config dict for a worker mode."""
-        if not self.mocker_config:
-            return {}
+    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
+        """The srun step exits with the engine; its exit code is the whole story."""
+        return ()
 
-        if mode == "prefill":
-            return dict(self.mocker_config.prefill or {})
-        elif mode == "decode":
-            return dict(self.mocker_config.decode or {})
-        elif mode == "agg":
-            return dict(self.mocker_config.aggregated or {})
+    @property
+    def mooncake_kv_store(self) -> None:
+        """The mocker has no Mooncake KV store block."""
+        return None
+
+    @property
+    def failover(self) -> None:
+        """The mocker has no shadow engine recovery."""
+        return None
+
+    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
         return {}
+
+    def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
+        return {}
+
+    def should_set_visible_devices(self) -> bool:
+        return True
+
+    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
+        """The role's mocker CLI overrides (``roles.<role>.args``)."""
+        return role_args(self.roles, mode)
 
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        """Get environment variables for a worker mode."""
-        if mode == "prefill":
-            return dict(self.prefill_environment)
-        elif mode == "decode":
-            return dict(self.decode_environment)
-        elif mode == "agg":
-            return dict(self.aggregated_environment)
-        return {}
+        """The role's environment (``roles.<role>.env``)."""
+        return role_env(self.roles, mode)
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
@@ -224,6 +213,12 @@ class MockerProtocol:
         # Determine model path: HF model ID or container mount path
         model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
+        # Register under the name the benchmark client requests (the model path
+        # basename, see SrtConfig.served_model_name). Left to its own devices the
+        # mocker derives the name from --model-path, which for the /model mount is
+        # "model" and makes every request 404 with "Model not found".
+        served_model_name = Path(str(runtime.model_path)).name
+
         # Start with nsys prefix if provided
         cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
 
@@ -234,6 +229,8 @@ class MockerProtocol:
                 "dynamo.mocker",
                 "--model-path",
                 model_arg,
+                "--model-name",
+                served_model_name,
             ]
         )
 

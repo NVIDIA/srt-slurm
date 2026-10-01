@@ -22,7 +22,7 @@ import os
 import subprocess
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -143,6 +143,10 @@ class MockOptions:
     nodelist: tuple[str, ...] = ("mock-node-01",)
     # Fake IP returned for every hostname lookup.
     hostname_ip: str = "127.0.0.1"
+    # Called with the keyword arguments of every srun launch, before the fake child starts.
+    on_srun: Callable[[dict[str, Any]], None] | None = None
+    # End a `benchmark.type: manual` hold at its first poll instead of serving until Ctrl+C.
+    end_manual_hold: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +227,8 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         cmd = kwargs.get("command") or (args[0] if args else [])
         if not isinstance(cmd, list):
             cmd = [str(cmd)]
+        if options.on_srun is not None:
+            options.on_srun({**kwargs, "command": cmd})
         return FakePopen(
             cmd=cmd,
             output=kwargs.get("output"),
@@ -265,8 +271,11 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.cli.mixins.telemetry_stage.start_srun_process", _fake_srun),
         ("srtctl.cli.mixins.benchmark_stage.start_srun_process", _fake_srun),
         ("srtctl.cli.mixins.postprocess_stage.start_srun_process", _fake_srun),
+        ("srtctl.cli.mixins.service_stage.start_srun_process", _fake_srun),
         ("srtctl.frontends.dynamo.start_srun_process", _fake_srun),
         ("srtctl.frontends.sglang.start_srun_process", _fake_srun),
+        ("srtctl.frontends.static_router.start_srun_process", _fake_srun),
+        ("srtctl.frontends.trtllm_serve.start_srun_process", _fake_srun),
         # Hostname / IP resolution.
         ("srtctl.core.slurm.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.core.slurm.get_slurm_nodelist", _fake_nodelist),
@@ -275,17 +284,55 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.core.telemetry.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.cli.mixins.frontend_stage.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.cli.mixins.service_stage.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.frontends.sglang.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.frontends.static_router.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.frontends.trtllm_serve.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.cli.mixins.worker_stage.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.core.power.session.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.core.power.cpu_session.get_hostname_ip", _fake_hostname_ip),
         # Port / model readiness checks.
         ("srtctl.core.health.wait_for_port", _fake_wait_for_port),
         ("srtctl.cli.do_sweep.wait_for_port", _fake_wait_for_port),
         ("srtctl.core.health.wait_for_model", _fake_wait_for_model),
         ("srtctl.cli.mixins.benchmark_stage.wait_for_model", _fake_wait_for_model),
+        ("srtctl.core.health.wait_for_http_endpoints", _fake_wait_for_port),
+        ("srtctl.frontends.static_router.wait_for_http_endpoints", _fake_wait_for_port),
+        ("srtctl.cli.mixins.worker_stage.wait_for_health", _fake_wait_for_port),
+        ("srtctl.frontends.trtllm_serve.wait_for_health", _fake_wait_for_port),
+        # Service readiness probes (etcd, NATS, exporters, declared services).
+        ("srtctl.cli.mixins.service_stage.wait_until_ready", _fake_wait_for_port),
+        # The ray kind resolves the head IP itself and gates on the dashboard's node summary.
+        ("srtctl.services.ray.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.services.ray.RayService.wait_fleet_ready", lambda *_args, **_kwargs: None),
         # Status POST/PUT — redirect to the on-disk sink so external watchers
         # have a concrete artifact to poll.
         ("srtctl.core.status.requests.put", _fake_put),
         ("srtctl.core.status.requests.post", _fake_post),
     ]
+
+    if options.end_manual_hold:
+        from srtctl.cli import do_sweep
+
+        stop_events: list[threading.Event] = []
+        original_signal_handlers = do_sweep.setup_signal_handlers
+
+        def _recording_signal_handlers(stop_event, registry):
+            stop_events.append(stop_event)
+            original_signal_handlers(stop_event, registry)
+
+        class _EndHoldClock:
+            monotonic = staticmethod(time.monotonic)
+            time = staticmethod(time.time)
+
+            def sleep(self, _seconds: float) -> None:
+                for event in stop_events:
+                    event.set()
+
+        patch_targets += [
+            ("srtctl.cli.do_sweep.setup_signal_handlers", _recording_signal_handlers),
+            ("srtctl.cli.mixins.benchmark_stage.time", _EndHoldClock()),
+        ]
 
     started: list = []
     try:

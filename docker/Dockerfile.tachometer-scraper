@@ -3,6 +3,9 @@
 FROM --platform=$BUILDPLATFORM rust:1.90-slim-bookworm AS builder
 
 ARG TARGETARCH
+# Release tag without the leading v; baked into --version by option_env!("SRTCTL_RELEASE_VERSION").
+ARG SRTCTL_RELEASE_VERSION
+ENV SRTCTL_RELEASE_VERSION=${SRTCTL_RELEASE_VERSION}
 
 WORKDIR /app
 
@@ -23,6 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src/tachometer/tachometer-writer/Cargo.toml src/tachometer/tachometer-writer/Cargo.toml
 COPY src/tachometer/tachometer-scraper/Cargo.toml src/tachometer/tachometer-scraper/Cargo.toml
+COPY src/cpu-power-exporter/Cargo.toml src/cpu-power-exporter/Cargo.toml
+# Empty sibling source satisfies the workspace manifest without compiling it.
+RUN mkdir -p src/cpu-power-exporter/src && echo 'fn main(){}' > src/cpu-power-exporter/src/main.rs
 COPY src/tachometer/tachometer-writer/src src/tachometer/tachometer-writer/src
 COPY src/tachometer/tachometer-scraper/src src/tachometer/tachometer-scraper/src
 

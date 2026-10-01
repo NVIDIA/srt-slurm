@@ -19,47 +19,42 @@ import yaml
 from srtctl.mock import MockOptions, run_mock_sweep
 
 MINIMAL_CONFIG = {
+    "schema": 2,
     "name": "mock-smoke",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "agg_nodes": 1,
-        "agg_workers": 1,
-    },
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "roles": {"agg": {"nodes": 1, "workers": 1}},
     "benchmark": {"type": "custom", "command": "echo fake-benchmark"},
 }
 
 TRTLLM_AGGREGATE_CONFIG = {
+    "schema": 2,
     "name": "mock-trtllm-aggregate-sa-bench",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "gb300",
-        "gpus_per_node": 4,
-        "agg_nodes": 2,
-        "agg_workers": 1,
-        "gpus_per_agg": 8,
-    },
+    "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
     "frontend": {
         "type": "trtllm_serve",
         "enable_multiple_frontends": False,
     },
-    "backend": {
-        "type": "trtllm",
-        "trtllm_config": {
-            "aggregated": {
+    "engine": "trtllm",
+    "roles": {
+        "agg": {
+            "nodes": 2,
+            "workers": 1,
+            "gpus": 8,
+            "args": {
                 "tensor_parallel_size": 8,
                 "moe_expert_parallel_size": 8,
                 "pipeline_parallel_size": 1,
-            }
+            },
         },
     },
     "benchmark": {
@@ -100,7 +95,8 @@ def test_run_mock_sweep_produces_expected_artifacts(tmp_path: Path) -> None:
     assert (output_dir / "result.json").is_file()
     assert (output_dir / "recipe.lock.yaml").is_file(), "lockfile written by real postprocess stage"
     # Per-component logs emitted by the real orchestrator, via fake srun.
-    assert (output_dir / "logs" / "infra.out").is_file()
+    assert (output_dir / "logs" / "service_etcd.out").is_file(), "etcd is a service now"
+    assert not (output_dir / "logs" / "service_nats.out").exists(), "tcp request plane: no NATS service runs"
     assert any((output_dir / "logs").glob("*_agg_w0.out")), "worker log written"
     assert any((output_dir / "logs").glob("*_frontend_*.out")), "frontend log written"
     assert (output_dir / "logs" / "benchmark.out").is_file()
@@ -179,6 +175,7 @@ def test_trtllm_aggregate_runs_complete_sa_bench_lifecycle_without_router(tmp_pa
     assert result["status"] == "completed"
     assert any((output_dir / "logs").glob("*_agg_w0.out"))
     assert (output_dir / "logs" / "benchmark.out").is_file()
-    assert not (output_dir / "logs" / "infra.out").exists()
+    assert not (output_dir / "logs" / "service_etcd.out").exists()
+    assert not (output_dir / "logs" / "service_nats.out").exists()
     assert not (output_dir / "logs" / "ser.yaml").exists()
     assert not any((output_dir / "logs").glob("*_frontend_*.out"))

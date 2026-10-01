@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for SLURM command construction."""
@@ -11,7 +11,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
-from srtctl.core.schema import ObservabilityConfig
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
+from srtctl.core.runtime import Nodes, RuntimeContext
+from srtctl.core.schema import HealthCheckConfig, ObservabilityConfig, ResourceConfig, Topology
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
 
 
@@ -76,7 +78,7 @@ def test_cluster_bash_preamble_applied_when_only_cluster_set() -> None:
         start_srun_process(["python3", "-m", "server"])
 
     bash_cmd = _built_bash_command(mock_popen)
-    assert bash_cmd.startswith("ulimit -n 1048576 && python3 -m server")
+    assert bash_cmd.startswith("ulimit -n 1048576 && exec python3 -m server")
 
 
 def test_cluster_bash_preamble_warns_when_bash_wrapper_disabled(caplog) -> None:
@@ -179,15 +181,22 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     backend.get_environment_for_mode.return_value = {}
     backend.get_process_environment.return_value = {}
     backend.type = "vllm"
+    backend.failover = None
+    backend.mooncake_kv_store = None
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
         setup_script="setup.sh",
         frontend=SimpleNamespace(type="sglang"),
-        dynamo=SimpleNamespace(install=False, request_plane="nats", event_plane="zmq"),
+        dynamo=SimpleNamespace(install=False, sidecar=False, request_plane="nats", event_plane="zmq"),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        resources=ResourceConfig(),
+        topology=Topology(roles={}, gpus_per_node=4),
+        health_check=HealthCheckConfig(),
         backend=backend,
+        backend_for_role=lambda _mode: backend,
+        role_containers={},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -196,9 +205,11 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         network_interface=None,
         nodes=SimpleNamespace(infra="infra-node", worker=["node-a"]),
         gpus_per_node=8,
+        visible_devices_env="CUDA_VISIBLE_DEVICES",
         environment={},
         container_image=Path("/container.sqsh"),
         container_mounts={},
+        container_log_dir=Path("/logs"),
         srun_options=[],
     )
     process = SimpleNamespace(
@@ -209,6 +220,8 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        trtllm_dist_init_port=29500,
+        sidecar_grpc_port=50051,
     )
 
     with (
@@ -223,6 +236,8 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     assert "/configs/patches/${setup_script}" in bash_preamble
     assert bash_preamble.endswith("&& ( fingerprint || true )")
     assert mock_srun.call_args.kwargs["env_to_unset"] is None
+    # Named step, so cleanup can SIGTERM the engine through scancel instead of killing srun.
+    assert mock_srun.call_args.kwargs["step_name"] == "prefill_0_node-a"
 
 
 def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: bool):
@@ -232,6 +247,8 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
     backend.build_worker_command.return_value = ["python3", "-m", "worker"]
     backend.get_environment_for_mode.return_value = {}
     backend.get_process_environment.return_value = {}
+    backend.failover = None
+    backend.mooncake_kv_store = None
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
@@ -239,13 +256,19 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         frontend=SimpleNamespace(type=frontend_type),
         dynamo=SimpleNamespace(
             install=dynamo_install,
+            sidecar=False,
             get_install_commands=lambda: "echo install-dynamo",
             request_plane="nats",
             event_plane="zmq",
         ),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        resources=ResourceConfig(),
+        topology=Topology(roles={}, gpus_per_node=4),
+        health_check=HealthCheckConfig(),
         backend=backend,
+        backend_for_role=lambda _mode: backend,
+        role_containers={},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -257,6 +280,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         environment={},
         container_image=Path("/container.sqsh"),
         container_mounts={},
+        container_log_dir=Path("/logs"),
         srun_options=[],
     )
     process = SimpleNamespace(
@@ -267,8 +291,84 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        trtllm_dist_init_port=29500,
+        sidecar_grpc_port=50051,
     )
+    mixin.runtime.visible_devices_env = "CUDA_VISIBLE_DEVICES"
     return mixin, process
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_worker_config_dump_uses_container_log_mount(tmp_path: Path, launch_method: str) -> None:
+    """Backend config dumps must use a path visible inside the worker container."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    ):
+        if launch_method == "start_worker":
+            mixin.start_worker(process, [process])
+        else:
+            mixin.start_endpoint_worker([process])
+
+    assert mixin.backend.build_worker_command.call_args.kwargs["dump_config_path"] == Path("/logs/node-a_config.json")
+
+
+def test_runtime_container_log_dir_follows_the_log_mount(tmp_path: Path) -> None:
+    """The container-side log directory is the log mount, /logs by default."""
+
+    def runtime(mounts: dict[Path, Path]) -> RuntimeContext:
+        return RuntimeContext(
+            job_id="12345",
+            run_name="test-run",
+            nodes=Nodes(head="node0", bench="node0", infra="node0", worker=("node1",)),
+            head_node_ip="10.0.0.1",
+            infra_node_ip="10.0.0.1",
+            log_dir=tmp_path,
+            model_path=Path("/models/test"),
+            container_image=Path("/img.sqsh"),
+            gpus_per_node=8,
+            network_interface=None,
+            container_mounts=mounts,
+            environment={},
+        )
+
+    assert Path(CONTAINER_LOG_DIR) == Path("/logs")
+    assert runtime({tmp_path: Path("/logs")}).container_log_dir == Path("/logs")
+    assert runtime({tmp_path: Path("/run/logs")}).container_log_dir == Path("/run/logs")
+    assert runtime({}).container_log_dir == Path(CONTAINER_LOG_DIR)
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_worker_container_paths_follow_a_remapped_log_mount(tmp_path: Path, launch_method: str) -> None:
+    """Config dump, profiler dir, and fingerprint paths all derive from runtime.container_log_dir."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin.runtime.container_log_dir = Path("/run/logs")
+    mixin.config.profiling = SimpleNamespace(
+        enabled=True,
+        is_nsys=False,
+        is_nsys_time=False,
+        type="torch",
+        get_env_vars=lambda mode, profile_dir: {"SGLANG_TORCH_PROFILER_DIR": f"{profile_dir}/{mode}"},
+    )
+    with (
+        patch(
+            "srtctl.cli.mixins.worker_stage.generate_capture_script",
+            side_effect=lambda path: f"fingerprint {path}",
+        ) as capture,
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()) as srun,
+    ):
+        if launch_method == "start_worker":
+            mixin.start_worker(process, [process])
+        else:
+            mixin.start_endpoint_worker([process])
+
+    dump_path = mixin.backend.build_worker_command.call_args.kwargs["dump_config_path"]
+    assert dump_path == Path("/run/logs/node-a_config.json")
+    assert srun.call_args.kwargs["env_to_set"]["SGLANG_TORCH_PROFILER_DIR"] == "/run/logs/profiles/prefill"
+    assert capture.call_args.args[0] == "/run/logs/fingerprint_prefill_w0.json"
+    # srtctl still creates the profile directory on the host side of the mount.
+    assert (tmp_path / "profiles" / "prefill").is_dir()
 
 
 def test_worker_stage_injects_remap_root_for_dynamo_install(tmp_path: Path) -> None:
@@ -284,7 +384,7 @@ def test_worker_stage_injects_remap_root_for_dynamo_install(tmp_path: Path) -> N
 
 
 def test_worker_stage_no_remap_root_for_sglang_frontend(tmp_path: Path) -> None:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
         patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
@@ -293,6 +393,34 @@ def test_worker_stage_no_remap_root_for_sglang_frontend(tmp_path: Path) -> None:
         mixin.start_worker(process, [process])
 
     assert mock_srun.call_args.kwargs["srun_export_env"] is None
+
+
+def test_sglang_workers_skip_the_post_sigterm_crash_diagnostics_by_default(tmp_path: Path) -> None:
+    """SGLang waits 60s for CUDA coredumps after a SIGTERM drain; nothing is collected without opting in."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+    env = mock_srun.call_args.kwargs["env_to_set"]
+    assert env["SGLANG_CUDA_COREDUMP_BEFORE_CRASH"] == "0"
+    assert env["SGLANG_PYSPY_DUMP_BEFORE_CRASH"] == "0"
+
+
+def test_sglang_workers_keep_the_coredump_wait_when_the_recipe_opts_in(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
+    mixin.runtime.environment = {"SGLANG_CUDA_COREDUMP": "1"}
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+    env = mock_srun.call_args.kwargs["env_to_set"]
+    assert "SGLANG_CUDA_COREDUMP_BEFORE_CRASH" not in env
+    assert env["SGLANG_CUDA_COREDUMP"] == "1"
 
 
 def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) -> None:
@@ -312,7 +440,7 @@ def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) ->
 
 
 def _start_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, str]:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.dynamo.event_plane = event_plane
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -324,7 +452,7 @@ def _start_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, s
 
 
 def _start_endpoint_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, str]:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.dynamo.event_plane = event_plane
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -356,10 +484,48 @@ def test_start_endpoint_worker_request_plane_injected(tmp_path: Path) -> None:
     assert env["DYN_REQUEST_PLANE"] == "nats"
 
 
+def test_trtllm_native_kv_events_receive_endpoint_hosts(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "trtllm"
+    mixin.runtime.environment = {"DYN_TRTLLM_PUBLISH_KV_EVENTS": "true"}
+    second_process = SimpleNamespace(**{**process.__dict__, "node": "node-b"})
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_endpoint_worker([process, second_process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["DYN_TRTLLM_KV_EVENT_HOSTS"] == "node-a,node-b"
+
+
+def test_trtllm_native_kv_event_host_override_is_preserved(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "trtllm"
+    mixin.runtime.environment = {
+        "DYN_TRTLLM_PUBLISH_KV_EVENTS": "true",
+        "DYN_TRTLLM_KV_EVENT_HOSTS": "override-a,override-b",
+    }
+    second_process = SimpleNamespace(**{**process.__dict__, "node": "node-b"})
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_endpoint_worker([process, second_process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["DYN_TRTLLM_KV_EVENT_HOSTS"] == "override-a,override-b"
+
+
 def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "trtllm"
     mixin.config.dynamo.sidecar = True
+    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
     mixin.runtime.srun_options = {"exclusive": "", "kill-on-bad-exit": "0"}
 
     with (
@@ -372,7 +538,50 @@ def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> N
     assert mock_srun.call_args.kwargs["srun_options"] == {
         "exclusive": "",
         "kill-on-bad-exit": "1",
+        "ntasks-per-node": "8",
     }
+
+
+def test_sglang_sidecar_trusts_the_bundled_rust_extension(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "sglang"
+    mixin.config.dynamo.sidecar = True
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["SGLANG_RUST_BUILD_MODE"] == "never"
+
+
+def test_sglang_sidecar_rust_build_mode_respects_the_recipe(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "sglang"
+    mixin.config.dynamo.sidecar = True
+    mixin.runtime.environment = {"SGLANG_RUST_BUILD_MODE": "auto"}
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["SGLANG_RUST_BUILD_MODE"] == "auto"
+
+    mixin_off, process_off = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin_off.config.backend.type = "sglang"
+    mixin_off.config.dynamo.sidecar = False
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin_off.start_worker(process_off, [process_off])
+    assert "SGLANG_RUST_BUILD_MODE" not in mock_srun.call_args.kwargs["env_to_set"]
 
 
 def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
@@ -388,6 +597,15 @@ def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
         mixin.start_worker(process, [process])
 
     assert mock_srun.call_args.kwargs["env_to_set"]["VLLM_PLUGINS"] == ""
+
+
+def test_worker_control_plane_uses_routable_infra_ip(tmp_path: Path) -> None:
+    for env in (
+        _start_worker_env(tmp_path, event_plane=None),
+        _start_endpoint_worker_env(tmp_path, event_plane=None),
+    ):
+        assert env["NATS_SERVER"] == "nats://10.0.0.1:4222"
+        assert env["ETCD_ENDPOINTS"] == "http://10.0.0.1:2379"
 
 
 @pytest.mark.parametrize("event_plane", ["zmq", "nats"])
@@ -471,15 +689,22 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
     backend.build_worker_command.return_value = ["python3", "-m", "worker"]
     backend.get_environment_for_mode.return_value = {}
     backend.get_process_environment.return_value = {}
+    backend.failover = None
+    backend.mooncake_kv_store = None
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
         setup_script=None,
         frontend=SimpleNamespace(type="sglang"),
-        dynamo=SimpleNamespace(install=False, request_plane="nats", event_plane=None),
+        dynamo=SimpleNamespace(install=False, sidecar=False, request_plane="nats", event_plane=None),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        resources=ResourceConfig(),
+        topology=Topology(roles={}, gpus_per_node=4),
+        health_check=HealthCheckConfig(),
         backend=backend,
+        backend_for_role=lambda _mode: backend,
+        role_containers={},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -491,6 +716,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         environment={},
         container_image=Path("/container.sqsh"),
         container_mounts={},
+        container_log_dir=Path("/logs"),
         srun_options=[],
     )
     process = SimpleNamespace(
@@ -501,6 +727,8 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        trtllm_dist_init_port=29500,
+        sidecar_grpc_port=50051,
     )
     peer_process = SimpleNamespace(node="node-b")
 
@@ -512,3 +740,239 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         mixin.start_worker(process, [process, peer_process])
 
     assert mock_srun.call_args.kwargs["env_to_unset"] == ["VLLM_PORT"]
+
+
+@pytest.mark.parametrize("worker", [0, 1])
+@pytest.mark.parametrize("visibility_env", ["CUDA_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"])
+def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int, visibility_env: str) -> None:
+    import os
+
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
+    mixin.runtime.gpus_per_node = 4
+    mixin.runtime.visible_devices_env = visibility_env
+    mixin.backend.type = "trtllm"
+    mixin.runtime.srun_options = {"cpu-bind": "none", "kill-on-bad-exit": "1"}
+    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+    mixin.backend.build_worker_command.return_value = [
+        "bash",
+        "-c",
+        f'printf "%s|%s|%s" "${visibility_env}" "$MASTER_ADDR" "$MASTER_PORT"',
+    ]
+    endpoints = TRTLLMProtocol().allocate_endpoints(
+        num_prefill=2,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=6,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=("node0", "node1", "node2"),
+    )
+    processes = TRTLLMProtocol().endpoints_to_processes([endpoints[worker]])
+    with (
+        patch.dict("os.environ", {"SLURM_NTASKS_PER_NODE": "4"}),
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
+        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.1") as mock_ip,
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mixin.start_endpoint_worker(processes)
+    mock_ip.assert_any_call(processes[0].node, mixin.runtime.network_interface)
+    command = mock_popen.call_args.args[0]
+    assert command[command.index("--ntasks") + 1] == "6"
+    assert "--nodes" not in command
+    assert "--distribution=arbitrary" in command
+    assert "--cpu-bind=none" in command
+    assert "--kill-on-bad-exit=1" in command
+    expected_hosts = [p.node for p in processes for _ in p.gpu_indices]
+    assert command[command.index("--nodelist") + 1] == ",".join(expected_hosts)
+    assert "--ntasks-per-node=4" in command
+    for process in processes:
+        result = subprocess.run(
+            ["bash", "-c", command[-1]],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "SLURMD_NODENAME": process.node,
+                "MASTER_ADDR": "wrong-sorted-first-node",
+                "MASTER_PORT": "64739",
+            },
+        )
+        assert result.stdout == f"{process.cuda_visible_devices}|10.0.0.1|29500"
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: Path, override: bool) -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
+    mixin.backend.type = "trtllm"
+    if override:
+        mixin.runtime.environment = {"MASTER_ADDR": "custom-host", "MASTER_PORT": "12345"}
+    endpoints = TRTLLMProtocol().allocate_endpoints(
+        num_prefill=2,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=2,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=("node0",),
+    )
+    processes = TRTLLMProtocol().endpoints_to_processes(endpoints)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
+        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.1"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        for process in processes:
+            mixin.start_endpoint_worker([process])
+    envs = [call.kwargs["env_to_set"] for call in mock_srun.call_args_list]
+    assert [env["MASTER_ADDR"] for env in envs] == ["custom-host" if override else "10.0.0.1"] * 2
+    assert [env["MASTER_PORT"] for env in envs] == (["12345"] * 2 if override else ["29500", "29501"])
+
+
+@pytest.mark.parametrize("gpu_count, nodes, per_node", [(32, 8, 4), (2, 1, 2)])
+def test_endpoint_launch_uniform_nodes(tmp_path: Path, gpu_count: int, nodes: int, per_node: int) -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.core.topology import endpoints_to_processes
+
+    mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
+    mixin.runtime.gpus_per_node = 4
+    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+    endpoints = TRTLLMProtocol().allocate_endpoints(
+        num_prefill=1,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=gpu_count,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=tuple(f"node{i}" for i in range(nodes)),
+    )
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
+        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.1"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mixin.start_endpoint_worker(endpoints_to_processes(endpoints))
+    kwargs = mock_srun.call_args.kwargs
+    assert kwargs["ntasks"] == gpu_count
+    assert kwargs["nodes"] == nodes
+    # TRT-LLM endpoint steps end when any task exits non-zero (see SrunConfig.kill_on_bad_exit).
+    assert kwargs["srun_options"] == {"ntasks-per-node": str(per_node), "kill-on-bad-exit": "1"}
+
+
+def test_endpoint_rejects_incompatible_local_rank_mapping(tmp_path: Path) -> None:
+    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.core.topology import endpoints_to_processes
+
+    mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
+    mixin.backend.type = "trtllm"
+    endpoints = TRTLLMProtocol().allocate_endpoints(
+        num_prefill=1,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=7,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=("node0", "node1"),
+    )
+    with (
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+        pytest.raises(ValueError, match="local-rank mapping"),
+    ):
+        mixin.start_endpoint_worker(endpoints_to_processes(endpoints))
+    mock_srun.assert_not_called()
+
+
+def test_trtllm_endpoint_step_kills_on_bad_exit_without_sidecar(tmp_path: Path) -> None:
+    """--kill-on-bad-exit=1 is on for every TRT-LLM endpoint step, not only behind the sidecar.
+
+    One launcher task exiting non-zero then ends the whole step, so srun exits and the
+    registry sees the failure, instead of leaving the follower ranks blocked forever.
+    """
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "trtllm"
+    mixin.config.dynamo.sidecar = False
+    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_endpoint_worker([process])
+
+    assert mock_srun.call_args.kwargs["srun_options"]["kill-on-bad-exit"] == "1"
+
+
+def test_sglang_worker_step_is_not_killed_on_bad_exit(tmp_path: Path) -> None:
+    from srtctl.backends.sglang import SGLangProtocol
+
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.backend.get_srun_config.return_value = SGLangProtocol().get_srun_config()
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_endpoint_worker([process])
+
+    assert "kill-on-bad-exit" not in mock_srun.call_args.kwargs["srun_options"]
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+@pytest.mark.parametrize("role_engine", [False, True])
+def test_worker_steps_watch_the_backend_and_recipe_fatal_log_patterns(
+    tmp_path: Path, launch_method: str, role_engine: bool
+) -> None:
+    from srtctl.core.schema import HealthCheckConfig
+
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    backend = mixin.config.backend_for_role("prefill")
+    backend.fatal_log_patterns.return_value = (r"^Rank\d+ Task exit code: (?!0$)\d+$",)
+    if role_engine:
+        mixin.config.backend = None
+    mixin.config.health_check = HealthCheckConfig(extra_fatal_log_patterns=["CUDA error: out of memory"])
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    ):
+        if launch_method == "start_worker":
+            managed = mixin.start_worker(process, [process])
+        else:
+            managed = mixin.start_endpoint_worker([process])
+
+    backend.fatal_log_patterns.assert_called_with("prefill")
+    assert managed.fatal_log_patterns == (r"^Rank\d+ Task exit code: (?!0$)\d+$", "CUDA error: out of memory")
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_health_check_kill_switch_disables_the_worker_log_watch(tmp_path: Path, launch_method: str) -> None:
+    from srtctl.core.schema import HealthCheckConfig
+
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.backend.fatal_log_patterns.return_value = (r"^Rank\d+ Task exit code: (?!0$)\d+$",)
+    mixin.config.health_check = HealthCheckConfig(fatal_log_markers=False, extra_fatal_log_patterns=["never used"])
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    ):
+        if launch_method == "start_worker":
+            managed = mixin.start_worker(process, [process])
+        else:
+            managed = mixin.start_endpoint_worker([process])
+
+    assert managed.fatal_log_patterns == ()

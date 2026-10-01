@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from srtctl.backends import MockerProtocol, MockerServerConfig
-from srtctl.core.schema import SrtConfig
+from srtctl.backends import MockerProtocol
+from srtctl.core.schema import SrtConfig, RoleConfig
 
 # ============================================================================
 # Helpers
@@ -53,12 +53,14 @@ class TestMockerConfigLoading:
     """Tests for mocker backend YAML deserialization."""
 
     def test_minimal_mocker_config(self):
-        """Minimal mocker recipe loads correctly."""
+        """Minimal mocker configuration loads correctly."""
         data = {
+            "schema": 2,
             "name": "test-mocker",
             "model": {"path": "hf:Qwen/Qwen3-0.6B", "container": "test", "precision": "fp16"},
-            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {"type": "mocker"},
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "engine": "mocker",
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)
@@ -91,10 +93,11 @@ class TestMockerConfigLoading:
     def test_mocker_with_custom_fields(self):
         """Custom fields deserialize correctly."""
         data = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "test", "container": "test", "precision": "fp16"},
-            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "engine": {
                 "type": "mocker",
                 "engine_type": "sglang",
                 "speedup_ratio": 50.0,
@@ -103,6 +106,7 @@ class TestMockerConfigLoading:
                 "kv_cache_dtype": "fp8_e4m3",
                 "enable_prefix_caching": False,
             },
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)
@@ -121,15 +125,15 @@ class TestMockerConfigLoading:
     def test_mocker_with_per_mode_config(self):
         """Per-mode mocker_config deserializes correctly."""
         data = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "test", "container": "test", "precision": "fp16"},
-            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {
-                "type": "mocker",
-                "mocker_config": {
-                    "prefill": {"max-num-seqs": 512},
-                    "decode": {"max-num-seqs": 128},
-                },
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "engine": "mocker",
+            "roles": {
+                "prefill": {"args": {"max-num-seqs": 512}},
+                "decode": {"args": {"max-num-seqs": 128}},
+                "agg": {"nodes": 1, "workers": 1},
             },
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -146,21 +150,20 @@ class TestMockerConfigLoading:
     def test_mocker_with_environment(self):
         """Per-mode environment vars deserialize correctly."""
         backend = MockerProtocol(
-            prefill_environment={"FOO": "bar"},
-            decode_environment={"BAZ": "qux"},
+            roles={"prefill": RoleConfig(env={"FOO": "bar"}), "decode": RoleConfig(env={"BAZ": "qux"})}
         )
         assert backend.get_environment_for_mode("prefill") == {"FOO": "bar"}
         assert backend.get_environment_for_mode("decode") == {"BAZ": "qux"}
         assert backend.get_environment_for_mode("agg") == {}
 
-    def test_smoke_test_recipes_load(self):
-        """Mocker recipes in recipes/mocker/ load successfully."""
-        recipe_dir = Path("recipes/mocker")
-        if not recipe_dir.exists():
-            pytest.skip("recipes/mocker/ not found")
+    def test_smoke_test_example_loads(self):
+        """The curated mocker example loads successfully."""
+        example_dir = Path("examples/mocker")
+        if not example_dir.exists():
+            pytest.fail("examples/mocker/ not found")
 
-        for recipe in recipe_dir.glob("*.yaml"):
-            config = SrtConfig.from_yaml(recipe)
+        for example in example_dir.glob("*.yaml"):
+            config = SrtConfig.from_yaml(example)
             assert config.backend_type == "mocker"
             assert isinstance(config.backend, MockerProtocol)
 
@@ -236,6 +239,25 @@ class TestMockerCommandConstruction:
         idx = cmd.index("--model-path")
         assert cmd[idx + 1] == "/model"
 
+    def test_model_name_matches_the_client_default(self):
+        """--model-name is the model path basename, the name sa-bench requests.
+
+        Without it the mocker registers the /model mount as "model" and the
+        benchmark 404s.
+        """
+        backend = MockerProtocol()
+        process = _make_process()
+
+        local_cmd = backend.build_worker_command(
+            process=process, endpoint_processes=[process], runtime=_make_runtime(is_hf=False)
+        )
+        assert local_cmd[local_cmd.index("--model-name") + 1] == "my-model"
+
+        hf_cmd = backend.build_worker_command(
+            process=process, endpoint_processes=[process], runtime=_make_runtime(is_hf=True)
+        )
+        assert hf_cmd[hf_cmd.index("--model-name") + 1] == "Qwen3-0.6B"
+
     def test_core_params_always_present(self):
         """Core simulation params are always emitted."""
         backend = MockerProtocol()
@@ -308,9 +330,7 @@ class TestMockerCommandConstruction:
     def test_per_mode_config_appended(self):
         """Per-mode mocker_config overrides are appended as CLI args."""
         backend = MockerProtocol(
-            mocker_config=MockerServerConfig(
-                prefill={"max-num-seqs": 512, "enable-prefix-caching": True},
-            ),
+            roles={"prefill": RoleConfig(args={"max-num-seqs": 512, "enable-prefix-caching": True})}
         )
         process = _make_process(mode="prefill", bootstrap_port=31000)
         runtime = _make_runtime(is_hf=False)

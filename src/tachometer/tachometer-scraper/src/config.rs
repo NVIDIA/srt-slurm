@@ -17,7 +17,7 @@ pub struct EndpointConfig {
     pub name: String,
     pub url: String,
     #[serde(default)]
-    pub frequency: Option<f64>,
+    pub collect_interval_ms: Option<u64>,
     #[serde(default)]
     pub filter: Option<String>,
     #[serde(default)]

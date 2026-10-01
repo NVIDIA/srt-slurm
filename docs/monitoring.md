@@ -107,7 +107,7 @@ The directory name follows the pattern: `{job_id}_{prefill}P_{decode}D_{timestam
 logs/4459_4P_1D_20251122_041341/
 │
 ├── config.yaml                              # Resolved job configuration
-├── sglang_config.yaml                       # SGLang worker configuration
+├── {node}_config.json                       # Engine args dumped by each worker leader
 ├── sbatch_script.sh                         # Generated SLURM script
 ├── nginx.conf                               # Load balancer configuration
 ├── 4459.json                                # Job metadata
@@ -157,6 +157,25 @@ Frontend available at: http://watchtower-aqua-cn01:8000
 
 ### benchmark.out
 
+To also show this output live in the Slurm job's stdout, enable:
+
+```yaml
+benchmark:
+  type: custom
+  command: bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh
+  stream_output: true
+```
+
+This defaults to `false`, retains `benchmark.out`, and also works with built-in
+benchmark types. Alternatively, pass `--set benchmark.stream_output=true` to
+`srtctl apply`. A CI launcher following the Slurm job log will see the forwarded
+output. The submit command itself does not attach to the running job. Output is
+forwarded as the client flushes it; use `PYTHONUNBUFFERED=1` for Python clients
+that buffer progress messages.
+
+The stream is bracketed by `Starting benchmark output streaming to stdout` and
+`End of streamed benchmark logs`; the end marker follows the final log drain.
+
 Shows benchmark progress and results:
 
 ```
@@ -180,6 +199,8 @@ Median TPOT (ms):                        15.48
 P99 TPOT (ms):                           22.36
 ==================================================
 ```
+
+Check `Total generated tokens` (and `Successful requests`) before trusting any throughput number: the client reports a successful benchmark even when every response was empty, which happens when KV transfer is broken in a disaggregated run. In that case the decode worker log also carries `Decode transfer failed` lines. Weight loading and CUDA graph capture show up as repeated `Model is not ready` lines before `Model is ready`; for large models that phase takes minutes.
 
 ### Worker Logs ({node}\_prefill_w0.err, {node}\_decode_w0.err)
 

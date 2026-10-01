@@ -9,22 +9,44 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from srtctl.core.ip_utils import url_host
 from srtctl.core.slurm import get_hostname_ip
-from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from srtctl.cli.mixins.frontend_stage import FrontendTopology
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.schema import TachometerConfig, TelemetryExporterConfig
+    from srtctl.core.schema import TachometerConfig
     from srtctl.core.topology import Process
 
 
 # Tachometer owns its final storage directory and rejects a pre-existing leaf
 # (see tachometer-scraper `parse_storage`). srtctl must therefore create only the
-# parent and hand the scraper a not-yet-existing leaf. This mirrors what the
-# direct-host path already does in templates/local_lifecycle.sh.j2.
+# parent and hand the scraper a not-yet-existing leaf.
 TACHOMETER_STORAGE_PARENT = "raw"
 TACHOMETER_STORAGE_LEAF = "scrape"
+
+
+@dataclass(frozen=True)
+class ServiceMetricsTarget:
+    """One node of a ``services[]`` entry that serves Prometheus metrics.
+
+    ``endpoint`` is the scraper endpoint name prefix (the service name unless the
+    kind sets one); ``gpu_metadata`` asks for the per-GPU worker labels DCGM rows
+    need. Built by ``TelemetryStageMixin._service_metrics_targets``.
+    """
+
+    service: str
+    node: str
+    url: str
+    filter: str = "passthrough"
+    endpoint: str | None = None
+    gpu_metadata: bool = False
+
+    @property
+    def endpoint_name(self) -> str:
+        return f"{self.endpoint or self.service}_{self.node}"
 
 
 @dataclass(frozen=True)
@@ -33,7 +55,7 @@ class TelemetryEndpoint:
 
     name: str
     url: str
-    frequency: float
+    collect_interval_ms: int
     filter: str | None = None
     node_metadata: dict[str, str] = field(default_factory=dict)
     gpu_metadata: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -45,82 +67,69 @@ def generate_tachometer_config(
     frontend_topology: FrontendTopology,
     runtime: RuntimeContext,
     tachometer: TachometerConfig,
-    dcgm_exporter: TelemetryExporterConfig | None = None,
     frontend_type: str = "dynamo",
-    exclude_urls: frozenset[str] | set[str] = frozenset(),
+    frontend_metrics_port: int | None = None,
+    service_targets: Sequence[ServiceMetricsTarget] = (),
 ) -> str:
-    """Generate Tachometer TOML from backend and frontend topology.
+    """Generate Tachometer TOML from the worker and frontend topology plus the services' metrics.
 
-    ``exclude_urls`` is the set of ``/metrics`` URLs the benchmark client
-    already polls (``AIPERF_SERVER_METRICS_URLS``). Tachometer scrapes the
-    complement so a worker endpoint is never double-polled — the extra scrape
-    load has previously made a submission irreproducible. Frontend, DCGM and
-    node-exporter endpoints are never excluded: the frontend scrape is cheap
-    and Tachometer is the only whole-window, per-replica capture of it.
+    Workers and the frontend are described by ``processes`` and
+    ``frontend_topology``; everything else that serves metrics is a
+    ``services[]`` entry with a ``metrics`` annotation (its own or its kind's),
+    resolved to one ``ServiceMetricsTarget`` per node by the telemetry stage.
+    The DCGM, node and process exporters arrive that way too, so a job with no
+    workers (``frontend.type: none``) is scraped wherever its services run.
+
+    Every endpoint is scraped even when the benchmark client polls the same
+    URL (``AIPERF_SERVER_METRICS_URLS``): double-polling has been validated
+    as harmless, and unconditional coverage keeps Tachometer the one
+    whole-window, per-replica capture regardless of what the client does.
+
+    ``frontend_type: trtllm_serve`` targets a different surface than Dynamo:
+    workers bind only their OpenAI ``http_port`` (leaders; the DYN_SYSTEM_PORT
+    sys-ports are never created in this mode) and both the workers and the
+    disaggregated orchestrator serve Prometheus at ``/prometheus/metrics`` —
+    the worker's ``/metrics`` route is JSON iteration stats and the
+    orchestrator registers no ``/metrics`` route at all. Endpoint names keep
+    the Dynamo pattern (``backend_{mode}{index}_rank{rank}``, ``frontend{i}``)
+    so downstream grouping is identical across the two frontends. Aggregate
+    trtllm-serve is out of scope (disagg-only coverage).
+
+    ``frontend_type: sglang`` (the Model Gateway over native ``sglang.launch_server``
+    workers) has no Dynamo system ports either: worker leaders serve ``/metrics``
+    on their OpenAI ``http_port`` (srtctl passes ``--enable-metrics``; followers
+    of a multi-node worker serve nothing), and the gateway serves Prometheus on
+    its own listener (``frontend_metrics_port``, ``--prometheus-port``), not on
+    the routing port.
     """
-    dcgm_exporter = dcgm_exporter or tachometer.dcgm_exporter
-    node_exporter = tachometer.node_exporter
+    from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+    # The frontend says which rank serves metrics on which port and at what path;
+    # a services-only job has no frontend and no worker processes.
+    frontend = None if frontend_type == FRONTEND_NONE else get_frontend(frontend_type)
+    metrics_path = frontend.metrics_path if frontend is not None else "/metrics"
     endpoints: list[TelemetryEndpoint] = []
-    physical_nodes: dict[str, list[Process]] = {}
+    # Per-GPU worker labels, attached to DCGM targets so GPU rows carry the rank that owns the GPU.
+    gpu_metadata_by_node: dict[str, dict[str, dict[str, str]]] = {}
     for process in processes:
-        physical_nodes.setdefault(process.node, []).append(process)
-
-    for node in sorted(physical_nodes):
-        node_processes = physical_nodes[node]
-        node_metadata = {"hostname": node, "job_id": runtime.job_id, "run_name": runtime.run_name}
-        node_metadata.update(tachometer.extra_metadata)
-
-        gpu_metadata: dict[str, dict[str, str]] = {}
-        for process in node_processes:
-            for gpu_idx in sorted(process.gpu_indices):
-                gpu_metadata[str(gpu_idx)] = {
-                    "worker_index": str(process.endpoint_index),
-                    "worker_process": str(process.node_rank),
-                    "worker_role": process.endpoint_mode,
-                }
-
-        if dcgm_exporter is not None:
-            endpoints.append(
-                TelemetryEndpoint(
-                    name=f"dcgm_{node}",
-                    url=f"http://{node}:{dcgm_exporter.port}/metrics",
-                    frequency=tachometer.default_frequency,
-                    filter="dcgm",
-                    node_metadata=node_metadata,
-                    gpu_metadata=gpu_metadata,
-                )
-            )
-        if node_exporter is not None:
-            endpoints.append(
-                TelemetryEndpoint(
-                    name=f"node_exporter_{node}",
-                    url=f"http://{node}:{node_exporter.port}/metrics",
-                    frequency=tachometer.default_frequency,
-                    filter="node_exporter",
-                    node_metadata=node_metadata,
-                )
-            )
+        for gpu_idx in sorted(process.gpu_indices):
+            gpu_metadata_by_node.setdefault(process.node, {})[str(gpu_idx)] = {
+                "worker_index": str(process.endpoint_index),
+                "worker_process": str(process.node_rank),
+                "worker_role": process.endpoint_mode,
+            }
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
-        # Every rank is a target (vLLM agg followers excepted below): follower
-        # metadata columns keep rows distinguishable, and rank coverage is
-        # exactly what the physical-process client list provides for vLLM DP.
-        if frontend_type == "vllm" and process.endpoint_mode == "agg" and not process.is_leader:
-            continue
-        if frontend_type == "vllm-router" and process.http_port <= 0:
+        # Every rank that serves metrics is a target: follower metadata columns
+        # keep rows distinguishable, and rank coverage is exactly what the
+        # physical-process client list provides for vLLM DP. Which ranks serve
+        # (Dynamo: every rank on its system port; native servers: the leader or
+        # each routable pool on its HTTP port) is the frontend's call.
+        port = frontend.worker_metrics_port(process, runtime) if frontend is not None else None
+        if port is None:
             continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        if frontend_type == "vllm" and process.endpoint_mode == "agg":
-            port = FRONTEND_PUBLIC_PORT
-        elif frontend_type == "vllm-router":
-            port = process.http_port
-        else:
-            port = process.sys_port
-        url = f"http://{node_ip}:{port}/metrics"
-        if url in exclude_urls:
-            # The benchmark client already polls this endpoint on its own
-            # cadence; scrape the complement instead of double-polling.
-            continue
+        url = f"http://{url_host(node_ip)}:{port}{metrics_path}"
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),
@@ -132,24 +141,19 @@ def generate_tachometer_config(
             TelemetryEndpoint(
                 name=f"backend_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
                 url=url,
-                frequency=tachometer.default_frequency,
+                collect_interval_ms=tachometer.collect_interval_ms,
                 filter="backend",
                 node_metadata=node_metadata,
             )
         )
 
-    frontend_nodes = frontend_topology.frontend_nodes
-    if frontend_type == "vllm":
-        # Direct vLLM has no separate frontend process. Its public endpoint is
-        # the aggregate leader, which may differ from the Slurm/orchestrator
-        # head recorded in FrontendTopology.
-        agg_leader_nodes = [
-            process.node
-            for process in sorted(processes, key=lambda p: (p.endpoint_index, p.node_rank, p.node))
-            if process.endpoint_mode == "agg" and process.is_leader
-        ]
-        if agg_leader_nodes:
-            frontend_nodes = list(dict.fromkeys(agg_leader_nodes))
+    # A services-only job has no frontend process, so nothing listens on the
+    # frontend port. A frontend whose worker is itself the endpoint (direct vLLM
+    # or SGLang) has no separate process either: the endpoint is the aggregate
+    # leader's node, which may differ from the orchestrator head in FrontendTopology.
+    frontend_nodes: list[str] = []
+    if frontend is not None:
+        frontend_nodes = frontend.direct_endpoint_nodes(processes) or list(frontend_topology.frontend_nodes)
 
     for frontend_index, node in enumerate(frontend_nodes):
         node_ip = get_hostname_ip(node, runtime.network_interface)
@@ -161,10 +165,29 @@ def generate_tachometer_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
-                url=f"http://{node_ip}:{frontend_topology.frontend_port}/metrics",
-                frequency=tachometer.default_frequency,
+                url=f"http://{url_host(node_ip)}:{frontend_metrics_port or frontend_topology.frontend_port}{metrics_path}",
+                collect_interval_ms=tachometer.collect_interval_ms,
                 filter="frontend",
                 node_metadata=node_metadata,
+            )
+        )
+
+    for target in service_targets:
+        node_metadata = {
+            "hostname": target.node,
+            "job_id": runtime.job_id,
+            "run_name": runtime.run_name,
+            "service": target.service,
+        }
+        node_metadata.update(tachometer.extra_metadata)
+        endpoints.append(
+            TelemetryEndpoint(
+                name=target.endpoint_name,
+                url=target.url,
+                collect_interval_ms=tachometer.collect_interval_ms,
+                filter=target.filter,
+                node_metadata=node_metadata,
+                gpu_metadata=gpu_metadata_by_node.get(target.node, {}) if target.gpu_metadata else {},
             )
         )
 
@@ -181,7 +204,7 @@ def _dump_toml(*, endpoints: list[TelemetryEndpoint], storage: str) -> str:
         lines.append("[[endpoints]]")
         lines.append(f"name = {json.dumps(endpoint.name)}")
         lines.append(f"url = {json.dumps(endpoint.url)}")
-        lines.append(f"frequency = {endpoint.frequency}")
+        lines.append(f"collect_interval_ms = {endpoint.collect_interval_ms}")
         if endpoint.filter is not None:
             lines.append(f"filter = {json.dumps(endpoint.filter)}")
         if endpoint.node_metadata:
