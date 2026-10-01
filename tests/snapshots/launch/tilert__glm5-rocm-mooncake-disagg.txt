@@ -1,6 +1,6 @@
 # examples/tilert/glm5-rocm-mooncake-disagg.yaml
 # exit_code: 0
-# srun calls: 12
+# srun calls: 9
 
 ## prefill_0_node-01
 nodelist: node-01
@@ -67,66 +67,6 @@ env_to_set:
 command: |
     python -m tilert.pd_vllm.pd_router --vllm-url http://127.0.0.1:6100 --decode 127.0.0.1:5401:6100 --host 0.0.0.0 --port 8000 --parser none --model-path /model --queue-timeout 1800
 
-## service_dcgm-exporter_node-01
-nodelist: node-01
-output: <output>/logs/service_dcgm-exporter_node-01.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
-## service_dcgm-exporter_node-02
-nodelist: node-02
-output: <output>/logs/service_dcgm-exporter_node-02.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
-## service_dcgm-exporter_node-03
-nodelist: node-03
-output: <output>/logs/service_dcgm-exporter_node-03.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
-## service_dcgm-exporter_node-04
-nodelist: node-04
-output: <output>/logs/service_dcgm-exporter_node-04.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
 ## service_node-exporter_node-01
 nodelist: node-01
 output: <output>/logs/service_node-exporter_node-01.out
@@ -186,6 +126,21 @@ srun_export_env:
 use_bash_wrapper: False
 command: |
     /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## <unnamed>
+nodes: 4
+ntasks: 4
+nodelist: node-01 node-02 node-03 node-04
+output: <output>/logs/telemetry_dcgm_exporter.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
 
 ## tachometer
 nodelist: node-01

@@ -506,7 +506,10 @@ class TestDryRunExecutionExtensions:
         assert "dcgm_exporter" in output
         assert "node_exporter" in output
         assert "process_exporter" in output
-        assert ":9401" in output
+        # With telemetry.enabled unset the power session owns the DCGM exporter, so the
+        # Tachometer row points at it and the telemetry row carries the port.
+        assert "shared with power telemetry" in output
+        assert "port 9401" in output
         assert ":9101" in output
         assert ":9256" in output
         # The process exporter is host-native by default; dry-run must say so

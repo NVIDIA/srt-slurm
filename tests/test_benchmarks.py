@@ -298,6 +298,7 @@ class TestCustomBenchmarkRunner:
             profiling=SimpleNamespace(enabled=False),
             topology=SimpleNamespace(num_agg=sum(p.endpoint_mode == "agg" and p.is_leader for p in processes)),
             telemetry=SimpleNamespace(enabled=False),
+            telemetry_enabled=False,
         )
         stage.runtime = SimpleNamespace(
             environment=environment or {},

@@ -1,6 +1,6 @@
 # examples/miles/qwen3-4b-grpo.yaml
 # exit_code: 0
-# srun calls: 8
+# srun calls: 7
 
 ## service_train_node-01
 nodelist: node-01
@@ -46,42 +46,6 @@ bash_preamble: |
 command: |
     bash -c 'for i in $(seq 1 60); do (exec 3<>/dev/tcp/127.0.0.1/6379) 2>/dev/null && break; echo "ray worker: waiting for head 127.0.0.1:6379 ($i/60)"; sleep 5; done; exec ray start --address=127.0.0.1:6379 --node-ip-address=127.0.0.1 --num-gpus=8 --disable-usage-stats --block'
 
-## service_dcgm-exporter_node-01
-nodelist: node-01
-output: <output>/logs/service_dcgm-exporter_node-01.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    /data/home/idhanani/datasets: /data/home/idhanani/datasets
-    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
-    /data/home/idhanani/models: /data/home/idhanani/models
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
-## service_dcgm-exporter_node-02
-nodelist: node-02
-output: <output>/logs/service_dcgm-exporter_node-02.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    /data/home/idhanani/datasets: /data/home/idhanani/datasets
-    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
-    /data/home/idhanani/models: /data/home/idhanani/models
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
 ## service_node-exporter_node-01
 nodelist: node-01
 output: <output>/logs/service_node-exporter_node-01.out
@@ -118,6 +82,24 @@ use_bash_wrapper: False
 command: |
     /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
 
+## <unnamed>
+nodes: 2
+ntasks: 2
+nodelist: node-01 node-02
+output: <output>/logs/telemetry_dcgm_exporter.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    /data/home/idhanani/datasets: /data/home/idhanani/datasets
+    /data/home/idhanani/miles-runs: /data/home/idhanani/miles-runs
+    /data/home/idhanani/models: /data/home/idhanani/models
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
 ## tachometer
 nodelist: node-01
 output: <output>/logs/tachometer.out
@@ -152,9 +134,7 @@ env_to_set:
     NCCL_SOCKET_IFNAME: bond0
     SRTCTL_FRONTEND_TYPE: none
     SRT_GPUS_PER_NODE: 8
-    SRT_SERVICE_DCGM_EXPORTER_IPS: 127.0.0.1,127.0.0.1
-    SRT_SERVICE_DCGM_EXPORTER_NODES: node-01,node-02
-    SRT_SERVICE_DCGM_EXPORTER_NODE_COUNT: 2
+    SRT_MEASUREMENT_WINDOW_DIR: /logs/power/windows
     SRT_SERVICE_NODE_EXPORTER_IPS: 127.0.0.1,127.0.0.1
     SRT_SERVICE_NODE_EXPORTER_NODES: node-01,node-02
     SRT_SERVICE_NODE_EXPORTER_NODE_COUNT: 2

@@ -261,7 +261,7 @@ DCGM power telemetry for benchmark measurement windows.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `False` |  |
+| `enabled` | bool \| None | `None` |  |
 | `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 | `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles. Replaces the retired ``default_frequency``, which despite its name was a period in seconds (1000ms == the old 1.0 default). |
 | `storage_subdir` | str | `'power'` |  |

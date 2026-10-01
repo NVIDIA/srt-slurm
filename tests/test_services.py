@@ -757,7 +757,9 @@ HOST_BINARY = "srtctl.services.exporters.resolve_host_binary"
 
 
 def test_tachometer_exporters_are_implied_on_every_worker_node(tmp_path: Path, caplog) -> None:
-    config = _load("frontend:\n  type: sglang-router\n", head=TACHOMETER_HEAD)
+    # Power telemetry is opted out so the implied DCGM exporter exists; default-on power ownership
+    # is covered by test_power_telemetry_owns_the_dcgm_exporter.
+    config = _load("frontend:\n  type: sglang-router\ntelemetry:\n  enabled: false\n", head=TACHOMETER_HEAD)
     assert _names(config) == [("dcgm-exporter", True), ("node-exporter", True), ("process-exporter", True)]
     orchestrator = _orchestrator(config, tmp_path)
     with (

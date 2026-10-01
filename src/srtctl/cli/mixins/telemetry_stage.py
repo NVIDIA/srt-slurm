@@ -19,6 +19,7 @@ from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
 from srtctl.core.power.manifest import ExpectedWindow
+from srtctl.core.power.ownership import power_owns_dcgm_exporter
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
@@ -168,6 +169,49 @@ class TelemetryStageMixin:
             managed.append(process)
         return managed
 
+    def _power_exporter_interval_ms(self) -> int | None:
+        """NVML sampling period for the default-on power exporter; None keeps the provider template.
+
+        An explicit ``telemetry.enabled: true`` keeps the dense 100 ms sampling
+        the provider was written for. Default-on must cost nothing the run did
+        not already pay: 100 ms sampling measured about 2% decode ITL p50 on
+        GB300, so it samples at the tighter of ``telemetry.collect_interval_ms``
+        and Tachometer's ``collect_interval_ms`` (both 1 s by default), i.e. no
+        faster than the implied exporter it replaces and no slower than
+        Tachometer scrapes.
+        """
+        if not self.config.telemetry_auto_resolved:
+            return None
+        interval_ms = self.config.telemetry.collect_interval_ms
+        observability = self.config.observability
+        if observability.tachometer_enabled:
+            interval_ms = min(interval_ms, observability.tachometer.collect_interval_ms)
+        return interval_ms
+
+    def _power_exporter_command_template(self) -> str:
+        """Exporter command for the power session (see ``_power_exporter_interval_ms``)."""
+        interval_ms = self._power_exporter_interval_ms()
+        if interval_ms is None:
+            return DCGM_EXPORTER_COMMAND_TEMPLATE
+        return f"dcgm-exporter --collect-interval={interval_ms} --address :{{port}}"
+
+    def _expected_power_windows(self) -> list[ExpectedWindow]:
+        """One expected measurement window per concurrency level.
+
+        Default-on samples runs whose benchmark never stamps a window (or has no
+        concurrency list at all); those simply expect none and the samples span
+        the whole run. A malformed concurrency spec is the benchmark's problem
+        to report, not a reason to lose the power samples.
+        """
+        try:
+            concurrencies = self.config.benchmark.get_concurrency_list()
+        except (TypeError, ValueError):
+            concurrencies = []
+        return [
+            ExpectedWindow(benchmark_type=self.config.benchmark.type, concurrency=concurrency)
+            for concurrency in concurrencies
+        ]
+
     def start_power_telemetry(self, registry: ProcessRegistry) -> PowerTelemetrySession | None:
         """Start DCGM power telemetry when it is enabled.
 
@@ -176,16 +220,15 @@ class TelemetryStageMixin:
         decide the exit code after the benchmark stage.
         """
         telemetry = self.config.telemetry
-        if not telemetry.enabled:
+        if not power_owns_dcgm_exporter(self.config):
             return None
-
-        exporter_config = telemetry.dcgm_exporter
-        if exporter_config is None:
-            return None
+        exporter_config = self.config.telemetry_dcgm_exporter
+        assert exporter_config is not None
 
         worker_nodes = self._telemetry_nodes()
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
-        command = resolve_exporter_command(exporter_config, DCGM_EXPORTER_COMMAND_TEMPLATE)
+        command_template = self._power_exporter_command_template()
+        command = resolve_exporter_command(exporter_config, command_template)
 
         session = PowerTelemetrySession(
             settings=PowerSessionSettings(
@@ -205,10 +248,7 @@ class TelemetryStageMixin:
                 producer_git_commit=read_producer_commit(),
             ),
             expected_devices=build_expected_devices(self.backend_processes),
-            expected_windows=[
-                ExpectedWindow(benchmark_type=self.config.benchmark.type, concurrency=concurrency)
-                for concurrency in self.config.benchmark.get_concurrency_list()
-            ],
+            expected_windows=self._expected_power_windows(),
             nodes=worker_nodes,
         )
         # NOTE: stored before initialize() so a raise mid-startup still leaves a finalizable session.
@@ -227,7 +267,7 @@ class TelemetryStageMixin:
                 name="telemetry_dcgm_exporter",
                 nodelist=worker_nodes,
                 log_file=self.runtime.log_dir / "telemetry_dcgm_exporter.out",
-                default_command_template=DCGM_EXPORTER_COMMAND_TEMPLATE,
+                default_command_template=command_template,
                 use_bash_wrapper=False,  # distroless exporter images have no shell
                 critical=False,  # an exit is telemetry invalidity, not a sweep-critical failure
                 on_started=own,
@@ -251,7 +291,7 @@ class TelemetryStageMixin:
         never affect the benchmark or the job's exit code.
         """
         telemetry = self.config.telemetry
-        if not telemetry.enabled or telemetry.cpu_power_exporter is None:
+        if not self.config.telemetry_enabled or telemetry.cpu_power_exporter is None:
             return None
 
         worker_nodes = self._telemetry_nodes()
@@ -340,7 +380,7 @@ class TelemetryStageMixin:
         """
         telemetry = self.config.telemetry
         cpu_power = telemetry.cpu_power
-        if not telemetry.enabled or cpu_power.enabled is not True:
+        if not self.config.telemetry_enabled or cpu_power.enabled is not True:
             return None
 
         worker_nodes = self._telemetry_nodes()
@@ -591,20 +631,21 @@ class TelemetryStageMixin:
 
     def _power_dcgm_targets(self) -> list[ServiceMetricsTarget]:
         """DCGM targets when power telemetry runs its own exporter (no implied dcgm-exporter service)."""
-        power = self.config.telemetry
-        if not (power.enabled and power.dcgm_exporter is not None):
+        if not power_owns_dcgm_exporter(self.config):
             return []
-        nodes = sorted({process.node for process in self.backend_processes})
+        exporter = self.config.telemetry_dcgm_exporter
+        assert exporter is not None
+        # The same nodes the exporter is launched on: engine workers and GPU service pools.
         return [
             ServiceMetricsTarget(
                 service="dcgm-exporter",
                 node=node,
-                url=f"http://{node}:{power.dcgm_exporter.port}/metrics",
+                url=f"http://{node}:{exporter.port}/metrics",
                 filter="dcgm",
                 endpoint="dcgm",
                 gpu_metadata=True,
             )
-            for node in nodes
+            for node in self._telemetry_nodes()
         ]
 
     def start_tachometer(self) -> list[ManagedProcess]:
@@ -617,7 +658,6 @@ class TelemetryStageMixin:
 
         logger.info("Starting Tachometer")
 
-        power_telemetry = self.config.telemetry
         topology = self._compute_frontend_topology()
         config_path = self.runtime.log_dir / "tachometer_config.toml"
         config_path.write_text(
@@ -644,8 +684,10 @@ class TelemetryStageMixin:
         # by observability.tachometer, launched by ServiceStageMixin in the
         # after_frontend phase, shell-less and non-critical). Only the warning
         # about aggressive sampling stays here, next to the knob it is about.
+        # Also under default-on power ownership, whose exporter follows the tighter of the two knobs.
+        tachometer_drives_dcgm = not power_owns_dcgm_exporter(self.config) or self.config.telemetry_auto_resolved
         if (
-            not power_telemetry.enabled
+            tachometer_drives_dcgm
             and tachometer.resolved_dcgm_exporter is not None
             and tachometer.collect_interval_ms < DCGM_PROVEN_SAFE_INTERVAL_MS
         ):

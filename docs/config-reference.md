@@ -1176,7 +1176,7 @@ Notes:
 - The user-assignments file referenced by the workload YAML must cover the highest concurrency level (`assign_trajectories` fails loudly otherwise).
 - Results land under `<log_dir>/agentperf/` (per-phase `*__traj*.{jsonl,txt,json}`, `requests.jsonl`, `phase_manifest.jsonl`); `rollup.py` normalizes them into `benchmark-rollup.json`.
 - Two runs must not share a results dir concurrently (the client resets `phase_manifest.jsonl` at start).
-- `telemetry:` (DCGM power measurement windows) is not supported with agentperf; the schema rejects non-sa-bench benchmark types at config load. Tachometer (`observability.enabled`) works normally.
+- `telemetry:` (DCGM power) is on by default and records per-GPU watts for the whole run under `<log_dir>/power/`; agentperf does not stamp per-concurrency measurement windows yet, so the artifacts carry `MEASUREMENT_WINDOW` reason codes and an explicit `required: true` would fail. Take the window from the client's `phase_manifest.jsonl` (`settling_end` to `actual_phase_end`). Tachometer works normally.
 
 ### mlperf
 
@@ -1622,6 +1622,8 @@ The scraper runs as a best-effort process: if it dies (or the binary is missing 
 
 `telemetry` is reserved for DCGM power measurement. It can run alongside `observability.tachometer`; it does not start Tachometer itself.
 
+It is on by default, like Tachometer: with `enabled` unset (`null`), every run records per-GPU watts under `<log_dir>/power/`, best-effort (`required` stays `false`, so a collector failure never changes the exit code), whatever the `benchmark.type` or client placement. Benchmarks that stamp a measurement window (`sa-bench`) get per-concurrency windows; the others (`agentperf`, `lm-eval`, `router`, `manual`, serve-only, eval-only) get samples spanning the whole run and `MEASUREMENT_WINDOW` reason codes in the manifest, which is expected. The DCGM exporter is the recipe's `telemetry.dcgm_exporter` or, when absent, the same cluster-resolved default Tachometer launches (an `srtslurm.yaml` `default_gpu_exporter` override applies to both); the only thing that keeps default-on off is having no exporter to launch, and `srtctl apply` prints that. In this default mode the exporter samples at the tighter of `telemetry.collect_interval_ms` and `observability.tachometer.collect_interval_ms` (both 1 s by default), so it runs no faster than the Tachometer-implied exporter it replaces and no slower than Tachometer scrapes, and the run pays nothing extra. Explicit `enabled: true` is the publication mode: it keeps the provider's dense 100 ms sampling (about 2% decode ITL p50 on GB300) and fails validation when the run cannot carry a valid window (unsupported `benchmark.type`, client off the head node, dedicated infra node, no concurrency list); `enabled: false` opts out. `EVAL_ONLY=true` runs sample too unless `required: true`, which skips the session and keeps the implied Tachometer exporter.
+
 When both are enabled, `telemetry.dcgm_exporter` is shared with Tachometer. Do not also configure `observability.tachometer.dcgm_exporter`; Tachometer can still launch an optional node exporter from its own block.
 
 ```yaml
@@ -1640,8 +1642,8 @@ telemetry:
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable DCGM power collection |
-| `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; required when enabled |
+| `enabled` | bool/null | `null` | `null` means ON for every run, best-effort (see above); explicit `false` opts out, explicit `true` is publication mode and fails validation when the run cannot carry a valid window |
+| `dcgm_exporter` | object/null | `null` | DCGM exporter image (or host-native `binary`), port, and optional command; defaults to Tachometer's resolved DCGM exporter, required only with an explicit `enabled: true` |
 | `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles (shared by the DCGM and CPU legs); must be at most `3000` (replaces the retired `default_frequency`, which was seconds despite its name) |
 | `storage_subdir` | string | `power` | Output directory below the run log directory |
 | `required` | bool | `false` | Fail the benchmark when publishable DCGM power artifacts cannot be produced (CPU power is always best-effort; see below) |
@@ -1650,7 +1652,7 @@ telemetry:
 | `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
 | `cpu_power_exporter` | object/null | `null` | Enables the independent CPU power leg; see below |
 
-`telemetry` requires a `benchmark.type` of `sa-bench`, `custom`, `agentic`, `agentx`, or `manual` (a `manual` job has no load window, so like serve-only it captures the whole serve session; use it when an external load generator drives the endpoint), the benchmark client on the head node (`benchmark.placement.node: head`, the default), and no dedicated node for the discovery plane (an `etcd`/`nats` service with `placement.node: dedicated` moves the head off the batch host the collector runs on).
+An explicit `enabled: true` requires a `benchmark.type` of `sa-bench`, `agentperf`, `custom`, `agentic`, `agentx`, or `manual` (`agentperf` does not stamp measurement windows yet, so its samples cover the whole run and the client's `phase_manifest.jsonl` gives the window offline; a `manual` job has no load window, so like serve-only it captures the whole serve session; use it when an external load generator drives the endpoint), the benchmark client on the head node (`benchmark.placement.node: head`, the default), and no dedicated node for the discovery plane (an `etcd`/`nats` service with `placement.node: dedicated` moves the head off the batch host the collector runs on).
 
 ### CPU power
 

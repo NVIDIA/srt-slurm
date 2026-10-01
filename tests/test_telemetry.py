@@ -218,7 +218,9 @@ class TestTachometerConfig:
         samples NVML exactly as often as tachometer scrapes it. It must NOT
         inherit the power template's 100ms — 10 Hz NVML sampling measured
         ~2% ITL p50 overhead on GB300 decode (isolation runs, 2026-09-06);
-        the power path keeps 100ms because dense sampling is its purpose."""
+        the power path keeps 100ms because dense sampling is its purpose.
+        Power telemetry is opted out here so the implied service exists;
+        default-on power ownership is covered by TestTelemetryDefaultOn."""
         from srtctl.cli.mixins.telemetry_stage import DCGM_EXPORTER_COMMAND_TEMPLATE
         from srtctl.services.implicit import find_service
         from srtctl.services.registry import ServiceLaunchContext, get_service_kind
@@ -227,13 +229,18 @@ class TestTachometerConfig:
             service = find_service(config, "dcgm-exporter")
             return get_service_kind(service.type).build_command(service, ServiceLaunchContext.preview())
 
-        assert command(_make_config(tachometer=TachometerConfig(enabled=True))) == [
+        assert command(
+            _make_config(tachometer=TachometerConfig(enabled=True), telemetry=TelemetryConfig(enabled=False))
+        ) == [
             "dcgm-exporter",
             "--collect-interval=1000",
             "--address",
             ":9401",
         ]
-        slow = _make_config(tachometer=TachometerConfig(enabled=True, collect_interval_ms=5000))
+        slow = _make_config(
+            tachometer=TachometerConfig(enabled=True, collect_interval_ms=5000),
+            telemetry=TelemetryConfig(enabled=False),
+        )
         assert "--collect-interval=5000" in command(slow)
 
         # An explicit recipe command must still win over the derived template.
@@ -243,7 +250,8 @@ class TestTachometerConfig:
                 dcgm_exporter=TelemetryExporterConfig(
                     container_image="dcgm:latest", port=9401, command="dcgm-exporter --custom --address :{port}"
                 ),
-            )
+            ),
+            telemetry=TelemetryConfig(enabled=False),
         )
         assert command(custom) == ["dcgm-exporter", "--custom", "--address", ":9401"]
 
@@ -343,6 +351,8 @@ class TestDcgmPowerConfig:
     def test_defaults_are_stable(self):
         defaults = TelemetryConfig()
 
+        assert defaults.enabled is None
+        assert defaults.dcgm_exporter is None
         assert defaults.collect_interval_ms == 1000
         assert defaults.required is False
         assert defaults.startup_timeout_seconds == 30.0
@@ -699,7 +709,13 @@ class TestCpuPowerHostConfig:
 
     def test_cpu_power_requires_telemetry(self):
         with pytest.raises(ValidationError, match="telemetry.cpu_power.enabled requires telemetry.enabled"):
-            _make_config(telemetry=TelemetryConfig(cpu_power=CpuPowerConfig(enabled=True)))
+            _make_config(telemetry=TelemetryConfig(enabled=False, cpu_power=CpuPowerConfig(enabled=True)))
+
+    def test_cpu_power_alone_enables_unset_telemetry(self):
+        config = _make_config(telemetry=TelemetryConfig(cpu_power=CpuPowerConfig(enabled=True)))
+
+        assert config.telemetry_enabled is True
+        assert config.telemetry.cpu_power.enabled is True
 
     def test_required_without_enabled_is_rejected(self):
         with pytest.raises(ValidationError, match="telemetry.cpu_power.required has no effect"):
@@ -2028,3 +2044,254 @@ class TestTelemetryNodes:
                 return []
 
         assert Harness()._telemetry_nodes() == ["pool-a"]
+
+
+class TestTelemetryDefaultOn:
+    """``telemetry.enabled: null`` resolves to on when the run can carry a window."""
+
+    def test_unset_enables_with_tachometer_default_exporter(self):
+        config = _make_config(benchmark=_sa_bench())
+
+        assert config.telemetry.enabled is None  # stays as written: a dump/reload keeps null
+        assert config.telemetry_auto_resolved is True
+        assert config.telemetry_enabled is True
+        assert config.telemetry_dcgm_exporter == config.observability.tachometer.resolved_dcgm_exporter
+        assert config.telemetry_auto_disabled_reason is None
+        assert config.telemetry.required is False
+
+    def test_unset_enables_for_agentperf(self):
+        config = _make_config(benchmark=BenchmarkConfig(type="agentperf", concurrencies=[4]))
+
+        assert config.telemetry_enabled is True
+
+    def test_unset_keeps_recipe_exporter(self):
+        exporter = TelemetryExporterConfig(container_image="/containers/dcgm.sqsh", port=9500)
+        config = _make_config(telemetry=TelemetryConfig(dcgm_exporter=exporter), benchmark=_sa_bench())
+
+        assert config.telemetry_enabled is True
+        assert config.telemetry_dcgm_exporter == exporter
+
+    def test_unset_adopts_explicit_tachometer_exporter_without_conflict(self):
+        exporter = TelemetryExporterConfig(container_image="/containers/dcgm.sqsh", port=9500)
+        config = _make_config(
+            tachometer=TachometerConfig(enabled=True, dcgm_exporter=exporter),
+            benchmark=_sa_bench(),
+        )
+
+        assert config.telemetry_enabled is True
+        assert config.telemetry_dcgm_exporter == exporter
+
+    def test_unset_accepts_a_host_native_cluster_exporter(self):
+        exporter = TelemetryExporterConfig(container_image="", binary="configs/dcgm-exporter", port=9401)
+        config = _make_config(
+            tachometer=TachometerConfig(enabled=False, default_gpu_exporter=exporter),
+            benchmark=_sa_bench(),
+        )
+
+        assert config.telemetry_enabled is True
+        assert config.telemetry_dcgm_exporter == exporter
+
+    @pytest.mark.parametrize(
+        "benchmark",
+        [
+            BenchmarkConfig(type="lm-eval"),
+            BenchmarkConfig(type="router"),
+            BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="last_decode")),
+            BenchmarkConfig(type="sa-bench", concurrencies="4,8"),
+            BenchmarkConfig(type="manual"),
+        ],
+        ids=["lm-eval", "router", "off-head-client", "malformed-concurrencies", "manual-no-concurrencies"],
+    )
+    def test_unset_samples_every_run_regardless_of_window_eligibility(self, benchmark):
+        """Default-on is capture, not publication: runs that cannot stamp a window still get watts."""
+        config = _make_config(benchmark=benchmark)
+
+        assert config.telemetry_enabled is True
+        assert config.telemetry_dcgm_exporter is not None
+        assert config.telemetry_auto_disabled_reason is None
+
+    def test_unset_samples_with_a_dedicated_infra_node(self):
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=_sa_bench(),
+            services=[ServiceConfig(name="etcd", type="etcd", placement=ServicePlacementConfig(node="dedicated"))],
+            observability=ObservabilityConfig(enabled=False, tachometer=TachometerConfig(enabled=False)),
+        )
+
+        assert config.infra_dedicated_node is True
+        assert config.telemetry_enabled is True
+
+    def test_unset_defers_to_a_declared_dcgm_exporter_service(self):
+        """A recipe that launches its own dcgm-exporter service keeps the port; no second exporter."""
+        from srtctl.services.config import ServiceConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=_sa_bench(),
+            observability=ObservabilityConfig(enabled=False, tachometer=TachometerConfig(enabled=False)),
+            services=[ServiceConfig(name="dcgm-exporter", type="dcgm-exporter", container="/mirror/dcgm.sqsh")],
+        )
+
+        assert config.telemetry_enabled is False
+        assert "dcgm-exporter service is declared" in config.telemetry_auto_disabled_reason
+
+    def test_unset_stays_off_without_any_exporter(self):
+        config = _make_config(
+            tachometer=TachometerConfig(enabled=False, default_exporters=False),
+            benchmark=_sa_bench(),
+        )
+
+        assert config.telemetry_enabled is False
+        assert "no DCGM exporter" in config.telemetry_auto_disabled_reason
+
+    def test_unset_keeps_cpu_power_leg_when_gpu_leg_cannot_run(self):
+        config = _make_config(
+            tachometer=TachometerConfig(enabled=False, default_exporters=False),
+            telemetry=TelemetryConfig(cpu_power_exporter=CpuPowerExporterConfig()),
+            benchmark=BenchmarkConfig(type="lm-eval"),
+        )
+
+        assert config.telemetry_enabled is True
+        assert config.telemetry_dcgm_exporter is None
+        assert config.telemetry.cpu_power_exporter is not None
+        assert config.telemetry_auto_disabled_reason is not None
+
+    def test_explicit_false_opts_out(self):
+        config = _make_config(telemetry=TelemetryConfig(enabled=False), benchmark=_sa_bench())
+
+        assert config.telemetry_enabled is False
+        assert config.telemetry_auto_resolved is False
+        assert config.telemetry_dcgm_exporter is None
+        assert config.telemetry_auto_disabled_reason is None
+
+    def test_explicit_true_still_fails_loudly_for_unsupported_benchmark(self):
+        with pytest.raises(ValidationError, match="telemetry requires benchmark.type"):
+            _make_config(telemetry=_dcgm_power(), benchmark=BenchmarkConfig(type="lm-eval"))
+
+    def test_explicit_true_still_requires_an_exporter(self):
+        with pytest.raises(ValidationError, match="telemetry.enabled requires telemetry.dcgm_exporter"):
+            _make_config(telemetry=TelemetryConfig(enabled=True), benchmark=_sa_bench())
+
+    def test_explicit_true_accepts_a_host_native_exporter(self):
+        exporter = TelemetryExporterConfig(container_image="", binary="configs/dcgm-exporter", port=9401)
+        config = _make_config(telemetry=_dcgm_power(dcgm_exporter=exporter), benchmark=_sa_bench())
+
+        assert config.telemetry_dcgm_exporter == exporter
+
+    def test_explicit_true_rejects_an_exporter_with_no_launch_mode(self):
+        exporter = TelemetryExporterConfig(container_image="", port=9401)
+        with pytest.raises(ValidationError, match="container_image .* or binary"):
+            _make_config(telemetry=_dcgm_power(dcgm_exporter=exporter), benchmark=_sa_bench())
+
+    def test_dump_and_reload_keep_the_default(self):
+        """Sweep per-point configs and srtctl migrate round-trip through the schema."""
+        config = _make_config(benchmark=_sa_bench())
+        schema = SrtConfig.Schema()
+
+        dumped = schema.dump(config)
+        assert dumped["telemetry"]["enabled"] is None
+        assert dumped["telemetry"]["dcgm_exporter"] is None
+
+        reloaded = schema.load(dumped)
+        assert reloaded.telemetry_auto_resolved is True
+        assert reloaded.telemetry_enabled is True
+        assert reloaded.telemetry_dcgm_exporter == config.telemetry_dcgm_exporter
+
+    def test_default_on_exporter_samples_at_the_tighter_scrape_knob(self):
+        """Default-on must not add the dense 100 ms NVML sampling (~2% decode ITL p50
+        on GB300); it follows the tighter of telemetry.collect_interval_ms and
+        Tachometer's collect_interval_ms, like the implied exporter it replaces.
+        An explicit enabled: true keeps the provider's 100 ms template."""
+        from srtctl.cli.mixins.telemetry_stage import DCGM_EXPORTER_COMMAND_TEMPLATE
+
+        def template(config):
+            class Harness(TelemetryStageMixin):
+                def __init__(self) -> None:
+                    self.config = config
+
+            return Harness()._power_exporter_command_template()
+
+        auto = _make_config(benchmark=_sa_bench())
+        assert template(auto) == "dcgm-exporter --collect-interval=1000 --address :{port}"
+
+        slow = _make_config(telemetry=TelemetryConfig(collect_interval_ms=2000), benchmark=_sa_bench())
+        assert "--collect-interval=2000" in template(slow)
+
+        tachometer_faster = _make_config(
+            tachometer=TachometerConfig(enabled=True, collect_interval_ms=500), benchmark=_sa_bench()
+        )
+        assert "--collect-interval=500" in template(tachometer_faster)
+
+        explicit = _make_config(telemetry=_dcgm_power(), benchmark=_sa_bench())
+        assert template(explicit) == DCGM_EXPORTER_COMMAND_TEMPLATE
+
+    def test_eval_only_still_samples_unless_telemetry_is_required(self, monkeypatch):
+        """Best-effort default-on samples an evaluation too; only a required measurement
+        steps aside (its windows can never exist), and then Tachometer keeps its own exporter."""
+        from srtctl.core.power.ownership import power_owns_dcgm_exporter
+        from srtctl.services.implicit import find_service
+
+        default_on = _make_config(tachometer=TachometerConfig(enabled=True), benchmark=_sa_bench())
+        required = _make_config(
+            tachometer=TachometerConfig(enabled=True), telemetry=_dcgm_power(required=True), benchmark=_sa_bench()
+        )
+
+        monkeypatch.delenv("EVAL_ONLY", raising=False)
+        assert power_owns_dcgm_exporter(default_on) is True
+        assert power_owns_dcgm_exporter(required) is True
+        assert find_service(default_on, "dcgm-exporter") is None
+
+        monkeypatch.setenv("EVAL_ONLY", "true")
+        assert power_owns_dcgm_exporter(default_on) is True
+        assert find_service(default_on, "dcgm-exporter") is None
+        assert power_owns_dcgm_exporter(required) is False
+        assert find_service(required, "dcgm-exporter") is not None
+
+    def test_expected_windows_follow_the_concurrency_list_and_tolerate_its_absence(self):
+        def windows(config):
+            class Harness(TelemetryStageMixin):
+                def __init__(self) -> None:
+                    self.config = config
+
+            return Harness()._expected_power_windows()
+
+        assert [w.concurrency for w in windows(_make_config(benchmark=_sa_bench()))] == [4]
+        assert windows(_make_config(benchmark=BenchmarkConfig(type="lm-eval"))) == []
+        assert windows(_make_config(benchmark=BenchmarkConfig(type="sa-bench", concurrencies="4,8"))) == []
+
+    def test_power_dcgm_targets_cover_every_telemetry_node(self):
+        """Tachometer scrapes the power exporter wherever it is launched, pools included."""
+        from types import SimpleNamespace
+
+        config = _make_config(benchmark=_sa_bench())
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self) -> None:
+                self.config = config
+                self.runtime = SimpleNamespace(nodes=SimpleNamespace(compute=("n1", "pool-a")))
+
+            @property
+            def backend_processes(self):
+                return [SimpleNamespace(node="n1")]
+
+        assert [t.node for t in Harness()._power_dcgm_targets()] == ["n1", "pool-a"]
+
+    def test_yaml_null_and_omitted_resolve_alike(self, tmp_path):
+        base = {
+            "schema": 2,
+            "name": "t",
+            "model": {"path": "/model", "container": "/image", "precision": "fp4"},
+            "resources": {"gpu_type": "h100"},
+            "benchmark": {"type": "sa-bench", "concurrencies": [4], "isl": 128, "osl": 16},
+        }
+        omitted = tmp_path / "omitted.yaml"
+        omitted.write_text(yaml.safe_dump(base))
+        explicit_null = tmp_path / "null.yaml"
+        explicit_null.write_text(yaml.safe_dump({**base, "telemetry": {"enabled": None}}))
+
+        assert SrtConfig.from_yaml(omitted).telemetry_enabled is True
+        assert SrtConfig.from_yaml(explicit_null).telemetry_enabled is True

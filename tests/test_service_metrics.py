@@ -52,6 +52,9 @@ RECIPE = {
     ],
     "benchmark": {"type": "custom", "command": "echo"},
     "observability": {"tachometer": {"enabled": True}},
+    # These tests pin the implied Tachometer exporters; default-on power telemetry would own the
+    # DCGM one instead (covered by test_power_telemetry_owning_dcgm_replaces_the_implied_exporter).
+    "telemetry": {"enabled": False},
 }
 
 
@@ -224,8 +227,10 @@ def test_power_telemetry_owning_dcgm_replaces_the_implied_exporter(tmp_path: Pat
         SweepOrchestrator, "backend_processes", [Process("node1", frozenset({0}), 8081, 30000, "agg", 0, 0)]
     ):
         power = orchestrator._power_dcgm_targets()
+    # Scraped wherever the power exporter is launched: the engine node and the pool node.
     assert [(t.endpoint_name, t.url, t.gpu_metadata) for t in power] == [
-        ("dcgm_node1", "http://node1:9400/metrics", True)
+        ("dcgm_node1", "http://node1:9400/metrics", True),
+        ("dcgm_node2", "http://node2:9400/metrics", True),
     ]
 
 

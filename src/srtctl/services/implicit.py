@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+from srtctl.core.power.ownership import power_owns_dcgm_exporter
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
 
@@ -164,8 +165,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
     if config.observability.tachometer_enabled:
         # When power telemetry brings its own DCGM exporter it launches and owns it, and the
         # telemetry stage scrapes that one; CPU-only power telemetry leaves tachometer's.
-        power_owns_dcgm = config.telemetry.enabled and config.telemetry.dcgm_exporter is not None
-        dcgm = None if power_owns_dcgm else tachometer.resolved_dcgm_exporter
+        dcgm = None if power_owns_dcgm_exporter(config) else tachometer.resolved_dcgm_exporter
         if dcgm is not None:
             implied.append(
                 EffectiveService(

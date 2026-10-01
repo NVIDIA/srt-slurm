@@ -244,6 +244,13 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
     def _fake_hostname_ip(*_args, **_kwargs) -> str:
         return options.hostname_ip
 
+    def _no_power_exporter(session, _deadline: float) -> bool:
+        # No DCGM exporter runs in the mock, so readiness ends as the real wait would at its deadline.
+        from srtctl.core.power.contract import Reason
+
+        session.record_reason(Reason.EXPORTER_STARTUP_TIMEOUT)
+        return False
+
     def _fake_nodelist() -> list[str]:
         return list(options.nodelist)
 
@@ -302,6 +309,7 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.frontends.trtllm_serve.wait_for_health", _fake_wait_for_port),
         # Service readiness probes (etcd, NATS, exporters, declared services).
         ("srtctl.cli.mixins.service_stage.wait_until_ready", _fake_wait_for_port),
+        ("srtctl.core.power.session.PowerTelemetrySession._wait_for_readiness", _no_power_exporter),
         # The ray kind resolves the head IP itself and gates on the dashboard's node summary.
         ("srtctl.services.ray.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.services.ray.RayService.wait_fleet_ready", lambda *_args, **_kwargs: None),

@@ -36,6 +36,7 @@ from srtctl.cli.mixins import (
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
+from srtctl.core.power.ownership import eval_only_run
 from srtctl.core.processes import (
     ProcessRegistry,
     setup_signal_handlers,
@@ -685,12 +686,13 @@ class SweepOrchestrator(
             # once workers and the frontend are healthy and before telemetry.
             self.start_services("after_frontend", registry)
 
-            if self.config.telemetry.enabled:
-                if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+            if self.config.telemetry_enabled:
+                if eval_only_run() and self.config.telemetry.required:
                     # Eval-only runs skip the benchmark stage, so every expected
                     # measurement window would be missing and required telemetry
-                    # would fail an otherwise successful evaluation.
-                    logger.info("EVAL_ONLY=true: skipping dcgm-power telemetry (no benchmark to measure)")
+                    # would fail an otherwise successful evaluation. Best-effort
+                    # (the default) still samples the evaluation.
+                    logger.info("EVAL_ONLY=true: skipping required dcgm-power telemetry (no benchmark to measure)")
                 else:
                     self.start_power_telemetry(registry)
                     self.start_cpu_power_telemetry(registry)

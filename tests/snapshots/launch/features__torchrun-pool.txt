@@ -1,6 +1,6 @@
 # examples/features/torchrun-pool.yaml
 # exit_code: 0
-# srun calls: 2
+# srun calls: 3
 
 ## service_train_node-01
 nodelist: node-01
@@ -37,3 +37,19 @@ env_to_set:
 use_bash_wrapper: True
 command: |
     torchrun --nnodes=2 --nproc-per-node=8 --node-rank=1 --master-addr=127.0.0.1 --master-port=29500 /demo/train.py
+
+## <unnamed>
+nodes: 2
+ntasks: 2
+nodelist: node-01 node-02
+output: <output>/logs/telemetry_dcgm_exporter.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <tmp>/$SRTCTL_SOURCE_DIR/examples/features/torchrun-pool: /demo
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401

@@ -77,6 +77,15 @@ def _dataclass_default(item: dataclasses.Field) -> Any:
 # Local copies of srtctl.core.power.contract values so that loading a config
 # never imports the power package; equality is pinned by tests.
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
+# Benchmark types an explicit `telemetry.enabled: true` accepts (default-on samples every
+# run and does not consult this list). sa-bench stamps a measurement window per
+# concurrency. `manual` holds the deployment for an external load generator; like
+# serve-only it has no load window, so telemetry captures the whole serve session,
+# best-effort. `agentperf` does not stamp windows yet either: its samples cover the whole
+# run and the client's phase_manifest.jsonl gives the measurement window offline.
+_DCGM_POWER_BENCHMARK_TYPES = frozenset(
+    {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentperf", "agentx", "custom", "manual"}
+)
 _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
@@ -1715,9 +1724,19 @@ class CpuPowerExporterConfig:
 
 @dataclass(frozen=True)
 class TelemetryConfig:
-    """DCGM power telemetry for benchmark measurement windows."""
+    """DCGM power telemetry for benchmark measurement windows.
 
-    enabled: bool = False
+    ``enabled`` is tri-state like ``observability.tachometer.enabled``: ``null``
+    (the default) turns power collection on for every run that can carry it
+    (a supported ``benchmark.type``, the client on the head node, no dedicated
+    infra node, a DCGM exporter to launch) and stays off otherwise; explicit
+    ``true`` demands it and fails validation when the run cannot carry it;
+    explicit ``false`` opts out. The value stays as written; ``SrtConfig``
+    exposes the resolution as ``telemetry_enabled``, ``telemetry_dcgm_exporter``
+    and ``telemetry_auto_disabled_reason``, so a dump/reload keeps ``null``.
+    """
+
+    enabled: bool | None = None
     dcgm_exporter: TelemetryExporterConfig | None = None
     # Milliseconds between collector cycles. Replaces the retired
     # ``default_frequency``, which despite its name was a period in seconds
@@ -3197,20 +3216,114 @@ class SrtConfig:
                     f"from the profiling: block when nsys profiling is enabled. Remove these keys."
                 )
 
-    def _validate_dcgm_power(self):
-        """Validate DCGM power telemetry.
+    def _dcgm_power_ineligibility(self) -> str | None:
+        """Why this run cannot carry a *publishable* DCGM power measurement, or None.
 
-        It runs its collector in the orchestrator process, so it needs neither
-        the scraper image nor node_exporter. Sample and window timestamps must
-        share one host clock, which is why the benchmark client stays on the
-        head node.
+        These are the window rules an explicit ``telemetry.enabled: true``
+        enforces (``_validate_dcgm_power`` raises the returned message).
+        Default-on does not consult them: it samples every run best-effort and
+        leaves window validity to the artifact's reason codes.
+        """
+        if self.benchmark.type not in _DCGM_POWER_BENCHMARK_TYPES:
+            supported = ", ".join(sorted(_DCGM_POWER_BENCHMARK_TYPES))
+            return f"telemetry requires benchmark.type to be one of: {supported}"
+        if self.benchmark.placement.location != "head":
+            return "telemetry requires benchmark.placement.node: head"
+        # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
+        if self.infra_dedicated_node:
+            return (
+                "telemetry requires the discovery plane on the infra node (no etcd or nats service with "
+                "placement.node: dedicated), because a dedicated infra node moves nodes.head off the batch host "
+                "and power samples would no longer share the benchmark's clock"
+            )
+        try:
+            concurrencies = self.benchmark.get_concurrency_list()
+        except (TypeError, ValueError):
+            concurrencies = []
+        if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
+            return "telemetry requires a non-empty list of unique positive benchmark.concurrencies"
+        return None
+
+    # ``telemetry.enabled`` is tri-state and stays as written; these properties resolve it, so a
+    # schema dump/reload (sweep per-point configs, ``srtctl migrate``) and ``dataclasses.replace``
+    # keep the default-on semantics instead of freezing a resolved ``true`` into the recipe.
+
+    @property
+    def telemetry_auto_resolved(self) -> bool:
+        """Whether ``telemetry.enabled`` was left unset and is being resolved by default."""
+        return self.telemetry.enabled is None
+
+    @property
+    def telemetry_auto_disabled_reason(self) -> str | None:
+        """Why default-on declined the GPU power leg; None when explicit or when it runs.
+
+        Power is on by default for the same reason Tachometer is: a run without
+        watts cannot be placed on a tokens-per-joule axis afterwards, and the
+        collector is best-effort (``required`` stays false) and cheap (one
+        exporter per worker node that Tachometer scrapes anyway, at the
+        Tachometer rate). Default-on samples every run, whatever the benchmark
+        type or client placement; a measurement window is recorded where the
+        benchmark stamps one and otherwise the samples span the whole run. The
+        only thing that keeps it off is having nothing to launch: the exporter
+        is the recipe's ``telemetry.dcgm_exporter`` or, when absent, the
+        cluster-resolved default Tachometer would launch, so an ``srtslurm.yaml``
+        ``default_gpu_exporter`` override applies to both.
+        """
+        if not self.telemetry_auto_resolved:
+            return None
+        # A recipe that declares its own dcgm-exporter service owns the port; launching a second
+        # exporter beside it would clash, so default-on leaves the GPU leg to that service.
+        if any(getattr(svc, "type", None) == "dcgm-exporter" and svc.enabled for svc in self.services):
+            return "a dcgm-exporter service is declared in services:, which owns the exporter"
+        exporter = self.telemetry.dcgm_exporter or self.observability.tachometer.resolved_dcgm_exporter
+        if exporter is None:
+            return "no DCGM exporter is configured (telemetry.dcgm_exporter or a Tachometer default)"
+        if not exporter.container_image and not exporter.binary:
+            return "the DCGM exporter sets neither container_image nor binary"
+        return None
+
+    @property
+    def telemetry_dcgm_exporter(self) -> TelemetryExporterConfig | None:
+        """The DCGM exporter the power session launches and owns, if any."""
+        telemetry = self.telemetry
+        if telemetry.enabled is False:
+            return None
+        if telemetry.enabled is True:
+            return telemetry.dcgm_exporter
+        if self.telemetry_auto_disabled_reason is not None:
+            return None
+        return telemetry.dcgm_exporter or self.observability.tachometer.resolved_dcgm_exporter
+
+    @property
+    def telemetry_enabled(self) -> bool:
+        """Resolved ``telemetry.enabled``.
+
+        Explicit values win. Unset means on when the GPU leg can run, and also
+        when a CPU power leg is explicitly demanded (``cpu_power_exporter`` or
+        ``cpu_power.enabled``), matching the pre-existing "either leg is
+        sufficient" rule.
         """
         telemetry = self.telemetry
-        exporter = telemetry.dcgm_exporter
-        if exporter is None:
-            raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
-        if not exporter.container_image:
-            raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
+        if telemetry.enabled is not None:
+            return telemetry.enabled
+        cpu_demand = telemetry.cpu_power.enabled or telemetry.cpu_power_exporter is not None
+        return bool(cpu_demand or self.telemetry_dcgm_exporter is not None)
+
+    def _validate_dcgm_power(self, exporter: TelemetryExporterConfig, *, strict: bool = True):
+        """Validate DCGM power telemetry for the exporter the power session will own.
+
+        It runs its collector in the orchestrator process, so it needs neither
+        the scraper image nor node_exporter. ``strict`` (an explicit
+        ``telemetry.enabled: true``) also enforces the measurement-window rules:
+        sample and window timestamps must share one host clock, which is why
+        the benchmark client stays on the head node. Default-on skips those and
+        samples best-effort.
+        """
+        telemetry = self.telemetry
+        if not exporter.container_image and not exporter.binary:
+            raise ValidationError(
+                "telemetry.dcgm_exporter: set container_image (container launch) or binary (host-native)"
+            )
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
 
@@ -3230,26 +3343,10 @@ class SrtConfig:
         if not _is_safe_relative_subpath(telemetry.storage_subdir):
             raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
 
-        # `manual` holds the deployment for an external load generator; like serve-only it
-        # has no load window, so telemetry captures the whole serve session, best-effort.
-        supported_benchmarks = {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentx", "custom", "manual"}
-        if self.benchmark.type not in supported_benchmarks:
-            supported = ", ".join(sorted(supported_benchmarks))
-            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
-        if self.benchmark.placement.location != "head":
-            raise ValidationError("telemetry requires benchmark.placement.node: head")
-
-        # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
-        if self.infra_dedicated_node:
-            raise ValidationError(
-                "telemetry requires the discovery plane on the infra node (no etcd or nats service with "
-                "placement.node: dedicated), because a dedicated infra node moves nodes.head off the batch host "
-                "and power samples would no longer share the benchmark's clock"
-            )
-
-        concurrencies = self.benchmark.get_concurrency_list()
-        if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
-            raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
+        if strict:
+            reason = self._dcgm_power_ineligibility()
+            if reason is not None:
+                raise ValidationError(reason)
 
     def _frontend_profiling_control_is_leader_only(self) -> bool:
         """Whether the frontend's workers expose one profiler control server per logical endpoint."""
@@ -3407,12 +3504,13 @@ class SrtConfig:
         tachometer = observability.tachometer
         if not observability.tachometer_enabled:
             return
-        if self.telemetry.enabled and self.telemetry.dcgm_exporter is not None and tachometer.dcgm_exporter is not None:
+        # Two hand-written exporter blocks conflict; default-on adopts Tachometer's, which is fine.
+        if self.telemetry_enabled and self.telemetry.dcgm_exporter is not None and tachometer.dcgm_exporter is not None:
             raise ValidationError(
                 "configure the shared DCGM exporter under telemetry, not observability.tachometer, "
                 "when DCGM power telemetry is enabled"
             )
-        if self.telemetry.enabled and tachometer.storage_subdir == self.telemetry.storage_subdir:
+        if self.telemetry_enabled and tachometer.storage_subdir == self.telemetry.storage_subdir:
             raise ValidationError(
                 "observability.tachometer.storage_subdir and telemetry.storage_subdir must be different"
             )
@@ -3452,7 +3550,7 @@ class SrtConfig:
         telemetry = self.telemetry
         if telemetry is None:
             return
-        if not telemetry.enabled:
+        if not self.telemetry_enabled:
             if telemetry.cpu_power.enabled:
                 raise ValidationError("telemetry.cpu_power.enabled requires telemetry.enabled")
             self._reject_inert_cpu_power_demand()
@@ -3465,8 +3563,9 @@ class SrtConfig:
             self._validate_cpu_power()
         else:
             self._reject_inert_cpu_power_demand()
-        if telemetry.dcgm_exporter is not None:
-            self._validate_dcgm_power()
+        exporter = self.telemetry_dcgm_exporter
+        if exporter is not None:
+            self._validate_dcgm_power(exporter, strict=not self.telemetry_auto_resolved)
         elif telemetry.cpu_power_exporter is None and not telemetry.cpu_power.enabled:
             raise ValidationError(
                 "telemetry.enabled requires telemetry.dcgm_exporter, telemetry.cpu_power_exporter, "
