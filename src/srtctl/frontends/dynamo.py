@@ -10,7 +10,7 @@ Uses NATS/etcd for communication between frontend and backend workers.
 import logging
 import shlex
 import threading
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import yaml
 
@@ -34,7 +34,7 @@ from srtctl.services.implicit import (
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Process
+    from srtctl.core.topology import Process, WorkerMode
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +43,8 @@ ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
 
 
 def _vllm_mode_config(backend: VLLMProtocol, mode: str) -> dict[str, Any]:
-    """The recipe's vLLM args for a health mode name (prefill, decode, aggregated)."""
-    if backend.vllm_config is None:
-        return {}
-    by_mode = {
-        "prefill": backend.vllm_config.prefill,
-        "decode": backend.vllm_config.decode,
-        "aggregated": backend.vllm_config.aggregated,
-    }
-    return by_mode.get(mode) or {}
+    """The recipe's vLLM args (``roles.<role>.args``) for a health mode name (prefill, decode, aggregated)."""
+    return backend.get_config_for_mode(cast("WorkerMode", "agg" if mode == "aggregated" else mode))
 
 
 def vllm_data_parallel_size(config: Any, mode: str) -> int:
@@ -154,8 +147,8 @@ class DynamoFrontend(DynamicFrontend):
         nats_reasons = nats_implied_reasons(config)
         if nats_reasons:
             nats_options = {}
-            if config.infra.nats_max_payload_mb is not None:
-                nats_options["max_payload_mb"] = config.infra.nats_max_payload_mb
+            if config.nats_max_payload_mb is not None:
+                nats_options["max_payload_mb"] = config.nats_max_payload_mb
             implied.append(
                 EffectiveService(
                     ServiceConfig(name=NATS_SERVICE_NAME, type="nats", placement=placement, options=nats_options),
@@ -184,7 +177,7 @@ class DynamoFrontend(DynamicFrontend):
         logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
         if not isinstance(config.backend, VLLMProtocol):
             return logical_prefill, logical_decode, worker_desc
-        if config.resources.num_agg > 0:
+        if config.topology.num_agg > 0:
             n_prefill = 0
             n_decode = vllm_health_entries(config, "aggregated", logical_decode, processes)
         else:
@@ -251,7 +244,7 @@ class DynamoFrontend(DynamicFrontend):
             env_to_set.update(nsys_env)
 
             # Add global recipe environment, including values derived from
-            # dynamo.wheel, before frontend-specific overrides.
+            # dynamo.source.wheel, before frontend-specific overrides.
             env_to_set.update(runtime.environment)
 
             # Add frontend env from config

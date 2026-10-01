@@ -71,7 +71,7 @@ Follow these patterns when extending the codebase:
 - **marshmallow_dataclass for validation** - Combine dataclasses with marshmallow schemas for type-safe config loading with validation. Custom fields (e.g., `BackendConfigField`) handle polymorphic deserialization.
 - **Factory classmethods** - Use `@classmethod` named `from_*` for construction (e.g., `RuntimeContext.from_config()`, `SrtConfig.from_yaml()`). Keep `__init__` simple.
 - **TYPE_CHECKING guard** - Import type-only dependencies under `if TYPE_CHECKING:` to avoid circular imports. Use string annotations for forward refs.
-- **Computed properties** - Use `@property` for derived values instead of storing computed state. See `ResourceConfig.gpus_per_prefill`, `RuntimeContext.container_log_dir`.
+- **Computed properties** - Use `@property` for derived values instead of storing computed state. See `Topology.gpus_per_prefill`, `RuntimeContext.container_log_dir`.
 - **Registry pattern** - Use decorators for extensible registration (`@register_benchmark("sa-bench")`). New implementations just decorate and import.
 - **TypedDict for external data** - Use `TypedDict` for typing dicts from JSON/external sources where you can't control the structure.
 - **Single source of truth** - Create context objects (like `RuntimeContext`) that compute all derived paths/values once at startup rather than recomputing.
@@ -172,7 +172,7 @@ When adding new config fields that affect what gets passed to srun (environment 
 
 Config sources that feed into dry-run display:
 - **Mounts**: `config.extra_mount`, `config.container_mounts`, `default_mounts` from srtslurm.yaml
-- **Env vars**: `config.environment` (global), `backend.prefill_environment`, `backend.decode_environment`, `backend.aggregated_environment`
+- **Env vars**: `config.environment` (global), `roles.<role>.env` (read by the engine from the roles bound onto it at load)
 - **srun options**: `config.srun_options`
 - **Host setup**: `config.host_setup`, `default_host_setup` from srtslurm.yaml
 

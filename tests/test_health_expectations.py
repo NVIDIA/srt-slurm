@@ -5,9 +5,10 @@
 
 from types import SimpleNamespace
 
-from srtctl.backends import SGLangProtocol, VLLMProtocol, VLLMServerConfig
+from srtctl.backends import SGLangProtocol, VLLMProtocol
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
 from srtctl.frontends.dynamo import vllm_data_parallel_size
+from srtctl.core.schema import RoleConfig
 
 
 def _config(
@@ -17,18 +18,18 @@ def _config(
     num_prefill=0,
     num_decode=0,
     num_agg=0,
-    vllm_config=None,
+    roles=None,
     dp_launch_mode="per_node",
 ):
     """Build a stand-in for SrtConfig around a real backend dataclass, with only the fields the helpers read."""
     if backend_type == "vllm":
-        backend = VLLMProtocol(vllm_config=vllm_config, dp_launch_mode=dp_launch_mode)
+        backend = VLLMProtocol(roles=roles or {}, dp_launch_mode=dp_launch_mode)
     else:
         backend = SGLangProtocol()
     return SimpleNamespace(
         frontend=SimpleNamespace(type=frontend_type),
         backend=backend,
-        resources=SimpleNamespace(num_prefill=num_prefill, num_decode=num_decode, num_agg=num_agg),
+        topology=SimpleNamespace(num_prefill=num_prefill, num_decode=num_decode, num_agg=num_agg),
     )
 
 
@@ -47,17 +48,16 @@ def _processes(*, prefill=0, decode=0, agg=0, gpu_count=8):
 
 def test_dynamo_vllm_per_gpu_disagg_multiplies_by_data_parallel_size():
     """Legacy per-GPU DP registers one generate instance per DP rank."""
-    vllm_config = VLLMServerConfig(
-        prefill={"data-parallel-size": 2},
-        decode={"data-parallel-size": 8},
-        aggregated=None,
-    )
+    roles = {
+        "prefill": RoleConfig(args={"data-parallel-size": 2}),
+        "decode": RoleConfig(args={"data-parallel-size": 8}),
+    }
     config = _config(
         "dynamo",
         "vllm",
         num_prefill=6,
         num_decode=1,
-        vllm_config=vllm_config,
+        roles=roles,
         dp_launch_mode="per_gpu",
     )
 
@@ -69,12 +69,12 @@ def test_dynamo_vllm_per_gpu_disagg_multiplies_by_data_parallel_size():
 
 def test_dynamo_vllm_per_gpu_aggregated_multiplies_by_data_parallel_size():
     """Legacy per-GPU aggregate workers register once per DP rank."""
-    vllm_config = VLLMServerConfig(prefill=None, decode=None, aggregated={"data-parallel-size": 8})
+    roles = {"agg": RoleConfig(args={"data-parallel-size": 8})}
     config = _config(
         "dynamo",
         "vllm",
         num_agg=1,
-        vllm_config=vllm_config,
+        roles=roles,
         dp_launch_mode="per_gpu",
     )
 
@@ -86,17 +86,16 @@ def test_dynamo_vllm_per_gpu_aggregated_multiplies_by_data_parallel_size():
 
 def test_dynamo_vllm_per_node_disagg_counts_node_processes():
     """Per-node DEP8/DEP16 registers once per node-local process, not per DP rank."""
-    vllm_config = VLLMServerConfig(
-        prefill={"data-parallel-size": 8},
-        decode={"data-parallel-size": 16},
-        aggregated=None,
-    )
+    roles = {
+        "prefill": RoleConfig(args={"data-parallel-size": 8}),
+        "decode": RoleConfig(args={"data-parallel-size": 16}),
+    }
     config = _config(
         "dynamo",
         "vllm",
         num_prefill=3,
         num_decode=1,
-        vllm_config=vllm_config,
+        roles=roles,
     )
 
     n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(config, _processes(prefill=6, decode=4))
@@ -107,12 +106,12 @@ def test_dynamo_vllm_per_node_disagg_counts_node_processes():
 
 def test_dynamo_vllm_per_node_aggregated_counts_node_processes():
     """Per-node aggregated DP workers register as one decode per process."""
-    vllm_config = VLLMServerConfig(prefill=None, decode=None, aggregated={"data-parallel-size": 8})
+    roles = {"agg": RoleConfig(args={"data-parallel-size": 8})}
     config = _config(
         "dynamo",
         "vllm",
         num_agg=1,
-        vllm_config=vllm_config,
+        roles=roles,
         dp_launch_mode="per_node",
     )
 
@@ -124,16 +123,12 @@ def test_dynamo_vllm_per_node_aggregated_counts_node_processes():
 
 def test_dynamo_vllm_per_node_cross_node_tp_counts_dplb_endpoints():
     """Topology-aware per_node counts the global DPLB endpoint when TP spans nodes."""
-    vllm_config = VLLMServerConfig(
-        prefill=None,
-        decode=None,
-        aggregated={"data-parallel-size": 2, "tensor-parallel-size": 8},
-    )
+    roles = {"agg": RoleConfig(args={"data-parallel-size": 2, "tensor-parallel-size": 8})}
     config = _config(
         "dynamo",
         "vllm",
         num_agg=1,
-        vllm_config=vllm_config,
+        roles=roles,
         dp_launch_mode="per_node",
     )
 
@@ -145,8 +140,8 @@ def test_dynamo_vllm_per_node_cross_node_tp_counts_dplb_endpoints():
 
 def test_dynamo_vllm_without_dp_config_defaults_to_logical_counts():
     """No data-parallel-size configured -> DP size 1 -> counts equal logical workers."""
-    vllm_config = VLLMServerConfig(prefill={}, decode={}, aggregated=None)
-    config = _config("dynamo", "vllm", num_prefill=6, num_decode=1, vllm_config=vllm_config)
+    roles = {"prefill": RoleConfig(args={}), "decode": RoleConfig(args={})}
+    config = _config("dynamo", "vllm", num_prefill=6, num_decode=1, roles=roles)
 
     n_prefill, n_decode, _count_desc, num_workers = _get_health_expectations(config)
 
@@ -155,8 +150,11 @@ def test_dynamo_vllm_without_dp_config_defaults_to_logical_counts():
 
 def test_non_dynamo_frontend_uses_logical_worker_counts():
     """Only Dynamo reports per-DP-rank generate instances; others stay logical."""
-    vllm_config = VLLMServerConfig(prefill={"data-parallel-size": 2}, decode={"data-parallel-size": 8}, aggregated=None)
-    config = _config("sglang-router", "vllm", num_prefill=6, num_decode=1, vllm_config=vllm_config)
+    roles = {
+        "prefill": RoleConfig(args={"data-parallel-size": 2}),
+        "decode": RoleConfig(args={"data-parallel-size": 8}),
+    }
+    config = _config("sglang-router", "vllm", num_prefill=6, num_decode=1, roles=roles)
 
     n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(config)
 
@@ -175,13 +173,13 @@ def test_dynamo_non_vllm_backend_uses_logical_worker_counts():
 
 
 def test_vllm_data_parallel_size_reads_both_key_styles_and_defaults():
-    dashed = _config("dynamo", "vllm", vllm_config=VLLMServerConfig(prefill={"data-parallel-size": 4}))
+    dashed = _config("dynamo", "vllm", roles={"prefill": RoleConfig(args={"data-parallel-size": 4})})
     assert vllm_data_parallel_size(dashed, "prefill") == 4
 
-    underscored = _config("dynamo", "vllm", vllm_config=VLLMServerConfig(decode={"data_parallel_size": 3}))
+    underscored = _config("dynamo", "vllm", roles={"decode": RoleConfig(args={"data_parallel_size": 3})})
     assert vllm_data_parallel_size(underscored, "decode") == 3
 
-    no_vllm_config = _config("dynamo", "vllm", vllm_config=None)
+    no_vllm_config = _config("dynamo", "vllm", roles=None)
     assert vllm_data_parallel_size(no_vllm_config, "prefill") == 1
 
     non_vllm = _config("dynamo", "sglang")

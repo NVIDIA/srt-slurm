@@ -3,12 +3,13 @@
 
 """Tests for per-process VLLM_PORT assignment (rendezvous EADDRINUSE avoidance)."""
 
-from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+from srtctl.backends.vllm import VLLMProtocol
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 from srtctl.ports import (
     VLLM_PORT_BASE,
     VLLM_PORT_STRIDE,
 )
+from srtctl.core.schema import RoleConfig
 
 
 def _colocated_decode_endpoints(count: int) -> list[Endpoint]:
@@ -46,7 +47,7 @@ def test_vllm_port_comes_from_the_allocation_not_the_system_port():
 
 def test_discovery_connector_workers_get_listeners_instead_of_a_scan_range():
     """Each colocated TP4 worker needs four handshake and four notify ports."""
-    backend = VLLMProtocol(connector="moriio", vllm_config=VLLMServerConfig(decode={"tensor-parallel-size": 4}))
+    backend = VLLMProtocol(connector="moriio", roles={"decode": RoleConfig(args={"tensor-parallel-size": 4})})
     endpoints = [
         Endpoint(mode="decode", index=0, nodes=("node0",), gpu_indices=frozenset({0, 1, 2, 3}), gpus_per_node=8),
         Endpoint(mode="decode", index=1, nodes=("node0",), gpu_indices=frozenset({4, 5, 6, 7}), gpus_per_node=8),
@@ -69,7 +70,7 @@ def test_discovery_connector_workers_get_listeners_instead_of_a_scan_range():
 
 def test_discovery_listeners_avoid_linux_ephemeral_ports():
     """MoRI's bind(0) listeners must not acquire a later fixed handshake/notify port."""
-    backend = VLLMProtocol(connector="moriio", vllm_config=VLLMServerConfig(decode={"tensor-parallel-size": 4}))
+    backend = VLLMProtocol(connector="moriio", roles={"decode": RoleConfig(args={"tensor-parallel-size": 4})})
     endpoint = Endpoint(mode="decode", index=0, nodes=("node0",), gpu_indices=frozenset({0, 1, 2, 3}))
     process = backend.endpoints_to_processes([endpoint], frontend_type="vllm-router")[0]
 
@@ -81,7 +82,7 @@ def test_discovery_listeners_avoid_linux_ephemeral_ports():
 
 def test_role_override_selects_the_discovery_connector_per_mode():
     """roles.decode.args.connector overrides engine.connector for that role only."""
-    backend = VLLMProtocol(connector="nixl", vllm_config=VLLMServerConfig(decode={"connector": "moriio"}))
+    backend = VLLMProtocol(connector="nixl", roles={"decode": RoleConfig(args={"connector": "moriio"})})
 
     assert backend.connector_for_mode("prefill") == "nixl"
     assert backend.connector_for_mode("decode") == "moriio"

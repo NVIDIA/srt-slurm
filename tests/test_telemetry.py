@@ -22,12 +22,13 @@ from srtctl.core.schema import (
     CpuPowerConfig,
     CpuPowerExporterConfig,
     FrontendConfig,
-    InfraConfig,
     ModelConfig,
     ObservabilityConfig,
+    PlacementConfig,
     ReportingConfig,
     ReportingStatusConfig,
     ResourceConfig,
+    RoleConfig,
     SrtConfig,
     TachometerConfig,
     TelemetryConfig,
@@ -35,6 +36,7 @@ from srtctl.core.schema import (
 )
 from srtctl.core.telemetry import ServiceMetricsTarget, generate_tachometer_config
 from srtctl.core.topology import Process
+from srtctl.services import ServiceConfig, ServicePlacementConfig
 
 
 def _make_config(
@@ -55,7 +57,7 @@ def _make_config(
 
 
 def _sa_bench(**overrides) -> BenchmarkConfig:
-    return BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="head", **overrides)
+    return BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="head"), **overrides)
 
 
 def _dcgm_power(**overrides) -> TelemetryConfig:
@@ -428,8 +430,8 @@ class TestDcgmPowerConfig:
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[0]), "benchmark.concurrencies"),
             (
                 {},
-                BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="last_decode"),
-                "benchmark.client_placement",
+                BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="last_decode")),
+                "benchmark.placement.node",
             ),
         ],
     )
@@ -504,15 +506,19 @@ class TestDcgmPowerConfig:
                 resources=ResourceConfig(gpu_type="h100"),
                 benchmark=_sa_bench(),
                 telemetry=telemetry,
-                infra=InfraConfig(etcd_nats_dedicated_node=dedicated),
+                services=(
+                    [ServiceConfig(name="etcd", type="etcd", placement=ServicePlacementConfig(node="dedicated"))]
+                    if dedicated
+                    else []
+                ),
             )
 
         if rejected:
-            with pytest.raises(ValidationError, match="etcd_nats_dedicated_node"):
+            with pytest.raises(ValidationError, match="placement.node: dedicated"):
                 build()
             return
 
-        assert build().infra.etcd_nats_dedicated_node is dedicated
+        assert build().infra_dedicated_node is dedicated
 
 
 class TestCpuPowerExporterConfig:
@@ -648,7 +654,8 @@ class TestCpuPowerExporterConfig:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/image", precision="fp4"),
-                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 benchmark=_sa_bench(),
                 frontend=FrontendConfig(type="dynamo"),
                 telemetry=TelemetryConfig(
@@ -2089,11 +2096,11 @@ class TestTelemetryDefaultOn:
         [
             BenchmarkConfig(type="lm-eval"),
             BenchmarkConfig(type="router"),
-            BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="compute"),
+            BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="last_decode")),
             BenchmarkConfig(type="sa-bench", concurrencies="4,8"),
             BenchmarkConfig(type="manual"),
         ],
-        ids=["lm-eval", "router", "compute-client", "malformed-concurrencies", "manual-no-concurrencies"],
+        ids=["lm-eval", "router", "off-head-client", "malformed-concurrencies", "manual-no-concurrencies"],
     )
     def test_unset_samples_every_run_regardless_of_window_eligibility(self, benchmark):
         """Default-on is capture, not publication: runs that cannot stamp a window still get watts."""
@@ -2109,10 +2116,11 @@ class TestTelemetryDefaultOn:
             model=ModelConfig(path="/model", container="/image", precision="fp4"),
             resources=ResourceConfig(gpu_type="h100"),
             benchmark=_sa_bench(),
-            infra=InfraConfig(etcd_nats_dedicated_node=True),
+            services=[ServiceConfig(name="etcd", type="etcd", placement=ServicePlacementConfig(node="dedicated"))],
             observability=ObservabilityConfig(enabled=False, tachometer=TachometerConfig(enabled=False)),
         )
 
+        assert config.infra_dedicated_node is True
         assert config.telemetry_enabled is True
 
     def test_unset_defers_to_a_declared_dcgm_exporter_service(self):
@@ -2274,6 +2282,7 @@ class TestTelemetryDefaultOn:
 
     def test_yaml_null_and_omitted_resolve_alike(self, tmp_path):
         base = {
+            "schema": 2,
             "name": "t",
             "model": {"path": "/model", "container": "/image", "precision": "fp4"},
             "resources": {"gpu_type": "h100"},

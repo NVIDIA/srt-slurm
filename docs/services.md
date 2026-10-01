@@ -131,7 +131,7 @@ Things the recipe asks for elsewhere are services the job runs without an entry;
 | Implied by | Services | Where |
 | --- | --- | --- |
 | `frontend.type: dynamo` | `etcd` | the infra node, phase `infra` |
-| `dynamo.request_plane: nats`, `dynamo.event_plane: nats`, or a `nats_max_payload_mb` knob | `nats` | the infra node, phase `infra` |
+| `dynamo.request_plane: nats`, `dynamo.event_plane: nats`, or a `nats` entry with `options.max_payload_mb` | `nats` | the infra node, phase `infra` |
 | a declared `mooncake-master` entry (see [Mooncake KV Store](mooncake-kv-store.md)) | `mooncake-master` | the infra node, phase `before_workers` |
 | a vLLM role with `connector: lmcache-mp` (engine-level or `roles.<role>.args.connector`), unless a `lmcache-server` entry is declared | `lmcache-server` | that role's nodes, or every worker node when several roles use it, phase `before_workers` |
 | `engine.failover` (see [Shadow Engine Recovery](shadow-engine-recovery.md)) | `gms` | one instance per vLLM worker (`placement.per: worker`), phase `before_workers` |

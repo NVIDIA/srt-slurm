@@ -232,16 +232,16 @@ This is useful for portable recipes that you want to share across clusters or ha
 
 | Field    | Type    | Required | Description                                                                 |
 | -------- | ------- | -------- | --------------------------------------------------------------------------- |
-| `schema` | integer | Yes      | Recipe layout version. `2` is the layout this document describes. Absent means `1`, the layout in [legacy-v1.md](legacy-v1.md). |
+| `schema` | integer | Yes      | Recipe layout version. `2` is the layout this document describes and the only one that loads. A recipe without the key is the pre-2.0 layout in [legacy-v1.md](legacy-v1.md) and is rejected. |
 
-Put the key first in the file, beside `base:` in an override file. Upgrade a recipe with `srtctl migrate -f recipe.yaml --in-place`, which preserves comments and key order and folds the legacy layout into `engine:`, `roles:`, `placement:`, `services:`, and `dynamo.source` (a directory is walked recursively). `srtctl migrate --verify -f <path>` migrates in memory and checks that the v1 and v2 documents resolve to the same config; CI runs it over the examples and the historical recipe corpus (golden equality).
+Put the key first in the file, beside `base:` in an override file. Upgrade a recipe with `srtctl migrate -f recipe.yaml --in-place`, which preserves comments and key order and folds the legacy layout into `engine:`, `roles:`, `placement:`, `services:`, and `dynamo.source` (a directory is walked recursively). A `schema: 2` recipe that still carries a pre-2.0 key (`backend:`, `infra:`, `resources.prefill_nodes`, `dynamo.hash`, ...) is rejected too; the error names the keys and `srtctl migrate` rewrites them.
 
 ```yaml
 schema: 2
 name: "deepseek-r1-benchmark"
 ```
 
-Schema 2 is stricter than schema 1 in two places: a `benchmark:` field the selected type does not read is a load error rather than a silent no-op (see [benchmark](#benchmark)), and `roles.<role>.nodes: 0` is rejected in favor of the explicit `colocate` (see [roles](#roles)).
+Two rules worth knowing: a `benchmark:` field the selected type does not read is a load error (see [benchmark](#benchmark)), and `roles.<role>.nodes: 0` is rejected in favor of the explicit `colocate` (see [roles](#roles)).
 
 ---
 
@@ -363,30 +363,44 @@ Do not set `data-parallel-size-local`, `data-parallel-start-rank`, `data-paralle
 
 ### TRT-LLM metrics publication
 
-With `frontend.type: dynamo`, prefill, decode, and aggregated TRT-LLM workers publish engine metrics by default using `--publish-metrics`, regardless of whether observability is enabled. Without observability, this does not enable KV events. `observability.enabled: true` retains its existing superset behavior: it additionally enables `--publish-events-and-metrics` when the combined setting is omitted or null. Explicitly requesting the combined flag also works without observability.
+With `frontend.type: dynamo`, prefill, decode, and aggregated TRT-LLM workers publish engine metrics by default using `--publish-metrics`, regardless of whether observability is enabled. `publish_events_and_metrics` is retained only for backward compatibility with older Dynamo builds. Observability does not enable this legacy flag automatically.
 
 ```yaml
 engine:
   type: trtllm
-  publish_metrics: true               # default
-  publish_events_and_metrics: null    # unset: inherit the defaults below
+  publish_metrics: true               # default: metrics only
+  publish_events_and_metrics: false   # use publish_metrics
 ```
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `publish_metrics` | bool | true | Pass `--publish-metrics` to Dynamo TRT-LLM workers; does not enable KV events |
-| `publish_events_and_metrics` | bool or null | unset | `false`: disable both publication flags; `true`: enable the combined flag; unset/null: inherit defaults |
+| `publish_metrics` | bool | true | Pass `--publish-metrics` unless the legacy combined flag is selected |
+| `publish_events_and_metrics` | bool or null | unset | `true`: pass only the legacy combined flag; `false` or unset/null: use `publish_metrics` |
 
-**An explicit `engine.publish_events_and_metrics: false` is a master opt-out:** neither publication flag is passed, even if `publish_metrics` is true or observability is enabled. This differs from omitting the combined setting, which keeps metrics on by default. Unset values remain null through config serialization so a saved config does not acquire an opt-out.
+The flags are mutually exclusive. Explicit `engine.publish_events_and_metrics: true` passes only `--publish-events-and-metrics`, even when `publish_metrics` is true. False, omitted, and null all select the metrics-only setting.
 
-| `publish_events_and_metrics` | Observability | Default publication flags |
+| `publish_events_and_metrics` | `publish_metrics` | Publication flag (with or without observability) |
 | --- | --- | --- |
-| omitted / null | disabled / omitted | `--publish-metrics` |
-| omitted / null | enabled | `--publish-metrics --publish-events-and-metrics` |
-| `false` | either | none |
-| `true` | either | `--publish-metrics --publish-events-and-metrics` |
+| omitted / null / `false` | `true` | `--publish-metrics` |
+| omitted / null / `false` | `false` | none |
+| `true` | either | `--publish-events-and-metrics` |
 
-**Compatibility:** the metrics-only flag requires a Dynamo build containing [ai-dynamo/dynamo#12162](https://github.com/ai-dynamo/dynamo/pull/12162) or equivalent support. Older builds (including Dynamo v1.4.2) reject the flag. Set `engine.publish_metrics: false` to omit only the new flag, including when observability is enabled; this does not disable a combined flag enabled by observability or the recipe. Set `engine.publish_events_and_metrics: false` to omit **both** flags. srt-slurm does not substitute the combined flag as an automatic compatibility fallback, because that would enable KV events. Omitting the flag does not override metrics-related environment variables supplied by the user. Metrics collection adds engine telemetry work; metrics-only does not mean zero overhead, but with the iteration-statistics default below the remaining cost is the per-request perf metrics.
+**Compatibility:** the metrics-only flag requires a Dynamo build containing [ai-dynamo/dynamo#12162](https://github.com/ai-dynamo/dynamo/pull/12162) or equivalent support. For older builds, set `engine.publish_events_and_metrics: true` to select the legacy flag, which also enables KV events. To omit both flags, set `engine.publish_metrics: false` and leave the legacy flag false or unset. Omitting the flag does not override metrics-related environment variables supplied by the user. Metrics collection adds engine telemetry work; metrics-only does not mean zero overhead, but with the iteration-statistics default below the remaining cost is the per-request perf metrics.
+
+**Migration from the previous publication behavior:** `engine.publish_events_and_metrics: false` previously omitted both publication flags. It now uses `publish_metrics`, which defaults to true. Recipes that used false to disable publication, especially on older Dynamo builds that reject `--publish-metrics`, must also set `engine.publish_metrics: false`. To publish metrics on those older builds, select `engine.publish_events_and_metrics: true` instead. Null remains accepted for existing serialized recipes and behaves the same as false.
+
+**KV events and observability:** `observability.enabled: true` no longer automatically enables TRT-LLM KV events. Router KV-event dashboard panels (`ro_kv_events_applied`, `ro_kv_event_warnings`, and `ro_kv_events_dropped`) require an explicit event-publication opt-in. On Dynamo builds supporting the independent controls, keep the default metrics-only flag and set `DYN_TRTLLM_PUBLISH_KV_EVENTS: "true"` in every worker role that should publish events:
+
+```yaml
+engine:
+  type: trtllm
+roles:
+  agg:
+    env:
+      DYN_TRTLLM_PUBLISH_KV_EVENTS: "true"
+```
+
+For disaggregated recipes, set the same environment variable under both `roles.prefill.env` and `roles.decode.env`. This uses Dynamo's [independent KV-event control](https://github.com/ai-dynamo/dynamo/blob/aacb1abae25204fa16a5c3cfeb1b748fc7252df0/components/src/dynamo/trtllm/backend_args.py#L179-L190); it does not require the legacy combined flag. Older builds without that control must use `engine.publish_events_and_metrics: true` to enable events and metrics together.
 
 **Iteration statistics default.** srtctl bakes `enable_iter_perf_stats: false` into every TRT-LLM engine section a recipe uses (prefill and decode, or aggregated), under both `frontend.type: dynamo` and `trtllm_serve`, creating the section when the recipe has none. This is a setdefault: an explicit `enable_iter_perf_stats: true` in the recipe wins, and `observability.enabled: true` keeps its own `true` because its expansion runs first. The default exists because `dynamo.trtllm` turns `--publish-metrics` into `enable_iter_perf_stats: true` in the engine arguments, and the engine YAML is merged over those arguments and wins on conflicts; without the explicit key every Dynamo worker collects TensorRT-LLM's per-iteration statistics (KV-cache stats and CUDA-event step timing on every executor loop). The request-level `trtllm_*` series (request latency, TTFT, TPOT, queue/prefill/decode time, token counters) do not need the key: they come from the per-request perf metrics, which `--publish-metrics` sets on the Dynamo path and `return_perf_metrics: true` sets for trtllm-serve. What the default drops is the iteration-level `trtllm_*` gauges (`trtllm_kv_cache_*`, running/waiting requests, iteration latency) and, on Dynamo, the `dynamo_component_kvstats_*` gauges, the router worker-load sample and the Planner's forward-pass metrics; set the key to `true` or enable `observability` to get them back. One visible effect to expect on a default run: the component dashboard's engine-tab KV-cache utilisation and hit-rate panels have no data, and the Dynamo bench dashboard's KV-utilisation series sits at the gauge's seeded 0 %, because both read gauges that only iteration statistics update. Engine sections whose `backend` is the legacy `tensorrt` engine are left alone: its `LlmArgs` rejects the key on containers older than TensorRT-LLM v1.3.0rc21, and that backend always collected the statistics anyway.
 
@@ -931,7 +945,7 @@ Only variables for roles present in the recipe are emitted. Entries follow logic
 
 Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 
-- **Dynamo TRT-LLM worker URLs are advertised when engine metrics are enabled.** This is the default via `engine.publish_metrics: true` (`--publish-metrics`) when the combined setting is omitted; `engine.publish_events_and_metrics: true` also enables them. Explicit `engine.publish_events_and_metrics: false` suppresses both publication flags and worker URLs, regardless of the metrics-only setting. URLs are also omitted when no flag is enabled (for example, metrics-only false and the combined setting omitted without observability). This applies to built-in AIPerf and custom benchmarks, excluding sidecars, whose behavior is unchanged. Runtime-only metrics may still exist but do not constitute an engine-metrics capture. With `frontend.type: trtllm_serve` the gate is the worker's own engine config instead: its `/prometheus/metrics` URL is advertised when that role's `args.return_perf_metrics` is true (the srtctl default for trtllm_serve recipes; an explicit `false` drops the URL). KVBM URLs are unaffected; KVBM serves its own endpoint regardless of the flag.
+- **Dynamo TRT-LLM worker URLs are advertised when engine metrics are enabled.** This is the default via `engine.publish_metrics: true` (`--publish-metrics`) when the combined setting is omitted; `engine.publish_events_and_metrics: true` also enables them. False or unset uses `engine.publish_metrics` to decide whether to publish metrics and advertise worker URLs. URLs are omitted when metrics-only is false and the legacy combined flag is false or unset, including with observability enabled. This applies to built-in AIPerf and custom benchmarks, excluding sidecars, whose behavior is unchanged. Runtime-only metrics may still exist but do not constitute an engine-metrics capture. With `frontend.type: trtllm_serve` the gate is the worker's own engine config instead: its `/prometheus/metrics` URL is advertised when that role's `args.return_perf_metrics` is true (the srtctl default for trtllm_serve recipes; an explicit `false` drops the URL). KVBM URLs are unaffected; KVBM serves its own endpoint regardless of the flag.
 - **An explicit `AIPERF_SERVER_METRICS_URLS` in the recipe `environment:` wins.** Injection is skipped when the variable is already set, so a curated endpoint list is never clobbered.
 
 Values in `benchmark.env` are applied last and can explicitly override any automatically injected variable.

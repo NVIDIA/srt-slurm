@@ -22,6 +22,7 @@ import shlex
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import field
 from enum import Enum
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import (
     TYPE_CHECKING,
@@ -53,6 +54,7 @@ from srtctl.core.formatting import (
 
 # Leaf module (stdlib-only imports), so this cannot cycle back into schema.
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
+from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
 from srtctl.services.config import ServiceConfig
@@ -461,7 +463,19 @@ class ProfilingType(str, Enum):
 
 
 class BackendConfigField(fields.Field):
-    """Marshmallow field for polymorphic backend deserialization based on type."""
+    """Marshmallow field for the polymorphic engine: a type string or a mapping with ``type``.
+
+    ``reject_per_role_keys`` is set on the recipe's engine fields (top-level ``engine`` and
+    ``roles.<role>.engine``): an engine mapping carries engine-wide knobs only, so the
+    pre-2.0 per-mode keys (``sglang_config``, ``prefill_environment``, ``kv_events_config``,
+    ...) are refused there with a pointer to ``roles.<role>`` (``env``, ``args``,
+    ``extra_args``, ``kv_events``). The engine's ``roles`` is bound by ``SrtConfig`` and
+    refused on load by its own field; it is left out of dumps.
+    """
+
+    def __init__(self, *, reject_per_role_keys: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.reject_per_role_keys = reject_per_role_keys
 
     def _deserialize(
         self,
@@ -470,9 +484,8 @@ class BackendConfigField(fields.Field):
         data: Mapping[str, Any] | None,
         **kwargs,
     ) -> BackendConfig:
-        """Deserialize backend config based on 'type' field."""
+        """Deserialize an engine from its type string or its mapping's ``type`` key."""
         if value is None:
-            # Default to SGLang
             return SGLangProtocol()
 
         if isinstance(
@@ -480,10 +493,20 @@ class BackendConfigField(fields.Field):
         ):
             return value
 
+        if isinstance(value, str):
+            value = {"type": value}
         if not isinstance(value, dict):
-            raise ValidationError(f"Expected dict for backend config, got {type(value).__name__}")
+            raise ValidationError(f"Expected an engine type or a mapping with 'type', got {type(value).__name__}")
 
-        # Get backend type from the value dict
+        if self.reject_per_role_keys:
+            per_role = sorted(set(value) & PER_ROLE_ENGINE_KEYS)
+            if per_role:
+                raise ValidationError(
+                    "an engine mapping carries engine-wide knobs only; per-role settings ("
+                    + ", ".join(per_role)
+                    + ") live under roles.<role> (env, args, extra_args, kv_events)"
+                )
+
         backend_type = value.get("type", "sglang")
 
         if backend_type == "atom":
@@ -504,13 +527,19 @@ class BackendConfigField(fields.Field):
             return schema.load(value)
         else:
             raise ValidationError(
-                f"Unknown backend type: {backend_type!r}. Supported types: atom, sglang, tilert, trtllm, vllm, mocker"
+                f"Unknown engine type: {backend_type!r}. Supported types: atom, sglang, tilert, trtllm, vllm, mocker"
             )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
-        """Serialize backend config to dict."""
+        """Serialize the engine to a dict; the bound ``roles`` are left out (the recipe's ``roles:`` carries them)."""
         if value is None:
             return None
+        dumped = self._dump(value)
+        dumped.pop("roles", None)
+        return dumped
+
+    @staticmethod
+    def _dump(value: Any) -> dict[str, Any]:
         if isinstance(value, AtomProtocol):
             return AtomProtocol.Schema().dump(value)
         if isinstance(value, TileRTProtocol):
@@ -684,8 +713,74 @@ class HetComponent:
 
 
 @dataclass(frozen=True)
+class RoleConfig:
+    """One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
+
+    Everything about a role lives here: the nodes and workers it gets, the GPUs per
+    worker, its environment and engine arguments, and optionally its own engine and
+    image. ``SrtConfig.topology`` derives the per-role counts the launch path reads;
+    ``SrtConfig.backend`` binds the roles onto the engine, which reads ``env`` / ``args`` /
+    ``extra_args`` / ``kv_events`` from them.
+    """
+
+    # Nodes reserved for this role. `colocate` (decode only) reserves none and packs the
+    # decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both
+    # roles and the loader rejects a split that does not fit.
+    nodes: int | Literal["colocate"] | None = None
+    # Number of workers of this role.
+    workers: int | None = None
+    # GPUs per worker. Defaults to `nodes * gpus_per_node // workers`; required when decode colocates.
+    gpus: int | None = None
+    # Environment for every worker of this role.
+    env: dict[str, str] = field(default_factory=dict)
+    # The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`).
+    args: dict[str, Any] = field(default_factory=dict)
+    # Raw extra CLI arguments (TRT-LLM only).
+    extra_args: list[str] = field(default_factory=list)
+    # Engine type or mapping with engine options. Set on every role when no top-level
+    # `engine` is declared; the two forms cannot be mixed, and role engines do not inherit
+    # options from each other.
+    engine: Annotated[BackendConfig | None, BackendConfigField(allow_none=True, reject_per_role_keys=True)] = None
+    # Optional role image; accepts cluster container aliases. Defaults to `model.container`.
+    container: str | None = None
+    # `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`.
+    kv_events: bool | dict[str, Any] | None = None
+    # Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree.
+    sidecar: bool | None = field(
+        default=None,
+        metadata={"marshmallow_field": fields.Boolean(truthy={True}, falsy={False}, allow_none=True)},
+    )
+    # A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers.
+    critical: bool = field(
+        default=True,
+        metadata={"marshmallow_field": fields.Boolean(truthy={True}, falsy={False})},
+    )
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        nodes = self.nodes
+        if isinstance(nodes, bool) or not (nodes is None or isinstance(nodes, int) or nodes == COLOCATE):
+            raise ValidationError(f"nodes must be a positive integer or {COLOCATE!r}; got {nodes!r}")
+        if self.container is not None and not self.container.strip():
+            raise ValidationError("container must be a non-empty string")
+
+    @property
+    def colocated(self) -> bool:
+        """``nodes: colocate``: the role shares the prefill nodes instead of reserving its own."""
+        return self.nodes == COLOCATE
+
+    @property
+    def node_count(self) -> int | None:
+        """Nodes this role reserves: ``0`` when it colocates, ``None`` when unset."""
+        if isinstance(self.nodes, int):
+            return self.nodes
+        return 0 if self.colocated else None
+
+
+@dataclass(frozen=True)
 class ResourceConfig:
-    """Resource allocation configuration."""
+    """Cluster facts and allocation knobs; the worker topology is the `roles:` block."""
 
     # GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional:
     # a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and
@@ -693,24 +788,6 @@ class ResourceConfig:
     # setting in a recipe so it is self-describing for result rollups.
     gpu_type: str | None = None
     gpus_per_node: int = 4
-
-    # Disaggregated mode
-    prefill_nodes: int | None = None
-    decode_nodes: int | None = None
-    prefill_workers: int | None = None
-    decode_workers: int | None = None
-
-    # Aggregated mode
-    agg_nodes: int | None = None
-    agg_workers: int | None = None
-
-    # A worker exit normally fails the run (the process monitor tears the job
-    # down). A role's flag set to False keeps the run alive when one of its
-    # workers exits, for workloads that kill workers on purpose (migration or
-    # fault-tolerance probes). The per-role spelling is ``roles.<role>.critical``.
-    prefill_critical: bool = True  # A prefill worker exiting fails the run. False keeps the run alive.
-    decode_critical: bool = True  # A decode worker exiting fails the run. False keeps the run alive.
-    agg_critical: bool = True  # An aggregated worker exiting fails the run. False keeps the run alive.
 
     # If True, place each partial-node worker on its own node instead of
     # packing multiple onto the same node. Caller must reserve enough nodes
@@ -724,46 +801,91 @@ class ResourceConfig:
     # `--segment`. See HetComponent above and docs/slurm-faq.md.
     het_jobs: bool | None = None
 
-    # Explicit GPUs per worker (override computed values)
-    # Use data_key to map from YAML field names to internal attribute names
-    _explicit_gpus_per_prefill: int | None = field(
-        default=None,
-        metadata={
-            "marshmallow_field": fields.Integer(
-                data_key="gpus_per_prefill",
-                load_default=None,
-                allow_none=True,
-            )
-        },
-    )
-    _explicit_gpus_per_decode: int | None = field(
-        default=None,
-        metadata={
-            "marshmallow_field": fields.Integer(
-                data_key="gpus_per_decode",
-                load_default=None,
-                allow_none=True,
-            )
-        },
-    )
-    _explicit_gpus_per_agg: int | None = field(
-        default=None,
-        metadata={
-            "marshmallow_field": fields.Integer(
-                data_key="gpus_per_agg",
-                load_default=None,
-                allow_none=True,
-            )
-        },
-    )
+    Schema: ClassVar[type[Schema]] = Schema
 
-    @property
-    def is_disaggregated(self) -> bool:
-        return self.prefill_nodes is not None or self.decode_nodes is not None
+
+@dataclasses.dataclass(frozen=True)
+class Topology:
+    """The worker layout ``roles:`` describes, on nodes of ``gpus_per_node`` GPUs.
+
+    One derivation of every per-role count the launch path, the frontends and the
+    validators read (``num_prefill``, ``gpus_per_decode``, ``total_nodes``, ...), built
+    once per config as ``SrtConfig.topology``. A role that is not declared has no nodes
+    and no workers. ``prefill`` or ``decode`` present means a disaggregated deployment;
+    ``agg`` alone is the aggregated one.
+    """
+
+    roles: Mapping[str, RoleConfig]
+    gpus_per_node: int
+    het_jobs: bool | None = None
+
+    def role(self, name: str) -> RoleConfig | None:
+        return self.roles.get(name)
+
+    def nodes(self, name: str) -> int | None:
+        """Nodes the role reserves (``0`` for a colocated decode), None when the role is absent or unsized."""
+        spec = self.roles.get(name)
+        return None if spec is None else spec.node_count
+
+    def workers(self, name: str) -> int:
+        spec = self.roles.get(name)
+        return (spec.workers or 0) if spec is not None else 0
+
+    def gpus_per_worker(self, name: str) -> int:
+        """GPUs per worker of the role: its ``gpus``, else its nodes' GPUs split over its workers."""
+        spec = self.roles.get(name)
+        if spec is None:
+            return self.gpus_per_node
+        if spec.gpus is not None:
+            return spec.gpus
+        if spec.node_count and spec.workers:
+            return (spec.node_count * self.gpus_per_node) // spec.workers
+        if name == "decode" and spec.colocated and spec.workers:
+            # A colocated decode shares the prefill nodes and inherits the prefill worker size.
+            return self.gpus_per_worker("prefill")
+        return self.gpus_per_node
 
     def worker_critical(self, mode: str) -> bool:
         """Whether a worker of ``mode`` (``prefill``, ``decode``, ``agg``) failing fails the run."""
-        return {"prefill": self.prefill_critical, "decode": self.decode_critical, "agg": self.agg_critical}[mode]
+        spec = self.roles.get(mode)
+        return True if spec is None else spec.critical
+
+    @property
+    def is_disaggregated(self) -> bool:
+        return "prefill" in self.roles or "decode" in self.roles
+
+    @property
+    def colocated_decode(self) -> bool:
+        """``roles.decode.nodes: colocate``: the decode workers live on the prefill nodes."""
+        decode = self.roles.get("decode")
+        return decode is not None and decode.colocated
+
+    @property
+    def prefill_nodes(self) -> int | None:
+        return self.nodes("prefill")
+
+    @property
+    def decode_nodes(self) -> int | None:
+        return self.nodes("decode")
+
+    @property
+    def agg_nodes(self) -> int | None:
+        return self.nodes("agg")
+
+    @property
+    def prefill_workers(self) -> int | None:
+        spec = self.roles.get("prefill")
+        return None if spec is None else spec.workers
+
+    @property
+    def decode_workers(self) -> int | None:
+        spec = self.roles.get("decode")
+        return None if spec is None else spec.workers
+
+    @property
+    def agg_workers(self) -> int | None:
+        spec = self.roles.get("agg")
+        return None if spec is None else spec.workers
 
     @property
     def total_nodes(self) -> int:
@@ -778,49 +900,27 @@ class ResourceConfig:
 
     @property
     def num_prefill(self) -> int:
-        return self.prefill_workers or 0
+        return self.workers("prefill")
 
     @property
     def num_decode(self) -> int:
-        return self.decode_workers or 0
+        return self.workers("decode")
 
     @property
     def num_agg(self) -> int:
-        return self.agg_workers or 0
+        return self.workers("agg")
 
     @property
     def gpus_per_prefill(self) -> int:
-        # Use explicit value if set
-        if self._explicit_gpus_per_prefill is not None:
-            return self._explicit_gpus_per_prefill
-        # Fall back to computed value
-        if self.prefill_nodes and self.prefill_workers:
-            return (self.prefill_nodes * self.gpus_per_node) // self.prefill_workers
-        return self.gpus_per_node
+        return self.gpus_per_worker("prefill")
 
     @property
     def gpus_per_decode(self) -> int:
-        # Use explicit value if set
-        if self._explicit_gpus_per_decode is not None:
-            return self._explicit_gpus_per_decode
-        # Fall back to computed value
-        if self.decode_nodes and self.decode_workers:
-            return (self.decode_nodes * self.gpus_per_node) // self.decode_workers
-        # decode_nodes=0 with decode_workers means "share nodes with prefill"
-        # Inherit TP from prefill in this case
-        if self.decode_nodes == 0 and self.decode_workers:
-            return self.gpus_per_prefill
-        return self.gpus_per_node
+        return self.gpus_per_worker("decode")
 
     @property
     def gpus_per_agg(self) -> int:
-        # Use explicit value if set
-        if self._explicit_gpus_per_agg is not None:
-            return self._explicit_gpus_per_agg
-        # Fall back to computed value
-        if self.agg_nodes and self.agg_workers:
-            return (self.agg_nodes * self.gpus_per_node) // self.agg_workers
-        return self.gpus_per_node
+        return self.gpus_per_worker("agg")
 
     @property
     def prefill_gpus(self) -> int:
@@ -872,7 +972,12 @@ class ResourceConfig:
             ),
         )
 
-    Schema: ClassVar[type[Schema]] = Schema
+
+def _bind_roles(engine: BackendConfig, roles: Mapping[str, RoleConfig]) -> BackendConfig:
+    """``engine`` with the recipe's roles bound; the engine reads per-role env, args, extra_args and kv_events from them."""
+    if engine.roles:
+        raise ValidationError("engine.roles is bound from the recipe's roles block; declare roles at the top level")
+    return dataclasses.replace(engine, roles=dict(roles)) if roles else engine
 
 
 @dataclass(frozen=True)
@@ -886,6 +991,36 @@ class SlurmConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+# ``placement.node`` value that reserves a node for the component.
+PLACEMENT_DEDICATED = "dedicated"
+
+
+@dataclass(frozen=True)
+class PlacementConfig:
+    """Where a component (the frontend or the benchmark client) runs.
+
+    Attributes:
+        node: A location name resolved against the worker topology (``head``, or a
+            role-relative name such as ``first_decode`` / ``last_decode``), or
+            ``dedicated`` to reserve a node for the component. A dedicated node is
+            always the head location, so the two never combine.
+    """
+
+    node: str = "head"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def dedicated(self) -> bool:
+        """Whether the component gets a node of its own."""
+        return self.node == PLACEMENT_DEDICATED
+
+    @property
+    def location(self) -> str:
+        """The placement name consumers resolve: ``head`` for a dedicated node."""
+        return "head" if self.dedicated else self.node
+
+
 @dataclass(frozen=True)
 class BenchmarkConfig:
     """Benchmark configuration."""
@@ -897,18 +1032,13 @@ class BenchmarkConfig:
     osl: int | None = None
     concurrencies: list[int] | str | None = None
     req_rate: str | int | None = "inf"
-    # Which node runs the benchmark client:
-    #   "head" (default) -> nodes.head (co-located with orchestrator by default)
-    #   "last_decode"    -> last decode/GEN worker-leader node (isolate the client
-    #                       off the CTX/orchestrator node). When the client lands on
-    #                       a different node than the orchestrator, use the injected
-    #                       $SRT_FRONTEND_HOST env in the benchmark command's URL.
-    client_placement: str = "head"
-    # If True, reserve a node exclusively for the benchmark client instead of
-    # running it on a worker node. Requires at least 2 nodes. Not supported
-    # together with resources.het_jobs: true.
-    # Default: False.
-    client_dedicated_node: bool = False
+    # Where the benchmark client runs. placement.node is "head" (default: the
+    # orchestrator's node), "last_decode" (the last decode/GEN worker-leader node,
+    # isolating the client off the CTX/orchestrator node; use the injected
+    # $SRT_FRONTEND_HOST env in the benchmark command's URL), or "dedicated" (a
+    # node reserved for the client: needs at least 2 nodes, not supported with
+    # resources.het_jobs: true).
+    placement: PlacementConfig = field(default_factory=PlacementConfig)
     # Governs how dedicated placements combine when more than one of the
     # benchmark client, the frontend, and the etcd/nats services asks for
     # placement.node: dedicated. If True (default), every requested role
@@ -1453,17 +1583,11 @@ class ObservabilityConfig:
 
     OTEL_SERVICE_NAME defaults to "dynamo-{component}" (e.g. dynamo-prefill,
     dynamo-decode, dynamo-frontend) and can be overridden per-component via
-    prefill_environment, decode_environment, or frontend.env.
+    roles.<role>.env or frontend.env.
 
-    ``enabled`` is the single analytics knob. Turning it on makes the run emit
-    every signal the offline perf-analysis tooling consumes, without the user
-    having to remember six independent flags. It expands (at config-load time,
+    ``enabled`` configures server-side analytics capture. It expands (at config-load time,
     via :func:`srtctl.core.config.expand_observability`) into:
 
-    * ``backend.publish_events_and_metrics: true`` -- enable KV-cache events
-      and TRT-LLM engine metrics. Metrics-only publication already defaults on
-      independently via ``backend.publish_metrics``. An explicit
-      ``publish_events_and_metrics: false`` disables both publication flags.
     * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
       config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
       histograms appear on that surface.
@@ -1479,16 +1603,18 @@ class ObservabilityConfig:
       client does not already poll (see ``TelemetryStageMixin.start_tachometer``
       and ``tachometer`` below).
 
-    Expansion preserves explicit recipe values; the tri-state combined
-    publishing setting treats null as unset. Explicit False is never replaced.
+    Expansion preserves explicit recipe values and leaves publication settings
+    unchanged. TRT-LLM engine metrics default on via ``backend.publish_metrics``.
+    The legacy combined flag requires explicit ``publish_events_and_metrics: true``.
+    KV events require an explicit opt-in; on newer Dynamo builds, set
+    ``DYN_TRTLLM_PUBLISH_KV_EVENTS: "true"`` in each worker role's environment.
 
     Scope is deliberately server-side. The knob configures what the workers and
     frontend *emit*, and captures that surface by scraping the endpoints
     directly. It never asks the benchmark client to re-export what the servers
     already publish. (One indirect exception: on TRT-LLM the client's
     ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
-    the effective publication flags give those endpoints engine metrics,
-    respecting the explicit combined-setting opt-out — see
+    the effective publication flags give those endpoints engine metrics — see
     ``BenchmarkStageMixin``.)
 
     It does **not** decide whether the component perf dashboard is built. That
@@ -1959,37 +2085,37 @@ def _serialize_node_install(install_cmd: str) -> str:
 class DynamoConfig:
     """Dynamo installation configuration.
 
-    Only one of version, hash, top_of_tree, or wheel should be specified.
-    Defaults to version="0.8.0" (pip install).
+    ``source`` names the Dynamo to install: a git ref to build, a PyPI release,
+    or a staged wheel. ``top_of_tree`` builds HEAD unpinned instead. With
+    neither, ``install: true`` pip-installs the PyPI release
+    ``DEFAULT_PYPI_VERSION``. ``effective_source`` is what actually gets
+    installed; ``pypi_version``, ``git_rev``, ``wheel_version``, and
+    ``cargo_patches`` are read-only views of it for the install path.
 
     Options:
         install: Whether to install dynamo at all (default: True). Set to False
                  if your container already has dynamo pre-installed.
-        version: Install specific version from PyPI (e.g., "0.8.0")
-        hash: Clone repo and checkout specific commit hash
-        top_of_tree: Clone repo at HEAD (latest)
-        wheel: ai-dynamo package version to install via staged wheels. The
-               matching ai-dynamo-runtime wheel is installed automatically.
-        source: One block for all of the above: ``git`` + ``rev`` (commit, tag,
-               or ``refs/pull/<n>/head``; ``srtctl apply`` pins it to ``sha``),
-               ``pypi``, or ``wheel``. Cannot be combined with the legacy fields.
+        top_of_tree: Clone repo at HEAD (latest). No immutable equivalent under
+                     ``source``; prefer pinning a commit in ``source.rev``.
+        source: Which Dynamo to install: ``git`` + ``rev`` (commit, tag, or
+               ``refs/pull/<n>/head``; ``srtctl apply`` pins it to ``sha``),
+               ``pypi``, or ``wheel``. Cannot be combined with ``top_of_tree``.
         request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
         event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
                      the Dynamo image's own default). Valid values: "nats", "zmq"
-        sidecar: Replace legacy Python workers with native engines and Dynamo sidecars.
-
-    If top_of_tree, hash, or wheel is set, version is automatically cleared.
+        sidecar: Replace the Python workers with native engines and Dynamo sidecars.
     """
 
+    # PyPI release installed when a recipe names no source and does not ask for top_of_tree.
+    DEFAULT_PYPI_VERSION: ClassVar[str] = "0.8.0"
     _VALID_REQUEST_PLANES: ClassVar[tuple[str, ...]] = ("nats", "tcp", "http")
     _VALID_EVENT_PLANES: ClassVar[tuple[str, ...]] = ("nats", "zmq")
 
     install: bool = True
-    version: str | None = "0.8.0"
-    hash: str | None = None
+    # Clone and build Dynamo at HEAD (unpinned). No `source` equivalent; prefer a commit in `source.rev`.
     top_of_tree: bool = False
-    wheel: str | None = None
-    # Which Dynamo to install: exactly one of git+rev, pypi, or wheel.
+    # Which Dynamo to install: exactly one of git+rev, pypi, or wheel. Unset, and not
+    # top_of_tree: the PyPI release DEFAULT_PYPI_VERSION.
     source: DynamoSourceConfig | None = None
     request_plane: str = "tcp"
     event_plane: str | None = None
@@ -1999,58 +2125,12 @@ class DynamoConfig:
     sidecar_startup_timeout: int = 3600
     sidecar_context_length: int | None = None
     sidecar_args: list[str] = field(default_factory=list)
-    # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
-    # source build (requires `hash`). Each entry is a full `<crate> = <spec>` TOML line, e.g.
-    #   'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }'
-    # The crate's existing declaration is replaced tree-wide, letting a source build pull a crate
-    # from an unmerged branch without waiting for a crates.io release.
-    cargo_patches: list[str] | None = None
 
     def __post_init__(self) -> None:
-        if self.source is not None:
-            legacy = [
-                name
-                for name, on in (
-                    ("hash", self.hash is not None),
-                    ("top_of_tree", self.top_of_tree),
-                    ("wheel", self.wheel is not None),
-                    ("cargo_patches", bool(self.cargo_patches)),
-                )
-                if on
-            ]
-            if legacy:
-                raise ValueError("dynamo.source cannot be combined with dynamo." + ", dynamo.".join(legacy))
-            if self.source.pypi is not None:
-                object.__setattr__(self, "version", self.source.pypi)
-            elif self.source.wheel is not None:
-                object.__setattr__(self, "wheel", self.source.wheel)
-            else:
-                object.__setattr__(self, "hash", self.source.checkout)
-                object.__setattr__(self, "cargo_patches", list(self.source.patches) if self.source.patches else None)
-
-        install_sources = [
-            ("hash", self.hash is not None),
-            ("top_of_tree", self.top_of_tree),
-            ("wheel", self.wheel is not None),
-        ]
-        enabled_sources = [name for name, enabled in install_sources if enabled]
-
-        # Auto-clear version if another install source is set.
-        if enabled_sources:
-            object.__setattr__(self, "version", None)
-
-        # Validate only one source option is set
-        if len(enabled_sources) > 1:
-            raise ValueError(f"Cannot specify both Dynamo install sources: {', '.join(enabled_sources)}")
-
-        if self.wheel is not None:
-            if not self.wheel.strip():
-                raise ValueError("dynamo.wheel must be a non-empty package version")
-            if Path(self.wheel).name.endswith(".whl") or "/" in self.wheel:
-                raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
-
-        if self.cargo_patches and self.hash is None:
-            raise ValueError("dynamo.cargo_patches requires a source build — set dynamo.hash to a commit")
+        if self.top_of_tree and self.source is not None:
+            raise ValueError(
+                "dynamo.top_of_tree cannot be combined with dynamo.source; pin a commit in source.rev or drop top_of_tree"
+            )
 
         if self.request_plane not in self._VALID_REQUEST_PLANES:
             raise ValueError(
@@ -2072,32 +2152,55 @@ class DynamoConfig:
             raise ValueError("dynamo.sidecar_context_length must be at least 1")
 
     @property
+    def effective_source(self) -> DynamoSourceConfig | None:
+        """What gets installed: ``source`` as written, the PyPI default when nothing was named, None for top_of_tree."""
+        if self.source is not None:
+            return self.source
+        if self.top_of_tree:
+            return None
+        return DynamoSourceConfig(pypi=self.DEFAULT_PYPI_VERSION)
+
+    @property
+    def pypi_version(self) -> str | None:
+        """PyPI release to pip-install, when the install is a PyPI release."""
+        source = self.effective_source
+        return source.pypi if source is not None else None
+
+    @property
+    def git_rev(self) -> str | None:
+        """Commit (or ref) to build from, when the install is a git source."""
+        source = self.effective_source
+        return source.checkout if source is not None and source.git is not None else None
+
+    @property
+    def cargo_patches(self) -> list[str] | None:
+        """Cargo dependency replacements applied before a git source build."""
+        source = self.effective_source
+        return list(source.patches) if source is not None and source.git is not None and source.patches else None
+
+    @property
     def needs_source_install(self) -> bool:
         """Whether this config requires a source install (git clone + maturin)."""
-        return self.wheel is None and (self.hash is not None or self.top_of_tree)
+        return self.top_of_tree or self.git_rev is not None
 
     @property
     def wheel_version(self) -> str | None:
         """Package version requested for staged wheel installation."""
-        return self.wheel
+        source = self.effective_source
+        return source.wheel if source is not None else None
 
     @property
     def wheel_name(self) -> str | None:
         """Return the ai-dynamo wheel filename for the requested package version."""
-        if not self.wheel:
-            return None
-        return f"ai_dynamo-{self.wheel}-py3-none-any.whl"
+        version = self.wheel_version
+        return f"ai_dynamo-{version}-py3-none-any.whl" if version else None
 
     def get_wheel_environment(self) -> dict[str, str]:
         """Environment variables consumed by ai-dynamo prefetch/setup scripts."""
-        if not self.wheel:
-            return {}
-        wheel_name = self.wheel_name
-        env = {"DYNAMO_WHEEL_NAME": wheel_name} if wheel_name else {}
         version = self.wheel_version
-        if version:
-            env["DYNAMO_VERSION"] = version
-        return env
+        if not version:
+            return {}
+        return {"DYNAMO_WHEEL_NAME": f"ai_dynamo-{version}-py3-none-any.whl", "DYNAMO_VERSION": version}
 
     def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo.
@@ -2111,11 +2214,8 @@ class DynamoConfig:
 
     def _build_install_commands(self) -> str:
         """Build the raw (unserialized) dynamo install command."""
-        if self.wheel is not None:
-            wheel_name = self.wheel_name or Path(self.wheel).name
-            version = self.wheel_version
-            if not version:
-                raise ValueError("dynamo.wheel must provide an exact package version")
+        wheel_name = self.wheel_name
+        if wheel_name is not None:
             start_message = shlex.quote(f"Installing ai-dynamo-runtime and ai-dynamo from wheel {wheel_name}...")
             done_message = shlex.quote(f"ai-dynamo-runtime and ai-dynamo install path completed for {wheel_name}")
             return (
@@ -2129,11 +2229,12 @@ class DynamoConfig:
                 f"echo {done_message}"
             )
 
-        if self.version is not None:
+        pypi_version = self.pypi_version
+        if pypi_version is not None:
             return (
-                f"echo 'Installing dynamo {self.version}...' && "
-                f"pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime=={self.version} ai-dynamo=={self.version} && "
-                f"echo 'Dynamo {self.version} installed'"
+                f"echo 'Installing dynamo {pypi_version}...' && "
+                f"pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime=={pypi_version} ai-dynamo=={pypi_version} && "
+                f"echo 'Dynamo {pypi_version} installed'"
             )
 
         # Source install. When pinned to an immutable hash, cache the build on
@@ -2142,11 +2243,10 @@ class DynamoConfig:
         # reuses the artifacts. Drops bootstrap from ~5 min + flaky github clone
         # to ~10 sec lustre access for repeat hashes. top_of_tree skips the
         # cache (no stable key) and always live-builds.
-        if self.hash is not None:
-            repo_url = (
-                self.source.git if self.source is not None and self.source.git else DynamoSourceConfig.DEFAULT_GIT
-            )
-            return _hash_cached_source_install(self.hash, self.cargo_patches, repo_url=repo_url)
+        git_rev = self.git_rev
+        if git_rev is not None:
+            assert self.source is not None and self.source.git is not None
+            return _hash_cached_source_install(git_rev, self.cargo_patches, repo_url=self.source.git)
 
         return _live_source_install_for_top_of_tree()
 
@@ -2163,8 +2263,8 @@ class FrontendConfig:
             "trtllm_serve" (direct: the single aggregate worker binds the public
             port, no router process); "none" (services-only job: no router, no
             OpenAI endpoint, no worker-count health gate; requires no engine
-            roles). In schema 1 recipes "sglang" still means the router and
-            loads as "sglang-router".
+            roles). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate``
+            rewrites that to "sglang-router".
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -2219,14 +2319,11 @@ class FrontendConfig:
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router
     server_config_extra: dict[str, Any] | None = None  # extra top-level ser.yaml keys
-    # trtllm_serve: which node runs the disaggregated orchestrator.
-    #   "head" (default) -> nodes.head (first prefill/CTX node)
-    #   "first_decode"   -> first decode/GEN worker-leader node
-    orchestrator_placement: str = "head"
-    # If True, reserve a node exclusively for the frontend/orchestrator instead
-    # of running it on a worker node. Requires at least 2 nodes. Not supported
-    # together with resources.het_jobs: true. Default: False.
-    dedicated_node: bool = False
+    # Where the frontend (trtllm_serve: the disaggregated orchestrator) runs.
+    # placement.node is "head" (default: the first prefill/CTX node), "first_decode"
+    # (the first decode/GEN worker-leader node), or "dedicated" (a node reserved for
+    # the frontend: needs at least 2 nodes, not supported with resources.het_jobs: true).
+    placement: PlacementConfig = field(default_factory=PlacementConfig)
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -2278,77 +2375,61 @@ class HealthCheckConfig:
                 ) from None
 
 
-@dataclass(frozen=True)
-class InfraConfig:
-    """Infrastructure configuration for etcd/nats placement.
-
-    Attributes:
-        etcd_nats_dedicated_node: If True, run etcd and nats on a dedicated node
-            instead of the head node. This reserves the first node exclusively
-            for infrastructure services. Default: False.
-        nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
-            NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
-            (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
-    """
-
-    etcd_nats_dedicated_node: bool = False
-    nats_max_payload_mb: int | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
 # ============================================================================
 # Main Configuration Dataclass
 # ============================================================================
 
-# Recipe schema versions. A recipe without a top-level `schema:` key is version 1
-# (the pre-2.0 layout); version 2 is the 2.0 layout. The loader accepts every
-# supported version; `srtctl migrate` rewrites a recipe to the current one.
+# Recipe schema versions. Version 2 is the 2.0 layout and the only one the
+# loader accepts; a recipe without a top-level `schema:` key is the pre-2.0
+# layout (version 1) and is rejected by `srtctl.core.config.require_current_schema`.
+# `srtctl migrate` still reads version 1 and rewrites it to the current one.
 CURRENT_SCHEMA_VERSION = 2
-SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
+
+# Service kinds that form the discovery plane and share the infra node.
+INFRA_SERVICE_TYPES: tuple[str, ...] = ("etcd", "nats")
+SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (CURRENT_SCHEMA_VERSION,)
 
 
 @dataclass(frozen=True)
 class SrtConfig:
     """Complete srtctl job configuration (frozen, immutable).
 
-    This is the main configuration type returned by load_config().
-
-    The backend field supports polymorphic deserialization:
-    - type: sglang -> SGLangProtocol
+    This is the main configuration type returned by load_config(). ``engine`` selects the
+    engine (polymorphic on ``type``), ``roles`` carries the worker topology and every
+    per-role setting; ``topology`` and ``backend`` are derived from them once.
     """
 
     name: str
     model: ModelConfig
     resources: ResourceConfig
 
-    # Recipe schema version (YAML key `schema`). Absent means 1, the pre-2.0
-    # layout. `schema: 2` selects the 2.0 layout; `srtctl migrate` upgrades a
-    # recipe in place. Both versions load on main.
+    # Recipe schema version (YAML key `schema`). A recipe must declare `schema: 2`;
+    # `require_current_schema` rejects a missing key as the pre-2.0 layout before
+    # the schema ever sees the document. The default only serves documents srtctl
+    # itself resolved (a lockfile's recipe, a dumped config).
     schema_version: int = field(
-        default=1,
+        default=CURRENT_SCHEMA_VERSION,
         metadata={
             "marshmallow_field": fields.Integer(
                 data_key="schema",
-                load_default=1,
+                load_default=CURRENT_SCHEMA_VERSION,
                 validate=validate.OneOf(SUPPORTED_SCHEMA_VERSIONS),
             )
         },
     )
 
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
-    backend: Annotated[BackendConfig, BackendConfigField()] = field(default_factory=SGLangProtocol)
-    # Internal normalized form of roles.<role>.engine/container. Legacy recipes
-    # keep these empty and retain their original backend allocation path.
-    role_backends: dict[str, Annotated[BackendConfig, BackendConfigField()]] = field(default_factory=dict)
-    role_containers: dict[str, str] = field(default_factory=dict)
+    # The engine every role runs: a type (`sglang`) or a mapping with `type` plus engine-wide
+    # knobs (see the engine types). Omit it when every role declares its own `engine`.
+    engine: Annotated[BackendConfig | None, BackendConfigField(allow_none=True, reject_per_role_keys=True)] = None
+    # One block per worker role (`prefill`, `decode`, `agg`): nodes, workers, GPUs, env, engine args.
+    roles: dict[str, RoleConfig] = field(default_factory=dict)
     frontend: FrontendConfig = field(default_factory=FrontendConfig)
     dynamo: DynamoConfig = field(default_factory=DynamoConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
     profiling: ProfilingConfig = field(default_factory=ProfilingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
-    infra: InfraConfig = field(default_factory=InfraConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 
@@ -2391,6 +2472,8 @@ class SrtConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
+        self._validate_roles()
+        _ = self.backend  # bind the roles onto the engine now, so a bad role setting fails at load
         self._validate_role_backends()
         self._validate_frontend_worker_selection()
         self._validate_profiling()
@@ -2399,7 +2482,6 @@ class SrtConfig:
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_colocated_decode()
-        self._validate_dedicated_node_placement()
         self._validate_frontend()
         self._validate_dynamo_sidecar()
         self._validate_vllm_failover()
@@ -2409,6 +2491,38 @@ class SrtConfig:
         self._validate_services_only()
         self._validate_services()
         self._warn_dp_launch_mode()
+
+    @cached_property
+    def topology(self) -> Topology:
+        """The worker layout: every per-role count, derived once from ``roles`` and ``resources``."""
+        return Topology(roles=self.roles, gpus_per_node=self.resources.gpus_per_node, het_jobs=self.resources.het_jobs)
+
+    @cached_property
+    def role_backends(self) -> dict[str, BackendConfig]:
+        """Per-role engines (``roles.<role>.engine``), each bound to its role's settings; empty with one shared engine."""
+        if self.engine is not None or all(spec.engine is None for spec in self.roles.values()):
+            return {}
+        return {
+            role: _bind_roles(spec.engine, {role: spec}) for role, spec in self.roles.items() if spec.engine is not None
+        }
+
+    @cached_property
+    def backend(self) -> BackendConfig:
+        """The serving engine with the recipe's roles bound (it reads per-role env, args, extra_args, kv_events).
+
+        With one shared ``engine`` this is that engine (SGLang when none is declared). With
+        per-role engines it is the serving role's (decode, else agg, else prefill); workers
+        resolve their own through ``backend_for_role``.
+        """
+        if self.role_backends:
+            serving = next(role for role in ("decode", "agg", "prefill") if role in self.role_backends)
+            return self.role_backends[serving]
+        return _bind_roles(self.engine if self.engine is not None else SGLangProtocol(), self.roles)
+
+    @property
+    def role_containers(self) -> dict[str, str]:
+        """Role images from ``roles.<role>.container``."""
+        return {role: spec.container for role, spec in self.roles.items() if spec.container is not None}
 
     @property
     def has_role_backends(self) -> bool:
@@ -2431,9 +2545,9 @@ class SrtConfig:
         return [
             (role, self.backend_for_role(role))
             for role, count in (
-                ("prefill", self.resources.num_prefill),
-                ("decode", self.resources.num_decode),
-                ("agg", self.resources.num_agg),
+                ("prefill", self.topology.num_prefill),
+                ("decode", self.topology.num_decode),
+                ("agg", self.topology.num_agg),
             )
             if count
         ]
@@ -2450,15 +2564,64 @@ class SrtConfig:
 
         return worker_processes(self, endpoints, port_allocator)
 
+    def _validate_roles(self) -> None:
+        """Rules of ``roles:`` that need the whole recipe.
+
+        Role names, node counts, the engine form (one shared ``engine`` or one on every
+        role), the colocated split, and the job-wide sidecar flag.
+        """
+        for role, spec in self.roles.items():
+            if role not in ROLE_TO_MODE:
+                raise ValidationError(f"unknown role {role!r}; valid roles are {', '.join(ROLE_NAMES)}")
+            if spec.colocated and role != "decode":
+                raise ValidationError(f"roles.{role}.nodes: only the decode role can colocate (on the prefill nodes)")
+            if isinstance(spec.nodes, int):
+                if spec.nodes == 0 and role == "decode":
+                    raise ValidationError(
+                        "roles.decode.nodes: 0 is not accepted; write nodes: colocate to share the prefill nodes"
+                    )
+                if spec.nodes < 1:
+                    raise ValidationError(f"roles.{role}.nodes must be at least 1; got {spec.nodes}")
+            if spec.engine is not None and self.engine is not None:
+                raise ValidationError(f"roles.{role}.engine cannot be combined with a top-level engine")
+        if self.engine is None and any(spec.engine is not None for spec in self.roles.values()):
+            for role, spec in self.roles.items():
+                if spec.engine is None:
+                    raise ValidationError(f"roles.{role}.engine must name a type when no top-level engine is set")
+        for role, spec in self.roles.items():
+            engine = spec.engine if spec.engine is not None else self.engine
+            engine_type = engine.type if engine is not None else "sglang"
+            if spec.extra_args and engine_type != "trtllm":
+                raise ValidationError(f"roles.{role}.extra_args is only supported by the trtllm engine")
+            if spec.kv_events is not None and engine_type not in ("sglang", "vllm"):
+                raise ValidationError(f"roles.{role}.kv_events is not supported by the {engine_type} engine")
+
+        decode = self.roles.get("decode")
+        if decode is not None and decode.colocated:
+            # A colocated split cannot be derived: the per-node formula would hand prefill every GPU
+            # and the decode size would silently inherit it. Both roles must state their worker size.
+            missing = [
+                role for role in ("prefill", "decode") if self.roles.get(role) is None or self.roles[role].gpus is None
+            ]
+            if missing:
+                raise ValidationError(
+                    "roles.decode.nodes: colocate requires an explicit gpus: on both prefill and decode "
+                    f"(missing on {', '.join(missing)}); the GPU split is validated against the prefill nodes at load"
+                )
+
+        sidecars = {spec.sidecar for spec in self.roles.values() if spec.sidecar is not None}
+        if len(sidecars) > 1:
+            raise ValidationError("roles.*.sidecar must agree across roles (the Dynamo sidecar mode is job-wide)")
+        if sidecars:
+            wanted = sidecars.pop()
+            if self.dynamo.sidecar and not wanted:
+                raise ValidationError("roles.*.sidecar: false disagrees with dynamo.sidecar: true")
+            if wanted and not self.dynamo.sidecar:
+                # The sidecar mode is job-wide: a role asking for it turns it on for the job.
+                object.__setattr__(self, "dynamo", dataclasses.replace(self.dynamo, sidecar=True))
+
     def _validate_role_backends(self) -> None:
         """Reject job-wide orchestration that is not yet role-aware."""
-        allowed = {"prefill", "decode", "agg"}
-        unknown = (self.role_backends.keys() | self.role_containers.keys()) - allowed
-        if unknown:
-            raise ValidationError(f"Unknown worker role(s): {', '.join(sorted(unknown))}")
-        for role, container in self.role_containers.items():
-            if not isinstance(container, str) or not container.strip():
-                raise ValidationError(f"roles.{role}.container must be a non-empty string")
         if not self.has_role_backends:
             return
         if self.frontend.type == "dynamo" or self.dynamo.sidecar:
@@ -2467,6 +2630,7 @@ class SrtConfig:
             raise ValidationError("role-specific engines do not yet support resources.het_jobs")
         if self.profiling.enabled or self.observability_nsys_enabled:
             raise ValidationError("role-specific engines do not yet support profiling or observability.nsys")
+        gpus_per_node = self.resources.gpus_per_node
         for role, backend in [("default", self.backend), *self.active_role_backends()]:
             if isinstance(backend, VLLMProtocol) and backend.discovers_workers():
                 raise ValidationError("role-specific engines do not yet support vLLM discovery connectors")
@@ -2477,10 +2641,8 @@ class SrtConfig:
             if role != "default":
                 if isinstance(backend, SGLangProtocol) and backend.is_grpc_mode(cast("WorkerMode", role)):
                     raise ValidationError("role-specific engines do not yet support SGLang gRPC workers")
-                gpus = getattr(self.resources, f"gpus_per_{role}")
-                if gpus > self.resources.gpus_per_node and (
-                    backend.type == "trtllm" or gpus % self.resources.gpus_per_node
-                ):
+                gpus = self.topology.gpus_per_worker(role)
+                if gpus > gpus_per_node and (backend.type == "trtllm" or gpus % gpus_per_node):
                     raise ValidationError(
                         f"roles.{role}: role-specific engines require whole-node multi-node workers; "
                         "multi-node TRT-LLM packing is not yet supported"
@@ -2514,20 +2676,22 @@ class SrtConfig:
                     f"(pools: {', '.join(sorted(owner_names)) or 'none'})"
                 )
         if self.frontend.type == "none":
-            if self.resources.has_engine_workers:
+            if self.topology.has_engine_workers:
                 raise ValidationError(
                     "frontend.type: none is only supported without engine roles (no prefill/decode/agg workers); "
                     "pick a frontend for the workers or drop them"
                 )
-            if self.frontend.dedicated_node:
-                raise ValidationError("frontend.type: none has no frontend process; frontend.dedicated_node is invalid")
+            if self.frontend.placement.dedicated:
+                raise ValidationError(
+                    "frontend.type: none has no frontend process; frontend.placement.node: dedicated is invalid"
+                )
 
     def _validate_services(self) -> None:
         """Whole-list checks for ``services:``: unique names, then each kind's recipe-level rules.
 
         Per-entry checks (empty command, moving-branch source rev, ...) live on
         ``ServiceConfig.__post_init__``; a kind's ``validate`` sees the full
-        recipe (a ``mooncake-store`` needs ``backend.mooncake_kv_store``).
+        recipe (a ``mooncake-store`` needs ``engine.mooncake_kv_store``).
         """
         from srtctl.services.registry import get_service_kind
 
@@ -2537,6 +2701,12 @@ class SrtConfig:
                 raise ValidationError(f"services[].name must be unique; duplicate: {service.name!r}")
             seen.add(service.name)
             get_service_kind(service.type).validate(service, self)
+
+        # etcd and nats share the infra node, so they must agree on whether it is dedicated.
+        if len({service.effective_placement == "dedicated" for service in self.infra_services}) > 1:
+            raise ValidationError(
+                "services etcd and nats must agree on placement.node: dedicated (they share the infra node)"
+            )
 
         # A terminal service is the job's run: the job ends when it exits. It cannot share
         # that role with a benchmark step, and an external service never runs here.
@@ -2574,23 +2744,19 @@ class SrtConfig:
             raise ValueError(f"Unknown benchmark.type {btype!r}. Available: {', '.join(sorted(allowed))}")
 
         # Per-type field split: a field set for a type whose runner never reads it
-        # is a silent no-op today (isl on gsm8k, num_shots on sa-bench). Schema 2
-        # rejects it; schema 1 recipes get a warning so the corpus keeps loading.
+        # would be a silent no-op (isl on gsm8k, num_shots on sa-bench), so it is
+        # rejected. `srtctl migrate` strips such fields from a pre-2.0 recipe.
         accepted = benchmark_config_fields(btype)
         stray = sorted(
             item.name
             for item in dataclasses.fields(BenchmarkConfig)
             if item.name not in accepted and getattr(self.benchmark, item.name) != _dataclass_default(item)
         )
-        if not stray:
-            return
-        message = (
-            f"benchmark.type {btype!r} does not use {', '.join(stray)}; fields it accepts: "
-            f"{', '.join(sorted(accepted))}"
-        )
-        if self.schema_version >= 2:
-            raise ValueError(message)
-        logger.warning("%s (a schema: 2 recipe would be rejected)", message)
+        if stray:
+            raise ValueError(
+                f"benchmark.type {btype!r} does not use {', '.join(stray)}; fields it accepts: "
+                f"{', '.join(sorted(accepted))}"
+            )
 
     def _validate_host_setup(self) -> None:
         """Reject host_setup blocks that would fail or hang mid-job.
@@ -2652,16 +2818,12 @@ class SrtConfig:
         if dp_modes:
             names = ", ".join(mode for mode, _ in dp_modes)
             raise ValidationError(f"engine.failover does not support data-parallel-size (set on {names})")
-        for mode_name, mode_config in (
-            ("prefill", self.backend.vllm_config.prefill if self.backend.vllm_config else None),
-            ("decode", self.backend.vllm_config.decode if self.backend.vllm_config else None),
-            ("aggregated", self.backend.vllm_config.aggregated if self.backend.vllm_config else None),
-        ):
-            for key, value in (mode_config or {}).items():
+        for role, spec in self.roles.items():
+            for key, value in spec.args.items():
                 if str(key).replace("_", "-") == "load-format" and str(value) != "gms":
                     raise ValidationError(
                         f"engine.failover loads weights through the GPU Memory Service; "
-                        f"vllm_config.{mode_name}.load-format must be gms or unset, got {value!r}"
+                        f"roles.{role}.args.load-format must be gms or unset, got {value!r}"
                     )
         if installs_dynamo(self):
             logger.warning(
@@ -2679,10 +2841,7 @@ class SrtConfig:
         if not isinstance(self.backend, SGLangProtocol | VLLMProtocol | TRTLLMProtocol):
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
         if isinstance(self.backend, VLLMProtocol) and self.backend.dp_launch_mode != "per_node":
-            raise ValidationError(
-                "vLLM sidecar mode requires engine.dp_launch_mode: per_node "
-                "(backend.dp_launch_mode in schema 1); per_gpu is unsupported"
-            )
+            raise ValidationError("vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported")
 
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
@@ -2767,46 +2926,45 @@ class SrtConfig:
         """
         if self.resources.het_jobs is not True:
             return
-        if not self.resources.is_disaggregated:
+        topology = self.topology
+        if not topology.is_disaggregated:
             raise ValidationError(
-                "het_jobs=true requires a disaggregated layout (set resources.prefill_nodes and resources.decode_nodes)"
+                "het_jobs=true requires a disaggregated layout (declare roles.prefill and roles.decode)"
             )
-        if (self.resources.prefill_nodes or 0) < 1 or (self.resources.decode_nodes or 0) < 1:
-            raise ValidationError("het_jobs=true requires prefill_nodes >= 1 and decode_nodes >= 1")
+        if (topology.prefill_nodes or 0) < 1 or (topology.decode_nodes or 0) < 1:
+            raise ValidationError("het_jobs=true requires roles.prefill.nodes >= 1 and roles.decode.nodes >= 1")
         if self.backend_type != "sglang":
             raise ValidationError(
                 f"het_jobs=true is only supported on the sglang backend; got backend.type={self.backend_type!r}"
             )
-        if self.frontend.dedicated_node or self.benchmark.client_dedicated_node:
+        if self.frontend.placement.dedicated or self.benchmark.placement.dedicated:
             raise ValidationError(
-                "frontend.dedicated_node/benchmark.client_dedicated_node are not supported together with "
-                "het_jobs=true (a dedicated frontend/client node is not carved out of a het allocation)"
+                "frontend.placement.node: dedicated / benchmark.placement.node: dedicated are not supported "
+                "together with het_jobs=true (a dedicated frontend/client node is not carved out of a het allocation)"
             )
 
     def _validate_colocated_decode(self) -> None:
-        """A colocated decode layout (``decode_nodes: 0``, ``roles.decode.nodes: colocate``)
-        reserves no nodes of its own, so every decode worker has to fit on the GPUs the
-        prefill workers leave free. Run the backend's real packer against a placeholder
-        node list of ``prefill_nodes`` entries and turn its failure into a load-time error
-        instead of a ``Not enough nodes`` crash inside the SLURM job.
+        """``roles.decode.nodes: colocate`` reserves no nodes of its own, so every decode worker
+        has to fit on the GPUs the prefill workers leave free. Run the backend's real packer
+        against a placeholder node list of the prefill nodes and turn its failure into a
+        load-time error instead of a ``Not enough nodes`` crash inside the SLURM job.
         """
-        res = self.resources
-        if not res.is_disaggregated or res.decode_nodes != 0 or not res.num_decode:
+        topology = self.topology
+        if not topology.colocated_decode or not topology.num_decode:
             return
-        prefill_nodes = res.prefill_nodes or 0
-        if prefill_nodes < 1 or not res.num_prefill:
+        prefill_nodes = topology.prefill_nodes or 0
+        if prefill_nodes < 1 or not topology.num_prefill:
             raise ValidationError(
-                "decode colocation (roles.decode.nodes: colocate / resources.decode_nodes: 0) needs at least "
-                "one prefill node and one prefill worker to share"
+                "roles.decode.nodes: colocate needs at least one prefill node and one prefill worker to share"
             )
-        if self.total_nodes != res.total_nodes:
+        if self.total_nodes != topology.total_nodes:
             return  # the backend packs prefill and decode across extra nodes itself (vLLM)
-        capacity = prefill_nodes * res.gpus_per_node
-        demand = res.prefill_gpus + res.decode_gpus
+        capacity = prefill_nodes * topology.gpus_per_node
+        demand = topology.prefill_gpus + topology.decode_gpus
         layout = (
-            f"{res.num_prefill} prefill x {res.gpus_per_prefill} GPU(s) + "
-            f"{res.num_decode} decode x {res.gpus_per_decode} GPU(s) = {demand} GPU(s) on "
-            f"{prefill_nodes} node(s) x {res.gpus_per_node} GPU(s) = {capacity} GPU(s)"
+            f"{topology.num_prefill} prefill x {topology.gpus_per_prefill} GPU(s) + "
+            f"{topology.num_decode} decode x {topology.gpus_per_decode} GPU(s) = {demand} GPU(s) on "
+            f"{prefill_nodes} node(s) x {topology.gpus_per_node} GPU(s) = {capacity} GPU(s)"
         )
         if demand > capacity:
             raise ValidationError(f"colocated decode workers do not fit on the prefill nodes: {layout}")
@@ -2819,22 +2977,6 @@ class SrtConfig:
             raise ValidationError(
                 f"colocated decode workers cannot be packed onto the prefill nodes ({layout}): {detail}"
             ) from exc
-
-    def _validate_dedicated_node_placement(self):
-        """A dedicated node is wasted if a placement override routes the
-        orchestrator/client somewhere else — the reserved node would then sit
-        idle while the intended workload runs on a worker node instead.
-        """
-        if self.frontend.dedicated_node and self.frontend.orchestrator_placement != "head":
-            raise ValidationError(
-                f"frontend.dedicated_node requires frontend.orchestrator_placement: head "
-                f"(got {self.frontend.orchestrator_placement!r}); otherwise the reserved node is never used"
-            )
-        if self.benchmark.client_dedicated_node and self.benchmark.client_placement != "head":
-            raise ValidationError(
-                f"benchmark.client_dedicated_node requires benchmark.client_placement: head "
-                f"(got {self.benchmark.client_placement!r}); otherwise the reserved node is never used"
-            )
 
     def _validate_mooncake_kv_store(self):
         """Catch the common misconfiguration: mooncake_kv_store set but the
@@ -2853,11 +2995,10 @@ class SrtConfig:
                 mooncake_cfg.validate_device_mapping(self.resources.gpus_per_node)
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
-        if not self.resources.is_disaggregated:
+        if not self.topology.is_disaggregated:
             return
 
         if isinstance(self.backend, SGLangProtocol):
-            sglang_cfg = self.backend.sglang_config
 
             def _sglang_has_mooncake(mode_cfg: dict | None) -> bool:
                 if not mode_cfg:
@@ -2869,8 +3010,8 @@ class SrtConfig:
                         return True
                 return False
 
-            prefill_ok = sglang_cfg is not None and _sglang_has_mooncake(sglang_cfg.prefill)
-            decode_ok = sglang_cfg is not None and _sglang_has_mooncake(sglang_cfg.decode)
+            prefill_ok = _sglang_has_mooncake(self.backend.get_config_for_mode("prefill"))
+            decode_ok = _sglang_has_mooncake(self.backend.get_config_for_mode("decode"))
 
             if not (prefill_ok or decode_ok):
                 raise ValidationError(
@@ -2880,7 +3021,6 @@ class SrtConfig:
                     "actually use the mooncake master srtslurm launches for you."
                 )
         elif isinstance(self.backend, VLLMProtocol):
-            vllm_cfg = self.backend.vllm_config
 
             def _vllm_has_mooncake(mode_cfg: dict | None) -> bool:
                 if not mode_cfg:
@@ -2896,8 +3036,8 @@ class SrtConfig:
                         return True
                 return False
 
-            prefill_ok = vllm_cfg is not None and _vllm_has_mooncake(vllm_cfg.prefill)
-            decode_ok = vllm_cfg is not None and _vllm_has_mooncake(vllm_cfg.decode)
+            prefill_ok = _vllm_has_mooncake(self.backend.get_config_for_mode("prefill"))
+            decode_ok = _vllm_has_mooncake(self.backend.get_config_for_mode("decode"))
 
             if not (prefill_ok or decode_ok):
                 raise ValidationError(
@@ -2913,7 +3053,7 @@ class SrtConfig:
         """Derive selectable physical ranks from the configured worker layout."""
         from srtctl.core.topology import Endpoint
 
-        resources = self.resources
+        resources = self.topology
         gpus_per_worker = {
             "prefill": resources.gpus_per_prefill,
             "decode": resources.gpus_per_decode,
@@ -2973,7 +3113,7 @@ class SrtConfig:
                 )
             return
 
-        r = self.resources
+        r = self.topology
         is_disaggregated = r.is_disaggregated
         has_prefill_prof = prof.prefill is not None
         has_decode_prof = prof.decode is not None
@@ -3054,32 +3194,25 @@ class SrtConfig:
 
         # Iteration-based nsys (type: nsys) drives the vLLM engine profiler via
         # --profiler-config, derived from the profiling: block. Forbid duplicating
-        # it in vllm_config so the two can't diverge silently.
+        # it in roles.<role>.args so the two can't diverge silently.
         if prof.type == "nsys" and backend_type == "vllm":
             self._validate_vllm_nsys_profiler_config_not_set()
 
     def _validate_vllm_nsys_profiler_config_not_set(self):
-        """Reject profiler-config.* in vllm_config when nsys profiling is enabled.
+        """Reject profiler-config.* in a role's args when nsys profiling is enabled.
 
         srtctl injects --profiler-config from the profiling: block (single source
-        of truth), so a user-supplied profiler-config in vllm_config would either
-        be overwritten or conflict with a different step window. Fail fast at
-        recipe-read time instead.
+        of truth), so a user-supplied profiler-config in roles.<role>.args would
+        either be overwritten or conflict with a different step window. Fail fast
+        at recipe-read time instead.
         """
-        if not isinstance(self.backend, VLLMProtocol) or self.backend.vllm_config is None:
+        if not isinstance(self.backend, VLLMProtocol):
             return
-        vllm_cfg = self.backend.vllm_config
-        for mode_name, cfg in (
-            ("prefill", vllm_cfg.prefill),
-            ("decode", vllm_cfg.decode),
-            ("aggregated", vllm_cfg.aggregated),
-        ):
-            if not cfg:
-                continue
-            bad = [k for k in cfg if str(k).replace("_", "-").startswith("profiler-config")]
+        for role, spec in self.roles.items():
+            bad = [k for k in spec.args if str(k).replace("_", "-").startswith("profiler-config")]
             if bad:
                 raise ValidationError(
-                    f"vllm_config.{mode_name} sets {bad}, but profiler-config.* is derived automatically "
+                    f"roles.{role}.args sets {bad}, but profiler-config.* is derived automatically "
                     f"from the profiling: block when nsys profiling is enabled. Remove these keys."
                 )
 
@@ -3094,14 +3227,14 @@ class SrtConfig:
         if self.benchmark.type not in _DCGM_POWER_BENCHMARK_TYPES:
             supported = ", ".join(sorted(_DCGM_POWER_BENCHMARK_TYPES))
             return f"telemetry requires benchmark.type to be one of: {supported}"
-        if self.benchmark.client_placement != "head":
-            return "telemetry requires benchmark.client_placement: head"
+        if self.benchmark.placement.location != "head":
+            return "telemetry requires benchmark.placement.node: head"
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
-        if self.infra.etcd_nats_dedicated_node:
+        if self.infra_dedicated_node:
             return (
-                "telemetry requires infra.etcd_nats_dedicated_node: false, because a "
-                "dedicated infra node moves nodes.head off the batch host and power samples would no longer "
-                "share the benchmark's clock"
+                "telemetry requires the discovery plane on the infra node (no etcd or nats service with "
+                "placement.node: dedicated), because a dedicated infra node moves nodes.head off the batch host "
+                "and power samples would no longer share the benchmark's clock"
             )
         try:
             concurrencies = self.benchmark.get_concurrency_list()
@@ -3230,7 +3363,7 @@ class SrtConfig:
         if self.frontend.type == "none" or get_frontend(self.frontend.type).worker_launch != "dynamo":
             return set()
 
-        resources = self.resources
+        resources = self.topology
         nodes = [f"validation-worker-{index}" for index in range(self.total_nodes)]
         endpoints = self.backend.allocate_endpoints(
             num_prefill=resources.num_prefill,
@@ -3241,7 +3374,7 @@ class SrtConfig:
             gpus_per_agg=resources.gpus_per_agg,
             gpus_per_node=resources.gpus_per_node,
             available_nodes=nodes,
-            spread_workers=resources.spread_workers,
+            spread_workers=self.resources.spread_workers,
         )
         processes = self.backend.endpoints_to_processes(
             endpoints,
@@ -3443,34 +3576,34 @@ class SrtConfig:
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
-        from srtctl.core.config import expand_engine_config_defaults
-        from srtctl.core.placement import expand_placement
-        from srtctl.core.roles import expand_roles
-        from srtctl.services.normalize import expand_services
+        """Load a recipe file without cluster defaults (``load_config`` applies them).
+
+        Runs the same gate and engine-default expansions as ``load_config``: a
+        pre-2.0 recipe is rejected before the schema loads the document.
+        """
+        from srtctl.core.config import expand_engine_config_defaults, resolve_config_with_defaults
 
         with open(yaml_path) as f:
             data = yaml.safe_load(f)
-        expand_roles(data)
-        expand_placement(data)
-        expand_services(data)
-        expand_engine_config_defaults(data)
+        resolved = resolve_config_with_defaults(data, None)
+        expand_engine_config_defaults(resolved)
         schema = cls.Schema()
-        return schema.load(data)
+        return schema.load(resolved)
 
     @property
     def served_model_name(self) -> str:
         """Get the served model name from backend config or model path."""
         default = Path(self.model.path).name
-        role = "decode" if self.resources.num_decode else "agg" if self.resources.num_agg else "prefill"
+        role = "decode" if self.topology.num_decode else "agg" if self.topology.num_agg else "prefill"
         if self.frontend.type != "none":
             from srtctl.frontends import get_frontend
 
             role = get_frontend(self.frontend.type).model_name_role or role
         backend = self.backend_for_role(role)
         if isinstance(backend, AtomProtocol):
-            # ATOM advertises the literal --model argument; unlike SGLang/vLLM,
-            # it has no separate served-model-name alias. Match the worker's
-            # HF ID or container-visible path, including node-local staging.
+            # Without served-model-name, ATOM advertises the literal --model
+            # argument: the worker's HF ID or container-visible path, including
+            # node-local staging.
             model_path = os.path.expandvars(self.model.path)
             if model_path.startswith("hf:"):
                 default = model_path[3:]
@@ -3499,7 +3632,7 @@ class SrtConfig:
     @property
     def engine_node_count(self) -> int:
         """Nodes the engine roles own; zero when the recipe has no engine workers."""
-        if not self.resources.has_engine_workers:
+        if not self.topology.has_engine_workers:
             return 0
         return self._engine_total_nodes()
 
@@ -3510,29 +3643,44 @@ class SrtConfig:
 
     def _engine_total_nodes(self) -> int:
         """Worker node count of the engine roles, adjusted for backend-specific packing."""
+        topology = self.topology
         if self.has_role_backends:
-            return self.resources.total_nodes
+            return topology.total_nodes
         if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
-            num_prefill=self.resources.num_prefill,
-            num_decode=self.resources.num_decode,
-            num_agg=self.resources.num_agg,
-            gpus_per_prefill=self.resources.gpus_per_prefill,
-            gpus_per_decode=self.resources.gpus_per_decode,
-            gpus_per_agg=self.resources.gpus_per_agg,
-            gpus_per_node=self.resources.gpus_per_node,
+            num_prefill=topology.num_prefill,
+            num_decode=topology.num_decode,
+            num_agg=topology.num_agg,
+            gpus_per_prefill=topology.gpus_per_prefill,
+            gpus_per_decode=topology.gpus_per_decode,
+            gpus_per_agg=topology.gpus_per_agg,
+            gpus_per_node=topology.gpus_per_node,
         ):
-            total_worker_gpus = (
-                self.resources.prefill_gpus
-                + self.resources.decode_gpus
-                + self.resources.num_agg * self.resources.gpus_per_agg
-            )
-            return (total_worker_gpus + self.resources.gpus_per_node - 1) // self.resources.gpus_per_node
-        return self.resources.total_nodes
+            total_worker_gpus = topology.prefill_gpus + topology.decode_gpus + topology.num_agg * topology.gpus_per_agg
+            return (total_worker_gpus + topology.gpus_per_node - 1) // topology.gpus_per_node
+        return topology.total_nodes
 
     @property
     def backend_type(self) -> str:
         """Get the backend type string."""
         return self.backend.type
+
+    @property
+    def infra_services(self) -> list[ServiceConfig]:
+        """The declared, enabled discovery-plane entries (``etcd`` / ``nats``)."""
+        return [service for service in self.services if service.type in INFRA_SERVICE_TYPES and service.enabled]
+
+    @property
+    def infra_dedicated_node(self) -> bool:
+        """Whether the discovery plane gets a node of its own: a declared ``etcd`` or ``nats`` placed ``dedicated``."""
+        return any(service.effective_placement == "dedicated" for service in self.infra_services)
+
+    @property
+    def nats_max_payload_mb(self) -> int | None:
+        """The NATS payload limit from a declared ``nats`` entry's ``options.max_payload_mb``; None for the default."""
+        for service in self.infra_services:
+            if service.type == "nats" and service.options.get("max_payload_mb") is not None:
+                return int(service.options["max_payload_mb"])
+        return None
 
 
 def installs_dynamo(config: SrtConfig) -> bool:

@@ -94,7 +94,7 @@ class SweepOrchestrator(
         from their own component nodelists so neither side bleeds into the
         other's topology segment.
         """
-        r = self.config.resources
+        r = self.config.topology
         if self.runtime.nodes.het:
             if self.config.role_backends:
                 raise ValueError("Role engine overrides do not support Slurm heterogeneous allocations")
@@ -124,8 +124,7 @@ class SweepOrchestrator(
         """Start the discovery plane (etcd, NATS) as services.
 
         They are implied by ``frontend.type: dynamo`` and placed on the infra node
-        (a dedicated node when ``infra.etcd_nats_dedicated_node`` / a declared
-        etcd or nats service asks for it). A recipe may declare them to change
+        (a dedicated node when a declared etcd or nats service asks for it). A recipe may declare them to change
         the container or point at an external instance. See docs/services.md.
         """
         self.start_services("infra", registry)
@@ -397,7 +396,7 @@ class SweepOrchestrator(
             logger.warning(
                 "HF model '%s' specified but HF_HOME is not set in backend environment config. "
                 "Workers will use the default HuggingFace cache (~/.cache/huggingface) which may not "
-                "be shared across nodes. Set HF_HOME in prefill_environment/decode_environment to use "
+                "be shared across nodes. Set HF_HOME in roles.<role>.env to use "
                 "a shared cache directory (e.g., HF_HOME: /lustre/fsw/.../common/cache).",
                 self.runtime.model_path,
             )
@@ -654,7 +653,7 @@ class SweepOrchestrator(
                 logger.info("No discovery plane for frontend.type=%s", self.config.frontend.type)
 
             # Stage 1b: services workers depend on: the Mooncake master (implied by
-            # backend.mooncake_kv_store), standalone Mooncake stores, anything with
+            # engine.mooncake_kv_store), standalone Mooncake stores, anything with
             # start: before_workers. The stage registers each process as it
             # launches. See docs/services.md.
             self._write_mooncake_store_config()

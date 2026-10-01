@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 from marshmallow import ValidationError
-from test_observability import BASE_CONFIG
+from test_observability import BASE_CONFIG, _recipe
 from test_slurm import _remap_worker_mixin
 
 from srtctl.core.observability_nsys import wrap_observability_nsys
@@ -22,7 +22,7 @@ from srtctl.frontends.dynamo import DynamoFrontend
 
 def config(**overrides):
     data = deepcopy(BASE_CONFIG)
-    data.update(backend={"type": "trtllm"}, observability={"enabled": True}, benchmark={"type": "manual"})
+    data.update(engine={"type": "trtllm"}, observability={"enabled": True}, benchmark={"type": "manual"})
     data.update(overrides)
     return SrtConfig.Schema().load(data)
 
@@ -51,24 +51,26 @@ def test_preset_requires_observability_and_honors_opt_out(observability, expecte
     ],
 )
 def test_explicit_profiling_takes_precedence(profiling):
-    cfg = config(profiling=profiling, backend={"type": "sglang"})
+    cfg = config(profiling=profiling, engine={"type": "sglang"})
     assert not cfg.observability_nsys_enabled
     assert cfg.profiling.type == profiling["type"]
 
 
 def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
-    cfg = config(
-        observability={
-            "enabled": True,
-            "nsys": {
-                "capture_window": "including_startup",
-                "report_timeout_secs": 45,
-                "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
-            },
-        }
-    )
+    observability = {
+        "enabled": True,
+        "nsys": {
+            "capture_window": "including_startup",
+            "report_timeout_secs": 45,
+            "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
+        },
+    }
+    cfg = config(observability=observability)
+    # The YAML loaders read recipes, not schema dumps: spell the same job as a schema-2 recipe.
+    data = deepcopy(BASE_CONFIG)
+    data.update(engine={"type": "trtllm"}, observability=observability, benchmark={"type": "manual"})
     path = tmp_path / "recipe.yaml"
-    path.write_text(yaml.safe_dump(SrtConfig.Schema().dump(cfg)))
+    path.write_text(yaml.safe_dump(_recipe(data)))
     loaded = SrtConfig.from_yaml(path)
     assert loaded.observability.nsys == cfg.observability.nsys
     assert loaded.benchmark.type == "manual"
@@ -165,7 +167,7 @@ def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, ena
 
 @pytest.mark.parametrize(("mpi", "engine_suffix"), [(False, ""), (True, ""), (False, "_e1")])
 def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mpi, engine_suffix):
-    cfg = config(backend={"type": "trtllm" if mpi else "vllm"})
+    cfg = config(engine={"type": "trtllm" if mpi else "vllm"})
     stage, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     # Validate the actual backend schema; stub only command/env construction.
     stage.config = cfg
@@ -215,7 +217,7 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
 def test_wrapped_processes_enable_their_nvtx_emitters(tmp_path, backend, frontend, present, absent):
     _, env = wrap_observability_nsys(
         ["python3", "-m", "app"],
-        config=config(backend={"type": backend}),
+        config=config(engine={"type": backend}),
         log_dir=tmp_path,
         report_name="x",
         frontend=frontend,

@@ -118,7 +118,6 @@ RULES = [
         # Frontend field reads kept reflective because stage tests pass partial SimpleNamespace frontends.
         frozenset(
             {
-                ("cli/mixins/benchmark_stage.py", "getattr(frontend, 'orchestrator_placement')"),
                 ("frontends/base.py", "getattr(frontend, 'numa_bind')"),
                 ("frontends/dynamo.py", "getattr(frontend, 'worker_selection')"),
                 ("frontends/static_router.py", "getattr(frontend, 'container_image')"),

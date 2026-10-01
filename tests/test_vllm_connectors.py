@@ -11,8 +11,9 @@ import json
 
 import pytest
 
-from srtctl.backends import VLLMProtocol, VLLMServerConfig
+from srtctl.backends import VLLMProtocol
 from srtctl.backends.vllm import _CONNECTOR_MAP, KVConnector, kv_connector_row
+from srtctl.core.schema import RoleConfig
 
 
 def test_table_presets_serialize_exactly_as_before():
@@ -41,7 +42,7 @@ def test_table_presets_serialize_exactly_as_before():
 
 
 def test_role_override_wins_for_that_role_only():
-    backend = VLLMProtocol(connector="nixl", vllm_config=VLLMServerConfig(decode={"connector": "lmcache"}))
+    backend = VLLMProtocol(connector="nixl", roles={"decode": RoleConfig(args={"connector": "lmcache"})})
 
     assert backend.connector_for_mode("prefill") == "nixl"
     assert backend.connector_for_mode("decode") == "lmcache"
@@ -91,8 +92,9 @@ def test_direct_aggregate_worker_runs_only_its_role_connector(aggregated, expect
     from unittest.mock import MagicMock
 
     from srtctl.core.topology import Process
+    from srtctl.core.schema import RoleConfig
 
-    backend = VLLMProtocol(connector="nixl", vllm_config=VLLMServerConfig(aggregated=aggregated))
+    backend = VLLMProtocol(connector="nixl", roles={"agg": RoleConfig(args=aggregated)})
     process = Process(
         node="node0",
         gpu_indices=frozenset(range(8)),

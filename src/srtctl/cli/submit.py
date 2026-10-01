@@ -266,14 +266,9 @@ def show_config_details(config: SrtConfig) -> None:
                 "--publish-events-and-metrics": "metrics and KV events",
             }
             publication = [f"{flag} ({descriptions[flag]})" for flag in config.backend.dynamo_metrics_flags]
-            disabled_by = (
-                "publish_events_and_metrics"
-                if config.backend.publish_events_and_metrics is False
-                else "publish_metrics"
-            )
             console.print(
                 Panel(
-                    "\n".join(publication) or f"No publication flag (backend.{disabled_by}: false)",
+                    "\n".join(publication) or "No publication flag (backend.publish_metrics: false)",
                     title="Dynamo TRT-LLM Metrics",
                     border_style="cyan",
                 )
@@ -287,7 +282,7 @@ def show_config_details(config: SrtConfig) -> None:
         # expand_observability). Shown for both frontends so a run that expects
         # the iteration-level trtllm_* gauges can see before submitting that
         # enable_iter_perf_stats is off.
-        modes = ("prefill", "decode") if config.resources.is_disaggregated else ("agg",)
+        modes = ("prefill", "decode") if config.topology.is_disaggregated else ("agg",)
         rows = []
         for mode in modes:
             section = config.backend.get_config_for_mode(mode)
@@ -307,10 +302,10 @@ def show_config_details(config: SrtConfig) -> None:
         if isinstance(config.backend, VLLMProtocol):
             orchestration_flags = find_vllm_orchestration_recipe_flags(config.backend)
             if orchestration_flags:
-                for mode_name, flag_name in orchestration_flags:
+                for role, flag_name in orchestration_flags:
                     console.print(
                         "[yellow]WARNING:[/] "
-                        f"vllm_config.{mode_name}.{flag_name} is set in the recipe but srtslurm "
+                        f"roles.{role}.args.{flag_name} is set in the recipe but srtslurm "
                         "derives this from the job topology at runtime; remove it from the recipe "
                         "to avoid confusion (the configured value is ignored)."
                     )
@@ -380,8 +375,8 @@ def show_config_details(config: SrtConfig) -> None:
         )
 
     # --- SLURM heterogeneous job structure ---
-    het_components = config.resources.het_components(
-        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+    het_components = config.topology.het_components(
+        infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
     if het_components is not None:
@@ -393,7 +388,7 @@ def show_config_details(config: SrtConfig) -> None:
         het_table.add_column("GPUs/node", style="white", justify="right", width=10)
         het_table.add_column("Infra", style="dim")
         for c in het_components:
-            infra_note = "first node" if c.name == "prefill" and config.infra.etcd_nats_dedicated_node else ""
+            infra_note = "first node" if c.name == "prefill" and config.infra_dedicated_node else ""
             het_table.add_row(
                 str(c.group),
                 c.name,
@@ -410,9 +405,8 @@ def show_config_details(config: SrtConfig) -> None:
     backend = config.backend
     mode_envs: list[tuple[str, dict[str, str]]] = []
     for mode_name, env in [
-        ("prefill", config.backend_for_role("prefill").prefill_environment),
-        ("decode", config.backend_for_role("decode").decode_environment),
-        ("aggregated", config.backend_for_role("agg").aggregated_environment),
+        (mode_name, config.roles[role].env if role in config.roles else {})
+        for mode_name, role in (("prefill", "prefill"), ("decode", "decode"), ("aggregated", "agg"))
     ]:
         if env:
             has_env = True
@@ -920,21 +914,21 @@ def generate_minimal_sbatch_script(
     env = Environment(loader=FileSystemLoader(str(template_dir)))
     template = env.get_template("job_script_minimal.j2")
 
-    het_components = config.resources.het_components(
-        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+    het_components = config.topology.het_components(
+        infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
     if het_components is not None and config.role_backends:
         raise ValueError("Role engine overrides require resources.het_jobs: false")
-    if het_components is not None and (config.frontend.dedicated_node or config.benchmark.client_dedicated_node):
+    if het_components is not None and (config.frontend.placement.dedicated or config.benchmark.placement.dedicated):
         # SrtConfig validation only catches resources.het_jobs: true explicitly
         # set in the recipe — it can't see a cluster-level use_het_jobs default,
         # which is only resolved here via het_components(). Catch the combo now,
         # before sbatch submits a heterogeneous allocation that Nodes.from_slurm
         # will then reject at job startup after the nodes are already granted.
         raise ValueError(
-            "frontend.dedicated_node/benchmark.client_dedicated_node are not supported with heterogeneous "
-            "SLURM jobs, and this job resolved to heterogeneous (either resources.het_jobs: true or the "
+            "frontend.placement.node: dedicated / benchmark.placement.node: dedicated are not supported with "
+            "heterogeneous SLURM jobs, and this job resolved to heterogeneous (either resources.het_jobs: true or the "
             "cluster's use_het_jobs default)"
         )
     # For het jobs the sum is informational only — the template iterates het_components
@@ -984,9 +978,9 @@ def _print_running_summary(config: SrtConfig, console: Console, *, serve_only: b
     console.print(f"  Model:     {config.model.path}")
     console.print(f"  Container: {config.model.container}")
     worker_counts = {
-        "prefill": config.resources.num_prefill,
-        "decode": config.resources.num_decode,
-        "agg": config.resources.num_agg,
+        "prefill": config.topology.num_prefill,
+        "decode": config.topology.num_decode,
+        "agg": config.topology.num_agg,
     }
     for mode, count in worker_counts.items():
         image = config.worker_container_for_role(mode)
@@ -1049,9 +1043,9 @@ def planned_total_nodes(config: SrtConfig) -> int:
     total_nodes = config.total_nodes
     num_dedicated_roles = sum(
         (
-            config.infra.etcd_nats_dedicated_node,
-            config.frontend.dedicated_node,
-            config.benchmark.client_dedicated_node,
+            config.infra_dedicated_node,
+            config.frontend.placement.dedicated,
+            config.benchmark.placement.dedicated,
         )
     )
     if num_dedicated_roles > 0:
@@ -1067,17 +1061,17 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
     same rules the orchestrator applies at job start; they are ``None`` for
     heterogeneous jobs, whose components are addressed differently.
     """
-    het = config.resources.het_components(
-        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+    het = config.topology.het_components(
+        infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
     if het is None:
         total_nodes = planned_total_nodes(config)
         head, client = Nodes.planned_role_indices(
             total_nodes,
-            frontend_dedicated_node=config.frontend.dedicated_node,
-            client_dedicated_node=config.benchmark.client_dedicated_node,
-            etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+            frontend_dedicated_node=config.frontend.placement.dedicated,
+            client_dedicated_node=config.benchmark.placement.dedicated,
+            etcd_nats_dedicated_node=config.infra_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
         )
         indices: dict[str, int | None] = {"frontend_node_index": head, "client_node_index": client}
@@ -1302,15 +1296,15 @@ def submit_with_orchestrator(
             "resources": {
                 "gpu_type": config.resources.gpu_type,
                 "gpus_per_node": config.resources.gpus_per_node,
-                "prefill_nodes": config.resources.prefill_nodes,
-                "decode_nodes": config.resources.decode_nodes,
-                "agg_nodes": config.resources.agg_nodes,
-                "prefill_workers": config.resources.num_prefill,
-                "decode_workers": config.resources.num_decode,
-                "agg_workers": config.resources.num_agg,
-                "gpus_per_prefill": config.resources.gpus_per_prefill,
-                "gpus_per_decode": config.resources.gpus_per_decode,
-                "gpus_per_agg": config.resources.gpus_per_agg,
+                "prefill_nodes": config.topology.prefill_nodes,
+                "decode_nodes": config.topology.decode_nodes,
+                "agg_nodes": config.topology.agg_nodes,
+                "prefill_workers": config.topology.num_prefill,
+                "decode_workers": config.topology.num_decode,
+                "agg_workers": config.topology.num_agg,
+                "gpus_per_prefill": config.topology.gpus_per_prefill,
+                "gpus_per_decode": config.topology.gpus_per_decode,
+                "gpus_per_agg": config.topology.gpus_per_agg,
             },
             # Backend and frontend
             "backend_type": config.backend_type,
@@ -1980,9 +1974,8 @@ def main():
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
-  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md + docs/legacy-v1.md
-  srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
-  srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
+  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
+  srtctl migrate -f config.yaml --in-place       # Rewrite a pre-2.0 recipe into the current schema (dir: recursive)
   srtctl skill --target claude                   # Install the srtctl agent skill into this project
   srtctl --version                               # Version (from the git tag), commit, schema and lockfile versions
 """,
@@ -2014,7 +2007,7 @@ def main():
             dest="set_overrides",
             help=(
                 "Override a recipe value by dotted path before validation (repeatable), e.g. "
-                "--set health_check.max_attempts=720 or --set 'backend.sglang_config.prefill.dist-timeout=1800'. "
+                "--set health_check.max_attempts=720 or --set 'roles.prefill.args.dist-timeout=1800'. "
                 "Values parse as YAML scalars or lists; mappings stay literal strings. "
                 "On override files the value is written into base and every variant."
             ),
@@ -2169,18 +2162,18 @@ def main():
     # Generated schema reference: srtctl schema-docs [--check] [--output PATH]
     schema_docs_parser = subparsers.add_parser(
         "schema-docs",
-        help="Regenerate docs/schema-reference.md (2.0 layout) and docs/legacy-v1.md (v1 layout) from the code",
+        help="Regenerate docs/schema-reference.md from the code",
     )
     schema_docs_parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 if either checked-in document is stale instead of rewriting them (used by CI)",
+        help="Exit 1 if the checked-in document is stale instead of rewriting it (used by CI)",
     )
     schema_docs_parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Write the schema reference to this path instead of docs/schema-reference.md (legacy-v1.md lands beside it)",
+        help="Write the schema reference to this path instead of docs/schema-reference.md",
     )
 
     # Recipe migration: srtctl migrate -f recipe.yaml [--in-place | --output PATH]
@@ -2206,7 +2199,7 @@ def main():
 
     migrate_parser = subparsers.add_parser(
         "migrate",
-        help="Upgrade a recipe (plain, override, or lock file) to the current schema version",
+        help="Rewrite a pre-2.0 recipe (plain, override, sweep, or lock file) into the current schema version",
     )
     migrate_parser.add_argument(
         "-f",
@@ -2223,11 +2216,6 @@ def main():
         type=Path,
         default=None,
         help="Write the migrated recipe to this path (single file only; default: print to stdout)",
-    )
-    migrate_parser.add_argument(
-        "--verify",
-        action="store_true",
-        help="Do not write: migrate in memory and prove the v1 and v2 recipes resolve identically (golden equality)",
     )
 
     args = parser.parse_args()
@@ -2335,27 +2323,19 @@ def main():
         sys.exit(1 if all_results else 0)
 
     if args.command == "schema-docs":
-        from srtctl.core.schema_docs import (
-            DEFAULT_OUTPUT,
-            legacy_output_for,
-            schema_reference_is_current,
-            write_schema_reference,
-        )
+        from srtctl.core.schema_docs import DEFAULT_OUTPUT, schema_reference_is_current, write_schema_reference
 
         output = args.output or DEFAULT_OUTPUT
         if args.check:
             if schema_reference_is_current(output):
-                console.print(f"[green]✓[/] {output} and {legacy_output_for(output)} are up to date")
+                console.print(f"[green]✓[/] {output} is up to date")
                 restore_console()
                 return
-            console.print(
-                f"[bold red]✗[/] {output} or {legacy_output_for(output)} is stale; "
-                "run `srtctl schema-docs` and commit the result"
-            )
+            console.print(f"[bold red]✗[/] {output} is stale; run `srtctl schema-docs` and commit the result")
             restore_console()
             sys.exit(1)
         written = write_schema_reference(output)
-        console.print(f"[green]✓[/] Wrote {written} and {legacy_output_for(written)}")
+        console.print(f"[green]✓[/] Wrote {written}")
         restore_console()
         return
 
@@ -2372,29 +2352,12 @@ def main():
         return
 
     if args.command == "migrate":
-        from srtctl.core.migrate import migrate_recipe_file, recipe_files, verify_migration_file
+        from srtctl.core.migrate import migrate_recipe_file, recipe_files
 
         files = recipe_files(args.migrate_files)
         if not files:
             console.print("[bold red]No recipe files found[/]")
             sys.exit(1)
-        if args.verify:
-            counts: dict[str, int] = {"ok": 0, "mismatch": 0, "skipped": 0, "error": 0}
-            for path in files:
-                outcome = verify_migration_file(path)
-                counts[outcome.status] += 1
-                if outcome.status == "ok":
-                    console.print(f"[green]✓[/] {path} ({outcome.variants} variant(s) resolve identically)")
-                elif outcome.status == "skipped":
-                    console.print(f"[yellow]-[/] {path}: skipped, {outcome.detail}")
-                else:
-                    console.print(f"[bold red]✗[/] {path}: {outcome.detail}")
-            console.print(
-                f"\n{counts['ok']} identical, {counts['mismatch']} mismatched, "
-                f"{counts['skipped']} skipped (v1 does not load), {counts['error']} unreadable"
-            )
-            restore_console()
-            sys.exit(1 if counts["mismatch"] or counts["error"] else 0)
         if not args.in_place and args.output is None and len(files) > 1:
             console.print("[bold red]Error:[/] printing to stdout needs a single file; use --in-place for many")
             sys.exit(1)

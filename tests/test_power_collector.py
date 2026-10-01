@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,9 +19,16 @@ from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import MANIFEST_FILENAME, SAMPLES_FILENAME, WINDOWS_DIRNAME, Reason
+from srtctl.core.power.diagnostics import ScrapeDiagnostics
 from srtctl.core.power.manifest import ExpectedWindow
-from srtctl.core.power.samples import read_samples
-from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession, _run_daemon_workers
+from srtctl.core.power.samples import SampleRow, read_samples
+from srtctl.core.power.session import (
+    PowerEndpoint,
+    PowerSessionSettings,
+    PowerTelemetrySession,
+    _EndpointResult,
+    _run_daemon_workers,
+)
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
@@ -185,6 +193,230 @@ def _exited_exporter(name, returncode):
 
 def _manifest(session):
     return json.loads((session.power_dir / MANIFEST_FILENAME).read_text())
+
+
+class TestScrapeDiagnostics:
+    def test_queue_overflow_is_bounded_and_reported(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("srtctl.core.power.diagnostics._MAX_PENDING_RECORDS", 2)
+        entered, release = threading.Event(), threading.Event()
+        real_open = Path.open
+        path = tmp_path / "timings.jsonl"
+
+        def blocked_open(path, *args, **kwargs):
+            entered.set()
+            assert release.wait(5)
+            return real_open(path, *args, **kwargs)
+
+        with monkeypatch.context() as context:
+            context.setattr(Path, "open", blocked_open)
+            sink = ScrapeDiagnostics(path)
+            try:
+                assert entered.wait(1)
+                for index in range(10):
+                    sink.record({"scrape_seq": index})
+                assert sink._queue.qsize() == 2
+                sink.close(time.monotonic())
+            finally:
+                release.set()
+                sink.close(time.monotonic() + 1)
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        assert [record["scrape_seq"] for record in records[:-1]] == [0, 1]
+        assert records[-1] == {"event": "diagnostic_summary", "dropped_records": 8}
+
+    def test_write_wait_and_schedule_lag_have_separate_monotonic_timings(self, tmp_path):
+        session = _session(tmp_path, [], windows=[])
+        session.initialize()
+        result = _EndpointResult("node-a", [], [], None, started_monotonic=90.0)
+        with patch("srtctl.core.power.session.time.monotonic", side_effect=[100.0, 101.0, 103.0]):
+            session._persist_cycle(
+                [result], [], scrape_seq=0, scheduled_monotonic=89.0, scheduled_at_unix=1_700_000_000.0
+            )
+        session.stop_and_finalize()
+        scrape, cycle, _ = [
+            json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()
+        ]
+        assert scrape["event"] == "scrape"
+        assert scrape["schedule_lag_seconds"] == 1.0
+        assert "writer_lock_wait_seconds" not in scrape
+        assert "request_started_monotonic" not in scrape
+        assert cycle["event"] == "cycle_write"
+        assert cycle["scrape_seq"] == 0
+        assert cycle["scheduled_at_unix"] == 1_700_000_000.0
+        assert cycle["writer_lock_wait_seconds"] == 1.0
+        assert cycle["sample_write_seconds"] == 2.0
+
+    @pytest.mark.parametrize("failure", ["timeout", "http_error"])
+    def test_failed_request_and_recovery_keep_timing_and_sample_identity(self, tmp_path, exporters, failure):
+        endpoint = exporters(
+            _body("a"), delay=0.1 if failure == "timeout" else 0, fail_requests=1 if failure == "http_error" else 0
+        )
+        session = _session(tmp_path, _endpoints(("node-a", endpoint.url)), windows=[], request_timeout_seconds=0.02)
+        session.initialize()
+        assert session.collect_once() == 0
+        endpoint.delay = 0
+        assert session.collect_once() == GPUS_PER_NODE
+        session.stop_and_finalize()
+
+        records = [json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()]
+        failed, failed_write, recovered, recovered_write, summary = records
+        assert failed["error_type"] == ("ReadTimeout" if failure == "timeout" else "HTTPError")
+        assert failed["request_duration_seconds"] > 0
+        assert failed["sample_timestamp_unix"] is None
+        assert failed["parse_seconds"] is None
+        assert failed["row_count"] == 0
+        assert recovered["http_status"] == 200
+        assert recovered["parse_seconds"] >= 0
+        assert recovered["error_type"] is None
+        assert failed_write["row_count"] == 0
+        assert recovered_write["sample_write_completed"]
+        assert recovered_write["row_count"] == GPUS_PER_NODE
+        assert recovered["job_id"] == "12345"
+        rows, _ = read_samples(session.samples_path)
+        assert {(r.hostname, r.scrape_seq, r.timestamp_unix) for r in rows} == {
+            (recovered["hostname"], recovered["scrape_seq"], recovered["sample_timestamp_unix"])
+        }
+        assert _manifest(session)["max_scrape_duration_seconds"] == recovered["request_duration_seconds"]
+        assert summary == {"event": "diagnostic_summary", "dropped_records": 0}
+
+    @pytest.mark.parametrize("operation", ["open", "write", "close"])
+    def test_blocked_diagnostics_do_not_stop_other_endpoints_or_shutdown(
+        self, tmp_path, exporters, monkeypatch, operation
+    ):
+        entered, release = threading.Event(), threading.Event()
+        real_open = Path.open
+
+        def blocked_open(path, *args, **kwargs):
+            if path.name != "scrape-timings.jsonl":
+                return real_open(path, *args, **kwargs)
+            if operation == "open":
+                entered.set()
+                assert release.wait(5)
+            handle = real_open(path, *args, **kwargs)
+            if operation != "open":
+                original = getattr(handle, operation)
+
+                def block(*args, **kwargs):
+                    entered.set()
+                    assert release.wait(5)
+                    return original(*args, **kwargs)
+
+                setattr(handle, operation, block)
+            return handle
+
+        monkeypatch.setattr(Path, "open", blocked_open)
+        a, b = exporters(_body("a")), exporters(_body("b"))
+        session = _session(
+            tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), windows=[], collector_join_timeout_seconds=0.2
+        )
+        session.initialize()
+        try:
+            assert session.start_and_wait_for_readiness()
+            if operation != "close":
+                assert entered.wait(1)
+            before = {row.hostname: row.scrape_seq for row in read_samples(session.samples_path)[0]}
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                after = {row.hostname: row.scrape_seq for row in read_samples(session.samples_path)[0]}
+                if all(after.get(host, -1) > seq for host, seq in before.items()):
+                    break
+                time.sleep(0.01)
+            assert set(before) == {"node-a", "node-b"}
+            assert all(after.get(host, -1) > seq for host, seq in before.items())
+            stopped = threading.Event()
+            stopper = threading.Thread(target=lambda: (session.stop_and_finalize(), stopped.set()), daemon=True)
+            stopper.start()
+            assert stopped.wait(1), "diagnostic I/O must not hold shutdown"
+            assert entered.wait(1)
+            assert session.writer_closed
+            assert _manifest(session)["status"] == "complete"
+        finally:
+            release.set()
+            session.stop_and_finalize()
+            if session._diagnostics is not None:
+                session._diagnostics.close(time.monotonic() + 1)
+
+    def test_sample_write_failure_is_named_and_distinct_from_refusal(self, tmp_path, exporters):
+        endpoint = exporters(_body("a"))
+        session = _session(tmp_path, _endpoints(("node-a", endpoint.url)), windows=[])
+        session.initialize()
+        with (
+            patch.object(session._writer, "append", side_effect=OSError("samples disk failure")),
+            pytest.raises(OSError, match="samples disk failure"),
+        ):
+            session.collect_once()
+        # Refusal is only reachable when finalization wins the race between poll and persist.
+        result = _EndpointResult(
+            "node-a",
+            [SampleRow(100.0, 1, "node-a", gpu, f"GPU-{gpu}", 100.0) for gpu in range(GPUS_PER_NODE)],
+            [],
+            0.01,
+        )
+        session._mutation_disabled = True
+        assert session._persist_cycle([result], result.rows, scrape_seq=1, scheduled_monotonic=None) == 0
+        session._mutation_disabled = False
+        session.stop_and_finalize()
+
+        records = [json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()]
+        assert all("sample_write_completed" not in r for r in records if r["event"] == "scrape")
+        failed, refused, summary = [r for r in records if r["event"] != "scrape"]
+        assert failed["event"] == refused["event"] == "cycle_write"
+        assert failed["row_count"] == GPUS_PER_NODE
+        assert failed["sample_write_completed"] is False
+        assert failed["sample_write_error"] == "OSError"
+        assert refused["row_count"] == GPUS_PER_NODE
+        assert refused["sample_write_completed"] is False
+        assert refused["sample_write_error"] is None
+        assert summary["event"] == "diagnostic_summary"
+
+    def test_final_bracket_scrape_records_null_lag_on_last_seq(self, tmp_path, exporters):
+        a, b = exporters(_body("a")), exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), windows=[])
+        session.initialize()
+        started = time.time()
+        assert session.start_and_wait_for_readiness()
+        session.stop_and_finalize()
+        finished = time.time()
+
+        records = [json.loads(line) for line in (session.power_dir / "scrape-timings.jsonl").read_text().splitlines()]
+        assert records[-1]["event"] == "diagnostic_summary"
+        rows, _ = read_samples(session.samples_path)
+        last_seq = max(row.scrape_seq for row in rows)
+        scrapes = [r for r in records if r["event"] == "scrape"]
+        bracket = [r for r in scrapes if r["scrape_seq"] == last_seq]
+        assert {r["hostname"] for r in bracket} == {"node-a", "node-b"}
+        assert all(r["schedule_lag_seconds"] is None for r in bracket)
+        (bracket_write,) = [r for r in records if r["event"] == "cycle_write" and r["scrape_seq"] == last_seq]
+        assert bracket_write["sample_write_completed"]
+        assert bracket_write["scheduled_at_unix"] is None
+        scheduled = [r for r in scrapes if r["scrape_seq"] < last_seq]
+        assert scheduled and all(r["schedule_lag_seconds"] is not None for r in scheduled)
+        assert all("request_started_monotonic" not in r for r in scrapes)
+        slots = [r["scheduled_at_unix"] for r in records if r["event"] == "cycle_write" and r["scrape_seq"] < last_seq]
+        assert slots and all(started <= slot <= finished for slot in slots)
+        interval = session._settings.sample_interval_seconds
+        assert all(later - earlier == pytest.approx(interval) for earlier, later in pairwise(slots))
+
+    def test_diagnostic_write_failure_preserves_samples(self, tmp_path, exporters, monkeypatch):
+        real_open = Path.open
+
+        def failing_open(path, *args, **kwargs):
+            handle = real_open(path, *args, **kwargs)
+            if path.name == "scrape-timings.jsonl":
+
+                def fail(_text):
+                    raise OSError("diagnostic disk failure")
+
+                handle.write = fail
+            return handle
+
+        monkeypatch.setattr(Path, "open", failing_open)
+        a, b = exporters(_body("a")), exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), windows=[])
+        session.initialize()
+        assert session.collect_once() == 2 * GPUS_PER_NODE
+        assert session.collect_once() == 2 * GPUS_PER_NODE
+        assert session.stop_and_finalize().status == "complete"
+        assert len(read_samples(session.samples_path)[0]) == 4 * GPUS_PER_NODE
 
 
 class TestDaemonWorkers:

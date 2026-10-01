@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import builtins
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -11,6 +11,7 @@ import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env, role_for_mode
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, TRTLLM_DIST_INIT_PORTS
 
@@ -39,21 +40,6 @@ TRTLLM_FATAL_LOG_PATTERNS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
-class TRTLLMServerConfig:
-    """SGLang server CLI configuration per mode (prefill/decode/aggregated).
-
-    Each mode can have its own configuration dict that gets converted
-    to CLI flags when starting the worker.
-    """
-
-    prefill: dict[str, Any] | None = None
-    decode: dict[str, Any] | None = None
-    aggregated: dict[str, Any] | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
 class TRTLLMProtocol:
     """TRTLLM protocol - implements BackendProtocol.
 
@@ -61,46 +47,40 @@ class TRTLLMProtocol:
     BackendProtocol methods for process allocation and launching.
 
     Example YAML:
-        backend:
-          type: trtllm
-          prefill_environment:
-            CUDA_LAUNCH_BLOCKING: "1"
-          trtllm_config:
-            prefill:
-              mem-fraction-static: 0.8
-              chunked-prefill-size: 8192
-            decode:
-              mem-fraction-static: 0.9
+        engine: trtllm
+        roles:
+          prefill:
+            env:
+              CUDA_LAUNCH_BLOCKING: "1"
+            args:
+              max_batch_size: 256
+          decode:
+            args:
+              max_batch_size: 64
     """
 
     type: Literal["trtllm"] = "trtllm"
 
-    prefill_environment: dict[str, str] = field(default_factory=dict)
-    decode_environment: dict[str, str] = field(default_factory=dict)
-    aggregated_environment: dict[str, str] = field(default_factory=dict)
-
-    # Extra `trtllm-serve` CLI flags per mode, appended verbatim to the worker
-    # command (frontend.type: trtllm_serve only -- dynamo.trtllm takes a
-    # different CLI).
+    # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
+    # never written on `engine:`. Per-role env and args (the engine YAML) are read from
+    # here, and so are `roles.<role>.extra_args`: extra `trtllm-serve` CLI flags appended
+    # verbatim to the worker command (frontend.type: trtllm_serve only -- dynamo.trtllm
+    # takes a different CLI).
     #
-    # `trtllm_config` already covers everything that belongs in the engine YAML,
-    # which is nearly everything: trtllm-serve merges that file into LlmArgs. But
-    # a few of its options configure the OpenAI SERVER layer rather than the
-    # engine and have no LlmArgs field, so no YAML key can reach them. The one
-    # that matters in practice is `--tool_parser` (a click.Choice consumed
-    # directly by the server constructor); note that its sibling
-    # `--reasoning_parser` IS forwarded into get_llm_args() and so remains
-    # settable from `trtllm_config`.
+    # `args` already covers everything that belongs in the engine YAML, which is nearly
+    # everything: trtllm-serve merges that file into LlmArgs. But a few of its options
+    # configure the OpenAI SERVER layer rather than the engine and have no LlmArgs field,
+    # so no YAML key can reach them. The one that matters in practice is `--tool_parser`
+    # (a click.Choice consumed directly by the server constructor); note that its sibling
+    # `--reasoning_parser` IS forwarded into get_llm_args() and so remains settable from
+    # `args`.
     #
-    #     backend:
-    #       type: trtllm
-    #       prefill_extra_args: ["--tool_parser", "glm47"]
-    #       decode_extra_args:  ["--tool_parser", "glm47"]
-    prefill_extra_args: list[str] = field(default_factory=list)
-    decode_extra_args: list[str] = field(default_factory=list)
-    aggregated_extra_args: list[str] = field(default_factory=list)
-
-    trtllm_config: TRTLLMServerConfig | None = None
+    #     roles:
+    #       prefill:
+    #         extra_args: ["--tool_parser", "glm47"]
+    #       decode:
+    #         extra_args: ["--tool_parser", "glm47"]
+    roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     # The name clients must use in a request's "model" field.
     # Defaults to the checkpoint directory name.
@@ -114,7 +94,7 @@ class TRTLLMProtocol:
     # it fixed in the benchmark definition, so the server must match or every
     # request 404s.
     #
-    # Top-level rather than a trtllm_config key because trtllm_config is dumped
+    # Top-level rather than a roles.<role>.args key because a role's args are dumped
     # straight into the engine's YAML file, and this is a launcher flag the
     # engine does not recognise.
     served_model_name: str | None = None
@@ -128,10 +108,9 @@ class TRTLLMProtocol:
     # per-request perf metrics only.
     publish_metrics: bool = True
 
-    # None means unspecified: metrics default on, events off (observability
-    # promotes this to True). Explicit False is a master opt-out of BOTH
-    # publication flags, even when publish_metrics is True. Preserve None in
-    # schema round-trips so an omitted value never becomes an explicit opt-out.
+    # Legacy compatibility flag for Dynamo builds without --publish-metrics.
+    # True emits only --publish-events-and-metrics, regardless of publish_metrics.
+    # False or None uses publish_metrics instead. Observability does not enable it.
     publish_events_and_metrics: bool | None = None
 
     # Controls batched startup of workers that share the same node.
@@ -169,15 +148,10 @@ class TRTLLMProtocol:
 
     @property
     def dynamo_metrics_flags(self) -> tuple[str, ...]:
-        """Effective publication flags, preserving the explicit legacy opt-out."""
-        if self.publish_events_and_metrics is False:
-            return ()
-        flags = []
-        if self.publish_metrics:
-            flags.append("--publish-metrics")
+        """Select the legacy combined flag or the metrics-only flag exclusively."""
         if self.publish_events_and_metrics:
-            flags.append("--publish-events-and-metrics")
-        return tuple(flags)
+            return ("--publish-events-and-metrics",)
+        return ("--publish-metrics",) if self.publish_metrics else ()
 
     # =========================================================================
     # BackendProtocol Implementation
@@ -222,38 +196,17 @@ class TRTLLMProtocol:
         return True
 
     def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        if not self.trtllm_config:
-            return {}
-
-        if mode == "prefill":
-            return dict(self.trtllm_config.prefill or {})
-        elif mode == "decode":
-            return dict(self.trtllm_config.decode or {})
-        elif mode == "agg":
-            return dict(self.trtllm_config.aggregated or {})
-        return {}
+        """The role's engine arguments (``roles.<role>.args``), the engine YAML."""
+        return role_args(self.roles, mode)
 
     def get_extra_args_for_mode(self, mode: WorkerMode) -> list[str]:
-        """Extra trtllm-serve CLI flags for this mode (see the field docs)."""
-        by_mode: dict[WorkerMode, list[str]] = {
-            "prefill": self.prefill_extra_args,
-            "decode": self.decode_extra_args,
-            "agg": self.aggregated_extra_args,
-        }
-        return list(by_mode.get(mode) or [])
+        """Extra trtllm-serve CLI flags for this mode (``roles.<role>.extra_args``)."""
+        role = role_for_mode(self.roles, mode)
+        return list(role.extra_args) if role is not None else []
 
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
-
-        env_by_mode: dict[WorkerMode, dict[str, str]] = {
-            "prefill": self.prefill_environment,
-            "decode": self.decode_environment,
-            "agg": self.aggregated_environment,
-        }
-        base_env = env_by_mode.get(mode)
-        if base_env is None:
-            return {}
-        env = {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        env = {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
         if self.numa_cpu_bind:
             env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
         return env

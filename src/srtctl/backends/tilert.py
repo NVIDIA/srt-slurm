@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
 
 if TYPE_CHECKING:
@@ -25,22 +26,14 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class TileRTServerConfig:
-    decode: dict[str, Any] | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
 class TileRTProtocol:
     """Launch TileRT's decode server with recipe-owned model and transport settings."""
 
     type: Literal["tilert"] = "tilert"
     served_model_name: str | None = None
-    prefill_environment: dict[str, str] = field(default_factory=dict)
-    decode_environment: dict[str, str] = field(default_factory=dict)
-    aggregated_environment: dict[str, str] = field(default_factory=dict)
-    tilert_config: TileRTServerConfig | None = None
+    # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
+    # never written on `engine:`. The decode role's env and args are read from here.
+    roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -50,16 +43,12 @@ class TileRTProtocol:
         return SrunConfig()
 
     def get_config_for_mode(self, mode: str) -> dict[str, Any]:
-        return dict(self.tilert_config.decode or {}) if mode == "decode" and self.tilert_config else {}
+        """The role's TileRT server arguments (``roles.<role>.args``)."""
+        return role_args(self.roles, mode)
 
     def get_environment_for_mode(self, mode: str) -> dict[str, str]:
-        return dict(
-            {
-                "prefill": self.prefill_environment,
-                "decode": self.decode_environment,
-                "agg": self.aggregated_environment,
-            }[mode]
-        )
+        """The role's environment (``roles.<role>.env``)."""
+        return role_env(self.roles, mode)
 
     def get_process_environment(self, process: Process) -> dict[str, str]:
         return {}

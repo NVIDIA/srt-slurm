@@ -14,21 +14,18 @@ from srtctl.cli import submit as submit_cli
 from srtctl.core.config import load_config
 
 MINIMAL_DRY_RUN_CONFIG = {
+    "schema": 2,
     "name": "stdin-dry-run",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "agg_nodes": 1,
-        "agg_workers": 1,
-    },
-    "backend": {"type": "sglang"},
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "engine": "sglang",
+    "roles": {"agg": {"nodes": 1, "workers": 1}},
     "frontend": {
-        "type": "sglang",
+        "type": "sglang-router",
         "enable_multiple_frontends": False,
     },
     "benchmark": {"type": "custom", "command": "echo stdin-dry-run"},

@@ -14,15 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srtctl.backends import (
-    SGLangProtocol,
-    SGLangServerConfig,
-    TRTLLMProtocol,
-    TRTLLMServerConfig,
-    VLLMProtocol,
-    VLLMServerConfig,
-)
-from srtctl.core.schema import DynamoConfig
+from srtctl.backends import SGLangProtocol, TRTLLMProtocol, VLLMProtocol
+from srtctl.core.schema import DynamoConfig, RoleConfig
 from srtctl.core.topology import Endpoint, Process
 
 
@@ -68,7 +61,7 @@ def _runtime(tmp_path: Path | None = None) -> MagicMock:
 def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     leader = _process(mode="prefill")
     follower = _process(node="node1", node_rank=1, mode="prefill", sys_port=7501)
-    backend = SGLangProtocol(sglang_config=SGLangServerConfig(prefill={"tensor-parallel-size": 8}))
+    backend = SGLangProtocol(roles={"prefill": RoleConfig(args={"tensor-parallel-size": 8})})
 
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         leader_command = backend.build_worker_command(leader, [leader, follower], _runtime())
@@ -90,7 +83,7 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
 def test_sglang_sidecar_respects_an_explicit_incremental_streaming_setting() -> None:
     process = _process(mode="agg")
     backend = SGLangProtocol(
-        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 4, "incremental-streaming-output": False})
+        roles={"agg": RoleConfig(args={"tensor-parallel-size": 4, "incremental-streaming-output": False})}
     )
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         command = backend.build_worker_command(process, [process], _runtime())
@@ -99,7 +92,7 @@ def test_sglang_sidecar_respects_an_explicit_incremental_streaming_setting() -> 
     # add its own copy on top. An explicit true renders exactly once.
     assert "incremental-streaming-output" not in leader_script
     backend_true = SGLangProtocol(
-        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 4, "incremental-streaming-output": True})
+        roles={"agg": RoleConfig(args={"tensor-parallel-size": 4, "incremental-streaming-output": True})}
     )
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         command_true = backend_true.build_worker_command(process, [process], _runtime())
@@ -112,8 +105,11 @@ def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
     # kv_event_sources stayed at 0 (every routed request scored 0.00 cache overlap).
     process = _process(mode="agg", kv_events_port=5557)
     backend = SGLangProtocol(
-        kv_events_config=True,
-        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 8}),
+        roles={
+            "prefill": RoleConfig(kv_events=True),
+            "decode": RoleConfig(kv_events=True),
+            "agg": RoleConfig(args={"tensor-parallel-size": 8}, kv_events=True),
+        }
     )
 
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
@@ -133,8 +129,9 @@ def test_vllm_sidecar_exposes_each_nodes_hybrid_dp_range(dp_size: int) -> None:
     # Dynamo cannot route to that node independently of the group leader.
     backend = VLLMProtocol(
         connector=None,
-        kv_events_config={"decode": True},
-        vllm_config=VLLMServerConfig(decode={"data-parallel-size": dp_size, "enable-expert-parallel": True}),
+        roles={
+            "decode": RoleConfig(args={"data-parallel-size": dp_size, "enable-expert-parallel": True}, kv_events=True)
+        },
     )
     endpoint = Endpoint(
         mode="decode",
@@ -174,10 +171,7 @@ def test_vllm_sidecar_exposes_each_nodes_hybrid_dp_range(dp_size: int) -> None:
 def test_vllm_sidecar_rejects_frontend_options_that_bypass_hybrid_lb(override: dict) -> None:
     # A valid recipe must not disable the local frontend or select Python gRPC
     # while srtctl waits for a Rust Control service on that node.
-    backend = VLLMProtocol(
-        connector=None,
-        vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, **override}),
-    )
+    backend = VLLMProtocol(connector=None, roles={"decode": RoleConfig(args={"data-parallel-size": 8, **override})})
     endpoint = Endpoint(
         mode="decode",
         index=0,
@@ -207,16 +201,18 @@ def test_vllm_sidecar_multi_node_replica_has_one_frontend(parallelism: dict) -> 
     # registers an engine incapable of serving independent requests.
     backend = VLLMProtocol(
         connector=None,
-        vllm_config=VLLMServerConfig(
-            aggregated={
-                **parallelism,
-                "api-server-count": 1,
-                "master_addr": "stale-host",
-                "node_rank": 7,
-                "nnodes": 9,
-                "master_port": 1234,
-            }
-        ),
+        roles={
+            "agg": RoleConfig(
+                args={
+                    **parallelism,
+                    "api-server-count": 1,
+                    "master_addr": "stale-host",
+                    "node_rank": 7,
+                    "nnodes": 9,
+                    "master_port": 1234,
+                }
+            )
+        },
     )
     tp = parallelism.get("tensor-parallel-size", parallelism.get("tensor_parallel_size", 1))
     node_count = tp * parallelism.get("pipeline-parallel-size", 1) // 4
@@ -273,7 +269,7 @@ def test_vllm_sidecar_multi_node_replica_has_one_frontend(parallelism: dict) -> 
         backend=backend,
         dynamo=runtime.dynamo,
         frontend=SimpleNamespace(type="dynamo"),
-        resources=SimpleNamespace(num_agg=1, num_prefill=0, num_decode=0),
+        topology=SimpleNamespace(num_agg=1, num_prefill=0, num_decode=0),
     )
     prefill, decode, _, total = _get_health_expectations(config, processes)
     assert (prefill, decode, total) == (0, 1, 1)
@@ -334,9 +330,7 @@ def test_headless_follower_termination_reaps_engine(tmp_path: Path) -> None:
 
 def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path) -> None:
     process = _process()
-    backend = TRTLLMProtocol(
-        trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 4, "max_seq_len": 4096}),
-    )
+    backend = TRTLLMProtocol(roles={"agg": RoleConfig(args={"tensor_parallel_size": 4, "max_seq_len": 4096})})
 
     command = backend.build_worker_command(process, [process], _runtime(tmp_path))
 

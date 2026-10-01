@@ -196,7 +196,7 @@ class TestMockerExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
             total_nodes_needed = (r.prefill_nodes or 0) + (r.decode_nodes or 0) + (r.agg_nodes or 0)
             assert total_nodes_needed <= self.RACK.NUM_NODES, (
                 f"{example_path.name}: needs {total_nodes_needed} nodes, rack has {self.RACK.NUM_NODES}"
@@ -210,7 +210,7 @@ class TestMockerExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             endpoints = config.backend.allocate_endpoints(
                 num_prefill=r.num_prefill,
@@ -271,7 +271,7 @@ class TestH100Examples:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             endpoints = config.backend.allocate_endpoints(
                 num_prefill=r.num_prefill,
@@ -316,7 +316,7 @@ class TestCIConfigs:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(recipe_path))
-            r = config.resources
+            r = config.topology
 
             endpoints = config.backend.allocate_endpoints(
                 num_prefill=r.num_prefill,
@@ -345,7 +345,7 @@ class TestCIConfigs:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(recipe_path))
-            r = config.resources
+            r = config.topology
 
             endpoints = config.backend.allocate_endpoints(
                 num_prefill=r.num_prefill,
@@ -397,7 +397,7 @@ class TestSharedNodeDisaggExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             assert r.decode_nodes == 0, "decode_nodes should be 0 (shared node)"
             assert r.gpus_per_prefill == 1
@@ -434,7 +434,7 @@ class TestSharedNodeDisaggExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             nodes = self.RACK.nodes()[:1]
             endpoints = allocate_endpoints(
@@ -470,7 +470,7 @@ class TestSharedNodeDisaggExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             total_gpus_needed = r.num_prefill * r.gpus_per_prefill + r.num_decode * r.gpus_per_decode
             total_gpus_available = r.total_nodes * r.gpus_per_node
@@ -572,18 +572,20 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  agg_nodes: 1
-  agg_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store:
     container: nvcr.io/nvidia/mooncake:latest
     master_extra_args:
-      - --nof_eviction_high_watermark_ratio=0.9
+    - --nof_eviction_high_watermark_ratio=0.9
     env:
       MOONCAKE_PROTOCOL: rdma
-      MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: 4gb
+roles:
+  agg:
+    nodes: 1
+    workers: 1
 """)
         config = SrtConfig.Schema().load(raw)
         assert config.backend.mooncake_kv_store is not None
@@ -608,16 +610,19 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+  decode:
+    nodes: 1
+    workers: 1
 """)
         try:
             SrtConfig.Schema().load(raw)
@@ -640,20 +645,22 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
-  sglang_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       disaggregation-transfer-backend: mooncake
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       disaggregation-transfer-backend: mooncake
 """)
         config = SrtConfig.Schema().load(raw)
@@ -672,18 +679,20 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store: {}
-  sglang_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       disaggregation_transfer_backend: mooncake
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       disaggregation_transfer_backend: mooncake
 """)
         # Should not raise.
@@ -702,14 +711,16 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  agg_nodes: 1
-  agg_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
+roles:
+  agg:
+    nodes: 1
+    workers: 1
 """)
         config = SrtConfig.Schema().load(raw)
         assert config.backend.mooncake_kv_store is not None
@@ -779,23 +790,25 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     container: inferactinc/public:mk-int-20260507
     master_extra_args:
-      - --nof_eviction_high_watermark_ratio=0.9
+    - --nof_eviction_high_watermark_ratio=0.9
     env:
       MOONCAKE_PROTOCOL: rdma
-  vllm_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)
@@ -821,16 +834,19 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+  decode:
+    nodes: 1
+    workers: 1
 """)
         with pytest.raises(ValidationError, match="Mooncake connector"):
             SrtConfig.Schema().load(raw)
@@ -866,24 +882,26 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
-  vllm_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{kv_transfer_cfg}'
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{kv_transfer_cfg}'
 """)
         config = SrtConfig.Schema().load(raw)
-        assert "MooncakeStoreConnector" in config.backend.vllm_config.prefill["kv-transfer-config"]
+        assert "MooncakeStoreConnector" in config.backend.get_config_for_mode("prefill")["kv-transfer-config"]
 
     def test_vllm_mooncake_disagg_with_kv_transfer_config_passes(self):
         """vLLM disagg + mooncake_kv_store with MooncakeConnector kv-transfer-config validates clean."""
@@ -898,24 +916,26 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
-  vllm_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)
-        assert config.backend.vllm_config.prefill["kv-transfer-config"]
+        assert config.backend.get_config_for_mode("prefill")["kv-transfer-config"]
 
     def test_vllm_mooncake_store_config_unset_yields_only_master_address(self):
         """No store_config from user → JSON only contains the auto-injected master_server_address."""
@@ -994,26 +1014,28 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
     store_config:
-      metadata_server: "P2PHANDSHAKE"
-      global_segment_size: "100GB"
-      local_buffer_size: "4GB"
-      protocol: "rdma"
-      device_name: ""
-  vllm_config:
-    prefill:
+      metadata_server: P2PHANDSHAKE
+      global_segment_size: 100GB
+      local_buffer_size: 4GB
+      protocol: rdma
+      device_name: ''
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)

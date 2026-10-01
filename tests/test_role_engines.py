@@ -12,7 +12,6 @@ from marshmallow import ValidationError
 
 from srtctl.backends import SGLangProtocol, VLLMProtocol
 from srtctl.cli.do_sweep import SweepOrchestrator
-from srtctl.core.roles import expand_roles, roles_from_legacy
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import NodePortAllocator
@@ -54,7 +53,7 @@ def recipe():
 
 
 def load(data):
-    return SrtConfig.Schema().load(expand_roles(copy.deepcopy(data)))
+    return SrtConfig.Schema().load(copy.deepcopy(data))
 
 
 def test_independent_engine_arguments_environments_and_images():
@@ -63,8 +62,8 @@ def test_independent_engine_arguments_environments_and_images():
     assert isinstance(config.backend_for_role("decode"), SGLangProtocol)
     assert config.backend_for_role("prefill").get_config_for_mode("prefill") == {"tensor-parallel-size": 2}
     assert config.backend_for_role("decode").get_config_for_mode("decode") == {"tp-size": 2}
-    assert config.backend_for_role("prefill").prefill_environment == {"PREFILL_ONLY": "1"}
-    assert config.backend_for_role("decode").prefill_environment == {}
+    assert config.backend_for_role("prefill").get_environment_for_mode("prefill") == {"PREFILL_ONLY": "1"}
+    assert config.backend_for_role("decode").get_environment_for_mode("prefill") == {}
     assert config.worker_container_for_role("prefill") == "prefill-image"
     assert config.worker_container_for_role("decode") == "default-image"
 
@@ -75,8 +74,11 @@ def test_shared_and_role_engines_are_rejected_at_preflight(shared_engine):
 
     data = recipe()
     data["engine"] = shared_engine
-    with pytest.raises(ValueError, match="cannot be combined with a top-level engine"):
-        preflight_config_variants(data, cluster_config=None)
+    # Preflight reports a recipe the loader rejects as a finding on that variant, not as a crash.
+    (result,) = preflight_config_variants(data, cluster_config=None)
+    assert not result.ok
+    assert [issue.code for issue in result.errors] == ["recipe-rejected"]
+    assert "cannot be combined with a top-level engine" in result.errors[0].message
 
 
 def test_explicit_role_engines_do_not_inherit_sibling_options():
@@ -95,7 +97,7 @@ def test_no_default_requires_an_engine_on_every_role(missing_role):
     data = recipe()
     data["roles"]["decode"]["engine"] = "sglang"
     data["roles"][missing_role].pop("engine")
-    with pytest.raises(ValueError, match=rf"roles\.{missing_role}\.engine must name a type"):
+    with pytest.raises(ValidationError, match=rf"roles\.{missing_role}\.engine must name a type"):
         load(data)
 
 
@@ -104,21 +106,14 @@ def test_roles_without_any_engine_share_the_default_backend():
     for spec in data["roles"].values():
         spec.pop("engine")
         spec.pop("container", None)
-    expanded = expand_roles(copy.deepcopy(data))
-    assert "role_backends" not in expanded
-    config = SrtConfig.Schema().load(expanded)
+    config = load(data)
     assert not config.has_role_backends
     assert config.backend_for_role("prefill") is config.backend_for_role("decode")
 
 
-def test_role_mapping_and_containers_round_trip():
-    expanded = expand_roles(recipe())
-    migrated = roles_from_legacy(expanded)
-    assert "role_backends" not in migrated
-    assert "role_containers" not in migrated
-    assert "engine" not in migrated
-    assert expand_roles(migrated) == expanded
+def test_role_mapping_and_containers_survive_a_schema_round_trip():
     config = load(recipe())
+    assert set(config.role_backends) == {"prefill", "decode"}
     dumped = SrtConfig.Schema().dump(config)
     reloaded = SrtConfig.Schema().load(dumped)
     assert reloaded.role_backends == config.role_backends

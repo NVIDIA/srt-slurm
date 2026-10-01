@@ -5,7 +5,7 @@
 
 Three things used to be launched by bespoke stages with their own placement
 knobs, readiness loops, and no dry-run output: etcd and NATS for the Dynamo
-frontend, the Mooncake master for ``backend.mooncake_kv_store``, and the DCGM and
+frontend, the Mooncake master for ``engine.mooncake_kv_store``, and the DCGM and
 node exporters tachometer scrapes. They are services now. This module derives
 the implicit ones from the rest of the recipe, lets a declared entry of the same
 name take over (or drop it with ``enabled: false``), and hands the effective
@@ -47,7 +47,7 @@ class EffectiveService:
 
 def infra_placement(config: SrtConfig) -> ServicePlacementConfig:
     """Where the discovery plane and other infra services run: the infra node, or a dedicated one."""
-    return ServicePlacementConfig(node="dedicated" if config.infra.etcd_nats_dedicated_node else "infra")
+    return ServicePlacementConfig(node="dedicated" if config.infra_dedicated_node else "infra")
 
 
 def nats_implied_reasons(config: SrtConfig) -> list[str]:
@@ -55,12 +55,12 @@ def nats_implied_reasons(config: SrtConfig) -> list[str]:
 
     The request plane defaults to ``tcp`` and KV events default to direct ZMQ, so
     NATS is implied only by ``dynamo.request_plane: nats``, ``dynamo.event_plane: nats``,
-    or a v1 ``infra.nats_max_payload_mb`` (a knob that only means anything with NATS).
+    or a ``nats`` service entry with ``options.max_payload_mb`` (a knob that only means
+    anything with NATS).
     """
     if getattr(config.frontend, "type", None) != "dynamo":
         return []
     dynamo = getattr(config, "dynamo", None)
-    infra = getattr(config, "infra", None)
     reasons = [
         f"dynamo.{field} nats"
         for field, value in (
@@ -69,8 +69,8 @@ def nats_implied_reasons(config: SrtConfig) -> list[str]:
         )
         if value == "nats"
     ]
-    if getattr(infra, "nats_max_payload_mb", None) is not None:
-        reasons.append("infra.nats_max_payload_mb")
+    if getattr(config, "nats_max_payload_mb", None) is not None:
+        reasons.append("services[nats].options.max_payload_mb")
     return reasons
 
 
@@ -91,7 +91,7 @@ def connector_services(config: SrtConfig) -> list[EffectiveService]:
     backend = config.backend
     if not isinstance(backend, VLLMProtocol):
         return []
-    resources = config.resources
+    resources = config.topology
     workers: dict[WorkerMode, int] = {
         "prefill": resources.num_prefill,
         "decode": resources.num_decode,
@@ -157,7 +157,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     options=options,
                 ),
                 implicit=True,
-                reason="backend.mooncake_kv_store",
+                reason="engine.mooncake_kv_store",
             )
         )
 
