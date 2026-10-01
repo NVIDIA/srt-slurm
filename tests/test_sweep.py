@@ -117,16 +117,10 @@ class TestGenerateSweepConfigs:
                 "container": "container.sqsh",
                 "precision": "fp8",
             },
-            "resources": {
-                "gpu_type": "h100",
-                "gpus_per_node": 8,
-                "agg_nodes": 1,
-                "agg_workers": 1,
-            },
-            "backend": {
-                "type": "vllm",
-                "vllm_config": {"aggregated": aggregated},
-            },
+            "schema": 2,
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "engine": "vllm",
+            "roles": {"agg": {"nodes": 1, "workers": 1, "args": aggregated}},
             "sweep": sweep,
         }
 
@@ -344,20 +338,11 @@ class TestGenerateSweepConfigs:
                 "container": "container.sqsh",
                 "precision": "fp8",
             },
-            "resources": {
-                "gpu_type": "h100",
-                "gpus_per_node": 8,
-                "agg_nodes": 1,
-                "agg_workers": 1,
-            },
-            "backend": {
-                "type": "sglang",
-                "sglang_config": {
-                    "aggregated": {
-                        "tp-size": "{tp}",
-                        "dp-size": "{dp}",
-                    }
-                },
+            "schema": 2,
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "engine": "sglang",
+            "roles": {
+                "agg": {"nodes": 1, "workers": 1, "args": {"tp-size": "{tp}", "dp-size": "{dp}"}},
             },
             "sweep": {"tp": [4, 8], "dp": [4, 8]},
         }
@@ -374,4 +359,47 @@ class TestGenerateSweepConfigs:
         )
 
         with pytest.raises(ValueError, match="no runnable configurations"):
+            generate_sweep_configs(config)
+
+    def test_vllm_sweep_uses_cluster_gpu_defaults(self, monkeypatch):
+        config = self._vllm_config(
+            sweep={"tp": [2, 4, 8]},
+            aggregated={"tensor-parallel-size": "{tp}"},
+        )
+        del config["resources"]["gpus_per_node"]
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: {"gpus_per_node": 4})
+
+        results = generate_sweep_configs(config)
+
+        assert [params for _, params in results] == [{"tp": 2}, {"tp": 4}]
+
+    def test_vllm_sweep_uses_per_role_engines_and_gpu_limits(self):
+        config = self._vllm_config(
+            sweep={"tp": [2, 4, 8]},
+            aggregated={"tensor-parallel-size": "{tp}"},
+        )
+        del config["engine"]
+        config["roles"]["agg"].update(engine="vllm", gpus=4)
+        config["frontend"] = {"type": "vllm-router"}
+
+        results = generate_sweep_configs(config)
+
+        assert [params for _, params in results] == [{"tp": 2}, {"tp": 4}]
+
+    def test_direct_vllm_sweep_allows_unused_reserved_gpus(self):
+        config = self._vllm_config(
+            sweep={"dp": [2, 4, 16]},
+            aggregated={"data-parallel-size": "{dp}"},
+        )
+        config["frontend"] = {"type": "vllm", "enable_multiple_frontends": False}
+
+        results = generate_sweep_configs(config)
+
+        assert [params for _, params in results] == [{"dp": 2}, {"dp": 4}]
+
+    def test_vllm_sweep_does_not_hide_other_validation_errors(self):
+        config = self._vllm_config(sweep={"tp": [1]}, aggregated={"tensor-parallel-size": "{tp}"})
+        config["frontend"] = {"type": "missing-frontend"}
+
+        with pytest.raises(ValueError, match="Unknown frontend"):
             generate_sweep_configs(config)
