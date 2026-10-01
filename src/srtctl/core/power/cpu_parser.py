@@ -121,7 +121,9 @@ def _parse_dcgm(families) -> list[CpuReading]:
             if field_id is None or field_id not in DCGM_FIELD_RAIL_KINDS:
                 continue
             value = sample.value
-            if not math.isfinite(value) or value < 0:
+            # 0 W from a hwmon-backed field is "not measured", never idle; see
+            # the module docstring.
+            if not math.isfinite(value) or value <= 0:
                 continue
             by_socket.setdefault(socket_id, {}).setdefault(field_id, value)
     return [
@@ -159,7 +161,7 @@ def _parse_acpi(families) -> list[CpuReading]:
             if socket_id is None or kind not in ACPI_RAIL_KINDS:
                 continue
             value = sample.value
-            if not math.isfinite(value) or value < 0:
+            if not math.isfinite(value) or value <= 0:
                 continue
             readings.append(
                 CpuReading(

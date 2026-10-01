@@ -18,9 +18,10 @@
 //!
 //! - `auto` (default): tries ACPI first — it carries the socket envelope plus
 //!   every rail — and falls back to DCGM only when no ACPI `power_meter` hwmon
-//!   sensors are present. (DCGM reads the same hwmon files, so if ACPI is absent
-//!   DCGM usually is too; the fallback covers hosts where sysfs is hidden from
-//!   this process but a privileged nv-hostengine is reachable.)
+//!   sensors are present or no socket-total channel reads positive. (DCGM reads
+//!   the same hwmon files, so if ACPI is absent DCGM usually is too; the
+//!   fallback covers hosts where sysfs is hidden from this process but a
+//!   privileged nv-hostengine is reachable.)
 //!
 //! Endpoints:
 //!   GET /metrics  — Prometheus text format
@@ -145,7 +146,8 @@ struct Args {
     /// Power reading back-end.
     ///
     /// `auto` tries ACPI first (socket envelope + every rail) and falls back
-    /// to DCGM (CPU rail + SysIO only) when no ACPI power_meter sensors exist.
+    /// to DCGM (CPU rail + SysIO only) when no ACPI power_meter sensors exist
+    /// or no socket-total channel reads positive.
     #[arg(long, default_value = "auto")]
     source: SourceMode,
 }
@@ -337,7 +339,10 @@ fn read_acpi_watts(path: &Path) -> Option<f64> {
     let raw = read_text(path)?;
     let microwatts: f64 = raw.parse().ok()?;
     let watts = microwatts / 1_000_000.0;
-    if watts.is_finite() && watts >= 0.0 {
+    // 0 from power1_average means the sensor has not produced a reading (not
+    // found / no average yet), never an idle socket: a live Grace socket draws
+    // tens of watts. File it as missing so it can never integrate to 0 J.
+    if watts.is_finite() && watts > 0.0 {
         Some(watts)
     } else {
         None
@@ -544,15 +549,15 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
                     }
                     None => {
                         let reason = format!(
-                            "all {} ACPI power_meter sensors under {} read zero across {} probe(s)",
-                            sensors.len(),
+                            "no ACPI socket-total power_meter sensor under {} read positive across {} probe(s) ({} sensors discovered)",
                             args.hwmon_root.display(),
-                            ACPI_PROBE_RETRIES + 1
+                            ACPI_PROBE_RETRIES + 1,
+                            sensors.len()
                         );
                         if acpi_only {
                             anyhow::bail!("{reason}");
                         }
-                        tracing::warn!(%reason, "ACPI sensors present but dead; falling back to DCGM");
+                        tracing::warn!(%reason, "ACPI sensors present but no live socket total; falling back to DCGM");
                     }
                 }
             }
@@ -607,20 +612,26 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
 const ACPI_PROBE_RETRIES: u32 = 1;
 const ACPI_PROBE_RETRY_DELAY: Duration = Duration::from_millis(1_000);
 
-/// Read every sensor up to `1 + retries` times; `Some(n)` with the count of
-/// sensors that produced a finite, positive value on the first pass where any
-/// did, `None` when every pass read zero (or unreadable) everywhere.
+/// Read every socket-total sensor up to `1 + retries` times; `Some(n)` with
+/// the count of totals that produced a finite, positive value on the first
+/// pass where any did, `None` when no total read positive on any pass. Only
+/// `total` counts: it is what becomes `power_w`, and a live component rail
+/// next to a dead envelope would otherwise vouch for a socket whose power can
+/// never be published.
 fn probe_acpi_live(sensors: &[Sensor], retries: u32, delay: Duration) -> Option<usize> {
     for attempt in 0..=retries {
         let live = sensors
             .iter()
-            .filter(|s| matches!(read_acpi_watts(&s.path), Some(w) if w.is_finite() && w > 0.0))
+            .filter(|s| s.kind == "total" && read_acpi_watts(&s.path).is_some())
             .count();
         if live > 0 {
             return Some(live);
         }
         if attempt < retries {
-            tracing::debug!(attempt, "all ACPI sensors read zero; retrying probe");
+            tracing::debug!(
+                attempt,
+                "no ACPI socket-total sensor reads positive; retrying probe"
+            );
             std::thread::sleep(delay);
         }
     }
@@ -793,6 +804,67 @@ mod tests {
         );
         let sensors = discover_sensors(dir.path()).unwrap();
         assert_eq!(probe_acpi_live(&sensors, 0, Duration::ZERO), Some(1));
+    }
+
+    #[test]
+    fn acpi_probe_ignores_live_component_rails_when_every_total_is_zero() {
+        // A live CPU rail must not vouch for ACPI when no socket envelope reads
+        // positive: power_w comes from the total, and 0 there would be filed
+        // as a measurement for the whole run.
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "0"),
+                ("power2", Some("CPU Power Socket 0"), "50000000"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        assert_eq!(sensors.len(), 2);
+        assert_eq!(probe_acpi_live(&sensors, 0, Duration::ZERO), None);
+    }
+
+    #[test]
+    fn acpi_probe_counts_only_live_totals() {
+        // Socket 0 healthy, socket 1's envelope stuck at 0 with a live rail: one live total.
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "100000000"),
+                ("power2", Some("CPU Power Socket 0"), "50000000"),
+                ("power3", Some("Grace Power Socket 1"), "0"),
+                ("power4", Some("CPU Power Socket 1"), "52000000"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        assert_eq!(probe_acpi_live(&sensors, 0, Duration::ZERO), Some(1));
+    }
+
+    #[test]
+    fn zero_watts_is_missing_not_a_sample() {
+        // 0 from power1_average means the sensor is not reporting; the rail
+        // is left out of the scrape body rather than published as 0 W.
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "0"),
+                ("power2", Some("CPU Power Socket 0"), "50000000"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        let total = sensors.iter().find(|s| s.kind == "total").unwrap();
+        assert_eq!(read_acpi_watts(&total.path), None);
+        let body = build_metrics(&sensors);
+        assert!(
+            !body.contains("type=\"total\""),
+            "zero total must not be published:\n{body}"
+        );
+        assert!(body.contains("type=\"cpu_rail\""));
     }
 
     #[test]

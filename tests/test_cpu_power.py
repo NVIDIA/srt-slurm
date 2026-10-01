@@ -507,6 +507,42 @@ def test_acpi_probe_is_live_when_any_sensor_reads_positive(tmp_path: Path) -> No
     assert reader.probe_live(retries=0, delay_seconds=0.0) == 1
 
 
+def _stuck_total_live_rail_root(tmp_path: Path) -> Path:
+    # Socket 0 healthy; socket 1's Grace envelope reads 0 while its CPU rail is live.
+    root = tmp_path / "hwmon"
+    _make_acpi_sensor(root, hwmon_id=0, socket_id=0, microwatts=100_000_000, domain="Grace Power Socket 0")
+    _make_acpi_sensor(root, hwmon_id=1, socket_id=0, microwatts=50_000_000, domain="CPU Power Socket 0")
+    _make_acpi_sensor(root, hwmon_id=2, socket_id=1, microwatts=0, domain="Grace Power Socket 1")
+    _make_acpi_sensor(root, hwmon_id=3, socket_id=1, microwatts=52_000_000, domain="CPU Power Socket 1")
+    return root
+
+
+def test_acpi_zero_total_is_missing_not_zero_watts(tmp_path: Path) -> None:
+    """0 from power1_average means the sensor is not reporting; the socket gets no row, never power_w=0."""
+    reader = AcpiPowerMeterReader(_stuck_total_live_rail_root(tmp_path))
+    readings = reader.read_watts()
+    assert readings["CPU1:cpuSidePowerUsageW"] is None
+    assert readings["CPU1:cpuRailPowerUsageW"] == 52.0
+    assert [(s.socket_id, s.power_w, s.rails) for s in reader.socket_samples(readings)] == [
+        (0, 100.0, {"cpu_rail": 50.0}),
+    ]
+    # A stuck envelope also voids the node total: a partial sum must not pass for the node's power.
+    assert reader.aggregate_watts(readings) is None
+
+
+def test_acpi_probe_ignores_live_component_rails_when_every_total_is_zero(tmp_path: Path) -> None:
+    """A live CPU rail must not vouch for ACPI when no socket envelope reads positive."""
+    root = tmp_path / "hwmon"
+    _make_acpi_sensor(root, hwmon_id=0, socket_id=0, microwatts=0, domain="Grace Power Socket 0")
+    _make_acpi_sensor(root, hwmon_id=1, socket_id=0, microwatts=50_000_000, domain="CPU Power Socket 0")
+    assert AcpiPowerMeterReader(root).probe_live(retries=0, delay_seconds=0.0) == 0
+
+
+def test_acpi_probe_counts_only_live_totals(tmp_path: Path) -> None:
+    # Two live rails, one live total: the probe reports the one total.
+    assert AcpiPowerMeterReader(_stuck_total_live_rail_root(tmp_path)).probe_live(retries=0, delay_seconds=0.0) == 1
+
+
 def test_acpi_probe_retries_once_when_the_first_pass_is_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """hwmon averages can read 0 on the first poll after boot; one retry must rescue a good node."""
     root = _acpi_root_reading(tmp_path, 0.0)
@@ -538,7 +574,7 @@ def test_auto_falls_through_dead_acpi_to_dcgm(
 
     assert isinstance(reader, cpu_power.DcgmCpuPowerReader)
     messages = [rec.message for rec in caplog.records]
-    assert any("all 2 ACPI power_meter sensors read zero across 2 probe(s)" in m for m in messages)
+    assert any("no ACPI socket-total power_meter sensor read positive across 2 probe(s)" in m for m in messages)
 
 
 def test_auto_commits_to_live_acpi_without_touching_dcgm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -559,7 +595,7 @@ def test_explicit_acpi_source_fails_on_dead_sensors_instead_of_falling_back(
     root = _acpi_root_reading(tmp_path, 0.0)
     monkeypatch.setattr(cpu_power, "AcpiPowerMeterReader", lambda *_a, **_k: AcpiPowerMeterReader(root))
     monkeypatch.setattr(cpu_power, "ACPI_PROBE_RETRY_DELAY_SECONDS", 0.0)
-    with pytest.raises(CpuPowerSourceUnavailable, match="read zero"):
+    with pytest.raises(CpuPowerSourceUnavailable, match="no ACPI socket-total power_meter sensor read positive"):
         cpu_power.create_reader("acpi")
 
 

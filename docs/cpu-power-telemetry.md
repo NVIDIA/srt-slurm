@@ -136,11 +136,15 @@ The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
   step down is logged at WARN in the exporter's `.out` file with the reason:
 
   1. **ACPI, live** — `power_meter` hwmon sensors were discovered *and* at
-     least one reads a positive value. Discovery alone is not enough: a node
-     can expose channels that never report, and publishing them would
-     integrate to 0 J and pass for a measurement. If every sensor reads
-     zero, the probe is repeated once after 1 s (hwmon averages can read 0
-     on the first poll after boot) before ACPI is declared dead.
+     least one **socket-total** channel (`Grace Power Socket N` / `Total
+     Power socket N`) reads a positive value. Discovery alone is not enough:
+     a node can expose channels that never report, and publishing them would
+     integrate to 0 J and pass for a measurement. Only the total counts
+     because it is what becomes `power_w`; a live component rail next to a
+     dead envelope would otherwise vouch for a socket whose power can never
+     be published. If no total reads positive, the probe is repeated once
+     after 1 s (hwmon averages can read 0 on the first poll after boot)
+     before ACPI is declared dead.
   2. **DCGM, fields 1130 + 1132** — CPU rail and SysIO.
   3. **DCGM, field 1130 alone** — when this libdcgm refuses 1132 for CPU
      entities (older release, or a sysmon without SysIO). 1130 alone is the
@@ -178,8 +182,10 @@ schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, to
   A rail that could not be read is **blank, never `0`**, whatever the cause:
   the exporter fell back to watching 1130 alone (blank on every row, one WARN
   at startup); DCGM returned a non-OK status for that (socket, field) on that
-  scrape; or the value was zero or non-finite (the exporter drops it, since
-  `0` from these files means "not measured", not "idle"). The primary is
+  scrape; or the value was zero or non-finite (every reader -- the exporter,
+  the scrape parser and the host collector -- drops it, since `0` from these
+  files means "not measured", not "idle": a live Grace socket draws tens of
+  watts). The primary is
   different: a socket whose `power_w` source (ACPI `total`, or field 1130) is
   missing on a scrape produces **no row** for that socket rather than a row
   with blank `power_w`. Component rails never substitute for it and are

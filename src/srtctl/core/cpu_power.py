@@ -7,11 +7,14 @@ The implementation follows BTK's CPU-power source ordering for NVIDIA Grace:
 Linux ACPI ``power_meter`` socket totals first, then DCGM CPU entity field 1130.
 
 ``auto`` degrades in steps rather than failing (mirrors the Rust
-``cpu-power-exporter``): ACPI is used only if at least one discovered sensor
-reads a positive value (one retry after a short delay, since hwmon averages
-can read 0 on the first poll after boot); otherwise DCGM is tried with fields
-1130+1132, and if this libdcgm refuses that set for CPU entities, with 1130
-alone -- the floor every earlier collector had. Each step down is logged.
+``cpu-power-exporter``): ACPI is used only if at least one discovered
+socket-total sensor reads a positive value (one retry after a short delay,
+since hwmon averages can read 0 on the first poll after boot); otherwise DCGM
+is tried with fields 1130+1132, and if this libdcgm refuses that set for CPU
+entities, with 1130 alone -- the floor every earlier collector had. Each step
+down is logged. A reading of 0 W from any channel is filed as missing, never
+as a sample: ``power1_average`` reports 0 only when the sensor has produced
+no reading.
 It runs on the host (not in the model container) so sysfs and the host DCGM
 installation remain visible.
 """
@@ -265,7 +268,10 @@ class AcpiPowerMeterReader(CpuPowerReader):
         for sensor in self._sensors:
             try:
                 watts = float(sensor["path"].read_text().strip()) / 1_000_000.0
-                readings[sensor["name"]] = watts if math.isfinite(watts) and watts >= 0 else None
+                # 0 from power1_average means the sensor has not produced a
+                # reading (not found / no average yet), never an idle socket;
+                # a live Grace socket draws tens of watts. File it as missing.
+                readings[sensor["name"]] = watts if math.isfinite(watts) and watts > 0 else None
             except (OSError, ValueError):
                 readings[sensor["name"]] = None
         return readings
@@ -273,19 +279,24 @@ class AcpiPowerMeterReader(CpuPowerReader):
     def probe_live(
         self, *, retries: int = ACPI_PROBE_RETRIES, delay_seconds: float = ACPI_PROBE_RETRY_DELAY_SECONDS
     ) -> int:
-        """Number of sensors reading a positive value, retrying while every one reads zero.
+        """Number of socket-total sensors reading a positive value, retrying while none does.
 
         Discovery alone does not make ACPI usable: a node can expose
-        ``power_meter`` channels that never report, and publishing them would
-        integrate to 0 J and pass for a measurement. Returns 0 only after every
-        pass read zero (or unreadable) everywhere.
+        ``power_meter`` channels that never report. Only the ``total`` rail
+        counts -- it is what becomes ``power_w``, and a live component rail
+        next to a dead envelope would otherwise vouch for a socket whose
+        power can never be published. Returns 0 only after every pass found
+        no live total.
         """
         for attempt in range(retries + 1):
-            live = sum(1 for watts in self.read_watts().values() if watts is not None and watts > 0)
+            readings = self.read_watts()
+            live = sum(
+                1 for sensor in self._sensors if sensor["domain_kind"] == TOTAL_KIND and readings[sensor["name"]]
+            )
             if live:
                 return live
             if attempt < retries:
-                logger.debug("all ACPI sensors read zero; retrying probe (attempt %d)", attempt + 1)
+                logger.debug("no ACPI socket-total sensor reads positive; retrying probe (attempt %d)", attempt + 1)
                 time.sleep(delay_seconds)
         return 0
 
@@ -592,7 +603,8 @@ def _create_acpi_reader() -> CpuPowerReader:
     if live == 0:
         reader.close()
         raise CpuPowerSourceUnavailable(
-            f"all {reader.sensor_count} ACPI power_meter sensors read zero across {ACPI_PROBE_RETRIES + 1} probe(s)"
+            f"no ACPI socket-total power_meter sensor read positive across {ACPI_PROBE_RETRIES + 1} probe(s) "
+            f"({reader.sensor_count} sensors discovered)"
         )
     logger.info("ACPI sensors report non-zero power (%d of %d); using ACPI", live, reader.sensor_count)
     return reader

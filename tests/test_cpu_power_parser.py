@@ -154,6 +154,32 @@ def test_acpi_mode_leaves_total_blank_without_a_total_channel():
     assert len(scrape.readings) == 2  # the rails themselves are still parsed
 
 
+def test_acpi_mode_treats_a_zero_total_as_missing():
+    """0 W from a power_meter channel is 'not reporting', never idle: no power_w=0 row, no 0 J."""
+    body = _acpi_body(include_grace=False) + (
+        'cpu_power_acpi_watts{sensor="a/2",type="total",socket="0",oem_info="Grace Power Socket 0"} 0\n'
+    )
+    scrape = parse_cpu_scrape(body)
+
+    assert [r.kind for r in scrape.readings] == ["cpu_rail", "soc"]
+    assert scrape.sockets == ()
+    assert scrape.total_power_w is None
+
+
+def test_dcgm_mode_treats_a_zero_field_value_as_missing():
+    body = (
+        "# TYPE cpu_power_dcgm_watts gauge\n"
+        'cpu_power_dcgm_watts{socket="0",field_id="1130",source="dcgm"} 0\n'
+        'cpu_power_dcgm_watts{socket="0",field_id="1132",source="dcgm"} 6.2\n'
+        'cpu_power_dcgm_watts{socket="1",field_id="1130",source="dcgm"} 52.35\n'
+    )
+    scrape = parse_cpu_scrape(body)
+
+    # Socket 0's primary read 0 -> no row for it; socket 1 is untouched.
+    assert [(s.socket_id, s.power_w) for s in scrape.sockets] == [(1, 52.35)]
+    assert scrape.total_power_w == 52.35
+
+
 def test_acpi_mode_totals_a_generic_total_power_label_too():
     # Platforms that don't say "Grace" still report a socket-total rail
     # under a generic "Total Power" label; it must count the same as grace.
