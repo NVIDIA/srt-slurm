@@ -2,7 +2,7 @@
 
 <!-- GENERATED FILE. Do not edit by hand. Regenerate with `srtctl schema-docs`; CI fails when this file is stale. -->
 
-Field-level reference for the recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from `srtctl.core.roles`, `srtctl.core.placement`, and the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. The pre-2.0 (v1) layout no longer loads; its key-by-key mapping onto this layout is in [legacy-v1.md](legacy-v1.md) and `srtctl migrate` rewrites it. For prose, examples, and semantics see [config-reference.md](config-reference.md).
+Field-level reference for the recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from `srtctl.core.roles` and the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. The pre-2.0 (v1) layout no longer loads; its key-by-key mapping onto this layout is in [legacy-v1.md](legacy-v1.md) and `srtctl migrate` rewrites it. For prose, examples, and semantics see [config-reference.md](config-reference.md).
 
 ## Recipe
 
@@ -131,6 +131,7 @@ Frontend/router configuration.
 | `ctx_router` | dict[str, Any] \| None | `None` | trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends. |
 | `gen_router` | dict[str, Any] \| None | `None` | generation_servers.router |
 | `server_config_extra` | dict[str, Any] \| None | `None` | extra top-level ser.yaml keys |
+| `placement` | [PlacementConfig](#placementconfig) | `PlacementConfig()` | Where the frontend (trtllm_serve: the disaggregated orchestrator) runs. placement.node is "head" (default: the first prefill/CTX node), "first_decode" (the first decode/GEN worker-leader node), or "dedicated" (a node reserved for the frontend: needs at least 2 nodes, not supported with resources.het_jobs: true). |
 
 ### DynamoConfig
 
@@ -162,6 +163,7 @@ Benchmark configuration.
 | `osl` | int \| None | `None` |  |
 | `concurrencies` | list[int] \| str \| None | `None` |  |
 | `req_rate` | str \| int \| None | `'inf'` |  |
+| `placement` | [PlacementConfig](#placementconfig) | `PlacementConfig()` | Where the benchmark client runs. placement.node is "head" (default: the orchestrator's node), "last_decode" (the last decode/GEN worker-leader node, isolating the client off the CTX/orchestrator node; use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL), or "dedicated" (a node reserved for the client: needs at least 2 nodes, not supported with resources.het_jobs: true). |
 | `colocate_with_frontend` | bool | `True` | Governs how dedicated placements combine when more than one of the benchmark client, the frontend, and the etcd/nats services asks for placement.node: dedicated. If True (default), every requested role shares a single reserved node. If False, each requested role gets its own reserved node (requires enough total nodes: worker count + number of dedicated roles). |
 | `sweep` | [SweepConfig](#sweepconfig) \| None | `None` |  |
 | `num_examples` | int \| None | `None` | Accuracy benchmark fields |
@@ -345,6 +347,14 @@ Reporting configuration for status updates, AI analysis, and log exports.
 | `status` | [ReportingStatusConfig](#reportingstatusconfig) \| None | `None` |  |
 | `ai_analysis` | [AIAnalysisConfig](#aianalysisconfig) \| None | `None` |  |
 | `s3` | [S3Config](#s3config) \| None | `None` |  |
+
+### PlacementConfig
+
+Where a component (the frontend or the benchmark client) runs.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `node` | str | `'head'` | A location name resolved against the worker topology (``head``, or a role-relative name such as ``first_decode`` / ``last_decode``), or ``dedicated`` to reserve a node for the component. A dedicated node is always the head location, so the two never combine. |
 
 ### DynamoSourceConfig
 

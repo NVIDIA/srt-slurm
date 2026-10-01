@@ -23,7 +23,6 @@ import yaml
 from ruamel.yaml.comments import CommentedMap
 
 from .lockfile import verify_lock_integrity
-from .placement import BENCHMARK_PLACEMENT_FIELDS, FRONTEND_PLACEMENT_FIELDS
 from .roles import ROLE_NAMES
 from .schema import ClusterConfig, SrtConfig
 
@@ -165,8 +164,8 @@ LEGACY_SECTION_KEYS: dict[str, tuple[str, ...]] = {
         for role in ROLE_NAMES
         for key in (f"{role}_nodes", f"{role}_workers", f"gpus_per_{role}", f"{role}_critical")
     ),
-    "frontend": FRONTEND_PLACEMENT_FIELDS,
-    "benchmark": BENCHMARK_PLACEMENT_FIELDS,
+    "frontend": ("orchestrator_placement", "dedicated_node"),
+    "benchmark": ("client_placement", "client_dedicated_node"),
     "dynamo": ("version", "hash", "wheel", "cargo_patches"),
 }
 MIGRATE_HINT = "run `srtctl migrate -f <recipe> --in-place` to rewrite it (docs/legacy-v1.md maps every key)"
@@ -236,16 +235,13 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     # Deep copy to avoid mutating original
     config = copy.deepcopy(user_config)
 
-    # Normalize the 2.0 ``engine:`` / ``roles:`` / ``placement:`` / ``services:``
-    # vocabularies into the internal fields the runtime reads (resources.*_workers,
-    # backend.*_environment, backend.<engine>_config.*, infra.*) before anything
-    # else looks at them.
-    from srtctl.core.placement import expand_placement
+    # Normalize the ``engine:`` / ``roles:`` / ``services:`` vocabularies into the
+    # internal fields the runtime reads (resources.*_workers, backend.*_environment,
+    # backend.<engine>_config.*, infra.*) before anything else looks at them.
     from srtctl.core.roles import expand_roles
     from srtctl.services.normalize import expand_services
 
     expand_roles(config)
-    expand_placement(config)
     expand_services(config)
 
     if cluster_config is None:

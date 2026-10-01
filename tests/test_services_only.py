@@ -109,8 +109,8 @@ def test_frontend_none_rejects_engine_workers_and_dedicated_node() -> None:
     del data["services"][0]["nodes"]
     with pytest.raises(ValidationError, match="only supported without engine roles"):
         SrtConfig.Schema().load(data)
-    with pytest.raises(ValidationError, match="dedicated_node is invalid"):
-        _load(frontend={"type": "none", "dedicated_node": True})
+    with pytest.raises(ValidationError, match="placement.node: dedicated is invalid"):
+        _load(frontend={"type": "none", "placement": {"node": "dedicated"}})
 
 
 def test_frontend_none_has_no_implementation() -> None:

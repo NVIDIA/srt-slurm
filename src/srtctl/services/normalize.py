@@ -3,7 +3,7 @@
 
 """Pre-schema normalizer: declared infra-class services set the internal fields the runtime reads.
 
-Like ``expand_roles`` and ``expand_placement``, this runs on the raw recipe dict
+Like ``expand_roles``, this runs on the raw recipe dict
 before ``SrtConfig`` loads it: the recipe declares ``etcd`` / ``nats`` /
 ``mooncake-master`` entries under ``services:``, and the consumers of
 ``infra.etcd_nats_dedicated_node``, ``infra.nats_max_payload_mb``, and

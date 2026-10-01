@@ -877,6 +877,36 @@ class SlurmConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+# ``placement.node`` value that reserves a node for the component.
+PLACEMENT_DEDICATED = "dedicated"
+
+
+@dataclass(frozen=True)
+class PlacementConfig:
+    """Where a component (the frontend or the benchmark client) runs.
+
+    Attributes:
+        node: A location name resolved against the worker topology (``head``, or a
+            role-relative name such as ``first_decode`` / ``last_decode``), or
+            ``dedicated`` to reserve a node for the component. A dedicated node is
+            always the head location, so the two never combine.
+    """
+
+    node: str = "head"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def dedicated(self) -> bool:
+        """Whether the component gets a node of its own."""
+        return self.node == PLACEMENT_DEDICATED
+
+    @property
+    def location(self) -> str:
+        """The placement name consumers resolve: ``head`` for a dedicated node."""
+        return "head" if self.dedicated else self.node
+
+
 @dataclass(frozen=True)
 class BenchmarkConfig:
     """Benchmark configuration."""
@@ -888,18 +918,13 @@ class BenchmarkConfig:
     osl: int | None = None
     concurrencies: list[int] | str | None = None
     req_rate: str | int | None = "inf"
-    # Which node runs the benchmark client:
-    #   "head" (default) -> nodes.head (co-located with orchestrator by default)
-    #   "last_decode"    -> last decode/GEN worker-leader node (isolate the client
-    #                       off the CTX/orchestrator node). When the client lands on
-    #                       a different node than the orchestrator, use the injected
-    #                       $SRT_FRONTEND_HOST env in the benchmark command's URL.
-    client_placement: str = "head"
-    # If True, reserve a node exclusively for the benchmark client instead of
-    # running it on a worker node. Requires at least 2 nodes. Not supported
-    # together with resources.het_jobs: true.
-    # Default: False.
-    client_dedicated_node: bool = False
+    # Where the benchmark client runs. placement.node is "head" (default: the
+    # orchestrator's node), "last_decode" (the last decode/GEN worker-leader node,
+    # isolating the client off the CTX/orchestrator node; use the injected
+    # $SRT_FRONTEND_HOST env in the benchmark command's URL), or "dedicated" (a
+    # node reserved for the client: needs at least 2 nodes, not supported with
+    # resources.het_jobs: true).
+    placement: PlacementConfig = field(default_factory=PlacementConfig)
     # Governs how dedicated placements combine when more than one of the
     # benchmark client, the frontend, and the etcd/nats services asks for
     # placement.node: dedicated. If True (default), every requested role
@@ -2206,14 +2231,11 @@ class FrontendConfig:
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router
     server_config_extra: dict[str, Any] | None = None  # extra top-level ser.yaml keys
-    # trtllm_serve: which node runs the disaggregated orchestrator.
-    #   "head" (default) -> nodes.head (first prefill/CTX node)
-    #   "first_decode"   -> first decode/GEN worker-leader node
-    orchestrator_placement: str = "head"
-    # If True, reserve a node exclusively for the frontend/orchestrator instead
-    # of running it on a worker node. Requires at least 2 nodes. Not supported
-    # together with resources.het_jobs: true. Default: False.
-    dedicated_node: bool = False
+    # Where the frontend (trtllm_serve: the disaggregated orchestrator) runs.
+    # placement.node is "head" (default: the first prefill/CTX node), "first_decode"
+    # (the first decode/GEN worker-leader node), or "dedicated" (a node reserved for
+    # the frontend: needs at least 2 nodes, not supported with resources.het_jobs: true).
+    placement: PlacementConfig = field(default_factory=PlacementConfig)
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -2388,7 +2410,6 @@ class SrtConfig:
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_colocated_decode()
-        self._validate_dedicated_node_placement()
         self._validate_frontend()
         self._validate_dynamo_sidecar()
         self._validate_vllm_failover()
@@ -2508,8 +2529,10 @@ class SrtConfig:
                     "frontend.type: none is only supported without engine roles (no prefill/decode/agg workers); "
                     "pick a frontend for the workers or drop them"
                 )
-            if self.frontend.dedicated_node:
-                raise ValidationError("frontend.type: none has no frontend process; frontend.dedicated_node is invalid")
+            if self.frontend.placement.dedicated:
+                raise ValidationError(
+                    "frontend.type: none has no frontend process; frontend.placement.node: dedicated is invalid"
+                )
 
     def _validate_services(self) -> None:
         """Whole-list checks for ``services:``: unique names, then each kind's recipe-level rules.
@@ -2759,10 +2782,10 @@ class SrtConfig:
             raise ValidationError(
                 f"het_jobs=true is only supported on the sglang backend; got backend.type={self.backend_type!r}"
             )
-        if self.frontend.dedicated_node or self.benchmark.client_dedicated_node:
+        if self.frontend.placement.dedicated or self.benchmark.placement.dedicated:
             raise ValidationError(
-                "frontend.dedicated_node/benchmark.client_dedicated_node are not supported together with "
-                "het_jobs=true (a dedicated frontend/client node is not carved out of a het allocation)"
+                "frontend.placement.node: dedicated / benchmark.placement.node: dedicated are not supported "
+                "together with het_jobs=true (a dedicated frontend/client node is not carved out of a het allocation)"
             )
 
     def _validate_colocated_decode(self) -> None:
@@ -2801,22 +2824,6 @@ class SrtConfig:
             raise ValidationError(
                 f"colocated decode workers cannot be packed onto the prefill nodes ({layout}): {detail}"
             ) from exc
-
-    def _validate_dedicated_node_placement(self):
-        """A dedicated node is wasted if a placement override routes the
-        orchestrator/client somewhere else — the reserved node would then sit
-        idle while the intended workload runs on a worker node instead.
-        """
-        if self.frontend.dedicated_node and self.frontend.orchestrator_placement != "head":
-            raise ValidationError(
-                f"frontend.dedicated_node requires frontend.orchestrator_placement: head "
-                f"(got {self.frontend.orchestrator_placement!r}); otherwise the reserved node is never used"
-            )
-        if self.benchmark.client_dedicated_node and self.benchmark.client_placement != "head":
-            raise ValidationError(
-                f"benchmark.client_dedicated_node requires benchmark.client_placement: head "
-                f"(got {self.benchmark.client_placement!r}); otherwise the reserved node is never used"
-            )
 
     def _validate_mooncake_kv_store(self):
         """Catch the common misconfiguration: mooncake_kv_store set but the
@@ -3104,8 +3111,8 @@ class SrtConfig:
         if self.benchmark.type not in supported_benchmarks:
             supported = ", ".join(sorted(supported_benchmarks))
             raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
-        if self.benchmark.client_placement != "head":
-            raise ValidationError("telemetry requires benchmark.client_placement: head")
+        if self.benchmark.placement.location != "head":
+            raise ValidationError("telemetry requires benchmark.placement.node: head")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra.etcd_nats_dedicated_node:

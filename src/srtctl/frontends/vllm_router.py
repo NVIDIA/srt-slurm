@@ -182,10 +182,9 @@ class VLLMRouterFrontend(StaticRouterFrontend):
             raise ValueError(
                 "vLLM Router discovery uses one registration endpoint; set frontend.enable_multiple_frontends: false"
             )
-        if config.frontend.orchestrator_placement != "head":
+        if config.frontend.placement.location != "head":
             raise ValueError(
-                "vLLM Router discovery advertises the head node to every worker; "
-                "set frontend.orchestrator_placement: head"
+                "vLLM Router discovery advertises the head node to every worker; set frontend.placement.node: head"
             )
 
     def build_router_command(self, workers: list[RouterWorker], host: str, port: int, backend: Any) -> list[str]:

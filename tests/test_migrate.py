@@ -123,10 +123,10 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
 
     (config,) = _migrated_loads_and_v1_does_not(LEGACY)
     assert config.resources.num_prefill == 2
-    assert config.frontend.orchestrator_placement == "first_decode"
+    assert config.frontend.placement.location == "first_decode"
     assert config.infra.etcd_nats_dedicated_node is True
     assert config.dynamo.hash == "abc1234"
-    assert config.benchmark.client_placement == "last_decode"
+    assert config.benchmark.placement.location == "last_decode"
 
 
 def test_migrate_spells_shared_node_decode_as_colocate() -> None:

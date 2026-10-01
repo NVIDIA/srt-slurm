@@ -25,6 +25,7 @@ from srtctl.core.schema import (
     InfraConfig,
     ModelConfig,
     ObservabilityConfig,
+    PlacementConfig,
     ReportingConfig,
     ReportingStatusConfig,
     ResourceConfig,
@@ -55,7 +56,7 @@ def _make_config(
 
 
 def _sa_bench(**overrides) -> BenchmarkConfig:
-    return BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="head", **overrides)
+    return BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="head"), **overrides)
 
 
 def _dcgm_power(**overrides) -> TelemetryConfig:
@@ -418,8 +419,8 @@ class TestDcgmPowerConfig:
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[0]), "benchmark.concurrencies"),
             (
                 {},
-                BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="last_decode"),
-                "benchmark.client_placement",
+                BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="last_decode")),
+                "benchmark.placement.node",
             ),
         ],
     )

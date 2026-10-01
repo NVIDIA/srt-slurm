@@ -7,6 +7,7 @@ import pytest
 
 from srtctl.benchmarks import get_runner, list_benchmarks
 from srtctl.benchmarks.base import SCRIPTS_DIR
+from srtctl.core.schema import PlacementConfig
 
 
 class TestBenchmarkRegistry:
@@ -285,11 +286,11 @@ class TestCustomBenchmarkRunner:
 
         stage = Stage()
         stage.config = SimpleNamespace(
-            benchmark=SimpleNamespace(type=benchmark_type, aiperf_package=None),
+            benchmark=SimpleNamespace(type=benchmark_type, aiperf_package=None, placement=PlacementConfig()),
             backend=backend,
             backend_type=backend_type,
             dynamo=SimpleNamespace(sidecar=dynamo_sidecar),
-            frontend=SimpleNamespace(type=frontend_type),
+            frontend=SimpleNamespace(type=frontend_type, placement=PlacementConfig()),
             profiling=SimpleNamespace(enabled=False),
             resources=SimpleNamespace(num_agg=sum(p.endpoint_mode == "agg" and p.is_leader for p in processes)),
             telemetry=SimpleNamespace(enabled=False),

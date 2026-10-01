@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from srtctl.backends import SGLangProtocol, SGLangServerConfig
-from srtctl.core.schema import SrtConfig
+from srtctl.core.schema import PlacementConfig, SrtConfig
 from srtctl.ports import (
     KV_EVENTS_PORT_BASE,
     SGLANG_BOOTSTRAP_PORT_BASE,
@@ -1758,12 +1758,14 @@ class TestSbatchNodeCount:
 
         benchmark_kwargs = {}
         if "client_dedicated_node" in overrides:
-            benchmark_kwargs["client_dedicated_node"] = overrides.pop("client_dedicated_node")
+            dedicated = overrides.pop("client_dedicated_node")
+            benchmark_kwargs["placement"] = PlacementConfig(node="dedicated" if dedicated else "head")
         if "colocate_with_frontend" in overrides:
             benchmark_kwargs["colocate_with_frontend"] = overrides.pop("colocate_with_frontend")
         frontend_kwargs = {}
         if "frontend_dedicated_node" in overrides:
-            frontend_kwargs["dedicated_node"] = overrides.pop("frontend_dedicated_node")
+            dedicated = overrides.pop("frontend_dedicated_node")
+            frontend_kwargs["placement"] = PlacementConfig(node="dedicated" if dedicated else "head")
         infra_kwargs = {}
         if "etcd_nats_dedicated_node" in overrides:
             infra_kwargs["etcd_nats_dedicated_node"] = overrides.pop("etcd_nats_dedicated_node")
@@ -2171,7 +2173,7 @@ class TestHetJobsValidation:
         from srtctl.core.schema import FrontendConfig
 
         SrtConfig, kwargs = self._make()
-        kwargs["frontend"] = FrontendConfig(dedicated_node=True)
+        kwargs["frontend"] = FrontendConfig(placement=PlacementConfig(node="dedicated"))
         with pytest.raises(ValidationError, match="not supported together with het_jobs"):
             SrtConfig(**kwargs)
 
@@ -2182,7 +2184,7 @@ class TestHetJobsValidation:
         from srtctl.core.schema import BenchmarkConfig
 
         SrtConfig, kwargs = self._make()
-        kwargs["benchmark"] = BenchmarkConfig(client_dedicated_node=True)
+        kwargs["benchmark"] = BenchmarkConfig(placement=PlacementConfig(node="dedicated"))
         with pytest.raises(ValidationError, match="not supported together with het_jobs"):
             SrtConfig(**kwargs)
 
@@ -2198,10 +2200,10 @@ class TestDedicatedNodeValidation:
             model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
             infra=InfraConfig(etcd_nats_dedicated_node=True),
-            frontend=FrontendConfig(dedicated_node=True),
+            frontend=FrontendConfig(placement=PlacementConfig(node="dedicated")),
         )
         assert cfg.infra.etcd_nats_dedicated_node is True
-        assert cfg.frontend.dedicated_node is True
+        assert cfg.frontend.placement.dedicated is True
 
     def test_allows_infra_and_client_dedicated_node_together(self):
         from srtctl.core.schema import BenchmarkConfig, InfraConfig, ModelConfig, ResourceConfig, SrtConfig
@@ -2211,10 +2213,10 @@ class TestDedicatedNodeValidation:
             model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
             infra=InfraConfig(etcd_nats_dedicated_node=True),
-            benchmark=BenchmarkConfig(client_dedicated_node=True),
+            benchmark=BenchmarkConfig(placement=PlacementConfig(node="dedicated")),
         )
         assert cfg.infra.etcd_nats_dedicated_node is True
-        assert cfg.benchmark.client_dedicated_node is True
+        assert cfg.benchmark.placement.dedicated is True
 
     def test_allows_frontend_and_client_dedicated_node_together(self):
         from srtctl.core.schema import BenchmarkConfig, FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
@@ -2223,73 +2225,31 @@ class TestDedicatedNodeValidation:
             name="t",
             model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
-            frontend=FrontendConfig(dedicated_node=True),
-            benchmark=BenchmarkConfig(client_dedicated_node=True, colocate_with_frontend=False),
+            frontend=FrontendConfig(placement=PlacementConfig(node="dedicated")),
+            benchmark=BenchmarkConfig(placement=PlacementConfig(node="dedicated"), colocate_with_frontend=False),
         )
-        assert cfg.frontend.dedicated_node is True
-        assert cfg.benchmark.client_dedicated_node is True
+        assert cfg.frontend.placement.dedicated is True
+        assert cfg.benchmark.placement.dedicated is True
         assert cfg.benchmark.colocate_with_frontend is False
 
 
-class TestDedicatedNodePlacementValidation:
-    """A dedicated node is wasted if a placement override routes the
-    orchestrator/client elsewhere, so SrtConfig rejects that combination.
-    """
+class TestDedicatedPlacementIsTheHeadLocation:
+    """`placement.node: dedicated` reserves a node and resolves to the head location, so a
+    dedicated node can never be routed elsewhere and left idle."""
 
-    def test_rejects_frontend_dedicated_node_with_non_head_placement(self):
-        import pytest
-        from marshmallow import ValidationError
-
-        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
-
-        with pytest.raises(ValidationError, match="frontend.dedicated_node requires"):
-            SrtConfig(
-                name="t",
-                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
-                resources=ResourceConfig(
-                    gpu_type="h100",
-                    gpus_per_node=8,
-                    prefill_nodes=1,
-                    decode_nodes=1,
-                    prefill_workers=1,
-                    decode_workers=1,
-                ),
-                frontend=FrontendConfig(dedicated_node=True, orchestrator_placement="first_decode"),
-            )
-
-    def test_rejects_client_dedicated_node_with_non_head_placement(self):
-        import pytest
-        from marshmallow import ValidationError
-
-        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
-
-        with pytest.raises(ValidationError, match="benchmark.client_dedicated_node requires"):
-            SrtConfig(
-                name="t",
-                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
-                resources=ResourceConfig(
-                    gpu_type="h100",
-                    gpus_per_node=8,
-                    prefill_nodes=1,
-                    decode_nodes=1,
-                    prefill_workers=1,
-                    decode_workers=1,
-                ),
-                benchmark=BenchmarkConfig(client_dedicated_node=True, client_placement="last_decode"),
-            )
-
-    def test_allows_dedicated_node_with_default_head_placement(self):
+    def test_dedicated_resolves_to_head_for_frontend_and_client(self):
         from srtctl.core.schema import BenchmarkConfig, FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
 
         cfg = SrtConfig(
             name="t",
             model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
-            frontend=FrontendConfig(dedicated_node=True),
-            benchmark=BenchmarkConfig(client_dedicated_node=True),
+            frontend=FrontendConfig(placement=PlacementConfig(node="dedicated")),
+            benchmark=BenchmarkConfig(placement=PlacementConfig(node="dedicated")),
         )
-        assert cfg.frontend.orchestrator_placement == "head"
-        assert cfg.benchmark.client_placement == "head"
+        assert cfg.frontend.placement.dedicated and cfg.frontend.placement.location == "head"
+        assert cfg.benchmark.placement.dedicated and cfg.benchmark.placement.location == "head"
+        assert PlacementConfig(node="first_decode").location == "first_decode"
 
 
 class TestNodesAllThreeDedicated:
@@ -2521,8 +2481,8 @@ class TestDedicatedNodeRejectedForClusterDefaultHet:
                 decode_workers=10,
                 het_jobs=None,
             ),
-            frontend=FrontendConfig(dedicated_node=dedicated_frontend),
-            benchmark=BenchmarkConfig(client_dedicated_node=dedicated_client),
+            frontend=FrontendConfig(placement=PlacementConfig(node="dedicated" if dedicated_frontend else "head")),
+            benchmark=BenchmarkConfig(placement=PlacementConfig(node="dedicated" if dedicated_client else "head")),
         )
 
     def test_rejects_frontend_dedicated_node_when_cluster_default_is_het(self):
@@ -5491,7 +5451,6 @@ class TestClusterConfigPreflight:
 
         def fake_submit(config_path, **kwargs):
             seen.update(kwargs)
-            return None
 
         monkeypatch.setattr(sys, "argv", ["srtctl", "apply", "-f", str(cfg), "-y"])
         with (

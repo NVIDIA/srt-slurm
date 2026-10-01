@@ -913,15 +913,15 @@ def generate_minimal_sbatch_script(
     )
     if het_components is not None and config.role_backends:
         raise ValueError("Role engine overrides require resources.het_jobs: false")
-    if het_components is not None and (config.frontend.dedicated_node or config.benchmark.client_dedicated_node):
+    if het_components is not None and (config.frontend.placement.dedicated or config.benchmark.placement.dedicated):
         # SrtConfig validation only catches resources.het_jobs: true explicitly
         # set in the recipe — it can't see a cluster-level use_het_jobs default,
         # which is only resolved here via het_components(). Catch the combo now,
         # before sbatch submits a heterogeneous allocation that Nodes.from_slurm
         # will then reject at job startup after the nodes are already granted.
         raise ValueError(
-            "frontend.dedicated_node/benchmark.client_dedicated_node are not supported with heterogeneous "
-            "SLURM jobs, and this job resolved to heterogeneous (either resources.het_jobs: true or the "
+            "frontend.placement.node: dedicated / benchmark.placement.node: dedicated are not supported with "
+            "heterogeneous SLURM jobs, and this job resolved to heterogeneous (either resources.het_jobs: true or the "
             "cluster's use_het_jobs default)"
         )
     # For het jobs the sum is informational only — the template iterates het_components
@@ -1037,8 +1037,8 @@ def planned_total_nodes(config: SrtConfig) -> int:
     num_dedicated_roles = sum(
         (
             config.infra.etcd_nats_dedicated_node,
-            config.frontend.dedicated_node,
-            config.benchmark.client_dedicated_node,
+            config.frontend.placement.dedicated,
+            config.benchmark.placement.dedicated,
         )
     )
     if num_dedicated_roles > 0:
@@ -1062,8 +1062,8 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
         total_nodes = planned_total_nodes(config)
         head, client = Nodes.planned_role_indices(
             total_nodes,
-            frontend_dedicated_node=config.frontend.dedicated_node,
-            client_dedicated_node=config.benchmark.client_dedicated_node,
+            frontend_dedicated_node=config.frontend.placement.dedicated,
+            client_dedicated_node=config.benchmark.placement.dedicated,
             etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
         )

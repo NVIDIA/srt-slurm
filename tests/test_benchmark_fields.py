@@ -77,7 +77,7 @@ def test_shared_fields_are_accepted_for_every_type() -> None:
         "benchmark:\n  type: gsm8k\n  num_examples: 5\n  placement:\n    node: last_decode\n"
         "  aiperf_args:\n    workers-max: 8\n"
     )
-    assert config.benchmark.client_placement == "last_decode"
+    assert config.benchmark.placement.location == "last_decode"
 
 
 def test_a_field_the_type_does_not_use_is_rejected() -> None:

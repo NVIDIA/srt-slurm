@@ -339,7 +339,7 @@ roles:
       tensor-parallel-size: 4
 ```
 
-`srtctl.core.roles.expand_roles` (with `expand_engine`, `srtctl.core.placement.expand_placement`, and `srtctl.services.normalize`) rewrites this into the internal fields the runtime reads: the per-role node, worker, and GPU counts on `ResourceConfig`, and per-mode `args`, `env`, `extra_args`, and `kv_events` on the engine's protocol dataclass. `nodes: colocate` becomes the internal shared-node sentinel, and the loader rejects a colocated split that does not fit on the prefill nodes. Those internal fields have the same names as the v1 recipe layout and are documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites a v1 recipe into `roles:`.
+`srtctl.core.roles.expand_roles` (with `expand_engine` and `srtctl.services.normalize`) rewrites this into the internal fields the runtime reads: the per-role node, worker, and GPU counts on `ResourceConfig`, and per-mode `args`, `env`, `extra_args`, and `kv_events` on the engine's protocol dataclass. `nodes: colocate` becomes the internal shared-node sentinel, and the loader rejects a colocated split that does not fit on the prefill nodes. Those internal fields have the same names as the v1 recipe layout and are documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites a v1 recipe into `roles:`.
 
 #### SGLangProtocol
 
@@ -503,8 +503,7 @@ src/srtctl/core/
 +------------+     +-------------+     +------------------+     +--------------+
 | YAML Config| --> | load_config | --> | expand_engine    | --> | SrtConfig    |
 | (schema 2) |     +-------------+     | expand_roles     |     | (frozen DC)  |
-+------------+                         | expand_placement |     +--------------+
-                                       | normalize        |            |
++------------+                         | normalize        |     +--------------+
                                        | services         |            |
                                        +------------------+            |
                                                                        v

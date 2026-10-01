@@ -12,7 +12,7 @@ from marshmallow import ValidationError
 
 from srtctl.backends import VLLMProtocol, VLLMServerConfig
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
-from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+from srtctl.core.schema import FrontendConfig, PlacementConfig, ResourceConfig, SrtConfig
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 from srtctl.frontends import VLLMRouterFrontend, get_frontend
 from srtctl.frontends.static_router import RouterWorker
@@ -106,7 +106,7 @@ def test_discovered_workers_advertise_no_nixl_bootstrap_port() -> None:
     [
         ({"roles": {"decode": {"connector": "nixl"}}}, "both prefill and decode"),
         ({"frontend": {"enable_multiple_frontends": True}}, "enable_multiple_frontends: false"),
-        ({"frontend": {"orchestrator_placement": "last_decode"}}, "orchestrator_placement: head"),
+        ({"frontend": {"placement": PlacementConfig(node="last_decode")}}, "placement.node: head"),
         ({"frontend": {"type": "dynamo"}}, "requires frontend.type: vllm-router"),
     ],
 )

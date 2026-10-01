@@ -396,8 +396,8 @@ class RuntimeContext:
         # Get nodes from SLURM
         pools = [(svc.name, svc.nodes) for svc in config.pool_services if svc.nodes is not None]
         nodes = Nodes.from_slurm(
-            frontend_dedicated_node=config.frontend.dedicated_node,
-            client_dedicated_node=config.benchmark.client_dedicated_node,
+            frontend_dedicated_node=config.frontend.placement.dedicated,
+            client_dedicated_node=config.benchmark.placement.dedicated,
             etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
             engine_nodes=config.engine_node_count if pools else None,
