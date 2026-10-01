@@ -815,6 +815,28 @@ class BenchmarkStageMixin:
 
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
+    def _custom_metrics_need_physical_processes(self) -> bool:
+        """Whether a custom AIPerf command must scrape every SGLang process.
+
+        A pure-TP follower serves no engine of its own, so custom benchmarks
+        normally scrape logical worker leaders only. With attention data
+        parallelism (``dp-size`` > 1), however, each physical process schedules
+        its own attention-DP ranks and exports distinct cache and load metrics
+        for them; scraping only the leader silently drops the follower nodes'
+        ranks. Sidecar workers keep their native logical endpoints.
+        """
+        if self.config.backend_type != "sglang" or self.config.dynamo.sidecar:
+            return False
+        for mode in ("prefill", "decode", "agg"):
+            args = self.config.backend.get_config_for_mode(mode) or {}
+            dp_size = args.get("dp-size", args.get("dp_size", 1))
+            try:
+                if int(dp_size) > 1:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         from srtctl.benchmarks.base import AIPerfBenchmarkRunner
@@ -863,7 +885,9 @@ class BenchmarkStageMixin:
 
         # Built-in AIPerf runners retain physical-process metrics for vLLM DP.
         # Custom commands commonly wrap AIPerf but do not inherit from its base
-        # class, so give them the logical-worker view needed by SGLang TP.
+        # class, so give them the logical-worker view needed by SGLang TP, except
+        # under SGLang attention DP, where every physical process owns distinct
+        # DP ranks (see _custom_metrics_need_physical_processes).
         # An explicit AIPERF_SERVER_METRICS_URLS in the recipe environment wins:
         # the operator may be pointing the client at a curated endpoint list,
         # and injection used to clobber it here silently.
@@ -872,7 +896,14 @@ class BenchmarkStageMixin:
                 env.update(self._get_aiperf_server_metrics_env())
             elif is_custom:
                 assert logical_endpoints is not None
-                env.update(self._get_aiperf_server_metrics_env(logical_endpoints, logical_workers_only=True))
+                metrics_env: dict[str, str] = {}
+                if self._custom_metrics_need_physical_processes():
+                    metrics_env = self._get_aiperf_server_metrics_env()
+                # A worker without separately addressable physical metrics ports
+                # (e.g. a single-node DEP worker) keeps its logical leader URLs.
+                if not metrics_env:
+                    metrics_env = self._get_aiperf_server_metrics_env(logical_endpoints, logical_workers_only=True)
+                env.update(metrics_env)
         if isinstance(runner, AIPerfBenchmarkRunner) and self.config.benchmark.aiperf_package:
             env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
 
