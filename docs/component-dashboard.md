@@ -25,8 +25,7 @@ from a repo checkout.
 
 Jobs no longer automatically ingest dashboard data or render a dashboard. Use the
 [manual commands below](#running-it-by-hand) against a retained run's artifacts.
-The `srtctl.analysis.perf_dashboard` Python helper is also available for explicit
-builds and writes these outputs into the run's log directory:
+Choose output paths for these artifacts (`--dump-json` adds the JSON payload):
 
 ```
 perf_dashboard.html          self-contained page (D3 inlined, no network needed)
@@ -39,9 +38,6 @@ headless cluster, a CI log, an S3 prefix. It is the machine-readable form of
 everything the page shows, so a run can be diffed against another, asserted on in a
 test, or simply read without a browser. A build after the job finishes does not
 update its earlier S3 upload; copy generated outputs separately if needed remotely.
-
-Driven by `srtctl.analysis.perf_dashboard`, which is best-effort: a rendering failure
-is logged and never changes the outcome of a benchmark that already produced results.
 
 `observability.enabled` determines which server-side inputs a later build can use:
 

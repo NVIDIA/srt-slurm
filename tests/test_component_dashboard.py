@@ -488,10 +488,7 @@ class TestPerfDashboardPipeline:
         assert _worker_specs(cfg) == ["agg=tep:4:6"]
 
     def test_build_is_not_gated_on_observability(self, tmp_path: Path, monkeypatch):
-        """The page is built for every run. `observability.enabled` selects which
-        capture legs exist -- which tabs appear -- never whether there is a page:
-        a run with no server-side capture still has a client export and an
-        iteration log to render, and it is the run you cannot re-instrument."""
+        """Explicit builds run regardless of observability; the flag selects captured inputs."""
         import srtctl.analysis.perf_dashboard as pd
 
         sentinel = tmp_path / "perf_dashboard.html"
@@ -509,9 +506,7 @@ class TestPerfDashboardPipeline:
         assert seen == [False, True], "both arms must reach build()"
 
     def test_try_build_swallows_a_rendering_failure(self, tmp_path: Path, monkeypatch):
-        """With no opt-in gate left, this guard is the only thing between a bug in
-        third-party rendering code and the post-processing of a benchmark that has
-        already produced its results."""
+        """Rendering failures must not propagate to explicit callers."""
         import srtctl.analysis.perf_dashboard as pd
 
         def _boom(config, runtime):
@@ -524,8 +519,7 @@ class TestPerfDashboardPipeline:
         assert not (tmp_path / "perf_dashboard.html").exists()
 
     def test_end_to_end_one_run_produces_the_dashboard(self, run_dir: Path):
-        """The whole point of the wiring: a finished log dir in, artifacts out, with
-        no hand-driven step from a checkout."""
+        """Explicitly build a dashboard from a finished run's log directory."""
         from srtctl.analysis.perf_dashboard import BUNDLE_DIRNAME, try_build
 
         runtime = SimpleNamespace(log_dir=run_dir, job_id="2739690")
@@ -547,8 +541,7 @@ class TestPerfDashboardPipeline:
         assert (bundle / "trtllm_config_decode.yaml").is_file(), "engine ceilings must reach the bundle"
 
     def test_missing_vendored_tree_is_survivable(self, run_dir: Path, monkeypatch):
-        """A wheel install with no checkout must degrade to a warning, not an exception
-        — this runs inside post-processing of a benchmark that already succeeded."""
+        """A wheel install without a checkout must skip the explicit build without raising."""
         import srtctl.analysis.perf_dashboard as pd
 
         monkeypatch.setattr(pd, "find_repo_root", lambda: None)
