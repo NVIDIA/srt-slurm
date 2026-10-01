@@ -145,6 +145,7 @@ class TestAgentPerfPorter:
     def test_taskset_detection(self, tmp_path):
         recipe, _ = run_porter(make_run_dir(tmp_path, with_taskset=True), tmp_path)
         assert recipe["engine"]["numa_cpu_bind"] is True
+        assert recipe["engine"]["numa_memory_bind"] is True
 
     def test_dataset_root_resolution(self, tmp_path):
         root = tmp_path / "datasets"

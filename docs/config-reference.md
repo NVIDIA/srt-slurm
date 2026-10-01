@@ -182,13 +182,13 @@ The `srtslurm.yaml` file can contain the following fields:
 | `preflight`                     | bool   | `false` skips the pre-submit path checks on every `apply` (default `true`) |
 | `reporting`                     | object | Status collector (`status`), log upload (`s3`) and failure analysis (`ai_analysis`); see below and [status-api-spec.md](status-api-spec.md) |
 
-**reporting.s3**: After a run, a small container on the head node uploads the log directory to `s3://<bucket>/<prefix>/<YYYY-MM-DD>/<job_id>/` (`endpoint_url` for MinIO or another S3-compatible store; credentials only through `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the submit shell, since the literal fields would land in the lockfile). Not everything is worth shipping: a benchmark run's directory is 250 MB to 2 GB on lustre, over 95% of it aiperf's per-interval scrape of the worker and DCGM `/metrics` endpoints, the same series tachometer already stores as parquet, stored twice (raw per concurrency, and reshaped again in `perf_dashboard_bundle/`). The upload therefore follows a policy:
+**reporting.s3**: After a run, a small container on the head node uploads the log directory to `s3://<bucket>/<prefix>/<YYYY-MM-DD>/<job_id>/` (`endpoint_url` for MinIO or another S3-compatible store; credentials only through `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the submit shell, since the literal fields would land in the lockfile). Not everything is worth shipping: a benchmark run's directory is 250 MB to 2 GB on lustre, over 95% of it aiperf's per-interval scrape of the worker and DCGM `/metrics` endpoints, the same series tachometer already stores as parquet. The upload therefore follows a policy:
 
 | Shipped as-is | Packed into `bundle.tar.zst` (`archive`) | Skipped (`exclude`) |
 |---|---|---|
-| config, lockfile, job JSON, sbatch script, git state, fingerprints, resource snapshot; sweep, worker, frontend, service and benchmark logs; results JSON, rollup, `profile_export_aiperf.*`; `perf_dashboard.html`; `tachometer/` parquet | `artifacts/**/profile_export.jsonl`, `sa-bench_*/**/profile_export.jsonl` (aiperf's per-request records, 13 to 40 MB raw, under 1 MB compressed) | `server_metrics_export.jsonl`, `server_metrics_export.json`, `gpu_telemetry_export.jsonl` and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (the aiperf artifact roots; a same-named file from another benchmark type is not touched), `perf_dashboard_bundle/*`, `perf_dashboard.json` |
+| config, lockfile, job JSON, sbatch script, git state, fingerprints, resource snapshot; sweep, worker, frontend, service and benchmark logs; results JSON, rollup, `profile_export_aiperf.*`; `perf_dashboard.html` (if present); `tachometer/` parquet | `artifacts/**/profile_export.jsonl`, `sa-bench_*/**/profile_export.jsonl` (aiperf's per-request records, 13 to 40 MB raw, under 1 MB compressed) | `server_metrics_export.jsonl`, `server_metrics_export.json`, `gpu_telemetry_export.jsonl` and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (the aiperf artifact roots; a same-named file from another benchmark type is not touched), `perf_dashboard_bundle/*`, `perf_dashboard.json` |
 
-`exclude` uses `aws s3 sync` pattern rules (relative to the log directory, `*` matches across directories); `archive` uses Python glob rules with `**`. Either list replaces its default when set; `exclude: []` ships the whole directory, `archive: []` makes no archive. The archive is built under `/tmp` in the container, so nothing is added to the log directory on the cluster. One caveat: with tachometer disabled, dropping the aiperf scrape leaves no engine-metrics record outside `perf_dashboard.html`; enable tachometer, or override `exclude`.
+`exclude` uses `aws s3 sync` pattern rules (relative to the log directory, `*` matches across directories); `archive` uses Python glob rules with `**`. Either list replaces its default when set; `exclude: []` ships the whole directory, `archive: []` makes no archive. The archive is built under `/tmp` in the container, so nothing is added to the log directory on the cluster. One caveat: with tachometer disabled, dropping the aiperf scrape leaves no uploaded engine-metrics time series for a later dashboard build; enable tachometer, or override `exclude`.
 
 ```yaml
 reporting:
@@ -334,6 +334,40 @@ Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. Everything that is per
 | `mocker` | the simulation parameters: `engine_type`, `speedup_ratio`, `decode_speedup_ratio`, `num_gpu_blocks_override`, `max_num_seqs`, `max_num_batched_tokens`, `block_size`, `data_parallel_size`, ... |
 
 The v1 spelling of this (`backend.type` plus the engine-wide keys under `backend:`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
+
+### TRT-LLM CPU and memory placement
+
+To place worker CPUs and memory on the NUMA node associated with each task's GPU:
+
+```yaml
+engine:
+  type: trtllm
+  numa_cpu_bind: true
+  numa_memory_bind: local
+```
+
+The launcher resolves the GPU through `CUDA_VISIBLE_DEVICES` and
+`SLURM_LOCALID`, applies its CPU mask, and sets `numactl --membind=<node>`
+before starting the worker. Allocations governed by this policy cannot fall
+back to another node. Insufficient local memory can cause allocation failure
+or OOM, even when another node has free memory. Existing or shared pages are
+not migrated. The container must provide `numactl`. Local mode requires
+`numa_cpu_bind: true`. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
+cluster GPU visibility variables are not supported by this wrapper.
+
+`numa_memory_bind: false` keeps CPU binding without a memory policy change.
+`numa_memory_bind: true` uses `numactl -m 0,1` for any GPU type or worker mode.
+When omitted or null, this two-node policy applies only to `gb200`, `gb300`,
+and `vrnvl72` prefill and decode workers. Enabling CPU binding does not change
+these memory policies.
+
+In local mode, the launcher fails if the GPU's NUMA affinity cannot be resolved,
+its CPU list is missing or empty, or the memory policy cannot be applied.
+Without local mode, unknown GPU NUMA affinity skips CPU binding and retains
+the selected memory policy. When profiling in local mode, the outer `nsys`
+process also inherits the strict memory policy.
+
+See [the local-binding example](../examples/trtllm/trtllm-serve-agg-numa-local.yaml).
 
 ### vLLM DP launch mode
 
@@ -1559,7 +1593,7 @@ top-level `profiling` mode takes precedence. The serving container must provide 
 NVTX support. See [Observability capture](profiling.md#observability-capture)
 for timing, sampling, injection, and report-finalization settings.
 
-The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
+The component perf dashboard is built explicitly after a run; `enabled` decides which capture legs exist and therefore which tabs a later build carries. Jobs do not automatically run dashboard ingestion or rendering. See [Component Performance Dashboard](component-dashboard.md).
 
 SGLang workers always receive `--enable-metrics` unless the recipe sets it: native
 `sglang.launch_server` serves `/metrics` only with the flag, and `dynamo.sglang`
@@ -1612,7 +1646,7 @@ Every exporter block accepts `container_image`, `port`, `command` and `binary`. 
 
 The pressure collector reports PSI only when the host exposes the corresponding `/proc/pressure` files; missing metrics indicate unavailable data. NUMA memory and allocation metrics retain the exported `node` label as `numa_node` in raw metric names, separately from host metadata. With `observability.enabled: true`, the existing local host sampler also records cumulative PSI stall totals in microseconds in its `psi` JSONL field. That optional sampler covers the sweep/orchestrator host only; it does not extend exporter placement to dedicated frontend or client nodes. Collector overhead has not been measured for this change.
 
-Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself; srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans; the post-processing ingest converts the Parquet into the dashboard's `server_metrics_export.jsonl`.
+Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself; srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans; explicit dashboard ingestion converts the Parquet into the dashboard's `server_metrics_export.jsonl`.
 
 The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent.
 

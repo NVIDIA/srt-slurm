@@ -277,6 +277,8 @@ def show_config_details(config: SrtConfig) -> None:
     from srtctl.backends.trtllm import TRTLLMProtocol
 
     if isinstance(config.backend, TRTLLMProtocol):
+        if config.backend.numa_memory_bind == "local":
+            console.print("TRT-LLM NUMA: GPU-local CPU binding and strict GPU-local memory binding (--bind-memory)")
         # Engine-yaml statistics keys srtctl defaults at config load
         # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
         # expand_observability). Shown for both frontends so a run that expects

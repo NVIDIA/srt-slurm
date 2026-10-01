@@ -1608,12 +1608,10 @@ class ObservabilityConfig:
     the effective publication flags give those endpoints engine metrics — see
     ``BenchmarkStageMixin``.)
 
-    It does **not** decide whether the component perf dashboard is built. That
-    happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
-    only decides which capture legs exist and therefore which tabs the page
-    carries. Keeping the two separate is deliberate: a run that captured nothing
-    server-side still renders from the client export and the per-iteration log,
-    and that is the shape most runs have.
+    The component perf dashboard is built explicitly after a run (see
+    :mod:`srtctl.analysis.perf_dashboard`). ``enabled`` decides which capture
+    legs exist and therefore which tabs a later build carries. A run without
+    server-side capture can still render from the client export and worker logs.
 
     Attributes:
         enabled: Master analytics knob. Default: False.
