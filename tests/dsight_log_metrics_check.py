@@ -127,7 +127,7 @@ async def run(out: Path, port: int) -> None:
                     assert "2/2 samples" in active and "Highest observed usage" not in active
                     assert await browser.js("__options[0].references[0].conflict_timestamps") == [-1]
                 report["cases"].append({"case": case, "summaries": texts})
-            # uPlot needs unique x coordinates; request evidence must retain all
+            # uPlot needs unique x coordinates; event evidence must retain all
             # source lines while the plot explicitly labels its display median.
             logs, _ = write_run(out / "request-events")
             base = PREFILL_REQUEST.replace("2026-09-24 01:47:50.616", "2026-09-17 10:58:33.232")
@@ -182,6 +182,56 @@ async def run(out: Path, port: int) -> None:
             await browser.screenshot("04-request-events.png")
             report["cases"].append(
                 {"case": "request-events", "raw_points": len(raw[0]["points"]), "display_points": plotted}
+            )
+            # Stock SGLang logging omits ranks, milliseconds, and batch counters.
+            # Multiple batches at one second are separate observations, not conflicts.
+            logs, _ = write_run(out / "stock-batch-events")
+            (logs / "prefill-host_prefill_w0.out").write_text(
+                "".join(
+                    f"[2026-09-17 10:58:{second}] Prefill batch, #new-token: {value}\n"
+                    for second, value in [(33, 64), (33, 64), (33, 128), (34, 64), (34, 128)]
+                )
+            )
+            summary = build_dashboard(
+                logs, out / "stock-batch-events" / "report", single_file=True, iteration_timezone="UTC"
+            )
+            await browser.call("Page.navigate", url="about:blank")
+            await browser.wait("!window.traceExplorer")
+            await browser.call("Page.navigate", url=Path(summary["html"]).resolve().as_uri())
+            await browser.wait("Boolean(window.traceExplorer?.ready)")
+            await browser.js("traceExplorer.whenMetricsReady()")
+            await browser.js("""(()=>{
+              window.__plots=[];
+              const Plot=window.uPlot;
+              window.uPlot=Object.assign(function(...args){const plot=new Plot(...args);__plots.push(plot);return plot},Plot);
+            })()""")
+            metric = "log_sglang_new_tokens"
+            await browser.js(
+                "traceExplorer.setState("
+                + json.dumps({"metric": metric, "pinnedMetrics": [metric], "from": 0, "to": 10})
+                + ")"
+            )
+            await browser.js("traceExplorer.whenMetricsReady()")
+            query = "traceExplorer.queryMetrics({name:" + json.dumps(metric) + ",points:true})"
+            raw = await browser.js(query)
+            assert len(raw) == 1 and [p[1] for p in raw[0]["points"]] == [64, 64, 128, 64, 128]
+            assert [p[3] for p in raw[0]["points"]] == [1, 2, 3, 4, 5]
+            assert raw[0]["rank"] is None and raw[0]["time_resolution_s"] == 1
+            assert not raw[0]["conflict_timestamps"]
+            plotted = await browser.js("__plots.at(-1).data")
+            assert plotted == [[2, 3], [64, 96]]
+            for time, count in [(2, 3), (3, 2)]:
+                await browser.js(
+                    f"(()=>{{const p=__plots.at(-1);p.setCursor({{left:p.valToPos({time},'x'),top:10}})}})()"
+                )
+                value = await browser.js("document.querySelector('.ds-metric-value').textContent")
+                assert "median" in value and f"({count} events)" in value, value
+            assert await browser.js(query) == raw
+            assert not await browser.js("document.getElementById('error').textContent")
+            await browser.rectangle("#metricsSection")
+            await browser.screenshot("05-stock-batch-events.png")
+            report["cases"].append(
+                {"case": "stock-batch-events", "raw_points": len(raw[0]["points"]), "display_points": plotted}
             )
             errors = [event for event in browser.events if event.get("method") == "Runtime.exceptionThrown"]
             assert not errors, errors

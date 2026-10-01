@@ -169,7 +169,9 @@ Worker logs can also supply metrics without Tachometer. The shared
 by the metric UI. The Dynamo–TokenSpeed implementation supplies active decode
 batch size, configured batch limit, active KV pages and usable page pool size.
 The SGLang implementation supplies batch snapshots and per-request cache/timing
-events. Events logged at the same millisecond remain separate in raw queries;
+events. Default second-resolution logs, optional fractional timestamps and rank
+prefixes, and batches with or without counters are supported. Batch and request
+events logged at the same timestamp remain separate in raw queries;
 the chart displays their median with an event-count label.
 See [metric sources, schema and log generators](dsight-log-metrics.md) for exact
 names, units, evidence and extension rules. Local log timestamps require

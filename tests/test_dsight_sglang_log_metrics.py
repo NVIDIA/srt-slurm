@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from test_dsight import write_run
 
 from srtctl.dsight.importer import Importer
@@ -99,10 +100,107 @@ def test_partial_and_irrelevant_lines_do_not_invent_values():
         "log_sglang_queued_requests": 0,
     }
     assert generator.parse_line("[2026-09-24 01:47:50.615 DP3 TP3 EP3] ReqTimeStats(...)", source) is None
-    assert generator.parse_line("[2026-09-24 01:47:50.615] Prefill batch [1], #new-token: 64", source) is None
+    assert generator.parse_line("[2026-09-24 01:47:50.615 UNKNOWN0] Prefill batch [1], #new-token: 64", source) is None
     assert generator.parse_line(PREFILL, frontend) is None
     invalid_count = generator.parse_line(PREFILL.replace("#new-token: 64", "#new-token: bad"), source)
     assert invalid_count and "log_sglang_new_tokens" not in dict(invalid_count.values)
+
+
+@pytest.mark.parametrize(
+    "stamp,prefix,counter,rank,labels,resolution",
+    [
+        ("2026-09-24 01:47:50", "", "", None, {}, 1),
+        ("2026-09-24 01:47:50.615", "", " [7]", None, {}, 0.001),
+        ("2026-09-24 01:47:50", " DP0 TP0 EP0", " [7]", 0, {"tp": "0", "ep": "0"}, 1),
+        ("2026-09-24 01:47:50.615", " DP0 TP0 EP0", "", 0, {"tp": "0", "ep": "0"}, 0.001),
+        ("2026-09-24 01:47:50.123456", " TP2", "", None, {"tp": "2"}, 0.000001),
+        ("2026-09-24 01:47:50", " DP3", "", 3, {}, 1),
+        (
+            "2026-09-24 01:47:50.615",
+            " DP3 PP1 ATTN_CP2 MOE_DP4 TP5 EP6",
+            " [7]",
+            3,
+            {"pp": "1", "attn_cp": "2", "moe_dp": "4", "tp": "5", "ep": "6"},
+            0.001,
+        ),
+        ("2026-09-24 01:47:50", " PP1 MOE_DP2", "", None, {"pp": "1", "moe_dp": "2"}, 1),
+    ],
+)
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("kind", ["batch", "request"])
+def test_default_and_optional_logger_formats(stamp, prefix, counter, rank, labels, resolution, phase, kind):
+    source = source_identity(Path("host_agg_w0.out"))
+    assert source
+    body = (
+        f"{phase.title()} batch{counter}, #queue-req: 2"
+        if kind == "batch"
+        else f"ReqTimeStats(rid=synthetic, type={phase}): queue_duration=2.5ms"
+    )
+    event = SGLangLogMetrics().parse_line(f"[{stamp}{prefix}] {body}", source)
+    assert event
+    assert event.time == stamp and event.time_resolution_s == resolution
+    assert event.rank == rank and event.rank_kind == ("dp" if rank is not None else None)
+    assert dict(event.labels) == {"phase": phase, **labels}
+    assert dict(event.values) == (
+        {"log_sglang_queued_requests": 2} if kind == "batch" else {"log_sglang_request_queue_duration_ms": 2.5}
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Prefill batch, #new-token: -1",
+        "Prefill batch, cuda graph: unknown",
+        "Prefill batch, token usage: nan",
+        "Prefill batch, token usage: 1e999",
+        "Prefill batch, #token: 12",
+        "Decode batch, #cached-token: 12",
+        "ReqTimeStats(type=prefill): queue_duration=2s",
+        "ReqTimeStats(type=prefill): queue_duration=nanms",
+        "ReqTimeStats(type=prefill): queue_duration=1e999ms",
+        "ReqTimeStats(type=decode): unknown_duration=2ms",
+    ],
+)
+def test_invalid_and_wrong_phase_observations_remain_absent(body):
+    source = source_identity(Path("host_agg_w0.out"))
+    assert source
+    assert SGLangLogMetrics().parse_line(f"[2026-09-24 01:47:50] {body}", source) is None
+
+
+def test_ambiguous_duplicate_rank_prefix_is_not_merged():
+    source = source_identity(Path("host_prefill_w0.out"))
+    assert source
+    assert SGLangLogMetrics().parse_line(PREFILL.replace("DP3", "DP3 DP1"), source) is None
+
+
+@pytest.mark.parametrize(
+    "template,old_fields,new_fields,expected",
+    [
+        (
+            PREFILL_REQUEST,
+            "bootstrap_duration=0.32ms",
+            "bootstrap_queue_duration=12.5ms",
+            {"log_sglang_request_bootstrap_queue_duration_ms": 12.5},
+        ),
+        (
+            DECODE_REQUEST,
+            "bootstrap_duration=9.05ms, alloc_wait_duration=11.50ms",
+            "prealloc_queue_duration=25.5ms",
+            {"log_sglang_request_preallocation_queue_duration_ms": 25.5},
+        ),
+        (PREFILL_REQUEST, "bootstrap_duration=0.32ms", "bootstrap_done_time=1790239662.267", {}),
+    ],
+)
+def test_alternative_stage_fields_are_distinct_from_completed_bootstrap(template, old_fields, new_fields, expected):
+    source = source_identity(Path("host_agg_w0.out"))
+    assert source
+    event = SGLangLogMetrics().parse_line(template.replace(old_fields, new_fields), source)
+    assert event
+    values = dict(event.values)
+    assert "log_sglang_request_bootstrap_duration_ms" not in values
+    assert "log_sglang_request_allocation_wait_duration_ms" not in values
+    assert {k: v for k, v in values.items() if k in expected} == expected
+    assert not any("bootstrap_done" in k for k in values)
 
 
 def test_real_request_records_keep_completion_time_and_valid_same_request_fraction():
@@ -227,6 +325,25 @@ def test_distinct_requests_at_one_timestamp_keep_all_values_and_line_evidence(tm
     assert queue["conflict_timestamps"] == [] and queue["conflicting_samples"] == 0
     for point in queue["points"]:
         assert Path(data["sources"][point[2]]["path"]).read_text().splitlines()[point[3] - 1] == lines[point[3] - 1]
+
+
+def test_second_resolution_batches_keep_every_line_and_coarsest_precision(tmp_path):
+    logs, _ = write_run(tmp_path)
+    body = "Prefill batch, #new-token: 64"
+    lines = [
+        f"[2026-09-17 10:58:33.230] {body}",
+        f"[2026-09-17 10:58:34] {body}",
+        f"[2026-09-17 10:58:34] {body}",
+        f"[2026-09-17 10:58:34] {body.replace('64', '128')}",
+    ]
+    (logs / "prefill-host_prefill_w0.out").write_text("\n".join(lines) + "\n")
+    data = Importer(logs, iteration_timezone="UTC").run()
+    series = next(s for s in data["metrics"] if s["name"] == "log_sglang_new_tokens")
+    assert series["rank"] is None and series["rank_kind"] is None
+    assert series["temporal"] == "event" and series["time_resolution_s"] == 1
+    assert [p[:2] for p in series["points"]] == [[2.23, 64], [3, 64], [3, 64], [3, 128]]
+    assert [p[3] for p in series["points"]] == [1, 2, 3, 4]
+    assert series["conflict_timestamps"] == [] and series["conflicting_samples"] == 0
 
 
 def test_synthetic_example_imports_all_families_without_client_or_telemetry():

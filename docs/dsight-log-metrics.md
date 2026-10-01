@@ -104,10 +104,11 @@ the previous limit. Settings are not applied before their recorded timestamps.
 
 ## SGLang batch metrics
 
-SGLang `Prefill batch [...]` and `Decode batch [...]` lines contribute the recorded
-fields below as `log_sglang_*` samples. The shared reader retains each physical
-log line as evidence. Each series keeps the logged DP rank and its TP and EP
-labels, plus a `phase` label (`prefill` or `decode`); values from different ranks,
+SGLang `Prefill batch` and `Decode batch` lines, with or without a `[counter]`,
+contribute the recorded fields below as `log_sglang_*` observations. The shared
+reader retains each physical log line as evidence. Each series keeps the DP rank
+when logged, plus any `pp`, `attn_cp`, `moe_dp`, `tp`, and `ep` labels and a
+`phase` label (`prefill` or `decode`); values from different ranks,
 phases, files or workers are never summed. A field absent or invalid on a line
 creates no point. All values are snapshots or logger-reported rates, not held
 settings or continuously measured occupancy.
@@ -135,9 +136,22 @@ rate, or infer values between samples.
 SGLang timestamps are local. Pass the run's actual timezone through
 `--iteration-timezone` to align them with client and exported telemetry; without
 it the reader omits these metrics and records a warning.
-The supported format includes fractional-second timestamps and explicit
-`DP`, `TP`, and `EP` rank labels. The [synthetic SGLang example](../examples/dsight/sglang/README.md)
-builds a report from these logs alone.
+Both default second-resolution timestamps and optional fractional seconds are
+supported. `SGLANG_LOG_MS` and `SGLANG_LOG_FORWARD_ITERS` are not required.
+Rank prefixes may contain any of `DP`, `PP`, `ATTN_CP`, `MOE_DP`, `TP`, and `EP`,
+or no ranks. Without a logged `DP`, the normalized rank and rank kind remain
+unknown; a `TP` label is not reinterpreted as a DP rank. A series records the
+coarsest timestamp precision among its observations (1 s without a fraction).
+These formats follow the pinned upstream [logger](https://github.com/sgl-project/sglang/blob/f884231f5a3108d9139b0141406ddea60f6a97ff/python/sglang/srt/utils/common.py#L2453),
+[rank prefix](https://github.com/sgl-project/sglang/blob/f884231f5a3108d9139b0141406ddea60f6a97ff/python/sglang/srt/managers/scheduler.py#L5991),
+and [batch formatter](https://github.com/sgl-project/sglang/blob/f884231f5a3108d9139b0141406ddea60f6a97ff/python/sglang/srt/managers/scheduler_components/metrics_reporter.py#L702).
+
+Batch observations use `event` semantics because multiple batches can share
+one logged second. Queries retain every line, including repeated values; the
+chart shows a labeled median and event count for coincident observations.
+It does not fabricate ordering or subsecond timestamps. The
+[synthetic SGLang example](../examples/dsight/sglang/README.md) includes both default
+and detailed formats and builds a report from these logs alone.
 
 ### Per-request timing records
 
@@ -146,7 +160,7 @@ SGLang `ReqTimeStats(...)` lines also enter the same catalog. The request's
 record when the scheduler sees it finished and request-time logging is enabled;
 the point is placed at the **log emission time**, which is an observation after
 completion, not the queue-entry or first-forward time. Scope retains the logged
-DP rank, TP/EP labels and `type=prefill` or `type=decode` as the `phase` label.
+rank labels when present and `type=prefill` or `type=decode` as the `phase` label.
 
 | Metric suffix after `log_sglang_` | Source or calculation | Unit |
 | --- | --- | --- |
@@ -155,6 +169,8 @@ DP rank, TP/EP labels and `type=prefill` or `type=decode` as the `phase` label.
 | `request_cached_input_fraction` | `cached_input_len / input_len`, when input > 0 and 0 ≤ cached ≤ input | ratio |
 | `request_bootstrap_duration_ms`, `request_queue_duration_ms`, `request_forward_duration_ms` | Corresponding `ReqTimeStats` durations on either phase | ms |
 | `request_allocation_wait_duration_ms`, `request_transfer_duration_ms` | Decode-only `alloc_wait_duration`, `transfer_duration` | ms |
+| `request_bootstrap_queue_duration_ms` | Prefill `bootstrap_queue_duration` when bootstrap has not completed | ms |
+| `request_preallocation_queue_duration_ms` | Decode `prealloc_queue_duration` when no bootstrap-completion timestamp is available | ms |
 | `request_transfer_speed_gib_per_second`, `request_transfer_total_mib` | Prefill-only transfer fields as logged | GiB/s, MiB |
 
 These durations describe the individual request's recorded stages. They cannot
@@ -164,7 +180,7 @@ is a per-request fraction, not the batch's `#cached-token` share or a
 full-workload cache hit rate. A missing or invalid input count leaves that
 derived value absent; a valid zero denominator remains unknown rather than zero.
 Request metrics use `event` semantics: queries and SQLite keep every request's
-point and source line, including repeated values at the same millisecond. The
+point and source line, including repeated values at the same logged timestamp. The
 chart displays the median when events share a timestamp and labels the number
 of events at that tick. This display value is not an additional raw sample;
 hover and the source query distinguish it from individual requests. The line
@@ -179,6 +195,11 @@ so a logged zero does not always prove a zero-length stage. Prefill
 chunking and transfer. The logged prefill `entry_time` is the bootstrap queue
 entry time, while `queue_duration` starts at the waiting queue entry; the
 adapter does not use `entry_time` as an alignment anchor.
+Alternative queue durations retain their own metric names; they do not create
+`request_bootstrap_duration_ms` or `request_allocation_wait_duration_ms` points.
+When prefill instead logs `bootstrap_done_time`, that wall-clock timestamp stays
+in the source evidence and is not converted into a duration. Other valid fields
+on the same request still contribute points.
 The [upstream request-timing implementation](https://github.com/sgl-project/sglang/blob/f884231f5a3108d9139b0141406ddea60f6a97ff/python/sglang/srt/observability/req_time_stats.py)
 defines the stage boundaries, missing-endpoint behavior, and binary transfer units.
 

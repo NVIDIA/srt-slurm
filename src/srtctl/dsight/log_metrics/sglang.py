@@ -11,15 +11,14 @@ import re
 from ..sources import SourceIdentity
 from .base import LogMetricDefinition, LogMetricEvent
 
-_BATCH = re.compile(
-    r"\[(?P<time>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+) "
-    r"DP(?P<dp>\d+) TP(?P<tp>\d+) EP(?P<ep>\d+)\] "
-    r"(?P<phase>Prefill|Decode) batch \[\d+\], (?P<fields>.*)"
+_RANK = re.compile(r"(DP|PP|ATTN_CP|MOE_DP|TP|EP)(\d+)")
+_PREFIX = (
+    r"\[(?P<time>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?)"
+    rf"(?P<ranks>(?: {_RANK.pattern})*)\] "
 )
+_BATCH = re.compile(_PREFIX + r"(?P<phase>Prefill|Decode) batch(?: \[\d+\])?, (?P<fields>.*)")
 _REQUEST = re.compile(
-    r"\[(?P<time>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+) "
-    r"DP(?P<dp>\d+) TP(?P<tp>\d+) EP(?P<ep>\d+)\] "
-    r"ReqTimeStats\((?P<meta>[^)]*)\): (?P<fields>.*)"
+    _PREFIX + r"ReqTimeStats\((?P<meta>[^)]*)\): (?P<fields>.*)"
 )
 _DECIMAL = re.compile(r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\Z")
 
@@ -99,6 +98,8 @@ _DECODE_ONLY = {
 }
 _REQUEST_DURATIONS = {
     "bootstrap_duration": "bootstrap",
+    "bootstrap_queue_duration": "bootstrap_queue",
+    "prealloc_queue_duration": "preallocation_queue",
     "queue_duration": "queue",
     "forward_duration": "forward",
     "alloc_wait_duration": "allocation_wait",
@@ -110,11 +111,33 @@ _REQUEST_TRANSFER = {
 }
 
 
+def _scoped_event(match: re.Match[str], phase: str, values: list[tuple[str, float | None]]) -> LogMetricEvent | None:
+    rank_fields = _RANK.findall(match["ranks"])
+    ranks = dict(rank_fields)
+    if len(ranks) != len(rank_fields):
+        return None
+    dp = ranks.pop("DP", None)
+    return LogMetricEvent(
+        match["time"],
+        tuple(values),
+        rank=int(dp) if dp is not None else None,
+        rank_kind="dp" if dp is not None else None,
+        labels=(("phase", phase), *((name.lower(), rank) for name, rank in ranks.items())),
+        time_resolution_s=10 ** -len(match["time"].partition(".")[2]),
+    )
+
+
 class SGLangLogMetrics:
     name = "sglang"
     definitions = tuple(
         LogMetricDefinition(
-            f"log_sglang_{suffix}", title, unit, description + " Per logged rank and phase; samples are not summed."
+            f"log_sglang_{suffix}",
+            title,
+            unit,
+            description + " Per logged rank and phase; samples are not summed.",
+            # Default second-resolution logs can contain several distinct batches
+            # at one timestamp. Keep each source line, including equal values.
+            temporal="event",
         )
         for suffix, title, unit, description in _FIELDS.values()
     ) + (
@@ -200,14 +223,7 @@ class SGLangLogMetrics:
             values.append((f"log_sglang_{_FIELDS[key][0]}", value))
         if not values:
             return None
-        return LogMetricEvent(
-            match["time"],
-            tuple(values),
-            rank=int(match["dp"]),
-            rank_kind="dp",
-            labels=(("phase", phase), ("tp", match["tp"]), ("ep", match["ep"])),
-            time_resolution_s=10 ** -len(match["time"].split(".")[1]),
-        )
+        return _scoped_event(match, phase, values)
 
     def _parse_request(self, match: re.Match[str]) -> LogMetricEvent | None:
         metadata = dict(part.split("=", 1) for part in match["meta"].split(", ") if "=" in part)
@@ -248,11 +264,4 @@ class SGLangLogMetrics:
                 values.append((f"log_sglang_request_{suffix}", value))
         if not values:
             return None
-        return LogMetricEvent(
-            match["time"],
-            tuple(values),
-            rank=int(match["dp"]),
-            rank_kind="dp",
-            labels=(("phase", phase), ("tp", match["tp"]), ("ep", match["ep"])),
-            time_resolution_s=10 ** -len(match["time"].split(".")[1]),
-        )
+        return _scoped_event(match, phase, values)

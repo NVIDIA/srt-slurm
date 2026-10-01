@@ -124,7 +124,9 @@ def read_log_metrics(run: Importer, generators: tuple[LogMetricGenerator, ...] =
                             "points": [],
                             "source_ids": {sid},
                         }
-                    series_by_key[key]["points"].append([time, value, sid, line_number])
+                    series = series_by_key[key]
+                    series["time_resolution_s"] = max(series["time_resolution_s"], event.time_resolution_s)
+                    series["points"].append([time, value, sid, line_number])
     if unaligned:
         run.warnings.append("Log metrics with local timestamps omitted: set --iteration-timezone to align them.")
         run.audit["unaligned_log_metric_records"] += unaligned
