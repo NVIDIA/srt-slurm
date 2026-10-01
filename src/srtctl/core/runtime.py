@@ -121,9 +121,9 @@ class Nodes:
                                       colocating with whichever node ends up
                                       being head; infra falls back to head).
             engine_nodes: How many of the non-reserved nodes the engine roles
-                          own. Required when ``pools`` is given; None keeps the
-                          legacy behavior where every non-reserved node is a
-                          worker node.
+                          own. Required when ``pools`` is given; None keeps
+                          every non-reserved node a worker node (a recipe
+                          without pools).
             pools: ``(service name, node count)`` pairs for services that own
                    nodes, carved after the engine worker nodes in this order.
         """
@@ -166,8 +166,7 @@ class Nodes:
         # node of the allocation, unsandboxed. A dedicated *client* node exists
         # to isolate benchmark measurements from noisy neighbors, so it must
         # never land on that first node — reserve it from the tail instead.
-        # Non-client roles (infra, frontend) keep the original front-of-list
-        # reservation for backward compatibility.
+        # Non-client roles (infra, frontend) keep the front-of-list reservation.
         has_client = "client" in dedicated_roles
         if colocate_dedicated_nodes:
             if has_client:
@@ -248,7 +247,7 @@ class Nodes:
     ) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
         """Split the non-reserved nodes into the engine worker nodes and the service pools.
 
-        Legacy recipes (no pools) keep every node as a worker node. With pools,
+        Recipes without pools keep every node as a worker node. With pools,
         the engine roles take the first ``engine_nodes`` nodes and each pool the
         next ``count`` in declaration order; the allocation must be large enough.
         """

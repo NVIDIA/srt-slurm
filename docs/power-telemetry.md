@@ -31,7 +31,8 @@ window themselves.
 # with this exact config every run is unpublishable and `required: true` fails.
 benchmark:
   type: sa-bench          # future benchmark-side adapter must stamp the windows
-  client_placement: head  # keeps sample and window clocks on one host
+  placement:
+    node: head            # keeps sample and window clocks on one host
   isl: 8192
   osl: 1024
   concurrencies: [4]

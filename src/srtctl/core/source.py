@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Branch names that move out from under a build. Tags, SHAs, and PR head refs are fine.
 MOVING_REFS: frozenset[str] = frozenset({"main", "master", "HEAD"})
 
-# 4 is git's minimum abbreviation; legacy recipes pin short hashes like "abc123".
+# 4 is git's minimum abbreviation; recipes may pin abbreviated hashes like "abc123".
 _SHA_RE = re.compile(r"^[0-9a-f]{4,40}$")
 
 

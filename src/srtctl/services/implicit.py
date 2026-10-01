@@ -54,7 +54,8 @@ def nats_implied_reasons(config: SrtConfig) -> list[str]:
 
     The request plane defaults to ``tcp`` and KV events default to direct ZMQ, so
     NATS is implied only by ``dynamo.request_plane: nats``, ``dynamo.event_plane: nats``,
-    or a v1 ``infra.nats_max_payload_mb`` (a knob that only means anything with NATS).
+    or a ``nats`` service entry with ``options.max_payload_mb`` (a knob that only means
+    anything with NATS; it lands on the internal ``infra.nats_max_payload_mb``).
     """
     if getattr(config.frontend, "type", None) != "dynamo":
         return []

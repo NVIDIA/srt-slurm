@@ -36,7 +36,7 @@ Role names are ``prefill``, ``decode``, and ``agg``. The aggregated role is
 ``backend.aggregated_environment`` and ``backend.<engine>_config.aggregated``.
 
 ``decode.nodes: colocate`` places the decode workers on the prefill nodes' spare
-GPUs instead of reserving nodes for them. It normalizes to the v1 sentinel
+GPUs instead of reserving nodes for them. It normalizes to the internal sentinel
 ``resources.decode_nodes: 0``; under ``roles:`` the sentinel itself is rejected
 so the intent is always spelled out. A colocated recipe must give ``gpus`` on
 both prefill and decode, and :class:`~srtctl.core.schema.SrtConfig` rejects a
@@ -170,7 +170,7 @@ def _expand_nodes(role_name: str, value: Any) -> int:
     """Map ``roles.<role>.nodes`` onto ``resources.<role>_nodes``.
 
     ``colocate`` is only meaningful for ``decode`` (share the prefill nodes) and
-    becomes the v1 sentinel ``0``. The bare ``0`` is rejected under ``roles:``.
+    becomes the internal sentinel ``0``. The bare ``0`` is rejected under ``roles:``.
     """
     if isinstance(value, str):
         if value.strip().lower() == COLOCATE:

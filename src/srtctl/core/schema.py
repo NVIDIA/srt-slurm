@@ -1992,7 +1992,7 @@ class DynamoConfig:
 
     def __post_init__(self) -> None:
         if self.source is not None:
-            legacy = [
+            direct = [
                 name
                 for name, on in (
                     ("hash", self.hash is not None),
@@ -2002,8 +2002,11 @@ class DynamoConfig:
                 )
                 if on
             ]
-            if legacy:
-                raise ValueError("dynamo.source cannot be combined with dynamo." + ", dynamo.".join(legacy))
+            if direct:
+                raise ValueError(
+                    "dynamo.source already names the install target; it cannot be combined with dynamo."
+                    + ", dynamo.".join(direct)
+                )
             if self.source.pypi is not None:
                 object.__setattr__(self, "version", self.source.pypi)
             elif self.source.wheel is not None:
@@ -2324,8 +2327,8 @@ class SrtConfig:
 
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
     backend: Annotated[BackendConfig, BackendConfigField()] = field(default_factory=SGLangProtocol)
-    # Internal normalized form of roles.<role>.engine/container. Legacy recipes
-    # keep these empty and retain their original backend allocation path.
+    # Internal normalized form of roles.<role>.engine/container. Recipes with one
+    # shared engine keep these empty and use the single-backend allocation path.
     role_backends: dict[str, Annotated[BackendConfig, BackendConfigField()]] = field(default_factory=dict)
     role_containers: dict[str, str] = field(default_factory=dict)
     frontend: FrontendConfig = field(default_factory=FrontendConfig)
@@ -2661,10 +2664,7 @@ class SrtConfig:
         if not isinstance(self.backend, SGLangProtocol | VLLMProtocol | TRTLLMProtocol):
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
         if isinstance(self.backend, VLLMProtocol) and self.backend.dp_launch_mode != "per_node":
-            raise ValidationError(
-                "vLLM sidecar mode requires engine.dp_launch_mode: per_node "
-                "(backend.dp_launch_mode in schema 1); per_gpu is unsupported"
-            )
+            raise ValidationError("vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported")
 
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.

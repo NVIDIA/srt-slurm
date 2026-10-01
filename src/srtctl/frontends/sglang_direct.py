@@ -95,14 +95,13 @@ class SGLangFrontend:
         if config.resources.is_disaggregated:
             raise ValueError(
                 "frontend.type: sglang supports one aggregate worker only, not a prefill/decode layout. "
-                "The SGLang router is frontend.type: sglang-router (renamed in 2.0; `srtctl migrate` rewrites "
-                "schema 1 recipes)."
+                "The SGLang router is frontend.type: sglang-router."
             )
         if config.resources.num_agg != 1:
             raise ValueError(
                 f"frontend.type: sglang supports exactly one aggregate worker, got {config.resources.num_agg}. "
                 "sglang.launch_server owns the public port directly and there is no router to balance "
-                "replicas. Use frontend.type: sglang-router (the SGLang Model Gateway, renamed in 2.0) or dynamo."
+                "replicas. Use frontend.type: sglang-router (the SGLang Model Gateway) or dynamo."
             )
         if config.dynamo.sidecar:
             raise ValueError("frontend.type: sglang does not support dynamo.sidecar; use frontend.type: dynamo")

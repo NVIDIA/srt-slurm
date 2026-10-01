@@ -31,7 +31,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
 
 `docs/mooncake-kv-store.md` is the reference, including the schema 2 recipe shape. Rules for code:
 
-- The master is the `mooncake-master` service (`services/`); a v1 `backend.mooncake_kv_store` block is normalized onto it by `services/normalize.py` before schema load.
+- The master is the `mooncake-master` service (`services/`); `services/normalize.py` maps a declared entry onto the internal `backend.mooncake_kv_store` field before schema load, and `engine.mooncake_kv_store` sets that field directly.
 - srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, and `MOONCAKE_LOCAL_HOSTNAME` on every worker; `MOONCAKE_LOCAL_HOSTNAME` is the worker's own IP on `runtime.network_interface`. A value in a role's `env` pins the NIC; `MOONCAKE_MASTER` is never set by hand.
 - vLLM reads its store config from JSON: `store_config` is rendered into the file `MOONCAKE_CONFIG_PATH` names.
 - SGLang disaggregated recipes must set `disaggregation-transfer-backend: mooncake` in the prefill and decode `args`; the validator rejects a master without it, because workers would silently fall back to the default transport.

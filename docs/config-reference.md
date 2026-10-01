@@ -241,7 +241,7 @@ schema: 2
 name: "deepseek-r1-benchmark"
 ```
 
-Schema 2 is stricter than schema 1 in two places: a `benchmark:` field the selected type does not read is a load error rather than a silent no-op (see [benchmark](#benchmark)), and `roles.<role>.nodes: 0` is rejected in favor of the explicit `colocate` (see [roles](#roles)).
+Two rules worth knowing: a `benchmark:` field the selected type does not read is a load error (see [benchmark](#benchmark)), and `roles.<role>.nodes: 0` is rejected in favor of the explicit `colocate` (see [roles](#roles)).
 
 ---
 

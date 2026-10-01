@@ -176,7 +176,7 @@ def test_carve_services_only_puts_the_head_on_the_first_pool_node() -> None:
     assert nodes.compute == ("n1", "n2", "n3")
 
 
-def test_carve_legacy_recipes_keep_every_node_as_a_worker() -> None:
+def test_carve_recipes_without_pools_keep_every_node_as_a_worker() -> None:
     nodes = _from_slurm(NODES[:3])
     assert nodes.worker == NODES[:3] and nodes.pools == {}
     assert nodes.compute == NODES[:3]

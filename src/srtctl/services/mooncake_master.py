@@ -3,12 +3,12 @@
 
 """``type: mooncake-master``: the Mooncake master that stores and workers register with.
 
-Implied by ``backend.mooncake_kv_store`` (the v1 spelling) and equally the v2 way
-to ask for Mooncake: declare the service and srtctl injects ``MOONCAKE_MASTER``,
-``MOONCAKE_TE_META_DATA_SERVER``, and ``MOONCAKE_LOCAL_HOSTNAME`` into every
-worker (see ``expand_services``, which maps the declared service back onto
-``backend.mooncake_kv_store`` so the engine-side validation and env injection
-keep working unchanged). Runs on the infra node, before workers, with the
+Declared as a ``services:`` entry, or implied by ``engine.mooncake_kv_store``:
+either way srtctl injects ``MOONCAKE_MASTER``, ``MOONCAKE_TE_META_DATA_SERVER``,
+and ``MOONCAKE_LOCAL_HOSTNAME`` into every worker (``expand_services`` maps a
+declared entry onto the internal ``backend.mooncake_kv_store`` field so the
+engine-side validation and env injection read one field). Runs on the infra
+node, before workers, with the
 embedded HTTP metadata server and the metrics endpoint on, all three ports gated.
 """
 

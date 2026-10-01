@@ -122,15 +122,6 @@ def check_static_router_health(
     )
 
 
-def check_sglang_router_health(
-    response_json: dict,
-    expected_prefill: int,
-    expected_decode: int,
-) -> WorkerHealthResult:
-    """Backward-compatible name for static-router health parsing."""
-    return check_static_router_health(response_json, expected_prefill, expected_decode)
-
-
 def check_dynamo_health(
     response_json: dict,
     expected_prefill: int,
