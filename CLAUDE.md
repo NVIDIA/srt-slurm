@@ -36,6 +36,11 @@ This includes building or querying reports, analyzing existing results,
 preparing dashboard views, and changing DSight code. These skills live under
 `src/srtctl/dsight/skills/` and are part of this repository.
 
+Before preparing or submitting Slurm jobs, use
+[slurm-job-sizing](src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md)
+to size allocation time, warmup and measured traffic to the task. It covers
+short validation and full benchmarks while preserving non-preemptible resources.
+
 ## Pull Request Descriptions
 
 Write for a reviewer who knows the repository but has no access to the author's

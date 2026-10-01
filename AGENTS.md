@@ -5,3 +5,7 @@ Before using DSight, read [docs/dsight.md](docs/dsight.md) and load the applicab
 DSight skills listed there by reading the linked skill files. This applies to
 building or querying reports, analyzing existing results, preparing dashboard
 views, and changing DSight code.
+
+Before preparing or submitting Slurm jobs, read
+[slurm-job-sizing](src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md)
+to size allocation time and benchmark traffic to the task.

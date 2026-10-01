@@ -19,6 +19,7 @@ is required.
 | Skill | When to load it |
 | --- | --- |
 | [dsight-query](../src/srtctl/dsight/skills/dsight-query/SKILL.md) | Query an existing report, inspect source coverage, compare runs, or gather evidence for a dashboard view. Prefer the normalized SQLite cache through the read-only CLI, Python or MCP interface. |
+| [slurm-job-sizing](../src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md) | Prepare or submit a new Slurm run: select the minimum useful warmup/traffic, target at most 30 minutes for short validation, and estimate full-run walltime from comparable runs while preserving non-preemptible resources. |
 
 ## Generate on a cluster login node
 
