@@ -482,8 +482,8 @@ Best-effort CPU power collection via the cpu-power-exporter binary.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `port` | int | `9405` | Port the exporter listens on and the head-node collector scrapes. |
-| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` \| ``acpi`` \| ``dcgm``). ``auto`` tries DCGM first and falls back to ACPI when libdcgm.so is absent or reports no CPU entities. Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only. |
+| `port` | int | `9405` | TCP port the per-node exporter listens on for ``/metrics``. |
+| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` \| ``acpi`` \| ``dcgm``). ``auto`` tries ACPI first (the only source with the socket envelope) and falls back to DCGM when no ACPI power_meter hwmon sensors exist or every one of them reads zero on two probes; DCGM watches fields 1130+1132 and falls back to 1130 alone if this libdcgm refuses the pair. DCGM mode reports field 1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and the energy report flags such runs as "CPU rail only". Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only. |
 
 ### CpuPowerConfig
 
