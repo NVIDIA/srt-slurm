@@ -31,9 +31,6 @@ frontend:
 
 engine:
   type: trtllm
-  publish_metrics: true
-  # Legacy compatibility with older Dynamo builds; includes KV events for KV-aware routing.
-  publish_events_and_metrics: true  # Emits only --publish-events-and-metrics.
   served_model_name: "Qwen/Qwen3-0.6B"
 roles:
   agg:
@@ -43,6 +40,8 @@ roles:
     env:
       PYTHONUNBUFFERED: "1"
       TLLM_LOG_LEVEL: "INFO"
+      # Enable KV events independently of the default --publish-metrics flag.
+      DYN_TRTLLM_PUBLISH_KV_EVENTS: "true"
     args:
       backend: "pytorch"
       tensor_parallel_size: 1

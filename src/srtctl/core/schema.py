@@ -1446,14 +1446,9 @@ class ObservabilityConfig:
     dynamo-decode, dynamo-frontend) and can be overridden per-component via
     prefill_environment, decode_environment, or frontend.env.
 
-    ``enabled`` is the single analytics knob. Turning it on makes the run emit
-    every signal the offline perf-analysis tooling consumes, without the user
-    having to remember six independent flags. It expands (at config-load time,
+    ``enabled`` configures server-side analytics capture. It expands (at config-load time,
     via :func:`srtctl.core.config.expand_observability`) into:
 
-    * TRT-LLM engine metrics publication defaults on via ``backend.publish_metrics``.
-      The legacy ``publish_events_and_metrics`` flag is selected only when the
-      recipe explicitly sets it to true, for backward compatibility.
     * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
       config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
       histograms appear on that surface.
@@ -1469,16 +1464,18 @@ class ObservabilityConfig:
       client does not already poll (see ``TelemetryStageMixin.start_tachometer``
       and ``tachometer`` below).
 
-    Expansion preserves explicit recipe values; the tri-state combined
-    publishing setting treats null as unset. Explicit False is never replaced.
+    Expansion preserves explicit recipe values and leaves publication settings
+    unchanged. TRT-LLM engine metrics default on via ``backend.publish_metrics``.
+    The legacy combined flag requires explicit ``publish_events_and_metrics: true``.
+    KV events require an explicit opt-in; on newer Dynamo builds, set
+    ``DYN_TRTLLM_PUBLISH_KV_EVENTS: "true"`` in each worker role's environment.
 
     Scope is deliberately server-side. The knob configures what the workers and
     frontend *emit*, and captures that surface by scraping the endpoints
     directly. It never asks the benchmark client to re-export what the servers
     already publish. (One indirect exception: on TRT-LLM the client's
     ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
-    the effective publication flags give those endpoints engine metrics,
-    respecting the explicit combined-setting opt-out — see
+    the effective publication flags give those endpoints engine metrics — see
     ``BenchmarkStageMixin``.)
 
     It does **not** decide whether the component perf dashboard is built. That

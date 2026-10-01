@@ -769,8 +769,8 @@ def _setdefault_trtllm_engine_keys(
 def expand_observability(cfg: dict) -> dict:
     """Expand ``observability.enabled`` into the individual launch flags.
 
-    One knob, six effects -- see :class:`~srtctl.core.schema.ObservabilityConfig`
-    for the rationale and the full list. Mutates ``cfg`` in place and returns it.
+    See :class:`~srtctl.core.schema.ObservabilityConfig` for the capture settings.
+    Mutates ``cfg`` in place and returns it.
 
     Defaults preserve explicit recipe values. Observability leaves publication
     settings unchanged; the legacy combined flag requires an explicit true.

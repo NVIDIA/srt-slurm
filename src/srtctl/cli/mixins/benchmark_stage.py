@@ -733,6 +733,8 @@ class BenchmarkStageMixin:
             return {}
         backend = self.config.backend
         is_trtllm = self.config.backend_type == "trtllm"
+        # The combined setting also gates sidecar URL discovery; sidecars use
+        # native commands and do not consume dynamo_metrics_flags.
         dynamo_trtllm_metrics_disabled = (
             frontend.worker_launch == "dynamo"
             and isinstance(backend, TRTLLMProtocol)
