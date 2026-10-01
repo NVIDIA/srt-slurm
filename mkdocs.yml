@@ -73,6 +73,7 @@ nav:
           - Frontends and Dynamo: frontends.md
           - SGLang Router: sglang-router.md
           - vLLM Router: vllm-router.md
+          - Shepherd Model Gateway: smg.md
       - Benchmarks:
           - Benchmarks: benchmarks.md
           - Accuracy Benchmarks: accuracy.md

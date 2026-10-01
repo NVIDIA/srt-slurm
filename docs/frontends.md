@@ -1,6 +1,6 @@
 # Frontends and Dynamo
 
-The `frontend:` block (which router fronts the workers) and the `dynamo:` block (how Dynamo is installed and wired). Router-specific pages: [SGLang Router](sglang-router.md), [vLLM Router](vllm-router.md).
+The `frontend:` block (which router fronts the workers) and the `dynamo:` block (how Dynamo is installed and wired). Router-specific pages: [SGLang Router](sglang-router.md), [vLLM Router](vllm-router.md), [Shepherd Model Gateway](smg.md).
 
 ## frontend
 
@@ -8,7 +8,7 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang-router", "vllm-router", direct "sglang", "vllm", "trtllm_serve",
+  # Frontend type: "dynamo" (default), "sglang-router", "vllm-router", "smg", direct "sglang", "vllm", "trtllm_serve",
   # or "none" for a services-only job (no router, no OpenAI endpoint, no worker-count health gate; only
   # valid without engine roles, see services[].nodes)
   type: dynamo

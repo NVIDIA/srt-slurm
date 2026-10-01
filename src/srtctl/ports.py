@@ -35,6 +35,10 @@ SGLANG_NCCL_PORT_BASE = 17500
 # Only started when --prometheus-port is passed, which srtctl does so tachometer can scrape it.
 SGLANG_ROUTER_METRICS_PORT = 29000
 
+# Shepherd Model Gateway (frontend.type: smg) Prometheus listener on each router node,
+# passed as --prometheus-port so srtctl, not upstream's default, owns it.
+SMG_METRICS_PORT = 29000
+
 # TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
 TRTLLM_DIST_INIT_PORT_BASE = 29500
 

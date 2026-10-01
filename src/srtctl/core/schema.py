@@ -2399,7 +2399,8 @@ class FrontendConfig:
 
     Attributes:
         type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
-            Gateway), "vllm-router", "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and
+            Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "atomesh", and
+            "tilert-router" (static routers); "sglang", "vllm", and
             "trtllm_serve" (direct: the single aggregate worker binds the public
             port, no router process); "none" (services-only job: no router, no
             OpenAI endpoint, no worker-count health gate; requires no engine
