@@ -12,14 +12,9 @@ from ..sources import SourceIdentity
 from .base import LogMetricDefinition, LogMetricEvent
 
 _RANK = re.compile(r"(DP|PP|ATTN_CP|MOE_DP|TP|EP)(\d+)")
-_PREFIX = (
-    r"\[(?P<time>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?)"
-    rf"(?P<ranks>(?: {_RANK.pattern})*)\] "
-)
+_PREFIX = r"\[(?P<time>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?)" rf"(?P<ranks>(?: {_RANK.pattern})*)\] "
 _BATCH = re.compile(_PREFIX + r"(?P<phase>Prefill|Decode) batch(?: \[\d+\])?, (?P<fields>.*)")
-_REQUEST = re.compile(
-    _PREFIX + r"ReqTimeStats\((?P<meta>[^)]*)\): (?P<fields>.*)"
-)
+_REQUEST = re.compile(_PREFIX + r"ReqTimeStats\((?P<meta>[^)]*)\): (?P<fields>.*)")
 _DECIMAL = re.compile(r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\Z")
 
 # Counts are retained as exact integers. Ratios and rates retain the decimal
