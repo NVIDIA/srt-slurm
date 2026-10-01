@@ -60,7 +60,6 @@ from srtctl.core.schema import (
     ClusterConfig,
     DynamoConfig,
     FrontendConfig,
-    InfraConfig,
     ResourceConfig,
     SrtConfig,
 )
@@ -383,7 +382,6 @@ INTERNAL_TOP_LEVEL: frozenset[str] = frozenset(LEGACY_TOP_LEVEL_KEYS) | frozense
 # Dataclasses reachable only through internal keys.
 INTERNAL_CLASSES: frozenset[type] = frozenset(
     {
-        InfraConfig,
         AtomServerConfig,
         SGLangServerConfig,
         TileRTServerConfig,

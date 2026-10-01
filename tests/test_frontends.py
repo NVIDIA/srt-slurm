@@ -208,7 +208,9 @@ class TestFrontendRegistry:
         from srtctl.backends import SGLangProtocol
         from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
 
-        with pytest.raises(ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, none"):
+        with pytest.raises(
+            ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, none"
+        ):
             SrtConfig(
                 name="toy",
                 model={"path": "model", "container": "image", "precision": "fp8"},
@@ -286,7 +288,8 @@ class TestFrontendProperties:
         dynamo_config = SimpleNamespace(
             frontend=SimpleNamespace(type="dynamo"),
             dynamo=SimpleNamespace(request_plane="nats", event_plane="zmq"),
-            infra=SimpleNamespace(etcd_nats_dedicated_node=False, nats_max_payload_mb=None),
+            infra_dedicated_node=False,
+            nats_max_payload_mb=None,
         )
         implied = get_frontend("dynamo").implied_services(dynamo_config)
         assert [(entry.service.name, entry.service.type, entry.reason) for entry in implied] == [
@@ -1030,7 +1033,9 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
         ],
     }
     config = SimpleNamespace(
-        frontend=SimpleNamespace(type="dynamo", args={"router-mode": "kv"}, env=None, worker_selection=worker_selection),
+        frontend=SimpleNamespace(
+            type="dynamo", args={"router-mode": "kv"}, env=None, worker_selection=worker_selection
+        ),
         observability=ObservabilityConfig(),
         dynamo=SimpleNamespace(
             install=False,

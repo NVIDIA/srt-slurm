@@ -22,7 +22,6 @@ from srtctl.core.schema import (
     CpuPowerConfig,
     CpuPowerExporterConfig,
     FrontendConfig,
-    InfraConfig,
     ModelConfig,
     ObservabilityConfig,
     PlacementConfig,
@@ -36,6 +35,7 @@ from srtctl.core.schema import (
 )
 from srtctl.core.telemetry import ServiceMetricsTarget, generate_tachometer_config
 from srtctl.core.topology import Process
+from srtctl.services import ServiceConfig, ServicePlacementConfig
 
 
 def _make_config(
@@ -495,15 +495,19 @@ class TestDcgmPowerConfig:
                 resources=ResourceConfig(gpu_type="h100"),
                 benchmark=_sa_bench(),
                 telemetry=telemetry,
-                infra=InfraConfig(etcd_nats_dedicated_node=dedicated),
+                services=(
+                    [ServiceConfig(name="etcd", type="etcd", placement=ServicePlacementConfig(node="dedicated"))]
+                    if dedicated
+                    else []
+                ),
             )
 
         if rejected:
-            with pytest.raises(ValidationError, match="etcd_nats_dedicated_node"):
+            with pytest.raises(ValidationError, match="placement.node: dedicated"):
                 build()
             return
 
-        assert build().infra.etcd_nats_dedicated_node is dedicated
+        assert build().infra_dedicated_node is dedicated
 
 
 class TestCpuPowerExporterConfig:

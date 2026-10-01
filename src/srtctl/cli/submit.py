@@ -376,7 +376,7 @@ def show_config_details(config: SrtConfig) -> None:
 
     # --- SLURM heterogeneous job structure ---
     het_components = config.resources.het_components(
-        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+        infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
     if het_components is not None:
@@ -388,7 +388,7 @@ def show_config_details(config: SrtConfig) -> None:
         het_table.add_column("GPUs/node", style="white", justify="right", width=10)
         het_table.add_column("Infra", style="dim")
         for c in het_components:
-            infra_note = "first node" if c.name == "prefill" and config.infra.etcd_nats_dedicated_node else ""
+            infra_note = "first node" if c.name == "prefill" and config.infra_dedicated_node else ""
             het_table.add_row(
                 str(c.group),
                 c.name,
@@ -908,7 +908,7 @@ def generate_minimal_sbatch_script(
     template = env.get_template("job_script_minimal.j2")
 
     het_components = config.resources.het_components(
-        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+        infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
     if het_components is not None and config.role_backends:
@@ -1036,7 +1036,7 @@ def planned_total_nodes(config: SrtConfig) -> int:
     total_nodes = config.total_nodes
     num_dedicated_roles = sum(
         (
-            config.infra.etcd_nats_dedicated_node,
+            config.infra_dedicated_node,
             config.frontend.placement.dedicated,
             config.benchmark.placement.dedicated,
         )
@@ -1055,7 +1055,7 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
     heterogeneous jobs, whose components are addressed differently.
     """
     het = config.resources.het_components(
-        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+        infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
     if het is None:
@@ -1064,7 +1064,7 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
             total_nodes,
             frontend_dedicated_node=config.frontend.placement.dedicated,
             client_dedicated_node=config.benchmark.placement.dedicated,
-            etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+            etcd_nats_dedicated_node=config.infra_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
         )
         indices: dict[str, int | None] = {"frontend_node_index": head, "client_node_index": client}

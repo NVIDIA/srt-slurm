@@ -46,7 +46,7 @@ class EffectiveService:
 
 def infra_placement(config: SrtConfig) -> ServicePlacementConfig:
     """Where the discovery plane and other infra services run: the infra node, or a dedicated one."""
-    return ServicePlacementConfig(node="dedicated" if config.infra.etcd_nats_dedicated_node else "infra")
+    return ServicePlacementConfig(node="dedicated" if config.infra_dedicated_node else "infra")
 
 
 def nats_implied_reasons(config: SrtConfig) -> list[str]:
@@ -55,12 +55,11 @@ def nats_implied_reasons(config: SrtConfig) -> list[str]:
     The request plane defaults to ``tcp`` and KV events default to direct ZMQ, so
     NATS is implied only by ``dynamo.request_plane: nats``, ``dynamo.event_plane: nats``,
     or a ``nats`` service entry with ``options.max_payload_mb`` (a knob that only means
-    anything with NATS; it lands on the internal ``infra.nats_max_payload_mb``).
+    anything with NATS).
     """
     if getattr(config.frontend, "type", None) != "dynamo":
         return []
     dynamo = getattr(config, "dynamo", None)
-    infra = getattr(config, "infra", None)
     reasons = [
         f"dynamo.{field} nats"
         for field, value in (
@@ -69,8 +68,8 @@ def nats_implied_reasons(config: SrtConfig) -> list[str]:
         )
         if value == "nats"
     ]
-    if getattr(infra, "nats_max_payload_mb", None) is not None:
-        reasons.append("infra.nats_max_payload_mb")
+    if getattr(config, "nats_max_payload_mb", None) is not None:
+        reasons.append("services[nats].options.max_payload_mb")
     return reasons
 
 

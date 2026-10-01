@@ -188,7 +188,7 @@ def test_every_rejected_key_is_rewritten_by_migrate_into_something_that_loads() 
     assert config.resources.worker_critical("prefill") is False
     assert config.dynamo.hash == "abc1234"
     assert config.dynamo.cargo_patches == ["x = 1"]
-    assert config.infra.nats_max_payload_mb == 16
+    assert config.nats_max_payload_mb == 16
     assert config.backend.get_kv_events_config_for_mode("prefill")
 
     # A wheel install migrates too (it cannot share a recipe with hash).

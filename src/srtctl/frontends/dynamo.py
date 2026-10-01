@@ -154,8 +154,8 @@ class DynamoFrontend(DynamicFrontend):
         nats_reasons = nats_implied_reasons(config)
         if nats_reasons:
             nats_options = {}
-            if config.infra.nats_max_payload_mb is not None:
-                nats_options["max_payload_mb"] = config.infra.nats_max_payload_mb
+            if config.nats_max_payload_mb is not None:
+                nats_options["max_payload_mb"] = config.nats_max_payload_mb
             implied.append(
                 EffectiveService(
                     ServiceConfig(name=NATS_SERVICE_NAME, type="nats", placement=placement, options=nats_options),

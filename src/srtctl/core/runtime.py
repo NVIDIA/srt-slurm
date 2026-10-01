@@ -398,7 +398,7 @@ class RuntimeContext:
         nodes = Nodes.from_slurm(
             frontend_dedicated_node=config.frontend.placement.dedicated,
             client_dedicated_node=config.benchmark.placement.dedicated,
-            etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+            etcd_nats_dedicated_node=config.infra_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
             engine_nodes=config.engine_node_count if pools else None,
             pools=pools,

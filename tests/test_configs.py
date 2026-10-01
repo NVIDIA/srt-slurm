@@ -20,6 +20,7 @@ from srtctl.ports import (
     VLLM_DATA_PARALLEL_RPC_PORT,
     VLLM_NIXL_PORT_BASE,
 )
+from srtctl.services import ServiceConfig, ServicePlacementConfig
 
 
 class TestConfigLoading:
@@ -1517,11 +1518,17 @@ class TestWorkerEnvironmentTemplating:
                     assert env_vars["MIXED"] == "gpu-01-{unsupported_var}-cache"
 
 
-class TestInfraConfig:
-    """Tests for InfraConfig dataclass."""
+def _infra_services(dedicated: bool) -> list[ServiceConfig]:
+    """A declared etcd entry is how a recipe asks for a dedicated discovery-plane node."""
+    if not dedicated:
+        return []
+    return [ServiceConfig(name="etcd", type="etcd", placement=ServicePlacementConfig(node="dedicated"))]
 
-    def test_infra_config_defaults(self):
-        """Test that InfraConfig has correct defaults."""
+
+class TestInfraPlacement:
+    """The discovery plane's placement and payload limit come from the declared etcd/nats services."""
+
+    def test_no_declared_infra_services_means_shared_node_and_default_payload(self):
         from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
 
         config = SrtConfig(
@@ -1530,22 +1537,20 @@ class TestInfraConfig:
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
         )
 
-        # infra config should exist with default values
-        assert config.infra is not None
-        assert config.infra.etcd_nats_dedicated_node is False
+        assert config.infra_dedicated_node is False
+        assert config.nats_max_payload_mb is None
 
-    def test_infra_config_enabled(self):
-        """Test InfraConfig with dedicated node enabled."""
-        from srtctl.core.schema import InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+    def test_a_dedicated_etcd_entry_reserves_the_infra_node(self):
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
 
         config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
-            infra=InfraConfig(etcd_nats_dedicated_node=True),
+            services=_infra_services(True),
         )
 
-        assert config.infra.etcd_nats_dedicated_node is True
+        assert config.infra_dedicated_node is True
 
 
 class TestNodesInfraAllocation:
@@ -1697,7 +1702,7 @@ class TestSbatchNodeCount:
         from pathlib import Path
 
         from srtctl.cli.submit import generate_minimal_sbatch_script
-        from srtctl.core.schema import InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
 
         # Config with 2 worker nodes
         config = SrtConfig(
@@ -1711,7 +1716,7 @@ class TestSbatchNodeCount:
                 prefill_workers=1,
                 decode_workers=1,
             ),
-            infra=InfraConfig(etcd_nats_dedicated_node=True),
+            services=_infra_services(True),
         )
 
         script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
@@ -1724,7 +1729,7 @@ class TestSbatchNodeCount:
         from pathlib import Path
 
         from srtctl.cli.submit import generate_minimal_sbatch_script
-        from srtctl.core.schema import InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
 
         # Config with 2 worker nodes, no dedicated infra
         config = SrtConfig(
@@ -1738,7 +1743,7 @@ class TestSbatchNodeCount:
                 prefill_workers=1,
                 decode_workers=1,
             ),
-            infra=InfraConfig(etcd_nats_dedicated_node=False),
+            services=_infra_services(False),
         )
 
         script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
@@ -1750,7 +1755,6 @@ class TestSbatchNodeCount:
         from srtctl.core.schema import (
             BenchmarkConfig,
             FrontendConfig,
-            InfraConfig,
             ModelConfig,
             ResourceConfig,
             SrtConfig,
@@ -1766,9 +1770,7 @@ class TestSbatchNodeCount:
         if "frontend_dedicated_node" in overrides:
             dedicated = overrides.pop("frontend_dedicated_node")
             frontend_kwargs["placement"] = PlacementConfig(node="dedicated" if dedicated else "head")
-        infra_kwargs = {}
-        if "etcd_nats_dedicated_node" in overrides:
-            infra_kwargs["etcd_nats_dedicated_node"] = overrides.pop("etcd_nats_dedicated_node")
+        services = _infra_services(overrides.pop("etcd_nats_dedicated_node", False))
 
         return SrtConfig(
             name="test",
@@ -1783,7 +1785,7 @@ class TestSbatchNodeCount:
             ),
             benchmark=BenchmarkConfig(**benchmark_kwargs),
             frontend=FrontendConfig(**frontend_kwargs),
-            infra=InfraConfig(**infra_kwargs),
+            services=services,
         )
 
     def test_sbatch_adds_node_for_dedicated_frontend_only(self):
@@ -1865,7 +1867,7 @@ class TestSbatchNodeCount:
 
         from srtctl.backends import VLLMProtocol
         from srtctl.cli.submit import generate_minimal_sbatch_script
-        from srtctl.core.schema import InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
 
         config = SrtConfig(
             name="test",
@@ -1881,7 +1883,7 @@ class TestSbatchNodeCount:
                 _explicit_gpus_per_decode=4,
             ),
             backend=VLLMProtocol(allow_prefill_decode_colocation=True),
-            infra=InfraConfig(etcd_nats_dedicated_node=False),
+            services=_infra_services(False),
         )
 
         assert config.resources.total_nodes == 2
@@ -2193,29 +2195,29 @@ class TestDedicatedNodeValidation:
     """SrtConfig.__post_init__ allows combining all dedicated-node flags."""
 
     def test_allows_infra_and_frontend_dedicated_node_together(self):
-        from srtctl.core.schema import FrontendConfig, InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
 
         cfg = SrtConfig(
             name="t",
             model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
-            infra=InfraConfig(etcd_nats_dedicated_node=True),
+            services=_infra_services(True),
             frontend=FrontendConfig(placement=PlacementConfig(node="dedicated")),
         )
-        assert cfg.infra.etcd_nats_dedicated_node is True
+        assert cfg.infra_dedicated_node is True
         assert cfg.frontend.placement.dedicated is True
 
     def test_allows_infra_and_client_dedicated_node_together(self):
-        from srtctl.core.schema import BenchmarkConfig, InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
         cfg = SrtConfig(
             name="t",
             model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
-            infra=InfraConfig(etcd_nats_dedicated_node=True),
+            services=_infra_services(True),
             benchmark=BenchmarkConfig(placement=PlacementConfig(node="dedicated")),
         )
-        assert cfg.infra.etcd_nats_dedicated_node is True
+        assert cfg.infra_dedicated_node is True
         assert cfg.benchmark.placement.dedicated is True
 
     def test_allows_frontend_and_client_dedicated_node_together(self):
@@ -2393,7 +2395,7 @@ class TestHetJobsSbatchScript:
     """generate_minimal_sbatch_script() emits het structure when het_jobs is True."""
 
     def _config(self, *, het_jobs, infra_dedicated):
-        from srtctl.core.schema import InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
 
         return SrtConfig(
             name="t",
@@ -2407,7 +2409,7 @@ class TestHetJobsSbatchScript:
                 decode_workers=10,
                 het_jobs=het_jobs,
             ),
-            infra=InfraConfig(etcd_nats_dedicated_node=infra_dedicated),
+            services=_infra_services(infra_dedicated),
         )
 
     def test_emits_hetjob_separator_and_two_segments(self):

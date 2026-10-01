@@ -2287,25 +2287,6 @@ class HealthCheckConfig:
                 ) from None
 
 
-@dataclass(frozen=True)
-class InfraConfig:
-    """Infrastructure configuration for etcd/nats placement.
-
-    Attributes:
-        etcd_nats_dedicated_node: If True, run etcd and nats on a dedicated node
-            instead of the head node. This reserves the first node exclusively
-            for infrastructure services. Default: False.
-        nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
-            NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
-            (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
-    """
-
-    etcd_nats_dedicated_node: bool = False
-    nats_max_payload_mb: int | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
 # ============================================================================
 # Main Configuration Dataclass
 # ============================================================================
@@ -2315,6 +2296,9 @@ class InfraConfig:
 # layout (version 1) and is rejected by `srtctl.core.config.require_current_schema`.
 # `srtctl migrate` still reads version 1 and rewrites it to the current one.
 CURRENT_SCHEMA_VERSION = 2
+
+# Service kinds that form the discovery plane and share the infra node.
+INFRA_SERVICE_TYPES: tuple[str, ...] = ("etcd", "nats")
 SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (CURRENT_SCHEMA_VERSION,)
 
 
@@ -2359,7 +2343,6 @@ class SrtConfig:
     profiling: ProfilingConfig = field(default_factory=ProfilingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
-    infra: InfraConfig = field(default_factory=InfraConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 
@@ -2549,6 +2532,12 @@ class SrtConfig:
                 raise ValidationError(f"services[].name must be unique; duplicate: {service.name!r}")
             seen.add(service.name)
             get_service_kind(service.type).validate(service, self)
+
+        # etcd and nats share the infra node, so they must agree on whether it is dedicated.
+        if len({service.effective_placement == "dedicated" for service in self.infra_services}) > 1:
+            raise ValidationError(
+                "services etcd and nats must agree on placement.node: dedicated (they share the infra node)"
+            )
 
         # A terminal service is the job's run: the job ends when it exits. It cannot share
         # that role with a benchmark step, and an external service never runs here.
@@ -3115,11 +3104,11 @@ class SrtConfig:
             raise ValidationError("telemetry requires benchmark.placement.node: head")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
-        if self.infra.etcd_nats_dedicated_node:
+        if self.infra_dedicated_node:
             raise ValidationError(
-                "telemetry requires infra.etcd_nats_dedicated_node: false, because a "
-                "dedicated infra node moves nodes.head off the batch host and power samples would no longer "
-                "share the benchmark's clock"
+                "telemetry requires the discovery plane on the infra node (no etcd or nats service with "
+                "placement.node: dedicated), because a dedicated infra node moves nodes.head off the batch host "
+                "and power samples would no longer share the benchmark's clock"
             )
 
         concurrencies = self.benchmark.get_concurrency_list()
@@ -3443,6 +3432,24 @@ class SrtConfig:
     def backend_type(self) -> str:
         """Get the backend type string."""
         return self.backend.type
+
+    @property
+    def infra_services(self) -> list[ServiceConfig]:
+        """The declared, enabled discovery-plane entries (``etcd`` / ``nats``)."""
+        return [service for service in self.services if service.type in INFRA_SERVICE_TYPES and service.enabled]
+
+    @property
+    def infra_dedicated_node(self) -> bool:
+        """Whether the discovery plane gets a node of its own: a declared ``etcd`` or ``nats`` placed ``dedicated``."""
+        return any(service.effective_placement == "dedicated" for service in self.infra_services)
+
+    @property
+    def nats_max_payload_mb(self) -> int | None:
+        """The NATS payload limit from a declared ``nats`` entry's ``options.max_payload_mb``; None for the default."""
+        for service in self.infra_services:
+            if service.type == "nats" and service.options.get("max_payload_mb") is not None:
+                return int(service.options["max_payload_mb"])
+        return None
 
 
 def installs_dynamo(config: SrtConfig) -> bool:

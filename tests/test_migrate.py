@@ -124,7 +124,7 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
     (config,) = _migrated_loads_and_v1_does_not(LEGACY)
     assert config.resources.num_prefill == 2
     assert config.frontend.placement.location == "first_decode"
-    assert config.infra.etcd_nats_dedicated_node is True
+    assert config.infra_dedicated_node is True
     assert config.dynamo.hash == "abc1234"
     assert config.benchmark.placement.location == "last_decode"
 
@@ -278,7 +278,7 @@ override_deleted:
     assert "infra" not in doc["override_deleted"]
     configs = _migrated_loads_and_v1_does_not(text)
     assert len(configs) == 2  # the two override variants; base alone is not a job
-    assert all(c.infra.etcd_nats_dedicated_node is False for c in configs)
+    assert all(c.infra_dedicated_node is False for c in configs)
 
 
 MOONCAKE_LEGACY = """\

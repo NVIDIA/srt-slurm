@@ -691,7 +691,7 @@ def test_enabled_false_drops_an_implicit_service() -> None:
 
 
 def test_nats_max_payload_renders_a_config_file(tmp_path: Path) -> None:
-    config = _load("infra:\n  nats_max_payload_mb: 24\n")
+    config = _load("services:\n  - name: nats\n    type: nats\n    options:\n      max_payload_mb: 24\n")
     orchestrator = _orchestrator(config, tmp_path)
     with (
         patch(SRUN, return_value=_proc()) as srun,
@@ -705,7 +705,7 @@ def test_nats_max_payload_renders_a_config_file(tmp_path: Path) -> None:
     assert "> /tmp/nats.conf" in nats["bash_preamble"]
 
 
-def test_declared_nats_options_flow_back_into_infra(tmp_path: Path) -> None:
+def test_declared_infra_services_drive_placement_and_payload(tmp_path: Path) -> None:
     config = _from_yaml(
         tmp_path,
         DISAGG_RECIPE
@@ -713,8 +713,8 @@ def test_declared_nats_options_flow_back_into_infra(tmp_path: Path) -> None:
         + "  - name: nats\n    type: nats\n    placement:\n      node: dedicated\n    options:\n"
         + "      max_payload_mb: 24\n",
     )
-    assert config.infra.etcd_nats_dedicated_node is True
-    assert config.infra.nats_max_payload_mb == 24
+    assert config.infra_dedicated_node is True
+    assert config.nats_max_payload_mb == 24
     assert [entry.service.effective_placement for entry in effective_services(config)] == ["dedicated", "dedicated"]
 
 

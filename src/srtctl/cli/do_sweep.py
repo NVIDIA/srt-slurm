@@ -123,8 +123,7 @@ class SweepOrchestrator(
         """Start the discovery plane (etcd, NATS) as services.
 
         They are implied by ``frontend.type: dynamo`` and placed on the infra node
-        (a dedicated node when ``infra.etcd_nats_dedicated_node`` / a declared
-        etcd or nats service asks for it). A recipe may declare them to change
+        (a dedicated node when a declared etcd or nats service asks for it). A recipe may declare them to change
         the container or point at an external instance. See docs/services.md.
         """
         self.start_services("infra", registry)
