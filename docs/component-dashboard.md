@@ -21,10 +21,24 @@ from a repo checkout.
 
 ---
 
-## Quick start — nothing to turn on
+## Build a dashboard after the run
 
-**Every job builds its own dashboard.** There is no knob and nothing to remember:
-post-processing writes, into the run's log dir:
+Jobs capture raw artifacts, finalize reproducibility files and upload the log
+directory when S3 is configured. They do not automatically generate analysis or
+dashboards. Build a dashboard explicitly from a retained run:
+
+```bash
+cd /path/to/srt-slurm
+python3 -m src.ingest.ingest \
+    --run-dir outputs/<job_id>/logs \
+    --out outputs/<job_id>/logs/perf_dashboard_bundle
+python3 -m src.visualization.build_dynamo_bench_dash \
+    outputs/<job_id>/logs/perf_dashboard_bundle \
+    outputs/<job_id>/logs/perf_dashboard.html \
+    --dump-json outputs/<job_id>/logs/perf_dashboard.json
+```
+
+These commands produce:
 
 ```
 perf_dashboard.html          self-contained page (D3 inlined, no network needed)
@@ -35,28 +49,24 @@ perf_dashboard_bundle/       the intermediate schemas, re-renderable in seconds
 `perf_dashboard.json` exists because the HTML is often unreadable where it lands — a
 headless cluster, a CI log, an S3 prefix. It is the machine-readable form of
 everything the page shows, so a run can be diffed against another, asserted on in a
-test, or simply read without a browser. It is built before the S3 sync, so all three
-artifacts ship with the rest of the log dir.
+test, or simply read without a browser. A separate build after the job finishes
+does not update the job's earlier S3 upload; copy the generated outputs separately
+if they are needed remotely.
 
-Driven by `srtctl.analysis.perf_dashboard`, which is best-effort: a rendering failure
-is logged and never changes the outcome of a benchmark that already produced results.
+`srtctl.analysis.perf_dashboard` also provides a best-effort Python helper for
+explicit builds. It is not invoked by the sweep lifecycle.
 
-Nothing else is required. One `srtctl` submission collects the data, post-processes it
-and renders the page, in that order, inside the job.
-
-What `observability.enabled` changes is **which tabs the page carries**, not whether
-there is a page:
+`observability.enabled` determines which server-side inputs a later build can use:
 
 ```yaml
 observability:
   enabled: true          # adds the server-side capture legs — see the table below
 ```
 
-Without it the page is built from the client's own metrics export, the per-iteration
+Without those inputs the page is built from the client's own metrics export, the per-iteration
 worker logs and the frontend log: **Frontend / Router / Engine / Log-analysis**.
 Turning it on adds the scraped `/metrics` stream and the `SPAN_CLOSED` traces, and
-with them the **Overview** tab. Either way there is a dashboard, because the question
-it answers is asked *after* the run, when opting in is no longer possible.
+with them the **Overview** tab.
 
 ### Comparing two runs
 
@@ -90,9 +100,9 @@ report assumes: *were these two runs actually comparable?*
 Both degrade honestly: when either bundle lacks the provenance files the section says
 the changed variables are **UNKNOWN** rather than implying the runs matched.
 
-### Running a job against a modified checkout
+### Capturing a job against a modified checkout
 
-If you are testing dashboard changes, the compute node runs whatever `srtctl_root` in
+If you are testing capture changes, the compute node runs whatever `srtctl_root` in
 `srtslurm.yaml` points at -- not the tree you edited. Two things bite:
 
 * **`srtctl_root` is the only lever.** Staging a second checkout and `cd`-ing into it
@@ -107,12 +117,9 @@ If you are testing dashboard changes, the compute node runs whatever `srtctl_roo
 
 ### If the job hit its wall clock
 
-A SLURM `TIMEOUT` kills the job hard, so **post-processing never runs and no dashboard is
-written** — even though the capture itself completed. This matters because the runs most
-worth looking at are often the ones that ran out of time.
-
-Nothing is lost. Every raw input survives the kill, and the bundle rebuilds from the run
-directory in under a minute:
+A SLURM `TIMEOUT` can prevent finalization and upload. A dashboard can still be
+built from the raw inputs that were persisted before the kill; inspect the retained
+files for completeness before interpreting the result:
 
 ```bash
 cd /path/to/srt-slurm
@@ -301,7 +308,7 @@ python3 -m src.visualization.build_dynamo_bench_dash <bundle> <out.html> [flags]
 | `--d3-cdn` | off | load D3 from the CDN instead (smaller file, needs network to view) |
 | `--max-batch-prefill / --max-batch-decode` | `128` / `256` | in-flight-batch ceilings drawn on the Engine tab. **Only used when the bundle has no `trtllm_config_*.yaml`** — ingest copies those in automatically, and the real values win. On AgentX run 2739690 the true decode ceiling is `1`, so the `256` default would misdraw that panel by 256x |
 | `--gpus N` | from `dashboard.yaml` | tok/s/GPU denominator |
-| `--dump-json PATH` | — | also write the DATA payload as indented JSON (what the automatic build produces as `perf_dashboard.json`) |
+| `--dump-json PATH` | — | also write the DATA payload as indented JSON, e.g. `perf_dashboard.json` |
 | `--include-warmup` | off | by default only the profiling phase is kept |
 
 The bundle argument is optional — with only `--frontend-log`, you get a

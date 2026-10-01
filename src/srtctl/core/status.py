@@ -305,7 +305,7 @@ class StatusReporter:
 
         Benchmark results themselves are intentionally not carried in this PUT.
         S3 is the source of truth for artifacts; the collector stores the
-        pointer (``logs_url``) and consumers fetch the full rollup from S3.
+        pointer (``logs_url``) and consumers fetch the captured artifacts from S3.
 
         Args:
             exit_code: Process exit code (0 = success)
@@ -335,9 +335,9 @@ class StatusReporter:
     def report_artifacts(self, logs_url: str) -> bool:
         """Push an artifacts pointer (``logs_url``) eagerly, mid-run.
 
-        Used after S3 sync completes but before later stages (AI analysis,
-        cleanup) that can hang or fail. Keeps the status value at its current
-        stage (``benchmark``) so this PUT is purely an artifact-pointer update,
+        Used after S3 sync completes and before final completion reporting.
+        Keeps the status value at its current stage (``benchmark``) so this
+        PUT is purely an artifact-pointer update,
         not a lifecycle transition. The collector merges ``logs_url`` in; a
         later ``report_completed`` will reassert it idempotently.
 

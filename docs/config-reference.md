@@ -180,15 +180,21 @@ The `srtslurm.yaml` file can contain the following fields:
 | `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
 | `preflight`                     | bool   | `false` skips the pre-submit path checks on every `apply` (default `true`) |
-| `reporting`                     | object | Status collector (`status`), log upload (`s3`) and failure analysis (`ai_analysis`); see below and [status-api-spec.md](status-api-spec.md) |
+| `reporting`                     | object | Status collector (`status`) and log upload (`s3`); see below and [status-api-spec.md](status-api-spec.md) |
+
+Jobs finalize raw captures and reproducibility files, then upload artifacts when
+S3 is configured. Automatic rollups, dashboard generation, energy reports
+(including incremental reports) and AI failure analysis are not run. Existing
+`reporting.ai_analysis` settings remain accepted for compatibility and have no
+effect. Benchmark clients may still write their own summaries or rollups.
 
 **reporting.s3**: After a run, a small container on the head node uploads the log directory to `s3://<bucket>/<prefix>/<YYYY-MM-DD>/<job_id>/` (`endpoint_url` for MinIO or another S3-compatible store; credentials only through `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the submit shell, since the literal fields would land in the lockfile). Not everything is worth shipping: a benchmark run's directory is 250 MB to 2 GB on lustre, over 95% of it aiperf's per-interval scrape of the worker and DCGM `/metrics` endpoints, the same series tachometer already stores as parquet, stored twice (raw per concurrency, and reshaped again in `perf_dashboard_bundle/`). The upload therefore follows a policy:
 
 | Shipped as-is | Packed into `bundle.tar.zst` (`archive`) | Skipped (`exclude`) |
 |---|---|---|
-| config, lockfile, job JSON, sbatch script, git state, fingerprints, resource snapshot; sweep, worker, frontend, service and benchmark logs; results JSON, rollup, `profile_export_aiperf.*`; `perf_dashboard.html`; `tachometer/` parquet | `artifacts/**/profile_export.jsonl`, `sa-bench_*/**/profile_export.jsonl` (aiperf's per-request records, 13 to 40 MB raw, under 1 MB compressed) | `server_metrics_export.jsonl`, `server_metrics_export.json`, `gpu_telemetry_export.jsonl` and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (the aiperf artifact roots; a same-named file from another benchmark type is not touched), `perf_dashboard_bundle/*`, `perf_dashboard.json` |
+| config, lockfile, job JSON, sbatch script, git state, fingerprints, resource snapshot; sweep, worker, frontend, service and benchmark logs; client results and summaries; `tachometer/` parquet; any rollup or HTML already present | `artifacts/**/profile_export.jsonl`, `sa-bench_*/**/profile_export.jsonl` (aiperf's per-request records, 13 to 40 MB raw, under 1 MB compressed) | `server_metrics_export.jsonl`, `server_metrics_export.json`, `gpu_telemetry_export.jsonl` and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (the aiperf artifact roots; a same-named file from another benchmark type is not touched), `perf_dashboard_bundle/*`, `perf_dashboard.json` |
 
-`exclude` uses `aws s3 sync` pattern rules (relative to the log directory, `*` matches across directories); `archive` uses Python glob rules with `**`. Either list replaces its default when set; `exclude: []` ships the whole directory, `archive: []` makes no archive. The archive is built under `/tmp` in the container, so nothing is added to the log directory on the cluster. One caveat: with tachometer disabled, dropping the aiperf scrape leaves no engine-metrics record outside `perf_dashboard.html`; enable tachometer, or override `exclude`.
+`exclude` uses `aws s3 sync` pattern rules (relative to the log directory, `*` matches across directories); `archive` uses Python glob rules with `**`. Either list replaces its default when set; `exclude: []` ships the whole directory, `archive: []` makes no archive. The archive is built under `/tmp` in the container, so nothing is added to the log directory on the cluster. With tachometer disabled, dropping the aiperf scrape can leave no uploaded engine-metrics record; enable tachometer, or override `exclude`.
 
 ```yaml
 reporting:
@@ -1174,7 +1180,7 @@ extra_mount:
 Notes:
 - The first run of a job builds an isolated client runtime under `/tmp/agentperf-<jobid>` (uv env, pinned Rust toolchain, `rustcore` extension, tokenizer cache) and stages the trajectory and user-assignments datasets from shared storage to node-local `/tmp`; this preflight needs network egress from the benchmark node and adds several minutes before the first phase.
 - The user-assignments file referenced by the workload YAML must cover the highest concurrency level (`assign_trajectories` fails loudly otherwise).
-- Results land under `<log_dir>/agentperf/` (per-phase `*__traj*.{jsonl,txt,json}`, `requests.jsonl`, `phase_manifest.jsonl`); `rollup.py` normalizes them into `benchmark-rollup.json`.
+- Results land under `<log_dir>/agentperf/` (per-phase `*__traj*.{jsonl,txt,json}`, `requests.jsonl`, `phase_manifest.jsonl`). To normalize them explicitly, run `python3 src/srtctl/benchmarks/scripts/agentperf/rollup.py <log_dir>` from a checkout to produce `benchmark-rollup.json`.
 - Two runs must not share a results dir concurrently (the client resets `phase_manifest.jsonl` at start).
 - `telemetry:` (DCGM power measurement windows) is not supported with agentperf; the schema rejects non-sa-bench benchmark types at config load. Tachometer (`observability.enabled`) works normally.
 
@@ -1218,7 +1224,7 @@ Notes:
 - **Run it in the MLPerf endpoint client image** (`endpoint_client_*.sqsh`). The client ships pre-installed there, so there is nothing to build; the script checks it is on `PATH` and fails with that message if not.
 - **The endpoint is injected, never defaulted.** srt-slurm sets `SRT_FRONTEND_HOST` / `SRT_FRONTEND_PORT` for every custom benchmark, and the script errors if they are absent rather than quietly benchmarking localhost.
 - **`MLPERF_ENDPOINTS` is how you get more than one frontend.** The client load-balances across the list itself, which is how MLPerf gets past the roughly 28k-connection ceiling of a single `ip:port`; its own submission configs ask for 84,000. srt-slurm exposes a single frontend today, so at submission scale this override is currently the only route.
-- The script writes `benchmark-rollup.json` itself, which is the artifact srt-slurm's postprocess already reads. Per-run metrics are deliberately absent: this client does not use LoadGen and writes its own report format, which has not been observed here yet, and a fabricated parser would be worse than an honest gap. The record points at `report_dir` and lists what landed there.
+- The script writes `benchmark-rollup.json` itself, so it remains available without an orchestrator post-processing step. Per-run metrics are deliberately absent: this client does not use LoadGen and writes its own report format, which has not been observed here yet, and a fabricated parser would be worse than an honest gap. The record points at `report_dir` and lists what landed there.
 
 ---
 
@@ -1534,7 +1540,7 @@ observability:
   enabled: true
 ```
 
-The capture window aligns with the load, the same window the benchmark client's own `AIPERF_SERVER_METRICS_URLS` polling covers: on benchmark runs the scraper starts once the server passes the health gate (bring-up produces only dead-endpoint noise while workers load) and is stopped **gracefully** when the client exits, with a configurable grace period for compacting `final.parquet` before post-processing reads it. Runs without a discrete load window (serve-only, `manual`, eval-only) capture the whole serve session as before. Signal handlers and the critical-process monitor still use the process registry's existing teardown budget; the benchmark shutdown grace does not override those paths.
+The capture window aligns with the load, the same window the benchmark client's own `AIPERF_SERVER_METRICS_URLS` polling covers: on benchmark runs the scraper starts once the server passes the health gate (bring-up produces only dead-endpoint noise while workers load) and is stopped **gracefully** when the client exits, with a configurable grace period for compacting `final.parquet` before artifact upload. Runs without a discrete load window (serve-only, `manual`, eval-only) capture the whole serve session as before. Signal handlers and the critical-process monitor still use the process registry's existing teardown budget; the benchmark shutdown grace does not override those paths.
 
 Tachometer scrapes all configured worker, frontend, DCGM, and node-exporter endpoints, independently of the benchmark client's `AIPERF_SERVER_METRICS_URLS` polling. This keeps the raw capture complete even when the client also collects metrics.
 
@@ -1559,7 +1565,7 @@ top-level `profiling` mode takes precedence. The serving container must provide 
 NVTX support. See [Observability capture](profiling.md#observability-capture)
 for timing, sampling, injection, and report-finalization settings.
 
-The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
+Component perf dashboards are built explicitly after the run; `enabled` decides which capture legs exist and therefore which tabs a later build carries. See [Component Performance Dashboard](component-dashboard.md).
 
 SGLang workers always receive `--enable-metrics` unless the recipe sets it: native
 `sglang.launch_server` serves `/metrics` only with the flag, and `dynamo.sglang`

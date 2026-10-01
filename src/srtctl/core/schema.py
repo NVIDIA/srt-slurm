@@ -127,9 +127,10 @@ class ReportingStatusConfig:
 
 @dataclass(frozen=True)
 class ReportingConfig:
-    """Reporting configuration for status updates, AI analysis, and log exports."""
+    """Reporting configuration for status updates and log exports."""
 
     status: ReportingStatusConfig | None = None
+    # Legacy setting accepted for compatibility; automatic AI analysis has been removed.
     ai_analysis: "AIAnalysisConfig | None" = None
     s3: "S3Config | None" = None
 
@@ -167,20 +168,15 @@ Start by listing and reading the log files, then investigate.
 
 @dataclass(frozen=True)
 class AIAnalysisConfig:
-    """AI-powered failure analysis configuration.
+    """Legacy AI analysis settings, accepted for configuration compatibility.
 
-    This config is typically set in srtslurm.yaml (cluster config) to centralize
-    secrets and allow cluster-wide customization. Individual job configs can
-    override with `ai_analysis.enabled: false` to disable for specific jobs.
-
-    Uses OpenRouter for Claude Code authentication, which provides a simple API key
-    approach that works well in headless/automated environments.
-    See: https://openrouter.ai/docs/guides/claude-code-integration
+    These settings have no effect on job execution. Automatic AI failure
+    analysis has been removed from the sweep lifecycle.
 
     Attributes:
-        enabled: Whether to run AI analysis on benchmark failures
-        openrouter_api_key: OpenRouter API key (falls back to OPENROUTER_API_KEY env var)
-        gh_token: GitHub token for gh CLI (falls back to GH_TOKEN env var)
+        enabled: Legacy enable flag (ignored)
+        openrouter_api_key: Legacy OpenRouter API key (unused)
+        gh_token: Legacy GitHub token (unused)
         repos_to_search: GitHub repos to search for related PRs
         pr_search_days: Number of days to look back for PRs
         prompt: Custom prompt template (uses DEFAULT_AI_ANALYSIS_PROMPT if None)
@@ -1478,12 +1474,9 @@ class ObservabilityConfig:
     the effective publication flags give those endpoints engine metrics — see
     ``BenchmarkStageMixin``.)
 
-    It does **not** decide whether the component perf dashboard is built. That
-    happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
-    only decides which capture legs exist and therefore which tabs the page
-    carries. Keeping the two separate is deliberate: a run that captured nothing
-    server-side still renders from the client export and the per-iteration log,
-    and that is the shape most runs have.
+    Component perf dashboards are built explicitly after the run (see
+    :mod:`srtctl.analysis.perf_dashboard`). ``enabled`` decides which capture
+    legs exist and therefore which tabs a separately generated page carries.
 
     Attributes:
         enabled: Master analytics knob. Default: False.

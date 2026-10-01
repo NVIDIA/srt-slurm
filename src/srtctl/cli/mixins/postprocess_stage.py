@@ -2,15 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Post-process stage mixin for SweepOrchestrator.
+Artifact finalization and upload for SweepOrchestrator.
 
 Handles:
-- Benchmark result extraction
+- Run configuration and reproducibility files
 - S3 upload of the whole log directory
-- AI-powered failure analysis using Claude Code CLI
-
-AI analysis uses Claude Code in headless mode (-p flag) with OpenRouter for authentication.
-See: https://openrouter.ai/docs/guides/claude-code-integration
 """
 
 import json
@@ -19,16 +15,14 @@ import os
 import shlex
 import shutil
 import subprocess
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.config import load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
-from srtctl.core.schema import DEFAULT_S3_ARCHIVE, DEFAULT_S3_EXCLUDE, AIAnalysisConfig, S3Config
+from srtctl.core.schema import DEFAULT_S3_ARCHIVE, DEFAULT_S3_EXCLUDE, S3Config
 from srtctl.core.slurm import start_srun_process
 
 if TYPE_CHECKING:
@@ -79,10 +73,9 @@ def s3_sync_exclude_pattern(archive_pattern: str) -> str:
 
 
 class PostProcessStageMixin:
-    """Mixin for post-process stage after benchmark completion.
+    """Finalize reproducibility files and upload captured artifacts after a run.
 
-    Handles AI-powered failure analysis using Claude Code CLI.
-    Configuration is loaded from srtslurm.yaml (cluster config).
+    Upload configuration is loaded from srtslurm.yaml (cluster config).
 
     Requires:
         self.config: SrtConfig
@@ -92,31 +85,6 @@ class PostProcessStageMixin:
     # Type hints for mixin dependencies
     config: "SrtConfig"
     runtime: "RuntimeContext"
-
-    def _get_ai_analysis_config(self) -> AIAnalysisConfig | None:
-        """Load AI analysis config from cluster config (reporting.ai_analysis).
-
-        Returns:
-            AIAnalysisConfig if configured, None otherwise
-        """
-        cluster_config = load_cluster_config()
-        if not cluster_config:
-            return None
-
-        reporting = cluster_config.get("reporting")
-        if not reporting:
-            return None
-
-        ai_config_dict = reporting.get("ai_analysis")
-        if not ai_config_dict:
-            return None
-
-        try:
-            schema = AIAnalysisConfig.Schema()
-            return schema.load(ai_config_dict)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to parse reporting.ai_analysis config: %s", e)
-            return None
 
     def _get_s3_config(self) -> S3Config | None:
         """Load S3 config from cluster config (under reporting.s3).
@@ -184,39 +152,31 @@ class PostProcessStageMixin:
                 logger.warning("Failed to copy %s to log directory: %s", name, e)
 
     def run_postprocess(self, exit_code: int, reporter: "StatusReporter | None" = None) -> None:
-        """Run post-processing after benchmark completion.
+        """Finalize and upload artifacts after benchmark completion.
 
         Handles:
         1. Copy config YAML into log directory (for S3 upload)
-        2. Rollup generation (benchmark-specific normalization)
-        3. Benchmark result extraction (reads rollup or falls back to raw)
-        4. S3 upload of the whole log directory (if S3 configured)
-        5. Eager push of ``logs_url`` to the status API right after the S3 sync
+        2. Write the final lockfile and compare a lockfile re-run
+        3. S3 upload of the whole log directory (if S3 configured)
+        4. Eager push of ``logs_url`` to the status API right after the S3 sync
            completes, so downstream consumers can fetch results from S3 even
-           if later stages below fail or hang.
-        6. Stash ``logs_url`` on self so the caller's final
+           before final completion reporting.
+        5. Stash ``logs_url`` on self so the caller's final
            ``report_completed`` PUT in do_sweep can reassert the pointer.
-        7. AI-powered failure analysis (only on failures, if enabled).
+
+        Analysis and dashboard generation are separate, explicit operations.
 
         Benchmark results themselves are NOT pushed to the status API — S3 is
         the source of truth for artifacts. The collector only stores pointers.
 
         Args:
-            exit_code: Exit code from the benchmark run
+            exit_code: Benchmark exit code, retained for caller compatibility.
             reporter: Optional StatusReporter for eager mid-run pushes. When
-                provided, ``logs_url`` is PUT as soon as it's known (step 5);
+                provided, ``logs_url`` is PUT as soon as it's known (step 4);
                 when None, only the stash path is used.
         """
         # Copy config into log directory so it's included in S3 upload
         self._copy_config_to_logs()
-
-        # Generate rollup first (benchmark-specific normalization). This writes
-        # benchmark-rollup.json into the log dir; consumers pull it from S3.
-        self._generate_rollup()
-
-        # Extract benchmark results for the lockfile path only. The dict is
-        # intentionally NOT forwarded to the status API (see docstring).
-        _benchmark_results = self._extract_benchmark_results()
 
         # Write lockfile with verification
         # TODO: include benchmark results once rollup format is standardized across
@@ -233,172 +193,16 @@ class PostProcessStageMixin:
         # Compare against previous lockfile if this was a lockfile re-run
         self._compare_against_previous_lock()
 
-        # Build the component perf dashboard. Deliberately ordered BEFORE the S3 sync
-        # below: the sync ships the whole log dir, so building here is what gets
-        # perf_dashboard.{html,json} and its bundle off the cluster. Building after
-        # would leave them behind on a node whose /lustre scratch is transient.
-        self._build_perf_dashboard()
-
-        # Best-effort CPU/GPU energy-per-token report. Same ordering
-        # requirement as the perf dashboard above: must land before the S3
-        # sync so it ships with the rest of the log directory.
-        self._build_power_energy_report()
-
         # Upload the log directory to S3 (if configured)
         s3_url = self._run_postprocess_container()
 
-        # Eager push of logs_url to the status API. Fires BEFORE AI analysis so
-        # a hanging/crashing analyzer does not strand the artifact pointer.
+        # Publish the artifact pointer as soon as the upload completes.
         if reporter is not None and s3_url:
             reporter.report_artifacts(logs_url=s3_url)
 
         # Stash so the final StatusReporter.report_completed PUT (in do_sweep)
         # reasserts logs_url idempotently across every configured endpoint.
         self._last_logs_url = s3_url
-
-        # AI analysis only on failures
-        if exit_code != 0:
-            ai_config = self._get_ai_analysis_config()
-            if ai_config and ai_config.enabled:
-                logger.info("Running AI-powered failure analysis...")
-                self._run_ai_analysis(ai_config)
-
-    def _build_perf_dashboard(self) -> None:
-        """Render the component perf dashboard from this run's own artifacts.
-
-        Turns whatever the run captured — the tachometer parquet or the client's own
-        metrics export, SPAN_CLOSED lines, the request trace, the per-iteration log —
-        into `<log_dir>/perf_dashboard.{html,json}` plus the intermediate bundle, so
-        one submission yields the page with no second hand-driven step from a
-        checkout.
-
-        Runs on every job; `observability.enabled` changes which tabs the page carries,
-        not whether it is built. Best-effort: `try_build` swallows its own failures,
-        and the extra guard here means even an import error cannot fail a benchmark
-        that has already produced results.
-        """
-        try:
-            from srtctl.analysis.perf_dashboard import try_build
-
-            try_build(self.config, self.runtime)
-        except Exception as e:  # noqa: BLE001 - visualisation is never fatal
-            logger.warning("Perf dashboard build skipped: %s", e)
-
-    def _build_power_energy_report(self) -> None:
-        """Best-effort CPU/GPU trapezoidal energy report, written next to the samples.
-
-        Quietly skipped (DEBUG only) whenever it does not apply: telemetry
-        disabled (no power CSVs), a benchmark type without sa-bench/aiperf
-        timing artifacts (e.g. lm-eval, gpqa), or a serve-only run with no
-        formal benchmark window. Runs after ``finalize_power_telemetry`` /
-        ``finalize_cpu_power_telemetry`` in ``do_sweep.py``'s cleanup block,
-        so the CPU/GPU ``samples.csv`` files are already durable by the time
-        this executes.
-        """
-        try:
-            from srtctl.analysis.power_energy_report import PowerReportError, build_reports, report_to_dict
-        except ImportError as e:
-            logger.warning("Power energy report unavailable (import failed): %s", e)
-            return
-
-        try:
-            reports = build_reports(self.runtime.log_dir)
-        except PowerReportError as e:
-            logger.debug("Power energy report skipped: %s", e)
-            return
-        except Exception as e:  # noqa: BLE001 - post-processing must never fail the benchmark
-            logger.warning("Power energy report failed: %s", e)
-            return
-
-        output_path = self.runtime.log_dir / "power_energy_report.json"
-        output_path.write_text(json.dumps([report_to_dict(report) for report in reports], indent=2) + "\n")
-        total_joules = sum(report.combined_total_joules for report in reports)
-        logger.info(
-            "Power energy report: %d concurrency point(s), %.1f J combined total -> %s",
-            len(reports),
-            total_joules,
-            output_path,
-        )
-
-    def start_incremental_power_report(self) -> None:
-        """Start per-case energy emission for the duration of the benchmark.
-
-        Strictly additive to ``_build_power_energy_report``: this writes each
-        case's result as soon as that case completes, so a job killed mid-sweep
-        keeps the results it already earned. Every failure is absorbed -- power
-        post-processing must never affect the sweep or its exit code.
-        """
-        try:
-            from srtctl.analysis.incremental_power import IncrementalPowerEmitter, IncrementalPowerWatcher
-
-            emitter = IncrementalPowerEmitter(self.runtime.log_dir)
-            watcher = IncrementalPowerWatcher(emitter)
-            watcher.start()
-            self._incremental_power_watcher = watcher
-            logger.info("Incremental power report started (index: %s)", emitter.index_path)
-        except Exception as e:  # noqa: BLE001 - never fatal
-            logger.warning("Incremental power report unavailable: %s", e)
-
-    def finalize_incremental_power_report(self) -> None:
-        """Stop the watcher and run a final pass against the now-closed sample files."""
-        watcher = getattr(self, "_incremental_power_watcher", None)
-        if watcher is None:
-            return
-        try:
-            watcher.stop_and_finalize()
-        except Exception as e:  # noqa: BLE001 - never fatal
-            logger.warning("Incremental power report finalization failed: %s", e)
-
-    def _generate_rollup(self) -> None:
-        """Run benchmark-specific rollup script to generate benchmark-rollup.json.
-
-        Each benchmark type can have a rollup.py script that normalizes its output
-        into a standardized format for historical tracking.
-        """
-        benchmark_type = self.config.benchmark.type
-        rollup_script = SCRIPTS_DIR / benchmark_type / "rollup.py"
-
-        if not rollup_script.exists():
-            logger.debug("No rollup script for %s", benchmark_type)
-            return
-
-        try:
-            result = subprocess.run(
-                ["python3", str(rollup_script), str(self.runtime.log_dir)],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if result.returncode != 0:
-                logger.warning("Rollup failed: %s", result.stderr)
-            elif result.stdout:
-                logger.info(result.stdout.strip())
-        except subprocess.TimeoutExpired:
-            logger.warning("Rollup script timed out")
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Rollup error: %s", e)
-
-    def _extract_benchmark_results(self) -> dict[str, Any] | None:
-        """Read benchmark-rollup.json if it exists, otherwise fall back to raw output.
-
-        Returns:
-            Dictionary with benchmark results, or None if not found
-        """
-        # Try to read the standardized rollup first
-        rollup_file = self.runtime.log_dir / "benchmark-rollup.json"
-        if rollup_file.exists():
-            try:
-                return json.loads(rollup_file.read_text())
-            except json.JSONDecodeError as e:
-                logger.warning("Failed to parse rollup: %s", e)
-
-        # Fallback to raw output for legacy/failed rollups
-        benchmark_out = self.runtime.log_dir / "benchmark.out"
-        if benchmark_out.exists():
-            return {"benchmark_type": "unknown", "raw_output": benchmark_out.read_text(errors="replace")}
-
-        return None
 
     def _compare_against_previous_lock(self) -> None:
         """If this run was from a lockfile, compare against previous run."""
@@ -441,7 +245,7 @@ class PostProcessStageMixin:
 
         Ships the run identity (config, lockfile, job JSON, sbatch script, git
         state), every orchestrator, worker, frontend and service log, the
-        benchmark results, ``perf_dashboard.html`` and the tachometer parquet as
+        benchmark results and the tachometer parquet as
         loose objects, plus one compressed archive of the patterns in
         ``reporting.s3.archive``; the patterns in ``reporting.s3.exclude`` are
         skipped (see ``DEFAULT_S3_EXCLUDE`` for why). Returns the S3 URL of the
@@ -573,115 +377,3 @@ echo "Uploaded objects:"
 aws s3 ls --recursive {s3_url} {endpoint_flag} | wc -l
 echo "objects total"
 """
-
-    def _run_ai_analysis(self, config: AIAnalysisConfig) -> None:
-        """Run AI analysis using Claude Code CLI via OpenRouter.
-
-        Uses OpenRouter for authentication which works well in headless environments.
-        Installs claude CLI and gh CLI in a python container before running analysis.
-        See: https://openrouter.ai/docs/guides/claude-code-integration
-
-        Args:
-            config: AI analysis configuration
-        """
-        # Resolve secrets
-        openrouter_key = self._resolve_secret(config.openrouter_api_key, "OPENROUTER_API_KEY")
-        gh_token = self._resolve_secret(config.gh_token, "GH_TOKEN")
-
-        if not openrouter_key:
-            logger.error("AI analysis requires OPENROUTER_API_KEY (set in srtslurm.yaml or environment)")
-            return
-
-        if not gh_token:
-            logger.warning("GH_TOKEN not set - GitHub PR search will not work")
-
-        # Build the prompt - escape for shell
-        log_dir = str(self.runtime.log_dir)
-        prompt = config.get_prompt(log_dir)
-        escaped_prompt = shlex.quote(prompt)
-
-        logger.info("Log directory: %s", log_dir)
-        logger.info("Repos to search: %s", ", ".join(config.repos_to_search))
-
-        # Build environment variables for OpenRouter integration
-        # See: https://openrouter.ai/docs/guides/claude-code-integration
-        env_to_set = {
-            "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
-            "ANTHROPIC_AUTH_TOKEN": openrouter_key,
-            "ANTHROPIC_API_KEY": "",  # Must be explicitly empty to route through OpenRouter
-        }
-        if gh_token:
-            env_to_set["GH_TOKEN"] = gh_token
-
-        # Build the analysis script that installs tools and runs claude
-        # Uses curl to install claude CLI and gh CLI without requiring apt/root
-        script = f"""
-set -e
-
-echo "Installing uv..."
-pip install uv
-
-echo "Installing Claude Code CLI..."
-curl -fsSL https://claude.ai/install.sh | bash
-export PATH="$HOME/.claude/bin:$PATH"
-
-echo "Installing GitHub CLI..."
-GH_VERSION=$(curl -s https://api.github.com/repos/cli/cli/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//')
-curl -fsSL "https://github.com/cli/cli/releases/download/v${{GH_VERSION}}/gh_${{GH_VERSION}}_linux_amd64.tar.gz" | tar xz -C /tmp
-export PATH="/tmp/gh_${{GH_VERSION}}_linux_amd64/bin:$PATH"
-
-echo "Dependencies installed. Running AI analysis..."
-
-# Run claude with explicit tool permissions
-cd /logs
-claude -p {escaped_prompt} \\
-    --allowedTools "Read,Bash(gh *),Bash(ls *),Bash(cat *),Bash(grep *),Write(**/ai_analysis.md)"
-
-echo "AI analysis complete."
-"""
-
-        analysis_log = self.runtime.log_dir / "ai_analysis.log"
-        logger.info("Starting Claude Code analysis (log: %s)", analysis_log)
-
-        try:
-            proc = start_srun_process(
-                command=["bash", "-c", script],
-                nodelist=[self.runtime.nodes.head],
-                output=str(analysis_log),
-                container_image="python:3.11",
-                container_mounts={self.runtime.log_dir: Path("/logs")},
-                env_to_set=env_to_set,
-                het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
-            )
-
-            # Wait for completion with timeout (15 minutes for install + analysis)
-            timeout = 900
-            start_time = time.time()
-
-            while proc.poll() is None:
-                if time.time() - start_time > timeout:
-                    logger.warning("AI analysis timed out after %d seconds", timeout)
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    return
-                time.sleep(5)
-
-            exit_code = proc.returncode or 0
-
-            if exit_code != 0:
-                logger.warning("AI analysis exited with code %d", exit_code)
-            else:
-                logger.info("AI analysis completed successfully")
-
-            # Check if analysis file was created
-            analysis_file = self.runtime.log_dir / "ai_analysis.md"
-            if analysis_file.exists():
-                logger.info("Analysis report written to: %s", analysis_file)
-            else:
-                logger.warning("AI analysis did not produce ai_analysis.md")
-
-        except Exception as e:  # noqa: BLE001
-            logger.error("Failed to run AI analysis: %s", e)

@@ -1,21 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Post-run bridge: a finished run's log dir -> component perf dashboard.
+"""Explicit post-run bridge: a finished run's log dir -> component perf dashboard.
 
-Runs on **every** job, with no opt-in. Reading a run used to mean hand-driving two
-scripts from a checkout against a log dir; this module runs them at the end of the
-job instead, so one submission produces the page.
-
-Unconditional because the page is not a special-occasion artifact: the question it
-answers -- where did the time go, which component was the ceiling -- is the one
-asked of every run, and it is asked *after* the run, when opting in is no longer
-possible. A knob would only ever be discovered by the person who already knew.
+The sweep lifecycle does not invoke this module. Callers can use it to build a
+dashboard from retained artifacts after a job has finished; the standalone ingest
+and render commands are documented in ``docs/component-dashboard.md``.
 
 ``observability.enabled`` decides which capture legs exist and therefore which tabs
-the page carries; it never decides whether the page exists. A run with no
-server-side capture at all still renders from the client's own metrics export, the
-per-iteration log and the frontend log -- which is the shape most runs have.
+the page carries. Runs without server-side capture can still render from the
+client's metrics export, per-iteration log and frontend log.
 
 It drives the two vendored layers as SUBPROCESSES:
 
@@ -25,8 +19,7 @@ It drives the two vendored layers as SUBPROCESSES:
 Subprocess rather than import, for three reasons: the renderer is a script with
 module-level argparse and no importable entry point; the vendored tree is
 deliberately excluded from lint/typecheck and is not part of the ``srtctl`` wheel;
-and a crash in third-party rendering code must not be able to take down the job's
-post-processing.
+and a crash in third-party rendering code must not take down the caller.
 
 Best-effort by construction, matching the rest of the capture stack: every
 failure path is logged and swallowed. Visualisation is never a hard dependency of a
@@ -242,9 +235,8 @@ def try_build(config: SrtConfig, runtime: RuntimeContext) -> Path | None:
     legs :func:`build` finds, and that is the ingest's decision to make from the log
     dir rather than a recipe's to declare in advance.
 
-    With no gate left, this ``except`` is the only thing standing between a bug in
-    third-party rendering code and the post-processing of a benchmark that has
-    already produced its results -- so it stays broad on purpose.
+    Rendering failures are logged and returned as ``None`` so callers can keep
+    using the retained benchmark artifacts even when a dashboard cannot be built.
     """
     try:
         return build(config, runtime)

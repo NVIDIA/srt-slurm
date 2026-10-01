@@ -340,12 +340,12 @@ Virtual identity for runtime verification and reproduction.
 
 ### ReportingConfig
 
-Reporting configuration for status updates, AI analysis, and log exports.
+Reporting configuration for status updates and log exports.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `status` | [ReportingStatusConfig](#reportingstatusconfig) \| None | `None` |  |
-| `ai_analysis` | [AIAnalysisConfig](#aianalysisconfig) \| None | `None` |  |
+| `ai_analysis` | [AIAnalysisConfig](#aianalysisconfig) \| None | `None` | Legacy setting accepted for compatibility; automatic AI analysis has been removed. |
 | `s3` | [S3Config](#s3config) \| None | `None` |  |
 
 ### DynamoSourceConfig
@@ -522,13 +522,13 @@ Status reporting configuration.
 
 ### AIAnalysisConfig
 
-AI-powered failure analysis configuration.
+Legacy AI analysis settings, accepted for configuration compatibility.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `False` | Whether to run AI analysis on benchmark failures |
-| `openrouter_api_key` | str \| None | `None` | OpenRouter API key (falls back to OPENROUTER_API_KEY env var) |
-| `gh_token` | str \| None | `None` | GitHub token for gh CLI (falls back to GH_TOKEN env var) |
+| `enabled` | bool | `False` | Legacy enable flag (ignored) |
+| `openrouter_api_key` | str \| None | `None` | Legacy OpenRouter API key (unused) |
+| `gh_token` | str \| None | `None` | Legacy GitHub token (unused) |
 | `repos_to_search` | list[str] | `<lambda>()` | GitHub repos to search for related PRs |
 | `pr_search_days` | int | `14` | Number of days to look back for PRs |
 | `prompt` | str \| None | `None` | Custom prompt template (uses DEFAULT_AI_ANALYSIS_PROMPT if None) Available variables: {log_dir}, {repos}, {pr_days} |

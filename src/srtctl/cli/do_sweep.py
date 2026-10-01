@@ -696,7 +696,6 @@ class SweepOrchestrator(
                     self.start_power_telemetry(registry)
                     self.start_cpu_power_telemetry(registry)
                     self.start_cpu_power_host_telemetry(registry)
-                    self.start_incremental_power_report()
 
             # Tachometer capture aligns with the load window: benchmark runs
             # start it inside run_benchmark once the server is healthy and
@@ -757,19 +756,8 @@ class SweepOrchestrator(
             self._run_host_teardown()
             if exit_code != 0:
                 registry.print_failure_details()
-            # Deliberately AFTER _run_host_teardown(): the final pass plus its
-            # thread-join can take up to DEFAULT_JOIN_TIMEOUT_SECONDS, and on
-            # the SLURM walltime-kill path this feature exists to survive
-            # there's a fixed grace clock running -- node-state reversion must
-            # not wait behind it. Its own ordering requirement (run after
-            # finalize_power_telemetry / finalize_cpu_power_telemetry so it
-            # reads closed, durable CSVs) is still satisfied since both of
-            # those already ran above. Never rebinds exit_code: incremental
-            # power emission is best-effort.
-            self.finalize_incremental_power_report()
-            # Post-process first: generate rollup, upload logs to S3, eagerly
-            # push logs_url to the status API. Runs before report_completed so
-            # the final PUT can reassert the artifact pointer.
+            # Finalize reproducibility files and upload captured artifacts before
+            # report_completed so the final PUT can reassert the artifact pointer.
             self.run_postprocess(exit_code, reporter=reporter)
             if log_streamer is not None:
                 log_streamer.stop()

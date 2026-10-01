@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for post-processing: benchmark extraction, S3 upload, and AI analysis."""
+"""Tests for artifact finalization, S3 upload, and legacy reporting config."""
 
 from unittest.mock import MagicMock, patch
 
@@ -163,11 +163,7 @@ class TestPostProcessStageMixin:
         mixin.config = MagicMock()
 
         mixin._copy_config_to_logs = MagicMock()
-        mixin._generate_rollup = MagicMock()
-        mixin._extract_benchmark_results = MagicMock(return_value=None)
         mixin._run_postprocess_container = MagicMock(return_value=None)
-        mixin._get_ai_analysis_config = MagicMock(return_value=None)
-        mixin._run_ai_analysis = MagicMock()
         return mixin
 
     def test_resolve_secret_from_config(self):
@@ -202,13 +198,13 @@ class TestPostProcessStageMixin:
 
         assert result is None
 
-    def test_run_postprocess_always_runs_extraction_and_upload(self):
-        """Test run_postprocess always runs benchmark extraction and S3 upload."""
+    def test_run_postprocess_copies_artifacts_and_uploads(self):
+        """Retain job inputs for upload and stash the artifact URL."""
         mixin = self._create_mixin_with_mocks()
 
         mixin.run_postprocess(0)  # success exit code
 
-        mixin._extract_benchmark_results.assert_called_once()
+        mixin._copy_config_to_logs.assert_called_once()
         mixin._run_postprocess_container.assert_called_once()
         # logs_url is stashed on self for do_sweep's final report_completed PUT
         assert mixin._last_logs_url is None  # no S3 configured in this mock
@@ -245,45 +241,6 @@ class TestPostProcessStageMixin:
         mixin.run_postprocess(0)
 
         assert mixin._last_logs_url == s3_url
-
-    def test_run_postprocess_skips_ai_on_success(self):
-        """Test run_postprocess skips AI analysis when exit_code is 0."""
-        mixin = self._create_mixin_with_mocks()
-
-        mixin.run_postprocess(0)
-
-        mixin._get_ai_analysis_config.assert_not_called()
-        mixin._run_ai_analysis.assert_not_called()
-
-    def test_run_postprocess_skips_ai_when_not_configured(self):
-        """Test run_postprocess skips AI analysis when not configured."""
-        mixin = self._create_mixin_with_mocks()
-        mixin._get_ai_analysis_config.return_value = None
-
-        mixin.run_postprocess(1)
-
-        mixin._get_ai_analysis_config.assert_called_once()
-        mixin._run_ai_analysis.assert_not_called()
-
-    def test_run_postprocess_skips_ai_when_disabled(self):
-        """Test run_postprocess skips AI analysis when disabled."""
-        mixin = self._create_mixin_with_mocks()
-        mixin._get_ai_analysis_config.return_value = AIAnalysisConfig(enabled=False)
-
-        mixin.run_postprocess(1)
-
-        mixin._get_ai_analysis_config.assert_called_once()
-        mixin._run_ai_analysis.assert_not_called()
-
-    def test_run_postprocess_calls_ai_analysis_when_enabled(self):
-        """Test run_postprocess calls _run_ai_analysis when enabled and failed."""
-        mixin = self._create_mixin_with_mocks()
-        config = AIAnalysisConfig(enabled=True, openrouter_api_key="sk-or-test")
-        mixin._get_ai_analysis_config.return_value = config
-
-        mixin.run_postprocess(1)
-
-        mixin._run_ai_analysis.assert_called_once_with(config)
 
 
 class TestAIAnalysisConfigSchema:
@@ -449,153 +406,6 @@ class TestReportingStatusConfig:
         assert config.endpoint == "https://dashboard.example.com"
 
 
-class TestRollupFaultTolerance:
-    """Tests for rollup generation fault tolerance.
-
-    These tests verify that failures in rollup generation never crash the benchmark.
-    """
-
-    def _create_mixin_with_runtime(self, tmp_path, benchmark_type="sa-bench"):
-        """Create a mixin instance with real runtime and config mocks."""
-        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
-
-        mixin = PostProcessStageMixin()
-
-        # Mock config
-        mixin.config = MagicMock()
-        mixin.config.benchmark.type = benchmark_type
-
-        # Mock runtime with real tmp_path for log_dir
-        mixin.runtime = MagicMock()
-        mixin.runtime.log_dir = tmp_path
-        mixin.runtime.job_id = "12345"
-
-        return mixin
-
-    def test_generate_rollup_no_script_does_not_raise(self, tmp_path):
-        """Test _generate_rollup returns silently when no rollup script exists."""
-        mixin = self._create_mixin_with_runtime(tmp_path, benchmark_type="nonexistent-benchmark")
-
-        # Should not raise - just returns silently
-        mixin._generate_rollup()
-
-    def test_generate_rollup_script_failure_does_not_raise(self, tmp_path):
-        """Test _generate_rollup handles script failures gracefully."""
-        mixin = self._create_mixin_with_runtime(tmp_path, benchmark_type="sa-bench")
-
-        # No sa-bench results exist, so rollup.py will fail
-        # But it should not raise
-        mixin._generate_rollup()
-
-    def test_generate_rollup_timeout_does_not_raise(self, tmp_path):
-        """Test _generate_rollup handles timeout gracefully."""
-        import subprocess
-
-        mixin = self._create_mixin_with_runtime(tmp_path, benchmark_type="sa-bench")
-
-        # Mock subprocess.run to raise TimeoutExpired
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=30)
-
-            # Should not raise
-            mixin._generate_rollup()
-
-    def test_generate_rollup_exception_does_not_raise(self, tmp_path):
-        """Test _generate_rollup handles unexpected exceptions gracefully."""
-        mixin = self._create_mixin_with_runtime(tmp_path, benchmark_type="sa-bench")
-
-        # Mock subprocess.run to raise generic exception
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = Exception("Unexpected error")
-
-            # Should not raise
-            mixin._generate_rollup()
-
-    def test_extract_results_fallback_to_raw_output(self, tmp_path):
-        """Test _extract_benchmark_results falls back to benchmark.out when no rollup."""
-        mixin = self._create_mixin_with_runtime(tmp_path)
-
-        # Create benchmark.out but no rollup.json
-        benchmark_out = tmp_path / "benchmark.out"
-        benchmark_out.write_text("Raw benchmark output here")
-
-        result = mixin._extract_benchmark_results()
-
-        assert result is not None
-        assert result["benchmark_type"] == "unknown"
-        assert result["raw_output"] == "Raw benchmark output here"
-
-    def test_extract_results_corrupted_rollup_fallback(self, tmp_path):
-        """Test _extract_benchmark_results falls back when rollup.json is corrupted."""
-        mixin = self._create_mixin_with_runtime(tmp_path)
-
-        # Create corrupted rollup.json
-        rollup = tmp_path / "benchmark-rollup.json"
-        rollup.write_text("not valid json {{{")
-
-        # Create backup benchmark.out
-        benchmark_out = tmp_path / "benchmark.out"
-        benchmark_out.write_text("Fallback output")
-
-        result = mixin._extract_benchmark_results()
-
-        assert result is not None
-        assert result["benchmark_type"] == "unknown"
-        assert result["raw_output"] == "Fallback output"
-
-    def test_extract_results_no_files_returns_none(self, tmp_path):
-        """Test _extract_benchmark_results returns None when no files exist."""
-        mixin = self._create_mixin_with_runtime(tmp_path)
-
-        result = mixin._extract_benchmark_results()
-
-        assert result is None
-
-    def test_extract_results_valid_rollup(self, tmp_path):
-        """Test _extract_benchmark_results reads valid rollup.json."""
-        import json
-
-        mixin = self._create_mixin_with_runtime(tmp_path)
-
-        # Create valid rollup.json
-        rollup_data = {
-            "benchmark_type": "sa-bench",
-            "timestamp": "2026-01-27T00:00:00Z",
-            "config": {"model": "test-model", "isl": 100, "osl": 100},
-            "runs": [{"concurrency": 4, "throughput_toks": 100.0}],
-        }
-        rollup = tmp_path / "benchmark-rollup.json"
-        rollup.write_text(json.dumps(rollup_data))
-
-        result = mixin._extract_benchmark_results()
-
-        assert result is not None
-        assert result["benchmark_type"] == "sa-bench"
-        assert result["config"]["model"] == "test-model"
-        assert len(result["runs"]) == 1
-
-    def test_run_postprocess_completes_with_rollup_failure(self, tmp_path):
-        """Test run_postprocess completes even when rollup fails entirely."""
-        mixin = self._create_mixin_with_runtime(tmp_path, benchmark_type="sa-bench")
-
-        # Mock all the other methods to isolate rollup behavior
-        mixin._run_postprocess_container = MagicMock(return_value=None)
-        mixin._get_ai_analysis_config = MagicMock(return_value=None)
-
-        # Mock _generate_rollup to raise (simulating worst case)
-        # But actually, _generate_rollup should never raise - let's verify that
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = Exception("Catastrophic failure")
-
-            # Should complete without raising
-            mixin.run_postprocess(exit_code=0)
-
-        # S3 upload still attempted even when rollup fails
-        mixin._run_postprocess_container.assert_called_once()
-        # And logs_url is still stashed (None here because S3 returned None)
-        assert mixin._last_logs_url is None
-
-
 class TestS3UploadFaultTolerance:
     """Tests for S3 upload fault tolerance.
 
@@ -743,14 +553,8 @@ class TestS3UploadFaultTolerance:
         """Test run_postprocess completes even when S3 upload fails entirely."""
         mixin = self._create_mixin_with_runtime(tmp_path)
 
-        # Mock _generate_rollup
-        mixin._generate_rollup = MagicMock()
-
         # Mock _run_postprocess_container to simulate S3 failure
         mixin._run_postprocess_container = MagicMock(return_value=None)
-
-        # Mock AI config
-        mixin._get_ai_analysis_config = MagicMock(return_value=None)
 
         reporter = MagicMock()
 
@@ -868,109 +672,6 @@ class TestCopyConfigToLogs:
             mixin._copy_config_to_logs()  # Should not raise
         finally:
             log_dir.chmod(0o755)
-
-
-class TestBuildPowerEnergyReport:
-    """Tests for the best-effort power_energy_report.json step in run_postprocess."""
-
-    def _create_mixin(self, log_dir):
-        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
-
-        mixin = PostProcessStageMixin()
-        mixin.config = MagicMock()
-        mixin.runtime = MagicMock()
-        mixin.runtime.log_dir = log_dir
-        return mixin
-
-    def test_skips_quietly_when_no_power_telemetry_present(self, tmp_path):
-        """No benchmark.out / no samples.csv (telemetry disabled) must not raise or write anything."""
-        mixin = self._create_mixin(tmp_path)
-
-        mixin._build_power_energy_report()  # should not raise
-
-        assert not (tmp_path / "power_energy_report.json").exists()
-
-    def test_writes_report_json_for_a_valid_run(self, tmp_path):
-        import csv
-        import json
-
-        log_dir = tmp_path
-        (log_dir / "benchmark.out").write_text(
-            "17:59:31.680 NOTICE   Phase profiling (profiling) started (runner.py:593)\n"
-            "19:00:01.681 NOTICE   Phase profiling (profiling) complete (runner.py:1162)\n"
-        )
-        conc_dir = log_dir / "agentic" / "conc_4" / "aiperf_artifacts"
-        conc_dir.mkdir(parents=True)
-        with (conc_dir / "profile_export.jsonl").open("w") as handle:
-            handle.write(
-                json.dumps(
-                    {
-                        "metadata": {
-                            "benchmark_phase": "profiling",
-                            "request_start_ns": 10_000_000_000,
-                            "request_end_ns": 20_000_000_000,
-                        }
-                    }
-                )
-                + "\n"
-            )
-        (conc_dir / "profile_export_aiperf.json").write_text(
-            json.dumps({"total_osl": {"avg": 5.0}, "total_isl": {"avg": 2.0}})
-        )
-
-        cpu_csv = log_dir / "power" / "cpu" / "samples.csv"
-        cpu_csv.parent.mkdir(parents=True)
-        with cpu_csv.open("w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "schema_version",
-                    "timestamp_unix",
-                    "hostname",
-                    "source",
-                    "sensor",
-                    "socket_id",
-                    "power_w",
-                    "total_power_w",
-                ]
-            )
-            writer.writerow([2, 9.0, "node-a", "acpi", "CPU0:cpuPowerUsageW", 0, 40.0, 40.0])
-            writer.writerow([2, 15.0, "node-a", "acpi", "CPU0:cpuPowerUsageW", 0, 44.0, 44.0])
-            writer.writerow([2, 21.0, "node-a", "acpi", "CPU0:cpuPowerUsageW", 0, 42.0, 42.0])
-
-        mixin = self._create_mixin(log_dir)
-
-        mixin._build_power_energy_report()
-
-        output_path = log_dir / "power_energy_report.json"
-        assert output_path.exists()
-        payload = json.loads(output_path.read_text())
-        assert len(payload) == 1
-        assert payload[0]["concurrency"] == 4
-        assert payload[0]["cpu_total_joules"] > 0.0
-
-    def test_run_postprocess_calls_power_energy_report(self, tmp_path):
-        """Verify run_postprocess wires this step in, without depending on real telemetry data."""
-        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
-
-        mixin = PostProcessStageMixin()
-        log_dir = tmp_path / "logs"
-        log_dir.mkdir()
-        mixin.runtime = MagicMock()
-        mixin.runtime.log_dir = log_dir
-        mixin.runtime.job_id = "12345"
-        mixin.config = MagicMock()
-
-        mixin._copy_config_to_logs = MagicMock()
-        mixin._generate_rollup = MagicMock()
-        mixin._extract_benchmark_results = MagicMock(return_value=None)
-        mixin._run_postprocess_container = MagicMock(return_value=(None, None))
-        mixin._get_ai_analysis_config = MagicMock(return_value=None)
-        mixin._build_power_energy_report = MagicMock()
-
-        mixin.run_postprocess(0)
-
-        mixin._build_power_energy_report.assert_called_once()
 
 
 class TestArchiveScript:

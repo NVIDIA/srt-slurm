@@ -42,7 +42,7 @@ uv run srtctl skill --target cursor    # .cursor/rules/srtctl.mdc
 - [Parameter Sweeps](docs/sweeps.md) - Grid searches
 - [Profiling](docs/profiling.md) - Torch/nsys profiling
 - [DSight trace explorer](docs/dsight.md) - explicitly build an offline client/worker/hardware timeline; query it through CLI or MCP
-- [Component Performance Dashboard](docs/component-dashboard.md) - the per-run HTML dashboard built from the tachometer parquet
+- [Component Performance Dashboard](docs/component-dashboard.md) - build an HTML dashboard explicitly from a retained run's artifacts
 
 ## Commands
 
