@@ -21,13 +21,15 @@ A recipe can group everything about a worker role under one block::
         args:
           tensor-parallel-size: 2
 
-instead of spreading it across ``resources.prefill_workers`` /
-``resources.gpus_per_prefill``, ``backend.prefill_environment``, and
-``backend.<engine>_config.prefill``. :func:`expand_roles` normalizes a
-``roles:`` block back into those existing internal fields before schema load.
-Independent role engines additionally populate ``role_backends`` and role
-containers populate ``role_containers``; :func:`roles_from_legacy` is the inverse, used to
-migrate a v1 recipe and to prove the two forms are equivalent.
+:func:`expand_roles` normalizes a ``roles:`` block into the internal fields the
+runtime reads (``resources.prefill_workers`` / ``resources.gpus_per_prefill``,
+``backend.prefill_environment``, ``backend.<engine>_config.prefill``, ...) before
+schema load, so no downstream consumer changes. Independent role engines
+additionally populate ``role_backends`` and role containers populate
+``role_containers``. The internal fields keep the names of the pre-2.0 recipe
+layout; a recipe that spells them out itself is rejected by
+``srtctl.core.config.require_current_schema``, and ``srtctl migrate``
+(``srtctl.core.migrate``) rewrites it into ``roles:``.
 
 Role names are ``prefill``, ``decode``, and ``agg``. The aggregated role is
 ``agg`` here (matching ``resources.agg_*``); it maps to the ``aggregated`` key in
@@ -40,15 +42,15 @@ so the intent is always spelled out. A colocated recipe must give ``gpus`` on
 both prefill and decode, and :class:`~srtctl.core.schema.SrtConfig` rejects a
 colocated layout whose workers do not fit on the prefill nodes.
 
-The engine itself is a top-level ``engine:`` key in 2.0 (a string, or a mapping
-with ``type`` plus engine-wide knobs such as vLLM's ``connector``); it maps onto
+The engine itself is a top-level ``engine:`` key (a string, or a mapping with
+``type`` plus engine-wide knobs such as vLLM's ``connector``); it maps onto
 ``backend`` for shared-engine recipes. Alternatively, every role declares its own
-``engine`` with no top-level engine. The two forms cannot be mixed.
-Per-role ``kv_events`` maps onto
-the selected backend's ``kv_events_config.<mode>``
-and per-role ``sidecar`` onto ``dynamo.sidecar`` (every role must agree); per-role
-``critical`` maps onto ``resources.<role>_critical``. A v2
-recipe therefore needs no ``backend:`` block at all; a v1 recipe still loads.
+``engine`` with no top-level engine. The two forms cannot be mixed. An engine
+mapping carries engine-wide knobs only: per-role settings have one spelling,
+``roles.<role>.env`` / ``.args`` / ``.extra_args`` / ``.kv_events``. Per-role
+``kv_events`` maps onto the selected backend's ``kv_events_config.<mode>`` and
+per-role ``sidecar`` onto ``dynamo.sidecar`` (every role must agree); per-role
+``critical`` maps onto ``resources.<role>_critical``.
 """
 
 from __future__ import annotations
@@ -79,6 +81,14 @@ _ROLE_SPEC_KEYS = frozenset(
     {"nodes", "workers", "gpus", "env", "args", "extra_args", "engine", "container", "kv_events", "sidecar", "critical"}
 )
 
+# Backend fields that hold a per-role setting. An engine mapping only carries engine-wide knobs
+# (mooncake_kv_store is one: the master is shared, so it may ride on the engine or be a service).
+_PER_ROLE_ENGINE_KEYS = frozenset(
+    {f"{mode}_{suffix}" for mode in ROLE_TO_MODE.values() for suffix in ("environment", "extra_args")}
+    | _ALL_ENGINE_CONFIG_KEYS
+    | {"kv_events_config"}
+)
+
 
 def _engine_key(config: dict[str, Any]) -> str:
     backend = config.get("backend")
@@ -94,6 +104,16 @@ def _engine_mapping(engine: Any) -> dict[str, Any]:
     raise TypeError("engine must be a string (the engine type) or a mapping with a 'type' key")
 
 
+def _reject_per_role_keys(engine_map: dict[str, Any], where: str) -> None:
+    """Refuse the pre-2.0 per-mode spellings inside an engine mapping; they live under ``roles.<role>``."""
+    per_role = sorted(set(engine_map) & _PER_ROLE_ENGINE_KEYS)
+    if per_role:
+        raise ValueError(
+            f"{where}: carries per-role settings (" + ", ".join(per_role) + "); those live under roles.<role> "
+            "(env, args, extra_args, kv_events), never on the engine"
+        )
+
+
 def expand_engine(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize engine selection into the internal job backend, in place.
 
@@ -106,6 +126,7 @@ def expand_engine(config: dict[str, Any]) -> dict[str, Any]:
     if engine is None:
         return config
     engine_map = _engine_mapping(engine)
+    _reject_per_role_keys(engine_map, "engine")
     if backend is None:
         backend = config["backend"] = {}
     if not isinstance(backend, dict):
@@ -117,8 +138,8 @@ def expand_engine(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def _legacy_targets_present(config: dict[str, Any]) -> list[str]:
-    """Internal v1 fields that would collide with a ``roles:`` block."""
+def _internal_targets_present(config: dict[str, Any]) -> list[str]:
+    """Internal fields, already set on the dict, that a ``roles:`` block would overwrite."""
     present: list[str] = []
     resources = config.get("resources")
     if isinstance(resources, dict):
@@ -169,10 +190,11 @@ def _expand_nodes(role_name: str, value: Any) -> int:
 
 
 def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a ``roles:`` block into the existing internal fields, in place.
+    """Normalize a ``roles:`` block into the internal fields, in place.
 
-    A no-op when there is no ``roles:`` key. Rejects mixing ``roles:`` with the
-    v1 ``prefill_*`` / ``<engine>_config`` fields it expands into.
+    A no-op when there is no ``roles:`` key. Rejects a dict that already carries
+    the internal ``prefill_*`` / ``<engine>_config`` fields ``roles:`` expands
+    into, so a role setting is never silently overwritten.
     """
     has_engine_default = config.get("engine") is not None or bool(config.get("backend"))
     expand_engine(config)
@@ -180,12 +202,12 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(roles, dict):
         return config
 
-    collisions = _legacy_targets_present(config)
+    collisions = _internal_targets_present(config)
     if collisions:
         raise ValueError(
             "roles: cannot be combined with the fields it expands into: "
             + ", ".join(sorted(collisions))
-            + ". Use roles: or the legacy fields, not both."
+            + ". Put the setting under roles.<role> only."
         )
 
     resources = config.setdefault("resources", {})
@@ -210,6 +232,7 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"roles.{role_name}.engine cannot be combined with a top-level engine or backend")
         if per_role_engines:
             selected = _engine_mapping(spec["engine"]) if spec.get("engine") is not None else {}
+            _reject_per_role_keys(selected, f"roles.{role_name}.engine")
             if not selected.get("type"):
                 raise ValueError(f"roles.{role_name}.engine must name a type when no top-level engine is set")
             backend = config.setdefault("role_backends", {})[role_name] = selected
@@ -268,113 +291,3 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
         config["backend"] = copy.deepcopy(config["role_backends"][serving_role])
     config.pop("roles", None)
     return config
-
-
-def roles_from_legacy(config: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of ``config`` with legacy role fields folded into a ``roles:`` block.
-
-    The inverse of :func:`expand_roles`, used by ``srtctl migrate`` and by tests
-    that assert the two forms are equivalent. Only non-empty roles appear.
-    """
-    result = copy.deepcopy(config)
-    resources: dict[str, Any] = result["resources"] if isinstance(result.get("resources"), dict) else {}
-    backend: dict[str, Any] = result["backend"] if isinstance(result.get("backend"), dict) else {}
-    engine_key = _engine_key(result)
-    engine_cfg: dict[str, Any] = backend[engine_key] if isinstance(backend.get(engine_key), dict) else {}
-
-    roles: dict[str, dict[str, Any]] = {}
-    for role_name in ROLE_NAMES:
-        mode = ROLE_TO_MODE[role_name]
-        spec: dict[str, Any] = {}
-        if f"{role_name}_nodes" in resources:
-            nodes = resources[f"{role_name}_nodes"]
-            spec["nodes"] = COLOCATE if role_name == "decode" and nodes == 0 else nodes
-        if f"{role_name}_workers" in resources:
-            spec["workers"] = resources[f"{role_name}_workers"]
-        if f"gpus_per_{role_name}" in resources:
-            spec["gpus"] = resources[f"gpus_per_{role_name}"]
-        if f"{role_name}_critical" in resources:
-            spec["critical"] = resources[f"{role_name}_critical"]
-        if backend.get(f"{mode}_environment"):
-            spec["env"] = backend[f"{mode}_environment"]
-        if engine_cfg.get(mode):
-            spec["args"] = engine_cfg[mode]
-        if backend.get(f"{mode}_extra_args"):
-            spec["extra_args"] = backend[f"{mode}_extra_args"]
-        if spec:
-            roles[role_name] = spec
-
-    role_backends = result.pop("role_backends", {})
-    for role_name, selected in role_backends.items():
-        mode = ROLE_TO_MODE[role_name]
-        spec = roles.setdefault(role_name, {})
-        selected_key = _engine_key({"backend": selected})
-        mode_args = selected.get(selected_key, {})
-        if isinstance(mode_args, dict) and mode in mode_args:
-            spec["args"] = mode_args.pop(mode)
-            if not mode_args:
-                selected.pop(selected_key)
-        for key, role_key in ((f"{mode}_environment", "env"), (f"{mode}_extra_args", "extra_args")):
-            if key in selected:
-                spec[role_key] = selected.pop(key)
-        events = selected.get("kv_events_config")
-        if isinstance(events, dict) and mode in events:
-            spec["kv_events"] = events.pop(mode)
-            if not events:
-                selected.pop("kv_events_config")
-        spec["engine"] = selected["type"] if set(selected) == {"type"} else selected
-    for role_name, container in result.pop("role_containers", {}).items():
-        roles.setdefault(role_name, {})["container"] = container
-
-    kv_events_config = backend.get("kv_events_config")
-    if isinstance(kv_events_config, dict):
-        for role_name in ROLE_NAMES:
-            mode = ROLE_TO_MODE[role_name]
-            if mode in kv_events_config:
-                roles.setdefault(role_name, {})["kv_events"] = kv_events_config[mode]
-        backend.pop("kv_events_config", None)
-    elif kv_events_config is True:
-        # A bare `true` enables prefill and decode everywhere, and aggregated on SGLang.
-        covered = ("prefill", "decode", "agg") if backend.get("type", "sglang") == "sglang" else ("prefill", "decode")
-        for role_name in covered:
-            if role_name in roles:
-                roles[role_name]["kv_events"] = True
-        backend.pop("kv_events_config", None)
-
-    dynamo = result.get("dynamo") if isinstance(result.get("dynamo"), dict) else None
-    if dynamo is not None and dynamo.get("sidecar") is True and roles:
-        for spec in roles.values():
-            spec["sidecar"] = True
-        dynamo.pop("sidecar")
-
-    if not roles:
-        return result
-
-    # Strip the folded fields from resources/backend.
-    for role_name in ROLE_NAMES:
-        mode = ROLE_TO_MODE[role_name]
-        for key in (f"{role_name}_nodes", f"{role_name}_workers", f"gpus_per_{role_name}", f"{role_name}_critical"):
-            resources.pop(key, None)
-        backend.pop(f"{mode}_environment", None)
-        backend.pop(f"{mode}_extra_args", None)
-        if isinstance(engine_cfg, dict):
-            engine_cfg.pop(mode, None)
-    if isinstance(engine_cfg, dict) and not engine_cfg:
-        backend.pop(engine_key, None)
-    if isinstance(resources, dict) and not resources:
-        result.pop("resources", None)
-
-    result["roles"] = roles
-    # The engine moves to the top level: a bare string when nothing else is left in backend.
-    if isinstance(result.get("backend"), dict):
-        remaining = dict(result["backend"])
-        engine_type = remaining.pop("type", None)
-        if engine_type is not None or remaining:
-            engine = engine_type if not remaining else {"type": engine_type, **remaining}
-            if role_backends:
-                for spec in roles.values():
-                    spec.setdefault("engine", copy.deepcopy(engine))
-            else:
-                result["engine"] = engine
-        result.pop("backend", None)
-    return result

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 from marshmallow import ValidationError
-from test_observability import BASE_CONFIG
+from test_observability import BASE_CONFIG, _recipe
 from test_slurm import _remap_worker_mixin
 
 from srtctl.core.observability_nsys import wrap_observability_nsys
@@ -57,18 +57,20 @@ def test_explicit_profiling_takes_precedence(profiling):
 
 
 def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
-    cfg = config(
-        observability={
-            "enabled": True,
-            "nsys": {
-                "capture_window": "including_startup",
-                "report_timeout_secs": 45,
-                "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
-            },
-        }
-    )
+    observability = {
+        "enabled": True,
+        "nsys": {
+            "capture_window": "including_startup",
+            "report_timeout_secs": 45,
+            "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
+        },
+    }
+    cfg = config(observability=observability)
+    # The YAML loaders read recipes, not schema dumps: spell the same job as a schema-2 recipe.
+    data = deepcopy(BASE_CONFIG)
+    data.update(backend={"type": "trtllm"}, observability=observability, benchmark={"type": "manual"})
     path = tmp_path / "recipe.yaml"
-    path.write_text(yaml.safe_dump(SrtConfig.Schema().dump(cfg)))
+    path.write_text(yaml.safe_dump(_recipe(data)))
     loaded = SrtConfig.from_yaml(path)
     assert loaded.observability.nsys == cfg.observability.nsys
     assert loaded.benchmark.type == "manual"

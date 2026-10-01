@@ -55,10 +55,12 @@ class TestMockerConfigLoading:
     def test_minimal_mocker_config(self):
         """Minimal mocker configuration loads correctly."""
         data = {
+            "schema": 2,
             "name": "test-mocker",
             "model": {"path": "hf:Qwen/Qwen3-0.6B", "container": "test", "precision": "fp16"},
-            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {"type": "mocker"},
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "engine": "mocker",
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)
@@ -91,10 +93,11 @@ class TestMockerConfigLoading:
     def test_mocker_with_custom_fields(self):
         """Custom fields deserialize correctly."""
         data = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "test", "container": "test", "precision": "fp16"},
-            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "engine": {
                 "type": "mocker",
                 "engine_type": "sglang",
                 "speedup_ratio": 50.0,
@@ -103,6 +106,7 @@ class TestMockerConfigLoading:
                 "kv_cache_dtype": "fp8_e4m3",
                 "enable_prefix_caching": False,
             },
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)
@@ -121,15 +125,15 @@ class TestMockerConfigLoading:
     def test_mocker_with_per_mode_config(self):
         """Per-mode mocker_config deserializes correctly."""
         data = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "test", "container": "test", "precision": "fp16"},
-            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {
-                "type": "mocker",
-                "mocker_config": {
-                    "prefill": {"max-num-seqs": 512},
-                    "decode": {"max-num-seqs": 128},
-                },
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "engine": "mocker",
+            "roles": {
+                "prefill": {"args": {"max-num-seqs": 512}},
+                "decode": {"args": {"max-num-seqs": 128}},
+                "agg": {"nodes": 1, "workers": 1},
             },
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:

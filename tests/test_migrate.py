@@ -1,7 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the v1 -> v2 layout migrator and the golden-equality check."""
+"""Tests for the v1 -> v2 layout migrator.
+
+The loader no longer reads the v1 layout, so the migrator's contract is: a v1
+document is rejected by the loader, and the migrated document loads. Every
+fixture here asserts both.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +17,30 @@ import pytest
 import yaml
 
 from srtctl.cli import submit as submit_cli
-from srtctl.core.migrate import migrate_recipe_text, verify_migration_text
+from srtctl.core.config import generate_override_configs, legacy_keys_present, resolve_config_with_defaults
+from srtctl.core.migrate import migrate_recipe_text
+from srtctl.core.schema import SrtConfig
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
+
+
+def _loads(text: str) -> list[SrtConfig]:
+    """Resolve and load every concrete recipe a document holds, exactly as the loader does."""
+    raw = yaml.safe_load(text)
+    variants = generate_override_configs(raw) if "base" in raw else [("", raw)]
+    schema = SrtConfig.Schema()
+    return [schema.load(resolve_config_with_defaults(cfg, None)) for _, cfg in variants]
+
+
+def _migrated_loads_and_v1_does_not(v1_text: str) -> list[SrtConfig]:
+    with pytest.raises(ValueError, match="srtctl migrate"):
+        _loads(v1_text)
+    migrated = migrate_recipe_text(v1_text).text
+    raw = yaml.safe_load(migrated)
+    for _, variant in generate_override_configs(raw) if "base" in raw else [("", raw)]:
+        assert legacy_keys_present(variant) == [], legacy_keys_present(variant)
+    return _loads(migrated)
+
 
 LEGACY = """\
 # A v1 recipe with everything the migrator folds.
@@ -95,6 +121,13 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
     keys = list(doc)
     assert keys.index("roles") == keys.index("engine") + 1
 
+    (config,) = _migrated_loads_and_v1_does_not(LEGACY)
+    assert config.resources.num_prefill == 2
+    assert config.frontend.orchestrator_placement == "first_decode"
+    assert config.infra.etcd_nats_dedicated_node is True
+    assert config.dynamo.hash == "abc1234"
+    assert config.benchmark.client_placement == "last_decode"
+
 
 def test_migrate_spells_shared_node_decode_as_colocate() -> None:
     # 1 node x 8 GPUs: 1 prefill x 4 + 1 decode x 4 fits on the shared node
@@ -110,9 +143,10 @@ def test_migrate_spells_shared_node_decode_as_colocate() -> None:
     assert list(doc["roles"]["decode"])[:3] == ["nodes", "workers", "gpus"]
     assert "decode_nodes" not in doc.get("resources", {})
     assert any("nodes: colocate" in note for note in result.notes)
-    # and the migrated document resolves to the same config as the v1 text
-    verified = verify_migration_text(legacy)
-    assert verified.status == "ok", verified.detail
+    (config,) = _migrated_loads_and_v1_does_not(legacy)
+    assert config.resources.decode_nodes == 0
+    assert config.resources.gpus_per_prefill == 4
+    assert config.resources.gpus_per_decode == 4
 
 
 def test_migrate_is_idempotent_and_layout_folds_apply_to_schema_2_documents() -> None:
@@ -121,9 +155,13 @@ def test_migrate_is_idempotent_and_layout_folds_apply_to_schema_2_documents() ->
     assert not twice.changed
     assert twice.notes == ()
 
+    # Declaring schema: 2 on a v1 document does not make it load; migrate folds it anyway.
     legacy_v2 = "schema: 2\n" + LEGACY.split("\n", 1)[1]
+    with pytest.raises(ValueError, match=r"pre-2\.0 \(v1\) layout"):
+        _loads(legacy_v2)
     folded = migrate_recipe_text(legacy_v2)
     assert "roles" in yaml.safe_load(folded.text)
+    assert len(_loads(folded.text)) == 1
 
 
 def test_migrate_override_file_folds_every_variant() -> None:
@@ -170,10 +208,11 @@ zip_override_ctx:
     assert doc["base"]["engine"] == "sglang"
     assert doc["override_tp2"]["roles"]["agg"] == {"workers": 1, "gpus": 2, "args": {"tensor-parallel-size": 2}}
     assert doc["zip_override_ctx"]["roles"]["agg"] == {"args": {"context-length": [2048, 8192]}}
-    # And the variants still combine: a partially migrated file would collide on roles vs legacy fields.
-    verified = verify_migration_text(text)
-    assert verified.status == "ok", verified.detail
-    assert verified.variants == 3
+    # And the variants still combine: a partially migrated file would collide on roles vs internal fields.
+    configs = _migrated_loads_and_v1_does_not(text)
+    assert len(configs) == 3
+    assert configs[0].resources.num_agg == 1 and configs[0].resources.gpus_per_agg == 2
+    assert [c.backend.sglang_config.aggregated["context-length"] for c in configs[1:]] == [2048, 8192]
 
 
 def test_infra_false_is_dropped_and_payload_becomes_a_nats_option() -> None:
@@ -193,6 +232,8 @@ def test_infra_under_a_static_frontend_is_not_turned_into_services() -> None:
     assert "services" not in doc
     assert doc["infra"] == {"etcd_nats_dedicated_node": True}
     assert any("left as is" in note for note in result.notes)
+    # This is the one case the migrator cannot finish: the leftover infra block is still rejected at load.
+    assert legacy_keys_present(doc) == ["infra"]
 
     doc = yaml.safe_load(migrate_recipe_text(head + "infra: { nats_max_payload_mb: 8 }\n").text)
     assert "infra" not in doc and "services" not in doc
@@ -235,9 +276,9 @@ override_deleted:
     ]
     assert doc["override_deleted"]["services"] == doc["override_shared"]["services"]
     assert "infra" not in doc["override_deleted"]
-    verified = verify_migration_text(text)
-    assert verified.status == "ok", verified.detail
-    assert verified.variants == 2  # the two override variants; base alone is not a job
+    configs = _migrated_loads_and_v1_does_not(text)
+    assert len(configs) == 2  # the two override variants; base alone is not a job
+    assert all(c.infra.etcd_nats_dedicated_node is False for c in configs)
 
 
 MOONCAKE_LEGACY = """\
@@ -290,8 +331,10 @@ def test_mooncake_kv_store_becomes_a_master_service_and_role_env() -> None:
     assert doc["roles"]["prefill"]["env"] == {"MOONCAKE_GLOBAL_SEGMENT_SIZE": "4gb", "MOONCAKE_PROTOCOL": "rdma"}
     assert doc["roles"]["decode"]["env"] == {"MOONCAKE_PROTOCOL": "rdma", "MOONCAKE_GLOBAL_SEGMENT_SIZE": "4gb"}
     assert "# the store owns the segments" in result.text
-    verified = verify_migration_text(MOONCAKE_LEGACY)
-    assert verified.status == "ok", verified.detail
+    (config,) = _migrated_loads_and_v1_does_not(MOONCAKE_LEGACY)
+    assert config.backend.mooncake_kv_store is not None
+    assert config.backend.mooncake_kv_store.container == "mooncake"
+    assert config.backend.prefill_environment["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "4gb"
 
 
 def test_dynamo_version_and_wheel_and_top_of_tree() -> None:
@@ -303,40 +346,17 @@ def test_dynamo_version_and_wheel_and_top_of_tree() -> None:
         "source": {"wheel": "1.5.0.dev1"}
     }
     result = migrate_recipe_text(head + "dynamo:\n  top_of_tree: true\n")
-    assert yaml.safe_load(result.text)["dynamo"] == {"top_of_tree": True}
+    doc = yaml.safe_load(result.text)
+    assert doc["dynamo"] == {"top_of_tree": True}
     assert any("top_of_tree left as is" in note for note in result.notes)
+    assert legacy_keys_present(doc) == []  # still a recipe key: the migrated document loads
 
 
-def test_verify_reports_identical_and_mismatched() -> None:
-    ok = verify_migration_text(LEGACY)
-    assert ok.status == "ok", ok.detail
-    assert ok.variants == 1
-
-    # A recipe the v1 loader itself rejects is skipped, not counted against the migrator.
-    skipped = verify_migration_text(
-        "name: x\nmodel:\n  path: /m\n  container: /c\n  precision: bf16\nbenchmark:\n  type: nope\n"
-    )
-    assert skipped.status == "skipped"
-    assert "does not load" in skipped.detail
-
-
-def test_every_example_is_golden() -> None:
+def test_examples_are_already_current() -> None:
+    """Every checked-in example is a schema 2 document with nothing left for the migrator to fold."""
     for path in sorted(EXAMPLES_DIR.rglob("*.yaml")):
-        outcome = verify_migration_text(path.read_text(), path)
-        assert outcome.status == "ok", f"{path}: {outcome.detail}"
-
-
-def test_cli_verify_directory(tmp_path: Path, monkeypatch, capsys) -> None:
-    (tmp_path / "a.yaml").write_text(LEGACY)
-    (tmp_path / "sub").mkdir()
-    (tmp_path / "sub" / "b.yaml").write_text(LEGACY.replace("name: legacy", "name: other"))
-    monkeypatch.setattr(sys, "argv", ["srtctl", "migrate", "--verify", "-f", str(tmp_path)])
-    with pytest.raises(SystemExit) as exc:
-        submit_cli.main()
-    assert exc.value.code == 0
-    out = capsys.readouterr().out
-    assert "2 identical, 0 mismatched" in out
-    assert "a.yaml" in out and "b.yaml" in out
+        result = migrate_recipe_text(path.read_text())
+        assert not result.changed, f"{path}: {result.notes}"
 
 
 def test_cli_in_place_directory(tmp_path: Path, monkeypatch) -> None:
@@ -351,10 +371,6 @@ def test_cli_in_place_directory(tmp_path: Path, monkeypatch) -> None:
 
 def test_cli_in_place_directory_continues_past_an_unreadable_recipe(tmp_path: Path, monkeypatch, capsys) -> None:
     """One recipe with duplicate keys must not stop the rest of the directory from migrating."""
-    import sys
-
-    from srtctl.cli import submit as submit_cli
-
     good = tmp_path / "good.yaml"
     good.write_text(LEGACY)
     bad = tmp_path / "bad.yaml"
@@ -386,8 +402,8 @@ def test_custom_benchmark_with_power_telemetry_keeps_its_concurrencies() -> None
     doc = yaml.safe_load(result.text)
     assert doc["benchmark"] == {"type": "custom", "command": "bash run.sh", "concurrencies": "4"}
     assert "removed benchmark.use_chat_template (unused by type custom)" in result.notes
-    verified = verify_migration_text(text)
-    assert verified.status == "ok", verified.detail
+    (config,) = _migrated_loads_and_v1_does_not(text)
+    assert config.benchmark.get_concurrency_list() == [4]
 
 
 def test_migrate_folds_worker_criticality_into_roles() -> None:
@@ -399,5 +415,6 @@ def test_migrate_folds_worker_criticality_into_roles() -> None:
     assert doc["roles"]["decode"]["critical"] is False
     assert "critical" not in doc["roles"]["prefill"]
     assert "decode_critical" not in doc.get("resources", {})
-    verified = verify_migration_text(legacy)
-    assert verified.status == "ok", verified.detail
+    (config,) = _migrated_loads_and_v1_does_not(legacy)
+    assert config.resources.worker_critical("decode") is False
+    assert config.resources.worker_critical("prefill") is True

@@ -12,7 +12,7 @@ from marshmallow import ValidationError
 
 from srtctl.backends import SGLangProtocol, VLLMProtocol
 from srtctl.cli.do_sweep import SweepOrchestrator
-from srtctl.core.roles import expand_roles, roles_from_legacy
+from srtctl.core.roles import expand_roles
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import NodePortAllocator
@@ -75,8 +75,11 @@ def test_shared_and_role_engines_are_rejected_at_preflight(shared_engine):
 
     data = recipe()
     data["engine"] = shared_engine
-    with pytest.raises(ValueError, match="cannot be combined with a top-level engine"):
-        preflight_config_variants(data, cluster_config=None)
+    # Preflight reports a recipe the loader rejects as a finding on that variant, not as a crash.
+    (result,) = preflight_config_variants(data, cluster_config=None)
+    assert not result.ok
+    assert [issue.code for issue in result.errors] == ["recipe-rejected"]
+    assert "cannot be combined with a top-level engine" in result.errors[0].message
 
 
 def test_explicit_role_engines_do_not_inherit_sibling_options():
@@ -111,13 +114,9 @@ def test_roles_without_any_engine_share_the_default_backend():
     assert config.backend_for_role("prefill") is config.backend_for_role("decode")
 
 
-def test_role_mapping_and_containers_round_trip():
+def test_role_mapping_and_containers_survive_a_schema_round_trip():
     expanded = expand_roles(recipe())
-    migrated = roles_from_legacy(expanded)
-    assert "role_backends" not in migrated
-    assert "role_containers" not in migrated
-    assert "engine" not in migrated
-    assert expand_roles(migrated) == expanded
+    assert set(expanded["role_backends"]) == {"prefill", "decode"}
     config = load(recipe())
     dumped = SrtConfig.Schema().dump(config)
     reloaded = SrtConfig.Schema().load(dumped)

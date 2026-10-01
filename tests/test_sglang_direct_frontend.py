@@ -11,8 +11,8 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.core.config import apply_schema1_frontend_rename, resolve_config_with_defaults
-from srtctl.core.migrate import migrate_recipe_text, verify_migration_text
+from srtctl.core.config import resolve_config_with_defaults
+from srtctl.core.migrate import migrate_recipe_text
 from srtctl.core.schema import SrtConfig
 from srtctl.frontends import SGLangFrontend, SGLangRouterFrontend, get_frontend
 
@@ -72,16 +72,15 @@ def test_router_type_still_covers_replicas_and_disagg() -> None:
     assert isinstance(get_frontend(cfg.frontend.type), SGLangRouterFrontend)
 
 
-def test_schema1_recipe_keeps_the_router_meaning() -> None:
+def test_a_recipe_without_schema_is_rejected_not_reinterpreted() -> None:
+    """Schema 1 spelled the router `sglang`; the loader no longer guesses, it points at migrate."""
     v1 = copy.deepcopy(_recipe(roles={"agg": {"nodes": 1, "workers": 2, "gpus": 1}}))
-    v1.pop("schema")  # absent schema is 1
-    assert apply_schema1_frontend_rename(copy.deepcopy(v1))["frontend"]["type"] == "sglang-router"
-    cfg = _load(v1)
-    assert cfg.frontend.type == "sglang-router"
-    # explicit schema: 1 behaves the same; schema: 2 does not get the rename
+    v1.pop("schema")
+    with pytest.raises(ValueError, match="no `schema:` key.*srtctl migrate"):
+        _load(v1)
     v1["schema"] = 1
-    assert _load(v1).frontend.type == "sglang-router"
-    assert apply_schema1_frontend_rename(_recipe())["frontend"]["type"] == "sglang"
+    with pytest.raises(ValueError, match="schema 1 is not supported"):
+        _load(v1)
 
 
 V1_TEXT = """\
@@ -111,14 +110,16 @@ benchmark:
 """
 
 
-def test_migrate_renames_the_router_and_verifies_identical() -> None:
+def test_migrate_renames_the_router_and_the_result_loads_as_the_router() -> None:
     result = migrate_recipe_text(V1_TEXT)
     doc = yaml.safe_load(result.text)
     assert doc["schema"] == 2
     assert doc["frontend"]["type"] == "sglang-router"
     assert any("frontend.type: sglang -> sglang-router" in note for note in result.notes)
-    verified = verify_migration_text(V1_TEXT)
-    assert verified.status == "ok", verified.detail
+    cfg = _load(doc)
+    assert cfg.frontend.type == "sglang-router"
+    assert cfg.resources.num_agg == 2
+    assert isinstance(get_frontend(cfg.frontend.type), SGLangRouterFrontend)
 
 
 def test_migrate_leaves_a_schema2_direct_recipe_alone() -> None:

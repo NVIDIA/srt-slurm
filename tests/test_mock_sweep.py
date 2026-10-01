@@ -19,47 +19,42 @@ import yaml
 from srtctl.mock import MockOptions, run_mock_sweep
 
 MINIMAL_CONFIG = {
+    "schema": 2,
     "name": "mock-smoke",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "agg_nodes": 1,
-        "agg_workers": 1,
-    },
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "roles": {"agg": {"nodes": 1, "workers": 1}},
     "benchmark": {"type": "custom", "command": "echo fake-benchmark"},
 }
 
 TRTLLM_AGGREGATE_CONFIG = {
+    "schema": 2,
     "name": "mock-trtllm-aggregate-sa-bench",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "gb300",
-        "gpus_per_node": 4,
-        "agg_nodes": 2,
-        "agg_workers": 1,
-        "gpus_per_agg": 8,
-    },
+    "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
     "frontend": {
         "type": "trtllm_serve",
         "enable_multiple_frontends": False,
     },
-    "backend": {
-        "type": "trtllm",
-        "trtllm_config": {
-            "aggregated": {
+    "engine": "trtllm",
+    "roles": {
+        "agg": {
+            "nodes": 2,
+            "workers": 1,
+            "gpus": 8,
+            "args": {
                 "tensor_parallel_size": 8,
                 "moe_expert_parallel_size": 8,
                 "pipeline_parallel_size": 1,
-            }
+            },
         },
     },
     "benchmark": {

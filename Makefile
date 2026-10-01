@@ -1,4 +1,4 @@
-.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check snapshots snapshots-check golden-check tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
+.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check snapshots snapshots-check tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
@@ -22,11 +22,11 @@ test:
 test-cov:
 	uv run pytest tests/ --cov=srtctl --cov-report=term-missing --cov-report=html
 
-# Regenerate docs/schema-reference.md (2.0) and docs/legacy-v1.md (v1) from the code
+# Regenerate docs/schema-reference.md from the code
 schema-docs:
 	uv run srtctl schema-docs
 
-# Fail if docs/schema-reference.md or docs/legacy-v1.md is stale (also enforced by CI and tests/test_schema_docs.py)
+# Fail if docs/schema-reference.md is stale (also enforced by CI and tests/test_schema_docs.py)
 schema-docs-check:
 	uv run srtctl schema-docs --check
 
@@ -38,16 +38,6 @@ snapshots-check:
 
 # Run lint + tests in one command
 check: lint schema-docs-check test
-
-# Golden equality: migrate every known v1 recipe in memory and prove the resolved
-# config is unchanged. Extracts the historical recipes from the last commit that
-# carried recipes/ (same corpus as the CI job).
-GOLDEN_RECIPES_COMMIT ?= e6e9d8b9bee3e6c85e6f121eb4dacd88d8ca1d2c
-golden-check:
-	@rm -rf /tmp/srt-golden && mkdir -p /tmp/srt-golden
-	@git archive $(GOLDEN_RECIPES_COMMIT) recipes | tar -x -C /tmp/srt-golden
-	uv run srtctl migrate --verify -f examples -f /tmp/srt-golden/recipes
-	@echo "✓ All checks passed"
 
 tachometer-scraper:
 	cargo build --release --locked --bin tachometer-scraper

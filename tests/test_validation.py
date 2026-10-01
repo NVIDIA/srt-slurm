@@ -248,27 +248,21 @@ class TestPreflightConfigVariants:
         container_file = tmp_path / "container.sqsh"
         container_file.write_text("sqsh")
         (tmp_path / "srtslurm.yaml").write_text(
-            "model_paths:\n"
-            f"  qwen32b: {model_dir}\n"
-            "containers:\n"
-            f"  sglang-latest: {container_file}\n"
+            f"model_paths:\n  qwen32b: {model_dir}\ncontainers:\n  sglang-latest: {container_file}\n"
         )
         monkeypatch.chdir(tmp_path)
 
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "host-side-ignored",
                 "model": {
                     "path": "qwen32b",
                     "container": "sglang-latest",
                     "precision": "bf16",
                 },
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "agg_nodes": 1,
-                    "agg_workers": 1,
-                },
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {"agg": {"nodes": 1, "workers": 1}},
             },
         )
 
@@ -284,19 +278,17 @@ class TestPreflightConfigVariants:
 
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "ok",
                 "model": {
                     "path": "qwen32b",
                     "container": "sglang-latest",
                     "precision": "bf16",
                 },
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
             },
             cluster_config={
@@ -316,18 +308,15 @@ class TestPreflightConfigVariants:
 
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "bad-model",
                 "model": {
                     "path": "Qwen/Qwen3-32B",
                     "container": "sglang-latest",
                     "precision": "bf16",
                 },
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                },
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {"prefill": {"nodes": 1}, "decode": {"nodes": 1}},
             },
             cluster_config={"containers": {"sglang-latest": str(container_file)}},
         )
@@ -346,19 +335,17 @@ class TestPreflightConfigVariants:
 
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "docker-uri",
                 "model": {
                     "path": str(model_dir),
                     "container": "nvcr.io/fake:latest",
                     "precision": "bf16",
                 },
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
             },
         )
@@ -376,19 +363,17 @@ class TestPreflightConfigVariants:
 
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "hf-model",
                 "model": {
                     "path": "hf:meta-llama/Llama-3.1-8B",
                     "container": str(container_file),
                     "precision": "bf16",
                 },
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
             },
         )
@@ -397,26 +382,22 @@ class TestPreflightConfigVariants:
         assert results[0].model.source == "huggingface"
         assert results[0].model.resolved == "hf:meta-llama/Llama-3.1-8B"
 
-    def test_preflight_accepts_hf_model_and_docker_container_together(
-        self, tmp_path
-    ):
+    def test_preflight_accepts_hf_model_and_docker_container_together(self, tmp_path):
         """The full AIB CI shape: ``hf:`` model + Docker URI container, no
         srtslurm.yaml aliases registered."""
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "aib-ci-shape",
                 "model": {
                     "path": "hf:nvidia/Kimi-K2.5-NVFP4",
                     "container": "nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.8.1",
                     "precision": "fp4",
                 },
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
             },
         )
@@ -426,9 +407,7 @@ class TestPreflightConfigVariants:
         assert results[0].container.source == "container-uri"
         assert results[0].errors == []
 
-    def test_preflight_still_rejects_typo_local_path_without_colon(
-        self, tmp_path
-    ):
+    def test_preflight_still_rejects_typo_local_path_without_colon(self, tmp_path):
         """A bare relative string with no ``:`` and no leading ``./`` is NOT
         a Docker URI — runtime.py would treat it as an image name too, but
         if it doesn't even look URI-shaped, that's almost certainly a typo
@@ -439,27 +418,23 @@ class TestPreflightConfigVariants:
 
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "typo",
                 "model": {
                     "path": str(model_dir),
                     "container": "missing-file",  # no ':' → not URI shape
                     "precision": "bf16",
                 },
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
             },
         )
 
         assert results[0].ok is False
-        assert any(
-            issue.code == "container-not-available" for issue in results[0].errors
-        )
+        assert any(issue.code == "container-not-available" for issue in results[0].errors)
 
     def test_tachometer_aliases_resolve_and_pass_when_files_exist(self, tmp_path):
         model_dir = tmp_path / "model"
@@ -473,15 +448,13 @@ class TestPreflightConfigVariants:
 
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "tachometer-ok",
                 "model": {"path": "qwen32b", "container": "sglang-latest", "precision": "bf16"},
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
                 "observability": {
                     "enabled": True,
@@ -516,15 +489,13 @@ class TestPreflightConfigVariants:
 
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "tachometer-bad",
                 "model": {"path": str(model_dir), "container": str(container_file), "precision": "bf16"},
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
                 "observability": {
                     "enabled": True,
@@ -549,9 +520,11 @@ class TestPreflightConfigVariants:
         container_file.write_text("sqsh")
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "native-tachometer",
                 "model": {"path": str(model_dir), "container": str(container_file), "precision": "bf16"},
-                "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {"agg": {"nodes": 1, "workers": 1}},
                 "observability": {
                     "enabled": True,
                     "tachometer": {"enabled": True},
@@ -564,15 +537,13 @@ class TestPreflightConfigVariants:
 
     def _dcgm_power_recipe(self, model_dir, container_file, dcgm_image):
         return {
+            "schema": 2,
             "name": "dcgm-power",
             "model": {"path": str(model_dir), "container": str(container_file), "precision": "bf16"},
-            "resources": {
-                "gpu_type": "gb200",
-                "gpus_per_node": 4,
-                "prefill_nodes": 1,
-                "decode_nodes": 1,
-                "prefill_workers": 1,
-                "decode_workers": 1,
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "roles": {
+                "prefill": {"nodes": 1, "workers": 1},
+                "decode": {"nodes": 1, "workers": 1},
             },
             "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
             "telemetry": {
@@ -619,7 +590,9 @@ class TestPreflightConfigVariants:
         container_file.write_text("sqsh")
 
         results = preflight_config_variants(
-            self._dcgm_power_recipe(model_dir, container_file, "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04")
+            self._dcgm_power_recipe(
+                model_dir, container_file, "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04"
+            )
         )
 
         assert results[0].ok is True
@@ -647,15 +620,13 @@ class TestPreflightConfigVariants:
 
         results = preflight_config_variants(
             {
+                "schema": 2,
                 "name": "telemetry-off",
                 "model": {"path": str(model_dir), "container": str(container_file), "precision": "bf16"},
-                "resources": {
-                    "gpu_type": "gb200",
-                    "gpus_per_node": 4,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
                 "telemetry": {
                     "enabled": False,

@@ -1,21 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the per-type benchmark field split: schema 2 rejects stray fields, schema 1 warns."""
+"""Tests for the per-type benchmark field split: a field the type never reads is rejected."""
 
 from __future__ import annotations
 
 import dataclasses
-import logging
 
 import pytest
 import yaml
 
 from srtctl import benchmarks
 from srtctl.benchmarks.base import SHARED_BENCHMARK_FIELDS, benchmark_config_fields
+from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.schema import BenchmarkConfig, SrtConfig
 
 HEAD = """
+schema: 2
 name: fields-test
 model:
   path: /m
@@ -24,18 +25,16 @@ model:
 resources:
   gpu_type: h100
   gpus_per_node: 8
-  agg_nodes: 1
-  agg_workers: 1
-backend:
-  type: sglang
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 1
 """
 
 
-def _load(benchmark: str, schema: int | None = 2) -> SrtConfig:
-    text = HEAD + benchmark
-    if schema is not None:
-        text = f"schema: {schema}\n" + text
-    return SrtConfig.Schema().load(yaml.safe_load(text))
+def _load(benchmark: str) -> SrtConfig:
+    return SrtConfig.Schema().load(resolve_config_with_defaults(yaml.safe_load(HEAD + benchmark), None))
 
 
 def test_every_declared_field_exists_on_benchmark_config() -> None:
@@ -75,13 +74,13 @@ def test_each_type_accepts_the_fields_its_recipes_use() -> None:
 
 def test_shared_fields_are_accepted_for_every_type() -> None:
     config = _load(
-        "benchmark:\n  type: gsm8k\n  num_examples: 5\n  client_placement: last_decode\n"
+        "benchmark:\n  type: gsm8k\n  num_examples: 5\n  placement:\n    node: last_decode\n"
         "  aiperf_args:\n    workers-max: 8\n"
     )
     assert config.benchmark.client_placement == "last_decode"
 
 
-def test_schema_2_rejects_a_field_the_type_does_not_use() -> None:
+def test_a_field_the_type_does_not_use_is_rejected() -> None:
     with pytest.raises(ValueError, match="benchmark.type 'gsm8k' does not use isl, osl") as exc:
         _load("benchmark:\n  type: gsm8k\n  num_examples: 5\n  isl: 1024\n  osl: 128\n")
     assert "fields it accepts" in str(exc.value)
@@ -100,12 +99,11 @@ def test_concurrencies_is_shared_because_power_telemetry_reads_it() -> None:
     assert config.benchmark.get_concurrency_list() == [4]
 
 
-def test_schema_1_only_warns(caplog) -> None:
-    with caplog.at_level(logging.WARNING, logger="srtctl.core.schema"):
-        config = _load("benchmark:\n  type: gsm8k\n  num_examples: 5\n  isl: 1024\n", schema=None)
-    assert config.benchmark.isl == 1024
-    assert "benchmark.type 'gsm8k' does not use isl" in caplog.text
-    assert "schema: 2 recipe would be rejected" in caplog.text
+def test_there_is_no_lenient_schema_1_path() -> None:
+    """A recipe without schema: 2 is rejected before the benchmark fields are ever looked at."""
+    text = HEAD.replace("schema: 2\n", "") + "benchmark:\n  type: gsm8k\n  num_examples: 5\n  isl: 1024\n"
+    with pytest.raises(ValueError, match="no `schema:` key"):
+        resolve_config_with_defaults(yaml.safe_load(text), None)
 
 
 def test_defaults_never_count_as_set() -> None:

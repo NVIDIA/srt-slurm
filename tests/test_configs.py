@@ -844,9 +844,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "sglang", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
             "frontend": {"nginx_container": "nginx"},
         }
 
@@ -866,9 +868,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/direct/container.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
             "frontend": {"nginx_container": "/direct/nginx.sqsh"},
         }
 
@@ -888,9 +892,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
             "frontend": {"nginx_container": "nginx"},
         }
 
@@ -903,9 +909,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
             "frontend": {},
         }
 
@@ -924,9 +932,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
         }
 
         resolved = resolve_config_with_defaults(
@@ -944,9 +954,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
             "sbatch_directives": {"exclude": "gpu-9"},
         }
 
@@ -965,9 +977,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
         }
 
         resolved = resolve_config_with_defaults(
@@ -982,9 +996,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
             "health_check": {"max_attempts": 720, "interval_seconds": 10},
         }
 
@@ -1000,9 +1016,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
         }
 
         resolved = resolve_config_with_defaults(
@@ -1016,9 +1034,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "sglang", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
             "telemetry": {
                 "enabled": True,
                 "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
@@ -1039,9 +1059,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "sglang", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
             "observability": {
                 "enabled": True,
                 "tachometer": {
@@ -1074,9 +1096,11 @@ class TestFrontendConfig:
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
             "observability": {
                 "enabled": True,
                 "tachometer": {
@@ -5351,18 +5375,20 @@ class TestSequentialNodeStart:
 class TestClusterGpuDefaults:
     """resources.gpu_type / gpus_per_node inherit from srtslurm.yaml when omitted."""
 
-    def _recipe(self, resources: dict) -> dict:
+    def _recipe(self, resources: dict, roles: dict) -> dict:
         return {
+            "schema": 2,
             "name": "gpu-defaults",
             "model": {"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
             "resources": resources,
+            "roles": roles,
         }
 
     def test_recipe_without_gpu_type_inherits_default_gpu_type(self):
         from srtctl.core.config import resolve_config_with_defaults
 
         resolved = resolve_config_with_defaults(
-            self._recipe({"agg_nodes": 1, "agg_workers": 1}),
+            self._recipe({}, {"agg": {"nodes": 1, "workers": 1}}),
             {"default_gpu_type": "gb200", "gpus_per_node": 4},
         )
         assert resolved["resources"]["gpu_type"] == "gb200"
@@ -5372,16 +5398,18 @@ class TestClusterGpuDefaults:
         from srtctl.core.config import resolve_config_with_defaults
 
         resolved = resolve_config_with_defaults(
-            self._recipe({"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1}),
+            self._recipe({"gpu_type": "h100", "gpus_per_node": 8}, {"agg": {"nodes": 1}}),
             {"default_gpu_type": "gb200", "gpus_per_node": 4},
         )
         assert resolved["resources"]["gpu_type"] == "h100"
         assert resolved["resources"]["gpus_per_node"] == 8
 
     def test_recipe_without_gpu_type_and_no_cluster_default_loads(self):
+        from srtctl.core.config import resolve_config_with_defaults
         from srtctl.core.schema import SrtConfig
 
-        config = SrtConfig.Schema().load(self._recipe({"agg_nodes": 1, "agg_workers": 1}))
+        resolved = resolve_config_with_defaults(self._recipe({}, {"agg": {"nodes": 1, "workers": 1}}), None)
+        config = SrtConfig.Schema().load(resolved)
         assert config.resources.gpu_type is None
         assert config.resources.gpus_per_node == 4
 

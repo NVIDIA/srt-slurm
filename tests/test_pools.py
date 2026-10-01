@@ -20,6 +20,7 @@ from marshmallow import ValidationError
 
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.submit import show_config_details
+from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.mock import MockOptions, run_mock_sweep
@@ -29,8 +30,9 @@ TOY = {
     "schema": 2,
     "name": "pools-toy",
     "model": {"path": "hf:fake/model", "container": "nvcr.io/fake/sglang:latest", "precision": "bf16"},
-    "resources": {"gpu_type": "b200", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1, "gpus_per_agg": 8},
-    "backend": {"type": "sglang"},
+    "resources": {"gpu_type": "b200", "gpus_per_node": 8},
+    "engine": "sglang",
+    "roles": {"agg": {"nodes": 1, "workers": 1, "gpus": 8}},
     "frontend": {"type": "sglang", "enable_multiple_frontends": False},
     "services": [
         {
@@ -75,8 +77,13 @@ def _data(**overrides) -> dict:
     return data
 
 
+def _schema_load(data: dict) -> SrtConfig:
+    """Load a recipe dict the way load_config does: gate, expand roles/services, then the schema."""
+    return SrtConfig.Schema().load(resolve_config_with_defaults(data, None))
+
+
 def _load(**overrides) -> SrtConfig:
-    return SrtConfig.Schema().load(_data(**overrides))
+    return _schema_load(_data(**overrides))
 
 
 def _from_slurm(nodelist: tuple[str, ...], **kwargs) -> Nodes:
@@ -104,17 +111,17 @@ def test_toy_recipe_adds_up_to_four_nodes() -> None:
 
 def test_existing_recipes_are_untouched() -> None:
     data = _data(services=[])
-    assert SrtConfig.Schema().load(data).total_nodes == 1
-    data["resources"] = {"gpu_type": "b200", "gpus_per_node": 8, "agg_nodes": 3, "agg_workers": 3}
+    assert _schema_load(data).total_nodes == 1
+    data["roles"] = {"agg": {"nodes": 3, "workers": 3}}
     data["frontend"] = {"type": "sglang-router"}
-    assert SrtConfig.Schema().load(data).total_nodes == 3
+    assert _schema_load(data).total_nodes == 3
 
 
 def test_services_only_pools_still_work_without_roles() -> None:
     data = _data(frontend={"type": "none"})
-    data["resources"] = {"gpu_type": "b200", "gpus_per_node": 8}
-    data.pop("backend")
-    config = SrtConfig.Schema().load(data)
+    data.pop("roles")
+    data.pop("engine")
+    config = _schema_load(data)
     assert config.engine_node_count == 0
     assert config.total_nodes == 3
 
@@ -136,17 +143,10 @@ def test_pool_rules() -> None:
 
 def test_pools_are_refused_on_heterogeneous_jobs() -> None:
     data = _data(frontend={"type": "dynamo"})
-    data["resources"] = {
-        "gpu_type": "b200",
-        "gpus_per_node": 8,
-        "prefill_nodes": 1,
-        "decode_nodes": 1,
-        "prefill_workers": 1,
-        "decode_workers": 1,
-        "het_jobs": True,
-    }
+    data["resources"] = {"gpu_type": "b200", "gpus_per_node": 8, "het_jobs": True}
+    data["roles"] = {"prefill": {"nodes": 1, "workers": 1}, "decode": {"nodes": 1, "workers": 1}}
     with pytest.raises(ValidationError, match="not supported together with resources.het_jobs"):
-        SrtConfig.Schema().load(data)
+        _schema_load(data)
 
 
 # --- carving ------------------------------------------------------------------
@@ -342,8 +342,8 @@ def test_mock_sweep_runs_the_toy_recipe_on_four_nodes(tmp_path: Path) -> None:
 def _terminal_data() -> dict:
     """A services-only job whose run is a two-node pool: no benchmark block, `terminal: true`."""
     data = _data(frontend={"type": "none"})
-    data["resources"] = {"gpu_type": "b200", "gpus_per_node": 8}
-    data.pop("backend")
+    data.pop("roles")
+    data.pop("engine")
     data.pop("benchmark")
     data["services"] = [
         {
@@ -359,26 +359,26 @@ def _terminal_data() -> dict:
 
 
 def test_terminal_rules() -> None:
-    config = SrtConfig.Schema().load(_terminal_data())
+    config = _schema_load(_terminal_data())
     assert [svc.name for svc in config.terminal_services] == ["train"]
     assert config.benchmark.type == "manual", "no benchmark block means manual mode"
 
     data = _terminal_data()
     data["benchmark"] = {"type": "custom", "command": "echo"}
     with pytest.raises(ValidationError, match="cannot also run benchmark.type: custom"):
-        SrtConfig.Schema().load(data)
+        _schema_load(data)
 
     data = _terminal_data()
     data["services"].append({"name": "etcd", "type": "etcd", "external": "http://etcd.example:2379", "terminal": True})
     with pytest.raises(ValidationError, match="external service launches nothing"):
-        SrtConfig.Schema().load(data)
+        _schema_load(data)
 
 
 def test_manual_mode_ends_when_the_terminal_services_exit(tmp_path: Path) -> None:
     """The job waits for every instance, then takes the worst exit code as its own."""
     from srtctl.core.processes import ProcessRegistry
 
-    orchestrator = SweepOrchestrator(config=SrtConfig.Schema().load(_terminal_data()), runtime=_runtime(tmp_path))
+    orchestrator = SweepOrchestrator(config=_schema_load(_terminal_data()), runtime=_runtime(tmp_path))
     first, second = MagicMock(), MagicMock()
     first.name, first.is_running, first.exit_code = "service_train_n2", False, 0
     second.name, second.is_running, second.exit_code = "service_train_n3", True, None
@@ -397,7 +397,7 @@ def test_manual_mode_ends_when_the_terminal_services_exit(tmp_path: Path) -> Non
 
 
 def test_dry_run_marks_terminal_services(capsys) -> None:
-    show_config_details(SrtConfig.Schema().load(_terminal_data()))
+    show_config_details(_schema_load(_terminal_data()))
     out = capsys.readouterr().out
     assert "nodes=2 terminal" in out
 

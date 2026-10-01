@@ -21,15 +21,13 @@ LOCK_CLOCKS = "sudo -n nvidia-smi -lmc <min>,<max>"
 RESET_CLOCKS = "sudo -n nvidia-smi -rmc"
 
 BASE_RECIPE = {
+    "schema": 2,
     "name": "host-setup-test",
     "model": {"path": "/models/test", "container": "test.sqsh", "precision": "fp8"},
-    "resources": {
-        "gpu_type": "gb200",
-        "gpus_per_node": 4,
-        "prefill_nodes": 1,
-        "decode_nodes": 1,
-        "prefill_workers": 1,
-        "decode_workers": 1,
+    "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+    "roles": {
+        "prefill": {"nodes": 1, "workers": 1},
+        "decode": {"nodes": 1, "workers": 1},
     },
 }
 

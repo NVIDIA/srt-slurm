@@ -13,10 +13,11 @@ One vocabulary replaces the per-block placement knobs::
         node: last_decode   # head | last_decode | dedicated
 
 ``node: dedicated`` reserves a node for that component (and implies the head
-location, which the legacy validation already required). Any other value is a
+location, the only one a dedicated node supports). Any other value is a
 location string passed through. :func:`expand_placement` normalizes these blocks
-into the existing internal fields before schema load, so no consumer changes and
-the legacy fields still load.
+into the internal fields before schema load, so no consumer changes. The
+internal fields keep their pre-2.0 names; spelling them out in a recipe is
+rejected by ``srtctl.core.config.require_current_schema``.
 
 | Block       | node: dedicated sets                          | node: <other> sets                    |
 |-------------|-----------------------------------------------|---------------------------------------|
@@ -25,7 +26,7 @@ the legacy fields still load.
 
 The discovery plane (etcd, NATS) is placed through its services: an ``etcd`` or
 ``nats`` entry under ``services:`` with ``placement.node: dedicated``
-(``srtctl.services.normalize.expand_services``). The v1 ``infra`` block still loads.
+(``srtctl.services.normalize.expand_services``).
 """
 
 from __future__ import annotations
@@ -34,9 +35,9 @@ from typing import Any
 
 DEDICATED = "dedicated"
 
-# block name -> (placement-str field, dedicated-bool field or None, legacy fields it fills)
-_FRONTEND = ("orchestrator_placement", "dedicated_node")
-_BENCHMARK = ("client_placement", "client_dedicated_node")
+# block name -> (placement-str field, dedicated-bool field): the internal fields a placement block fills
+FRONTEND_PLACEMENT_FIELDS = ("orchestrator_placement", "dedicated_node")
+BENCHMARK_PLACEMENT_FIELDS = ("client_placement", "client_dedicated_node")
 
 
 def _expand_block(section: dict[str, Any], *, place_field: str, dedicated_field: str, block: str) -> None:
@@ -64,17 +65,12 @@ def expand_placement(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize ``placement:`` blocks on frontend / benchmark into the internal fields, in place."""
     frontend = config.get("frontend")
     if isinstance(frontend, dict):
-        _expand_block(frontend, place_field=_FRONTEND[0], dedicated_field=_FRONTEND[1], block="frontend")
+        place_field, dedicated_field = FRONTEND_PLACEMENT_FIELDS
+        _expand_block(frontend, place_field=place_field, dedicated_field=dedicated_field, block="frontend")
 
     benchmark = config.get("benchmark")
     if isinstance(benchmark, dict):
-        _expand_block(benchmark, place_field=_BENCHMARK[0], dedicated_field=_BENCHMARK[1], block="benchmark")
-
-    infra = config.get("infra")
-    if isinstance(infra, dict) and "placement" in infra:
-        raise ValueError(
-            "infra.placement is not a thing: place the discovery plane through its services "
-            "(services: - name: etcd, type: etcd, placement.node: dedicated; same for nats)"
-        )
+        place_field, dedicated_field = BENCHMARK_PLACEMENT_FIELDS
+        _expand_block(benchmark, place_field=place_field, dedicated_field=dedicated_field, block="benchmark")
 
     return config
