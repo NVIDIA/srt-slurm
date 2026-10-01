@@ -51,7 +51,7 @@ benchmark:
   type: "sa-bench"
   isl: 1024
   osl: 1024
-  concurrencies: "{concurrency}" # <-- placeholder
+  concurrencies: ["{concurrency}"] # <-- placeholder
 
 sweep:
   concurrency: [128, 256, 512] # <-- sweep values
@@ -84,7 +84,7 @@ roles:
       mem-fraction-static: "{mem}"
 
 benchmark:
-  concurrencies: "{conc}"
+  concurrencies: ["{conc}"]
 
 sweep:
   mem: [0.85, 0.90]
@@ -106,6 +106,10 @@ This generates 4 jobs (2 x 2):
 
 Placeholders work anywhere in the YAML, quoted so YAML reads them as strings:
 
+An exact placeholder keeps the sweep value's type, including numbers, booleans,
+and lists. Embedded placeholders such as `run-{param}` produce strings. For a
+list-valued field such as `concurrencies`, put a scalar placeholder inside a list.
+
 ```yaml
 name: "sweep-{param}"
 roles:
@@ -114,7 +118,7 @@ roles:
       mem-fraction-static: "{mem}"
       dp-size: "{dp}"
 benchmark:
-  concurrencies: "{conc}"
+  concurrencies: ["{conc}"]
 ```
 
 ## Auto-Detection
