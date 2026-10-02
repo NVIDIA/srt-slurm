@@ -1,7 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 SemiAnalysis LLC. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""TokenSpeed inference backend, served through Dynamo (``python3 -m dynamo.tokenspeed``)."""
+"""TokenSpeed inference backend.
+
+Behind the Dynamo frontend each worker is ``python3 -m dynamo.tokenspeed``; behind a
+static router (SMG) it is TokenSpeed's gRPC engine, ``python3 -m smg_grpc_servicer.tokenspeed``.
+"""
 
 from __future__ import annotations
 
@@ -30,10 +34,14 @@ WorkerMode = Literal["prefill", "decode", "agg"]
 # Attention DP never exceeds the endpoint's GPU count.
 _RENDEZVOUS_PORTS = 6
 
+# The worker module per frontend launch mode. TokenSpeed's engine-only server is its
+# gRPC servicer, what `ts serve` runs behind its bundled SMG; it has no HTTP-only server.
+_WORKER_MODULE = {"dynamo": "dynamo.tokenspeed", "direct": "smg_grpc_servicer.tokenspeed"}
+
 
 @dataclass(frozen=True)
 class TokenSpeedBackend(Backend):
-    """Launch ``python3 -m dynamo.tokenspeed`` workers behind the Dynamo frontend.
+    """Launch TokenSpeed workers behind the Dynamo frontend or a static router such as SMG.
 
     Example YAML:
         engine: tokenspeed
@@ -48,11 +56,17 @@ class TokenSpeedBackend(Backend):
 
     # Engine type discriminator.
     type: Literal["tokenspeed"] = "tokenspeed"
+    # The gRPC engine starts no HTTP listener, so a direct worker serves no Prometheus text.
+    native_metrics_path: ClassVar[str] = "/metrics"
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
     # never written on `engine:`. Per-role env and TokenSpeed CLI args are read from here.
     roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+
+    def is_grpc_mode(self, mode: str) -> bool:
+        """A direct TokenSpeed worker is always the gRPC engine (``smg_grpc_servicer.tokenspeed``)."""
+        return True
 
     def get_served_model_name(self, default: str) -> str:
         """A role's ``served-model-name``, else ``default``; srtctl always passes the result."""
@@ -97,11 +111,17 @@ class TokenSpeedBackend(Backend):
         frontend_type: str = "dynamo",
         dynamo_sidecar: bool = False,
     ) -> list[Process]:
-        """Each process gets its own ``--port``; each endpoint a rendezvous block on its leader node."""
+        """Each process gets its own ``--port``; each endpoint a rendezvous block on its leader node.
+
+        A direct worker's leader serves gRPC on that ``--port``, so it is also the
+        process's routable port (``http_port``).
+        """
         if dynamo_sidecar:
             raise ValueError("TokenSpeed does not support Dynamo sidecars")
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
+        from srtctl.frontends import get_frontend
 
+        direct = get_frontend(frontend_type).worker_launch == "direct"
         allocator = port_allocator_for(port_allocator, base_sys_port)
         processes = endpoints_to_processes(endpoints, port_allocator=allocator)
         dist_init_ports = {
@@ -110,14 +130,18 @@ class TokenSpeedBackend(Backend):
             )
             for endpoint in endpoints
         }
-        return [
-            replace(
-                process,
-                tokenspeed_port=allocator.next(TOKENSPEED_PORTS, process.node),
-                dist_init_port=dist_init_ports[(process.endpoint_mode, process.endpoint_index)],
+        result = []
+        for process in processes:
+            port = allocator.next(TOKENSPEED_PORTS, process.node)
+            result.append(
+                replace(
+                    process,
+                    tokenspeed_port=port,
+                    http_port=port if direct and process.http_port > 0 else process.http_port,
+                    dist_init_port=dist_init_ports[(process.endpoint_mode, process.endpoint_index)],
+                )
             )
-            for process in processes
-        ]
+        return result
 
     def build_worker_command(
         self,
@@ -132,8 +156,6 @@ class TokenSpeedBackend(Backend):
         from srtctl.core.slurm import get_hostname_ip
         from srtctl.frontends import get_frontend
 
-        if get_frontend(frontend_type).worker_launch != "dynamo":
-            raise ValueError("engine: tokenspeed runs dynamo.tokenspeed and requires frontend.type: dynamo")
         if process.tokenspeed_port is None or process.dist_init_port is None:
             raise ValueError("build the topology with TokenSpeedBackend.endpoints_to_processes")
 
@@ -148,12 +170,13 @@ class TokenSpeedBackend(Backend):
             *(nsys_prefix or []),
             "python3",
             "-m",
-            "dynamo.tokenspeed",
+            _WORKER_MODULE[get_frontend(frontend_type).worker_launch],
             "--model",
             runtime.worker_model_arg,
             "--served-model-name",
             self.get_served_model_name(runtime.model_path.name),
-            # A prefill worker advertises this host for the Mooncake bootstrap.
+            # A prefill worker advertises this host for the Mooncake bootstrap; a direct
+            # worker also binds its gRPC server on it.
             "--host",
             get_hostname_ip(process.node, runtime.network_interface),
             "--port",

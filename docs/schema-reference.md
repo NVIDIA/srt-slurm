@@ -703,7 +703,7 @@ Launch TileRT's decode server with recipe-owned model and transport settings.
 
 `engine.type: tokenspeed`
 
-Launch ``python3 -m dynamo.tokenspeed`` workers behind the Dynamo frontend.
+Launch TokenSpeed workers behind the Dynamo frontend or a static router such as SMG.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

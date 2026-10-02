@@ -1,19 +1,27 @@
 # TokenSpeed
 
-Use `engine: tokenspeed` with `frontend.type: dynamo`. Every worker runs Dynamo's
-TokenSpeed backend, `python3 -m dynamo.tokenspeed`, which registers with the Dynamo
-frontend like the other Dynamo engines. Recipes:
+Use `engine: tokenspeed` with `frontend.type: dynamo` or `frontend.type: smg`.
 
-- [Aggregated](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/dynamo-agg.yaml)
-- [Prefill/decode](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/dynamo-disagg.yaml)
+- **Dynamo.** Every worker runs Dynamo's TokenSpeed backend, `python3 -m dynamo.tokenspeed`,
+  which registers with the Dynamo frontend like the other Dynamo engines.
+- **SMG.** Every worker runs TokenSpeed's gRPC engine, `python3 -m smg_grpc_servicer.tokenspeed`,
+  and srtctl hands SMG its `grpc://` URL. This is the pair `ts serve` runs on one node: the
+  same engine module with `--host`/`--port`, and `smg launch --worker-urls grpc://<host:port>`
+  ([`_proc.py`](https://github.com/lightseekorg/tokenspeed/blob/22251686ff26a2b2f495263b348db80980b8ac9e/python/tokenspeed/cli/_proc.py#L39-L104)).
 
-Configuration loading rejects any other frontend, `dynamo.sidecar`, and
-`roles.<role>.kv_events`.
+Recipes:
+
+- Dynamo: [aggregated](../examples/tokenspeed/dynamo-agg.yaml), [prefill/decode](../examples/tokenspeed/dynamo-disagg.yaml)
+- SMG: [aggregated](../examples/tokenspeed/smg-agg.yaml), [prefill/decode](../examples/tokenspeed/smg-disagg.yaml)
+
+Configuration loading rejects the engine-specific routers (`sglang-router`,
+`vllm-router`, ...), `dynamo.sidecar`, and `roles.<role>.kv_events`.
 
 The backend follows
-[TokenSpeed](https://github.com/lightseekorg/tokenspeed/tree/22251686ff26a2b2f495263b348db80980b8ac9e)
-and Dynamo's
-[`dynamo.tokenspeed`](https://github.com/ai-dynamo/dynamo/tree/7778c8d0cddb2a1ab7b2782c92cf97b30b2a5dcd/components/src/dynamo/tokenspeed).
+[TokenSpeed](https://github.com/lightseekorg/tokenspeed/tree/22251686ff26a2b2f495263b348db80980b8ac9e),
+Dynamo's
+[`dynamo.tokenspeed`](https://github.com/ai-dynamo/dynamo/tree/7778c8d0cddb2a1ab7b2782c92cf97b30b2a5dcd/components/src/dynamo/tokenspeed)
+and SMG [v1.11.0](https://github.com/smg-project/smg/tree/3be823a700fabaff3add8a390cf78f163479d686).
 
 ## Image
 
@@ -27,6 +35,12 @@ image that ships TokenSpeed, or build an image with Dynamo's
 from a TokenSpeed runner and the Dynamo checkout. The examples set
 `dynamo.install: false` because their image already ships Dynamo.
 
+Behind SMG the image needs TokenSpeed only. Installing it pulls in the gRPC engine
+(`tokenspeed-smg-grpc-servicer`) and the SMG build it pins (`tokenspeed-smg`, which
+provides the `smg` command)
+([`pyproject.toml`](https://github.com/lightseekorg/tokenspeed/blob/22251686ff26a2b2f495263b348db80980b8ac9e/python/pyproject.toml#L75-L77)), so SMG runs in the model
+container and needs no `frontend.container_image`.
+
 ## Arguments
 
 `roles.<role>.args` are TokenSpeed
@@ -36,14 +50,14 @@ such as `tensor-parallel-size`, `data-parallel-size`, `enable-expert-parallel`,
 role's `gpus`. A role's `served-model-name` is the name every worker serves; without
 one, workers serve the model directory name.
 
-srtctl sets these flags on every worker:
+srtctl sets these flags on every worker, under either frontend:
 
 | Flag | Value |
 | --- | --- |
 | `--model` | `/model`, the staged model path, or the Hugging Face ID |
 | `--served-model-name` | the role's `served-model-name`, else the model directory name |
 | `--host` | the worker's own IP on `network_interface` |
-| `--port` | an allocated port, 10000 and up, 1024 apart on a node |
+| `--port` | an allocated port, 10000 and up, 1024 apart on a node; behind SMG, the leader's gRPC port |
 | `--dist-init-addr` | the endpoint leader's IP and an allocated port |
 | `--nnodes`, `--node-rank` | the endpoint's node count and this node's rank |
 | `--disaggregation-mode` | `prefill` or `decode`, on prefill/decode workers |
@@ -78,3 +92,33 @@ the transfer backend is Mooncake, attention DP is 1, and `prefix-granularity` is
 positive (TokenSpeed's default is 64). Scale prefill or decode with more workers.
 Set `disaggregation-ib-device` in the role's args when Mooncake does not pick the
 right RDMA device.
+
+## SMG
+
+The engine's `--host` and `--port` are its gRPC listener
+([`server.py`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/grpc_servicer/smg_grpc_servicer/tokenspeed/server.py)), so srtctl
+advertises the leader of each worker as `grpc://<host>:<port>`
+(`TokenSpeedBackend.is_grpc_mode` is always true: TokenSpeed has no HTTP-only engine
+server). A follower node of a multi-node worker runs the same module, as `ts serve` does
+on a non-zero node rank
+([`serve_smg.py`](https://github.com/lightseekorg/tokenspeed/blob/22251686ff26a2b2f495263b348db80980b8ac9e/python/tokenspeed/cli/serve_smg.py#L873-L879)), and is not routed.
+Before SMG starts, srtctl waits for every gRPC port to accept connections.
+
+For prefill/decode srtctl passes `--pd-disaggregation --prefill grpc://<host:port>
+<bootstrap-port> --decode grpc://<host:port>`. SMG's gRPC P/D table gives TokenSpeed
+parallel dispatch with a KV bootstrap room
+([`pd_protocol.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/routers/grpc/common/stages/pd_protocol.rs#L63-L85)):
+it mints one room per request and sends both workers the prefill worker's host and
+bootstrap port
+([`helpers.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/routers/grpc/common/stages/helpers.rs#L764-L824)),
+which the engine hands to Mooncake
+([`servicer.py`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/grpc_servicer/smg_grpc_servicer/tokenspeed/servicer.py#L1031-L1071)).
+The prefill engine serves that bootstrap port
+([`async_llm.py`](https://github.com/lightseekorg/tokenspeed/blob/22251686ff26a2b2f495263b348db80980b8ac9e/python/tokenspeed/runtime/engine/async_llm.py#L245-L253)).
+
+In gRPC mode SMG tokenizes and applies the chat template itself; pass
+`tool-call-parser` / `reasoning-parser` in `frontend.args` when the model needs them.
+The gRPC engine starts no HTTP listener, so these workers serve no Prometheus
+`/metrics`; SMG's own metrics stay on its Prometheus port. TokenSpeed's ZMQ engine
+(`ts serve --headless`) is not used: SMG reaches a ZMQ engine only over local `ipc://`
+sockets.

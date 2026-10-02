@@ -27,7 +27,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
 - **ATOM**: Native ROCm servers behind AToMesh, with one Slurm node per logical worker and allocator-owned Mooncake handshake ports
 - **SGLang**: Per-process srun launching, supports prefill/decode/aggregated modes
 - **TileRT**: Decode workers behind `tilert-router`, paired with an explicit prefill engine and image.
-- **TokenSpeed**: `dynamo.tokenspeed` workers behind the Dynamo frontend, aggregated or prefill/decode; allocator-owned `--port` scan base and a dist-init block sized for its control-plane cluster
+- **TokenSpeed**: `dynamo.tokenspeed` workers behind the Dynamo frontend, or the gRPC engine `smg_grpc_servicer.tokenspeed` behind SMG (`is_grpc_mode` is always true), aggregated or prefill/decode; allocator-owned `--port` scan base and a dist-init block sized for its control-plane cluster
 - **TRTLLM**: MPI-style launching (one srun per endpoint with all nodes), prefill/decode only
 - **vLLM**: Per-process srun launching, prefill/decode/aggregated, `per_node` DP; `frontend_type` selects Dynamo registration or a direct `vllm serve` server, and `_CONNECTOR_MAP` owns the KV connector table
 

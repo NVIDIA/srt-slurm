@@ -3558,7 +3558,7 @@
           "default": "tokenspeed"
         }
       },
-      "description": "Launch ``python3 -m dynamo.tokenspeed`` workers behind the Dynamo frontend."
+      "description": "Launch TokenSpeed workers behind the Dynamo frontend or a static router such as SMG."
     },
     "VLLMBackend": {
       "type": "object",

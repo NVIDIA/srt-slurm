@@ -53,7 +53,9 @@ def test_optional_features_read_as_absent_by_default(backend_cls):
     assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
     assert backend.get_failover_environment(_process(), "12345") == {}
     assert backend.get_srun_config().sequential_node_start == 0
-    assert not any(backend.is_grpc_mode(mode) for mode in ("prefill", "decode", "agg"))
+    # A direct TokenSpeed worker is always its gRPC engine.
+    grpc_only = backend_cls is TokenSpeedBackend
+    assert all(backend.is_grpc_mode(mode) == grpc_only for mode in ("prefill", "decode", "agg"))
 
 
 def test_vllm_grpc_role_arg_selects_grpc_mode():
