@@ -48,6 +48,32 @@ def test_schema_pairs_smg_with_any_backend(engine) -> None:
     assert config.frontend.type == "smg"
 
 
+def test_grpc_workers_are_advertised_as_grpc_urls() -> None:
+    """A backend whose mode serves gRPC (vLLM ``grpc: true``) is advertised as ``grpc://``."""
+    from srtctl.core.schema import RoleConfig
+
+    backend = VLLMProtocol(
+        roles={"prefill": RoleConfig(args={"grpc": True}), "decode": RoleConfig(args={"grpc": True})}
+    )
+    processes = [
+        Process("node0", frozenset({0}), 7500, 6100, "prefill", 0),
+        Process("node1", frozenset({0}), 7501, 6100, "decode", 0),
+    ]
+    frontend = SMGFrontend()
+    with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=["10.0.0.1", "10.0.0.2"]):
+        workers = frontend.collect_workers(backend, processes)
+    command = frontend.build_router_command(workers, "0.0.0.0", 8000, backend)
+    assert command[:7] == [
+        "smg",
+        "launch",
+        "--pd-disaggregation",
+        "--prefill",
+        "grpc://10.0.0.1:6100",
+        "--decode",
+        "grpc://10.0.0.2:6100",
+    ]
+
+
 def test_pd_command_advertises_prefill_bootstrap_port() -> None:
     frontend = SMGFrontend()
     processes = [

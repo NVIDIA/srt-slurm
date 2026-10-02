@@ -108,7 +108,10 @@ and [`examples/sglang/smg-disagg.yaml`](../examples/sglang/smg-disagg.yaml) (SGL
 
 ## Not wired
 
-srtctl advertises every worker over HTTP. SMG's gRPC, ZMQ and encode (EPD) worker
-modes, its Kubernetes service discovery, mesh, and the cloud-provider, history, MCP
+srtctl advertises a worker over HTTP unless its backend reports gRPC for the role
+(`BackendProtocol.is_grpc_mode`: SGLang `grpc-mode: true`, vLLM `grpc: true`), and
+then as `grpc://`. Workers advertised over gRPC are not probed before SMG starts,
+so a slow-loading model may need a larger `frontend.args.worker-startup-timeout-secs`.
+SMG's ZMQ and encode (EPD) worker modes, its Kubernetes service discovery, mesh, and the cloud-provider, history, MCP
 and WASM features are not configured by srtctl; `frontend.args` can still pass any
 `smg launch` flag that needs no srtctl-managed process or port.
