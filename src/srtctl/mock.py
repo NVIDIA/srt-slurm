@@ -298,6 +298,7 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.cli.mixins.benchmark_stage.wait_for_model", _fake_wait_for_model),
         ("srtctl.core.health.wait_for_http_endpoints", _fake_wait_for_port),
         ("srtctl.frontends.static_router.wait_for_http_endpoints", _fake_wait_for_port),
+        ("srtctl.frontends.static_router.wait_for_port", _fake_wait_for_port),
         ("srtctl.cli.mixins.worker_stage.wait_for_health", _fake_wait_for_port),
         ("srtctl.frontends.trtllm_serve.wait_for_health", _fake_wait_for_port),
         # Service readiness probes (etcd, NATS, exporters, declared services).
