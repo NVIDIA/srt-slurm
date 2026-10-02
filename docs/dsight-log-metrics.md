@@ -10,7 +10,7 @@ pinning and query APIs. No AIPerf metric summary is used for these families.
 ```mermaid
 flowchart LR
     T["Tachometer Parquet / Arrow rows"] --> TR["metrics.read_metrics<br/>names, labels, absolute timestamps"]
-    W["Worker .out lines + filename identity"] --> G["LogMetricGenerator Protocol<br/>TokenSpeed and SGLang adapters"]
+    W["Worker .out lines + filename identity"] --> G["LogMetricGenerator base class<br/>TokenSpeed and SGLang adapters"]
     G --> LR["log_metrics.reader<br/>timezone, scope, file + line evidence"]
     TR --> S["Shared metric series + catalog<br/>deduplication, conflicts, reference IDs"]
     LR --> S
@@ -227,16 +227,21 @@ The observed metric still works without a reference, Tachometer, OTel or Nsight.
 ## Generator interface
 
 `log_metrics/base.py` defines frozen `LogMetricDefinition` and `LogMetricEvent`
-records and the `LogMetricGenerator` Protocol:
+records and the `LogMetricGenerator` abstract base class:
 
 ```python
-class LogMetricGenerator(Protocol):
+from abc import ABC, abstractmethod
+
+class LogMetricGenerator(ABC):
     @property
+    @abstractmethod
     def name(self) -> str: ...
 
     @property
+    @abstractmethod
     def definitions(self) -> tuple[LogMetricDefinition, ...]: ...
 
+    @abstractmethod
     def parse_line(self, line: str, source: SourceIdentity) -> LogMetricEvent | None: ...
 ```
 
@@ -247,8 +252,10 @@ owns file discovery, timezone alignment, window selection, evidence, validation,
 normalization and reference matching. Configuration-only evidence does not invent
 a workload time envelope for a source-only report.
 
-`log_metrics/__init__.py` holds the generator registry. An implementation is added
-there with representative source fixtures and missing/changed-limit tests. Engine
+`log_metrics/__init__.py` holds the generator registry. Implementations inherit
+`LogMetricGenerator` and provide all three abstract members; class attributes can
+supply `name` and `definitions`. Add each implementation to the registry with
+representative source fixtures and missing/changed-limit tests. Engine
 log syntax stays in the adapter; rendering depends only on the normalized contract.
 `DynamoTokenSpeedLogMetrics` and `SGLangLogMetrics` are registered generators.
 

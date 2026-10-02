@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.runtime import Nodes, RuntimeContext
@@ -32,7 +32,7 @@ def process(gpus, node="n0"):
 
 
 def backend(devices=()):
-    return VLLMProtocol(
+    return VLLMBackend(
         mooncake_kv_store=VLLMMooncakeKVStoreConfig(
             device_names_by_gpu=list(devices),
             store_config={"device_name": "shared", "global_segment_size": "170GB"},
@@ -44,7 +44,7 @@ def test_default_unchanged():
     b = backend()
     assert b.build_mooncake_process_config(process([0]), "infra", 4) is None
     assert b.build_mooncake_store_config("infra")["device_name"] == "shared"
-    assert VLLMProtocol().build_mooncake_process_config(process([0]), "infra", 4) is None
+    assert VLLMBackend().build_mooncake_process_config(process([0]), "infra", 4) is None
 
 
 @pytest.mark.parametrize("gpus,expected", [([2], "h2"), ([0, 1], "h0,h1"), ([2, 3], "h2,h3"), ([0, 2], "h0,h2")])

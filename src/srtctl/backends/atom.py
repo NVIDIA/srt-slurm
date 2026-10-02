@@ -15,11 +15,10 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, LMCACHE_SERVER_PORT
 
 if TYPE_CHECKING:
-    from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
@@ -28,7 +27,7 @@ WorkerMode = Literal["prefill", "decode", "agg"]
 
 
 @dataclass(frozen=True)
-class AtomProtocol:
+class AtomBackend(Backend):
     """Launch ``atom.entrypoints.openai_server`` on ROCm workers."""
 
     type: Literal["atom"] = "atom"
@@ -40,26 +39,6 @@ class AtomProtocol:
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
-    def get_srun_config(self) -> SrunConfig:
-        from srtctl.backends.base import SrunConfig
-
-        return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
-
-    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
-        """The srun step exits with the engine; its exit code is the whole story."""
-        return ()
-
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """The role's native ATOM CLI arguments (``roles.<role>.args``)."""
-        return role_args(self.roles, mode)
-
-    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        """The role's environment (``roles.<role>.env``)."""
-        return role_env(self.roles, mode)
-
-    def get_process_environment(self, process: Process) -> dict[str, str]:
-        return {}
-
     def get_served_model_name(self, default: str) -> str:
         """The name ATOM serves: a role's ``served-model-name``, else its literal ``--model``."""
         for mode in ("prefill", "agg", "decode"):
@@ -68,23 +47,6 @@ class AtomProtocol:
             if name:
                 return name
         return default
-
-    @property
-    def mooncake_kv_store(self) -> None:
-        return None
-
-    @property
-    def failover(self) -> None:
-        return None
-
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        return {}
-
-    def get_failover_environment(self, process: Process, job_id: str) -> dict[str, str]:
-        return {}
-
-    def should_set_visible_devices(self) -> bool:
-        return True
 
     def allocate_endpoints(
         self,
@@ -220,3 +182,7 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
 
 def _canonical_arg_key(key: str) -> str:
     return key.lstrip("-").replace("_", "-")
+
+
+# Compatibility for callers using the former class name.
+AtomProtocol = AtomBackend

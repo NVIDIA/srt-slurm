@@ -13,7 +13,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any, Literal
 
-from srtctl.backends.vllm import VLLMFailoverConfig, VLLMProtocol
+from srtctl.backends.vllm import VLLMBackend, VLLMFailoverConfig
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
@@ -61,7 +61,7 @@ class WorkerStageMixin:
     Requires:
         self.config: SrtConfig
         self.runtime: RuntimeContext
-        self.backend: BackendProtocol
+        self.backend: Backend
         self.backend_processes: list[Process]
     """
 
@@ -71,7 +71,7 @@ class WorkerStageMixin:
 
     def _apply_mooncake_process_config(self, process: "Process", environment: dict[str, str]) -> None:
         backend = self.config.backend_for_role(process.endpoint_mode)
-        if not isinstance(backend, VLLMProtocol):
+        if not isinstance(backend, VLLMBackend):
             return
         local_config = backend.build_mooncake_process_config(
             process, self.runtime.infra_node_ip, self.runtime.gpus_per_node
@@ -89,7 +89,7 @@ class WorkerStageMixin:
 
     @property
     def backend(self) -> Any:
-        """Access the backend config (implements BackendProtocol)."""
+        """Access the backend config (implements Backend)."""
         return self.config.backend
 
     @property
@@ -144,7 +144,7 @@ class WorkerStageMixin:
         """Log lines that fail a worker whose srun step outlives its engine.
 
         The backend names the lines its launcher prints once the engine has died
-        (``BackendProtocol.fatal_log_patterns``); the recipe adds its own through
+        (``Backend.fatal_log_patterns``); the recipe adds its own through
         ``health_check.extra_fatal_log_patterns`` or switches the watch off with
         ``health_check.fatal_log_markers: false``.
         """
@@ -390,7 +390,7 @@ class WorkerStageMixin:
             # The engine creates the lock file itself; its directory (also the GMS
             # socket dir) must exist. The gms service made it, but the engine step
             # should not depend on that after a relaunch.
-            assert isinstance(backend, VLLMProtocol)
+            assert isinstance(backend, VLLMBackend)
             worker_dir = backend.failover_worker_dir(self.runtime.job_id, process)
             bash_preamble = _append_preamble(bash_preamble, f"mkdir -p {shlex.quote(worker_dir)}")
 

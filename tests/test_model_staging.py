@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from srtctl.backends import TRTLLMProtocol
+from srtctl.backends import TRTLLMBackend
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import DynamoConfig, SrtConfig, RoleConfig
 
@@ -91,7 +91,7 @@ class TestSchema:
         assert dumped["engine"]["publish_events_and_metrics"] is expected_events
         assert reloaded.backend.publish_metrics is expected_metrics
         assert reloaded.backend.publish_events_and_metrics is expected_events
-        assert TRTLLMProtocol(**publishing).dynamo_metrics_flags == expected_flags
+        assert TRTLLMBackend(**publishing).dynamo_metrics_flags == expected_flags
         assert config.backend.dynamo_metrics_flags == expected_flags
         assert reloaded.backend.dynamo_metrics_flags == expected_flags
 
@@ -154,7 +154,7 @@ class TestWorkerCommandUsesStagedPath:
         return rt
 
     def test_trtllm_serve_worker_uses_staged_path(self, tmp_path):
-        backend = TRTLLMProtocol(roles={"decode": RoleConfig(args={"tensor_parallel_size": 4})})
+        backend = TRTLLMBackend(roles={"decode": RoleConfig(args={"tensor_parallel_size": 4})})
         cmd = backend.build_worker_command(
             self._proc(),
             [self._proc()],
@@ -169,7 +169,7 @@ class TestWorkerCommandUsesStagedPath:
         process = replace(process, endpoint_mode="agg")
         runtime = self._runtime_mock(tmp_path, "/model")
         runtime.frontend_port = 8000
-        backend = TRTLLMProtocol(roles={"agg": RoleConfig(args={"tensor_parallel_size": 8})})
+        backend = TRTLLMBackend(roles={"agg": RoleConfig(args={"tensor_parallel_size": 8})})
 
         cmd = backend.build_worker_command(
             process,
@@ -181,7 +181,7 @@ class TestWorkerCommandUsesStagedPath:
         assert cmd[cmd.index("--port") + 1] == "8000"
 
     def test_dynamo_worker_uses_staged_path(self, tmp_path):
-        backend = TRTLLMProtocol(roles={"decode": RoleConfig(args={"tensor_parallel_size": 4})})
+        backend = TRTLLMBackend(roles={"decode": RoleConfig(args={"tensor_parallel_size": 4})})
         cmd = backend.build_worker_command(
             self._proc(),
             [self._proc()],
@@ -209,7 +209,7 @@ class TestWorkerCommandUsesStagedPath:
         ],
     )
     def test_dynamo_worker_publishing_policy(self, tmp_path, mode, publishing, expected_flags):
-        backend = TRTLLMProtocol(**publishing)
+        backend = TRTLLMBackend(**publishing)
         assert backend.publish_metrics is publishing.get("publish_metrics", True)
         assert backend.publish_events_and_metrics is publishing.get("publish_events_and_metrics")
         assert backend.dynamo_metrics_flags == tuple(expected_flags)
@@ -233,8 +233,8 @@ class TestWorkerCommandUsesStagedPath:
         process = replace(self._proc(), endpoint_mode=mode)
         runtime = self._runtime_mock(tmp_path, "/model")
         runtime.frontend_port = 8000
-        baseline = TRTLLMProtocol(publish_metrics=False, publish_events_and_metrics=False)
-        backend = TRTLLMProtocol(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
+        baseline = TRTLLMBackend(publish_metrics=False, publish_events_and_metrics=False)
+        backend = TRTLLMBackend(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
 
         expected = baseline.build_worker_command(process, [process], runtime, frontend_type="trtllm_serve")
         actual = backend.build_worker_command(process, [process], runtime, frontend_type="trtllm_serve")
@@ -251,8 +251,8 @@ class TestWorkerCommandUsesStagedPath:
         process = replace(self._proc(), endpoint_mode="agg", sidecar_grpc_port=50051)
         runtime = self._runtime_mock(tmp_path, "/model")
         runtime.dynamo = DynamoConfig(sidecar=True)
-        baseline = TRTLLMProtocol(publish_metrics=False, publish_events_and_metrics=False)
-        backend = TRTLLMProtocol(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
+        baseline = TRTLLMBackend(publish_metrics=False, publish_events_and_metrics=False)
+        backend = TRTLLMBackend(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
 
         expected = baseline.build_worker_command(process, [process], runtime, frontend_type="dynamo")
         actual = backend.build_worker_command(process, [process], runtime, frontend_type="dynamo")

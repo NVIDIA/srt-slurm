@@ -3,7 +3,7 @@
 """
 vLLM backend configuration.
 
-Implements BackendProtocol for vLLM inference serving with prefill/decode disaggregation.
+Backend implementation for vLLM inference serving with prefill/decode disaggregation.
 Supports Dynamo's vLLM integration module or direct ``vllm serve`` behind
 either the public direct-vLLM frontend or official vLLM Router.
 """
@@ -27,7 +27,7 @@ from typing import (
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env, role_kv_events
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
@@ -52,7 +52,6 @@ from srtctl.ports import (
 )
 
 if TYPE_CHECKING:
-    from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
@@ -138,7 +137,7 @@ def _log_overridden_recipe_flags(
     )
 
 
-def find_vllm_orchestration_recipe_flags(backend: VLLMProtocol) -> list[tuple[str, str]]:
+def find_vllm_orchestration_recipe_flags(backend: VLLMBackend) -> list[tuple[str, str]]:
     """Return ``(role, flag)`` pairs set in the roles' ``args``."""
     findings: list[tuple[str, str]] = []
     for role, spec in backend.roles.items():
@@ -287,11 +286,11 @@ def failover_worker_dir(shared_dir: str, job_id: str, process: Process) -> str:
 
 
 @dataclass(frozen=True)
-class VLLMProtocol:
-    """vLLM protocol - implements BackendProtocol.
+class VLLMBackend(Backend):
+    """vLLM backend configuration and launch implementation.
 
     This frozen dataclass both holds configuration AND implements the
-    BackendProtocol methods for process allocation and launching.
+    Backend methods for process allocation and launching.
 
     dynamo 1.0.0+: ``--connector`` was removed; the ``connector`` field is now
     translated to ``--kv-transfer-config`` with the appropriate JSON payload.
@@ -423,32 +422,14 @@ class VLLMProtocol:
             )
 
     # =========================================================================
-    # BackendProtocol Implementation
+    # Backend Implementation
     # =========================================================================
-
-    def get_srun_config(self) -> SrunConfig:
-        """vLLM launches one srun step for each generated process."""
-        from srtctl.backends.base import SrunConfig
-
-        return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
-
-    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
-        """The srun step exits with the engine; its exit code is the whole story."""
-        return ()
-
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """The role's engine arguments (``roles.<role>.args``)."""
-        return role_args(self.roles, mode)
 
     def get_kv_events_config_for_mode(self, mode: WorkerMode) -> dict[str, Any] | None:
         """``roles.<role>.kv_events`` for a worker mode over the vLLM defaults; None when it publishes none."""
         return role_kv_events(
             self.roles, mode, {"publisher": "zmq", "topic": "kv-events", "enable_kv_cache_events": True}
         )
-
-    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        """The role's environment (``roles.<role>.env``)."""
-        return role_env(self.roles, mode)
 
     def connector_for_mode(self, mode: WorkerMode) -> str | None:
         """The KV connector a worker mode runs: ``roles.<mode>.args.connector``, else ``engine.connector``."""
@@ -1662,7 +1643,7 @@ class KVConnector:
     ``kv_role`` None means the role follows the worker mode (prefill produces,
     decode consumes). ``discovery`` marks a connector whose workers find each
     other through the vLLM Router's ZMQ discovery endpoint instead of being
-    listed on the router command line; ``VLLMProtocol.kv_transfer_config`` adds
+    listed on the router command line; ``VLLMBackend.kv_transfer_config`` adds
     the realized topology to its ``kv_connector_extra_config`` and the allocator
     reserves its handshake and notify listeners per process.
     """
@@ -1737,3 +1718,7 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
         elif value is not None:
             args.extend([f"--{flag_name}", str(value)])
     return args
+
+
+# Compatibility for callers using the former class name.
+VLLMProtocol = VLLMBackend

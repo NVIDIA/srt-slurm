@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from marshmallow import ValidationError
 
-from srtctl.backends import SGLangProtocol, VLLMProtocol
+from srtctl.backends import SGLangBackend, VLLMBackend
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
@@ -58,8 +58,8 @@ def load(data):
 
 def test_independent_engine_arguments_environments_and_images():
     config = load(recipe())
-    assert isinstance(config.backend_for_role("prefill"), VLLMProtocol)
-    assert isinstance(config.backend_for_role("decode"), SGLangProtocol)
+    assert isinstance(config.backend_for_role("prefill"), VLLMBackend)
+    assert isinstance(config.backend_for_role("decode"), SGLangBackend)
     assert config.backend_for_role("prefill").get_config_for_mode("prefill") == {"tensor-parallel-size": 2}
     assert config.backend_for_role("decode").get_config_for_mode("decode") == {"tp-size": 2}
     assert config.backend_for_role("prefill").get_environment_for_mode("prefill") == {"PREFILL_ONLY": "1"}
@@ -87,7 +87,7 @@ def test_explicit_role_engines_do_not_inherit_sibling_options():
     data["roles"]["decode"]["engine"] = {"type": "sglang", "gpu_type": "h100"}
     config = load(data)
     assert config.backend_for_role("decode").gpu_type == "h100"
-    assert config.backend_for_role("prefill").gpu_type == SGLangProtocol().gpu_type
+    assert config.backend_for_role("prefill").gpu_type == SGLangBackend().gpu_type
     assert config.backend_for_role("prefill").get_config_for_mode("prefill") == {"tensor-parallel-size": 2}
     assert config.backend_for_role("decode").get_config_for_mode("decode") == {"tp-size": 2}
 

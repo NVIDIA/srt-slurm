@@ -34,12 +34,12 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints
 
 from srtctl.backends import (
-    AtomProtocol,
-    MockerProtocol,
-    SGLangProtocol,
-    TileRTProtocol,
-    TRTLLMProtocol,
-    VLLMProtocol,
+    AtomBackend,
+    MockerBackend,
+    SGLangBackend,
+    TileRTBackend,
+    TRTLLMBackend,
+    VLLMBackend,
 )
 from srtctl.backends.sglang import MooncakeKVStoreConfig
 from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
@@ -61,12 +61,12 @@ GENERATED_NOTICE = (
 
 # backend.type value -> dataclass. Order is the documentation order.
 BACKEND_TYPES: tuple[tuple[str, type], ...] = (
-    ("atom", AtomProtocol),
-    ("sglang", SGLangProtocol),
-    ("tilert", TileRTProtocol),
-    ("trtllm", TRTLLMProtocol),
-    ("vllm", VLLMProtocol),
-    ("mocker", MockerProtocol),
+    ("atom", AtomBackend),
+    ("sglang", SGLangBackend),
+    ("tilert", TileRTBackend),
+    ("trtllm", TRTLLMBackend),
+    ("vllm", VLLMBackend),
+    ("mocker", MockerBackend),
 )
 _BACKEND_CLASSES: set[type] = {cls for _, cls in BACKEND_TYPES}
 

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Every backend answers the BackendProtocol questions the stages ask; nothing duck-types a backend.
+"""Every backend answers the Backend questions the stages ask; nothing duck-types a backend.
 
 The stage mixins, schema validators, services, and dry-run read optional
 features (Mooncake, failover, batched startup) through the protocol. A backend
@@ -15,19 +15,19 @@ from pathlib import Path
 import pytest
 
 from srtctl.backends import (
-    AtomProtocol,
-    MockerProtocol,
+    AtomBackend,
+    MockerBackend,
     MooncakeKVStoreConfig,
-    SGLangProtocol,
-    TRTLLMProtocol,
-    TileRTProtocol,
+    SGLangBackend,
+    TRTLLMBackend,
+    TileRTBackend,
     VLLMFailoverConfig,
-    VLLMProtocol,
+    VLLMBackend,
 )
 from srtctl.core.topology import Process
 from srtctl.ports import MOONCAKE_MASTER_PORT
 
-BACKENDS = [SGLangProtocol, TRTLLMProtocol, VLLMProtocol, MockerProtocol, TileRTProtocol]
+BACKENDS = [SGLangBackend, TRTLLMBackend, VLLMBackend, MockerBackend, TileRTBackend]
 SRC = Path(__file__).resolve().parents[1] / "src" / "srtctl"
 DUCK_TYPED_BACKEND = re.compile(r"\b(getattr|hasattr)\((self\.|config\.|self\.config\.)?backend\b")
 
@@ -55,7 +55,7 @@ def test_optional_features_read_as_absent_by_default(backend_cls):
 
 
 def test_sglang_mooncake_env_reaches_workers_through_the_protocol():
-    backend = SGLangProtocol(mooncake_kv_store=MooncakeKVStoreConfig(env={"MOONCAKE_PROTOCOL": "rdma"}))
+    backend = SGLangBackend(mooncake_kv_store=MooncakeKVStoreConfig(env={"MOONCAKE_PROTOCOL": "rdma"}))
     env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2")
     assert env["MOONCAKE_MASTER"] == f"10.0.0.1:{MOONCAKE_MASTER_PORT}"
     assert env["MOONCAKE_LOCAL_HOSTNAME"] == "10.0.0.2"
@@ -63,7 +63,7 @@ def test_sglang_mooncake_env_reaches_workers_through_the_protocol():
 
 
 def test_vllm_failover_env_reaches_workers_through_the_protocol():
-    backend = VLLMProtocol(failover=VLLMFailoverConfig(shadow_engines=1, shared_dir="/dev/shm"))
+    backend = VLLMBackend(failover=VLLMFailoverConfig(shadow_engines=1, shared_dir="/dev/shm"))
     assert backend.failover is not None
     env = backend.get_failover_environment(_process(), "12345")
     assert env["ENGINE_ID"] == "0"
@@ -71,7 +71,7 @@ def test_vllm_failover_env_reaches_workers_through_the_protocol():
 
 
 def test_trtllm_batched_startup_rides_on_srun_config():
-    assert TRTLLMProtocol(sequential_node_start=2).get_srun_config().sequential_node_start == 2
+    assert TRTLLMBackend(sequential_node_start=2).get_srun_config().sequential_node_start == 2
 
 
 def test_no_module_probes_a_backend_with_getattr_or_hasattr():
@@ -81,10 +81,10 @@ def test_no_module_probes_a_backend_with_getattr_or_hasattr():
         for number, line in enumerate(path.read_text().splitlines(), start=1)
         if DUCK_TYPED_BACKEND.search(line)
     ]
-    assert offenders == [], "read the member on BackendProtocol instead:\n" + "\n".join(offenders)
+    assert offenders == [], "read the member on Backend instead:\n" + "\n".join(offenders)
 
 
-ALL_BACKENDS = [*BACKENDS, AtomProtocol]
+ALL_BACKENDS = [*BACKENDS, AtomBackend]
 
 LAUNCHER_LINES_THAT_MEAN_THE_ENGINE_IS_GONE = [
     "Rank0 Task exit code: 1",
@@ -114,7 +114,7 @@ def test_every_backend_names_its_fatal_log_patterns(backend_cls, mode):
 
 
 @pytest.mark.parametrize(
-    "backend_cls", [SGLangProtocol, VLLMProtocol, MockerProtocol, AtomProtocol, TileRTProtocol], ids=lambda c: c.__name__
+    "backend_cls", [SGLangBackend, VLLMBackend, MockerBackend, AtomBackend, TileRTBackend], ids=lambda c: c.__name__
 )
 def test_engines_whose_step_exits_with_the_engine_watch_nothing(backend_cls):
     assert backend_cls().fatal_log_patterns("decode") == ()
@@ -123,7 +123,7 @@ def test_engines_whose_step_exits_with_the_engine_watch_nothing(backend_cls):
 
 @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
 def test_trtllm_fatal_log_patterns_match_the_launcher_exit_line_but_not_a_clean_run(mode):
-    regexes = [re.compile(pattern) for pattern in TRTLLMProtocol().fatal_log_patterns(mode)]
+    regexes = [re.compile(pattern) for pattern in TRTLLMBackend().fatal_log_patterns(mode)]
     assert regexes, "TRT-LLM must name the lines its launcher prints when the engine dies"
 
     def matches(line: str) -> bool:
@@ -136,4 +136,4 @@ def test_trtllm_fatal_log_patterns_match_the_launcher_exit_line_but_not_a_clean_
 
 
 def test_trtllm_endpoint_steps_end_when_any_task_exits_badly():
-    assert TRTLLMProtocol().get_srun_config().kill_on_bad_exit is True
+    assert TRTLLMBackend().get_srun_config().kill_on_bad_exit is True

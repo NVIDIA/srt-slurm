@@ -9,37 +9,56 @@ Supported backends:
 - TRTLLM: TensorRT-LLM backend with prefill/decode disaggregation
 """
 
-from .atom import AtomProtocol
-from .base import BackendProtocol, BackendType, RoleSettings, SrunConfig
-from .mocker import MockerProtocol
-from .sglang import MooncakeKVStoreConfig, SGLangProtocol
-from .tilert import TileRTProtocol
-from .trtllm import TRTLLMProtocol
-from .vllm import VLLMFailoverConfig, VLLMMooncakeKVStoreConfig, VLLMProtocol
+from .atom import AtomBackend
+from .base import Backend, BackendType, RoleSettings, SrunConfig
+from .mocker import MockerBackend
+from .sglang import MooncakeKVStoreConfig, SGLangBackend
+from .tilert import TileRTBackend
+from .trtllm import TRTLLMBackend
+from .vllm import VLLMBackend, VLLMFailoverConfig, VLLMMooncakeKVStoreConfig
 
 # Union type for all backend configs
-BackendConfig = AtomProtocol | SGLangProtocol | TileRTProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
+BackendConfig = AtomBackend | SGLangBackend | TileRTBackend | TRTLLMBackend | VLLMBackend | MockerBackend
 
 __all__ = [
     # ATOM
-    "AtomProtocol",
-    "BackendConfig",
+    "AtomBackend",
     # Base types
-    "BackendProtocol",
+    "Backend",
+    "BackendConfig",
     "BackendType",
     # Mocker
-    "MockerProtocol",
+    "MockerBackend",
     # SGLang
     "MooncakeKVStoreConfig",
     "RoleSettings",
-    "SGLangProtocol",
+    "SGLangBackend",
     "SrunConfig",
     # TRTLLM
-    "TRTLLMProtocol",
+    "TRTLLMBackend",
     # TileRT
-    "TileRTProtocol",
+    "TileRTBackend",
+    "VLLMBackend",
     # vLLM
     "VLLMFailoverConfig",
     "VLLMMooncakeKVStoreConfig",
+]
+
+
+# Compatibility for existing Python imports.
+BackendProtocol = Backend
+AtomProtocol = AtomBackend
+SGLangProtocol = SGLangBackend
+TileRTProtocol = TileRTBackend
+TRTLLMProtocol = TRTLLMBackend
+VLLMProtocol = VLLMBackend
+MockerProtocol = MockerBackend
+__all__ += [
+    "AtomProtocol",
+    "BackendProtocol",
+    "MockerProtocol",
+    "SGLangProtocol",
+    "TRTLLMProtocol",
+    "TileRTProtocol",
     "VLLMProtocol",
 ]

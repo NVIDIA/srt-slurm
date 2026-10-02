@@ -551,12 +551,12 @@ def test_role_srun_options_override_recipe_on_worker_steps(
 
 
 def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "trtllm"
     mixin.config.dynamo.sidecar = True
-    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
     mixin.runtime.srun_options = {"exclusive": "", "kill-on-bad-exit": "0"}
     mixin.config.roles["prefill"] = RoleConfig(
         srun_options={"mem": "1000M", "kill-on-bad-exit": "0", "ntasks-per-node": "99"}
@@ -783,20 +783,20 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
 def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int, visibility_env: str) -> None:
     import os
 
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.runtime.gpus_per_node = 4
     mixin.runtime.visible_devices_env = visibility_env
     mixin.backend.type = "trtllm"
     mixin.runtime.srun_options = {"cpu-bind": "none", "kill-on-bad-exit": "1"}
-    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
     mixin.backend.build_worker_command.return_value = [
         "bash",
         "-c",
         f'printf "%s|%s|%s" "${visibility_env}" "$MASTER_ADDR" "$MASTER_PORT"',
     ]
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=2,
         num_decode=0,
         num_agg=0,
@@ -806,7 +806,7 @@ def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int, visibility_e
         gpus_per_node=4,
         available_nodes=("node0", "node1", "node2"),
     )
-    processes = TRTLLMProtocol().endpoints_to_processes([endpoints[worker]])
+    processes = TRTLLMBackend().endpoints_to_processes([endpoints[worker]])
     with (
         patch.dict("os.environ", {"SLURM_NTASKS_PER_NODE": "4"}),
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
@@ -844,13 +844,13 @@ def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int, visibility_e
 
 @pytest.mark.parametrize("override", [False, True])
 def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: Path, override: bool) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.backend.type = "trtllm"
     if override:
         mixin.runtime.environment = {"MASTER_ADDR": "custom-host", "MASTER_PORT": "12345"}
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=2,
         num_decode=0,
         num_agg=0,
@@ -860,7 +860,7 @@ def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: 
         gpus_per_node=4,
         available_nodes=("node0",),
     )
-    processes = TRTLLMProtocol().endpoints_to_processes(endpoints)
+    processes = TRTLLMBackend().endpoints_to_processes(endpoints)
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
         patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.1"),
@@ -875,13 +875,13 @@ def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: 
 
 @pytest.mark.parametrize("gpu_count, nodes, per_node", [(32, 8, 4), (2, 1, 2)])
 def test_endpoint_launch_uniform_nodes(tmp_path: Path, gpu_count: int, nodes: int, per_node: int) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
     from srtctl.core.topology import endpoints_to_processes
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.runtime.gpus_per_node = 4
-    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=1,
         num_decode=0,
         num_agg=0,
@@ -905,12 +905,12 @@ def test_endpoint_launch_uniform_nodes(tmp_path: Path, gpu_count: int, nodes: in
 
 
 def test_endpoint_rejects_incompatible_local_rank_mapping(tmp_path: Path) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
     from srtctl.core.topology import endpoints_to_processes
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.backend.type = "trtllm"
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=1,
         num_decode=0,
         num_agg=0,
@@ -934,12 +934,12 @@ def test_trtllm_endpoint_step_kills_on_bad_exit_without_sidecar(tmp_path: Path) 
     One launcher task exiting non-zero then ends the whole step, so srun exits and the
     registry sees the failure, instead of leaving the follower ranks blocked forever.
     """
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "trtllm"
     mixin.config.dynamo.sidecar = False
-    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -952,10 +952,10 @@ def test_trtllm_endpoint_step_kills_on_bad_exit_without_sidecar(tmp_path: Path) 
 
 
 def test_sglang_worker_step_is_not_killed_on_bad_exit(tmp_path: Path) -> None:
-    from srtctl.backends.sglang import SGLangProtocol
+    from srtctl.backends.sglang import SGLangBackend
 
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
-    mixin.backend.get_srun_config.return_value = SGLangProtocol().get_srun_config()
+    mixin.backend.get_srun_config.return_value = SGLangBackend().get_srun_config()
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),

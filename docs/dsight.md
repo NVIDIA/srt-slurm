@@ -423,7 +423,7 @@ The implementation separates these responsibilities:
   and SGLang. Each can provide any subset of NVTX names/prefixes, a single-line
   log decoder and exact metric definitions. Log decoders return typed identity, iteration and snapshot observations.
   Decoding has no clocks, joins, filesystem access or UI state.
-- `log_metrics/base.py` defines the `LogMetricGenerator` Protocol and immutable
+- `log_metrics/base.py` defines the `LogMetricGenerator` abstract base class and immutable
   metric definitions/events. `log_metrics/tokenspeed.py` implements its
   Dynamo–TokenSpeed dialect, and `log_metrics/sglang.py` implements SGLang batch
   snapshots and completed-request statistics. `log_metrics/reader.py` normalizes all registered

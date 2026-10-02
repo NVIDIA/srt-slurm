@@ -151,6 +151,7 @@ class TestFrontendRegistry:
 
     def test_dynamic_frontend_base_carries_the_registration_defaults(self, monkeypatch):
         """Dynamo is a DynamicFrontend; a future registration-based frontend inherits the same defaults."""
+        from srtctl.core.health import WorkerHealthResult
         from srtctl.frontends import DynamicFrontend, base
 
         assert isinstance(get_frontend("dynamo"), DynamicFrontend)
@@ -160,6 +161,24 @@ class TestFrontendRegistry:
         class ToyDiscovery(DynamicFrontend):
             type = "toy-discovery"
             worker_launch = "direct"
+
+            def parse_health(self, response_json, expected_prefill, expected_decode):
+                return WorkerHealthResult(ready=True, message="ready")
+
+            def worker_metrics_port(self, process, runtime):
+                return process.sys_port
+
+            def worker_endpoint_port(self, process, config, runtime):
+                return process.sys_port
+
+            def profiling_control_port(self, process, config, runtime):
+                return process.sys_port
+
+            def worker_ready_port(self, process):
+                return process.sys_port
+
+            def start_frontends(self, topology, runtime, config, backend, backend_processes, stop_event=None):
+                return []
 
         toy = get_frontend("toy-discovery")
         assert isinstance(toy, ToyDiscovery)
@@ -182,22 +201,15 @@ class TestFrontendRegistry:
 
         monkeypatch.setattr(base, "_FRONTENDS", dict(base._FRONTENDS))
 
+        from srtctl.frontends.static_router import StaticRouterFrontend
+
         @register_frontend("toy-router")
-        class ToyRouter:
+        class ToyRouter(StaticRouterFrontend):
+            type = "toy-router"
             required_backend = "vllm"
-            worker_launch = "direct"
-            expands_node_local_dp = False
-
-            @property
-            def type(self) -> str:
-                return "toy-router"
-
-            def validate(self, config) -> None:
-                del config
-
-            def worker_api_port(self, mode: str) -> str:
-                del mode
-                return "allocated"
+            executable = ("toy-router",)
+            pd_flag = "--disaggregated"
+            process_name = "toy-router"
 
         assert isinstance(get_frontend("toy-router"), ToyRouter)
         assert "toy-router" in list_frontend_types()
@@ -205,7 +217,7 @@ class TestFrontendRegistry:
     def test_schema_rejects_unknown_type_at_load(self):
         from marshmallow import ValidationError
 
-        from srtctl.backends import SGLangProtocol
+        from srtctl.backends import SGLangBackend
         from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 
         with pytest.raises(
@@ -217,7 +229,7 @@ class TestFrontendRegistry:
                 resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
                 roles={"agg": RoleConfig(nodes=1, workers=1)},
                 frontend=FrontendConfig(type="toy-router", enable_multiple_frontends=False),
-                engine=SGLangProtocol(),
+                engine=SGLangBackend(),
             )
 
     @pytest.mark.parametrize(
@@ -227,7 +239,7 @@ class TestFrontendRegistry:
     def test_schema_enforces_required_backend_generically(self, frontend_type, required):
         from marshmallow import ValidationError
 
-        from srtctl.backends import TRTLLMProtocol
+        from srtctl.backends import TRTLLMBackend
         from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 
         assert get_frontend(frontend_type).required_backend == required
@@ -238,7 +250,7 @@ class TestFrontendRegistry:
                 resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
                 roles={"agg": RoleConfig(nodes=1, workers=1)},
                 frontend=FrontendConfig(type=frontend_type, enable_multiple_frontends=False),
-                engine=TRTLLMProtocol(),
+                engine=TRTLLMBackend(),
             )
 
 
@@ -464,7 +476,7 @@ class MockConfig:
 @pytest.mark.parametrize("ready", [True, False])
 def test_sglang_router_starts_only_after_workers_are_healthy(tmp_path, ready):
     """Probe the advertised worker IPs before spawning the static router."""
-    from srtctl.backends.sglang import SGLangProtocol
+    from srtctl.backends.sglang import SGLangBackend
 
     stop = Event()
     probed = []
@@ -504,7 +516,7 @@ def test_sglang_router_starts_only_after_workers_are_healthy(tmp_path, ready):
         patch("srtctl.frontends.sglang.start_srun_process", side_effect=launch) as start,
     ):
         frontend = SGLangRouterFrontend()
-        args = (MockTopology(["node0"]), runtime, config, SGLangProtocol(), workers)
+        args = (MockTopology(["node0"]), runtime, config, SGLangBackend(), workers)
         if ready:
             processes = frontend.start_frontends(*args, stop_event=stop)
             assert len(processes) == 1
@@ -573,10 +585,10 @@ class TestSGLangGrpcScheme:
             topology=MockWorkerCounts(num_agg=1),
         )
 
-        # Mock SGLangProtocol backend with gRPC enabled
-        from srtctl.backends.sglang import SGLangProtocol
+        # Mock SGLangBackend backend with gRPC enabled
+        from srtctl.backends.sglang import SGLangBackend
 
-        backend = MagicMock(spec=SGLangProtocol)
+        backend = MagicMock(spec=SGLangBackend)
         backend.is_grpc_mode.side_effect = lambda mode: mode == "agg"
 
         # Mock runtime

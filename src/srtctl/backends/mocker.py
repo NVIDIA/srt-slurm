@@ -4,7 +4,7 @@
 """
 Dynamo Mocker backend configuration.
 
-Implements BackendProtocol for the dynamo.mocker scheduler simulator.
+Backend implementation for the dynamo.mocker scheduler simulator.
 Used for smoke-testing the full srt-slurm pipeline (SLURM, mounts,
 tokenizer, discovery, frontend, benchmark) without loading model weights.
 
@@ -27,11 +27,10 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
 
 if TYPE_CHECKING:
-    from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
@@ -41,11 +40,11 @@ WorkerMode = Literal["prefill", "decode", "agg"]
 
 
 @dataclass(frozen=True)
-class MockerProtocol:
-    """Dynamo Mocker protocol - implements BackendProtocol.
+class MockerBackend(Backend):
+    """Dynamo Mocker backend configuration and launch implementation.
 
     This frozen dataclass both holds configuration AND implements the
-    BackendProtocol methods for process allocation and launching.
+    Backend methods for process allocation and launching.
 
     The mocker is a drop-in replacement for real inference backends
     (sglang, vllm, trtllm) that simulates scheduling without loading
@@ -96,56 +95,8 @@ class MockerProtocol:
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
-    # BackendProtocol Implementation
+    # Backend Implementation
     # =========================================================================
-
-    def get_srun_config(self) -> "SrunConfig":
-        """Mocker uses per-process launching (one srun per node)."""
-        from srtctl.backends.base import SrunConfig
-
-        return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
-
-    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
-        """The srun step exits with the engine; its exit code is the whole story."""
-        return ()
-
-    @property
-    def mooncake_kv_store(self) -> None:
-        """The mocker has no Mooncake KV store block."""
-        return None
-
-    @property
-    def failover(self) -> None:
-        """The mocker has no shadow engine recovery."""
-        return None
-
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        return {}
-
-    def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
-        return {}
-
-    def should_set_visible_devices(self) -> bool:
-        return True
-
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """The role's mocker CLI overrides (``roles.<role>.args``)."""
-        return role_args(self.roles, mode)
-
-    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        """The role's environment (``roles.<role>.env``)."""
-        return role_env(self.roles, mode)
-
-    def get_process_environment(self, process: "Process") -> dict[str, str]:
-        """Get process-specific environment variables.
-
-        The mocker does not need per-process env vars (no NIXL ports, etc.).
-        """
-        return {}
-
-    def get_served_model_name(self, default: str) -> str:
-        """Get served model name — mocker uses default (model path basename)."""
-        return default
 
     def allocate_endpoints(
         self,
@@ -290,3 +241,7 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
         elif value is not None:
             args.extend([f"--{flag_name}", str(value)])
     return args
+
+
+# Compatibility for callers using the former class name.
+MockerProtocol = MockerBackend

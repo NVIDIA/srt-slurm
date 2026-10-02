@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from srtctl.backends.trtllm import TRTLLMProtocol
+from srtctl.backends.trtllm import TRTLLMBackend
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
 from srtctl.core.ip_utils import url_host
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
     from srtctl.core.topology import Endpoint, Process
-    from srtctl.frontends import FrontendProtocol
+    from srtctl.frontends import Frontend
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def _get_health_expectations(
 
     The frontend knows what its readiness endpoint counts (Dynamo generate
     registrations, Router-expanded DP ranks, logical workers); see
-    ``FrontendProtocol.health_expectations``.
+    ``Frontend.health_expectations``.
     """
     frontend = get_frontend(config.frontend.type)
     n_prefill, n_decode, count_desc = frontend.health_expectations(config, backend_processes)
@@ -122,7 +122,7 @@ class BenchmarkStageMixin:
         return placed_node(self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.placement.node")
 
     @property
-    def frontend(self) -> "FrontendProtocol | None":
+    def frontend(self) -> "Frontend | None":
         """The frontend implementation for ``frontend.type``; ``None`` for a services-only job."""
         if self.config.frontend.type == FRONTEND_NONE:
             return None
@@ -733,7 +733,7 @@ class BenchmarkStageMixin:
         # native commands and do not consume dynamo_metrics_flags.
         dynamo_trtllm_metrics_disabled = (
             frontend.worker_launch == "dynamo"
-            and isinstance(backend, TRTLLMProtocol)
+            and isinstance(backend, TRTLLMBackend)
             and not (
                 (not self.config.dynamo.sidecar and backend.dynamo_metrics_flags) or backend.publish_events_and_metrics
             )

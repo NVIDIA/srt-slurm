@@ -591,7 +591,7 @@ Ready when the service's log file contains a line matching the regular expressio
 
 `engine.type` selects one of the following; the remaining `engine` keys are that type's knobs.
 
-### AtomProtocol
+### AtomBackend
 
 `engine.type: atom`
 
@@ -603,18 +603,18 @@ Launch ``atom.entrypoints.openai_server`` on ROCm workers.
 | `connector` | one of `'mooncake'` | `'mooncake'` |  |
 | `mooncake_protocol` | one of `'rdma'`, `'tcp'` \| None | `None` |  |
 
-### SGLangProtocol
+### SGLangBackend
 
 `engine.type: sglang`
 
-SGLang protocol - implements BackendProtocol.
+SGLang backend configuration and launch implementation.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `type` | one of `'sglang'` | `'sglang'` |  |
 | `gpu_type` | str \| None | `None` |  |
 
-### TileRTProtocol
+### TileRTBackend
 
 `engine.type: tilert`
 
@@ -625,11 +625,11 @@ Launch TileRT's decode server with recipe-owned model and transport settings.
 | `type` | one of `'tilert'` | `'tilert'` |  |
 | `served_model_name` | str \| None | `None` |  |
 
-### TRTLLMProtocol
+### TRTLLMBackend
 
 `engine.type: trtllm`
 
-TRTLLM protocol - implements BackendProtocol.
+TRTLLM backend configuration and launch implementation.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -641,11 +641,11 @@ TRTLLM protocol - implements BackendProtocol.
 | `numa_memory_bind` | bool \| one of `'local'` \| None | `None` | Worker memory policy. None (default) uses `numactl -m 0,1` only for gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type). True uses nodes 0,1 for any GPU type or mode; False leaves the policy unchanged. CPU binding does not change these policies. "local" requires numa_cpu_bind=True and strictly binds memory to the task GPU's NUMA node. Local mode fails startup if GPU NUMA affinity is unknown. Local memory exhaustion can fail allocations; existing/shared pages are not migrated. |
 | `numa_cpu_bind` | bool | `False` | Optional stricter NUMA CPU affinity for the worker process, in addition to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID` approach (see bind-b300-prefill-cpus.sh) only pins the leader PID *after* launch, so secondary threads spawned by Python/UCX/MPI/TRT-LLM can still land cross-socket. When true, srtctl instead: 1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own internal NUMA thread-pinning, which fights with the OS-level mask) 2. wraps the worker command (prefill/decode/agg) in `taskset -c <cpu_list>`, applied *before* exec so every spawned thread inherits the mask. The CPU list is discovered at runtime (configs/numa_cpu_bind.sh) from the physical GPU this task owns, not a static SLURM_LOCALID table — a static table assumes SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two endpoints share a node (each gets its own srun step, so LOCALID restarts at 0 for both). Set numa_memory_bind="local" to also bind memory to that same NUMA node. |
 
-### VLLMProtocol
+### VLLMBackend
 
 `engine.type: vllm`
 
-vLLM protocol - implements BackendProtocol.
+vLLM backend configuration and launch implementation.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -658,11 +658,11 @@ vLLM protocol - implements BackendProtocol.
 | `dp_launch_mode` | one of `'per_gpu'`, `'per_node'` | `'per_node'` | DP process layout. Per-node lets vLLM manage the node-local portion of a DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP rendezvous when a replica is larger than the node-local GPU allocation. Per-GPU remains available as a deprecated compatibility layout. |
 | `vllm_serve_binary` | str | `'vllm'` | Executable used by direct aggregate frontend.type=vllm jobs. This can be set to vllm-rs (or its absolute path) to use the Rust OpenAI frontend. |
 
-### MockerProtocol
+### MockerBackend
 
 `engine.type: mocker`
 
-Dynamo Mocker protocol - implements BackendProtocol.
+Dynamo Mocker backend configuration and launch implementation.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

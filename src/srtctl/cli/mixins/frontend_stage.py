@@ -53,7 +53,7 @@ class FrontendStageMixin:
     Requires:
         self.config: SrtConfig
         self.runtime: RuntimeContext
-        self.backend: BackendProtocol
+        self.backend: Backend
         self.backend_processes: list[Process]
     """
 
@@ -63,7 +63,7 @@ class FrontendStageMixin:
 
     @property
     def backend(self) -> Any:
-        """Access the backend config (implements BackendProtocol)."""
+        """Access the backend config (implements Backend)."""
         return self.config.backend
 
     @property

@@ -4,7 +4,7 @@
 """
 SGLang backend configuration.
 
-Implements BackendProtocol for SGLang inference serving with prefill/decode disaggregation.
+Backend implementation for SGLang inference serving with prefill/decode disaggregation.
 """
 
 import builtins
@@ -23,7 +23,7 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env, role_kv_events
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DIST_INIT_PORTS,
@@ -37,7 +37,6 @@ from srtctl.ports import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
@@ -51,7 +50,7 @@ def _dist_init_port(process: "Process") -> int:
     if process.dist_init_port is None:
         raise ValueError(
             f"process {process.node} rank {process.node_rank} has no dist-init port; "
-            "build the topology with SGLangProtocol.endpoints_to_processes"
+            "build the topology with SGLangBackend.endpoints_to_processes"
         )
     return process.dist_init_port
 
@@ -61,7 +60,7 @@ def _nccl_port(process: "Process") -> int:
     if process.nccl_port is None:
         raise ValueError(
             f"process {process.node} rank {process.node_rank} has no NCCL port; "
-            "build the topology with SGLangProtocol.endpoints_to_processes"
+            "build the topology with SGLangBackend.endpoints_to_processes"
         )
     return process.nccl_port
 
@@ -102,11 +101,11 @@ class MooncakeKVStoreConfig:
 
 
 @dataclass(frozen=True)
-class SGLangProtocol:
-    """SGLang protocol - implements BackendProtocol.
+class SGLangBackend(Backend):
+    """SGLang backend configuration and launch implementation.
 
     This frozen dataclass both holds configuration AND implements the
-    BackendProtocol methods for process allocation and launching.
+    Backend methods for process allocation and launching.
 
     Example YAML:
         engine: sglang
@@ -136,37 +135,8 @@ class SGLangProtocol:
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
-    # BackendProtocol Implementation
+    # Backend Implementation
     # =========================================================================
-
-    def get_srun_config(self) -> "SrunConfig":
-        """SGLang uses per-process launching (one srun per node)."""
-        from srtctl.backends.base import SrunConfig
-
-        return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
-
-    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
-        """The srun step exits with the engine; its exit code is the whole story."""
-        return ()
-
-    @property
-    def failover(self) -> None:
-        """SGLang has no shadow engine recovery."""
-        return None
-
-    def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
-        return {}
-
-    def should_set_visible_devices(self) -> bool:
-        return True
-
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """The role's engine arguments (``roles.<role>.args``)."""
-        return role_args(self.roles, mode)
-
-    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        """The role's environment (``roles.<role>.env``)."""
-        return role_env(self.roles, mode)
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
@@ -567,3 +537,7 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
         elif value is not None:
             args.extend([f"--{flag_name}", str(value)])
     return args
+
+
+# Compatibility for callers using the former class name.
+SGLangProtocol = SGLangBackend

@@ -244,10 +244,10 @@ def test_engine_types_and_cluster_config_are_rendered() -> None:
     for heading in (
         "## Recipe",
         "## Engine types",
-        "### SGLangProtocol",
-        "### TRTLLMProtocol",
-        "### VLLMProtocol",
-        "### MockerProtocol",
+        "### SGLangBackend",
+        "### TRTLLMBackend",
+        "### VLLMBackend",
+        "### MockerBackend",
         "## Cluster config",
     ):
         assert heading in text, heading

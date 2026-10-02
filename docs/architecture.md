@@ -70,9 +70,9 @@ srtctl abstracts this complexity into a simple YAML interface while providing ex
                 |               |                |
                 v               v                v
 +---------------+  +---------------+  +------------------+
-|  BACKEND      |  |   FRONTEND    |  |   BENCHMARK      |
-|  BackendProto |  |   FrontendProto|  |   BenchmarkRunner|
-|  (SGLang)     |  |   (Dynamo/SGL) |  |   (SA-Bench/MMLU)|
+| BACKEND       |  | FRONTEND      |  | BENCHMARK        |
+| Backend       |  | Frontend      |  | BenchmarkRunner  |
+| (SGLang)      |  | (Dynamo/SGL)  |  | (SA-Bench/MMLU)  |
 +---------------+  +---------------+  +------------------+
                                 |
                                 v
@@ -124,21 +124,37 @@ Benefits:
 - Safe to pass around without defensive copying
 - Thread-safe by default
 
-### 3. Protocol Pattern (Duck Typing)
+### 3. Abstract Base Classes and Inheritance
 
-Using `typing.Protocol` instead of ABC for interfaces enables duck typing without inheritance:
+`Backend` and `Frontend` inherit `abc.ABC`. Concrete implementations inherit their
+base and supply all required abstract hooks before they can be instantiated. Optional
+behavior lives in the base class, so engines and routers override only what differs.
+Type checking also verifies method signatures at typed call sites.
+
+Backend implementations remain frozen dataclasses. They own the configuration fields
+and Marshmallow schema; the base provides behavior without adding schema fields.
+`RoleConfig` inherits the `RoleSettings` data contract used by backend role helpers.
 
 ```python
-class BackendProtocol(Protocol):
-    def build_worker_command(...) -> list[str]: ...
+from abc import ABC, abstractmethod
 
-# SGLangProtocol is a frozen dataclass that implements this
-# No inheritance required - just implement the methods
-@dataclass(frozen=True)
-class SGLangProtocol:
+class Backend(ABC):
+    @abstractmethod
     def build_worker_command(...) -> list[str]:
-        # implementation
+        raise NotImplementedError
+
+    # Other required launch hooks and shared optional defaults live here.
+
+@dataclass(frozen=True)
+class SGLangBackend(Backend):
+    def build_worker_command(...) -> list[str]:
+        # SGLang command construction
+        ...
 ```
+
+Previous Python names such as `BackendProtocol`, `FrontendProtocol`, and
+`SGLangProtocol` remain compatibility aliases for the corresponding classes.
+Recipe engine names, fields, and frontend selection are unchanged.
 
 ### 4. Registry Pattern
 
@@ -280,47 +296,52 @@ class RuntimeContext:
 
 ```
 src/srtctl/backends/
-|-- __init__.py     # Exports BackendConfig, protocols
-|-- base.py         # BackendProtocol definition
-|-- sglang.py       # SGLangProtocol implementation
-|-- trtllm.py       # TRTLLMProtocol implementation
+|-- __init__.py     # Exports BackendConfig, backend classes
+|-- base.py         # Backend definition
+|-- sglang.py       # SGLangBackend implementation
+|-- trtllm.py       # TRTLLMBackend implementation
 ```
 
-#### BackendProtocol
+#### Backend
+
+The required hooks identify the engine and define its launch behavior (signatures
+abbreviated here):
 
 ```python
-class BackendProtocol(Protocol):
+class Backend(ABC):
     @property
-    def type(self) -> str: ...
+    @abstractmethod
+    def type(self) -> str:
+        raise NotImplementedError
 
-    # Optional features every backend answers; None / {} when the engine has none.
-    @property
-    def mooncake_kv_store(self) -> MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | None: ...
-    @property
-    def failover(self) -> VLLMFailoverConfig | None: ...
-    def get_mooncake_worker_env(self, infra_node_ip, local_hostname) -> dict[str, str]: ...
-    def get_failover_environment(self, process, job_id) -> dict[str, str]: ...
-    def should_set_visible_devices(self) -> bool: ...
+    @abstractmethod
+    def allocate_endpoints(...) -> list[Endpoint]:
+        raise NotImplementedError
 
-    def get_srun_config(self) -> SrunConfig: ...  # launch_per_endpoint, sequential_node_start, mpi
-    def get_config_for_mode(self, mode: str) -> dict[str, Any]: ...
-    def get_environment_for_mode(self, mode: str) -> dict[str, str]: ...
+    @abstractmethod
+    def endpoints_to_processes(...) -> list[Process]:
+        raise NotImplementedError
 
-    def allocate_endpoints(...) -> list[Endpoint]: ...
-    def endpoints_to_processes(...) -> list[Process]: ...
-
-    def build_worker_command(
-        self, process, endpoint_processes, runtime,
-        frontend_type, nsys_prefix, dump_config_path
-    ) -> list[str]: ...
-    def get_process_environment(self, process) -> dict[str, str]: ...
+    @abstractmethod
+    def build_worker_command(...) -> list[str]:
+        raise NotImplementedError
 ```
 
-Consumers (stage mixins, schema validators, services, dry-run) call these members directly. There is no `getattr(backend, "x", default)` or `hasattr(backend, "f")` in `src/`: a backend that lacks a feature says so through the protocol, and logic that belongs to one engine narrows with `isinstance(backend, VLLMProtocol)` before reading typed fields.
+The base supplies per-process `SrunConfig()` settings, role-based
+`get_config_for_mode` and `get_environment_for_mode`, and neutral defaults for
+optional features: `mooncake_kv_store` and `failover` return `None`, their environment
+hooks and `get_process_environment` return `{}`, and `fatal_log_patterns` returns
+`()`. `should_set_visible_devices` defaults to `True`, and `get_served_model_name`
+returns the supplied default. Engines override these only when their behavior differs.
+
+Consumers (stage mixins, schema validators, services, dry-run) call these members
+directly. There is no `getattr(backend, "x", default)` or `hasattr(backend, "f")` in
+`src/`: a backend without a feature inherits the neutral answer. Logic that belongs
+to one engine narrows with `isinstance(backend, VLLMBackend)` before reading typed fields.
 
 #### Authoring surface: `engine:` and `roles:`
 
-The user-facing API for a backend is the 2.0 recipe, not the protocol dataclass. `engine:` names the engine (a string, or a mapping with engine-wide knobs such as vLLM `connector` and `dp_launch_mode`, or TRT-LLM `served_model_name`), and `roles:` holds everything that is per worker role:
+The user-facing API for a backend is the 2.0 recipe, not the Python backend dataclass. `engine:` names the engine (a string, or a mapping with engine-wide knobs such as vLLM `connector` and `dp_launch_mode`, or TRT-LLM `served_model_name`), and `roles:` holds everything that is per worker role:
 
 ```yaml
 engine: sglang
@@ -345,15 +366,15 @@ roles:
 
 `roles:` loads into `SrtConfig.roles`, one `RoleConfig` per role. `SrtConfig.topology` derives the per-role node, worker, and GPU counts the launch path reads, and `SrtConfig.backend` binds the roles onto the engine, which reads each role's `args`, `env`, `extra_args`, and `kv_events` from them. `nodes: colocate` reserves no decode nodes, and the loader rejects a colocated split that does not fit on the prefill nodes. The pre-2.0 spelling of these settings is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites a v1 recipe into `roles:`.
 
-#### SGLangProtocol
+#### SGLangBackend
 
-Implements BackendProtocol for SGLang with P/D disaggregation. Its `roles` carry each role's `env`, `args`, and `kv_events` (`roles.prefill`, `roles.decode`, `roles.agg`, bound at load); `get_config_for_mode(mode)` and `get_environment_for_mode(mode)` hand them to the launch path.
+Inherits `Backend` for SGLang with P/D disaggregation. Its `roles` carry each role's `env`, `args`, and `kv_events` (`roles.prefill`, `roles.decode`, `roles.agg`, bound at load); `get_config_for_mode(mode)` and `get_environment_for_mode(mode)` hand them to the launch path.
 
 **Launch strategy**: Per-process srun launching (one srun per worker process).
 
-#### TRTLLMProtocol
+#### TRTLLMBackend
 
-Implements BackendProtocol for TRTLLM with MPI-style launching. Its fields are the per-mode `env`, `args`, and `extra_args` from `roles.prefill` and `roles.decode`, plus the engine-wide `served_model_name` from `engine:`.
+Inherits `Backend` for TRTLLM with MPI-style launching. Its fields are the per-mode `env`, `args`, and `extra_args` from `roles.prefill` and `roles.decode`, plus the engine-wide `served_model_name` from `engine:`.
 
 **Launch strategy**: MPI-style launching (one srun per endpoint with all nodes together). Uses `trtllm-llmapi-launch` for distributed launching.
 
@@ -367,42 +388,47 @@ Implements BackendProtocol for TRTLLM with MPI-style launching. Its fields are t
 
 ```
 src/srtctl/frontends/
-|-- __init__.py     # Exports FrontendProtocol
-|-- base.py         # FrontendProtocol definition
+|-- __init__.py     # Exports Frontend
+|-- base.py         # Frontend definition
 |-- dynamo.py       # DynamoFrontend (NATS/etcd)
 |-- sglang.py       # SGLangFrontend (direct router)
 |-- trtllm_serve.py # TRTLLMServeFrontend (disagg TRT-LLM orchestrator)
 |-- vllm.py         # VLLMFrontend (direct aggregate vllm serve)
 ```
 
-#### FrontendProtocol
+#### Frontend
 
 Implementations register with `@register_frontend("<type>")` and are imported from the
-package `__init__`; `frontend.type` resolves through that registry. Two bases carry the
-shared behavior: `StaticRouterFrontend` (worker URLs on the CLI) and `DynamicFrontend`
-(workers register themselves). The protocol is the set of questions the rest of srtctl asks:
+package `__init__`; `frontend.type` resolves through that registry. Registration accepts
+only concrete `Frontend` subclasses and rejects abstract or unrelated classes.
+`StaticRouterFrontend` (worker URLs on the CLI) and `DynamicFrontend` (workers register
+themselves) inherit `Frontend` and supply shared router behavior.
+
+`Frontend` requires `type` and the hooks that choose worker ports, probe readiness,
+and start frontend processes. Its optional defaults include no additional services,
+no separate frontend metrics listener, no direct backend health URLs, logical worker
+counts for readiness, and no extra recipe validation. Subclasses inherit these
+answers or override them. The required hooks are:
 
 ```python
-class FrontendProtocol(Protocol):
-    type: str
-    required_backend: str | None  # pairing, checked at config load
-    worker_launch: Literal["dynamo", "direct"]  # backends read this, never the name
-    expands_node_local_dp: bool
-    metrics_path: str
+class Frontend(ABC):
+    @property
+    @abstractmethod
+    def type(self) -> str: ...
 
-    def validate(self, config) -> None: ...  # recipe rules (raise ValueError)
+    @abstractmethod
     def worker_api_port(self, mode) -> Literal["public", "allocated"]: ...
+    @abstractmethod
     def worker_metrics_port(self, process, runtime) -> int | None: ...
+    @abstractmethod
     def worker_endpoint_port(self, process, config, runtime) -> int | None: ...
+    @abstractmethod
     def profiling_control_port(self, process, config, runtime) -> int | None: ...
-    def profiling_control_is_leader_only(self, config) -> bool: ...
-    def direct_endpoint_nodes(self, processes) -> list[str]: ...
+    @abstractmethod
     def worker_ready_port(self, process) -> int: ...
-    def health_expectations(self, config, processes) -> tuple[int, int, str]: ...
+    @abstractmethod
     def probe_ready(self, host, port, expected_prefill, expected_decode, config) -> WorkerHealthResult: ...
-    def implied_services(self, config) -> list[EffectiveService]: ...
-    def frontend_metrics_port(self, frontend_args) -> int | None: ...
-    def get_backend_health_urls(self, backend, backend_processes, network_interface) -> list[str]: ...
+    @abstractmethod
     def start_frontends(
         self, topology, runtime, config, backend, backend_processes, stop_event
     ) -> list[ManagedProcess]: ...
@@ -469,21 +495,21 @@ src/srtctl/core/
 +------------------------------------------------------------------+
 |                        BACKEND LAYER                              |
 +------------------------------------------------------------------+
-| BackendProtocol                    | Implementations:             |
-| - get_srun_config()                | - SGLangProtocol             |
-| - allocate_endpoints()             |   (per-process srun)         |
-| - endpoints_to_processes()         | - TRTLLMProtocol             |
-| - build_worker_command()           |   (MPI-style srun)           |
+| Backend (ABC)                    | Implementations:              |
+| - get_srun_config()              | - SGLangBackend               |
+| - allocate_endpoints()           |   (per-process srun)          |
+| - endpoints_to_processes()       | - TRTLLMBackend               |
+| - build_worker_command()         |   (MPI-style srun)            |
 +------------------------------------------------------------------+
                                 |
                                 v
 +----------------------------------------------------------------------------------------------+
 |                                       FRONTEND LAYER                                         |
 +----------------------------------------------------------------------------------------------+
-| FrontendProtocol          | DynamoFrontend | SGLangRouter   | TRTLLMServe  | VLLMFrontend    |
-| - start_frontends()       | srun process   | srun process   | srun process | (no process)    |
-| - probe_ready()           | /health JSON   | /workers JSON  | bare 200     | /health+models  |
-| - worker_launch           | dynamo         | direct         | direct       | direct          |
+| Frontend (ABC)           | DynamoFrontend| SGLangRouter  | TRTLLMServe | VLLMFrontend        |
+| - start_frontends()      | srun process  | srun process  | srun process| (no process)        |
+| - probe_ready()          | /health JSON  | /workers JSON | bare 200    | /health+models      |
+| - worker_launch          | dynamo        | direct        | direct      | direct              |
 +----------------------------------------------------------------------------------------------+
                                 |
                                 v
@@ -893,23 +919,24 @@ class ManagedProcess:
 1. **Create backend module** at `backends/mybackend.py`:
 
 ```python
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import field
+from typing import Literal
+
 from marshmallow_dataclass import dataclass as marshmallow_dataclass
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings
 
 @marshmallow_dataclass(frozen=True)
-class MyBackendProtocol:
+class MyBackend(Backend):
     type: Literal["mybackend"] = "mybackend"
 
-    # Configuration fields
+    # Configuration fields stay on the concrete frozen dataclass.
     my_option: str | None = None
+    roles: Mapping[str, RoleSettings] = field(
+        default_factory=dict, metadata={"marshmallow_field": BoundRolesField()}
+    )
 
-    def get_config_for_mode(self, mode: str) -> dict[str, Any]:
-        """Return config dict for worker mode."""
-        ...
-
-    def get_environment_for_mode(self, mode: str) -> dict[str, str]:
-        """Return env vars for worker mode."""
-        ...
+    # Inherit role arguments, role environment, and optional feature defaults.
 
     def allocate_endpoints(self, ...) -> list[Endpoint]:
         """Allocate logical endpoints to nodes."""
@@ -930,9 +957,9 @@ class MyBackendProtocol:
 2. **Register in `backends/__init__.py`**:
 
 ```python
-from .mybackend import MyBackendProtocol
+from .mybackend import MyBackend
 
-BackendConfig = SGLangProtocol | MyBackendProtocol
+BackendConfig = SGLangBackend | MyBackend
 ```
 
 3. **Update BackendConfigField in schema.py** to handle polymorphic deserialization.
@@ -1107,14 +1134,14 @@ src/srtctl/
 |       |-- get_node_ip.sh
 |
 |-- backends/                # Backend implementations
-|   |-- __init__.py          # Exports BackendConfig, protocols
-|   |-- base.py              # BackendProtocol definition
-|   |-- sglang.py            # SGLangProtocol implementation
-|   |-- trtllm.py            # TRTLLMProtocol implementation
+|   |-- __init__.py          # Exports BackendConfig, backend classes
+|   |-- base.py              # Backend definition
+|   |-- sglang.py            # SGLangBackend implementation
+|   |-- trtllm.py            # TRTLLMBackend implementation
 |
 |-- frontends/               # Frontend implementations
-|   |-- __init__.py          # Exports FrontendProtocol
-|   |-- base.py              # FrontendProtocol definition
+|   |-- __init__.py          # Exports Frontend
+|   |-- base.py              # Frontend definition
 |   |-- dynamo.py            # DynamoFrontend (NATS/etcd)
 |   |-- sglang.py            # SGLangFrontend (direct router)
 |   |-- trtllm_serve.py      # TRTLLMServeFrontend (disagg orchestrator)
@@ -1162,7 +1189,7 @@ srtctl is a well-architected orchestration framework with:
 
 - **Clean separation of concerns**: Config, runtime, backend, frontend, benchmark layers
 - **Strong typing**: Frozen dataclasses with marshmallow validation
-- **Extensibility**: Protocol-based backends/frontends, decorator-based benchmark registration
+- **Extensibility**: Abstract base classes for backends/frontends, decorator-based benchmark registration
 - **Robust process management**: Registry, monitoring, graceful cleanup
 - **SLURM integration**: Proper container mounts, srun launching, nodelist parsing
 - **Modern Python**: 3.10+ syntax, comprehensive type hints, clear module structure

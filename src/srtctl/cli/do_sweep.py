@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
+from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMBackend
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
@@ -81,7 +81,7 @@ class SweepOrchestrator(
 
     @property
     def backend(self):
-        """Access the backend config (implements BackendProtocol)."""
+        """Access the backend config (implements Backend)."""
         return self.config.backend
 
     @functools.cached_property
@@ -135,7 +135,7 @@ class SweepOrchestrator(
         start, pointing at the Mooncake master on the infra node.
         """
         backend = self.config.backend
-        if not isinstance(backend, VLLMProtocol) or backend.mooncake_kv_store is None:
+        if not isinstance(backend, VLLMBackend) or backend.mooncake_kv_store is None:
             return
         store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
         store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME

@@ -36,7 +36,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
 
-from srtctl.backends import VLLMMooncakeKVStoreConfig, VLLMProtocol
+from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -258,9 +258,9 @@ def show_config_details(config: SrtConfig) -> None:
             console.print(f"{role}: engine={backend.type}, container={config.worker_container_for_role(role)}")
 
     if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
-        from srtctl.backends.trtllm import TRTLLMProtocol
+        from srtctl.backends.trtllm import TRTLLMBackend
 
-        if isinstance(config.backend, TRTLLMProtocol):
+        if isinstance(config.backend, TRTLLMBackend):
             descriptions = {
                 "--publish-metrics": "metrics only",
                 "--publish-events-and-metrics": "metrics and KV events",
@@ -274,9 +274,9 @@ def show_config_details(config: SrtConfig) -> None:
                 )
             )
 
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
-    if isinstance(config.backend, TRTLLMProtocol):
+    if isinstance(config.backend, TRTLLMBackend):
         if config.backend.numa_memory_bind == "local":
             console.print("TRT-LLM NUMA: GPU-local CPU binding and strict GPU-local memory binding (--bind-memory)")
         # Engine-yaml statistics keys srtctl defaults at config load
@@ -301,7 +301,7 @@ def show_config_details(config: SrtConfig) -> None:
     if config.frontend.type == "vllm":
         from srtctl.backends.vllm import find_vllm_orchestration_recipe_flags
 
-        if isinstance(config.backend, VLLMProtocol):
+        if isinstance(config.backend, VLLMBackend):
             orchestration_flags = find_vllm_orchestration_recipe_flags(config.backend)
             if orchestration_flags:
                 for role, flag_name in orchestration_flags:
@@ -768,7 +768,7 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
-            if isinstance(backend, VLLMProtocol):
+            if isinstance(backend, VLLMBackend):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON
                 # so operators can sanity-check protocol/device_name/sizes

@@ -38,15 +38,16 @@ from marshmallow import Schema, ValidationError, fields, validate
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
-    AtomProtocol,
+    AtomBackend,
     BackendConfig,
-    MockerProtocol,
-    SGLangProtocol,
-    TileRTProtocol,
-    TRTLLMProtocol,
+    MockerBackend,
+    SGLangBackend,
+    TileRTBackend,
+    TRTLLMBackend,
+    VLLMBackend,
     VLLMMooncakeKVStoreConfig,
-    VLLMProtocol,
 )
+from srtctl.backends.base import RoleSettings
 from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
@@ -477,11 +478,9 @@ class BackendConfigField(fields.Field):
     ) -> BackendConfig:
         """Deserialize an engine from its type string or its mapping's ``type`` key."""
         if value is None:
-            return SGLangProtocol()
+            return SGLangBackend()
 
-        if isinstance(
-            value, AtomProtocol | SGLangProtocol | TileRTProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
-        ):
+        if isinstance(value, AtomBackend | SGLangBackend | TileRTBackend | TRTLLMBackend | VLLMBackend | MockerBackend):
             return value
 
         if isinstance(value, str):
@@ -501,20 +500,20 @@ class BackendConfigField(fields.Field):
         backend_type = value.get("type", "sglang")
 
         if backend_type == "atom":
-            return AtomProtocol.Schema().load(value)
+            return AtomBackend.Schema().load(value)
         elif backend_type == "tilert":
-            return TileRTProtocol.Schema().load(value)
+            return TileRTBackend.Schema().load(value)
         elif backend_type == "sglang":
-            schema = SGLangProtocol.Schema()
+            schema = SGLangBackend.Schema()
             return schema.load(value)
         elif backend_type == "trtllm":
-            schema = TRTLLMProtocol.Schema()
+            schema = TRTLLMBackend.Schema()
             return schema.load(value)
         elif backend_type == "vllm":
-            schema = VLLMProtocol.Schema()
+            schema = VLLMBackend.Schema()
             return schema.load(value)
         elif backend_type == "mocker":
-            schema = MockerProtocol.Schema()
+            schema = MockerBackend.Schema()
             return schema.load(value)
         else:
             raise ValidationError(
@@ -531,18 +530,18 @@ class BackendConfigField(fields.Field):
 
     @staticmethod
     def _dump(value: Any) -> dict[str, Any]:
-        if isinstance(value, AtomProtocol):
-            return AtomProtocol.Schema().dump(value)
-        if isinstance(value, TileRTProtocol):
-            return TileRTProtocol.Schema().dump(value)
-        if isinstance(value, SGLangProtocol):
-            return SGLangProtocol.Schema().dump(value)
-        if isinstance(value, TRTLLMProtocol):
-            return TRTLLMProtocol.Schema().dump(value)
-        if isinstance(value, VLLMProtocol):
-            return VLLMProtocol.Schema().dump(value)
-        if isinstance(value, MockerProtocol):
-            return MockerProtocol.Schema().dump(value)
+        if isinstance(value, AtomBackend):
+            return AtomBackend.Schema().dump(value)
+        if isinstance(value, TileRTBackend):
+            return TileRTBackend.Schema().dump(value)
+        if isinstance(value, SGLangBackend):
+            return SGLangBackend.Schema().dump(value)
+        if isinstance(value, TRTLLMBackend):
+            return TRTLLMBackend.Schema().dump(value)
+        if isinstance(value, VLLMBackend):
+            return VLLMBackend.Schema().dump(value)
+        if isinstance(value, MockerBackend):
+            return MockerBackend.Schema().dump(value)
         return value
 
 
@@ -704,7 +703,7 @@ class HetComponent:
 
 
 @dataclass(frozen=True)
-class RoleConfig:
+class RoleConfig(RoleSettings):
     """One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
 
     Everything about a role lives here: the nodes and workers it gets, the GPUs per
@@ -2498,7 +2497,7 @@ class SrtConfig:
         if self.role_backends:
             serving = next(role for role in ("decode", "agg", "prefill") if role in self.role_backends)
             return self.role_backends[serving]
-        return _bind_roles(self.engine if self.engine is not None else SGLangProtocol(), self.roles)
+        return _bind_roles(self.engine if self.engine is not None else SGLangBackend(), self.roles)
 
     @property
     def role_containers(self) -> dict[str, str]:
@@ -2613,14 +2612,14 @@ class SrtConfig:
             raise ValidationError("role-specific engines do not yet support profiling or observability.nsys")
         gpus_per_node = self.resources.gpus_per_node
         for role, backend in [("default", self.backend), *self.active_role_backends()]:
-            if isinstance(backend, VLLMProtocol) and backend.discovers_workers():
+            if isinstance(backend, VLLMBackend) and backend.discovers_workers():
                 raise ValidationError("role-specific engines do not yet support vLLM discovery connectors")
             if backend.mooncake_kv_store is not None or backend.failover is not None:
                 raise ValidationError(
                     f"role-specific engines do not yet support implicit Mooncake stores or failover ({role})"
                 )
             if role != "default":
-                if isinstance(backend, SGLangProtocol) and backend.is_grpc_mode(cast("WorkerMode", role)):
+                if isinstance(backend, SGLangBackend) and backend.is_grpc_mode(cast("WorkerMode", role)):
                     raise ValidationError("role-specific engines do not yet support SGLang gRPC workers")
                 gpus = self.topology.gpus_per_worker(role)
                 if gpus > gpus_per_node and (backend.type == "trtllm" or gpus % gpus_per_node):
@@ -2767,7 +2766,7 @@ class SrtConfig:
         (both roles on the connector, one router on the head node, a P/D
         topology) live in ``VLLMRouterFrontend.validate``.
         """
-        if not isinstance(self.backend, VLLMProtocol) or not self.backend.discovers_workers():
+        if not isinstance(self.backend, VLLMBackend) or not self.backend.discovers_workers():
             return
         if self.frontend.type != "vllm-router":
             raise ValidationError(
@@ -2787,7 +2786,7 @@ class SrtConfig:
         failover = self.backend.failover
         if failover is None:
             return
-        assert isinstance(self.backend, VLLMProtocol)
+        assert isinstance(self.backend, VLLMBackend)
         if self.frontend.type != "dynamo":
             raise ValidationError(
                 f"engine.failover requires frontend.type: dynamo (shadow engines are elected by dynamo.vllm); "
@@ -2819,9 +2818,9 @@ class SrtConfig:
             return
         if self.frontend.type != "dynamo":
             raise ValidationError("dynamo.sidecar: true requires frontend.type: dynamo")
-        if not isinstance(self.backend, SGLangProtocol | VLLMProtocol | TRTLLMProtocol):
+        if not isinstance(self.backend, SGLangBackend | VLLMBackend | TRTLLMBackend):
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
-        if isinstance(self.backend, VLLMProtocol) and self.backend.dp_launch_mode != "per_node":
+        if isinstance(self.backend, VLLMBackend) and self.backend.dp_launch_mode != "per_node":
             raise ValidationError("vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported")
 
     def _warn_dp_launch_mode(self):
@@ -2831,7 +2830,7 @@ class SrtConfig:
         `vllm serve` owns the local DP ranks, so the layout is one process per
         node whatever dp_launch_mode says.
         """
-        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm" or self.dynamo.sidecar:
+        if not isinstance(self.backend, VLLMBackend) or self.frontend.type == "vllm" or self.dynamo.sidecar:
             return
         if self.backend.dp_launch_mode != "per_gpu":
             return
@@ -2979,7 +2978,7 @@ class SrtConfig:
         if not self.topology.is_disaggregated:
             return
 
-        if isinstance(self.backend, SGLangProtocol):
+        if isinstance(self.backend, SGLangBackend):
 
             def _sglang_has_mooncake(mode_cfg: dict | None) -> bool:
                 if not mode_cfg:
@@ -3001,7 +3000,7 @@ class SrtConfig:
                     "Add it to both roles (and 'disaggregation-ib-device') so workers "
                     "actually use the mooncake master srtslurm launches for you."
                 )
-        elif isinstance(self.backend, VLLMProtocol):
+        elif isinstance(self.backend, VLLMBackend):
 
             def _vllm_has_mooncake(mode_cfg: dict | None) -> bool:
                 if not mode_cfg:
@@ -3187,7 +3186,7 @@ class SrtConfig:
         either be overwritten or conflict with a different step window. Fail fast
         at recipe-read time instead.
         """
-        if not isinstance(self.backend, VLLMProtocol):
+        if not isinstance(self.backend, VLLMBackend):
             return
         for role, spec in self.roles.items():
             bad = [k for k in spec.args if str(k).replace("_", "-").startswith("profiler-config")]
@@ -3501,7 +3500,7 @@ class SrtConfig:
 
             role = get_frontend(self.frontend.type).model_name_role or role
         backend = self.backend_for_role(role)
-        if isinstance(backend, AtomProtocol):
+        if isinstance(backend, AtomBackend):
             # Without served-model-name, ATOM advertises the literal --model
             # argument: the worker's HF ID or container-visible path, including
             # node-local staging.
@@ -3547,7 +3546,7 @@ class SrtConfig:
         topology = self.topology
         if self.has_role_backends:
             return topology.total_nodes
-        if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
+        if isinstance(self.backend, VLLMBackend) and self.backend.should_colocate_prefill_decode(
             num_prefill=topology.num_prefill,
             num_decode=topology.num_decode,
             num_agg=topology.num_agg,

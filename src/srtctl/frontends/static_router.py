@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import shlex
 import threading
+from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -18,13 +19,12 @@ from srtctl.core.health import (
     wait_for_http_endpoints,
 )
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
-from srtctl.frontends.base import logical_health_expectations, numactl_prefix
+from srtctl.frontends.base import Frontend, numactl_prefix
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
-    from srtctl.services.implicit import EffectiveService
 
 logger = logging.getLogger(__name__)
 
@@ -38,40 +38,44 @@ class RouterWorker:
     bootstrap_port: int | None = None
 
 
-class StaticRouterFrontend:
+class StaticRouterFrontend(Frontend):
     """Base class for routers whose worker topology is supplied on the CLI.
 
     A subclass sets the class attributes, registers with ``@register_frontend``,
     and overrides only the hooks whose behavior differs.
     """
 
-    type: ClassVar[str]
-    required_backend: ClassVar[str | None]
-    model_name_role: ClassVar[str | None] = None
-    executable: ClassVar[tuple[str, ...]]
-    pd_flag: ClassVar[str]
-    process_name: ClassVar[str]
+    @property
+    @abstractmethod
+    def executable(self) -> tuple[str, ...]:
+        """Router executable and any fixed launch arguments."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def pd_flag(self) -> str:
+        """CLI flag enabling prefill/decode disaggregation."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def process_name(self) -> str:
+        """Name used for the router's managed process and logs."""
+        raise NotImplementedError
+
     log_label: ClassVar[str | None] = None
     allow_empty_workers: ClassVar[bool] = False
     # Probe every advertised HTTP worker for 200 before launching the router. A router whose
     # static registration expires when model loading outlasts its startup window sets this.
     wait_for_workers_before_start: ClassVar[bool] = False
-    # Workers are the engines' own servers, each on its allocated HTTP port.
-    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
-    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def health_endpoint(self) -> str:
         return "/workers"
 
-    def validate(self, config: Any) -> None:
-        """Recipe-level rules beyond the backend pairing; none by default."""
-
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """A routed worker binds its own allocated port; the router owns the public one."""
         return "allocated"
-
-    metrics_path: ClassVar[str] = "/metrics"
 
     def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
         """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing."""
@@ -86,12 +90,6 @@ class StaticRouterFrontend:
 
     def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
         return process.http_port if process.http_port > 0 else None
-
-    def profiling_control_is_leader_only(self, config: Any) -> bool:
-        return False
-
-    def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
-        return []
 
     def worker_ready_port(self, process: Process) -> int:
         return process.sys_port
@@ -109,18 +107,6 @@ class StaticRouterFrontend:
     ) -> WorkerHealthResult:
         """One GET of the router's worker registry, parsed against the expected counts."""
         return probe_json_health(host, port, self.health_endpoint, self.parse_health, expected_prefill, expected_decode)
-
-    def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
-        """The registry lists one entry per logical worker unless the router expands them."""
-        return logical_health_expectations(config)
-
-    def implied_services(self, config: Any) -> list[EffectiveService]:
-        """A static router needs no discovery plane."""
-        return []
-
-    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
-        """Metrics share the routing port unless the router runs a separate listener."""
-        return None
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert config values to CLI arguments, preserving repeated values."""

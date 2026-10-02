@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from marshmallow import ValidationError
 
-from srtctl.backends import SGLangProtocol
+from srtctl.backends import SGLangBackend
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.schema import RoleConfig, SrtConfig
 
@@ -66,7 +66,7 @@ def test_roles_load_as_role_configs_and_bind_the_engine() -> None:
         args={"tensor-parallel-size": 2, "disaggregation-mode": "prefill"},
     )
     assert cfg.roles["decode"].colocated
-    assert isinstance(cfg.engine, SGLangProtocol)
+    assert isinstance(cfg.engine, SGLangBackend)
 
     topology = cfg.topology
     assert (topology.num_prefill, topology.num_decode) == (6, 2)
@@ -346,7 +346,7 @@ def test_per_role_kv_events_and_sidecar() -> None:
             name="k",
             model={"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
             resources={"gpu_type": "h100", "gpus_per_node": 8},
-            engine=SGLangProtocol(roles={"agg": RoleConfig(kv_events=True)}),
+            engine=SGLangBackend(roles={"agg": RoleConfig(kv_events=True)}),
             roles={"agg": RoleConfig(nodes=1, workers=1)},
         )
 
