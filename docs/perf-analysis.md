@@ -18,22 +18,7 @@ and source file/field**:
 
 - **General:** TTFT p50/p95/p99 (ms), ITL p50/p99 (ms/token), and output throughput
   (tokens/s). Label input and total throughput separately when available.
-- **AgentX / InferenceX:** concurrent clients, p90 interactivity (tokens/s/user),
-  throughput/GPU and p90 TTFT; include E2E-normalized interactivity when used by
-  the selected Pareto view.
-- **AA-AgentPerf:** concurrent agents, output throughput, SLO thresholds and
-  pass/fail; p25 output speed and p95 TTFT, or E2E speed with the percentile
-  specified by that benchmark version.
-
-Keep ITL and per-request TPOT distinct. Use the benchmark's exact definitions,
-state the GPU denominator and measurement filters, and mark unavailable values
-N/A with a reason. Report baseline deltas at matched latency/interactivity/SLO.
-See [AgentX metrics][agentx-metrics], [interactivity definitions][inferencex-metrics]
-and [AA-AgentPerf methodology][agentperf-metrics].
-
-[agentx-metrics]: https://inferencex.semianalysis.com/blog/agentic-benchmark-agent-benchmark-guide
-[inferencex-metrics]: https://inferencex.semianalysis.com/about
-[agentperf-metrics]: https://artificialanalysis.ai/methodology/agentperf
+- **Agentic benchmarks:** include the metrics relevant to this run's benchmark.
 
 ## Contribution to a performance investigation
 
@@ -50,12 +35,7 @@ For each finding, connect the observed metric/data to the evidence and decision:
 - For DSight UI or dashboard evidence, include the report path and a saved view
   link with the relevant range, request and pinned metrics/panels, plus a short
   explanation of what to inspect. Follow the
-  [DSight guide and skills](dsight.md#agent-skills) and
-  [component dashboard guide](component-dashboard.md) as applicable.
+  [DSight guide and skills](dsight.md#agent-skills) as applicable.
 - Name/link each skill used to collect or analyze that evidence, its relevant
   command/query and resulting artifact, and explain how it helped test the
   hypothesis, locate a bottleneck, rule out a cause or validate an improvement.
-- Separate observations from hypotheses. Document coverage gaps, confounders
-  (including profiling overhead), whether the target was met, and the next
-  useful measurement. An artifact inventory alone is not an analysis; a root
-  cause or performance claim needs supporting evidence.
