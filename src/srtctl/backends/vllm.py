@@ -876,9 +876,10 @@ class VLLMBackend(Backend):
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        Dynamo DP+EP mode uses the configured per-GPU or per-node process layout.
-        For direct vLLM aggregate jobs, `vllm serve` manages local DP ranks from
-        one process, so keep the standard one-process-per-node topology.
+        Dynamo DP+EP mode and routers that expand node-local DP pools use the
+        configured per-GPU or per-node process layout. Any other direct worker is
+        one `vllm serve` that manages its DP ranks itself (headless on the other
+        nodes), so it keeps the standard topology: one API on the leader node.
         For standard TP mode, creates one process per node. Every process then
         gets the listeners its KV connector needs from the allocator (see
         ``_with_connector_ports``).
@@ -887,9 +888,10 @@ class VLLMBackend(Backend):
         from srtctl.frontends import get_frontend
 
         allocator = port_allocator_for(port_allocator, base_sys_port)
-        if get_frontend(frontend_type).worker_api_port("agg") == "public":
-            # The worker is the public endpoint: one `vllm serve` per node owns
-            # its local DP ranks, so the standard topology applies.
+        frontend = get_frontend(frontend_type)
+        if frontend.worker_launch == "direct" and not frontend.expands_node_local_dp:
+            # One `vllm serve` owns every DP rank of the endpoint, and only the
+            # leader serves the API, so the standard topology applies.
             processes = endpoints_to_processes(endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar)
         elif not any(self._is_dp_mode(ep.mode) for ep in endpoints):
             # Standard TP mode: one process per node, or one per engine of the

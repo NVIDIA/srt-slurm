@@ -32,6 +32,22 @@ and the decode worker recomputes the prompt
 ([upstream test note](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/e2e_test/router/test_pd_topologies.py#L105-L110)).
 srtctl does not reject that layout, but it is not a KV-disaggregated run.
 
+## vLLM data parallel
+
+A vLLM aggregated role with `data-parallel-size` (DP, optionally with
+`enable-expert-parallel`) is one `vllm serve` that load-balances its DP ranks itself.
+Across nodes, the leader node serves the API and the other nodes run headless engine
+ranks (`--nnodes`/`--node-rank`), so SMG receives one worker URL per DP deployment.
+This is the layout `frontend.type: vllm` uses, with the API on an allocated port.
+
+SMG's `--dp-aware` rank pinning is not used: it discovers `dp_size` over HTTP only
+from SGLang workers and registers any other HTTP worker as a plain worker
+([`discover_dp.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/workflow/steps/local/discover_dp.rs#L145-L156));
+for vLLM it needs gRPC workers
+([`discover_dp.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/workflow/steps/local/discover_dp.rs#L127-L141)),
+which srtctl does not configure. See
+[`examples/vllm/smg-dep16.yaml`](../examples/vllm/smg-dep16.yaml).
+
 ## Configuration
 
 ```yaml
@@ -54,7 +70,8 @@ frontend:
 - `enable_multiple_frontends` / `num_additional_frontends`: as for every router,
   several SMG replicas behind nginx, or one SMG on the public port.
 
-See [`examples/vllm/smg-agg.yaml`](../examples/vllm/smg-agg.yaml) (vLLM, aggregated)
+See [`examples/vllm/smg-agg.yaml`](../examples/vllm/smg-agg.yaml) (vLLM, aggregated),
+[`examples/vllm/smg-dep16.yaml`](../examples/vllm/smg-dep16.yaml) (vLLM, two-node DP16 with EP)
 and [`examples/sglang/smg-disagg.yaml`](../examples/sglang/smg-disagg.yaml) (SGLang, P/D).
 
 ## Launch and readiness

@@ -134,7 +134,7 @@ def test_setup_script_runs_in_the_smg_container() -> None:
     assert 'bash "${script_path}"' in preamble
 
 
-@pytest.mark.parametrize("recipe", ["vllm/smg-agg.yaml", "sglang/smg-disagg.yaml"])
+@pytest.mark.parametrize("recipe", ["vllm/smg-agg.yaml", "vllm/smg-dep16.yaml", "sglang/smg-disagg.yaml"])
 def test_examples_launch_smg_through_the_orchestrator(recipe: str) -> None:
     """The mock orchestrator starts the workers, then one SMG router fronting them."""
     path = EXAMPLES_DIR / recipe
@@ -147,3 +147,14 @@ def test_examples_launch_smg_through_the_orchestrator(recipe: str) -> None:
     expected = "--pd-disaggregation --prefill" if "disagg" in recipe else "--worker-urls"
     assert expected in launch
     assert f"--prometheus-port {SMG_METRICS_PORT}" in launch
+
+
+def test_multi_node_vllm_dp_is_one_smg_worker() -> None:
+    """vLLM balances its 16 DP ranks itself; SMG gets the leader's API and nothing from the headless node."""
+    plan = render_launch_plan(EXAMPLES_DIR / "vllm/smg-dep16.yaml")
+    serves = [line.strip() for line in plan.splitlines() if line.strip().startswith("vllm serve")]
+    assert len(serves) == 2
+    assert "--headless" in serves[1] and "--port" not in serves[1]
+    launch = next(line.strip() for line in plan.splitlines() if line.strip().startswith("smg launch"))
+    port = serves[0].split("--port ")[1].split()[0]
+    assert launch.startswith(f"smg launch --worker-urls http://127.0.0.1:{port} --host")

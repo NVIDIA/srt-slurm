@@ -2943,6 +2943,29 @@ class TestVLLMDataParallelMode:
         assert processes[0].node == "node0"
         assert processes[0].gpu_indices == frozenset(range(8))
 
+    @pytest.mark.parametrize("frontend_type", ["vllm", "smg"])
+    def test_direct_multi_node_dp_serves_one_api_on_the_leader(self, frontend_type):
+        """A direct worker that no router expands owns every DP rank; only its leader node serves the API."""
+        from srtctl.backends import VLLMBackend
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMBackend(
+            roles={"agg": RoleConfig(args={"data-parallel-size": 16, "enable-expert-parallel": True})}
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint], frontend_type=frontend_type)
+
+        assert [process.node for process in processes] == ["node0", "node1"]
+        assert processes[0].http_port > 0
+        assert processes[1].http_port == 0
+
     def test_direct_vllm_command_preserves_current_main_device_binding(self):
         """Direct vllm serve uses the public port and main's --device-ids binding."""
         from pathlib import Path
