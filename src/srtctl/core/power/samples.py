@@ -18,10 +18,13 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from srtctl.core.power.contract import (
+    DCGM_INT32_BLANK,
     SAMPLES_HEADER,
     SAMPLES_HEADER_V1,
+    SAMPLES_HEADER_V2,
     SAMPLES_SCHEMA_VERSION,
     SAMPLES_SCHEMA_VERSION_V1,
+    SAMPLES_SCHEMA_VERSION_V2,
     UTILIZATION_METRICS,
     Reason,
     dedupe,
@@ -32,8 +35,8 @@ from srtctl.core.power.contract import (
 class SampleRow:
     """One persisted observation of one GPU.
 
-    Utilization fields are optional riders on the mandatory power reading; a v1
-    file loads with both set to ``None``.
+    Utilization and temperature are optional. Older files leave unavailable
+    fields as ``None``.
     """
 
     timestamp_unix: float
@@ -44,6 +47,7 @@ class SampleRow:
     power_w: float
     gpu_util_pct: float | None = None
     sm_active: float | None = None
+    temperature_c: float | None = None
     schema_version: int = SAMPLES_SCHEMA_VERSION
 
     @property
@@ -61,6 +65,7 @@ class SampleRow:
             repr(self.power_w),
             _optional_cell(self.gpu_util_pct),
             _optional_cell(self.sm_active),
+            _optional_cell(self.temperature_c),
         ]
 
 
@@ -147,6 +152,8 @@ def read_samples(path: Path) -> tuple[tuple[SampleRow, ...], tuple[str, ...]]:
             header = next(reader, None)
             if header == list(SAMPLES_HEADER):
                 expected_version = SAMPLES_SCHEMA_VERSION
+            elif header == list(SAMPLES_HEADER_V2):
+                expected_version = SAMPLES_SCHEMA_VERSION_V2
             elif header == list(SAMPLES_HEADER_V1):
                 expected_version = SAMPLES_SCHEMA_VERSION_V1
             else:
@@ -202,11 +209,9 @@ def derive_observed_devices(rows: Sequence[SampleRow]) -> list[ObservedDevice]:
 def _parse_row(raw: list[str], expected_version: int) -> SampleRow | None:
     """Parse one row against the header's version; any mismatch is malformed.
 
-    A v1 header only admits seven-field v1 rows, and a v2 header only admits
-    nine-field v2 rows, so a file cannot mix generations.
+    Each header admits only its matching version and width; files cannot mix generations.
     """
-    is_v2 = expected_version == SAMPLES_SCHEMA_VERSION
-    expected_width = len(SAMPLES_HEADER) if is_v2 else len(SAMPLES_HEADER_V1)
+    expected_width = {1: len(SAMPLES_HEADER_V1), 2: len(SAMPLES_HEADER_V2), 3: len(SAMPLES_HEADER)}[expected_version]
     if len(raw) != expected_width:
         return None
     try:
@@ -220,9 +225,14 @@ def _parse_row(raw: list[str], expected_version: int) -> SampleRow | None:
                 metric.column: _parse_utilization_cell(raw[7 + offset], metric.max_value)
                 for offset, metric in enumerate(UTILIZATION_METRICS)
             }
-            if is_v2
+            if expected_version >= SAMPLES_SCHEMA_VERSION_V2
             else {}
         )
+        temperature = None
+        if expected_version == SAMPLES_SCHEMA_VERSION and raw[9]:
+            temperature = float(raw[9])
+            if not math.isfinite(temperature) or not -273.15 <= temperature < DCGM_INT32_BLANK:
+                return None
     except ValueError:
         return None
 
@@ -241,6 +251,7 @@ def _parse_row(raw: list[str], expected_version: int) -> SampleRow | None:
         gpu_uuid=gpu_uuid,
         power_w=power_w,
         schema_version=schema_version,
+        temperature_c=temperature,
         **utilization,
     )
 

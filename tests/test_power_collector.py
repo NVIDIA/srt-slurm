@@ -511,7 +511,7 @@ class TestCollection:
         assert _manifest(session)["samples_sha256"] == hashlib.sha256(samples.read_bytes()).hexdigest()
 
     def test_utilization_is_persisted_when_the_exporter_reports_it(self, tmp_path, exporters):
-        a = exporters(_body("a", utilization=True))
+        a = exporters(_body("a", utilization=True) + 'DCGM_FI_DEV_GPU_TEMP{gpu="0",UUID="GPU-a0"} 64.5\n')
         b = exporters(_body("b"))
         session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), windows=[])
         session.initialize()
@@ -529,6 +529,8 @@ class TestCollection:
             (float(10 * index), 0.1 * index) for index in range(GPUS_PER_NODE)
         ]
         assert all(row.gpu_util_pct is None and row.sm_active is None for row in by_host["node-b"])
+        assert node_a[0].temperature_c == 64.5
+        assert all(row.temperature_c is None for row in by_host["node-b"])
         assert outcome.status == "complete"
         assert outcome.reason_codes == ()
 
