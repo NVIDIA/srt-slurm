@@ -82,11 +82,3 @@ def test_router_inherits_optional_defaults_and_decorator_preserves_class(monkeyp
     assert frontend.direct_endpoint_nodes([]) == []
     assert frontend.profiling_control_is_leader_only(config) is False
     assert frontend.health_expectations(config, None) == (2, 3, "2P + 3D")
-
-
-def test_legacy_frontend_name_aliases_the_abstract_base_class():
-    from srtctl.frontends import FrontendProtocol
-    from srtctl.frontends.base import FrontendProtocol as BaseFrontendProtocol
-
-    assert FrontendProtocol is Frontend
-    assert BaseFrontendProtocol is Frontend

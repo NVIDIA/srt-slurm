@@ -148,9 +148,3 @@ __all__ = [
     # Health checks
     "wait_for_port",
 ]
-
-
-# Compatibility for existing Python imports.
-BackendProtocol = Backend
-SGLangProtocol = SGLangBackend
-__all__ += ["BackendProtocol", "SGLangProtocol"]

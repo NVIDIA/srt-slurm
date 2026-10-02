@@ -43,22 +43,3 @@ __all__ = [
     "VLLMFailoverConfig",
     "VLLMMooncakeKVStoreConfig",
 ]
-
-
-# Compatibility for existing Python imports.
-BackendProtocol = Backend
-AtomProtocol = AtomBackend
-SGLangProtocol = SGLangBackend
-TileRTProtocol = TileRTBackend
-TRTLLMProtocol = TRTLLMBackend
-VLLMProtocol = VLLMBackend
-MockerProtocol = MockerBackend
-__all__ += [
-    "AtomProtocol",
-    "BackendProtocol",
-    "MockerProtocol",
-    "SGLangProtocol",
-    "TRTLLMProtocol",
-    "TileRTProtocol",
-    "VLLMProtocol",
-]

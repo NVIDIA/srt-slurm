@@ -443,7 +443,3 @@ class TRTLLMBackend(Backend):
             startup_timeout=sidecar_config.sidecar_startup_timeout,
             rank_zero_only=True,
         )
-
-
-# Compatibility for callers using the former class name.
-TRTLLMProtocol = TRTLLMBackend

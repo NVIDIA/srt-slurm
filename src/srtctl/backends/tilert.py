@@ -119,7 +119,3 @@ class TileRTBackend(Backend):
                 for item in value if isinstance(value, list) else [value]:
                     command.extend([flag, str(item)])
         return command
-
-
-# Compatibility for callers using the former class name.
-TileRTProtocol = TileRTBackend

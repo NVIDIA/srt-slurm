@@ -152,8 +152,6 @@ class SGLangBackend(Backend):
         ...
 ```
 
-Previous Python names such as `BackendProtocol`, `FrontendProtocol`, and
-`SGLangProtocol` remain compatibility aliases for the corresponding classes.
 Recipe engine names, fields, and frontend selection are unchanged.
 
 ### 4. Registry Pattern

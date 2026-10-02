@@ -22,7 +22,6 @@ from srtctl.frontends.atomesh import AtomeshFrontend
 from srtctl.frontends.base import (
     FRONTEND_NONE,
     Frontend,
-    FrontendProtocol,
     get_frontend,
     list_frontend_types,
     register_frontend,
@@ -42,7 +41,6 @@ __all__ = [
     "DynamicFrontend",
     "DynamoFrontend",
     "Frontend",
-    "FrontendProtocol",
     "SGLangFrontend",
     "SGLangRouterFrontend",
     "TRTLLMServeFrontend",

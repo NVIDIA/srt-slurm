@@ -211,10 +211,6 @@ class Frontend(ABC):
         raise NotImplementedError
 
 
-# Preserve existing imports while requiring the same abstract base class.
-FrontendProtocol = Frontend
-
-
 def frontend_args_to_cli(args: dict[str, Any] | None) -> list[str]:
     """``frontend.args`` as CLI flags with keys verbatim: ``True`` is a bare flag, ``False``/``None`` are dropped."""
     if not args:

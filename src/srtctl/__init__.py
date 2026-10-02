@@ -87,9 +87,3 @@ __all__ = [
     # Logging
     "setup_logging",
 ]
-
-
-# Compatibility for existing Python imports.
-BackendProtocol = Backend
-SGLangProtocol = SGLangBackend
-__all__ += ["BackendProtocol", "SGLangProtocol"]

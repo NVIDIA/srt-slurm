@@ -182,7 +182,3 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
 
 def _canonical_arg_key(key: str) -> str:
     return key.lstrip("-").replace("_", "-")
-
-
-# Compatibility for callers using the former class name.
-AtomProtocol = AtomBackend

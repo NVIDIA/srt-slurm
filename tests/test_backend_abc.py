@@ -5,7 +5,6 @@
 
 from abc import abstractmethod
 from dataclasses import FrozenInstanceError, replace
-from importlib import import_module
 
 import pytest
 
@@ -64,15 +63,3 @@ def test_inherited_role_arguments_are_independent_copies(backend_cls):
     env["TEST"] = "changed"
     assert backend.get_environment_for_mode("agg")["TEST"] == "value"
     assert backend.get_config_for_mode("prefill") == {}
-
-
-@pytest.mark.parametrize("backend_cls", BACKENDS)
-def test_old_python_names_alias_the_concrete_backend(backend_cls):
-    old_name = backend_cls.__name__.replace("Backend", "Protocol")
-    assert getattr(import_module(backend_cls.__module__), old_name) is backend_cls
-    assert getattr(import_module("srtctl.backends"), old_name) is backend_cls
-
-
-def test_old_public_base_imports_alias_backend():
-    for module in ("srtctl", "srtctl.core", "srtctl.backends", "srtctl.backends.base"):
-        assert import_module(module).BackendProtocol is Backend

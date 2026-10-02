@@ -537,7 +537,3 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
         elif value is not None:
             args.extend([f"--{flag_name}", str(value)])
     return args
-
-
-# Compatibility for callers using the former class name.
-SGLangProtocol = SGLangBackend

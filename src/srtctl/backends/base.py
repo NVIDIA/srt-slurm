@@ -254,7 +254,3 @@ class Backend(ABC):
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from backend config, or return default."""
         return default
-
-
-# Compatibility for callers using the former class name.
-BackendProtocol = Backend
