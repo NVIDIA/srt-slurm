@@ -30,7 +30,6 @@ from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import DEFAULT_S3_ARCHIVE, DEFAULT_S3_EXCLUDE, AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
-from srtctl.ruter import normalize_run
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -234,17 +233,7 @@ class PostProcessStageMixin:
         # Compare against previous lockfile if this was a lockfile re-run
         self._compare_against_previous_lock()
 
-        # Keep the prepared bundle inside logs/ so the existing S3 sync below
-        # transfers it with the raw benchmark artifacts.
-        self._normalize_ruter()
-        # Build the component perf dashboard. Deliberately ordered BEFORE the S3 sync
-        # below: the sync ships the whole log dir, so building here is what gets
-        # perf_dashboard.{html,json} and its bundle off the cluster. Building after
-        # would leave them behind on a node whose /lustre scratch is transient.
-        self._build_perf_dashboard()
-
-        # Best-effort CPU/GPU energy-per-token report. Same ordering
-        # requirement as the perf dashboard above: must land before the S3
+        # Best-effort CPU/GPU energy-per-token report. Must land before the S3
         # sync so it ships with the rest of the log directory.
         self._build_power_energy_report()
 
@@ -266,47 +255,6 @@ class PostProcessStageMixin:
             if ai_config and ai_config.enabled:
                 logger.info("Running AI-powered failure analysis...")
                 self._run_ai_analysis(ai_config)
-
-    def _normalize_ruter(self) -> None:
-        """Best-effort Dynamo post-processing shared with the direct Bash lifecycle."""
-        if self.config.frontend.type != "dynamo" or not self.config.observability.enabled:
-            return
-        try:
-            report = normalize_run(
-                self.runtime.log_dir.parent,
-                output_dir=self.runtime.log_dir / ".ruter",
-            )
-            logger.info(
-                "ruter normalized router_events=%d worker_events=%d worker_logs=%d",
-                report.router_events,
-                report.worker_events,
-                report.worker_logs,
-            )
-            for warning in report.warnings:
-                logger.warning("ruter: %s", warning)
-        except Exception as error:  # noqa: BLE001
-            logger.warning("ruter normalization failed: %s", error)
-
-    def _build_perf_dashboard(self) -> None:
-        """Render the component perf dashboard from this run's own artifacts.
-
-        Turns whatever the run captured — the tachometer parquet or the client's own
-        metrics export, SPAN_CLOSED lines, the request trace, the per-iteration log —
-        into `<log_dir>/perf_dashboard.{html,json}` plus the intermediate bundle, so
-        one submission yields the page with no second hand-driven step from a
-        checkout.
-
-        Runs on every job; `observability.enabled` changes which tabs the page carries,
-        not whether it is built. Best-effort: `try_build` swallows its own failures,
-        and the extra guard here means even an import error cannot fail a benchmark
-        that has already produced results.
-        """
-        try:
-            from srtctl.analysis.perf_dashboard import try_build
-
-            try_build(self.config, self.runtime)
-        except Exception as e:  # noqa: BLE001 - visualisation is never fatal
-            logger.warning("Perf dashboard build skipped: %s", e)
 
     def _build_power_energy_report(self) -> None:
         """Best-effort CPU/GPU trapezoidal energy report, written next to the samples.
@@ -465,7 +413,7 @@ class PostProcessStageMixin:
 
         Ships the run identity (config, lockfile, job JSON, sbatch script, git
         state), every orchestrator, worker, frontend and service log, the
-        benchmark results, ``perf_dashboard.html`` and the tachometer parquet as
+        benchmark results, ``perf_dashboard.html`` (if present) and the tachometer parquet as
         loose objects, plus one compressed archive of the patterns in
         ``reporting.s3.archive``; the patterns in ``reporting.s3.exclude`` are
         skipped (see ``DEFAULT_S3_EXCLUDE`` for why). Returns the S3 URL of the

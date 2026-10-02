@@ -875,6 +875,7 @@ class TestMeasurementWindowArtifacts:
             expected_device_keys=set() if expected_device_keys is None else expected_device_keys,
             observed_devices=observed_devices,
             artifact_errors=errors,
+            sample_interval_seconds=1.0,
         )
         return rows[0], errors
 
@@ -1032,6 +1033,7 @@ class TestMeasurementWindowArtifacts:
         assert row.power_coverage_valid is False
         assert row.reason_codes == (
             Reason.SAMPLE_GAP_EXCEEDED,
+            Reason.SAMPLE_LOSS_EXCEEDED,
             Reason.MEASUREMENT_WINDOW_NOT_BRACKETED,
         )
         assert row.per_device_max_sample_gap_seconds == {"node-a/GPU-a": 6.0}
@@ -1045,7 +1047,7 @@ class TestMeasurementWindowArtifacts:
                 gpu_uuids=("GPU-a",),
                 first_sample_time_unix=999.0,
                 last_sample_time_unix=1003.0,
-                sample_times=(1000.0, 1003.0, 999.0, 1002.0),
+                sample_times=(1000.0, 1003.0, 999.0, 1002.0, 1001.0),
             )
         ]
 
@@ -1057,7 +1059,7 @@ class TestMeasurementWindowArtifacts:
 
         assert row.power_coverage_valid is True
         assert row.reason_codes == ()
-        assert row.per_device_max_sample_gap_seconds == {"node-a/GPU-a": 2.0}
+        assert row.per_device_max_sample_gap_seconds == {"node-a/GPU-a": 1.0}
 
     def test_three_duplicate_windows_are_each_recorded_once(self, tmp_path):
         windows_dir = tmp_path / WINDOWS_DIRNAME
@@ -1089,6 +1091,7 @@ class TestMeasurementWindowArtifacts:
             expected_device_keys=set(),
             observed_devices=[],
             artifact_errors=errors,
+            sample_interval_seconds=1.0,
         )
 
         assert rows[0].reason_codes == (Reason.MEASUREMENT_WINDOW_DUPLICATE,)

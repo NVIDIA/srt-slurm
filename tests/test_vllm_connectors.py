@@ -11,8 +11,9 @@ import json
 
 import pytest
 
-from srtctl.backends import VLLMProtocol, VLLMServerConfig
+from srtctl.backends import VLLMProtocol
 from srtctl.backends.vllm import _CONNECTOR_MAP, KVConnector, kv_connector_row
+from srtctl.core.schema import RoleConfig
 
 
 def test_table_presets_serialize_exactly_as_before():
@@ -22,6 +23,14 @@ def test_table_presets_serialize_exactly_as_before():
     )
     assert VLLMProtocol(connector="LMCache").kv_transfer_config("decode") == json.dumps(
         {"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"}
+    )
+    assert VLLMProtocol(connector="lmcache-mp").kv_transfer_config("prefill") == json.dumps(
+        {
+            "kv_connector": "LMCacheMPConnector",
+            "kv_connector_module_path": "lmcache.integration.vllm.lmcache_mp_connector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {"lmcache.mp.host": "tcp://localhost", "lmcache.mp.port": 8750},
+        }
     )
     assert VLLMProtocol(connector="kvbm").kv_transfer_config("decode") == json.dumps(
         {
@@ -33,7 +42,7 @@ def test_table_presets_serialize_exactly_as_before():
 
 
 def test_role_override_wins_for_that_role_only():
-    backend = VLLMProtocol(connector="nixl", vllm_config=VLLMServerConfig(decode={"connector": "lmcache"}))
+    backend = VLLMProtocol(connector="nixl", roles={"decode": RoleConfig(args={"connector": "lmcache"})})
 
     assert backend.connector_for_mode("prefill") == "nixl"
     assert backend.connector_for_mode("decode") == "lmcache"
@@ -67,3 +76,40 @@ def test_a_mode_dependent_role_follows_the_worker_mode():
     assert row.transfer_config("prefill")["kv_role"] == "kv_producer"
     assert row.transfer_config("decode")["kv_role"] == "kv_consumer"
     assert KVConnector("SomeConnector").transfer_config("prefill")["kv_role"] == "kv_both"
+
+
+@pytest.mark.parametrize(
+    ("aggregated", "expected"),
+    [
+        ({}, None),
+        ({"connector": "none"}, None),
+        ({"connector": "lmcache-mp"}, _CONNECTOR_MAP["lmcache-mp"].transfer_config("agg")),
+    ],
+)
+def test_direct_aggregate_worker_runs_only_its_role_connector(aggregated, expected):
+    """A direct `vllm serve` aggregate worker skips the P/D default connector but keeps the one its role names."""
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from srtctl.core.topology import Process
+    from srtctl.core.schema import RoleConfig
+
+    backend = VLLMProtocol(connector="nixl", roles={"agg": RoleConfig(args=aggregated)})
+    process = Process(
+        node="node0",
+        gpu_indices=frozenset(range(8)),
+        sys_port=8081,
+        http_port=0,
+        endpoint_mode="agg",
+        endpoint_index=0,
+        node_rank=0,
+    )
+    runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, frontend_port=9000)
+
+    cmd = backend.build_worker_command(
+        process=process, endpoint_processes=[process], runtime=runtime, frontend_type="vllm"
+    )
+
+    assert "--connector" not in cmd
+    kv_config = json.loads(cmd[cmd.index("--kv-transfer-config") + 1]) if "--kv-transfer-config" in cmd else None
+    assert kv_config == expected

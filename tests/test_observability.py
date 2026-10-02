@@ -3,6 +3,8 @@
 
 """Tests for the `observability.enabled` knob and its config expansion."""
 
+import copy
+
 import pytest
 import yaml
 from marshmallow import ValidationError
@@ -11,6 +13,7 @@ from srtctl.core.config import (
     expand_observability,
     expand_trtllm_engine_defaults,
     expand_trtllm_serve_defaults,
+    legacy_keys_present,
     load_config,
 )
 from srtctl.core.schema import SrtConfig
@@ -18,29 +21,36 @@ from srtctl.core.schema import SrtConfig
 BASE_CONFIG = {
     "name": "test-job",
     "model": {"path": "/models/test-model", "container": "test.sqsh", "precision": "fp8"},
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "prefill_nodes": 1,
-        "decode_nodes": 1,
-        "prefill_workers": 1,
-        "decode_workers": 1,
-    },
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "roles": {"prefill": {"nodes": 1, "workers": 1}, "decode": {"nodes": 1, "workers": 1}},
 }
 
 
+def _base_config() -> dict:
+    return copy.deepcopy(BASE_CONFIG)
+
+
 def _trtllm_config(**observability):
-    cfg = dict(BASE_CONFIG)
-    cfg["backend"] = {
-        "type": "trtllm",
-        "prefill_environment": {"TLLM_LOG_LEVEL": "INFO"},
-        "decode_environment": {},
-        "trtllm_config": {"prefill": {"max_batch_size": 256}, "decode": {"max_batch_size": 64}},
-    }
+    cfg = _base_config()
+    cfg["engine"] = {"type": "trtllm"}
+    cfg["roles"]["prefill"].update({"env": {"TLLM_LOG_LEVEL": "INFO"}, "args": {"max_batch_size": 256}})
+    cfg["roles"]["decode"].update({"env": {}, "args": {"max_batch_size": 64}})
     cfg["frontend"] = {"env": {"DYN_TOKENIZER": "fastokens"}}
     if observability:
         cfg["observability"] = observability
     return cfg
+
+
+def _role_args(cfg: dict) -> dict[str, dict]:
+    """``roles.<role>.args`` of every role that has args, by role."""
+    return {role: spec["args"] for role, spec in cfg["roles"].items() if "args" in spec}
+
+
+def _recipe(cfg):
+    """``cfg`` as a recipe file: the fixtures are in the recipe layout already, so only ``schema`` is added."""
+    recipe = {"schema": 2, **copy.deepcopy(cfg)}
+    assert not legacy_keys_present(recipe), legacy_keys_present(recipe)
+    return recipe
 
 
 # --------------------------------------------------------------- expansion ---
@@ -51,12 +61,8 @@ class TestExpandObservability:
         loaded = SrtConfig.Schema().load(expand_observability(cfg))
 
         assert loaded.backend.publish_metrics is True
-        # The master observability switch remains a superset that adds events.
-        assert loaded.backend.publish_events_and_metrics is (True if enabled is True else None)
-        expected = ("--publish-metrics",)
-        if enabled is True:
-            expected += ("--publish-events-and-metrics",)
-        assert loaded.backend.dynamo_metrics_flags == expected
+        assert loaded.backend.publish_events_and_metrics is None
+        assert loaded.backend.dynamo_metrics_flags == ("--publish-metrics",)
 
     @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
     @pytest.mark.parametrize("enabled", [False, True])
@@ -68,78 +74,88 @@ class TestExpandObservability:
         monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
         cfg = _trtllm_config(enabled=enabled)
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
-        cfg["backend"]["publish_metrics"] = publish_metrics
-        cfg["backend"]["publish_events_and_metrics"] = publish_events_and_metrics
+        cfg["engine"]["publish_metrics"] = publish_metrics
+        cfg["engine"]["publish_events_and_metrics"] = publish_events_and_metrics
         loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
-        expected_events = True if enabled and publish_events_and_metrics is None else publish_events_and_metrics
-        if expected_events is False:
-            expected_flags = ()
-        else:
-            expected_flags = ("--publish-metrics",) if publish_metrics else ()
-            if expected_events is True:
-                expected_flags += ("--publish-events-and-metrics",)
+        expected_events = publish_events_and_metrics
+        expected_flags = (
+            ("--publish-events-and-metrics",)
+            if expected_events is True
+            else (("--publish-metrics",) if publish_metrics else ())
+        )
 
-        # Check the raw recipe and a schema-dumped recipe through the same real
-        # loader: configured values and effective flags must both survive.
+        # Check the raw recipe and a recipe carrying the schema-dumped backend
+        # through the same real loader: configured values and effective flags
+        # must both survive.
+        recipe = _recipe(cfg)
         for filename in ("recipe.yaml", "roundtrip.yaml"):
             path = tmp_path / filename
-            path.write_text(yaml.safe_dump(cfg))
+            path.write_text(yaml.safe_dump(recipe))
             loaded = loader(path)
             assert loaded.backend.publish_metrics is publish_metrics
             assert loaded.backend.publish_events_and_metrics is expected_events
             assert loaded.backend.dynamo_metrics_flags == expected_flags
-            cfg = SrtConfig.Schema().dump(loaded)
-            assert cfg["backend"]["publish_metrics"] is publish_metrics
-            assert cfg["backend"]["publish_events_and_metrics"] is expected_events
+            dumped = SrtConfig.Schema().dump(loaded)
+            assert dumped["engine"]["publish_metrics"] is publish_metrics
+            assert dumped["engine"]["publish_events_and_metrics"] is expected_events
+            # A dump is a recipe: carry its engine and roles through the second pass.
+            recipe = _recipe({**cfg, "engine": dumped["engine"], "roles": dumped["roles"]})
 
     @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
     @pytest.mark.parametrize("publish_metrics", [False, True])
-    @pytest.mark.parametrize("explicit_optout", [False, True])
+    @pytest.mark.parametrize("explicit_false", [False, True])
     def test_schema_dump_preserves_omission_before_observability_is_enabled(
-        self, tmp_path, monkeypatch, loader_name, publish_metrics, explicit_optout
+        self, tmp_path, monkeypatch, loader_name, publish_metrics, explicit_false
     ):
-        """The sweep's load/dump/reload path must not turn omission into False."""
+        """A schema dump (a saved or locked recipe) preserves the legacy setting without promoting it."""
         monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
         cfg = _trtllm_config()
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
-        cfg["backend"]["publish_metrics"] = publish_metrics
-        if explicit_optout:
-            cfg["backend"]["publish_events_and_metrics"] = False
+        cfg["engine"]["publish_metrics"] = publish_metrics
+        if explicit_false:
+            cfg["engine"]["publish_events_and_metrics"] = False
         else:
-            assert "publish_events_and_metrics" not in cfg["backend"]
+            assert "publish_events_and_metrics" not in cfg["engine"]
         schema = SrtConfig.Schema()
         dumped = schema.dump(schema.load(cfg))
-        assert "publish_events_and_metrics" in dumped["backend"]
-        assert dumped["backend"]["publish_events_and_metrics"] is (False if explicit_optout else None)
+        assert "publish_events_and_metrics" in dumped["engine"]
+        assert dumped["engine"]["publish_events_and_metrics"] is (False if explicit_false else None)
 
         dumped["observability"]["enabled"] = True
         path = tmp_path / "enable-observability.yaml"
-        path.write_text(yaml.safe_dump(dumped))
+        path.write_text(
+            yaml.safe_dump(
+                _recipe(
+                    {
+                        **cfg,
+                        "engine": dumped["engine"],
+                        "roles": dumped["roles"],
+                        "observability": dumped["observability"],
+                    }
+                )
+            )
+        )
         loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
         loaded = loader(path)
 
         assert loaded.backend.publish_metrics is publish_metrics
-        assert loaded.backend.publish_events_and_metrics is (not explicit_optout)
-        if explicit_optout:
-            assert loaded.backend.dynamo_metrics_flags == ()
-        else:
-            expected = ("--publish-metrics",) if publish_metrics else ()
-            assert loaded.backend.dynamo_metrics_flags == (*expected, "--publish-events-and-metrics")
+        assert loaded.backend.publish_events_and_metrics is (False if explicit_false else None)
+        assert loaded.backend.dynamo_metrics_flags == (("--publish-metrics",) if publish_metrics else ())
 
     def test_disabled_is_a_noop(self):
         cfg = expand_observability(_trtllm_config(enabled=False))
-        assert "publish_events_and_metrics" not in cfg["backend"]
-        assert "DYN_LOGGING_SPAN_EVENTS" not in cfg["backend"]["prefill_environment"]
+        assert "publish_events_and_metrics" not in cfg["engine"]
+        assert "DYN_LOGGING_SPAN_EVENTS" not in cfg["roles"]["prefill"]["env"]
 
     def test_absent_block_is_a_noop(self):
         cfg = expand_observability(_trtllm_config())
-        assert "publish_events_and_metrics" not in cfg["backend"]
+        assert "publish_events_and_metrics" not in cfg["engine"]
 
     def test_enabled_expands_span_env_on_all_three_roles(self):
         cfg = expand_observability(_trtllm_config(enabled=True))
         for env in (
-            cfg["backend"]["prefill_environment"],
-            cfg["backend"]["decode_environment"],
+            cfg["roles"]["prefill"]["env"],
+            cfg["roles"]["decode"]["env"],
             cfg["frontend"]["env"],
         ):
             assert env["DYN_LOGGING_SPAN_EVENTS"] == "true"
@@ -162,88 +178,90 @@ class TestExpandObservability:
 
         # Workers have no RequestTracker; tracing them would write empty files.
         for mode in ("prefill", "decode"):
-            assert "DYN_REQUEST_TRACE" not in cfg["backend"][f"{mode}_environment"]
+            assert "DYN_REQUEST_TRACE" not in cfg["roles"][mode]["env"]
 
     def test_enabled_turns_on_metrics_surface_and_iteration_stats(self):
         cfg = expand_observability(_trtllm_config(enabled=True))
         assert "telemetry" not in cfg
-        assert cfg["backend"]["publish_events_and_metrics"] is True
+        assert "publish_events_and_metrics" not in cfg["engine"]
         assert SrtConfig.Schema().load(cfg).backend.publish_metrics is True
         for mode in ("prefill", "decode"):
-            section = cfg["backend"]["trtllm_config"][mode]
+            section = cfg["roles"][mode]["args"]
             # enable_iter_perf_stats is what produces trtllm_kv_cache_*_blocks.
             assert section["enable_iter_perf_stats"] is True
             assert section["return_perf_metrics"] is True
 
-    def test_enabled_creates_engine_sections_for_the_modes_in_use(self):
+    def test_enabled_creates_args_for_every_role(self):
         """A recipe with no engine yaml still gets the iteration-level gauges:
-        the sections the layout uses are created; unused ones are not."""
+        every declared role gets args; no role is invented."""
         cfg = _trtllm_config(enabled=True)
-        del cfg["backend"]["trtllm_config"]
+        for spec in cfg["roles"].values():
+            spec.pop("args", None)
         out = expand_observability(cfg)
-        assert out["backend"]["trtllm_config"] == {
+        assert _role_args(out) == {
             "prefill": {"enable_iter_perf_stats": True, "return_perf_metrics": True},
             "decode": {"enable_iter_perf_stats": True, "return_perf_metrics": True},
         }
+        assert "agg" not in out["roles"]
 
     def test_explicit_recipe_values_win(self):
         """setdefault semantics: an explicit recipe value must never be clobbered."""
         cfg = _trtllm_config(enabled=True)
-        cfg["backend"]["decode_environment"]["DYN_LOG"] = "info"
-        cfg["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] = False
-        cfg["backend"]["publish_events_and_metrics"] = False
+        cfg["roles"]["decode"]["env"]["DYN_LOG"] = "info"
+        cfg["roles"]["decode"]["args"]["return_perf_metrics"] = False
+        cfg["engine"]["publish_events_and_metrics"] = False
         out = expand_observability(cfg)
-        assert out["backend"]["decode_environment"]["DYN_LOG"] == "info"
-        assert out["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] is False
-        assert out["backend"]["publish_events_and_metrics"] is False
+        assert out["roles"]["decode"]["env"]["DYN_LOG"] == "info"
+        assert out["roles"]["decode"]["args"]["return_perf_metrics"] is False
+        assert out["engine"]["publish_events_and_metrics"] is False
 
     @pytest.mark.parametrize("frontend_type", ["dynamo", "trtllm_serve"])
     @pytest.mark.parametrize("publish_metrics", [False, True])
     @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
-    def test_publishing_optouts_are_preserved_and_only_disabled_dynamo_metrics_warn(
+    def test_explicit_publishing_settings_are_preserved_without_legacy_warnings(
         self, caplog, frontend_type, publish_metrics, publish_events_and_metrics
     ):
         cfg = _trtllm_config(enabled=True)
         cfg["frontend"]["type"] = frontend_type
-        cfg["backend"]["publish_metrics"] = publish_metrics
-        cfg["backend"]["publish_events_and_metrics"] = publish_events_and_metrics
+        cfg["engine"]["publish_metrics"] = publish_metrics
+        cfg["engine"]["publish_events_and_metrics"] = publish_events_and_metrics
 
         with caplog.at_level("WARNING"):
             out = expand_observability(cfg)
 
-        assert out["backend"]["publish_metrics"] is publish_metrics
-        assert out["backend"]["publish_events_and_metrics"] is publish_events_and_metrics
+        assert out["engine"]["publish_metrics"] is publish_metrics
+        assert out["engine"]["publish_events_and_metrics"] is publish_events_and_metrics
         publishing_warnings = [record for record in caplog.records if "publish_events_and_metrics" in record.message]
-        should_warn = frontend_type == "dynamo" and publish_events_and_metrics is False
-        assert bool(publishing_warnings) is should_warn
+        assert not publishing_warnings
 
-    def test_observability_can_publish_legacy_metrics_when_standalone_flag_is_disabled(self, caplog):
+    def test_observability_preserves_disabled_metrics_without_enabling_legacy_flag(self, caplog):
         cfg = _trtllm_config(enabled=True)
-        cfg["backend"]["publish_metrics"] = False
+        cfg["engine"]["publish_metrics"] = False
 
         with caplog.at_level("WARNING"):
             out = expand_observability(cfg)
 
-        assert out["backend"]["publish_metrics"] is False
-        assert out["backend"]["publish_events_and_metrics"] is True
+        assert out["engine"]["publish_metrics"] is False
+        assert "publish_events_and_metrics" not in out["engine"]
+        assert SrtConfig.Schema().load(out).backend.dynamo_metrics_flags == ()
         assert not [record for record in caplog.records if "publish_metrics" in record.message]
 
     def test_preexisting_env_is_preserved(self):
         cfg = expand_observability(_trtllm_config(enabled=True))
-        assert cfg["backend"]["prefill_environment"]["TLLM_LOG_LEVEL"] == "INFO"
+        assert cfg["roles"]["prefill"]["env"]["TLLM_LOG_LEVEL"] == "INFO"
         assert cfg["frontend"]["env"]["DYN_TOKENIZER"] == "fastokens"
 
     def test_non_trtllm_backend_keeps_span_env_but_no_engine_keys(self):
-        cfg = dict(BASE_CONFIG)
-        cfg["backend"] = {"type": "sglang"}
+        cfg = _base_config()
+        cfg["engine"] = "sglang"
         cfg["observability"] = {"enabled": True}
         out = expand_observability(cfg)
-        assert out["backend"]["prefill_environment"]["DYN_LOGGING_SPAN_EVENTS"] == "true"
-        assert "publish_events_and_metrics" not in out["backend"]
+        assert out["roles"]["prefill"]["env"]["DYN_LOGGING_SPAN_EVENTS"] == "true"
+        assert out["engine"] == "sglang"
 
     def test_missing_sections_are_created(self):
-        out = expand_observability({**BASE_CONFIG, "observability": {"enabled": True}})
-        assert out["backend"]["prefill_environment"]["DYN_LOGGING_JSONL"] == "true"
+        out = expand_observability({**_base_config(), "observability": {"enabled": True}})
+        assert out["roles"]["prefill"]["env"]["DYN_LOGGING_JSONL"] == "true"
         assert out["frontend"]["env"]["DYN_LOGGING_JSONL"] == "true"
 
     def test_nested_tachometer_settings_stay_under_observability(self):
@@ -368,7 +386,7 @@ class TestExpandObservability:
     def test_retired_frequency_knob_is_rejected_on_power_telemetry(self):
         """Power telemetry's ``default_frequency`` was a period in seconds
         despite its name; it is retired in favor of ``collect_interval_ms``."""
-        cfg = dict(BASE_CONFIG)
+        cfg = _base_config()
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
         cfg["telemetry"] = {
             "enabled": True,
@@ -424,7 +442,7 @@ class TestTrtllmServeDefaults:
     def test_return_perf_metrics_defaults_on_without_observability(self):
         out = expand_trtllm_serve_defaults(_trtllm_serve_config())
         for mode in ("prefill", "decode"):
-            section = out["backend"]["trtllm_config"][mode]
+            section = out["roles"][mode]["args"]
             assert section["return_perf_metrics"] is True
             # Only this key is touched; the recipe's own values survive.
             assert "enable_iter_perf_stats" not in section
@@ -432,69 +450,73 @@ class TestTrtllmServeDefaults:
 
     def test_explicit_false_wins_and_warns(self, caplog):
         cfg = _trtllm_serve_config()
-        cfg["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] = False
+        cfg["roles"]["decode"]["args"]["return_perf_metrics"] = False
         with caplog.at_level("WARNING"):
             out = expand_trtllm_serve_defaults(cfg)
-        assert out["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] is False
-        assert out["backend"]["trtllm_config"]["prefill"]["return_perf_metrics"] is True
+        assert out["roles"]["decode"]["args"]["return_perf_metrics"] is False
+        assert out["roles"]["prefill"]["args"]["return_perf_metrics"] is True
         assert any("decode" in rec.message and "/prometheus/metrics" in rec.message for rec in caplog.records)
 
     def test_dynamo_frontend_is_untouched(self):
         cfg = _trtllm_config()
         out = expand_trtllm_serve_defaults(cfg)
         for mode in ("prefill", "decode"):
-            assert "return_perf_metrics" not in out["backend"]["trtllm_config"][mode]
+            assert "return_perf_metrics" not in out["roles"][mode]["args"]
 
     def test_non_trtllm_backend_is_untouched(self):
-        cfg = dict(BASE_CONFIG)
+        cfg = _base_config()
         cfg["frontend"] = {"type": "trtllm_serve"}
-        cfg["backend"] = {"type": "sglang", "sglang_config": {"prefill": {}}}
+        cfg["engine"] = {"type": "sglang"}
+        cfg["roles"]["prefill"]["args"] = {}
         out = expand_trtllm_serve_defaults(cfg)
-        assert out["backend"] == {"type": "sglang", "sglang_config": {"prefill": {}}}
+        assert out["engine"] == {"type": "sglang"}
+        assert _role_args(out) == {"prefill": {}}
 
-    def test_missing_sections_are_created_for_the_modes_in_use(self):
+    def test_missing_args_are_created_for_every_role(self):
         """A disaggregated recipe with no engine yaml at all still gets the route:
-        prefill and decode sections are created; aggregated is not (unused)."""
+        prefill and decode args are created; no agg role is invented."""
         cfg = _trtllm_serve_config()
-        del cfg["backend"]["trtllm_config"]
+        for spec in cfg["roles"].values():
+            spec.pop("args", None)
         out = expand_trtllm_serve_defaults(cfg)
-        assert out["backend"]["trtllm_config"] == {
+        assert _role_args(out) == {
             "prefill": {"return_perf_metrics": True},
             "decode": {"return_perf_metrics": True},
         }
+        assert "agg" not in out["roles"]
 
     def test_partial_sections_are_completed(self):
         cfg = _trtllm_serve_config()
-        del cfg["backend"]["trtllm_config"]["decode"]
+        del cfg["roles"]["decode"]["args"]
         out = expand_trtllm_serve_defaults(cfg)
-        assert out["backend"]["trtllm_config"]["prefill"]["return_perf_metrics"] is True
-        assert out["backend"]["trtllm_config"]["decode"] == {"return_perf_metrics": True}
-        assert "aggregated" not in out["backend"]["trtllm_config"]
+        assert out["roles"]["prefill"]["args"]["return_perf_metrics"] is True
+        assert out["roles"]["decode"]["args"] == {"return_perf_metrics": True}
+        assert "agg" not in out["roles"]
 
     def test_aggregated_layout_gets_the_default_and_can_opt_out(self, caplog):
-        cfg = dict(BASE_CONFIG)
-        cfg["resources"] = {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1}
+        cfg = _base_config()
+        cfg["roles"] = {"agg": {"nodes": 1, "workers": 1, "args": {"max_batch_size": 8}}}
         cfg["frontend"] = {"type": "trtllm_serve", "enable_multiple_frontends": False}
-        cfg["backend"] = {"type": "trtllm", "trtllm_config": {"aggregated": {"max_batch_size": 8}}}
+        cfg["engine"] = "trtllm"
         out = expand_trtllm_serve_defaults(cfg)
-        assert out["backend"]["trtllm_config"]["aggregated"]["return_perf_metrics"] is True
-        assert "prefill" not in out["backend"]["trtllm_config"]
+        assert out["roles"]["agg"]["args"]["return_perf_metrics"] is True
+        assert "prefill" not in out["roles"]
 
-        cfg["backend"]["trtllm_config"]["aggregated"]["return_perf_metrics"] = False
+        cfg["roles"]["agg"]["args"]["return_perf_metrics"] = False
         with caplog.at_level("WARNING"):
             expand_trtllm_serve_defaults(cfg)
-        assert any("aggregated" in rec.message for rec in caplog.records)
+        assert any("roles.agg" in rec.message for rec in caplog.records)
 
     def test_from_yaml_applies_the_default(self, tmp_path):
         cfg = _trtllm_serve_config()
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.safe_dump(cfg))
+        config_path.write_text(yaml.safe_dump(_recipe(cfg)))
 
         loaded = SrtConfig.from_yaml(config_path)
 
         for mode in ("prefill", "decode"):
-            section = getattr(loaded.backend.trtllm_config, mode)
+            section = loaded.backend.get_config_for_mode(mode)
             assert section["return_perf_metrics"] is True
 
     def test_load_config_applies_the_default(self, tmp_path, monkeypatch):
@@ -507,7 +529,7 @@ class TestTrtllmServeDefaults:
         cfg = _trtllm_serve_config()
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
         config_path = tmp_path / "recipe.yaml"
-        config_path.write_text(yaml.safe_dump(cfg))
+        config_path.write_text(yaml.safe_dump(_recipe(cfg)))
 
         loaded = load_config(config_path)
 
@@ -521,7 +543,7 @@ class TestTrtllmServeDefaults:
         expand_observability(cfg)
         out = expand_trtllm_serve_defaults(cfg)
         for mode in ("prefill", "decode"):
-            section = out["backend"]["trtllm_config"][mode]
+            section = out["roles"][mode]["args"]
             assert section["return_perf_metrics"] is True
             assert section["enable_iter_perf_stats"] is True
 
@@ -544,18 +566,18 @@ class TestTrtllmEngineDefaults:
     def test_iteration_stats_default_off_under_dynamo(self):
         out = expand_trtllm_engine_defaults(_trtllm_config())
         for mode in ("prefill", "decode"):
-            section = out["backend"]["trtllm_config"][mode]
+            section = out["roles"][mode]["args"]
             assert section["enable_iter_perf_stats"] is False
             # Only this key is touched; the recipe's own values survive and
             # the dynamo path gets no trtllm-serve route default.
             assert section["max_batch_size"] in (256, 64)
             assert "return_perf_metrics" not in section
-        assert "aggregated" not in out["backend"]["trtllm_config"]
+        assert "agg" not in out["roles"]
 
     def test_iteration_stats_default_off_under_trtllm_serve(self):
         out = _expand_all(_trtllm_serve_config())
         for mode in ("prefill", "decode"):
-            section = out["backend"]["trtllm_config"][mode]
+            section = out["roles"][mode]["args"]
             assert section["enable_iter_perf_stats"] is False
             assert section["return_perf_metrics"] is True
 
@@ -563,14 +585,14 @@ class TestTrtllmEngineDefaults:
         cfg = _trtllm_config()
         del cfg["frontend"]
         out = expand_trtllm_engine_defaults(cfg)
-        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
+        assert out["roles"]["prefill"]["args"]["enable_iter_perf_stats"] is False
 
     def test_explicit_true_wins(self):
         cfg = _trtllm_config()
-        cfg["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] = True
+        cfg["roles"]["decode"]["args"]["enable_iter_perf_stats"] = True
         out = expand_trtllm_engine_defaults(cfg)
-        assert out["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] is True
-        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
+        assert out["roles"]["decode"]["args"]["enable_iter_perf_stats"] is True
+        assert out["roles"]["prefill"]["args"]["enable_iter_perf_stats"] is False
 
     @pytest.mark.parametrize("frontend_type", ["dynamo", "trtllm_serve"])
     @pytest.mark.parametrize("with_sections", [True, False])
@@ -580,48 +602,43 @@ class TestTrtllmEngineDefaults:
         also for a recipe that carries no engine yaml at all."""
         cfg = _trtllm_serve_config(enabled=True) if frontend_type == "trtllm_serve" else _trtllm_config(enabled=True)
         if not with_sections:
-            del cfg["backend"]["trtllm_config"]
+            for spec in cfg["roles"].values():
+                spec.pop("args", None)
         out = _expand_all(cfg)
         for mode in ("prefill", "decode"):
-            section = out["backend"]["trtllm_config"][mode]
+            section = out["roles"][mode]["args"]
             assert section["enable_iter_perf_stats"] is True
             assert section["return_perf_metrics"] is True
 
     def test_observability_does_not_override_an_explicit_false(self):
         cfg = _trtllm_config(enabled=True)
-        cfg["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] = False
+        cfg["roles"]["decode"]["args"]["enable_iter_perf_stats"] = False
         out = _expand_all(cfg)
-        assert out["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] is False
-        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is True
+        assert out["roles"]["decode"]["args"]["enable_iter_perf_stats"] is False
+        assert out["roles"]["prefill"]["args"]["enable_iter_perf_stats"] is True
 
-    def test_missing_sections_are_created_for_the_modes_in_use(self):
+    def test_missing_args_are_created_for_every_role(self):
         disagg = _trtllm_config()
-        del disagg["backend"]["trtllm_config"]
+        for spec in disagg["roles"].values():
+            spec.pop("args", None)
         out = expand_trtllm_engine_defaults(disagg)
-        assert out["backend"]["trtllm_config"] == {
+        assert _role_args(out) == {
             "prefill": {"enable_iter_perf_stats": False},
             "decode": {"enable_iter_perf_stats": False},
         }
 
         agg = _trtllm_config()
-        agg["resources"] = {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1}
-        del agg["backend"]["trtllm_config"]
+        agg["roles"] = {"agg": {"nodes": 1, "workers": 1}}
         out = expand_trtllm_engine_defaults(agg)
-        assert out["backend"]["trtllm_config"] == {"aggregated": {"enable_iter_perf_stats": False}}
-
-    def test_unused_mode_section_is_left_alone_unless_present(self):
-        cfg = _trtllm_config()
-        cfg["backend"]["trtllm_config"]["aggregated"] = {"max_batch_size": 8}
-        out = expand_trtllm_engine_defaults(cfg)
-        # Present-but-unused sections get the default too (they would be used
-        # by a layout override); absent ones are not invented.
-        assert out["backend"]["trtllm_config"]["aggregated"] == {"max_batch_size": 8, "enable_iter_perf_stats": False}
+        assert _role_args(out) == {"agg": {"enable_iter_perf_stats": False}}
 
     def test_non_trtllm_backend_is_untouched(self):
-        cfg = dict(BASE_CONFIG)
-        cfg["backend"] = {"type": "sglang", "sglang_config": {"prefill": {}}}
+        cfg = _base_config()
+        cfg["engine"] = {"type": "sglang"}
+        cfg["roles"]["prefill"]["args"] = {}
         out = expand_trtllm_engine_defaults(cfg)
-        assert out["backend"] == {"type": "sglang", "sglang_config": {"prefill": {}}}
+        assert out["engine"] == {"type": "sglang"}
+        assert _role_args(out) == {"prefill": {}}
 
     @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
     @pytest.mark.parametrize("frontend_type", ["dynamo", "trtllm_serve"])
@@ -637,7 +654,7 @@ class TestTrtllmEngineDefaults:
         )
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
         path = tmp_path / "recipe.yaml"
-        path.write_text(yaml.safe_dump(cfg))
+        path.write_text(yaml.safe_dump(_recipe(cfg)))
         loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
         loaded = loader(path)
         for mode in ("prefill", "decode"):
@@ -647,10 +664,10 @@ class TestTrtllmEngineDefaults:
 
     @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
     def test_v2_roles_args_get_the_default(self, tmp_path, monkeypatch, loader_name):
-        """The 2.0 layout spells the engine yaml as roles.<role>.args; expand_roles
-        folds it into backend.trtllm_config before the default is applied."""
+        """The engine yaml is roles.<role>.args; the default lands in each role's args."""
         monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
         cfg = {
+            "schema": 2,
             "name": "test-job",
             "model": {"path": "/models/test-model", "container": "test.sqsh", "precision": "fp8"},
             "resources": {"gpu_type": "h100", "gpus_per_node": 8},
@@ -672,58 +689,72 @@ class TestTrtllmEngineDefaults:
             assert section["max_batch_size"] in (256, 64)
 
     def test_dump_reload_carries_the_key_and_observability_warns(self, tmp_path, monkeypatch, caplog):
-        """The sweep's load/dump/reload path (and any saved or locked recipe) carries
-        the baked key as an explicit false. A later observability.enabled: true then
-        keeps that value, so the load step says so instead of failing silently."""
+        """A schema dump (a saved or locked recipe) carries the baked key as an
+        explicit false. A recipe that spells that value out and later sets
+        observability.enabled: true keeps it, so the load step says so instead of
+        failing silently."""
         monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
         cfg = _trtllm_config()
         cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
         schema = SrtConfig.Schema()
         dumped = schema.dump(schema.load(_expand_all(cfg)))
-        assert dumped["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
+        assert dumped["roles"]["prefill"]["args"]["enable_iter_perf_stats"] is False
 
         dumped["observability"]["enabled"] = True
         path = tmp_path / "enable-observability.yaml"
-        path.write_text(yaml.safe_dump(dumped))
+        path.write_text(
+            yaml.safe_dump(
+                _recipe(
+                    {
+                        **cfg,
+                        "engine": dumped["engine"],
+                        "roles": dumped["roles"],
+                        "observability": dumped["observability"],
+                    }
+                )
+            )
+        )
         with caplog.at_level("WARNING"):
             loaded = load_config(path)
         for mode in ("prefill", "decode"):
             assert loaded.backend.get_config_for_mode(mode)["enable_iter_perf_stats"] is False
         assert any(
-            "prefill.enable_iter_perf_stats" in rec.message and "decode.enable_iter_perf_stats" in rec.message
+            "roles.prefill.args.enable_iter_perf_stats" in rec.message
+            and "roles.decode.args.enable_iter_perf_stats" in rec.message
             for rec in caplog.records
         )
 
     def test_observability_warns_on_an_explicit_false(self, caplog):
         cfg = _trtllm_config(enabled=True)
-        cfg["backend"]["trtllm_config"]["decode"]["enable_iter_perf_stats"] = False
+        cfg["roles"]["decode"]["args"]["enable_iter_perf_stats"] = False
         with caplog.at_level("WARNING"):
             expand_observability(cfg)
         warnings = [rec.message for rec in caplog.records if "enable_iter_perf_stats" in rec.message]
-        assert warnings and "decode.enable_iter_perf_stats" in warnings[0]
+        assert warnings and "roles.decode.args.enable_iter_perf_stats" in warnings[0]
         assert "prefill" not in warnings[0]
 
-    def test_non_mapping_engine_config_is_left_for_schema_validation(self):
-        """A bogus trtllm_config (or role section) must still fail validation
-        instead of being silently replaced by the defaults."""
+    def test_non_mapping_role_args_are_left_for_schema_validation(self):
+        """Bogus role args must still fail validation instead of being silently
+        replaced by the defaults."""
         cfg = _trtllm_config()
-        cfg["backend"]["trtllm_config"] = "bogus"
+        cfg["roles"]["decode"]["args"] = "bogus"
         out = expand_trtllm_engine_defaults(cfg)
-        assert out["backend"]["trtllm_config"] == "bogus"
+        assert out["roles"]["decode"]["args"] == "bogus"
         with pytest.raises(ValidationError):
             SrtConfig.Schema().load(out)
 
         cfg = _trtllm_config()
-        cfg["backend"]["trtllm_config"]["decode"] = ["not", "a", "mapping"]
+        cfg["roles"]["decode"]["args"] = ["not", "a", "mapping"]
         out = expand_trtllm_engine_defaults(cfg)
-        assert out["backend"]["trtllm_config"]["decode"] == ["not", "a", "mapping"]
-        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
+        assert out["roles"]["decode"]["args"] == ["not", "a", "mapping"]
+        assert out["roles"]["prefill"]["args"]["enable_iter_perf_stats"] is False
 
-    def test_null_sections_are_treated_as_absent(self):
+    def test_null_args_are_treated_as_absent(self):
         cfg = _trtllm_config()
-        cfg["backend"]["trtllm_config"] = None
+        for spec in cfg["roles"].values():
+            spec["args"] = None
         out = expand_trtllm_engine_defaults(cfg)
-        assert out["backend"]["trtllm_config"] == {
+        assert _role_args(out) == {
             "prefill": {"enable_iter_perf_stats": False},
             "decode": {"enable_iter_perf_stats": False},
         }
@@ -733,10 +764,10 @@ class TestTrtllmEngineDefaults:
         """The legacy TensorRT engine's LlmArgs rejects the key on containers that
         predate the backend's removal, and always collected the statistics anyway."""
         cfg = _trtllm_config()
-        cfg["backend"]["trtllm_config"]["decode"]["backend"] = spelling
+        cfg["roles"]["decode"]["args"]["backend"] = spelling
         out = expand_trtllm_engine_defaults(cfg)
-        assert out["backend"]["trtllm_config"]["decode"] == {"max_batch_size": 64, "backend": spelling}
-        assert out["backend"]["trtllm_config"]["prefill"]["enable_iter_perf_stats"] is False
+        assert out["roles"]["decode"]["args"] == {"max_batch_size": 64, "backend": spelling}
+        assert out["roles"]["prefill"]["args"]["enable_iter_perf_stats"] is False
 
 
 class TestObservabilitySchema:
@@ -759,13 +790,15 @@ class TestObservabilitySchema:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump(
-                {
-                    **BASE_CONFIG,
-                    "observability": {
-                        "enabled": True,
-                        "tachometer": {"enabled": True, "collect_interval_ms": 500},
-                    },
-                }
+                _recipe(
+                    {
+                        **BASE_CONFIG,
+                        "observability": {
+                            "enabled": True,
+                            "tachometer": {"enabled": True, "collect_interval_ms": 500},
+                        },
+                    }
+                )
             )
         )
 

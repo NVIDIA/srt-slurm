@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 
 
 def make_config(
@@ -24,12 +24,8 @@ def make_config(
     return SrtConfig(
         name="test-config",
         model={"path": "test-model", "container": "test.sqsh", "precision": "fp16"},
-        resources=ResourceConfig(
-            gpu_type="a100",
-            gpus_per_node=8,
-            prefill_nodes=1,
-            decode_nodes=1,
-        ),
+        resources=ResourceConfig(gpu_type="a100", gpus_per_node=8),
+        roles={"prefill": RoleConfig(nodes=1), "decode": RoleConfig(nodes=1)},
         frontend=FrontendConfig(
             type=frontend_type,
             enable_multiple_frontends=enable_multiple_frontends,

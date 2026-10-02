@@ -106,6 +106,7 @@ CPU_SAMPLES_HEADER = (
 # columns and DCGM mode (one already-aggregate value per socket) are unaffected.
 
 MAX_SAMPLE_GAP_SECONDS = 3.0
+MAX_MISSING_SAMPLE_WINDOW_FRACTION = 0.05
 COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
 
 BENCHMARK_TYPE_SA_BENCH = "sa-bench"
@@ -157,6 +158,7 @@ class Reason:
     MEASUREMENT_WINDOW_CLOCK_MISMATCH = "measurement_window_clock_mismatch"
     MEASUREMENT_WINDOW_NOT_BRACKETED = "measurement_window_not_bracketed"
     SAMPLE_GAP_EXCEEDED = "sample_gap_exceeded"
+    SAMPLE_LOSS_EXCEEDED = "sample_loss_exceeded"
 
 
 ALL_REASON_CODES: frozenset[str] = frozenset(

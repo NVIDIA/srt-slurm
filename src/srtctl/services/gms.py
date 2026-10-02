@@ -121,7 +121,7 @@ class GMSService(ServiceKind):
             )
 
     def _worker_dir(self, ctx: ServiceLaunchContext) -> str | None:
-        failover = getattr(ctx.config.backend, "failover", None) if ctx.config is not None else None
+        failover = ctx.config.backend.failover if ctx.config is not None else None
         if failover is None or ctx.process is None:
             return None
         from srtctl.backends.vllm import failover_worker_dir

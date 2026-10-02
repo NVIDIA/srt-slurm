@@ -22,7 +22,6 @@ from srtctl.backends import (
     BackendProtocol,
     BackendType,
     SGLangProtocol,
-    SGLangServerConfig,
 )
 
 from .config import (
@@ -34,7 +33,6 @@ from .formatting import FormattablePath, FormattableString
 from .health import (
     WorkerHealthResult,
     check_dynamo_health,
-    check_sglang_router_health,
     check_static_router_health,
     wait_for_etcd,
     wait_for_health,
@@ -63,8 +61,10 @@ from .schema import (
     ProfilingConfig,
     ProfilingPhaseConfig,
     ResourceConfig,
+    RoleConfig,
     SlurmConfig,
     SrtConfig,
+    Topology,
 )
 from .slurm import (
     get_container_mounts_str,
@@ -111,17 +111,17 @@ __all__ = [
     "ProfilingConfig",
     "ProfilingPhaseConfig",
     "ResourceConfig",
+    "RoleConfig",
     "RuntimeContext",
     # Backend configs (re-exported from backends)
     "SGLangProtocol",
-    "SGLangServerConfig",
     "SlurmConfig",
     # Schema types (frozen dataclasses)
     "SrtConfig",
+    "Topology",
     "WorkerHealthResult",
     "allocate_endpoints",
     "check_dynamo_health",
-    "check_sglang_router_health",
     "check_static_router_health",
     "endpoints_to_processes",
     "find_cluster_config_path",

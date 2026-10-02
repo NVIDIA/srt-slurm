@@ -134,6 +134,7 @@ def package(tmp_path):
             expected_device_keys={device.key for device in expected},
             observed_devices=observed,
             artifact_errors=manifest.artifact_errors,
+            sample_interval_seconds=manifest.sample_interval_seconds,
         )
         manifest.mark_terminal(status=STATUS_COMPLETE, stopped_at_unix=END + 5, publication_valid=publication_valid)
         atomic_write_json(power_dir / MANIFEST_FILENAME, manifest.to_dict())
@@ -277,6 +278,17 @@ class TestIndependenceFromTheManifestBooleans:
 
         assert report.ok is False
         assert any("sample_gap_exceeded" in failure for failure in report.failures)
+
+    def test_repeated_subthreshold_gaps_are_rejected(self, package):
+        expected = build_expected_devices(_processes())
+        rows = _rows(expected, step=2.0)
+        log_dir, power_dir = package(rows=rows)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any("sample_loss_exceeded" in failure for failure in report.failures)
+        assert not any("sample_gap_exceeded" in failure for failure in report.failures)
 
     def test_reversed_short_window_is_rejected_end_to_end(self, package):
         log_dir, power_dir = package()

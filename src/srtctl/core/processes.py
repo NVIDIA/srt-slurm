@@ -12,6 +12,7 @@ This module provides lifecycle management for srun processes, including:
 
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 # Routers and frontends drain in-flight requests on SIGTERM; more than the default 10s, less than an engine.
 FRONTEND_TERMINATE_TIMEOUT_SECONDS = 20.0
+
+# Bytes read per step while scanning a worker log for fatal markers.
+_LOG_SCAN_CHUNK_BYTES = 65536
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,13 @@ class ManagedProcess:
             delivers SIGTERM to the task with ``scancel --signal=TERM --full``
             on that step, because SIGTERM to the srun process itself only
             aborts the step and the task is SIGKILLed without warning.
+        fatal_log_patterns: Regular expressions that mark the process failed when
+            a new line of ``log_file`` matches one while ``popen`` is still
+            running. A launcher such as ``trtllm-llmapi-launch`` keeps its srun
+            step alive after the engine it started has died (the follower ranks
+            block in ``MPICommExecutor`` with no timeout), so the step's exit code
+            never arrives; the launcher's ``Rank<N> Task exit code: <n>`` line is
+            the only signal. Empty for processes whose exit code is the whole story.
     """
 
     name: str
@@ -89,8 +100,14 @@ class ManagedProcess:
     shutdown_tier: int = 0
     # False for wrappers that finalize a profiler before signalling its application.
     signal_full: bool = True
+    fatal_log_patterns: tuple[str, ...] = ()
     _stopped_via_step: bool = field(default=False, init=False, repr=False)
     _stop_deadline: float | None = field(default=None, init=False, repr=False)
+    # Log-watch state: bytes already scanned, the partial line after the last newline,
+    # and the compiled patterns (built on first use).
+    _log_offset: int = field(default=0, init=False, repr=False)
+    _log_tail: bytes = field(default=b"", init=False, repr=False)
+    _fatal_regexes: list[re.Pattern[str]] | None = field(default=None, init=False, repr=False)
 
     @property
     def is_running(self) -> bool:
@@ -101,6 +118,47 @@ class ManagedProcess:
     def exit_code(self) -> int | None:
         """Get exit code if process has exited, None otherwise."""
         return self.popen.poll()
+
+    def scan_log_for_fatal_marker(self) -> tuple[str, str] | None:
+        """``(pattern, line)`` for the first new log line matching ``fatal_log_patterns``, else None.
+
+        Reads only the bytes appended since the previous call, bounded by the size
+        seen at the start of this call so a chatty log cannot stall the monitor
+        (the same shape as ``LogOutputStreamer``), and judges whole lines only: a
+        line split across two polls is matched once its newline has arrived.
+        Invalid UTF-8 is replaced, never raised. A log that does not exist yet
+        (srun has not opened it) is not a failure.
+        """
+        if not self.fatal_log_patterns or self.log_file is None:
+            return None
+        if self._fatal_regexes is None:
+            self._fatal_regexes = [re.compile(pattern) for pattern in self.fatal_log_patterns]
+        try:
+            with self.log_file.open("rb") as log:
+                size = os.fstat(log.fileno()).st_size
+                if size < self._log_offset:  # truncated or replaced: start over
+                    self._log_offset, self._log_tail = 0, b""
+                log.seek(self._log_offset)
+                remaining = size - self._log_offset
+                while remaining > 0:
+                    chunk = log.read(min(remaining, _LOG_SCAN_CHUNK_BYTES))
+                    if not chunk:
+                        break
+                    self._log_offset += len(chunk)
+                    remaining -= len(chunk)
+                    lines = (self._log_tail + chunk).split(b"\n")
+                    # Keep at most one chunk of an unterminated line (progress bars never end one).
+                    self._log_tail = lines.pop()[-_LOG_SCAN_CHUNK_BYTES:]
+                    for raw in lines:
+                        line = raw.decode("utf-8", errors="replace").rstrip("\r")
+                        for regex in self._fatal_regexes:
+                            if regex.search(line):
+                                return regex.pattern, line
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            logger.warning("Could not scan %s for fatal log markers: %s", self.log_file, exc)
+        return None
 
     def terminate(self, timeout: float | None = None) -> None:
         """Terminate the process gracefully (SIGTERM, then SIGKILL after ``timeout`` or ``terminate_timeout``).
@@ -270,6 +328,8 @@ class ProcessRegistry:
         self._processes: dict[str, ManagedProcess] = {}
         self._lock = threading.Lock()
         self._failed_processes: list[str] = []
+        # name -> the log line that failed a process whose step was still running
+        self._failure_reasons: dict[str, str] = {}
 
     def add_process(self, process: ManagedProcess) -> None:
         """Add a process to the registry.
@@ -302,26 +362,47 @@ class ProcessRegistry:
                     step_name=proc.step_name,
                     shutdown_tier=proc.shutdown_tier,
                     signal_full=proc.signal_full,
+                    fatal_log_patterns=proc.fatal_log_patterns,
                 )
             self.add_process(proc)
 
     def check_failures(self) -> bool:
         """Check if any critical process has failed.
 
+        A critical process has failed when its srun has exited non-zero, or when
+        it is still running but its log has printed one of its
+        ``fatal_log_patterns`` (the engine behind a launcher died while the step
+        stayed up; see ``ManagedProcess.fatal_log_patterns``).
+
         Returns:
-            True if any critical process has exited with non-zero code
+            True if any critical process has failed
         """
         with self._lock:
             for name, proc in self._processes.items():
-                if proc.critical and not proc.is_running:
+                if not proc.critical or name in self._failed_processes:
+                    continue
+                if not proc.is_running:
                     exit_code = proc.exit_code
-                    if exit_code != 0 and name not in self._failed_processes:
+                    if exit_code != 0:
                         self._failed_processes.append(name)
                         logger.error(
                             "Critical process '%s' exited with code %d",
                             name,
                             exit_code,
                         )
+                    continue
+                marker = proc.scan_log_for_fatal_marker()
+                if marker is not None:
+                    pattern, line = marker
+                    self._failed_processes.append(name)
+                    self._failure_reasons[name] = line
+                    logger.error(
+                        "Critical process '%s' reported a fatal condition in its log while its step is still "
+                        "running (matched /%s/): %s",
+                        name,
+                        pattern,
+                        line,
+                    )
 
             return len(self._failed_processes) > 0
 
@@ -374,6 +455,9 @@ class ProcessRegistry:
 
                 logger.error("\n--- Process: %s ---", name)
                 logger.error("Exit code: %s", proc.exit_code)
+                reason = self._failure_reasons.get(name)
+                if reason is not None:
+                    logger.error("Fatal log line (step still running when detected): %s", reason)
                 logger.error("Node: %s", proc.node or "unknown")
                 logger.error("Log file: %s", proc.log_file or "none")
 

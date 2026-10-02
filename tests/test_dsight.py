@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import copy
-import gzip
 import hashlib
 import json
 import sqlite3
@@ -382,7 +381,7 @@ def test_cli_and_embedded_data_share_the_same_contract(artifacts, tmp_path, monk
     assert exit_info.value.code == 0
     result = json.loads(capsys.readouterr().out)
     assert result["counts"]["requests"] == 2
-    payload = json.loads(gzip.decompress((out / "trace-data.json.gz").read_bytes()))
+    payload = TraceDataset.from_path(out).data
     assert payload["schema"] == "srtctl-trace/1"
     assert payload["meta"]["otel_enabled"] is not no_otel
     assert payload["requests"][0]["lifecycle"]["available"] is not no_otel
@@ -513,8 +512,10 @@ def test_engine_gauges_are_imported(artifacts, name, label, unit):
     pq.write_table(pa.Table.from_pylist(rows), path)
     data = TraceDataset(Importer(logs).run())
     result = data.query("metrics", rank=0, points=True)
-    assert result["total"] == 1
-    series = result["items"][0]
+    assert result["total"] == 2
+    series = next(item for item in result["items"] if item["name"] == name)
+    unknown = next(item for item in result["items"] if item["name"] == f"{name}_unknown")
+    assert unknown["points"][0][1] == 1000.0
     assert (series["name"], series["label"], series["unit"]) == (name, label, unit)
     assert series["worker"] == "agg-0"
     assert series["labels"]["metric.model_name"] == "test"
@@ -551,9 +552,15 @@ def test_iteration_and_identity_on_one_line_preserve_ranks_window_and_provenance
     source = next(source["id"] for source in data["sources"] if source["path"] == str(worker_log))
     assert rows[0] == {
         "worker": "decode-0",
+        "host": "decode-host",
         "iteration": 42,
         "global_rank": 4,
-        "rank": 0,
+        "rank": 4,
+        "local_rank": 0,
+        "rank_kind": "global_rank",
+        "kind": "iteration",
+        "backend": "trtllm",
+        "time_resolution_s": 1.0,
         "batch_requests": 2,
         "kv_cache_util": 0.25,
         "host_step_ms": 0.001,

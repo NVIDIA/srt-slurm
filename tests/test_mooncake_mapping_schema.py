@@ -12,13 +12,13 @@ from marshmallow import ValidationError
 
 from srtctl.backends.vllm import VLLMProtocol
 from srtctl.cli.submit import show_config_details
-from srtctl.core.migrate import migrate_recipe_text, verify_migration_text
+from srtctl.core.migrate import migrate_recipe_text
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Process
 
 
 def recipe(style: str, mode: str, devices: list[str] | None) -> dict[str, Any]:
-    """Build independent v1, v2-engine, and v2-services recipes."""
+    """Build independent v1, v2-engine, and v2-services recipes (v1 only loads through srtctl migrate)."""
     store: dict[str, Any] = {"store_config": {"device_name": "shared", "global_segment_size": "100GB"}}
     if devices is not None:
         store["device_names_by_gpu"] = devices
@@ -55,7 +55,7 @@ def load(tmp_path: Path, data: dict[str, Any]) -> SrtConfig:
     return SrtConfig.from_yaml(path)
 
 
-@pytest.mark.parametrize("style", ["v1", "v2-engine", "v2-services"])
+@pytest.mark.parametrize("style", ["v2-engine", "v2-services"])
 @pytest.mark.parametrize("mode", ["agg", "disagg"])
 @pytest.mark.parametrize("devices", [None, [], ["h0", "h1", "h2", "h3"], ["h0", "h0", "h1", "h1"]])
 def test_valid_mapping_reaches_runtime_and_dry_run(
@@ -82,7 +82,7 @@ def test_valid_mapping_reaches_runtime_and_dry_run(
         assert "device_names_by_gpu" in output
 
 
-@pytest.mark.parametrize("style", ["v1", "v2-engine", "v2-services"])
+@pytest.mark.parametrize("style", ["v2-engine", "v2-services"])
 @pytest.mark.parametrize("mode", ["agg", "disagg"])
 @pytest.mark.parametrize(
     "devices",
@@ -118,5 +118,6 @@ def test_migration_preserves_process_mapping(tmp_path: Path, mode: str, devices:
     else:
         assert options["device_names_by_gpu"] == devices
     assert load(tmp_path, doc).backend.mooncake_kv_store.device_names_by_gpu == (devices or [])
-    verified = verify_migration_text(original)
-    assert verified.status == "ok", verified.detail
+    # The v1 spelling itself no longer loads; the migrated document is the only way in.
+    with pytest.raises(ValueError, match="srtctl migrate"):
+        load(tmp_path, recipe("v1", mode, devices))

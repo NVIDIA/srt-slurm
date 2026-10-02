@@ -13,53 +13,51 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 import yaml
 
+from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.mock import MockOptions, run_mock_sweep
 
 MINIMAL_CONFIG = {
+    "schema": 2,
     "name": "mock-smoke",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "agg_nodes": 1,
-        "agg_workers": 1,
-    },
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "roles": {"agg": {"nodes": 1, "workers": 1}},
     "benchmark": {"type": "custom", "command": "echo fake-benchmark"},
 }
 
 TRTLLM_AGGREGATE_CONFIG = {
+    "schema": 2,
     "name": "mock-trtllm-aggregate-sa-bench",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "gb300",
-        "gpus_per_node": 4,
-        "agg_nodes": 2,
-        "agg_workers": 1,
-        "gpus_per_agg": 8,
-    },
+    "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
     "frontend": {
         "type": "trtllm_serve",
         "enable_multiple_frontends": False,
     },
-    "backend": {
-        "type": "trtllm",
-        "trtllm_config": {
-            "aggregated": {
+    "engine": "trtllm",
+    "roles": {
+        "agg": {
+            "nodes": 2,
+            "workers": 1,
+            "gpus": 8,
+            "args": {
                 "tensor_parallel_size": 8,
                 "moe_expert_parallel_size": 8,
                 "pipeline_parallel_size": 1,
-            }
+            },
         },
     },
     "benchmark": {
@@ -105,6 +103,29 @@ def test_run_mock_sweep_produces_expected_artifacts(tmp_path: Path) -> None:
     assert any((output_dir / "logs").glob("*_agg_w0.out")), "worker log written"
     assert any((output_dir / "logs").glob("*_frontend_*.out")), "frontend log written"
     assert (output_dir / "logs" / "benchmark.out").is_file()
+
+
+@pytest.mark.parametrize("benchmark_exit_code", [0, 7])
+def test_mock_sweep_does_not_prepare_or_render_dashboard(tmp_path: Path, benchmark_exit_code: int) -> None:
+    cfg = _write_config(tmp_path)
+    output_dir = tmp_path / "outputs" / "42046"
+
+    # Inject the benchmark outcome while exercising the real cleanup/postprocess path.
+    with (
+        patch.object(SweepOrchestrator, "run_benchmark", return_value=benchmark_exit_code),
+        patch("srtctl.analysis.perf_dashboard.build") as dashboard_build,
+    ):
+        exit_code = run_mock_sweep(
+            config_path=cfg,
+            output_dir=output_dir,
+            job_id="42046",
+            options=MockOptions(child_duration_s=0.05, phase_pause_s=0.01),
+        )
+
+    assert exit_code == benchmark_exit_code
+    assert (output_dir / "recipe.lock.yaml").is_file(), "post-processing still runs"
+    dashboard_build.assert_not_called()  # entry point for both dashboard ingestion and rendering
+    assert not list((output_dir / "logs").glob("perf_dashboard*"))
 
 
 def test_run_mock_sweep_drives_full_status_timeline(tmp_path: Path) -> None:

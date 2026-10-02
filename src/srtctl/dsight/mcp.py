@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from srtctl.dsight.query import TraceDataset
+from srtctl.dsight.query import TraceDataset, dataset_path
 
 
 @lru_cache(maxsize=1)
@@ -20,12 +21,10 @@ def _load(path: str, mtime_ns: int, size: int, inode: int) -> TraceDataset:
 
 def _query_trace(dataset: str, kind: str = "summary", **filters: Any) -> dict[str, Any]:
     try:
-        path = Path(dataset).expanduser().resolve()
-        if path.is_dir():
-            path /= "trace-data.json.gz"
+        path = dataset_path(Path(dataset).expanduser().resolve())
         stat = path.stat()
         return _load(str(path), stat.st_mtime_ns, stat.st_size, stat.st_ino).query(kind, **filters)
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
         return {"ok": False, "error": str(exc)}
 
 
@@ -49,11 +48,13 @@ def query_trace(
 ) -> dict[str, Any]:
     """Read a CLI-generated trace dashboard; never start profiling or a benchmark.
 
-    dataset is a local dashboard directory or trace-data.json.gz. kind is summary,
-    requests, request, lifecycle, metrics, profiles, nsys, cpu, iterations, or
-    sources. start/end are seconds relative to summary.meta.origin_ns.
+    dataset is a local dashboard directory, trace-data.sqlite, or legacy
+    trace-data.json.gz. Directory queries prefer the indexed SQLite cache. kind is summary,
+    requests, request, lifecycle, server_spans, metrics, profiles, nsys, cpu,
+    iterations, or sources. start/end are seconds relative to summary.meta.origin_ns.
     request/lifecycle require request_id. All list queries have offset/limit
-    (maximum 1000). Rank selects the Nsight/iteration global rank, not router DP
+    (maximum 1000). Rank selects the recorded Nsight rank or the observation's
+    rank_kind (global rank for TRT-LLM, attention TP for TokenSpeed), not router DP
     rank. Runtime spans and shared batch activity are not exclusive request costs.
     Generate the dataset explicitly with srtctl dsight build before querying.
     """

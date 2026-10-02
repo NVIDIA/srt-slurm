@@ -16,11 +16,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from srtctl.backends import SGLangProtocol, SGLangServerConfig
+from srtctl.backends import SGLangProtocol
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.core.schema import TachometerConfig
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
-from srtctl.core.schema import DynamoConfig, TachometerConfig
+from srtctl.core.schema import DynamoConfig, TachometerConfig, RoleConfig
 from srtctl.core.slurm import start_srun_process
 from srtctl.core.telemetry import generate_tachometer_config
 from srtctl.core.topology import Process
@@ -112,14 +112,14 @@ def _worker_command(backend: SGLangProtocol, frontend_type: str) -> list[str]:
 
 
 def test_sglang_workers_enable_metrics_under_every_frontend() -> None:
-    backend = SGLangProtocol(sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 1}))
+    backend = SGLangProtocol(roles={"agg": RoleConfig(args={"tensor-parallel-size": 1})})
     assert _worker_command(backend, "sglang").count("--enable-metrics") == 1
     # dynamo.sglang only merges the engine's sglang:* series into its system-port
     # /metrics when SGLang itself was started with the flag.
     assert _worker_command(backend, "dynamo").count("--enable-metrics") == 1
 
     # A recipe that already sets the flag is not given it twice.
-    explicit = SGLangProtocol(sglang_config=SGLangServerConfig(aggregated={"enable-metrics": True}))
+    explicit = SGLangProtocol(roles={"agg": RoleConfig(args={"enable-metrics": True})})
     assert _worker_command(explicit, "sglang").count("--enable-metrics") == 1
 
 

@@ -1,6 +1,6 @@
 # srtctl
 
-Command-line tool for distributed LLM inference benchmarks on SLURM clusters using SGLang, vLLM, TensorRT LLM and AMD's ATOM. Replace complex shell scripts and 50+ CLI flags with a declarative `schema: 2` YAML recipe: `engine:` names the engine, `roles:` describes each worker role, and `services:` covers everything launched next to the workers.
+Command-line tool for distributed LLM inference benchmarks on SLURM clusters using SGLang, vLLM, TensorRT LLM, TileRT and AMD's ATOM. Replace complex shell scripts and 50+ CLI flags with a declarative `schema: 2` YAML recipe: `engine:` names the engine, `roles:` describes each worker role, and `services:` covers everything launched next to the workers.
 
 ## Quick Start
 
@@ -42,8 +42,7 @@ uv run srtctl skill --target cursor    # .cursor/rules/srtctl.mdc
 - [Parameter Sweeps](docs/sweeps.md) - Grid searches
 - [Profiling](docs/profiling.md) - Torch/nsys profiling
 - [DSight trace explorer](docs/dsight.md) - explicitly build an offline client/worker/hardware timeline; query it through CLI or MCP
-- [Component Performance Dashboard](docs/component-dashboard.md) - the per-run HTML dashboard built from the tachometer parquet
-- [ruter](docs/ruter.md) - Dynamo router post-processing
+- [Component Performance Dashboard](docs/component-dashboard.md) - build an HTML dashboard explicitly from a retained run's artifacts
 
 ## Commands
 

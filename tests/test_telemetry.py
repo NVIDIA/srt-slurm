@@ -5,6 +5,7 @@
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,10 +22,13 @@ from srtctl.core.schema import (
     CpuPowerConfig,
     CpuPowerExporterConfig,
     FrontendConfig,
-    InfraConfig,
     ModelConfig,
     ObservabilityConfig,
+    PlacementConfig,
+    ReportingConfig,
+    ReportingStatusConfig,
     ResourceConfig,
+    RoleConfig,
     SrtConfig,
     TachometerConfig,
     TelemetryConfig,
@@ -32,6 +36,7 @@ from srtctl.core.schema import (
 )
 from srtctl.core.telemetry import ServiceMetricsTarget, generate_tachometer_config
 from srtctl.core.topology import Process
+from srtctl.services import ServiceConfig, ServicePlacementConfig
 
 
 def _make_config(
@@ -52,7 +57,7 @@ def _make_config(
 
 
 def _sa_bench(**overrides) -> BenchmarkConfig:
-    return BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="head", **overrides)
+    return BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="head"), **overrides)
 
 
 def _dcgm_power(**overrides) -> TelemetryConfig:
@@ -132,8 +137,19 @@ class TestTachometerConfig:
         names = [line.split("name:", 1)[1].strip() for line in text.splitlines() if "name:" in line]
         assert names[0] == "frontend"
         assert names.index("trtllm_llmapi_launch") < names.index("dynamo_trtllm")
-        for expected in ("dynamo_trtllm", "dynamo_sglang", "dynamo_vllm", "aiperf", "etcd", "nats"):
+        for expected in (
+            "dynamo_trtllm",
+            "dynamo_sglang",
+            "sglang_scheduler",
+            "sglang_dp_controller",
+            "sglang_detokenizer",
+            "dynamo_vllm",
+            "aiperf",
+            "etcd",
+            "nats",
+        ):
             assert expected in names
+        assert names.index("sglang_scheduler") < names.index("dynamo_sglang")
         assert "dynamo\\.frontend" in text
 
         # The container launch (a declared container) reaches the group file through /logs.
@@ -153,6 +169,10 @@ class TestTachometerConfig:
             ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node --rank 0", "trtllm_engine"),
             ("python3 -m dynamo.trtllm --disaggregation-mode decode", "dynamo_trtllm"),
             ("python3 -m dynamo.frontend", "frontend"),
+            ("python3 -m dynamo.sglang --disaggregation-mode prefill", "dynamo_sglang"),
+            ("sglang::scheduler_DP1_TP1_EP1", "sglang_scheduler"),
+            ("sglang::data_parallel_controller", "sglang_dp_controller"),
+            ("sglang::detokenizer", "sglang_detokenizer"),
             ("trtllm-llmapi-launch-other", None),
             ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node_extra", None),
         ],
@@ -400,8 +420,8 @@ class TestDcgmPowerConfig:
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[0]), "benchmark.concurrencies"),
             (
                 {},
-                BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="last_decode"),
-                "benchmark.client_placement",
+                BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="last_decode")),
+                "benchmark.placement.node",
             ),
         ],
     )
@@ -476,15 +496,19 @@ class TestDcgmPowerConfig:
                 resources=ResourceConfig(gpu_type="h100"),
                 benchmark=_sa_bench(),
                 telemetry=telemetry,
-                infra=InfraConfig(etcd_nats_dedicated_node=dedicated),
+                services=(
+                    [ServiceConfig(name="etcd", type="etcd", placement=ServicePlacementConfig(node="dedicated"))]
+                    if dedicated
+                    else []
+                ),
             )
 
         if rejected:
-            with pytest.raises(ValidationError, match="etcd_nats_dedicated_node"):
+            with pytest.raises(ValidationError, match="placement.node: dedicated"):
                 build()
             return
 
-        assert build().infra.etcd_nats_dedicated_node is dedicated
+        assert build().infra_dedicated_node is dedicated
 
 
 class TestCpuPowerExporterConfig:
@@ -620,7 +644,8 @@ class TestCpuPowerExporterConfig:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/image", precision="fp4"),
-                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 benchmark=_sa_bench(),
                 frontend=FrontendConfig(type="dynamo"),
                 telemetry=TelemetryConfig(
@@ -1235,6 +1260,19 @@ class TestTachometerStageMixin:
         # tear down the benchmark via the critical-process check.
         assert procs[-1].name == "tachometer"
         assert procs[-1].critical is False
+
+        # Live streaming seals immutable segments into an outbox outside the log tree.
+        harness.config = replace(
+            harness.config,
+            reporting=ReportingConfig(
+                status=ReportingStatusConfig(endpoint="http://collector:8080", logging_stream_interval=5)
+            ),
+        )
+        harness.start_tachometer()
+        assert mock_srun.call_args_list[-1].kwargs["command"][-2:] == [
+            "--outbox-dir",
+            str(tmp_path.parent / "tachometer-outbox"),
+        ]
 
     def test_resolve_tachometer_binary(self, tmp_path, monkeypatch):
         """Explicit paths are respected verbatim; the default bare name

@@ -10,7 +10,7 @@ Implements BackendProtocol for SGLang inference serving with prefill/decode disa
 import builtins
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import field, replace
 from pathlib import Path
 from typing import (
@@ -23,10 +23,12 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DIST_INIT_PORTS,
     DYN_SYSTEM_PORT_BASE,
+    LMCACHE_SERVER_PORT,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     NCCL_PORTS,
@@ -100,21 +102,6 @@ class MooncakeKVStoreConfig:
 
 
 @dataclass(frozen=True)
-class SGLangServerConfig:
-    """SGLang server CLI configuration per mode (prefill/decode/aggregated).
-
-    Each mode can have its own configuration dict that gets converted
-    to CLI flags when starting the worker.
-    """
-
-    prefill: dict[str, Any] | None = None
-    decode: dict[str, Any] | None = None
-    aggregated: dict[str, Any] | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
 class SGLangProtocol:
     """SGLang protocol - implements BackendProtocol.
 
@@ -122,37 +109,29 @@ class SGLangProtocol:
     BackendProtocol methods for process allocation and launching.
 
     Example YAML:
-        backend:
-          type: sglang
-          prefill_environment:
-            CUDA_LAUNCH_BLOCKING: "1"
-          sglang_config:
-            prefill:
+        engine: sglang
+        roles:
+          prefill:
+            env:
+              CUDA_LAUNCH_BLOCKING: "1"
+            args:
               mem-fraction-static: 0.8
               chunked-prefill-size: 8192
-            decode:
+          decode:
+            args:
               mem-fraction-static: 0.9
     """
 
     type: Literal["sglang"] = "sglang"
     gpu_type: str | None = None
 
-    # Environment variables per mode
-    prefill_environment: dict[str, str] = field(default_factory=dict)
-    decode_environment: dict[str, str] = field(default_factory=dict)
-    aggregated_environment: dict[str, str] = field(default_factory=dict)
-
-    # SGLang server CLI config per mode
-    sglang_config: SGLangServerConfig | None = None
-
-    # KV events config - enables --kv-events-config with auto-allocated ports
-    # Per-mode: {"prefill": true, "decode": {"publisher": "zmq", "topic": "custom"}}
-    # Or global: true (enables for prefill+decode with defaults)
-    kv_events_config: bool | dict[str, Any] | None = None
-
     # Mooncake KV store - launches mooncake_master on infra node and injects
     # MOONCAKE_MASTER env var on all workers automatically
     mooncake_kv_store: MooncakeKVStoreConfig | None = None
+
+    # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
+    # never written on `engine:`. Per-role env, args and kv_events are read from here.
+    roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -166,6 +145,10 @@ class SGLangProtocol:
 
         return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
 
+    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
+        """The srun step exits with the engine; its exit code is the whole story."""
+        return ()
+
     @property
     def failover(self) -> None:
         """SGLang has no shadow engine recovery."""
@@ -178,35 +161,27 @@ class SGLangProtocol:
         return True
 
     def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """Get merged config dict for a worker mode."""
-        if not self.sglang_config:
-            return {}
-
-        if mode == "prefill":
-            return dict(self.sglang_config.prefill or {})
-        elif mode == "decode":
-            return dict(self.sglang_config.decode or {})
-        elif mode == "agg":
-            return dict(self.sglang_config.aggregated or {})
-        return {}
+        """The role's engine arguments (``roles.<role>.args``)."""
+        return role_args(self.roles, mode)
 
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        """Get environment variables for a worker mode."""
-        if mode == "prefill":
-            return dict(self.prefill_environment)
-        elif mode == "decode":
-            return dict(self.decode_environment)
-        elif mode == "agg":
-            return dict(self.aggregated_environment)
-        return {}
+        """The role's environment (``roles.<role>.env``)."""
+        return role_env(self.roles, mode)
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
 
-        SGLang handles kv-events via CLI args (--kv-events-config), so no
-        additional process-specific env vars are needed here.
+        A worker started with ``enable-lmcache`` dials the LMCache MP server on its own
+        node (``services[].type: lmcache-server``) unless the recipe points it elsewhere
+        with ``lmcache-config-file`` or ``LMCACHE_MP_HOST`` in the role env.
         """
-        return {}
+        mode = process.endpoint_mode
+        config = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
+        if not config.get("enable-lmcache") or config.get("lmcache-config-file"):
+            return {}
+        if "LMCACHE_MP_HOST" in self.get_environment_for_mode(mode):
+            return {}
+        return {"LMCACHE_MP_HOST": "127.0.0.1", "LMCACHE_MP_PORT": str(LMCACHE_SERVER_PORT)}
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
         """Get mooncake env vars to inject on a specific worker.
@@ -239,46 +214,17 @@ class SGLangProtocol:
         return config.get("grpc-mode", False)
 
     def get_served_model_name(self, default: str) -> str:
-        """Get served model name from SGLang config, or return default."""
-        if self.sglang_config:
-            for cfg in [self.sglang_config.prefill, self.sglang_config.aggregated, self.sglang_config.decode]:
-                if cfg:
-                    name = cfg.get("served-model-name") or cfg.get("served_model_name")
-                    if name:
-                        return name
+        """Get served model name from the roles' engine args, or return default."""
+        for mode in ("prefill", "agg", "decode"):
+            args = role_args(self.roles, mode)
+            name = args.get("served-model-name") or args.get("served_model_name")
+            if name:
+                return name
         return default
 
     def get_kv_events_config_for_mode(self, mode: WorkerMode) -> dict[str, str] | None:
-        """Get kv-events config for a worker mode.
-
-        Returns None if disabled, or dict with publisher/topic if enabled.
-        """
-        if not self.kv_events_config:
-            return None
-
-        # Global bool: enable for every worker mode with defaults. Aggregated
-        # workers publish too; without this, `kv_events_config: true` on an agg
-        # topology silently dropped --kv-events-config and the router's cache
-        # overlap stayed at zero.
-        if self.kv_events_config is True:
-            if mode in ("prefill", "decode", "agg"):
-                return {"publisher": "zmq", "topic": "kv-events"}
-            return None
-
-        # Per-mode config dict
-        if isinstance(self.kv_events_config, dict):
-            # Normalize mode key: use "aggregated" for aggregated mode
-            mode_cfg = self.kv_events_config.get("aggregated") if mode == "agg" else self.kv_events_config.get(mode)
-
-            if mode_cfg is None:
-                return None
-            if mode_cfg is True:
-                return {"publisher": "zmq", "topic": "kv-events"}
-            if isinstance(mode_cfg, dict):
-                # Merge with defaults
-                return {"publisher": "zmq", "topic": "kv-events", **mode_cfg}
-
-        return None
+        """``roles.<role>.kv_events`` for a worker mode over the ZMQ defaults; None when it publishes none."""
+        return role_kv_events(self.roles, mode, {"publisher": "zmq", "topic": "kv-events"})
 
     def allocate_endpoints(
         self,

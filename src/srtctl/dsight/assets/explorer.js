@@ -50,7 +50,8 @@
   const safe = (fn) => {
     try {
       $("error").textContent = "";
-      return fn();
+      const result = fn();
+      return result?.catch ? result.catch(e => { $("error").textContent = e.message; }) : result;
     } catch (e) {
       $("error").textContent = e.message;
     }
@@ -69,23 +70,41 @@
       "Could not open embedded trace data: " + e.message;
     throw e;
   }
+  const available = D.capabilities;
+  const usableProfiles = D.profiles.filter((p) => (p.event_count ?? p.events.length) || (p.cpu?.sample_count ?? p.cpu?.samples?.length));
+  const tabs = [
+    ...(available.requests ? ["request"] : []),
+    ...(available.nsight ? ["nsys"] : []),
+    "api",
+  ];
   const requests = new Map(D.requests.map((r) => [r.id, r]));
   const sessionRequests = new Map(
     D.sessions.map((s) => [s.id, s.requests.map((id) => requests.get(id))]),
   );
   const profileById = new Map(D.profiles.map((p) => [p.id, p]));
   const sourceById = new Map(D.sources.map((s) => [s.id, s]));
+  const detailData = window.DSightDetailData.create(D);
+  const metricData = window.DSightMetricData.create(D, {detailData});
+  const nsysViews = new Map();
+  let detailsReady = Promise.resolve(), detailController, detailKey = "", metricController;
+  const metricFamilies = metricData.listFamilies();
+  const metricFamilyByName = new Map(metricFamilies.map(family => [family.name, family]));
+  const defaultMetric = metricFamilyByName.has("trtllm_num_requests_running")
+    ? "trtllm_num_requests_running"
+    : (metricFamilies.find(family => family.samples > 0) || metricFamilies[0])?.name || "";
   const history = [];
   let clientDrag = null,
     suppressClientClick = false;
   let metricMounts = [],
     metricCharts = [];
+  let metricPanelHeights = new Map();
+  let metricGeneration = 0, metricsReady = Promise.resolve(), metricSearch = "";
   const state = {
     from: 0,
     to: D.meta.duration,
     request: null,
     span: null,
-    tab: "request",
+    tab: tabs[0],
     page: 0,
     pageSize: 7,
     search: "",
@@ -94,19 +113,16 @@
     expandedSessions: new Set(),
     expandedAgents: new Set(),
     expandedRequests: new Set(),
-    nsys: false,
+    nsys: !available.requests && available.nsight,
     profile:
-      D.profiles.find((p) => p.worker === "frontend")?.id ??
-      D.profiles[0]?.id ??
+      usableProfiles.find((p) => p.worker === "frontend")?.id ??
+      usableProfiles[0]?.id ??
       null,
-    metricSeries: {},
     metricCharts: {},
-    iterationWorker: null,
-    iterationRank: 0,
-    expandedWorkers: new Set(),
+    pinnedMetrics: [],
     hardware: false,
     compareNsys: false,
-    metric: "trtllm_num_requests_running",
+    metric: defaultMetric,
   };
   const overlap = (a, b, lo = state.from, hi = state.to) => a <= hi && b >= lo;
   const selected = () => requests.get(state.request);
@@ -151,11 +167,10 @@
   const stateJSON = () => ({
     ...state,
     metricCharts: clone(state.metricCharts),
-    metricSeries: clone(state.metricSeries),
+    pinnedMetrics: [...state.pinnedMetrics],
     expandedSessions: [...state.expandedSessions],
     expandedAgents: [...state.expandedAgents],
     expandedRequests: [...state.expandedRequests],
-    expandedWorkers: [...state.expandedWorkers],
   });
   function validateRange(from, to) {
     if (!Number.isFinite(from) || !Number.isFinite(to))
@@ -169,8 +184,7 @@
     if (!value || typeof value !== "object")
       throw Error("View state must be an object");
     validateRange(value.from ?? state.from, value.to ?? state.to);
-    if (value.request && !requests.has(value.request))
-      throw Error("Unknown request in saved view");
+    if (value.request && !requests.has(value.request)) value = {...value, request: null, span: null};
     for (const k of [
       "from",
       "to",
@@ -184,17 +198,14 @@
       "metric",
       "span",
       "cursor",
-      "metricSeries",
       "metricCharts",
-      "iterationWorker",
-      "iterationRank",
     ]) {
       if (value[k] !== undefined)
-        state[k] = ["metricCharts", "metricSeries"].includes(k)
+        state[k] = k === "metricCharts"
           ? clone(value[k]) : value[k];
     }
     if (
-      ["request", "nsys", "iterations", "evidence", "api"].includes(value.tab)
+      tabs.includes(value.tab)
     )
       state.tab = value.tab;
     if (value.profile !== undefined && profileById.has(value.profile))
@@ -203,7 +214,6 @@
       "expandedSessions",
       "expandedAgents",
       "expandedRequests",
-      "expandedWorkers",
     ]) {
       if (Array.isArray(value[k])) state[k] = new Set(value[k]);
     }
@@ -211,7 +221,13 @@
       [...state.expandedRequests].filter((id) => hasLifecycle(requests.get(id))),
     );
     if (state.span && !findInterval(selected(), state.span)) state.span = null;
+    if (!metricFamilyByName.has(state.metric)) state.metric = defaultMetric;
+    if (Array.isArray(value.pinnedMetrics))
+      state.pinnedMetrics = [...new Set(value.pinnedMetrics.filter(name => metricFamilyByName.has(name)))];
     state.page = Math.max(0, Number.isInteger(state.page) ? state.page : 0);
+    state.nsys = Boolean(state.nsys && available.nsight);
+    state.hardware = Boolean(state.hardware && available.hardware_metrics);
+    if (!usableProfiles.some((p) => p.id === state.profile)) state.profile = usableProfiles[0]?.id ?? null;
   }
   function setRange(from, to, remember = true) {
     validateRange(from, to);
@@ -294,7 +310,6 @@
       fitRange(span.start, span.end);
       return inspectNsys({
         worker,
-        rank: worker === "frontend" ? undefined : 0,
       });
     }
     if (fit) fitRange(span.start, span.end);
@@ -302,18 +317,19 @@
     return clone(span);
   }
   function metricStats(series, from = state.from, to = state.to) {
-    const points = series.points.filter((p) => p[0] >= from && p[0] <= to);
-    if (!points.length)
+    let samples = 0, min = Infinity, max = -Infinity, sum = 0;
+    let first = null, last = null;
+    for (const point of series.points) {
+      if (point[0] < from || point[0] > to || !Number.isFinite(point[1])) continue;
+      if (!first) first = point;
+      last = point; samples++; sum += point[1];
+      min = Math.min(min, point[1]); max = Math.max(max, point[1]);
+    }
+    if (!samples)
       return { samples: 0, min: null, max: null, mean: null, last: null };
-    const values = points.map((p) => p[1]);
     return {
-      samples: values.length,
-      min: Math.min(...values),
-      max: Math.max(...values),
-      mean: values.reduce((a, b) => a + b, 0) / values.length,
-      last: values.at(-1),
-      first_time: points[0][0],
-      last_time: points.at(-1)[0],
+      samples, min, max, mean: sum / samples, last: last[1],
+      first_time: first[0], last_time: last[0],
     };
   }
   function queryRequests({
@@ -362,7 +378,20 @@
   } = {}) {
     validateRange(from, to);
     const p = profileById.get(profile);
-    if (!p) throw Error("Unknown Nsight profile");
+    if (!p) return {available: false, total: 0, items: [], range: [from, to]};
+    const formatEvents = ({items, total, ...page}) => ({
+      profile: p.id, worker: p.worker, rank: p.rank, attribution: p.attribution,
+      capture: p.capture, total, ...page,
+      items: items.map((e) => ({
+        start: e[0], end: e[1], name: p.names[e[2]], globalTid: e[3],
+        pid: p.threads?.find(t => t.global_tid === e[3])?.pid ?? null,
+        tid: p.threads?.find(t => t.global_tid === e[3])?.tid ?? null,
+        definition: clone(p.name_definitions?.[e[2]] ?? null), rowid: e[4], evidence_source: p.evidence_source,
+      })),
+    });
+    if (p.event_chunks) return detailData.events(p, {from, to, name,
+      offset: Math.max(0, Math.floor(offset)), limit: Math.max(0, Math.min(10000, Math.floor(limit))),
+    }).then(formatEvents);
     const es = p.events.filter(
       (e) =>
         overlap(e[0], e[1], from, to) &&
@@ -385,6 +414,9 @@
         end: e[1],
         name: p.names[e[2]],
         globalTid: e[3],
+        pid: p.threads?.find((t) => t.global_tid === e[3])?.pid ?? null,
+        tid: p.threads?.find((t) => t.global_tid === e[3])?.tid ?? null,
+        definition: clone(p.name_definitions?.[e[2]] ?? null),
         rowid: e[4],
         evidence_source: p.evidence_source,
       })),
@@ -401,12 +433,12 @@
     const p =
       profile !== undefined
         ? profileById.get(profile)
-        : D.profiles.find(
+        : usableProfiles.find(
             (x) =>
               x.worker === (worker ?? "frontend") &&
               (rank === undefined || x.rank === rank),
           );
-    if (!p) throw Error("No captured Nsight report matches this worker/rank.");
+    if (!p) throw Error("No usable Nsight report matches this worker/rank.");
     if (from !== undefined || to !== undefined) {
       validateRange(from ?? state.from, to ?? state.to);
       state.from = from ?? state.from;
@@ -420,7 +452,7 @@
     scrollNsys();
     return queryNsys();
   }
-  function queryMetrics({
+  async function queryMetrics({
     from = state.from,
     to = state.to,
     worker,
@@ -431,34 +463,26 @@
     points = false,
   } = {}) {
     validateRange(from, to);
-    return D.metrics
-      .filter(
-        (s) =>
-          (!worker || s.worker === worker) &&
-          (!host || s.host === host) &&
-          (gpu === undefined || s.gpu === String(gpu)) &&
-          (rank === undefined || String(s.rank) === String(rank)) &&
-          (!name || s.name === name),
-      )
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        raw_name: s.raw_name,
-        labels: clone(s.labels),
-        endpoint: s.endpoint,
-        worker: s.worker,
-        host: s.host,
-        gpu: s.gpu,
-        rank: s.rank,
-        worker_process: s.worker_process,
-        host_source: s.host_source,
-        host_evidence: s.host_evidence,
-        unit: s.unit,
-        ...metricStats(s, from, to),
-        ...(points
-          ? { points: s.points.filter((p) => p[0] >= from && p[0] <= to) }
-          : {}),
-      }));
+    const selectedSeries = metricData.listSeries({worker, host, gpu, rank, name});
+    const ids = new Set(selectedSeries.map(series => String(series.id)));
+    const results = new Map();
+    // Decode one family at a time, including for all-metric summary exports.
+    for (const family of new Set(selectedSeries.map(series => series.name))) {
+      for (const series of await metricData.loadFamily(family, {from, to})) {
+        if (!ids.has(String(series.id))) continue;
+        const {points: rawPoints, ...metadata} = series;
+        results.set(String(series.id), {
+          ...clone(metadata), ...metricStats(series, from, to),
+          ...(points ? {points: rawPoints.filter(p => p[0] >= from && p[0] <= to).map(p => [...p])} : {}),
+          ...(series.temporal === "setting" ? {carried_setting: (() => {
+            const prior = rawPoints.filter(p => p[0] < from);
+            const stamp = prior.length ? prior[prior.length - 1][0] : null;
+            return prior.filter(p => p[0] === stamp).map(p => [...p]);
+          })()} : {}),
+        });
+      }
+    }
+    return selectedSeries.map(series => results.get(String(series.id)));
   }
   function queryCpu({
     profile = state.profile,
@@ -468,15 +492,21 @@
   } = {}) {
     validateRange(from, to);
     const p = profileById.get(profile);
-    if (!p) throw Error("Unknown profile");
+    if (!p) return {available: false, total_samples: 0, hotspots: []};
     const cpu = p.cpu;
-    if (!cpu)
+    if (!(cpu?.sample_count ?? cpu?.samples?.length))
       return {
         total_samples: 0,
         hotspots: [],
         available: false,
         attribution: "CPU samples were not imported for this process",
       };
+    if (cpu.chunks) return detailData.cpu(p, from, to).then(({counts, total}) => ({
+      available: true, total_samples: total, pid: cpu.pid, attribution: cpu.attribution,
+      range: [from, to], evidence_source: p.evidence_source,
+      hotspots: [...counts].sort((a, b) => b[1] - a[1]).slice(0, Math.min(200, Math.max(0, limit)))
+        .map(([id, n]) => ({symbol: cpu.names[id], samples: n, fraction: total ? n / total : 0})),
+    }));
     const samples = cpu.samples.filter((s) => s[0] >= from && s[0] <= to),
       counts = new Map();
     for (const s of samples)
@@ -500,8 +530,14 @@
     };
   }
   function cpuInspector(p) {
-    if (!p.cpu) return "";
-    const q = queryCpu({ profile: p.id, limit: 12 });
+    if (!(p.cpu?.sample_count ?? p.cpu?.samples?.length)) return "";
+    const result = nsysViews.get(p.id)?.cpu;
+    if (p.cpu?.chunks && !result) return '<p class="help">Zoom in to load CPU sample hotspots, or use await traceExplorer.queryCpu() for the exact window.</p>';
+    const q = result ? {
+      total_samples: result.total,
+      hotspots: [...result.counts].sort((a, b) => b[1] - a[1]).slice(0, 12)
+        .map(([id, n]) => ({symbol: p.cpu.names[id], samples: n, fraction: n / result.total})),
+    } : queryCpu({ profile: p.id, limit: 12 });
     return `<h3>Frontend CPU sample hotspots</h3><p class="help">${fmt(q.total_samples, 0)} process samples in this window. Inclusive frames; percentages may overlap and do not measure this request’s CPU time.</p><table class="mini-table"><thead><tr><th>Sampled frame</th><th>Samples</th><th>Share</th></tr></thead><tbody>${q.hotspots.map((h) => `<tr><td title="${esc(h.symbol)}">${esc(h.symbol.length > 130 ? h.symbol.slice(0, 127) + "…" : h.symbol)}</td><td>${fmt(h.samples, 0)}</td><td>${fmt(h.fraction * 100, 1)}%</td></tr>`).join("")}</tbody></table>`;
   }
   function queryIterations({
@@ -524,7 +560,7 @@
     const rows = D.iterations.filter(
       (r) =>
         (!worker || r.worker === worker) &&
-        (rank === undefined || r.global_rank === rank),
+        (rank === undefined || rank === null || r.rank === rank),
     );
     const aligned = rows.filter(
       (r) => r.start !== null && overlap(r.start, r.end, from, to),
@@ -537,41 +573,44 @@
       limit,
       items: clone(aligned.slice(offset, offset + limit)),
       attribution:
-        "Shared batch context; whole-second log timestamps. No request ownership or universal NVTX counter shift.",
+        "Shared batch observations. Source timestamp precision and rank scope are preserved; these are not request durations.",
     };
   }
-  function iterationInspector() {
-    const worker =
-      state.iterationWorker ??
-      selected()?.engine.find((e) => e.role === "decode")?.worker ??
-      D.workers[0]?.id;
-    const rank = state.iterationRank,
-      q = queryIterations({ worker, rank, limit: 50 });
-    return `<h3>TRT-LLM iteration context</h3><p class="help">${esc(q.attribution)} Host step time covers a completed host loop; previous-device time is delayed. Neither is a request stage duration.</p><div class="nsys-controls"><label>Worker<select id="iterationWorker">${D.workers.map((w) => `<option value="${esc(w.id)}" ${w.id === worker ? "selected" : ""}>${esc(w.id)}</option>`).join("")}</select></label><label>Global rank<input id="iterationRank" type="number" min="0" value="${rank}" aria-label="Iteration global rank"></label></div><p class="help">${fmt(q.total)} rows overlap this window; first 50 shown. ${q.unaligned_rows ? `${q.unaligned_rows} rows have no timezone; rebuild with --iteration-timezone.` : "Timestamps are aligned to the configured log timezone with one-second resolution."}</p><table class="mini-table"><thead><tr><th>Iteration</th><th>Batch</th><th>Host ms</th><th>Prev. GPU ms</th></tr></thead><tbody>${q.items.map((r) => `<tr><td>${r.iteration}</td><td>${r.batch_requests}</td><td>${fmt(r.host_step_ms)}</td><td>${fmt(r.previous_device_step_ms)}</td></tr>`).join("")}</tbody></table>`;
+  function queryServerSpans({from = state.from, to = state.to, offset = 0, limit = 100} = {}) {
+    validateRange(from, to);
+    offset = Math.max(0, Math.floor(offset));
+    limit = Math.max(0, Math.min(1000, Math.floor(limit)));
+    const rows = (D.server_spans ?? []).filter((r) => overlap(r.start, r.end, from, to));
+    return {total: rows.length, offset, limit, items: clone(rows.slice(offset, offset + limit))};
   }
-  function exportSelection() {
+  async function exportSelection() {
     const r = selected();
-    return {
+    const view = stateJSON();
+    const result = {
       schema: D.schema,
       job: D.meta.job,
       origin_ns: D.meta.origin_ns,
-      view: stateJSON(),
+      view,
       request: r ? clone(r) : null,
       visible_request_count: queryRequests({ limit: 0 }).total,
-      metrics: queryMetrics(),
-      profile: state.nsys ? queryNsys({ limit: 200 }) : null,
+      server_spans: queryServerSpans(),
+      batch_observations: queryIterations({limit: 1000}),
+      profile: state.nsys ? await queryNsys({ profile: view.profile, from: view.from, to: view.to, limit: 200 }) : null,
       limitations: D.meta.limitations,
       audit: D.audit,
       sources: D.sources,
     };
+    result.metrics = await queryMetrics({from: view.from, to: view.to});
+    return result;
   }
   window.traceExplorer = Object.freeze({
-    version: "2.0",
+    version: "3.1",
     ready: true,
     describe: () => ({
       schema: D.schema,
       meta: clone(D.meta),
       audit: clone(D.audit),
+      available: clone(available),
       capabilities: [
         "selectRange",
         "selectRequest",
@@ -580,6 +619,9 @@
         "inspectNsys",
         "queryRequests",
         "queryMetrics",
+        "listMetricFamilies",
+        "listMetricSeries",
+        "whenMetricsReady",
         "queryNsys",
         "exportSelection",
       ],
@@ -597,9 +639,22 @@
     inspectNsys,
     queryRequests,
     queryMetrics,
+    listMetricFamilies: () => metricData.listFamilies(),
+    listMetricSeries: filters => metricData.listSeries(filters),
+    metricDataStatus: () => metricData.status(),
+    detailDataStatus: () => detailData.status(),
+    whenDetailsReady: async () => {
+      let current;
+      do { current = detailsReady; await current; } while (current !== detailsReady);
+    },
+    whenMetricsReady: async () => {
+      let current;
+      do { current = metricsReady; await current; } while (current !== metricsReady);
+    },
     queryNsys,
     queryCpu,
     queryIterations,
+    queryServerSpans,
     listSessions: ({ offset = 0, limit = 100 } = {}) => ({
       total: sessionList().length,
       items: clone(sessionList().slice(offset, offset + Math.min(limit, 1000))),
@@ -616,9 +671,9 @@
     listProfiles: () =>
       D.profiles.map(({ events, names, cpu, ...p }) => ({
         ...clone(p),
-        selected_event_count: events.length,
+        selected_event_count: p.event_count ?? events.length,
         names: names.length,
-        cpu_samples: cpu?.samples.length ?? 0,
+        cpu_samples: cpu?.sample_count ?? cpu?.samples.length ?? 0,
       })),
     getSource: (id) => clone(sourceById.get(id) ?? null),
     exportSelection,
@@ -636,10 +691,11 @@
     if (!overlap(r.start, r.end)) return "";
     const lo = Math.max(r.start, state.from),
       hi = Math.min(r.end, state.to),
-      cut =
-        r.first === null
-          ? 0
-          : Math.min(100, Math.max(0, ((r.first - lo) / (hi - lo)) * 100));
+      validFirst = Number.isFinite(r.first) && r.first >= r.start && r.first <= r.end,
+      cut = validFirst ? Math.min(100, Math.max(0, ((r.first - lo) / (hi - lo)) * 100)) : null,
+      background = validFirst
+        ? `linear-gradient(90deg,var(--amber) 0%,var(--amber) ${cut}%,var(--teal) ${cut}%,var(--teal) 100%)`
+        : "repeating-linear-gradient(135deg,#b7c2cd 0px,#b7c2cd 5px,#dae1e7 5px,#dae1e7 10px)";
     const text = `Turn ${r.turn} · ${short(r.id)}\nClient TTFT ${fmt(r.ttft_ms)} ms · request ${ms(r.end - r.start)}\n${r.input_tokens ?? "?"} input / ${r.output_tokens ?? "?"} output tokens\nClick to select.${hasLifecycle(r) ? " Expand stages for the full lifecycle." : ""}`;
     return bar(
       r.start,
@@ -650,7 +706,7 @@
       text,
     ).replace(
       'style="',
-      `style="background:linear-gradient(90deg,var(--amber) 0%,var(--amber) ${cut}%,var(--teal) ${cut}%,var(--teal) 100%);`,
+      `style="background:${background};`,
     );
   }
   function track(
@@ -679,7 +735,7 @@
       r?.spans.find((s) => s.id === id)
     );
   }
-  function lifecycleRows(r) {
+  function milestoneRows(r) {
     if (!hasLifecycle(r)) return "";
     const model = lifecycleModel(r);
     const html = model.stages
@@ -706,29 +762,14 @@
         });
       })
       .join("");
-    const streams = model.activities
-      .filter((s) => s.kind === "concurrent")
-      .map((s) =>
-        track(
-          labelText(s.label + " · concurrent"),
-          bar(
-            s.start,
-            s.end,
-            s.label,
-            "phase frontend",
-            `data-span="${esc(s.id)}" data-owner-request="${esc(r.id)}"`,
-            s.description,
-          ),
-        ),
-      )
-      .join("");
-    return (
-      html +
-      streams +
-      `<div class="row-note">${esc(model.timing)} ${model.issues.map(esc).join(" · ")}</div>`
-    );
+    return html + `<div class="row-note">${esc(model.timing)} ${model.issues.map(esc).join(" · ")}</div>`;
+  }
+  function lifecycleRows(r) {
+    if (!hasLifecycle(r)) return "";
+    return '<div class="row-note"><strong>Request breakdown · Progress milestones</strong></div>' + milestoneRows(r);
   }
   function clientTracks() {
+    if (!available.requests) return "";
     const list = sessionList(),
       pages = Math.max(1, Math.ceil(list.length / state.pageSize));
     state.page = Math.min(state.page, pages - 1);
@@ -776,11 +817,7 @@
           ar.map((r) => requestBar(r, "agent")).join(""),
         );
         if (!aopen) continue;
-        const chosen = ar.includes(selected())
-          ? [selected(), ...ar.filter((r) => r !== selected()).slice(0, 7)]
-          : ar.slice(0, 8);
-        chosen.sort((a, b) => a.start - b.start);
-        for (const r of chosen) {
+        for (const r of ar.sort((a, b) => a.start - b.start)) {
           const ropen = hasLifecycle(r) && state.expandedRequests.has(r.id);
           html += track(
             '<span class="indent2"></span>' +
@@ -798,8 +835,6 @@
           );
           if (ropen) html += lifecycleRows(r);
         }
-        if (ar.length > 8)
-          html += `<div class="row-note">Showing ${chosen.length} of ${ar.length} requests for this agent. Zoom or search to narrow the list; all remain queryable through the API.</div>`;
       }
     }
     if (!list.length)
@@ -813,32 +848,118 @@
   function metricPanel(key, series, title) {
     const id = `metricChart${metricMounts.length}`;
     metricMounts.push({ id, key, series, title });
-    return `<div id="${id}" class="dsight-metric-panel" data-metric-key="${esc(key)}"></div>`;
+    const height = metricPanelHeights.get(key);
+    return `<div id="${id}" class="dsight-metric-panel" data-metric-key="${esc(key)}" ${height ? `style="min-height:${height}px"` : ""} aria-busy="true"><div class="ds-metric-loading" role="status">Loading recorded metric samples…</div></div>`;
   }
   function mountMetricCharts() {
-    metricCharts = metricMounts.map(({ id, key, series, title }) =>
-      window.DSightMetricCharts.mount($(id), {
-        series,
-        title,
-        height: 220,
-        from: state.from,
-        to: state.to,
-        selection: state.metricCharts[key],
-        onSelectionChange: (selection) => {
-          state.metricCharts[key] = selection;
-          window.dispatchEvent(new CustomEvent("trace-explorer:state", { detail: stateJSON() }));
-        },
-        onRangeChange: (from, to) => safe(() => setRange(
-          Math.max(0, from), Math.min(D.meta.duration, to),
-        )),
-      }),
-    );
+    const generation = metricGeneration;
+    const from = state.from, to = state.to;
+    const mounts = metricMounts.map(mount => ({...mount, host: $(mount.id)}));
+    metricsReady = (async () => {
+      let firstError;
+      for (const {host, key, series, title} of mounts) {
+        try {
+          const wanted = new Set(series.map(item => String(item.id)));
+          const loaded = [];
+          for (const name of new Set(series.map(item => item.name))) {
+            loaded.push(...(await metricData.loadFamily(name, {from, to, signal: metricController.signal})).filter(item => wanted.has(String(item.id))));
+            if (generation !== metricGeneration) return;
+          }
+          const references = [];
+          const referenceIds = new Set(loaded.filter(item => item.reference?.series_id != null).map(item => String(item.reference.series_id)));
+          for (const name of new Set(loaded.filter(item => item.reference?.series_id != null).map(item => item.reference.name))) {
+            references.push(...(await metricData.loadFamily(name, {from, to, signal: metricController.signal})).filter(item => referenceIds.has(String(item.id))));
+            if (generation !== metricGeneration) return;
+          }
+          if (generation !== metricGeneration || !host.isConnected) return;
+          host.replaceChildren();
+          metricCharts.push(window.DSightMetricCharts.mount(host, {
+            series: loaded, references, title, height: 220, from, to,
+            selection: state.metricCharts[key],
+            onSelectionChange: (selection) => {
+              state.metricCharts[key] = selection;
+              window.dispatchEvent(new CustomEvent("trace-explorer:state", {detail: stateJSON()}));
+            },
+            onRangeChange: (start, end) => safe(() => setRange(
+              Math.max(0, start), Math.min(D.meta.duration, end),
+            )),
+          }));
+          host.style.removeProperty("min-height");
+          host.setAttribute("aria-busy", "false");
+        } catch (error) {
+          if (generation !== metricGeneration) return;
+          host.replaceChildren();
+          const message = document.createElement("div");
+          message.className = "ds-metric-empty";
+          message.textContent = `Could not load this metric: ${error.message}`;
+          host.append(message); host.setAttribute("aria-busy", "false");
+          host.style.removeProperty("min-height");
+          $("error").textContent = error.message;
+          firstError ??= error;
+        }
+      }
+      if (firstError) throw firstError;
+      if (generation === metricGeneration)
+        window.dispatchEvent(new CustomEvent("trace-explorer:metrics-ready", {detail: {metric: state.metric}}));
+    })();
+    // Keep the readiness promise rejected for API callers while reporting UI errors above.
+    metricsReady.catch(() => {});
+  }
+  function metricOptions() {
+    const query = metricSearch.trim().toLowerCase();
+    const matches = metricFamilies.filter(family =>
+      [family.name, family.title, family.component, family.group, family.description]
+        .some(value => String(value || "").toLowerCase().includes(query)));
+    const componentOrder = ["Frontend", "Router", "Workers", "GPU", "Host"];
+    for (const family of metricFamilies)
+      if (!componentOrder.includes(family.component)) componentOrder.push(family.component);
+    matches.sort((a, b) => componentOrder.indexOf(a.component) - componentOrder.indexOf(b.component)
+      || (a.group_order ?? 100) - (b.group_order ?? 100)
+      || String(a.group).localeCompare(String(b.group))
+      || (a.order ?? 100) - (b.order ?? 100) || a.name.localeCompare(b.name));
+    const groups = new Map();
+    for (const family of matches) {
+      const label = [family.component, family.group].filter(Boolean).join(" / ");
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(family);
+    }
+    if (!matches.some(family => family.name === state.metric) && metricFamilyByName.has(state.metric))
+      groups.set(matches.length ? "Current selection" : "No matches · current selection", [metricFamilyByName.get(state.metric)]);
+    const option = family => `<option value="${esc(family.name)}" ${family.name === state.metric ? "selected" : ""}>${esc(family.title && family.title !== family.name ? family.title + " — " : "")}${esc(family.name)}${family.samples === 0 ? " (no samples)" : ""}</option>`;
+    return {
+      html: [...groups].map(([label, families]) => `<optgroup label="${esc(label)}">${families.map(option).join("")}</optgroup>`).join(""),
+      count: `${matches.length} / ${metricFamilies.length} metrics`,
+    };
+  }
+  function metricDescription(family) {
+    if (!family) return "No metrics were recorded.";
+    const kind = family.value_kind === "histogram"
+      ? `Recorded bucket observation counts${family.observation_unit ? `; bounds in ${family.observation_unit}` : ""}.`
+      : family.counter || family.value_kind === "counter" ? "Raw cumulative counter values." : "Recorded sample values.";
+    return `<code>${esc(family.name)}</code><span>${esc([family.description, kind, family.samples === 0 ? "No samples in the captured trace interval." : ""].filter(Boolean).join(" "))}</span>${family.quality ? `<details class="metric-quality"><summary>Metric notes</summary>${esc(family.quality)}</details>` : ""}`;
   }
   function workerTracks() {
-    let html =
-      '<div class="section-head"><span>Server metrics</span><select id="workerMetric" aria-label="Worker metric"><option value="trtllm_num_requests_running">Running requests</option><option value="trtllm_num_requests_waiting">Waiting requests</option><option value="dynamo_component_inflight_requests">In-flight requests</option><option value="trtllm_kv_cache_utilization">KV cache utilization</option></select></div>';
-    const choices = D.metrics.filter((s) => s.name === state.metric);
-    html += metricPanel(JSON.stringify(["metric", state.metric]), choices, choices[0]?.label ?? state.metric);
+    if (!metricFamilies.length) return "";
+    const options = metricOptions();
+    const pinned = state.pinnedMetrics.includes(state.metric);
+    let html = `<section id="metricsSection" aria-label="Metrics"><div class="section-head metric-section-head"><span>Metrics</span><div class="metric-picker"><input id="metricSearch" type="search" placeholder="Search metrics" aria-label="Search metrics" value="${esc(metricSearch)}"><select id="workerMetric" aria-label="Metric">${options.html}</select><button id="pinMetric" aria-pressed="${pinned}" aria-label="${pinned ? "Unpin" : "Pin"} selected metric" ${state.metric ? "" : "disabled"}>${pinned ? "Unpin" : "Pin"}</button><small id="metricSearchCount" aria-live="polite">${options.count}</small></div></div>`;
+    const names = pinned ? state.pinnedMetrics : [...state.pinnedMetrics, state.metric];
+    for (const name of names) {
+      const family = metricFamilyByName.get(name);
+      const pinIndex = state.pinnedMetrics.indexOf(name);
+      const isPinned = pinIndex >= 0;
+      const choices = D.metrics.filter(series => series.name === name);
+      const title = family?.title || choices[0]?.label || name;
+      const pinControls = isPinned ? `<div class="metric-pin-controls"><span class="metric-pin-label">Pinned</span>
+        <button data-action="move-metric-up" data-metric="${esc(name)}" aria-label="Move ${esc(name)} up" title="Move up" ${pinIndex === 0 ? "disabled" : ""}>↑</button>
+        <button data-action="move-metric-down" data-metric="${esc(name)}" aria-label="Move ${esc(name)} down" title="Move down" ${pinIndex === state.pinnedMetrics.length - 1 ? "disabled" : ""}>↓</button>
+        <button data-action="unpin-metric" data-metric="${esc(name)}" aria-label="Unpin ${esc(name)}">Unpin</button></div>` : "";
+      html += `<section class="metric-card${isPinned ? " metric-card-pinned" : ""}" data-metric-name="${esc(name)}" aria-label="${esc(title || "Metric")}" tabindex="-1"><div class="metric-card-head"><div class="metric-description">${metricDescription(family)}</div>${pinControls}</div>`;
+      html += metricPanel(JSON.stringify(["metric", name]), choices, title) + "</section>";
+    }
+    html += "</section>";
+    // Catalog reports expose hardware through the same categorized selector.
+    if (D.metric_catalog) return html;
     html += `<div class="section-head"><span>Hardware</span><button id="hardwareToggle" aria-expanded="${state.hardware}">${state.hardware ? "Hide" : "Show"} GPU / host metrics</button></div>`;
     if (state.hardware) {
       const gpuSeries = D.metrics.filter((s) =>
@@ -860,34 +981,16 @@
         '<div class="row-note">GPU and host metrics follow this time range. Individual GPU samples do not identify request ownership.</div>';
     return html;
   }
-  function workerActivityTracks() {
-    const workers = D.workers.filter((w) => state.expandedWorkers.has(w.id));
-    if (!workers.length) return "";
-    const r = selected();
-    let html = '<section id="workerActivity"><div class="section-head">Selected worker activity</div>';
-    for (const w of workers) {
-      html += `<div class="section-head"><span>${esc(w.id)} · ${esc(w.host)}</span><button data-toggle="worker" data-id="${esc(w.id)}">Close activity</button></div>`;
-      const related = r?.lifecycle.activities.filter((s) => s.worker === w.id) ?? [];
-      for (const activity of related)
-        html += track(
-          labelText((activity.depth ? "↳ " : "") + activity.label + (activity.kind === "envelope" ? " · inclusive" : "")),
-          bar(activity.start, activity.end, activity.label, `phase ${w.role}`, `data-span="${esc(activity.id)}"`, activity.description),
-        );
-      html += `<div class="row-note">${w.profiles.length} rank reports. ${w.profiles.length ? `<button data-worker-nsys="${esc(w.id)}">Inspect Nsight</button>` : "No Nsight export for this worker."}</div>`;
-    }
-    return html + "</section>";
-  }
-  function nsysTracks() {
-    if (!state.nsys) return "";
+  function chosenProfiles() {
     const p = profileById.get(state.profile);
-    if (!p) return "";
+    if (!p) return [];
     let chosen = [p];
     if (state.compareNsys && selected()) {
       const ids = new Set(["frontend", ...selected().workers]);
-      chosen = D.profiles
+      chosen = usableProfiles
         .filter(
           (x) =>
-            ids.has(x.worker) && (x.rank === null || x.rank === (p.rank ?? 0)),
+            ids.has(x.worker) && (p.rank === null || x.rank === null || x.rank === p.rank),
         )
         .sort(
           (a, b) =>
@@ -903,11 +1006,77 @@
                 : 2),
         );
     }
-    return chosen.map(nsysTracksFor).join("");
+    return chosen;
+  }
+  function nsysTracks() {
+    if (!state.nsys) return "";
+    return chosenProfiles().map(nsysTracksFor).join("");
+  }
+  function densityTrack(p) {
+    const bins = p.event_density, width = D.meta.duration / bins.length;
+    const peak = Math.max(1, ...bins);
+    const rects = bins.map((n, i) => {
+      if (!n || (i + 1) * width < state.from || i * width > state.to) return "";
+      const x = Math.max(0, (i * width - state.from) / (state.to - state.from) * 1000);
+      const right = Math.min(1000, ((i + 1) * width - state.from) / (state.to - state.from) * 1000);
+      return `<rect x="${x}" y="${32 - 28 * n / peak}" width="${Math.max(0, right - x)}" height="${28 * n / peak}" fill="#8067b4"/>`;
+    }).join("");
+    return `<div class="section-head" data-nsys-heading="${p.id}"><span>Nsight · ${profileLabel(p)}</span><small>Density overview</small></div>`
+      + `<div class="row-note">${fmt(p.event_count, 0)} imported NVTX ranges in this report. Counts per ${ms(width)} bin; overlapping ranges are not CPU utilization. Zoom in for exact ranges. The API returns exact paginated rows.</div>`
+      + track(labelText("NVTX interval density"), `<svg class="metric-svg" viewBox="0 0 1000 35" preserveAspectRatio="none">${rects}</svg>`, {classes: "nsys-track", height: 35});
+  }
+  function refreshDetails() {
+    if (!D.delivery) return;
+    const chosen = state.nsys ? chosenProfiles() : state.tab === "nsys" ? [profileById.get(state.profile)].filter(Boolean) : [];
+    const from = state.from, to = state.to;
+    const key = JSON.stringify([from, to, chosen.map(p => p.id)]);
+    if (key === detailKey) return;
+    detailKey = key;
+    detailController?.abort();
+    detailController = new AbortController();
+    const signal = detailController.signal;
+    nsysViews.clear();
+    for (const p of D.profiles) if (p.event_chunks) p.events = [];
+    for (const p of chosen) nsysViews.set(p.id, {from, to, loading: true});
+    detailsReady = (async () => {
+      for (const p of chosen) {
+        const sampleCount = (p.cpu?.chunks || []).filter(c => c.bounds[0] <= to && c.bounds[3] >= from).reduce((n, c) => n + c.count, 0);
+        if (detailData.estimate(p, from, to) > 20000 || sampleCount > 20000) {
+          nsysViews.set(p.id, {from, to, summary: true});
+          continue;
+        }
+        const result = await detailData.events(p, {from, to, limit: 20000, signal});
+        const cpu = p.cpu?.chunks ? await detailData.cpu(p, from, to, signal) : null;
+        signal.throwIfAborted();
+        p.events = result.items;
+        nsysViews.set(p.id, {from, to, total: result.total, cpu});
+      }
+      signal.throwIfAborted();
+      if ($("nsysTracks")) $("nsysTracks").innerHTML = nsysTracks();
+      renderInspector();
+      window.dispatchEvent(new Event("trace-explorer:details-ready"));
+    })().catch(error => {
+      if (error.name === "AbortError") return;
+      if (!signal.aborted) {
+        for (const p of chosen) nsysViews.set(p.id, {from, to, error: error.message});
+        if ($("nsysTracks")) $("nsysTracks").innerHTML = nsysTracks();
+        renderInspector();
+        $("error").textContent = error.message;
+      }
+      throw error;
+    });
+    detailsReady.catch(() => {});
   }
   function nsysTracksFor(p) {
+    if (p.event_chunks) {
+      const view = nsysViews.get(p.id);
+      if (!view || view.from !== state.from || view.to !== state.to || view.loading)
+        return `<div class="section-head" data-nsys-heading="${p.id}"><span>Nsight · ${profileLabel(p)}</span></div><div class="row-note">Loading selected ranges…</div>`;
+      if (view.error) return `<div class="row-note">Could not load Nsight ranges: ${esc(view.error)}</div>`;
+      if (view.summary) return densityTrack(p);
+    }
     const es = p.events.filter((e) => overlap(e[0], e[1]));
-    let html = `<div class="section-head" data-nsys-heading="${p.id}"><span>Nsight · ${profileLabel(p)}</span><small>${fmt(es.length, 0)} selected NVTX ranges</small></div><div class="row-note">Shared CPU/NVTX activity. Shows up to 8 threads and 5 overlap lanes each; all imported events remain queryable. ${p.cuda ? "CUDA kernels exist in the source export; this view imports NVTX and CPU only." : "No CUDA kernel table in this export."}</div>`;
+    let html = `<div class="section-head" data-nsys-heading="${p.id}"><span>Nsight · ${profileLabel(p)}</span><small>${fmt(es.length, 0)} selected NVTX ranges</small></div><div class="row-note">Shared CPU/NVTX activity. Shows up to 8 threads and 5 overlap lanes each; all imported events remain queryable. ${p.cuda ? "The source contains a CUDA kernel table; this view displays host NVTX and CPU samples." : ""}</div>`;
     const r = selected();
     if (r) {
       html += track(labelText("Selected request"), requestBar(r));
@@ -947,7 +1116,7 @@
       for (const [i, level] of levels.slice(0, 5).entries()) {
         const label =
           i === 0
-            ? `TID ${Number(BigInt(tid) & 0xffffffn)}`
+            ? `PID ${p.threads?.find((t) => t.global_tid === tid)?.pid ?? "?"} / TID ${p.threads?.find((t) => t.global_tid === tid)?.tid ?? tid}`
             : `overlap lane ${i + 1}`;
         let content;
         if (level.length > 1800) {
@@ -999,19 +1168,23 @@
     return `<div class="evidence-item"><span class="tag">${esc(label)}</span><br><code>${esc(s?.path ?? "Unknown source")}${ref[1] !== undefined ? ":" + ref[1] : ""}</code>${ref[2] !== undefined ? `<br>span index ${ref[2]}` : ""}</div>`;
   }
   function pathNode(id, title, host, active) {
-    return `<button class="path-node ${active ? "active" : ""}" data-path-worker="${esc(id)}"><strong>${esc(title)}</strong><small>${esc(host || "host not mapped")}</small></button>`;
+    const hasProfile = usableProfiles.some((p) => p.worker === id);
+    return `<button class="path-node ${active ? "active" : ""}" data-path-worker="${esc(id)}" ${hasProfile ? "" : "disabled"}><strong>${esc(title)}</strong><small>${esc(host || "host not mapped")}</small><small>${hasProfile ? "Inspect Nsight" : "No Nsight report"}</small></button>`;
   }
 
+  function spanHasProfile(r,span) {
+    const source = span?.kind === "progress" ? r.spans.find((s) => s.id === span.source_span_id) : span;
+    const worker = source?.role === "frontend" ? "frontend" : source?.worker;
+    return worker && usableProfiles.some((p) => p.worker === worker);
+  }
   function requestInspector() {
     const r = selected();
     if (!r)
       return "<p>Select a request to follow its frontend, prefill, and decode path.</p>";
-    const pathWorkers = [
-        ...new Map(r.engine.map((e) => [e.worker, e])).values(),
-      ],
+    const pathWorkers = D.workers.filter((w) => r.workers.includes(w.id)),
       sp = findInterval(r, state.span),
       front = r.spans.find((s) => s.role === "frontend");
-    let html = `<div class="help">Session ${esc(short(r.session))} / ${r.client_kind === "agentperf" ? "client" : r.depth ? "subagent" : "main agent"} / turn ${esc(r.turn)}</div><div class="request-id mono">${esc(r.id)}</div><div class="stats"><div class="stat">${fmt(r.ttft_ms)}<small>Client TTFT · ms</small></div><div class="stat">${fmt(r.end - r.start, 3)}<small>Request duration · s</small></div><div class="stat">${fmt(r.input_tokens, 0)}<small>Input tokens</small></div><div class="stat">${fmt(r.output_tokens, 0)}<small>Output tokens</small></div></div><div class="actions"><button id="fitRequest">Fit request</button><button id="fitTTFT" ${r.first === null ? "disabled" : ""}>Fit TTFT</button>${hasLifecycle(r) ? `<button id="expandTTFT" aria-expanded="${state.expandedRequests.has(r.id)}">${state.expandedRequests.has(r.id) ? "Collapse" : "Expand"} lifecycle</button>` : ""}</div>`;
+    let html = `<div class="help">Session ${esc(short(r.session))} / ${r.client_kind === "agentperf" ? "client" : r.depth ? "subagent" : "main agent"} / turn ${esc(r.turn)}</div><div class="request-id mono">${esc(r.id)}</div><div class="stats"><div class="stat">${fmt(r.ttft_ms)}<small>Client TTFT · ms</small></div><div class="stat">${fmt(r.end - r.start, 3)}<small>Request duration · s</small></div><div class="stat">${fmt(r.input_tokens, 0)}<small>Input tokens</small></div><div class="stat">${fmt(r.output_tokens, 0)}<small>Output tokens</small></div></div><div class="actions"><button id="fitSession" title="Fit all recorded requests in this session, including subagents">Fit Session</button><button id="fitRequest">Fit request</button><button id="fitTTFT" ${r.first === null ? "disabled" : ""}>Fit TTFT</button>${hasLifecycle(r) ? `<button id="expandTTFT" aria-expanded="${state.expandedRequests.has(r.id)}">${state.expandedRequests.has(r.id) ? "Collapse" : "Expand"} lifecycle</button>` : ""}</div>`;
     if (sp) {
       const stage = [
           ...lifecycleModel(r).stages,
@@ -1021,7 +1194,7 @@
         route = context
           ? r.spans.find((s) => s.id === context.route_span_id)
           : null;
-      html += `<div class="phase-focus"><strong>${esc(stage?.label ?? sp.name)}</strong><br><span class="mono">${esc(sp.name)} · ${esc(sp.id)}</span><br>${ms(sp.end - sp.start)} ${sp.kind === "progress" ? "between milestones" : "recorded elapsed"} · ${esc(sp.role)} · ${esc(sp.host)}${stage && !context ? `<p class="help">${esc(stageDescription(stage))}</p>` : ""}${route ? `<br>Route: ${esc(route.routing.phase)} · DP rank ${esc(route.routing.dp_rank)} · attempt ${esc(route.routing["request.attempt"])}<p class="help">${esc(context.basis)}.</p>` : ""}<div class="actions"><button id="fitSpan">Fit phase</button><button id="inspectSpan">Inspect phase in Nsight</button></div></div>`;
+      html += `<div class="phase-focus"><strong>${esc(stage?.label ?? sp.name)}</strong><br><span class="mono">${esc(sp.name)} · ${esc(sp.id)}</span><br>${ms(sp.end - sp.start)} ${sp.kind === "progress" ? "between milestones" : "recorded elapsed"} · ${esc(sp.role)} · ${esc(sp.host)}${stage && !context ? `<p class="help">${esc(stageDescription(stage))}</p>` : ""}${route ? `<br>Route: ${esc(route.routing.phase)} · DP rank ${esc(route.routing.dp_rank)} · attempt ${esc(route.routing["request.attempt"])}<p class="help">${esc(context.basis)}.</p>` : ""}<div class="actions"><button id="fitSpan">Fit phase</button>${spanHasProfile(r,sp) ? '<button id="inspectSpan">Inspect phase in Nsight</button>' : ""}</div></div>`;
     }
     if (sp?.kind === "progress")
       html +=
@@ -1033,8 +1206,10 @@
           sp.to_boundary.evidence,
           "Interval end: " + sp.to_boundary.label,
         );
-    if (sp && sp.kind !== "progress")
+    if (sp && sp.kind !== "progress") {
+      if (sp.worker_basis) html += `<p class="help">Worker association: ${esc(sp.worker_basis)}.</p>`;
       html += evidence(sp.evidence, "Dynamo OTel span");
+    }
     if (hasLifecycle(r) && state.expandedRequests.has(r.id)) {
       html += `<h3>Progress milestones</h3><div class="stage-list">${lifecycleModel(
         r,
@@ -1045,10 +1220,7 @@
         )
         .join(
           "",
-        )}</div><p class="help">Each delta begins at the preceding milestone. Raw spans keep their original inclusive durations in the source table and worker tracks.</p>`;
-    }
-    if (hasLifecycle(r) && state.expandedRequests.has(r.id)) {
-      html += `<h3>Source measurements</h3><p class="help">Dynamo OTel spans below are inclusive. The operation contains backend stream creation and response pumping. Frontend streaming runs concurrently.</p><table class="mini-table"><thead><tr><th>Runtime activity</th><th>Elapsed</th><th>Source</th></tr></thead><tbody>${r.lifecycle.activities.map((a) => `<tr><td><button data-span="${esc(a.id)}" title="${esc(a.description)}">${esc((a.depth ? "↳ " : "") + a.label)}</button></td><td>${ms(a.end - a.start)}</td><td title="${esc(a.name)}">OTel</td></tr>`).join("")}</tbody></table>`;
+        )}</div><p class="help">Each delta begins at the preceding milestone.</p>`;
       if (r.lifecycle.issues.length)
         html += `<p class="notice">${r.lifecycle.issues.map(esc).join("<br>")}</p>`;
     }
@@ -1061,17 +1233,17 @@
           html += `<div class="path-arrow">↓</div><div class="prefill-options">${prefill
             .map(
               (w) =>
-                `<button data-path-worker="${w.id}" class="${r.workers.includes(w.id) ? "active" : ""}">${esc(w.id)}</button>`,
+                `<button data-path-worker="${esc(w.id)}" class="${r.workers.includes(w.id) ? "active" : ""}" title="Inspect Nsight for ${esc(w.id)}" ${usableProfiles.some((p) => p.worker === w.id) ? "" : "disabled"}>${esc(w.id)}</button>`,
             )
             .join("")}</div>`;
       }
       let hasPathNode = Boolean(front);
-      for (const role of ["prefill", "decode", "aggregated"]) {
+      for (const role of ["prefill", "decode", "agg"]) {
         const recorded = pathWorkers.filter((e) => e.role === role);
         if (recorded.length) {
           if (hasPathNode && role !== "prefill") html += '<div class="path-arrow">↓</div>';
           html += recorded
-            .map((e) => pathNode(e.worker, e.worker, e.host, true))
+            .map((w) => pathNode(w.id, w.id, (w.hosts || [w.host]).filter(Boolean).join(", "), true))
             .join("");
           hasPathNode = true;
         }
@@ -1080,7 +1252,7 @@
         html +=
           '<p class="help">All recorded workers are shown, including repeated routing attempts.</p>';
       if (pathWorkers.length)
-        html += '<p class="help" style="margin-top:9px">Click a worker for its recorded activity and Nsight reports. Use the metric chart legend to show or hide worker lines.</p>';
+        html += '<p class="help" style="margin-top:9px">Click a worker to inspect its Nsight report. Use the metric chart legend to show or hide worker lines.</p>';
     }
     if (r.server_ids.length || r.engine.length) {
       html +=
@@ -1089,19 +1261,27 @@
         '</dd><dt>Dynamo</dt><dd class="mono">' +
         r.server_ids.map(esc).join("<br>") +
         "</dd>";
+      for (const b of r.worker_bindings ?? [])
+        html += `<dt>${esc(b.worker)} binding</dt><dd>${b.ambiguous ? '<strong>Ambiguous</strong><br>' : ''}<span class="mono">${esc(b.process ?? "process not recorded")}</span><br>${esc(b.basis)}${r.server_ids.length > 1 ? `<br>Dynamo <span class="mono">${esc(b.server_id)}</span>` : ''}</dd>`;
       for (const e of r.engine)
-        html += `<dt>${esc(e.worker)}</dt><dd>engine client ${esc(e.client_id)}<br><span class="mono">disagg ${esc(e.disagg_id)}</span></dd>`;
+        html += `<dt>${esc(e.worker)} engine</dt><dd>engine client ${esc(e.client_id)}<br><span class="mono">disagg ${esc(e.disagg_id)}</span>${e.identity_ambiguous ? '<br>Process-local ID scope unresolved' : ''}</dd>`;
       html += '</dl>';
       if (r.engine.length)
         html += '<p class="help">Engine client IDs are process-local. Router DP rank is not assumed to match a Nsight process rank; rank selection shows shared activity.</p>';
     }
+    if ((r.worker_bindings ?? []).some((e) => e.ambiguous))
+      html += '<p class="warn">Conflicting worker bindings are retained as evidence and omitted from the recorded request path.</p>';
     if (r.issues.length)
       html += `<p class="warn">${r.issues.map(esc).join("; ")}</p>`;
     return html;
   }
   function nsysInspector() {
     const p = profileById.get(state.profile);
-    if (!p) return "<p>No Nsight SQLite exports are embedded.</p>";
+    if (!p) return "<p>No Nsight SQLite exports were imported.</p>";
+    const view = p.event_chunks ? nsysViews.get(p.id) : null;
+    const pending = p.event_chunks && (!view || view.from !== state.from || view.to !== state.to || view.loading);
+    const detailNote = pending ? "Loading selected ranges…" : view?.error ? `Could not load ranges: ${esc(view.error)}`
+      : view?.summary ? "Density overview. Zoom in for exact range counts and elapsed totals, or use await traceExplorer.queryNsys()." : "";
     const es = p.events.filter((e) => overlap(e[0], e[1])),
       sums = new Map();
     for (const e of es) {
@@ -1117,49 +1297,21 @@
     const groups = [...sums.values()]
       .sort((a, b) => b.time - a.time)
       .slice(0, 18);
-    return `<p>Inspect activity beside the selected request. Worker and time joins identify context; they do not assign shared work to one request.</p><div class="nsys-controls"><label>Report<select id="profileSelect">${D.profiles.map((x) => `<option value="${x.id}" ${p.id === x.id ? "selected" : ""}>${profileLabel(x)}</option>`).join("")}</select></label><button id="showNsys">${state.nsys ? "Hide" : "Show"} Nsight tracks</button><button id="compareNsys" aria-pressed="${state.compareNsys}">${state.compareNsys ? "Show one report" : "Compare frontend + request workers"}</button></div><dl class="facts"><dt>Coverage</dt><dd>${fmt(p.capture[0], 3)} to ${fmt(p.capture[1], 3)} s</dd><dt>Matching ranges</dt><dd>${fmt(es.length, 0)}</dd><dt>Recorded host</dt><dd>${esc(p.host || "not in exported metadata")}</dd><dt>CUDA kernels</dt><dd>${p.cuda ? "Present in source; not imported" : "Not captured"}</dd><dt>Excluded ranges</dt><dd>${p.invalid_or_boundary_ranges} malformed / boundary</dd></dl><p class="help">Selected NVTX categories: frontend preprocessing/routing and engine iteration/scheduling/forward preparation. Detokenize ranges below 100 µs remain in the original report, along with other excluded categories.</p>${cpuInspector(p)}<h3>Ranges in selected window</h3><p class="help">Inclusive, clipped elapsed time; nested and parallel ranges overlap. Totals are not CPU utilization or additive TTFT.</p><table class="mini-table"><thead><tr><th>Range</th><th>Count</th><th>Elapsed</th></tr></thead><tbody>${groups.map((g) => `<tr><td>${esc(g.name)}</td><td>${fmt(g.count, 0)}</td><td>${ms(g.time)}</td></tr>`).join("")}</tbody></table>${evidence([p.evidence_source], "Nsight SQLite")}<div class="detail-heading">Collection notes</div><ul class="quality-list">${(p.diagnostics || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
-  }
-  function evidenceInspector() {
-    const r = selected();
-    return `<h3>Join coverage</h3><dl class="facts"><dt>Client requests</dt><dd>${fmt(D.audit.client_requests, 0)}</dd><dt>Client → Dynamo</dt><dd>${fmt(D.audit.clients_with_server_identity, 0)}</dd>${D.audit.clients_with_lifecycle ? `<dt>With lifecycle</dt><dd>${fmt(D.audit.clients_with_lifecycle, 0)}</dd>` : ""}<dt>Both engine maps</dt><dd>${fmt(D.audit.clients_with_both_engine_maps, 0)}</dd><dt>Ambiguous engine IDs</dt><dd>${D.audit.ambiguous_engine_ids}</dd></dl><h3>Timing and coverage</h3><ul class="quality-list">${[...D.meta.warnings, ...D.meta.limitations].map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="help">No negative residual is relabeled as execution time. Clock anchors remain uncorrected; GPU metrics preserve host / GPU labels.</p>${
-      r
-        ? evidence(r.evidence, "Client record") +
-          r.bridge_evidence
-            .map((e) => evidence(e, "Client → Dynamo"))
-            .join("") +
-          r.engine
-            .map((e) =>
-              evidence(
-                e.evidence,
-                `${e.worker} → engine client ${e.client_id}`,
-              ),
-            )
-            .join("") +
-          r.spans
-            .filter(
-              (s) => s.name === "request.lifecycle" || s.id === state.span,
-            )
-            .map((s) => evidence(s.evidence, s.name))
-            .join("")
-        : ""
-    }`;
+    return `<p>Inspect activity beside the selected request. Worker and time joins identify context; they do not assign shared work to one request.</p><div class="nsys-controls"><label>Report<select id="profileSelect">${usableProfiles.map((x) => `<option value="${x.id}" ${p.id === x.id ? "selected" : ""}>${profileLabel(x)}</option>`).join("")}</select></label><button id="showNsys">${state.nsys ? "Hide" : "Show"} Nsight tracks</button>${selected()?.workers.length ? `<button id="compareNsys" aria-pressed="${state.compareNsys}">${state.compareNsys ? "Show one report" : "Compare frontend + request workers"}</button>` : ""}</div><dl class="facts"><dt>Coverage</dt><dd>${fmt(p.capture[0], 3)} to ${fmt(p.capture[1], 3)} s</dd>${p.truncated ? `<dt>Partial import</dt><dd>Events included through ${fmt(p.imported_range?.[1],3)} s; later source events are omitted.</dd>` : ""}<dt>Matching ranges</dt><dd>${detailNote ? "Not yet queried" : fmt(es.length, 0)}</dd><dt>Recorded host</dt><dd>${esc(p.host || "not in exported metadata")}</dd>${p.cuda ? "<dt>CUDA source</dt><dd>Kernel table retained in original export</dd>" : ""}<dt>Excluded ranges</dt><dd>${p.invalid_or_boundary_ranges} malformed / boundary</dd></dl><p class="help">Selected NVTX categories: frontend preprocessing/routing and engine iteration/scheduling/forward preparation. Detokenize ranges below 100 µs remain in the original report, along with other excluded categories.</p>${detailNote ? `<p class="help">${detailNote}</p>` : ""}${cpuInspector(p)}<h3>Ranges in selected window</h3><p class="help">Inclusive, clipped elapsed time; nested and parallel ranges overlap. Totals are not CPU utilization or additive TTFT.</p><table class="mini-table"><thead><tr><th>Range</th><th>Count</th><th>Elapsed</th></tr></thead><tbody>${groups.map((g) => `<tr><td>${esc(g.name)}</td><td>${fmt(g.count, 0)}</td><td>${ms(g.time)}</td></tr>`).join("")}</tbody></table>${evidence([p.evidence_source], "Nsight SQLite")}<div class="detail-heading">Collection notes</div><ul class="quality-list">${(p.diagnostics || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
   }
   function apiInspector() {
-    const id = selected()?.id ?? "client-request-id";
+    const r = selected() ?? D.requests[0], p = usableProfiles[0];
+    const id = JSON.stringify(r?.id);
     const code = [
       "const x = window.traceExplorer;",
-      "x.selectRange(10, 20);",
-      "x.queryRequests({limit: 10});",
-      `x.selectRequest("${id}");`,
-      `x.getRequest("${id}");`,
-      ...(hasLifecycle(selected())
-        ? [`x.getLifecycle("${id}");`, `x.expandRequest("${id}");`]
-        : []),
-      'x.inspectNsys({worker: "prefill-0", rank: 0});',
-      "x.queryNsys({limit: 20});",
-      "x.queryMetrics();",
-      "x.queryIterations({worker: 'decode-0', rank: 0});",
-      "x.exportSelection();",
+      `x.selectRange(0, ${D.meta.duration});`,
+      ...(r ? ["x.queryRequests({limit: 10});", `x.selectRequest(${id});`, `x.getRequest(${id});`] : []),
+      ...(hasLifecycle(r) ? [`x.getLifecycle(${id});`, `x.expandRequest(${id});`] : []),
+      ...(p ? [`await x.inspectNsys({profile: ${p.id}});`, "await x.whenDetailsReady();", "await x.queryNsys({limit: 20});"] : []),
+      ...(available.metrics ? ["x.listMetricFamilies();", "x.listMetricSeries({name: x.getState().metric});", "await x.queryMetrics({name: x.getState().metric});"] : []),
+      ...(available.iterations ? ["x.queryIterations({limit: 10});"] : []),
+      ...(available.server_activity ? ["x.queryServerSpans({offset: 0, limit: 10});"] : []),
+      "await x.exportSelection();",
     ].join("\n");
     return `<p>The API controls the same inputs and expansions you see here, and returns structured evidence.</p><div class="code">${esc(code)}</div><div class="actions"><button id="downloadState">Export evidence JSON</button><button id="copyState">Copy view state</button></div><h3>Current state</h3><div class="code">${esc(JSON.stringify({ range_seconds: [state.from, state.to], request: state.request, ttft_expanded: state.expandedRequests.has(state.request), nsys_profile: state.nsys ? state.profile : null }, null, 2))}</div><p class="help">Times are seconds from origin_ns. Queries support offset / limit and report total counts. View links preserve range, selection, and expansion.</p>`;
   }
@@ -1170,11 +1322,7 @@
         ? requestInspector()
         : state.tab === "nsys"
           ? nsysInspector()
-          : state.tab === "iterations"
-            ? iterationInspector()
-            : state.tab === "evidence"
-              ? evidenceInspector()
-              : apiInspector();
+          : apiInspector();
     $("inspectorBody").scrollTop = scroll;
     document.querySelectorAll("[data-tab]").forEach((b) => {
       b.classList.toggle("active", b.dataset.tab === state.tab);
@@ -1183,10 +1331,14 @@
     $("selectionTag").textContent = selected()
       ? selected().status
       : "No selection";
+    refreshDetails();
   }
   function overview() {
     const bins = Array(300).fill(0);
-    for (const r of D.requests)
+    const observations = available.requests ? D.requests : available.server_activity ? D.server_spans :
+      D.metrics.length ? D.metrics.flatMap((m) => (m.points ?? []).map((p) => ({start:p[0]}))) :
+      D.profiles.map((p) => ({start: Math.max(0,p.capture[0])}));
+    for (const r of observations)
       bins[Math.min(299, Math.floor((r.start / D.meta.duration) * 300))]++;
     const max = Math.max(...bins, 1),
       start = (state.from / D.meta.duration) * 1200,
@@ -1202,7 +1354,7 @@
         .join("") +
       `<rect x="${start}" y="1" width="${Math.max(1, end - start)}" height="54" fill="#2f72aa12" stroke="#397bac" stroke-width="2"/><path d="M${start},0v56M${end},0v56" stroke="#397bac" stroke-width="3"/>`;
     $("overviewLabel").textContent =
-      `${fmt(D.requests.length, 0)} selected client requests · ${fmt(D.meta.duration, 2)} s`;
+      `${available.requests ? fmt(D.requests.length, 0)+" client requests" : "Recorded source coverage"} · ${fmt(D.meta.duration, 2)} s`;
   }
   function alignRuler() {
     document.querySelector(".axis-row").style.paddingRight =
@@ -1217,10 +1369,16 @@
   }
   function render() {
     clearClientDrag();
+    metricGeneration++;
+    metricController?.abort();
+    metricController = new AbortController();
+    // Reserve existing chart heights during async reloads so lower pins stay in view.
+    const scroll = $("tracks").scrollTop;
+    metricPanelHeights = new Map([...document.querySelectorAll(".dsight-metric-panel")]
+      .map(host => [host.dataset.metricKey, host.getBoundingClientRect().height]));
     for (const chart of metricCharts) chart.destroy();
     metricCharts = [];
     metricMounts = [];
-    const scroll = $("tracks").scrollTop;
     $("rangeFrom").value = Number(state.from.toFixed(6));
     $("rangeTo").value = Number(state.to.toFixed(6));
     $("rangeFrom").max = D.meta.duration;
@@ -1237,12 +1395,14 @@
       (_, i) =>
         `<span class="tick" style="left:${i * 20}%">${fmt(state.from + ((state.to - state.from) * i) / 5, state.to - state.from < 1 ? 6 : 3)} s</span>`,
     ).join("");
-    $("tracks").innerHTML = clientTracks() + workerTracks() + workerActivityTracks() + nsysTracks();
+    $("tracks").innerHTML = clientTracks() + workerTracks() + (state.nsys ? `<div id="nsysTracks">${nsysTracks()}</div>` : "") ||
+      '<div class="loading">No timeline tracks are available. Imported data and source coverage are available in Agent API.</div>';
     mountMetricCharts();
     $("tracks").scrollTop = scroll;
     if ($("workerMetric")) $("workerMetric").value = state.metric;
     $("visibleCount").textContent =
       `${fmt(inRangeRequests().length, 0)} requests in range`;
+    $("visibleCount").hidden = !available.requests;
     renderInspector();
     overview();
     alignRuler();
@@ -1281,6 +1441,46 @@
     safe(() => {
       const b = event.target.closest("button");
       if (!b) return;
+      if (["move-metric-up", "move-metric-down"].includes(b.dataset.action)) {
+        const index = state.pinnedMetrics.indexOf(b.dataset.metric);
+        const direction = b.dataset.action === "move-metric-up" ? -1 : 1;
+        const next = index + direction;
+        if (index < 0 || next < 0 || next >= state.pinnedMetrics.length) return;
+        const cards = [...document.querySelectorAll(".metric-card-pinned")];
+        const panel = cards[index], neighbor = cards[next];
+        const pins = [...state.pinnedMetrics];
+        [pins[index], pins[next]] = [pins[next], pins[index]];
+        state.pinnedMetrics = pins;
+        // Keep mounted charts and pending loads attached to their existing hosts.
+        if (direction < 0) neighbor.before(panel);
+        else neighbor.after(panel);
+        document.querySelectorAll(".metric-card-pinned").forEach((card, i) => {
+          card.querySelector('[data-action="move-metric-up"]').disabled = i === 0;
+          card.querySelector('[data-action="move-metric-down"]').disabled = i === pins.length - 1;
+        });
+        const focus = b.disabled ? panel.querySelector('[data-action^="move-metric-"]:not(:disabled)') : b;
+        focus.focus({preventScroll: true});
+        focus.scrollIntoView({block: "nearest"});
+        renderInspector();
+        window.dispatchEvent(new CustomEvent("trace-explorer:state", {detail: stateJSON()}));
+        return;
+      }
+      if (b.id === "pinMetric" || b.dataset.action === "unpin-metric") {
+        const name = b.id === "pinMetric" ? state.metric : b.dataset.metric;
+        if (!metricFamilyByName.has(name)) return;
+        const cardIndex = [...document.querySelectorAll(".metric-card")].indexOf(b.closest(".metric-card"));
+        state.pinnedMetrics = state.pinnedMetrics.includes(name)
+          ? state.pinnedMetrics.filter(metric => metric !== name)
+          : [...state.pinnedMetrics, name];
+        render();
+        if (cardIndex < 0) $("pinMetric").focus({preventScroll: true});
+        else {
+          const cards = document.querySelectorAll(".metric-card");
+          const nearby = cards[Math.min(cardIndex, cards.length - 1)];
+          (nearby?.querySelector('[data-action="unpin-metric"]') || nearby || $("pinMetric")).focus();
+        }
+        return;
+      }
       if (b.dataset.request) {
         selectRequest(b.dataset.request);
         return;
@@ -1299,7 +1499,6 @@
             session: "expandedSessions",
             agent: "expandedAgents",
             request: "expandedRequests",
-            worker: "expandedWorkers",
           }[kind];
         if (kind === "request" && !state.expandedRequests.has(id)) {
           expandRequest(id);
@@ -1322,13 +1521,7 @@
         return;
       }
       if (b.dataset.pathWorker) {
-        state.expandedWorkers = new Set([b.dataset.pathWorker]);
-        render();
-        $("workerActivity")?.scrollIntoView({ block: "nearest" });
-        return;
-      }
-      if (b.dataset.workerNsys) {
-        inspectNsys({ worker: b.dataset.workerNsys, rank: 0 });
+        inspectNsys({ worker: b.dataset.pathWorker });
         return;
       }
       if (b.dataset.nvtx) {
@@ -1358,6 +1551,10 @@
           state.expandedRequests.clear();
           render();
         },
+        fitSession: () => {
+          const session = D.sessions.find((s) => s.id === r?.session);
+          if (session) fitRange(session.start, session.end);
+        },
         fitRequest: () => r && fitRange(r.start, r.end),
         fitTTFT: () => {
           if (r && r.first !== null) {
@@ -1382,10 +1579,10 @@
           render();
           if (state.nsys) scrollNsys();
         },
-        saveSelection: () =>
-          download(exportSelection(), `trace-${D.meta.job}-selection.json`),
-        downloadState: () =>
-          download(exportSelection(), `trace-${D.meta.job}-selection.json`),
+        saveSelection: async () =>
+          download(await exportSelection(), `trace-${D.meta.job}-selection.json`),
+        downloadState: async () =>
+          download(await exportSelection(), `trace-${D.meta.job}-selection.json`),
         copyState: () =>
           copy(JSON.stringify(stateJSON(), null, 2)).catch(
             (e) => ($("error").textContent = e.message),
@@ -1397,24 +1594,12 @@
           copy(url.href).catch((e) => ($("error").textContent = e.message));
         },
       };
-      actions[b.id]?.();
+      return actions[b.id]?.();
     }),
   );
   document.addEventListener("change", (event) =>
     safe(() => {
       const t = event.target;
-      if (t.dataset.workerSeries) {
-        state.metricSeries[t.dataset.workerSeries] = Number(t.value);
-        render();
-      }
-      if (t.id === "iterationWorker") {
-        state.iterationWorker = t.value;
-        renderInspector();
-      }
-      if (t.id === "iterationRank") {
-        state.iterationRank = Number(t.value);
-        renderInspector();
-      }
       if (t.id === "profileSelect") {
         state.profile = Number(t.value);
         state.nsys = true;
@@ -1424,6 +1609,7 @@
       if (t.id === "workerMetric") {
         state.metric = t.value;
         render();
+        $("workerMetric").focus({preventScroll: true});
       }
       if (t.id === "sessionSort") {
         state.sort = t.value;
@@ -1433,6 +1619,13 @@
     }),
   );
   let searchTimer;
+  document.addEventListener("input", event => {
+    if (event.target.id !== "metricSearch") return;
+    metricSearch = event.target.value;
+    const options = metricOptions();
+    $("workerMetric").innerHTML = options.html;
+    $("metricSearchCount").textContent = options.count;
+  });
   $("search").addEventListener("input", () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
@@ -1623,26 +1816,55 @@
     tip.style.top =
       Math.max(8, Math.min(innerHeight - 150, event.clientY + 15)) + "px";
   });
+  document.querySelectorAll(".tabs [data-tab]").forEach((button) => {
+    button.hidden = !tabs.includes(button.dataset.tab);
+  });
+  document.querySelector(".timeline-controls").hidden = !available.requests;
+  document.querySelector(".legend").hidden = !available.requests && !available.nsight;
+  document.querySelector(".legend").innerHTML = [
+    ...(available.requests ? ['<span><i class="dot" style="background:var(--amber)"></i>Client TTFT</span>',
+      '<span><i class="dot" style="background:var(--teal)"></i>Output reception</span>'] : []),
+    ...(D.requests.some((r) => !Number.isFinite(r.first) || r.first < r.start || r.first > r.end)
+      ? ['<span><i class="dot" style="background:#b7c2cd"></i>First-token timing unavailable</span>'] : []),
+    ...(available.request_breakdown ? ['<span><i class="dot" style="background:var(--violet)"></i>OTel activity</span>'] : []),
+    ...(available.nsight ? ['<span><i class="dot" style="background:var(--violet)"></i>Host NVTX</span>'] : []),
+    '<span class="muted">Shared time axis</span>',
+  ].join("");
+  if (!available.requests) {
+    document.querySelector(".inspector-title h2").textContent = "Captured evidence";
+    $("selectionTag").hidden = true;
+  }
+  const workerRoles = [...new Set(D.workers.map((w) => w.role))]
+    .map((role) => `${D.workers.filter((w) => w.role === role).length} ${role}`).join(" / ");
   $("runSubtitle").textContent =
-    `Run ${D.meta.job} · ${D.workers.filter((w) => w.role === "prefill").length} prefill / ${D.workers.filter((w) => w.role === "decode").length} decode workers · ${D.meta.phase} client phase`;
+    `Run ${D.meta.job}${workerRoles ? " · " + workerRoles + " workers" : ""} · ${available.requests ? D.meta.phase+" client phase" : "recorded source window"}`;
   $("joinBadge").textContent =
     `${fmt(D.audit.clients_with_server_identity, 0)} / ${fmt(D.requests.length, 0)} client → server`;
   $("joinBadge").style.display = D.audit.clients_with_server_identity ? "" : "none";
   $("joinBadge").classList.add(
     D.audit.clients_with_server_identity === D.requests.length ? "ok" : "warn",
   );
+  const imported = [
+    [D.requests.length, "clients"], [D.audit.joined_spans, "joined OTel spans"],
+    [D.server_spans?.length, "unjoined server spans"], [D.metrics.length, "metric series"],
+    [usableProfiles.length, "Nsight reports"], [D.iterations.length, "batch observations"],
+  ].filter(([count]) => count).map(([count, label]) => `${fmt(count,0)} ${label}`);
+  $("coverageNotice").classList.toggle("has-warning", D.meta.warnings.length > 0);
   $("coverageNotice").innerHTML =
-    `<strong>Imported:</strong> ${D.requests.length} clients${D.audit.joined_spans ? ` · ${D.audit.joined_spans} joined OTel spans` : ""} · ${D.metrics.length} metric series · ${D.profiles.length} Nsight exports. ${D.meta.warnings.map(esc).join(" ")} <button data-tab="evidence">View evidence</button>`;
+    `<strong>Imported:</strong> ${imported.join(" · ") || "No supported observations"}. ${D.meta.warnings.map(esc).join(" ")}`;
+  if (!available.requests) $("cursorLabel").textContent = "Time since source window start";
   if (D.meta.qualification?.passed)
     $("runSubtitle").textContent += " · capture qualified";
   const candidates = [...D.requests]
-    .filter((r) => r.spans.length && r.engine.length === 2 && r.first !== null)
+    .filter((r) => r.spans.length && r.workers.length && r.first !== null)
     .sort((a, b) => b.ttft_ms - a.ttft_ms);
   const preferred =
     candidates[Math.min(20, candidates.length - 1)] || D.requests[0];
-  state.request = preferred.id;
-  state.expandedSessions.add(preferred.session);
-  state.expandedAgents.add(preferred.agent);
+  if (preferred) {
+    state.request = preferred.id;
+    state.expandedSessions.add(preferred.session);
+    state.expandedAgents.add(preferred.agent);
+  }
   if (location.hash.startsWith("#view=")) {
     try {
       restore(JSON.parse(decodeURIComponent(location.hash.slice(6))));
@@ -1651,7 +1873,7 @@
     }
   } else {
     state.sort = "ttft";
-    const idx = sessionList().findIndex((s) => s.id === preferred.session);
+    const idx = sessionList().findIndex((s) => s.id === preferred?.session);
     state.page = Math.floor(Math.max(0, idx) / state.pageSize);
   }
   render();

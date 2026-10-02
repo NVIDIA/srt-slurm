@@ -25,6 +25,7 @@
         color: var(--ink);
         background: var(--paper);
       }
+      [hidden] { display: none !important; }
       * {
         box-sizing: border-box;
       }
@@ -154,10 +155,14 @@
       .notice {
         margin: 12px 24px 0;
         padding: 8px 12px;
-        border-left: 3px solid var(--amber);
-        background: #fff6e5;
+        border-left: 3px solid #6688ad;
+        background: #edf3f9;
         font-size: 12px;
         line-height: 1.5;
+      }
+      .notice.has-warning {
+        border-left-color: var(--amber);
+        background: #fff6e5;
       }
       .toolbar {
         display: flex;
@@ -292,6 +297,29 @@
       }
       .section-head small {
         font-weight: 400;
+      }
+      .metric-section-head { align-items: flex-start; }
+      .metric-picker { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; min-width: 0; max-width: 85%; }
+      .metric-picker input { width: 180px; min-width: 0; }
+      .metric-picker select { width: min(480px, 100%); min-width: 0; }
+      .metric-picker small { width: 100%; text-align: right; color: var(--muted); }
+      .metric-card + .metric-card { border-top: 1px solid var(--grid); }
+      .metric-card-head { display: flex; align-items: flex-start; border-bottom: 1px solid var(--grid); }
+      .metric-card-pinned .metric-card-head { background: #f5f8fc; }
+      .metric-description { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px; font-size: 11px; color: var(--muted); }
+      .metric-description code { color: var(--ink); overflow-wrap: anywhere; }
+      .metric-pin-controls { display: flex; align-items: center; gap: 8px; padding: 8px 12px 8px 0; }
+      .metric-pin-label { color: #275c9b; font-size: 11px; font-weight: 650; }
+      .metric-quality { width: 100%; }
+      .metric-quality summary { cursor: pointer; color: #275c9b; width: fit-content; }
+      .ds-metric-loading { padding: 30px 12px; color: var(--muted); font-size: 12px; }
+      @media (max-width: 700px) {
+        .metric-section-head { flex-wrap: wrap; }
+        .metric-picker { max-width: 100%; width: 100%; justify-content: flex-start; }
+        .metric-picker input, .metric-picker select { width: 100%; }
+        .metric-picker small { text-align: left; }
+        .metric-card-head { flex-wrap: wrap; }
+        .metric-pin-controls { width: 100%; justify-content: flex-end; padding: 0 12px 8px; }
       }
       .track {
         display: flex;
@@ -1068,8 +1096,6 @@
         <nav class="tabs" aria-label="Inspector tabs">
           <button data-tab="request" class="active">Request</button
           ><button data-tab="nsys">Nsight</button
-          ><button data-tab="iterations">Iterations</button
-          ><button data-tab="evidence">Evidence</button
           ><button data-tab="api">Agent API</button>
         </nav>
         <div id="inspectorBody" class="inspect-body"></div>
@@ -1085,6 +1111,7 @@
     </script>
     <script src="uPlot.iife.min.js"></script>
     <script src="metric-charts.js"></script>
+    <script src="metric-data.js"></script>
     <script src="explorer.js"></script>
   </body>
 </html>

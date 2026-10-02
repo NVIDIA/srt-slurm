@@ -54,6 +54,9 @@ class FrontendProtocol(Protocol):
     #: ``SrtConfig._validate_frontend`` enforces it at config load.
     required_backend: ClassVar[str | None]
 
+    #: Role that accepts the public request's model name; None uses decode/agg/prefill order.
+    model_name_role: ClassVar[str | None]
+
     #: How this frontend's workers are launched. ``dynamo`` workers are
     #: ``dynamo.<engine>`` processes that register with the Dynamo runtime;
     #: ``direct`` workers are the engine's own OpenAI server (``vllm serve``,
@@ -220,7 +223,7 @@ def numactl_prefix(config: Any) -> list[str]:
 
 def logical_health_expectations(config: Any) -> tuple[int, int, str]:
     """Expected counts in logical workers: aggregate workers count as decode."""
-    r = config.resources
+    r = config.topology
     if r.num_agg > 0:
         return 0, r.num_agg, f"{r.num_agg} agg"
     return r.num_prefill, r.num_decode, f"{r.num_prefill}P + {r.num_decode}D"
