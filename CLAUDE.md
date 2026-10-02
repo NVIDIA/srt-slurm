@@ -44,8 +44,8 @@ files, DSight/dashboard views and skills advance the goal.
 Before using DSight, read [docs/dsight.md](docs/dsight.md) and load the applicable
 [DSight skills](docs/dsight.md#agent-skills) by reading the linked skill files.
 This includes building or querying reports, analyzing existing results,
-preparing dashboard views, and changing DSight code. These skills live under
-`src/srtctl/dsight/skills/` and are part of this repository.
+preparing dashboard views, and changing DSight code. The `dsight-query` skill
+lives under `.agents/skills/` with the other repository agent skills.
 
 Before preparing or submitting Slurm jobs, use
 [slurm-job-sizing](src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md)
