@@ -39,8 +39,8 @@ preparing dashboard views, and changing DSight code. These skills live under
 Before preparing or submitting Slurm jobs, use
 [slurm-job-sizing](src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md)
 to size allocation time, warmup and measured traffic to the task. It covers
-short, parallel hypothesis tests and full benchmarks sized from InferenceMAX run
-history and phase timing distributions, while preserving non-preemptible resources.
+short, parallel hypothesis tests and full benchmarks sized from history and phase
+timing distributions, while preserving non-preemptible resources.
 
 ## Pull Request Descriptions
 

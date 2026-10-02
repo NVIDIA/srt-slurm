@@ -20,14 +20,14 @@ depends on the site.
   needed to reproduce it. Isolate each job's state and outputs; serialize actual
   dependencies. Split preparation first if the budget does not fit, and justify
   unavoidable exceptions. Label reduced runs as diagnostic.
-- **Full load point:** search the task's **InferenceMAX GitHub run history**
-  before choosing walltime. Find multiple comparable runs by model, hardware,
+- **Full load point:** search history before choosing walltime.
+  Find multiple comparable runs by model, hardware,
   engine, workload, concurrency, cache state and instrumentation. Inspect their
   logs/artifacts and break down each run into startup, warmup, measurement, drain
   and preservation. Compare phase and total timing distributions; separate queue
-  time and failed/incomplete attempts. Base the allowance and margin on those
-  observations, not a fixed duration or the fastest run. If evidence is missing,
-  state the gaps and use a bounded pilot or matched local history.
+  time and failed/incomplete attempts. Derive the allowance and margin from
+  comparable observations. **If no comparable history is found, default to a
+  2-hour allocation (`02:00:00`) for a 60-minute measured run.**
 - **Set the whole-job budget.** Include preparation, startup, all load points,
   drain, capture finalization, preservation and uncertainty; account for overlap.
   Set `slurm.time_limit` explicitly and adjust the selected runner's actual
