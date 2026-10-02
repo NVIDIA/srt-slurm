@@ -193,7 +193,9 @@ def test_setup_script_runs_in_the_smg_container() -> None:
     assert 'bash "${script_path}"' in preamble
 
 
-@pytest.mark.parametrize("recipe", ["vllm/smg-agg.yaml", "vllm/smg-dep16.yaml", "sglang/smg-disagg.yaml"])
+@pytest.mark.parametrize(
+    "recipe", ["vllm/smg-agg.yaml", "vllm/smg-dep16.yaml", "vllm/smg-disagg-grpc.yaml", "sglang/smg-disagg.yaml"]
+)
 def test_examples_launch_smg_through_the_orchestrator(recipe: str) -> None:
     """The mock orchestrator starts the workers, then one SMG router fronting them."""
     path = EXAMPLES_DIR / recipe
@@ -217,3 +219,14 @@ def test_multi_node_vllm_dp_is_one_smg_worker() -> None:
     launch = next(line.strip() for line in plan.splitlines() if line.strip().startswith("smg launch"))
     port = serves[0].split("--port ")[1].split()[0]
     assert launch.startswith(f"smg launch --worker-urls http://127.0.0.1:{port} --host")
+
+
+def test_vllm_pd_runs_grpc_workers_with_nixl() -> None:
+    """vLLM P/D: both roles serve gRPC with NixlConnector, and SMG pairs them by grpc:// URL."""
+    plan = render_launch_plan(EXAMPLES_DIR / "vllm/smg-disagg-grpc.yaml")
+    serves = [line.strip() for line in plan.splitlines() if line.strip().startswith("vllm serve")]
+    assert len(serves) == 2
+    assert all("--grpc" in serve and '"kv_connector": "NixlConnector"' in serve for serve in serves)
+    launch = next(line.strip() for line in plan.splitlines() if line.strip().startswith("smg launch"))
+    assert launch.startswith("smg launch --pd-disaggregation --prefill grpc://")
+    assert " --decode grpc://" in launch
