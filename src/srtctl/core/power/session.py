@@ -418,6 +418,7 @@ class PowerTelemetrySession:
                 power_w=reading.power_w,
                 gpu_util_pct=reading.gpu_util_pct,
                 sm_active=reading.sm_active,
+                temperature_c=reading.temperature_c,
             )
             for reading in (scrape.readings if scrape is not None else ())
         ]

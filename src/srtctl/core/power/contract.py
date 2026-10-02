@@ -20,7 +20,8 @@ SCHEMA_VERSION = 1
 # The samples CSV is versioned independently: SCHEMA_VERSION is shared with
 # manifest.json and with measurement-window files whose writer keeps its own copy.
 SAMPLES_SCHEMA_VERSION_V1 = 1
-SAMPLES_SCHEMA_VERSION = 2
+SAMPLES_SCHEMA_VERSION_V2 = 2
+SAMPLES_SCHEMA_VERSION = 3
 
 PRODUCER = "srt-slurm.dcgm-power"
 POWER_METRIC = "DCGM_FI_DEV_POWER_USAGE"
@@ -30,6 +31,9 @@ CLOCK_SOURCE = "head_node_unix_clock"
 
 GPU_UTIL_METRIC = "DCGM_FI_DEV_GPU_UTIL"
 SM_ACTIVE_METRIC = "DCGM_FI_PROF_SM_ACTIVE"
+TEMPERATURE_METRIC = "DCGM_FI_DEV_GPU_TEMP"
+# DCGM reserves this value and larger integers for blank/error sentinels.
+DCGM_INT32_BLANK = 0x7FFFFFF0
 
 
 @dataclass(frozen=True)
@@ -64,7 +68,8 @@ SAMPLES_HEADER_V1 = (
     "gpu_uuid",
     "power_w",
 )
-SAMPLES_HEADER = (*SAMPLES_HEADER_V1, *(metric.column for metric in UTILIZATION_METRICS))
+SAMPLES_HEADER_V2 = (*SAMPLES_HEADER_V1, *(metric.column for metric in UTILIZATION_METRICS))
+SAMPLES_HEADER = (*SAMPLES_HEADER_V2, "temperature_c")
 
 CPU_SCHEMA_VERSION_V1 = 1
 # v2 pivots to one row per (timestamp, hostname, socket): power_w is the

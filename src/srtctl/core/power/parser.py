@@ -4,7 +4,7 @@
 """Strict, mapping-driven exporter power parsing.
 
 The mapping's power metric is mandatory and decides which GPUs produce a
-reading. The mapping's utilization metrics are optional riders: they attach to a
+reading. GPU temperature and the mapping's utilization metrics are optional riders: they attach to a
 GPU's power reading when present and valid, and are dropped silently otherwise.
 Device identity comes from the mapping's index and identity labels; any
 exporter hostname label is deliberately ignored because the collector already
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from prometheus_client.parser import text_string_to_metric_families
 
-from srtctl.core.power.contract import Reason, dedupe
+from srtctl.core.power.contract import DCGM_INT32_BLANK, TEMPERATURE_METRIC, Reason, dedupe
 from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 
 
@@ -32,6 +32,7 @@ class PowerReading:
     power_w: float
     gpu_util_pct: float | None = None
     sm_active: float | None = None
+    temperature_c: float | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,8 @@ def parse_power_scrape(text: str, mapping: PowerMetricMapping = DCGM_POWER_MAPPI
     duplicated_power: set[int] = set()
     saw_power_sample = False
     utilization_by_metric = {metric.metric: metric for metric in mapping.utilization_metrics}
+    temperatures: dict[tuple[int, str], float] = {}
+    duplicated_temperatures: set[tuple[int, str]] = set()
     # column -> gpu_index -> value; a duplicate poisons that (column, gpu) pair.
     utilization: dict[str, dict[int, float]] = {metric.column: {} for metric in mapping.utilization_metrics}
     duplicated_utilization: dict[str, set[int]] = {metric.column: set() for metric in mapping.utilization_metrics}
@@ -67,6 +70,9 @@ def parse_power_scrape(text: str, mapping: PowerMetricMapping = DCGM_POWER_MAPPI
             if sample.name == mapping.power_metric:
                 saw_power_sample = True
                 _collect_power(sample.labels, sample.value, power_by_index, duplicated_power, reasons, mapping)
+                continue
+            if sample.name == TEMPERATURE_METRIC:
+                _collect_temperature(sample.labels, sample.value, temperatures, duplicated_temperatures, mapping)
                 continue
             spec = utilization_by_metric.get(sample.name)
             if spec is None:
@@ -96,7 +102,11 @@ def parse_power_scrape(text: str, mapping: PowerMetricMapping = DCGM_POWER_MAPPI
             for column, values in utilization.items()
             if gpu_index in values and gpu_index not in duplicated_utilization[column]
         }
-        readings.append(PowerReading(gpu_index=gpu_index, gpu_uuid=gpu_uuid, power_w=power_w, **extras))
+        key = (gpu_index, gpu_uuid)
+        temperature = temperatures.get(key) if key not in duplicated_temperatures else None
+        readings.append(
+            PowerReading(gpu_index=gpu_index, gpu_uuid=gpu_uuid, power_w=power_w, temperature_c=temperature, **extras)
+        )
     return ParsedScrape(readings=tuple(readings), reason_codes=dedupe(reasons))
 
 
@@ -152,6 +162,25 @@ def _collect_utilization(
         duplicated.add(gpu_index)
         return
     by_index[gpu_index] = value
+
+
+def _collect_temperature(
+    labels: dict[str, str],
+    value: float,
+    temperatures: dict[tuple[int, str], float],
+    duplicated: set[tuple[int, str]],
+    mapping: PowerMetricMapping,
+) -> None:
+    if any(labels.get(label) for label in mapping.instance_labels):
+        return
+    gpu_index = _parse_index(labels.get(mapping.gpu_index_label))
+    gpu_uuid = (labels.get(mapping.gpu_identity_label) or "").strip()
+    if gpu_index is None or not gpu_uuid or not math.isfinite(value) or not -273.15 <= value < DCGM_INT32_BLANK:
+        return
+    key = (gpu_index, gpu_uuid)
+    if key in temperatures:
+        duplicated.add(key)
+    temperatures[key] = value
 
 
 def _parse_index(raw: str | None) -> int | None:

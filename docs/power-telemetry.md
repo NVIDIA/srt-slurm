@@ -16,8 +16,9 @@ the watts is selected per cluster or recipe (see [GPU exporter labels and metric
 - A collector thread inside the orchestrator polls every exporter concurrently
   from the physical head node, so all sample timestamps and benchmark
   boundaries come from one clock.
-- Only the profile's power metric is parsed (`DCGM_FI_DEV_POWER_USAGE` for
-  DCGM). Device identity comes from the profile's index and identity labels
+- The profile's power metric (`DCGM_FI_DEV_POWER_USAGE` for DCGM) determines
+  which GPUs have power readings; optional utilization and `DCGM_FI_DEV_GPU_TEMP`
+  readings accompany them. Device identity comes from the profile's index and identity labels
   (`gpu` and `UUID` for DCGM).
 - **No in-tree benchmark stamps measurement windows yet**, so every run is
   currently unpublishable: it records `MEASUREMENT_WINDOW` reason codes, and
@@ -174,10 +175,19 @@ The same block works under `telemetry.dcgm_exporter` in a recipe, as shown in th
 ```
 
 `samples.csv` has the exact header
-`schema_version,timestamp_unix,scrape_seq,hostname,gpu_index,gpu_uuid,power_w`,
+`schema_version,timestamp_unix,scrape_seq,hostname,gpu_index,gpu_uuid,power_w,gpu_util_pct,sm_active,temperature_c` (version 3),
 one row per observation, `(scrape_seq, hostname, gpu_index)` unique. Rows are
 never interpolated, averaged, or role-attributed — role and heterogeneous
 group live once in the manifest topology.
+
+GPU temperature is optional Celsius from `DCGM_FI_DEV_GPU_TEMP` in the same
+exporter response as power; collection adds no request, process, or wait.
+Temperature must match the power reading's GPU index and UUID. Missing,
+duplicate, non-finite, MIG, or DCGM blank/error values leave the temperature
+cell empty without invalidating power. Older v1/v2 files remain readable;
+v3 readers must be deployed before upgrading producers. Consumers must show
+missing temperatures as unavailable, never zero. The exporter must expose the
+temperature field; collection does not enable additional profiling counters.
 
 `manifest.json` records producer identity (version, git commit, exporter image
 and its SHA-256), the power metric and scope, the sample interval, expected and observed device sets, the
