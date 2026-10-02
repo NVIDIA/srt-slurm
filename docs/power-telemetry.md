@@ -18,7 +18,10 @@ window themselves.
   aligned, so the client may run on any node (`benchmark.placement.node`,
   including `dedicated`). Before any server starts, the
   orchestrator probes every allocation node's bare host for a synchronised
-  clock (`timedatectl`, then `chronyc`, then `ntpq`). A node that cannot prove
+  clock (`timedatectl`, then `chronyc`, then `ntpq`). Each node's verdict is
+  logged (`clock_sync_check: <node> OK (<which daemon vouched>)`) and the
+  probe's output — including the chrony/ntp offset when that path proved it —
+  is kept in `<log_dir>/clock_sync_<node>.out`. A node that cannot prove
   synchronisation aborts the job under `required: true`; under
   `required: false` the run continues but the manifest records the failing
   hosts in `clock_sync_failures`, carries the `clock_sync_unverified` reason,

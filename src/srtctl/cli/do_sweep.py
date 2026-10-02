@@ -322,17 +322,33 @@ class SweepOrchestrator(
             return
         raise RuntimeError(f"host_setup failed on: {', '.join(failures)}")
 
-    # One probe per line; the first that proves synchronisation wins. Every
-    # probe is read-only and unprivileged on stock images: timedatectl reads
-    # the kernel STA_UNSYNC flag over D-Bus, chronyc/ntpq ask their daemon.
-    # Locked-down cmdports print nothing and fall through to the failure line.
+    # One probe per branch; the first that proves synchronisation prints its
+    # evidence and wins, so clock_sync_<node>.out records *which* daemon
+    # vouched (and, for chrony/ntp, the offset it reported). Every probe is
+    # read-only and unprivileged on stock images: timedatectl reads the kernel
+    # STA_UNSYNC flag over D-Bus, chronyc/ntpq ask their daemon. Locked-down
+    # cmdports print nothing and fall through to the failure line.
     CLOCK_SYNC_SCRIPT = (
-        "timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes && exit 0; "
-        "chronyc -n tracking 2>/dev/null | grep -Eq '^Leap status *: *Normal' && exit 0; "
-        "ntpq -pn 2>/dev/null | grep -q '^\\*' && exit 0; "
+        "if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes; then "
+        'echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; '
+        "if t=$(chronyc -n tracking 2>/dev/null) && grep -Eq '^Leap status *: *Normal' <<<\"$t\"; then "
+        'echo "$(hostname): chronyc Leap status Normal"; '
+        "grep -E '^(Reference ID|System time|Last offset)' <<<\"$t\"; exit 0; fi; "
+        "if n=$(ntpq -pn 2>/dev/null) && grep -q '^[*]' <<<\"$n\"; then "
+        'echo "$(hostname): ntpq has a selected peer"; grep \'^[*]\' <<<"$n"; exit 0; fi; '
         'echo "$(hostname): system clock is not NTP-synchronised" >&2; exit 1'
     )
     CLOCK_SYNC_TIMEOUT_SECONDS = 30
+
+    @staticmethod
+    def _clock_sync_evidence(log: Path) -> str:
+        """First line the probe printed (which daemon vouched), formatted for the OK log line."""
+        try:
+            first = log.read_text().splitlines()[0].strip()
+        except (OSError, IndexError):
+            return ""
+        # The probe prefixes with "<hostname>: "; the log line already names the node.
+        return f" ({first.split(': ', 1)[-1]})" if first else ""
 
     def _clock_sync_nodes(self) -> list[str]:
         """Every node whose clock feeds a power artifact: collector host, benchmark client, workers."""
@@ -394,6 +410,8 @@ class SweepOrchestrator(
             if returncode != 0:
                 logger.error("clock_sync_check failed on %s (see %s)", node, log)
                 failures.append(node)
+                continue
+            logger.info("clock_sync_check: %s OK%s", node, self._clock_sync_evidence(log))
 
         if not failures:
             logger.info("clock_sync_check: all %d node(s) report NTP-synchronised clocks", len(nodes))

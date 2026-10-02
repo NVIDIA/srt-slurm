@@ -88,7 +88,11 @@ class TestGate:
         for call in srun.call_args_list:
             assert call.kwargs["container_image"] is None, "the time daemon lives on the host, not in the container"
             assert call.kwargs["command"][:2] == ["bash", "-c"]
-            assert "timedatectl" in call.kwargs["command"][2]
+            script = call.kwargs["command"][2]
+            # Every probe branch must leave evidence in the .out, not just an exit code.
+            for daemon in ("timedatectl", "chronyc", "ntpq"):
+                assert daemon in script
+                assert f'echo "$(hostname): {daemon}' in script
 
     def test_includes_a_dedicated_bench_node_once(self, tmp_path):
         """A client node outside the worker set still feeds window timestamps and must be probed."""
@@ -128,6 +132,46 @@ class TestGate:
 
         assert orch._clock_sync_failures == []
 
+    def test_each_passing_node_logs_which_daemon_vouched(self, tmp_path, caplog):
+        """The per-node .out carries the probe's evidence; the sweep log should name it, not just say OK."""
+        orch = SweepOrchestrator(config=_config(telemetry=_dcgm_power()), runtime=_runtime(tmp_path))
+
+        def srun(*, nodelist, output, **_):
+            # Emulate what the real probe prints for each branch.
+            node = nodelist[0]
+            evidence = {
+                "node0": f"{node}: timedatectl NTPSynchronized=yes\n",
+                "node1": f"{node}: chronyc Leap status Normal\nSystem time     : 0.000012 seconds fast of NTP time\n",
+                "node2": "",  # a probe that passed silently still gets a bare OK line
+            }[node]
+            Path(output).write_text(evidence)
+            return _proc(0)
+
+        with patch("srtctl.cli.do_sweep.start_srun_process", side_effect=srun), caplog.at_level("INFO"):
+            orch._check_clock_sync()
+
+        assert "clock_sync_check: node0 OK (timedatectl NTPSynchronized=yes)" in caplog.text
+        assert "clock_sync_check: node1 OK (chronyc Leap status Normal)" in caplog.text
+        assert "clock_sync_check: node2 OK\n" in caplog.text or "clock_sync_check: node2 OK" in caplog.text
+        assert "all 3 node(s) report NTP-synchronised clocks" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            ("node7: timedatectl NTPSynchronized=yes\n", " (timedatectl NTPSynchronized=yes)"),
+            ("node7: chronyc Leap status Normal\nLast offset : +0.000003 seconds\n", " (chronyc Leap status Normal)"),
+            ("no-hostname-prefix\n", " (no-hostname-prefix)"),
+            ("", ""),
+        ],
+    )
+    def test_evidence_is_the_first_line_without_the_hostname_prefix(self, tmp_path, content, expected):
+        log = tmp_path / "clock_sync_node7.out"
+        log.write_text(content)
+        assert SweepOrchestrator._clock_sync_evidence(log) == expected
+
+    def test_missing_evidence_file_is_tolerated(self, tmp_path):
+        assert SweepOrchestrator._clock_sync_evidence(tmp_path / "absent.out") == ""
+
     def test_best_effort_failures_reach_the_power_session(self, tmp_path):
         """The warning alone is not enough: the manifest must carry the unverified-clock reason."""
         orch = SweepOrchestrator(config=_config(telemetry=_dcgm_power(required=False)), runtime=_runtime(tmp_path))
@@ -162,6 +206,82 @@ class TestGate:
             orch._check_clock_sync()
 
         hung.kill.assert_called_once()
+
+
+class TestProbeScript:
+    """Run CLOCK_SYNC_SCRIPT under real bash with fake probe tools on PATH.
+
+    The script is a quoted one-liner built from Python string pieces; only
+    executing it proves the quoting, here-strings, and branch order are right.
+    """
+
+    CHRONY_NORMAL = (
+        "Reference ID    : 0A000001 (10.0.0.1)\nStratum         : 3\n"
+        "System time     : 0.000012345 seconds fast of NTP time\nLast offset     : +0.000003210 seconds\n"
+        "Leap status     : Normal\n"
+    )
+    NTPQ_PEER = (
+        "     remote           refid      st t when poll reach   delay   offset  jitter\n"
+        "*10.0.0.1        .GPS.            1 u   12   64  377    0.123    0.004   0.010\n"
+    )
+
+    @staticmethod
+    def _run(tmp_path: Path, tools: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        for name, body in tools.items():
+            exe = bindir / name
+            exe.write_text("#!/usr/bin/env bash\n" + body)
+            exe.chmod(0o755)
+        env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(tmp_path)}
+        return subprocess.run(
+            ["bash", "-c", SweepOrchestrator.CLOCK_SYNC_SCRIPT], capture_output=True, text=True, env=env, check=False
+        )
+
+    def test_timedatectl_wins_first(self, tmp_path):
+        r = self._run(tmp_path, {"timedatectl": "echo yes\n", "chronyc": "exit 1\n", "ntpq": "exit 1\n"})
+        assert r.returncode == 0
+        assert r.stdout.splitlines()[0].endswith(": timedatectl NTPSynchronized=yes")
+
+    def test_chronyc_evidence_includes_the_offset(self, tmp_path):
+        r = self._run(
+            tmp_path,
+            {"timedatectl": "echo no\n", "chronyc": f"cat <<'EOF'\n{self.CHRONY_NORMAL}EOF\n", "ntpq": "exit 1\n"},
+        )
+        assert r.returncode == 0
+        lines = r.stdout.splitlines()
+        assert lines[0].endswith(": chronyc Leap status Normal")
+        assert any(line.startswith("System time") for line in lines)
+        assert any(line.startswith("Last offset") for line in lines)
+
+    def test_ntpq_selected_peer_is_the_last_resort(self, tmp_path):
+        r = self._run(
+            tmp_path,
+            {
+                "timedatectl": "exit 1\n",
+                "chronyc": "echo '506 Cannot talk to daemon' >&2; exit 1\n",
+                "ntpq": f"cat <<'EOF'\n{self.NTPQ_PEER}EOF\n",
+            },
+        )
+        assert r.returncode == 0
+        lines = r.stdout.splitlines()
+        assert lines[0].endswith(": ntpq has a selected peer")
+        assert lines[1].startswith("*10.0.0.1")
+
+    @pytest.mark.parametrize(
+        "tools",
+        [
+            {"timedatectl": "exit 127\n", "chronyc": "exit 127\n", "ntpq": "exit 127\n"},
+            {"timedatectl": "echo no\n", "chronyc": "echo 'Leap status     : Not synchronised'\n", "ntpq": "exit 1\n"},
+            {"timedatectl": "echo no\n", "chronyc": "exit 1\n", "ntpq": "printf '+10.0.0.2 x 2 u 1 64 377 0 0 0\\n'\n"},
+        ],
+        ids=["no-tools", "chrony-unsynced", "ntpq-no-selected-peer"],
+    )
+    def test_no_proof_exits_nonzero_with_no_stdout(self, tmp_path, tools):
+        r = self._run(tmp_path, tools)
+        assert r.returncode == 1
+        assert r.stdout == ""
+        assert "not NTP-synchronised" in r.stderr
 
 
 class TestSkipped:
