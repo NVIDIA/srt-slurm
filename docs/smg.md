@@ -25,6 +25,22 @@ serving the model it names
 ([`router.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/routers/http/router.rs#L249-L252)),
 so clients send the workers' served model name, as srtctl's benchmarks do.
 
+A TensorRT-LLM worker is a plain `trtllm-serve` OpenAI server on its allocated port.
+Its `/v1/models` reports `owned_by: "tensorrt_llm"`, which SMG does not match, and it
+serves `/version`, so SMG records it as `vllm`
+([`openai_protocol.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/089dce4f30b36bb979ce157e26eb2ece4b52c7e0/tensorrt_llm/serve/openai_protocol.py#L138),
+[`openai_server.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/089dce4f30b36bb979ce157e26eb2ece4b52c7e0/tensorrt_llm/serve/openai_server.py#L918-L919),
+[`detect_backend.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/workflow/steps/local/detect_backend.rs#L122-L123),
+[fallback](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/workflow/steps/local/detect_backend.rs#L223-L235)).
+For an aggregated worker that label only selects the metadata reader, which takes the
+served model name from `/v1/models`
+([`discover_metadata.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/workflow/steps/local/discover_metadata.rs#L403-L406));
+the HTTP router forwards the OpenAI request unchanged. `--backend trtllm` would not
+change this: over HTTP and gRPC SMG keeps auto-detection and uses `--backend` only to
+pick the routing mode
+([`main.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/main.rs#L1840-L1853)). SMG's TRT-LLM runtime is
+its gRPC client for `trtllm-serve --grpc`, which srtctl does not launch for this frontend.
+
 SGLang P/D runs over HTTP. SMG's HTTP P/D router hands the KV cache over through
 SGLang's bootstrap rendezvous (`bootstrap_host` / `bootstrap_port` / `bootstrap_room`,
 [`pd_router.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/routers/http/pd_router.rs#L303-L305)).
@@ -50,6 +66,11 @@ tokenizes and applies the chat template itself; pass `tool-call-parser` /
 starts no HTTP listener, so these workers serve no Prometheus `/metrics`; SMG's own
 metrics stay on its Prometheus port. See
 [`examples/vllm/smg-disagg-grpc.yaml`](../examples/vllm/smg-disagg-grpc.yaml).
+
+TRT-LLM P/D is not available behind SMG: its gRPC P/D table has no TRT-LLM entry
+([`pd_protocol.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/routers/grpc/common/stages/pd_protocol.rs#L63-L85)),
+and over HTTP SMG relays only vLLM-style `kv_transfer_params`. Use `trtllm-serve` disaggregated
+serving (`frontend.type: trtllm_serve`) or Dynamo for TRT-LLM P/D.
 
 ## vLLM data parallel
 
@@ -90,7 +111,8 @@ frontend:
   several SMG replicas behind nginx, or one SMG on the public port.
 
 See [`examples/vllm/smg-agg.yaml`](../examples/vllm/smg-agg.yaml) (vLLM, aggregated),
-[`examples/vllm/smg-dep16.yaml`](../examples/vllm/smg-dep16.yaml) (vLLM, two-node DP16 with EP)
+[`examples/vllm/smg-dep16.yaml`](../examples/vllm/smg-dep16.yaml) (vLLM, two-node DP16 with EP),
+[`examples/trtllm/smg-agg.yaml`](../examples/trtllm/smg-agg.yaml) (TRT-LLM, aggregated)
 and [`examples/sglang/smg-disagg.yaml`](../examples/sglang/smg-disagg.yaml) (SGLang, P/D).
 
 ## Launch and readiness
@@ -122,14 +144,19 @@ and [`examples/sglang/smg-disagg.yaml`](../examples/sglang/smg-disagg.yaml) (SGL
   `--prometheus-port 29000` (on every interface, SMG's default host) and points
   tachometer's frontend target there
   ([`main.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/main.rs#L741-L748)).
-  Workers are scraped on their own HTTP ports, as with the other static routers.
+  Workers are scraped on their own HTTP ports, as with the other static routers, at
+  the engine's Prometheus route (`native_metrics_path`): `/metrics`, or
+  `/prometheus/metrics` for trtllm-serve, whose `/metrics` is JSON iteration stats.
+  trtllm-serve mounts that route only with `return_perf_metrics: true`
+  ([`openai_server.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/089dce4f30b36bb979ce157e26eb2ece4b52c7e0/tensorrt_llm/serve/openai_server.py#L890-L913)),
+  which srtctl sets by default for every TRT-LLM role behind a direct-worker frontend.
 - **Logs.** Each replica writes `<node>_smg_<index>.out` in the job log directory and
   runs as the Slurm step `smg_<index>`.
 
 ## Not wired
 
 srtctl advertises a worker over HTTP unless its backend reports gRPC for the role
-(`BackendProtocol.is_grpc_mode`: SGLang `grpc-mode: true`, vLLM `grpc: true`), and
+(`Backend.is_grpc_mode`: SGLang `grpc-mode: true`, vLLM `grpc: true`), and
 then as `grpc://`. Before SMG starts, a gRPC worker is probed by connecting to its
 port (vLLM's gRPC server binds it only once the engine is up), an HTTP worker on `/health`.
 SMG's ZMQ and encode (EPD) worker modes, its Kubernetes service discovery, mesh, and the cloud-provider, history, MCP

@@ -69,6 +69,7 @@ def generate_tachometer_config(
     tachometer: TachometerConfig,
     frontend_type: str = "dynamo",
     frontend_metrics_port: int | None = None,
+    worker_metrics_path: str = "/metrics",
     service_targets: Sequence[ServiceMetricsTarget] = (),
 ) -> str:
     """Generate Tachometer TOML from the worker and frontend topology plus the services' metrics.
@@ -104,8 +105,9 @@ def generate_tachometer_config(
     """
     from srtctl.frontends import FRONTEND_NONE, get_frontend
 
-    # The frontend says which rank serves metrics on which port and at what path;
-    # a services-only job has no frontend and no worker processes.
+    # The frontend says which rank serves metrics on which port, and at what path
+    # (``worker_metrics_path``, resolved by the caller with the backend); a
+    # services-only job has no frontend and no worker processes.
     frontend = None if frontend_type == FRONTEND_NONE else get_frontend(frontend_type)
     metrics_path = frontend.metrics_path if frontend is not None else "/metrics"
     endpoints: list[TelemetryEndpoint] = []
@@ -129,7 +131,7 @@ def generate_tachometer_config(
         if port is None:
             continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        url = f"http://{url_host(node_ip)}:{port}{metrics_path}"
+        url = f"http://{url_host(node_ip)}:{port}{worker_metrics_path}"
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),

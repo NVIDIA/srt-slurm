@@ -13,6 +13,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
+from srtctl.backends import TRTLLMBackend
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
@@ -36,6 +37,7 @@ from srtctl.core.schema import (
 )
 from srtctl.core.telemetry import ServiceMetricsTarget, generate_tachometer_config
 from srtctl.core.topology import Process
+from srtctl.frontends import get_frontend
 from srtctl.services import ServiceConfig, ServicePlacementConfig
 
 
@@ -999,6 +1001,7 @@ class TestTachometerConfigGeneration:
             runtime=runtime,
             tachometer=tachometer,
             frontend_type="trtllm_serve",
+            worker_metrics_path=get_frontend("trtllm_serve").worker_metrics_path(TRTLLMBackend()),
         )
 
         # Worker leaders: OpenAI http_port at the Prometheus mount.

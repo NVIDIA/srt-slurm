@@ -746,7 +746,7 @@ class BenchmarkStageMixin:
                 (not self.config.dynamo.sidecar and backend.dynamo_metrics_flags) or backend.publish_events_and_metrics
             )
         )
-        metrics_path = frontend.metrics_path
+        metrics_path = frontend.worker_metrics_path(backend)
         if logical_workers_only:
             # Sidecars use native worker commands, so publish_metrics does not
             # control their existing logical-worker URL discovery. Their native
@@ -769,7 +769,7 @@ class BenchmarkStageMixin:
         elif frontend.worker_launch == "direct":
             # Every rank the frontend says serves metrics. trtllm-serve mounts its
             # Prometheus route only when the engine runs with return_perf_metrics
-            # (expand_trtllm_serve_defaults sets it on every trtllm_serve recipe;
+            # (expand_trtllm_serve_defaults sets it on every direct-worker recipe;
             # an explicit false opts out), so gate each worker on its own engine
             # config -- publish_events_and_metrics is a dynamo.trtllm flag that
             # never reaches a trtllm-serve worker.

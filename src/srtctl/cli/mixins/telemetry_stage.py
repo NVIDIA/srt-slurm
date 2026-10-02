@@ -551,6 +551,14 @@ class TelemetryStageMixin:
             return None
         return get_frontend(self.config.frontend.type).frontend_metrics_port(self.config.frontend.args)
 
+    def _worker_metrics_path(self) -> str:
+        """Path the workers serve Prometheus metrics at; a services-only job has no workers to scrape."""
+        from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+        if self.config.frontend.type == FRONTEND_NONE:
+            return "/metrics"
+        return get_frontend(self.config.frontend.type).worker_metrics_path(self.config.backend)
+
     def _service_metrics_targets(self) -> list[ServiceMetricsTarget]:
         """One tachometer target per node for every service that serves metrics.
 
@@ -628,6 +636,7 @@ class TelemetryStageMixin:
                 tachometer=tachometer,
                 frontend_type=self.config.frontend.type,
                 frontend_metrics_port=self._frontend_metrics_port(),
+                worker_metrics_path=self._worker_metrics_path(),
                 service_targets=[*self._service_metrics_targets(), *self._power_dcgm_targets()],
             )
         )

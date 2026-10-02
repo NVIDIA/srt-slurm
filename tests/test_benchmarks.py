@@ -280,6 +280,7 @@ class TestCustomBenchmarkRunner:
         else:
             backend = SimpleNamespace(
                 type=backend_type,
+                native_metrics_path="/metrics",
                 publish_metrics=publish_metrics,
                 publish_events_and_metrics=publish_events_and_metrics,
                 prefill_environment=prefill_environment or {},
@@ -506,6 +507,29 @@ class TestCustomBenchmarkRunner:
         assert env["AIPERF_SERVER_METRICS_URLS"] == (
             "http://ip-node-a:6100/prometheus/metrics,http://ip-node-c:6100/prometheus/metrics"
         )
+
+    def test_static_router_custom_endpoints_use_the_trtllm_prometheus_path(self):
+        """A router in front of trtllm-serve workers (smg) advertises each worker's
+        own port at the engine's Prometheus route, not the router's /metrics."""
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(8)), 7500, 6100, "agg", 0, node_rank=0),
+            Process("node-b", frozenset(range(8)), 7501, 0, "agg", 0, node_rank=1),
+        ]
+        stage = self._benchmark_stage("smg", processes, backend_type="trtllm")
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        assert env["SRT_AGG_ENDPOINTS"] == "ip-node-a:6100"
+        assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/prometheus/metrics"
 
     @pytest.mark.parametrize("publish_metrics", [False, True])
     @pytest.mark.parametrize("publish_events_and_metrics", [None, False, True])

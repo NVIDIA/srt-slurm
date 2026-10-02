@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srtctl.backends import SGLangProtocol, TRTLLMProtocol, VLLMProtocol
+from srtctl.backends import SGLangBackend, TRTLLMBackend, VLLMBackend
 from srtctl.core.config import load_config
 from srtctl.core.health import check_static_router_health
 from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
@@ -35,7 +35,7 @@ def test_registry_resolves_smg_for_every_backend() -> None:
     assert frontend.frontend_metrics_port(None) == SMG_METRICS_PORT
 
 
-@pytest.mark.parametrize("engine", [SGLangProtocol(), VLLMProtocol(), TRTLLMProtocol()])
+@pytest.mark.parametrize("engine", [SGLangBackend(), VLLMBackend(), TRTLLMBackend()])
 def test_schema_pairs_smg_with_any_backend(engine) -> None:
     config = SrtConfig(
         name="smg",
@@ -52,7 +52,7 @@ def test_grpc_workers_are_advertised_as_grpc_urls() -> None:
     """A backend whose mode serves gRPC (vLLM ``grpc: true``) is advertised as ``grpc://``."""
     from srtctl.core.schema import RoleConfig
 
-    backend = VLLMProtocol(
+    backend = VLLMBackend(
         roles={"prefill": RoleConfig(args={"grpc": True}), "decode": RoleConfig(args={"grpc": True})}
     )
     processes = [
@@ -78,7 +78,7 @@ def test_grpc_workers_are_probed_on_their_port_before_smg_starts(tmp_path: Path)
     """A gRPC worker has no HTTP /health: SMG starts once its port accepts connections."""
     from srtctl.core.schema import RoleConfig
 
-    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"grpc": True})})
+    backend = VLLMBackend(roles={"agg": RoleConfig(args={"grpc": True})})
     runtime = SimpleNamespace(
         network_interface=None,
         log_dir=tmp_path,
@@ -114,9 +114,9 @@ def test_pd_command_advertises_prefill_bootstrap_port() -> None:
         Process("node1", frozenset({0}), 7501, 6100, "decode", 0),
     ]
     with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=["10.0.0.1", "10.0.0.2"]):
-        workers = frontend.collect_workers(SGLangProtocol(), processes)
-    command = frontend.build_router_command(workers, "0.0.0.0", 8000, SGLangProtocol())
-    command.extend(frontend.get_managed_frontend_args(_config(), SGLangProtocol(), processes))
+        workers = frontend.collect_workers(SGLangBackend(), processes)
+    command = frontend.build_router_command(workers, "0.0.0.0", 8000, SGLangBackend())
+    command.extend(frontend.get_managed_frontend_args(_config(), SGLangBackend(), processes))
 
     assert command == [
         "smg",
@@ -139,7 +139,7 @@ def test_pd_command_advertises_prefill_bootstrap_port() -> None:
 @pytest.mark.parametrize("key", ["prometheus-port", "prometheus_port"])
 def test_recipe_cannot_move_the_metrics_listener(key: str) -> None:
     with pytest.raises(ValueError, match="managed by srtctl for smg"):
-        SMGFrontend().get_managed_frontend_args(_config({key: 31000}), VLLMProtocol(), [])
+        SMGFrontend().get_managed_frontend_args(_config({key: 31000}), VLLMBackend(), [])
 
 
 def test_readiness_counts_the_workers_registry() -> None:
@@ -171,7 +171,7 @@ def test_start_frontends_launches_smg_in_its_own_image(tmp_path: Path) -> None:
             SimpleNamespace(frontend_nodes=["node0"], frontend_port=8000),
             runtime,
             _config({"policy": "cache_aware"}),
-            VLLMProtocol(),
+            VLLMBackend(),
             processes,
         )
 
@@ -230,3 +230,27 @@ def test_vllm_pd_runs_grpc_workers_with_nixl() -> None:
     launch = next(line.strip() for line in plan.splitlines() if line.strip().startswith("smg launch"))
     assert launch.startswith("smg launch --pd-disaggregation --prefill grpc://")
     assert " --decode grpc://" in launch
+
+
+@pytest.mark.parametrize(
+    ("engine", "path"),
+    [(SGLangBackend(), "/metrics"), (VLLMBackend(), "/metrics"), (TRTLLMBackend(), "/prometheus/metrics")],
+)
+def test_workers_are_scraped_on_their_engine_metrics_route(engine, path: str) -> None:
+    """A routed worker is the engine's own server; trtllm-serve's /metrics is JSON iteration stats."""
+    assert SMGFrontend().worker_metrics_path(engine) == path
+    assert SMGFrontend.metrics_path == "/metrics"
+
+
+def test_trtllm_example_launches_smg_in_front_of_trtllm_serve() -> None:
+    """Each trtllm-serve worker binds its allocated port; SMG owns the public one."""
+    path = EXAMPLES_DIR / "trtllm/smg-agg.yaml"
+    assert load_config(path).frontend.type == "smg"
+    plan = render_launch_plan(path)
+
+    assert "# exit_code: 0" in plan
+    workers = [line.strip() for line in plan.splitlines() if "trtllm-serve /model" in line]
+    assert len(workers) == 2
+    assert all("--port 8000" not in line for line in workers)
+    launch = next(line.strip() for line in plan.splitlines() if line.strip().startswith("smg launch"))
+    assert launch.startswith("smg launch --worker-urls http://127.0.0.1:6100 http://127.0.0.1:6132 ")
