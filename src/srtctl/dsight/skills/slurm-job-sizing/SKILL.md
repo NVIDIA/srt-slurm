@@ -1,6 +1,6 @@
 ---
 name: slurm-job-sizing
-description: Size srt-slurm allocation time, warmup and benchmark traffic to the task before preparing or submitting Slurm jobs. Use for builds, tests, debugging, verification and full performance runs; keep validation jobs within 30 minutes when feasible and estimate full runs from comparable evidence.
+description: Size srt-slurm allocation time, warmup and benchmark traffic before preparing or submitting jobs. Prefer short, parallel hypothesis tests for debugging, target validation jobs within 30 minutes, and derive full-run budgets from InferenceMAX run history and phase timing distributions.
 ---
 
 # Size and submit Slurm jobs
@@ -28,8 +28,8 @@ recipe; do not copy them from an unrelated run.
 | Task | Work to perform | Allocation target |
 | --- | --- | --- |
 | Existing-data analysis, dashboard generation, recipe validation | Reuse preserved captures; use DSight, dry-run or local tests. | No GPU allocation. Use CPU resources if needed. |
-| Build, smoke test, debug or verify without a full benchmark | Build only what changed; run the minimum warmup and traffic that exercise the required path and produce the evidence. | **At most `00:30:00` for the whole job**, shorter when the budget supports it. |
-| Full benchmark or sustained-load investigation | Preserve the required warmup/cache state, measured duration, repetitions and concurrency points. | Derive from comparable runs; **`01:30:00` is a candidate for one 60-minute measurement**, subject to overhead. |
+| Build, smoke test, debug or verify without a full benchmark | Split the investigation into small hypothesis tests; run independent tests in parallel with minimum useful warmup and traffic. | **At most `00:30:00` per whole job**, shorter when the budget supports it. |
+| Full benchmark or sustained-load investigation | Preserve the required warmup/cache state, measured duration, repetitions and concurrency points. | Search InferenceMAX run history and derive the budget from comparable runs' phase timing distributions. No fixed full-run duration or overhead multiplier. |
 
 State what completion proves before selecting the duration. A startup check may
 need just readiness and one completed request. A scheduler, cache or transfer
@@ -37,6 +37,17 @@ check must actually exercise those paths; a short single-request test cannot
 establish behavior under the target concurrency. For a delayed failure, inspect
 prior request/metric timelines to find its onset and allow time to observe the
 outcome, not just start the triggering request.
+
+**Prefer short jobs in parallel for debugging.** Break independent hypotheses or
+verification tasks into separate jobs, each with a predicted signal, controlled
+change, completion criterion and evidence output. Submit independent jobs
+together when the authorized aggregate GPU/budget limits allow; avoid putting
+all experiments in one long serial allocation. Each job retains the resources
+its hypothesis needs. Give each job its own allocation, mutable state and output
+paths so experiments do not interfere. Keep matched controls and record revisions for
+each arm. Serialize actual dependencies, such as building an image before tests
+that consume it, or comparisons that require the same physical nodes/cache state.
+Do not add dependencies between otherwise independent tests.
 
 For short validation, use a separate recipe/override: reduce warmup and measured
 traffic together, and select only the necessary load point. A few representative
@@ -54,21 +65,63 @@ preparation and reduce unnecessary traffic. Document any remaining unavoidable
 exception with timings; do not silently request a multi-hour debugging job or
 pretend an impossible 30-minute budget is safe.
 
-## Estimate the complete allocation
+## Research full-run history before choosing walltime
 
-Find recent comparable runs: same model/precision, hardware and worker topology,
-engine/image, client/workload, concurrency, cache state and instrumentation.
-Read the resolved recipe, Slurm accounting and timestamped startup/client/cleanup
-logs. DSight's request window is not the allocation's total duration. When using
-DSight, read [the guide](../../../../../docs/dsight.md) and
+**For every full load point, search the InferenceMAX GitHub repository's run
+history first.** Resolve the repository from the user's task or existing CI
+integration, following any move/rename; do not substitute an unrelated fork.
+Keep private repository/run links in the task's private evidence record.
+
+Discover benchmark workflows, then search their runs by model, hardware,
+engine and workload. Inspect multiple comparable attempts, including their
+recipes at the recorded commit, matrix jobs, timestamped logs and available
+artifacts. A workflow title, timeout setting or result summary alone is not a
+duration estimate. Example discovery commands, with recorded identifiers:
+
+```bash
+history_repo="<owner/repository>"
+gh workflow list --repo "$history_repo"
+gh run list --repo "$history_repo" --workflow "<benchmark-workflow>" --limit 100 \
+  --json databaseId,displayTitle,headSha,status,conclusion,createdAt,url
+gh run view "<run-id>" --repo "$history_repo" --attempt "<attempt>" --json jobs
+gh run view "<run-id>" --repo "$history_repo" --job "<job-id>" --log
+```
+
+Page back or narrow by workflow/date when recent runs are not comparable. Follow
+linked run artifacts to the actual allocation and client logs; record the run,
+attempt, load point and source boundaries used for every timing. A workflow can
+contain queue waits, multiple allocations or a concurrency sweep, and CPU work
+after GPU release. Its elapsed time is not one load point's allocated runtime.
+DSight's request window also excludes startup and teardown. When using DSight,
+read [the guide](../../../../../docs/dsight.md) and
 [dsight-query](../dsight-query/SKILL.md).
 
-Separate observations from estimates. Use successful runs to size completion;
-failed/timed-out runs reveal missing budget, not a successful short duration.
-Prefer several comparable timings over the fastest run. With sparse history,
-state uncertainty and run a bounded pilot if it can resolve the unknowns.
-Do not transplant a lower-concurrency warmup budget into a higher-concurrency
-run: request counts, queueing and completion times can all change.
+For each candidate, reconstruct preparation/build, model/service startup,
+collector readiness, warmup, measured traffic, drain, capture finalization and
+durable preservation. Show a row per run/load point with these timings and the
+allocation total. Mark missing boundaries as unknown, not zero. Check whether
+phases overlap and which work actually held the allocation.
+
+Group comparable runs by model/precision, hardware/worker topology, engine/image,
+client/workload, concurrency, cache state and instrumentation. Examine both each
+run's phase breakdown and variation across runs: report sample count, median and
+observed range for phases and totals, with upper percentiles only when supported
+by enough observations. Separate cold staging/JIT from cached startup and explain
+slow outliers. Use completed measurements to estimate successful duration;
+retain failed, cancelled and timed-out attempts separately, with their causes
+when known, to assess budget or reliability risks. Do not treat their short
+elapsed times as successful runs.
+
+Choose walltime from this distribution and explicit uncertainty, not the fastest
+run, a fixed allowance or an assumed measurement-to-allocation ratio. Use observed
+total/overhead variability to justify the margin; summing phase percentiles does
+not establish a percentile of total runtime. Do not transplant a lower-concurrency
+warmup budget into a higher-concurrency run. If history is unavailable, expired or
+poorly matched, record what was searched and the gaps; use available matched local
+runs or a bounded pilot to establish the missing timings, and label the estimate
+provisional instead of silently falling back to a fixed duration.
+
+## Budget the complete allocation
 
 Budget the critical path from allocation start, excluding time waiting in queue:
 
@@ -86,21 +139,11 @@ time from comparable request completions; a request count is not a time limit.
 A timed sending window also needs drain/grace time and unfinished-request
 accounting. Keep safety margin separate from measured stage costs.
 
-Illustrative arithmetic, **not measured defaults**:
-
-| Stage | Small validation | One full load point |
-| --- | ---: | ---: |
-| Prepared-image startup and collector readiness | 10 min | 12 min |
-| Warmup | 2 min | 8 min |
-| Measured traffic | 3 min | 60 min |
-| Drain, capture finalization and durable copy | 5 min | 5 min |
-| Uncertainty margin | 5 min | 5 min |
-| Requested allocation | **25 min** | **90 min** |
-
-Replace each allowance with evidence for the actual task. A 60-minute run fits
-90 minutes only if all other work fits the remaining 30 minutes. Multiple load
-points need a new total; choose separate jobs or a sequential allocation based
-on startup cost and the experiment's cache/reset requirements.
+Present the budget as phase, source run(s), observed distribution, proposed
+allowance and uncertainty. Derive every allowance from the task and history.
+Multiple load points need a new total; choose separate jobs or a sequential
+allocation based on startup cost, available resources and the experiment's
+cache/reset requirements.
 
 Finalize and flush captures, then preserve node-local logs, traces and client
 results before releasing GPUs. Move Nsight SQLite export, DSight HTML/JSON/SQLite
@@ -143,9 +186,11 @@ revise the next job; do not silently truncate a full measurement.
 ## Validate, submit and record
 
 Prepare a compact rationale: purpose and success evidence; fixed resources;
-comparable run references; warmup/traffic settings; stage budget and margin;
-total walltime; output location. When submission is already authorized, this is
-a progress record, not an additional approval gate.
+parallel hypothesis jobs and dependencies; InferenceMAX search/comparable run
+references for full runs; phase distributions; warmup/traffic settings; stage
+budget and margin; total walltime and aggregate resources; output location.
+When submission is already authorized, this is a progress record, not an
+additional approval gate.
 
 From the checkout, with `recipe` pointing to the prepared recipe or named override:
 
