@@ -29,6 +29,7 @@ Top-level keys of a recipe YAML.
 | `container_mounts` | dict[[FormattablePath](#formattablepath), [FormattablePath](#formattablepath)] | `{}` |  |
 | `extra_mount` | tuple[str, ...] \| None | `None` |  |
 | `srun_options` | dict[str, str] | `{}` |  |
+| `worker_srun_options` | dict[str, str] | `{}` | Merged over srun_options on inference worker steps only (e.g. a per-step mem cap). |
 | `sbatch_directives` | dict[str, str] | `{}` |  |
 | `enable_config_dump` | bool | `True` |  |
 | `setup_script` | str \| None | `None` | Custom setup script (runs before dynamo install and worker startup) e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh |

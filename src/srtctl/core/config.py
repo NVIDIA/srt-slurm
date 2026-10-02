@@ -98,6 +98,7 @@ _CONTAINER_ALIAS_SKIP_KEYS: frozenset[str] = frozenset(
         "container_mounts",
         "sbatch_directives",
         "srun_options",
+        "worker_srun_options",
         "store_config",
     }
 )

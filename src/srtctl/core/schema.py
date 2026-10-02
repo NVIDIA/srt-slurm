@@ -2419,6 +2419,8 @@ class SrtConfig:
     ] = field(default_factory=dict)
     extra_mount: tuple[str, ...] | None = None
     srun_options: dict[str, str] = field(default_factory=dict)
+    # Merged over srun_options on inference worker steps only (e.g. a per-step mem cap).
+    worker_srun_options: dict[str, str] = field(default_factory=dict)
     sbatch_directives: dict[str, str] = field(default_factory=dict)
     enable_config_dump: bool = True
 

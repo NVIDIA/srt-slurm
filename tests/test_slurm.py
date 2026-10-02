@@ -197,6 +197,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         backend=backend,
         backend_for_role=lambda _mode: backend,
         role_containers={},
+        worker_srun_options={},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -269,6 +270,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         backend=backend,
         backend_for_role=lambda _mode: backend,
         role_containers={},
+        worker_srun_options={},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -519,6 +521,27 @@ def test_trtllm_native_kv_event_host_override_is_preserved(tmp_path: Path) -> No
     assert mock_srun.call_args.kwargs["env_to_set"]["DYN_TRTLLM_KV_EVENT_HOSTS"] == "override-a,override-b"
 
 
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_worker_srun_options_override_srun_options_on_worker_steps(tmp_path: Path, launch_method: str) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin.runtime.srun_options = {"cpu-bind": "none", "mem": "0"}
+    mixin.config.worker_srun_options = {"mem": "1000M"}
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        if launch_method == "start_worker":
+            mixin.start_worker(process, [process])
+        else:
+            mixin.start_endpoint_worker([process])
+
+    options = mock_srun.call_args.kwargs["srun_options"]
+    assert (options["cpu-bind"], options["mem"]) == ("none", "1000M")
+    assert mixin.runtime.srun_options == {"cpu-bind": "none", "mem": "0"}
+
+
 def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> None:
     from srtctl.backends.trtllm import TRTLLMProtocol
 
@@ -705,6 +728,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         backend=backend,
         backend_for_role=lambda _mode: backend,
         role_containers={},
+        worker_srun_options={},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,

@@ -2063,6 +2063,13 @@ srun_options:
 
 **Format**: Each option becomes `--{key}={value}` or `--{key}` if value is empty.
 
+`srun_options` applies to every srun step the job launches (workers, frontends, benchmark, telemetry). To set an option only on the inference worker steps, use `worker_srun_options`; its keys override `srun_options` there:
+
+```yaml
+worker_srun_options:
+  mem: "500000M"                      # Cap each worker step's host memory
+```
+
 ---
 
 ## setup_script
