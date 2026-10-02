@@ -242,6 +242,7 @@ class TestCustomBenchmarkRunner:
         environment=None,
         dynamo_sidecar=False,
         trtllm_config=None,
+        engine_args=None,
     ):
         from types import SimpleNamespace
 
@@ -255,7 +256,7 @@ class TestCustomBenchmarkRunner:
 
         # Mirrors TRTLLMProtocol.get_config_for_mode: the engine yaml section for
         # a worker mode ("agg" maps to the "aggregated" section).
-        engine_sections = trtllm_config or {}
+        engine_sections = trtllm_config or engine_args or {}
 
         def get_config_for_mode(mode):
             return dict(engine_sections.get("aggregated" if mode == "agg" else mode, {}))
@@ -346,6 +347,53 @@ class TestCustomBenchmarkRunner:
         assert runner.build_command(config, runtime) == ["bash", "-lc", "python /bench/run.py --foo bar"]
         assert runner.get_container_image(config, runtime) == "nvcr.io/nvidia/python:3.11"
         assert runner.get_environment(config, runtime) == {"FOO": "bar"}
+
+    @staticmethod
+    def _two_node_disagg_processes():
+        from srtctl.core.topology import Process
+
+        return [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 0, "prefill", 0, node_rank=1),
+            Process("node-e", frozenset(range(4)), 7504, 6100, "decode", 0, node_rank=0),
+            Process("node-f", frozenset(range(4)), 7505, 0, "decode", 0, node_rank=1),
+        ]
+
+    def test_sglang_attention_dp_custom_metrics_scrape_every_process(self):
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+
+        stage = self._benchmark_stage(
+            "dynamo",
+            self._two_node_disagg_processes(),
+            engine_args={"prefill": {"dp-size": 8}, "decode": {"dp-size": 8}},
+        )
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        # Routing still targets logical leaders; only metrics include follower ranks.
+        assert env["SRT_PREFILL_ENDPOINTS"] == "ip-node-a:7500"
+        assert env["AIPERF_SERVER_METRICS_URLS"] == (
+            "http://ip-node-a:7500/metrics,http://ip-node-b:7501/metrics,"
+            "http://ip-node-e:7504/metrics,http://ip-node-f:7505/metrics"
+        )
+
+    @pytest.mark.parametrize(
+        ("engine_args", "dynamo_sidecar"),
+        [
+            pytest.param({"prefill": {"tp-size": 8}, "decode": {"tp-size": 8}}, False, id="pure-tp"),
+            pytest.param({"prefill": {"dp-size": 8}, "decode": {"dp-size": 8}}, True, id="sidecar"),
+        ],
+    )
+    def test_custom_metrics_keep_logical_leaders_without_attention_dp(self, engine_args, dynamo_sidecar):
+        stage = self._benchmark_stage(
+            "dynamo", self._two_node_disagg_processes(), engine_args=engine_args, dynamo_sidecar=dynamo_sidecar
+        )
+        assert not stage._custom_metrics_need_physical_processes()
 
     def test_disaggregated_worker_endpoints_use_logical_leaders(self):
         from unittest.mock import patch
