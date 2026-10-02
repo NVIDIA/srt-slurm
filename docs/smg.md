@@ -46,7 +46,9 @@ NIXL
 [upstream test](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/e2e_test/router/test_pd_nixl.py#L1-L11)). `engine.connector: nixl`
 gives both roles `NixlConnector` and the per-worker NIXL side channel. In gRPC mode SMG
 tokenizes and applies the chat template itself; pass `tool-call-parser` /
-`reasoning-parser` in `frontend.args` when the model needs them. See
+`reasoning-parser` in `frontend.args` when the model needs them. vLLM's gRPC server
+starts no HTTP listener, so these workers serve no Prometheus `/metrics`; SMG's own
+metrics stay on its Prometheus port. See
 [`examples/vllm/smg-disagg-grpc.yaml`](../examples/vllm/smg-disagg-grpc.yaml).
 
 ## vLLM data parallel
