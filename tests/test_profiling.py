@@ -54,7 +54,7 @@ class TestProfilingConfig:
         assert profiling.is_nsys is False
         assert profiling.is_torch is False
         assert profiling.type == "none"
-        assert profiling.nsys_trace == "cuda,nvtx"
+        assert profiling.nsys_trace is None
         assert profiling.trace_fork_before_exec is None
         assert profiling.capture_range_end == "stop"
         assert profiling.nsys_library_paths is None
@@ -212,6 +212,59 @@ class TestProfilingConfig:
         assert time_prefix[0] == "/opt/nsight/nsys"
         # trtllm path
         assert ProfilingConfig(type="nsys").get_nsys_prefix("/out/w0", backend_type="trtllm")[0] == "/opt/nsight/nsys"
+
+    @pytest.mark.parametrize(
+        ("profile_type", "backend_type", "expected_trace", "expected_sample"),
+        [
+            ("nsys", "trtllm", "cuda,nvtx,ucx", "--sample=none"),
+            ("nsys-time", "trtllm", "cuda,nvtx,ucx", "--sample=none"),
+            ("nsys", "vllm", "cuda,nvtx", None),
+            ("nsys-time", "vllm", "cuda,nvtx", None),
+        ],
+    )
+    def test_nsys_flag_defaults_preserve_existing_prefixes(
+        self, profile_type, backend_type, expected_trace, expected_sample
+    ):
+        """Omitted overrides retain each path's pre-existing nsys flags."""
+        from srtctl.core.schema import ProfilingConfig
+
+        kwargs = {"type": profile_type}
+        if profile_type == "nsys-time":
+            kwargs.update(delay_secs=1, duration_secs=1)
+        prefix = ProfilingConfig(**kwargs).get_nsys_prefix("/out/rank0", backend_type=backend_type)
+
+        assert expected_trace in prefix
+        assert "--cuda-graph-trace=node" in prefix
+        assert (
+            (expected_sample in prefix) if expected_sample else not any(arg.startswith("--sample=") for arg in prefix)
+        )
+
+    @pytest.mark.parametrize(
+        ("profile_type", "backend_type"),
+        [("nsys", "trtllm"), ("nsys-time", "trtllm"), ("nsys", "vllm"), ("nsys-time", "vllm")],
+    )
+    def test_configurable_nsys_flags_apply_to_every_prefix(self, profile_type, backend_type):
+        """Explicit nsys flag overrides work for both TRT-LLM and other backends."""
+        from srtctl.core.schema import ProfilingConfig
+
+        kwargs = {"type": profile_type}
+        if profile_type == "nsys-time":
+            kwargs.update(delay_secs=1, duration_secs=1)
+        prefix = ProfilingConfig(
+            **kwargs,
+            nsys_trace="cuda,nvtx,osrt",
+            cuda_graph_trace_mode="node:host-only:nvtx-precapture",
+            sample_mode="cpu",
+            capture_range_end="repeat:1:async",
+        ).get_nsys_prefix("/out/rank0", backend_type=backend_type)
+
+        assert "cuda,nvtx,osrt" in prefix
+        assert "--cuda-graph-trace=node:host-only:nvtx-precapture" in prefix
+        assert "--sample=cpu" in prefix
+        if profile_type == "nsys":
+            assert prefix[prefix.index("--capture-range-end") + 1] == "repeat:1:async"
+        else:
+            assert "--capture-range-end" not in prefix
 
     def test_torch_profiling(self):
         """Test torch profiling configuration."""
