@@ -8,15 +8,18 @@ from __future__ import annotations
 import logging
 import shlex
 import threading
+import time
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from urllib.parse import urlsplit
 
 from srtctl.core.health import (
     WorkerHealthResult,
     check_static_router_health,
     probe_json_health,
     wait_for_http_endpoints,
+    wait_for_port,
 )
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends.base import Frontend, numactl_prefix
@@ -273,24 +276,31 @@ class StaticRouterFrontend(Frontend):
 
         workers = self.collect_workers(backend, backend_processes, runtime.network_interface)
         if self.wait_for_workers_before_start and config.health_check is not None:
+            health_check = config.health_check
+            timeout = float(health_check.max_attempts * health_check.interval_seconds)
             health_urls = [
                 f"{worker.url.rstrip('/')}/health"
                 for worker in workers
                 if worker.url.startswith(("http://", "https://"))
             ]
-            if health_urls:
-                logger.info(
-                    "Waiting for %d advertised backend endpoints before starting %s", len(health_urls), self.type
+            # A gRPC worker serves no HTTP /health; its port accepting connections is the signal.
+            grpc_targets = [urlsplit(worker.url) for worker in workers if worker.url.startswith("grpc://")]
+            logger.info("Waiting for %d advertised backend endpoints before starting %s", len(workers), self.type)
+            deadline = time.monotonic() + timeout
+            ready = all(
+                wait_for_port(
+                    str(target.hostname), int(target.port or 0), timeout=max(deadline - time.monotonic(), 0.0)
                 )
-                health_check = config.health_check
-                if not wait_for_http_endpoints(
-                    health_urls,
-                    poll_interval=float(health_check.interval_seconds),
-                    timeout=float(health_check.max_attempts * health_check.interval_seconds),
-                    report_every=60.0,
-                    stop_event=stop_event,
-                ):
-                    raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
+                for target in grpc_targets
+            ) and wait_for_http_endpoints(
+                health_urls,
+                poll_interval=float(health_check.interval_seconds),
+                timeout=max(deadline - time.monotonic(), 0.0),
+                report_every=60.0,
+                stop_event=stop_event,
+            )
+            if not ready:
+                raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
 
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):

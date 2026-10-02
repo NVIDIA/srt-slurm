@@ -74,6 +74,39 @@ def test_grpc_workers_are_advertised_as_grpc_urls() -> None:
     ]
 
 
+def test_grpc_workers_are_probed_on_their_port_before_smg_starts(tmp_path: Path) -> None:
+    """A gRPC worker has no HTTP /health: SMG starts once its port accepts connections."""
+    from srtctl.core.schema import RoleConfig
+
+    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"grpc": True})})
+    runtime = SimpleNamespace(
+        network_interface=None,
+        log_dir=tmp_path,
+        container_image="model.sqsh",
+        container_mounts={},
+        environment={},
+        srun_options={},
+        nodes=SimpleNamespace(het_group_for=lambda node: None),
+    )
+    config = _config()
+    config.health_check = SimpleNamespace(max_attempts=3, interval_seconds=1)
+    with (
+        patch("srtctl.frontends.static_router.get_hostname_ip", return_value="10.0.0.1"),
+        patch("srtctl.frontends.static_router.wait_for_port", return_value=True) as port_probe,
+        patch.object(SMGFrontend, "start_process", return_value=MagicMock()) as start,
+    ):
+        SMGFrontend().start_frontends(
+            SimpleNamespace(frontend_nodes=["node0"], frontend_port=8000),
+            runtime,
+            config,
+            backend,
+            [Process("node1", frozenset({0}), 7500, 6100, "agg", 0)],
+        )
+
+    assert port_probe.call_args.args == ("10.0.0.1", 6100)
+    assert start.call_args.kwargs["command"][:4] == ["smg", "launch", "--worker-urls", "grpc://10.0.0.1:6100"]
+
+
 def test_pd_command_advertises_prefill_bootstrap_port() -> None:
     frontend = SMGFrontend()
     processes = [
