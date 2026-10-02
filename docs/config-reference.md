@@ -1735,7 +1735,7 @@ benchmark:
   type: "sa-bench"
   isl: 128
   osl: 128
-  concurrencies: "{concurrency}"
+  concurrencies: ["{concurrency}"]
 
 sweep:
   concurrency: [4, 8]
