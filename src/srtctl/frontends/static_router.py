@@ -38,6 +38,28 @@ class RouterWorker:
     bootstrap_port: int | None = None
 
 
+def setup_script_preamble(config: Any) -> str | None:
+    """Shell that runs the recipe's ``setup_script`` in a router's own container.
+
+    A router that ships as a package (``pip install``) rather than in the model
+    image installs itself this way; the script is looked up in ``/configs`` and
+    then ``/configs/patches``, as for the workers.
+    """
+    setup_script = getattr(config, "setup_script", None)
+    if not setup_script:
+        return None
+    script_name = shlex.quote(setup_script)
+    return (
+        f"setup_script={script_name} && "
+        'script_path="/configs/${setup_script}" && '
+        'patch_script_path="/configs/patches/${setup_script}" && '
+        'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
+        'if [ -f "${script_path}" ]; then bash "${script_path}"; '
+        'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
+        'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
+    )
+
+
 class StaticRouterFrontend(Frontend):
     """Base class for routers whose worker topology is supplied on the CLI.
 

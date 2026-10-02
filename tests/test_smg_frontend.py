@@ -124,6 +124,16 @@ def test_start_frontends_launches_smg_in_its_own_image(tmp_path: Path) -> None:
     assert kwargs["command"][-2:] == ["--policy", "cache_aware"]
 
 
+def test_setup_script_runs_in_the_smg_container() -> None:
+    """A recipe can install SMG into the model image (``pip install smg``) with its setup script."""
+    frontend = SMGFrontend()
+    assert frontend.build_bash_preamble(SimpleNamespace(setup_script=None)) is None
+    preamble = frontend.build_bash_preamble(SimpleNamespace(setup_script="smg-1.11.0.sh"))
+    assert preamble is not None
+    assert preamble.startswith("setup_script=smg-1.11.0.sh && ")
+    assert 'bash "${script_path}"' in preamble
+
+
 @pytest.mark.parametrize("recipe", ["vllm/smg-agg.yaml", "sglang/smg-disagg.yaml"])
 def test_examples_launch_smg_through_the_orchestrator(recipe: str) -> None:
     """The mock orchestrator starts the workers, then one SMG router fronting them."""

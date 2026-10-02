@@ -46,6 +46,9 @@ frontend:
 - `container_image`: an engine image need not ship SMG. Point this at an image
   with the `smg` command (the official `lightseekorg/smg` image, or any image where
   `pip install smg` was run). Without it the model container is reused.
+- `setup_script`: the recipe's setup script also runs in SMG's container before
+  `smg launch`, so a script that runs `pip install smg==1.11.0` (a manylinux wheel)
+  makes the model image serve as the router image.
 - `args`: passed to `smg launch` as `--<key> <value>`; `true` adds a bare flag and a
   list repeats the flag. `prometheus-port` is managed by srtctl and rejected here.
 - `enable_multiple_frontends` / `num_additional_frontends`: as for every router,

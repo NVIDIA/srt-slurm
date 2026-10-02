@@ -14,7 +14,7 @@ every backend.
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.frontends.base import register_frontend
-from srtctl.frontends.static_router import StaticRouterFrontend
+from srtctl.frontends.static_router import StaticRouterFrontend, setup_script_preamble
 from srtctl.ports import SMG_METRICS_PORT
 
 if TYPE_CHECKING:
@@ -37,6 +37,10 @@ class SMGFrontend(StaticRouterFrontend):
     def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
         """SMG serves Prometheus on its own listener, not on the routing port."""
         return SMG_METRICS_PORT
+
+    def build_bash_preamble(self, config: Any) -> str | None:
+        """Run the recipe setup script in SMG's container, e.g. to ``pip install smg``."""
+        return setup_script_preamble(config)
 
     def get_managed_frontend_args(
         self,
