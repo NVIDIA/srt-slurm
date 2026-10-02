@@ -28,6 +28,102 @@ uv run ruff check --fix src/srtctl/
 uv run ruff format src/srtctl/
 ```
 
+## Per-run Performance Analysis
+
+For **every Slurm run you launch or analyze**, write and maintain
+`<run_dir>/perf-analysis.md` on the cluster. Use the actual job output directory
+reported by submission: normally `outputs/<job_id>/`, the parent of
+`RuntimeContext.log_dir`. Honor custom output paths. Keep the authoritative
+report beside the run's configuration, metadata and `logs/`; local copies and
+campaign summaries may link to it.
+
+Start the report once the run directory exists, and finalize it after the run
+ends, including failed, timed-out or cancelled runs. Record incomplete evidence
+and missing metrics explicitly. Each run in a sweep needs its own report; within
+a run, separate benchmark phases and concurrency points. Before declaring the
+analysis complete, verify the report exists on the cluster and its artifact
+references resolve. Preserve it with the run artifacts before releasing any
+ephemeral storage.
+
+### Metrics for this run
+
+Identify the cluster/job ID, outcome, model, engine/version, recipe, hardware and
+GPU count, topology, benchmark/version, dataset, concurrency or request rate,
+and measurement window (including warmup/steady-state filtering). Link the
+configuration and result files. Include successful/failed request counts and
+actual generated-token counts so an empty or partial run cannot look successful.
+
+Summarize at least these metrics, with **value, unit and source file/field**:
+
+| Metric | Required statistics | Unit |
+| --- | --- | --- |
+| Time to first token (TTFT) | p50, p95, p99 | ms |
+| Inter-token latency (ITL) | p50, p99 | ms/token |
+| Output token throughput | Aggregate over the measured window | tokens/s |
+| Input and total token throughput, when available | Report separately from output | tokens/s |
+
+Preserve the client's metric definitions and percentile population. Distinguish
+individual token intervals (ITL) from per-request average time per output token
+(TPOT); do not substitute one for the other. State whether input/total throughput
+counts cached prompt tokens. Derive missing statistics only from sufficient raw
+records, recording the calculation and filters. Otherwise write `N/A` with the
+reason; never invent a percentile from a mean or another percentile.
+
+For agentic benchmarks, also report the run's applicable Pareto/SLO metrics:
+
+- **AgentX / InferenceX:** concurrent agent clients, p90 interactivity in
+  tokens/s/user, throughput in tokens/s/GPU (label output, input or total), and
+  p90 TTFT. Record the selected chart's axes and exact exported fields/formulas.
+  For a TPOT-based axis, interactivity is `1000 / p90 TPOT_ms`, not the p90 of
+  per-request token rates. Include E2E-normalized interactivity when used by the
+  benchmark view: its per-request rate is output tokens divided by full request
+  latency, including TTFT; preserve the view's percentile convention. See the
+  [AgentX metric and comparison guide][agentx-metrics] and
+  [InferenceX interactivity definitions][inferencex-metrics].
+- **AA-AgentPerf:** concurrent agents and system output throughput, the tested
+  SLO tier/thresholds and pass/fail, and the applicable speed/latency metrics.
+  For versions using separate targets, these are p25 output speed (tokens/s) and
+  p95 TTFT (s); for E2E-speed/Pareto versions, record E2E speed and its specified
+  percentile/target. Only claim maximum supported agents when a capacity search
+  establishes it. Follow the run's version of the
+  [AA-AgentPerf methodology][agentperf-metrics].
+
+State the GPU denominator for normalized results, including both prefill and
+decode GPUs in disaggregated serving. Include per-MW or cost-normalized metrics
+when relevant and supported by measured power or explicit cost assumptions.
+Link any baseline/sweep used to place this run on a Pareto curve; compare at a
+matched interactivity, latency or SLO target. A single point does not establish a
+frontier. Record which tradeoff improved or regressed, with absolute and relative
+deltas where a comparable baseline exists.
+
+[agentx-metrics]: https://inferencex.semianalysis.com/blog/agentic-benchmark-agent-benchmark-guide
+[inferencex-metrics]: https://inferencex.semianalysis.com/about
+[agentperf-metrics]: https://artificialanalysis.ai/methodology/agentperf
+
+### Contribution to a performance investigation
+
+If the run supports a performance diagnosis, debugging task or improvement,
+include the goal/hypothesis, target metric, baseline and change tested. Explain
+**what this run taught us and how it advances that goal**, even if the result is
+negative or inconclusive.
+
+For each finding, connect the observed metric/data to the evidence and decision:
+
+- Link the relevant result files, log lines, traces, profiles or exported queries;
+  give the metric/field, request or worker identity and time range needed to
+  reproduce the observation.
+- For DSight UI or dashboard evidence, include the report path and a saved view
+  link with the relevant range, request and pinned metrics/panels, plus a short
+  explanation of what to inspect. Follow [Using DSight](#using-dsight) and the
+  [component dashboard guide](docs/component-dashboard.md) as applicable.
+- Name/link each skill used to collect or analyze that evidence, its relevant
+  command/query and resulting artifact, and explain how it helped test the
+  hypothesis, locate a bottleneck, rule out a cause or validate an improvement.
+- Separate observations from hypotheses. Document coverage gaps, confounders
+  (including profiling overhead), whether the target was met, and the next
+  useful measurement. An artifact inventory alone is not an analysis; a root
+  cause or performance claim needs supporting evidence.
+
 ## Using DSight
 
 Before using DSight, read [docs/dsight.md](docs/dsight.md) and load the applicable
