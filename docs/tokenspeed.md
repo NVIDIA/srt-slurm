@@ -20,10 +20,12 @@ and Dynamo's
 The worker image must contain TokenSpeed and an `ai-dynamo` build with
 `dynamo.tokenspeed`. Aggregated serving needs Dynamo 1.2.0 or newer; prefill/decode
 needs a build that includes [ai-dynamo/dynamo#9237](https://github.com/ai-dynamo/dynamo/pull/9237),
-which Dynamo 1.5.0 does not. Dynamo's
+which Dynamo 1.5.0 does not; the PyPI nightlies from `1.6.0.dev20260922` on do. Either
+let srtctl install one at job start (`dynamo.source.pypi: "1.6.0.dev20260922"`) into an
+image that ships TokenSpeed, or build an image with Dynamo's
 [TokenSpeed Dockerfile](https://github.com/ai-dynamo/dynamo/blob/7778c8d0cddb2a1ab7b2782c92cf97b30b2a5dcd/recipes/kimi-k2.5/tokenspeed/agg/nvidia/Dockerfile)
-builds such an image from a TokenSpeed runner and the Dynamo checkout. The examples
-set `dynamo.install: false` because the image already ships Dynamo.
+from a TokenSpeed runner and the Dynamo checkout. The examples set
+`dynamo.install: false` because their image already ships Dynamo.
 
 ## Arguments
 
