@@ -29,6 +29,10 @@ frontend:
   args:
     policy: "cache_aware"
 
+# Non-worker steps retain this limit; each worker role overrides it below.
+srun_options:
+  mem: "0"
+
 engine: sglang
 roles:
   prefill:

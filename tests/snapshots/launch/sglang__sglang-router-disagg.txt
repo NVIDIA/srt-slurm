@@ -61,6 +61,8 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+srun_options:
+    mem: 0
 command: |
     python -m sglang_router.launch_router --pd-disaggregation --prefill http://127.0.0.1:6100 7200 --decode http://127.0.0.1:6100 --host 0.0.0.0 --port 8000 --prometheus-port 29000 --prometheus-host 0.0.0.0 --policy cache_aware
 
@@ -73,6 +75,8 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+srun_options:
+    mem: 0
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -88,6 +92,8 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+srun_options:
+    mem: 0
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -103,6 +109,8 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+srun_options:
+    mem: 0
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -118,6 +126,8 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+srun_options:
+    mem: 0
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -133,6 +143,8 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+srun_options:
+    mem: 0
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -148,6 +160,8 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+srun_options:
+    mem: 0
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
 use_bash_wrapper: False
@@ -157,6 +171,8 @@ command: |
 ## tachometer
 nodelist: node-01
 output: <output>/logs/tachometer.out
+srun_options:
+    mem: 0
 srun_export_env:
     POLARS_MAX_THREADS: 4
 use_bash_wrapper: False
@@ -176,5 +192,7 @@ env_to_set:
     SRTCTL_FRONTEND_TYPE: sglang-router
     SRT_FRONTEND_HOST: 127.0.0.1
     SRT_FRONTEND_PORT: 8000
+srun_options:
+    mem: 0
 command: |
     bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4x8 inf /model Qwen/Qwen3-0.6B true 2 1 1 0.8 10 2 '' true random '' false
