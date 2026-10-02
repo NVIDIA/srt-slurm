@@ -415,7 +415,7 @@ class WorkerStageMixin:
             env_to_set=env_to_set,
             env_to_unset=env_to_unset,
             bash_preamble=bash_preamble,
-            srun_options=dict(self.runtime.srun_options, **self.config.worker_srun_options),
+            srun_options={**self.runtime.srun_options, **self.config.roles[mode].srun_options},
             srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
             het_group=process.het_group,
             step_name=step_name,
@@ -607,7 +607,7 @@ class WorkerStageMixin:
         # Repeated hosts preserve each node's exact rank count and ordering.
         task_nodes = [p.node for p in endpoint_processes for _ in p.gpu_indices]
         task_counts = [len(p.gpu_indices) for p in endpoint_processes]
-        srun_options = dict(self.runtime.srun_options, **self.config.worker_srun_options)
+        srun_options = {**self.runtime.srun_options, **self.config.roles[mode].srun_options}
         srun_options["ntasks-per-node"] = str(max(task_counts))
         if len(set(task_counts)) > 1:
             srun_options["distribution"] = "arbitrary"

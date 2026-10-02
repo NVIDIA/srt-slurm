@@ -17,6 +17,8 @@ env_to_set:
     PYTHONUNBUFFERED: 1
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
+srun_options:
+    mem: 64G
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
@@ -40,6 +42,8 @@ env_to_set:
     PYTHONUNBUFFERED: 1
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
+srun_options:
+    mem: 32G
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>

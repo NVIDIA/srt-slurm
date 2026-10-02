@@ -29,7 +29,6 @@ Top-level keys of a recipe YAML.
 | `container_mounts` | dict[[FormattablePath](#formattablepath), [FormattablePath](#formattablepath)] | `{}` |  |
 | `extra_mount` | tuple[str, ...] \| None | `None` |  |
 | `srun_options` | dict[str, str] | `{}` |  |
-| `worker_srun_options` | dict[str, str] | `{}` | Merged over srun_options on inference worker steps only (e.g. a per-step mem cap). |
 | `sbatch_directives` | dict[str, str] | `{}` |  |
 | `enable_config_dump` | bool | `True` |  |
 | `setup_script` | str \| None | `None` | Custom setup script (runs before dynamo install and worker startup) e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh |
@@ -105,6 +104,7 @@ One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
 | `nodes` | int \| one of `'colocate'` \| None | `None` | Nodes reserved for this role. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit. |
 | `workers` | int \| None | `None` | Number of workers of this role. |
 | `gpus` | int \| None | `None` | GPUs per worker. Defaults to `nodes * gpus_per_node // workers`; required when decode colocates. |
+| `srun_options` | dict[str, str] | `{}` | Merged over the recipe srun_options on this role's worker steps only (e.g. a per-step mem cap). |
 | `env` | dict[str, str] | `{}` | Environment for every worker of this role. |
 | `args` | dict[str, Any] | `{}` | The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`). |
 | `extra_args` | list[str] | `[]` | Raw extra CLI arguments (TRT-LLM only). |

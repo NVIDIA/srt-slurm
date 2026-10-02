@@ -13,7 +13,7 @@ import pytest
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import HealthCheckConfig, ObservabilityConfig, ResourceConfig, Topology
+from srtctl.core.schema import HealthCheckConfig, ObservabilityConfig, ResourceConfig, RoleConfig, Topology
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
 
 
@@ -197,7 +197,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         backend=backend,
         backend_for_role=lambda _mode: backend,
         role_containers={},
-        worker_srun_options={},
+        roles={"prefill": RoleConfig(), "decode": RoleConfig(), "agg": RoleConfig()},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -211,7 +211,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
-        srun_options=[],
+        srun_options={},
     )
     process = SimpleNamespace(
         endpoint_mode="prefill",
@@ -270,7 +270,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         backend=backend,
         backend_for_role=lambda _mode: backend,
         role_containers={},
-        worker_srun_options={},
+        roles={"prefill": RoleConfig(), "decode": RoleConfig(), "agg": RoleConfig()},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -283,7 +283,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
-        srun_options=[],
+        srun_options={},
     )
     process = SimpleNamespace(
         endpoint_mode="prefill",
@@ -522,10 +522,18 @@ def test_trtllm_native_kv_event_host_override_is_preserved(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
-def test_worker_srun_options_override_srun_options_on_worker_steps(tmp_path: Path, launch_method: str) -> None:
+@pytest.mark.parametrize("mode,expected_mem", [("prefill", "1000M"), ("decode", "2000M"), ("agg", "0")])
+def test_role_srun_options_override_recipe_on_worker_steps(
+    tmp_path: Path, launch_method: str, mode: str, expected_mem: str
+) -> None:
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
     mixin.runtime.srun_options = {"cpu-bind": "none", "mem": "0"}
-    mixin.config.worker_srun_options = {"mem": "1000M"}
+    mixin.config.roles = {
+        "prefill": RoleConfig(srun_options={"mem": "1000M"}),
+        "decode": RoleConfig(srun_options={"mem": "2000M"}),
+        "agg": RoleConfig(),
+    }
+    process.endpoint_mode = mode
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -538,7 +546,7 @@ def test_worker_srun_options_override_srun_options_on_worker_steps(tmp_path: Pat
             mixin.start_endpoint_worker([process])
 
     options = mock_srun.call_args.kwargs["srun_options"]
-    assert (options["cpu-bind"], options["mem"]) == ("none", "1000M")
+    assert (options["cpu-bind"], options["mem"]) == ("none", expected_mem)
     assert mixin.runtime.srun_options == {"cpu-bind": "none", "mem": "0"}
 
 
@@ -550,6 +558,9 @@ def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> N
     mixin.config.dynamo.sidecar = True
     mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
     mixin.runtime.srun_options = {"exclusive": "", "kill-on-bad-exit": "0"}
+    mixin.config.roles["prefill"] = RoleConfig(
+        srun_options={"mem": "1000M", "kill-on-bad-exit": "0", "ntasks-per-node": "99"}
+    )
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -562,6 +573,7 @@ def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> N
         "exclusive": "",
         "kill-on-bad-exit": "1",
         "ntasks-per-node": "8",
+        "mem": "1000M",
     }
 
 
@@ -728,7 +740,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         backend=backend,
         backend_for_role=lambda _mode: backend,
         role_containers={},
-        worker_srun_options={},
+        roles={"prefill": RoleConfig(), "decode": RoleConfig(), "agg": RoleConfig()},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -741,7 +753,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
-        srun_options=[],
+        srun_options={},
     )
     process = SimpleNamespace(
         endpoint_mode="decode",

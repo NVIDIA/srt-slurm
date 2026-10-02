@@ -3,6 +3,7 @@
 # One TP1 prefill worker and one TP1 decode worker sharing a node (`nodes: colocate`
 # places decode on the prefill node's spare GPUs). srtctl adds `--disaggregation-mode`
 # and the prefill bootstrap port; the router is launched with `--pd-disaggregation`.
+# Per-role srun options give the colocated workers different host-memory caps.
 # KV transfer uses SGLang's default backend (mooncake); set
 # `disaggregation-transfer-backend: nixl` on both roles to switch.
 #
@@ -34,6 +35,8 @@ roles:
     nodes: 1
     workers: 1
     gpus: 1
+    srun_options:
+      mem: "64G"
     env:
       PYTHONUNBUFFERED: "1"
     args:
@@ -46,6 +49,8 @@ roles:
     nodes: colocate
     workers: 1
     gpus: 1
+    srun_options:
+      mem: "32G"
     env:
       PYTHONUNBUFFERED: "1"
     args:

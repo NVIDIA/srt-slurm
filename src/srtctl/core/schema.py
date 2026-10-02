@@ -722,6 +722,8 @@ class RoleConfig:
     workers: int | None = None
     # GPUs per worker. Defaults to `nodes * gpus_per_node // workers`; required when decode colocates.
     gpus: int | None = None
+    # Merged over the recipe srun_options on this role's worker steps only (e.g. a per-step mem cap).
+    srun_options: dict[str, str] = field(default_factory=dict)
     # Environment for every worker of this role.
     env: dict[str, str] = field(default_factory=dict)
     # The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`).
@@ -2419,8 +2421,6 @@ class SrtConfig:
     ] = field(default_factory=dict)
     extra_mount: tuple[str, ...] | None = None
     srun_options: dict[str, str] = field(default_factory=dict)
-    # Merged over srun_options on inference worker steps only (e.g. a per-step mem cap).
-    worker_srun_options: dict[str, str] = field(default_factory=dict)
     sbatch_directives: dict[str, str] = field(default_factory=dict)
     enable_config_dump: bool = True
 

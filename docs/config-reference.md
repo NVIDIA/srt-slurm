@@ -531,6 +531,7 @@ between the installed engine versions.
 | `workers` | int | Number of workers in the role |
 | `gpus` | int | GPUs per worker. Computed as `nodes * gpus_per_node / workers` when omitted; required on both roles when decode is colocated |
 | `env` | dict | Environment variables for every process of this role. Values support the per-worker `{node}` / `{node_id}` placeholders described under [environment](#environment) |
+| `srun_options` | dict | Additional options for this role's inference worker steps. Keys override the recipe's [srun_options](#srun_options) for these steps only |
 | `args` | dict | The engine's CLI flags for this role (`sglang` and `vllm` flags, the `trtllm` engine YAML, the mocker overrides). Any flag the engine accepts, kebab-case or snake_case, written as an ordinary YAML mapping. srtctl adds the topology flags itself (`disaggregation-mode`, ports, hosts, rank arguments); see [frontend](#frontend) for the keys each frontend owns |
 | `extra_args` | list[string] | TRT-LLM only: extra `trtllm-serve` CLI flags appended verbatim to the worker command (`frontend.type: trtllm_serve`). For the few options that configure the OpenAI server layer and have no engine YAML key, such as `--tool_parser` |
 | `kv_events` | bool or dict | Publish KV cache events for the Dynamo router; see below |
@@ -2042,7 +2043,7 @@ sbatch_directives:
 
 ## srun_options
 
-Additional srun options for worker processes.
+Additional srun options for job steps.
 
 ```yaml
 srun_options:
@@ -2063,11 +2064,18 @@ srun_options:
 
 **Format**: Each option becomes `--{key}={value}` or `--{key}` if value is empty.
 
-`srun_options` applies to every srun step the job launches (workers, frontends, benchmark, telemetry). To set an option only on the inference worker steps, use `worker_srun_options`; its keys override `srun_options` there:
+`srun_options` applies to every srun step the job launches (workers, frontends, benchmark, telemetry). Set `roles.<role>.srun_options` to override individual keys for that role's inference worker steps. Other keys are inherited from the recipe's `srun_options`; non-worker steps keep the recipe options.
 
 ```yaml
-worker_srun_options:
-  mem: "500000M"                      # Cap each worker step's host memory
+roles:
+  prefill:
+    # ... node, GPU, and engine settings ...
+    srun_options:
+      mem: "64G"                     # Host memory per node in each prefill step
+  decode:
+    # ... node, GPU, and engine settings ...
+    srun_options:
+      mem: "32G"                     # Host memory per node in each decode step
 ```
 
 ---

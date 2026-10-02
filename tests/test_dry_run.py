@@ -410,6 +410,22 @@ class TestDryRunSrunOptions:
         assert "--export=ALL" in output
         assert "--cpu-bind=none" in output
 
+    def test_role_srun_options_shown(self, capsys):
+        config = _make_config(
+            {
+                "srun_options": {"mem": "0"},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1, "gpus": 2, "srun_options": {"mem": "1000M"}},
+                    "decode": {"nodes": "colocate", "workers": 1, "gpus": 6, "srun_options": {"mem": "3000M"}},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "srun options: --mem=0" in output
+        assert "prefill worker srun options (override recipe): --mem=1000M" in output
+        assert "decode worker srun options (override recipe): --mem=3000M" in output
+
     def test_no_srun_options_no_output(self, capsys):
         config = _make_config()
         show_config_details(config)

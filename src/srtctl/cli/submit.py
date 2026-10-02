@@ -573,6 +573,10 @@ def show_config_details(config: SrtConfig) -> None:
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
+    for mode, role in config.roles.items():
+        if role.srun_options:
+            opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in role.srun_options.items())
+            console.print(f"[dim]{mode} worker srun options (override recipe):[/] {opts}")
 
     # Dynamo install runs apt-get/pip as root inside the container, so srtctl injects
     # ENROOT_REMAP_ROOT=yes (via srun --export) on the worker + dynamo-frontend launches.
