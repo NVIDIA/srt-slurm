@@ -49,7 +49,8 @@ def _help(action: argparse.Action) -> str:
 
 
 def _default(action: argparse.Action) -> str:
-    if action.required:
+    # Python < 3.12 marks REMAINDER/"*"/"?" positionals required although they accept nothing.
+    if action.required and action.nargs not in (argparse.REMAINDER, argparse.ZERO_OR_MORE, argparse.OPTIONAL):
         return "required"
     value = action.default
     if value is None or value is False or value == [] or value is argparse.SUPPRESS or action.nargs == 0:
