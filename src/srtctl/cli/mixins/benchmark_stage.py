@@ -422,6 +422,14 @@ class BenchmarkStageMixin:
                     logger.error("Worker failure detected while serving")
                     return 1
                 time.sleep(MANUAL_POLL_SECONDS)
+            # The process monitor ticks faster than this loop and sets stop_event
+            # itself when a critical process dies; a stop that follows such a
+            # failure is a failed run, not a clean shutdown.
+            # Read the recorded failures rather than scanning again: by now the
+            # monitor's cleanup has SIGTERMed everything else too.
+            if registry.has_failures:
+                logger.error("Worker failure detected while serving")
+                return 1
             return 0
 
         logger.info("Starting benchmark")
@@ -832,7 +840,7 @@ class BenchmarkStageMixin:
             if gpus_per_node is not None:
                 env["SRT_GPUS_PER_NODE"] = str(gpus_per_node)
             worker_nodes = getattr(getattr(self.runtime, "nodes", None), "worker", None)
-            if isinstance(worker_nodes, (list, tuple)):
+            if isinstance(worker_nodes, list | tuple):
                 env["SRT_WORKER_NODES"] = ",".join(worker_nodes)
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
 

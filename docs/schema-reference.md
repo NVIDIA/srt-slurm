@@ -113,6 +113,7 @@ One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
 | `kv_events` | bool \| dict[str, Any] \| None | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
 | `sidecar` | bool \| None | `None` | Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree. |
 | `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
+| `restart` | [RestartPolicy](#restartpolicy) | `RestartPolicy()` | Relaunch exited workers in place: `never`, `on-failure`, `always`, or a mapping with `policy`, `max_restarts`, `backoff_seconds`, and `max_backoff_seconds`. |
 
 ### FrontendConfig
 
@@ -372,6 +373,17 @@ Reporting configuration for status updates, AI analysis, and log exports.
 | `status` | [ReportingStatusConfig](#reportingstatusconfig) \| None | `None` | Status collector endpoints that receive job lifecycle events. Unset sends nothing. |
 | `ai_analysis` | [AIAnalysisConfig](#aianalysisconfig) \| None | `None` | Failure analysis run after a failed job. Unset disables it. |
 | `s3` | [S3Config](#s3config) \| None | `None` | Upload of the log directory to S3-compatible storage after the run. Unset disables it. |
+
+### RestartPolicy
+
+How the worker supervisor treats a worker of one role that exits mid-run.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `policy` | one of `'never'`, `'on-failure'`, `'always'` | `'never'` | ``never`` leaves a worker exit to ``critical`` (the default, today's behavior). ``on-failure`` relaunches after a non-zero exit; ``always`` relaunches after any exit, including a clean one. |
+| `max_restarts` | int | `3` | Relaunches allowed per endpoint over the whole job. |
+| `backoff_seconds` | float | `10.0` | Delay before the first relaunch. Doubles on every further relaunch of the same endpoint (10 s, 20 s, 40 s, ...). |
+| `max_backoff_seconds` | float | `300.0` | Cap on the doubled delay. |
 
 ### PlacementConfig
 

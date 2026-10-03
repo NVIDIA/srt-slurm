@@ -71,6 +71,21 @@ def test_cluster_gpu_visibility_is_visible(tmp_path, monkeypatch, capsys):
     assert "GPU subset visibility variable: ROCR_VISIBLE_DEVICES" in capsys.readouterr().out
 
 
+def test_role_restart_policy_and_limits_are_visible(capsys):
+    config = _make_config(
+        {"roles": {"decode": {"restart": {"policy": "on-failure", "max_restarts": 2, "backoff_seconds": 4}}}}
+    )
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert "decode: restart=on-failure, max_restarts=2, backoff_seconds=4, max_backoff_seconds=300" in output
+    assert "prefill: restart=" not in output
+
+
+def test_default_restart_policy_keeps_dry_run_unchanged(capsys):
+    show_config_details(_make_config())
+    assert "restart=" not in capsys.readouterr().out
+
+
 def test_role_engines_images_and_environments_are_visible(capsys):
     data = yaml.safe_load(Path("examples/vllm/vllm-router-disagg.yaml").read_text())
     engine = data.pop("engine")

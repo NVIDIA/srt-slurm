@@ -253,6 +253,14 @@ def show_config_details(config: SrtConfig) -> None:
     """
     visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
     console.print(f"GPU subset visibility variable: {visible_devices_env}")
+    for role, spec in config.roles.items():
+        policy = spec.restart
+        if policy.enabled:
+            console.print(
+                f"{role}: restart={policy.policy}, max_restarts={policy.max_restarts}, "
+                f"backoff_seconds={policy.backoff_seconds:g}, max_backoff_seconds={policy.max_backoff_seconds:g}",
+                crop=False,
+            )
     if config.role_backends or config.role_containers:
         for role, backend in config.active_role_backends():
             console.print(f"{role}: engine={backend.type}, container={config.worker_container_for_role(role)}")

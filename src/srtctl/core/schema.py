@@ -732,6 +732,74 @@ class HetComponent:
 
 
 @dataclass(frozen=True)
+class RestartPolicy:
+    """How the worker supervisor treats a worker of one role that exits mid-run.
+
+    Modelled on a Kubernetes ``restartPolicy``: the supervisor observes every
+    worker step, and when one exits it relaunches the whole endpoint (every
+    process of a multi-node worker) on the same nodes and GPUs with the same
+    ports, after an exponential backoff. Restarts are counted per endpoint for
+    the life of the job; once ``max_restarts`` is spent the role's ``critical``
+    flag decides whether the run fails or carries on without that worker.
+
+    Attributes:
+        policy: ``never`` leaves a worker exit to ``critical`` (the default,
+            today's behavior). ``on-failure`` relaunches after a non-zero exit;
+            ``always`` relaunches after any exit, including a clean one.
+        max_restarts: Relaunches allowed per endpoint over the whole job.
+        backoff_seconds: Delay before the first relaunch. Doubles on every
+            further relaunch of the same endpoint (10 s, 20 s, 40 s, ...).
+        max_backoff_seconds: Cap on the doubled delay.
+    """
+
+    policy: Literal["never", "on-failure", "always"] = "never"
+    max_restarts: int = 3
+    backoff_seconds: float = 10.0
+    max_backoff_seconds: float = 300.0
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.max_restarts < 0:
+            raise ValidationError("restart.max_restarts must be 0 or more")
+        if self.backoff_seconds < 0:
+            raise ValidationError("restart.backoff_seconds must be 0 or more")
+        if self.max_backoff_seconds < self.backoff_seconds:
+            raise ValidationError("restart.max_backoff_seconds must be at least restart.backoff_seconds")
+
+    @property
+    def enabled(self) -> bool:
+        """True when the supervisor should relaunch workers of this role."""
+        return self.policy != "never"
+
+    def restarts_on(self, exit_code: int | None) -> bool:
+        """Whether an exit with ``exit_code`` is one this policy relaunches after."""
+        if self.policy == "always":
+            return True
+        if self.policy == "on-failure":
+            return exit_code != 0
+        return False
+
+    def backoff(self, restarts: int) -> float:
+        """Delay before relaunch number ``restarts`` (1 for the first relaunch)."""
+        return min(self.backoff_seconds * (2 ** max(0, restarts - 1)), self.max_backoff_seconds)
+
+
+class RestartPolicyField(fields.Field):
+    def _deserialize(
+        self, value: Any, attr: str | None, data: Mapping[str, Any] | None, **kwargs: Any
+    ) -> RestartPolicy:
+        if isinstance(value, str):
+            value = {"policy": value}
+        if not isinstance(value, dict):
+            raise ValidationError("restart must be a policy name or a mapping")
+        return RestartPolicy.Schema().load(value)
+
+    def _serialize(self, value: Any, attr: str | None, obj: Any, **kwargs: Any) -> dict[str, Any]:
+        return RestartPolicy.Schema().dump(value)
+
+
+@dataclass(frozen=True)
 class RoleConfig(RoleSettings):
     """One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
 
@@ -775,6 +843,12 @@ class RoleConfig(RoleSettings):
     critical: bool = field(
         default=True,
         metadata={"marshmallow_field": fields.Boolean(truthy={True}, falsy={False})},
+    )
+    # Relaunch exited workers in place: `never`, `on-failure`, `always`, or a mapping with
+    # `policy`, `max_restarts`, `backoff_seconds`, and `max_backoff_seconds`.
+    restart: RestartPolicy = field(
+        default_factory=RestartPolicy,
+        metadata={"marshmallow_field": RestartPolicyField()},
     )
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -871,6 +945,11 @@ class Topology:
         """Whether a worker of ``mode`` (``prefill``, ``decode``, ``agg``) failing fails the run."""
         spec = self.roles.get(mode)
         return True if spec is None else spec.critical
+
+    def worker_restart(self, mode: str) -> RestartPolicy:
+        """Restart policy of a worker role; undeclared roles are never restarted."""
+        spec = self.roles.get(mode)
+        return RestartPolicy() if spec is None else spec.restart
 
     @property
     def is_disaggregated(self) -> bool:

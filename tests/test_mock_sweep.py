@@ -12,6 +12,7 @@ and produces the expected artifact set that external harnesses observe.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -78,6 +79,180 @@ def _write_config(tmp_path: Path) -> Path:
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text(yaml.dump(MINIMAL_CONFIG))
     return cfg
+
+
+@pytest.mark.parametrize("critical", [True, False])
+def test_mock_worker_restart_preserves_role_launch_settings_and_records_exhaustion(
+    tmp_path: Path, critical: bool
+) -> None:
+    config = deepcopy(MINIMAL_CONFIG)
+    config["engine"] = "sglang"
+    config["roles"]["agg"].update(
+        critical=critical,
+        env={"ROLE_SETTING": "kept"},
+        srun_options={"mem": "4G"},
+        restart={"policy": "on-failure", "max_restarts": 1, "backoff_seconds": 0},
+    )
+    config_path = tmp_path / "restart.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    output_dir = tmp_path / "outputs" / "42042"
+    launches = []
+
+    def kill_and_reconcile(self, registry, stop_event, reporter):
+        reconcile = monitor.call_args.kwargs["reconcile"]
+        original = registry.get_process("agg_0_mock-node-01")
+        assert original is not None and original.supervised
+        original.popen.kill()
+        reconcile()
+        assert not registry.check_failures()
+        reconcile()
+        replacement = registry.get_process("agg_0_mock-node-01_r1")
+        assert replacement is not None and replacement.supervised
+        assert replacement.critical is critical
+        assert registry.get_process(original.name) is None
+
+        worker_launches = [launch for launch in launches if launch.get("step_name", "").startswith("agg_")]
+        assert len(worker_launches) == 2
+        first, second = worker_launches
+        for key in (
+            "command",
+            "nodelist",
+            "env_to_set",
+            "srun_options",
+            "output",
+            "container_image",
+            "container_mounts",
+        ):
+            assert second[key] == first[key]
+        assert second["env_to_set"]["ROLE_SETTING"] == "kept"
+        assert second["srun_options"]["mem"] == "4G"
+
+        replacement.popen.kill()
+        reconcile()
+        assert not replacement.supervised
+        assert registry.check_failures() is critical
+        return int(critical)
+
+    with (
+        patch("srtctl.cli.do_sweep.start_process_monitor") as monitor,
+        patch.object(SweepOrchestrator, "run_benchmark", kill_and_reconcile),
+    ):
+        exit_code = run_mock_sweep(
+            config_path=config_path,
+            output_dir=output_dir,
+            job_id="42042",
+            options=MockOptions(child_duration_s=600, phase_pause_s=0, on_srun=launches.append),
+        )
+
+    assert exit_code == int(critical)
+    restarts = json.loads((output_dir / "logs" / "worker_restarts.json").read_text())
+    assert restarts["total_restarts"] == 1
+    assert [event["outcome"] for event in restarts["events"]] == ["relaunched", "exhausted"]
+    lockfile = yaml.safe_load((output_dir / "recipe.lock.yaml").read_text())
+    assert lockfile["lock"]["worker_restarts"] == restarts
+
+
+@pytest.mark.parametrize("critical", [True, False])
+@pytest.mark.parametrize("fail_rank", [0, 1])
+def test_mock_failed_relaunch_after_a_clean_exit_tracks_and_stops_partial_workers(
+    tmp_path: Path, critical: bool, fail_rank: int
+) -> None:
+    config = deepcopy(MINIMAL_CONFIG)
+    config["engine"] = "sglang"
+    config["roles"]["agg"].update(
+        nodes=2,
+        gpus=16,
+        critical=critical,
+        restart={"policy": "always", "max_restarts": 1, "backoff_seconds": 0},
+    )
+    config_path = tmp_path / "restart.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    output_dir = tmp_path / "outputs" / "42042"
+
+    def fail_and_reconcile(self, registry, stop_event, reporter):
+        reconcile = monitor.call_args.kwargs["reconcile"]
+        for node in ("mock-node-01", "mock-node-02"):
+            original = registry.get_process(f"agg_0_{node}")
+            assert original is not None and original.supervised
+            original.popen._finalize()
+            assert original.exit_code == 0
+        reconcile()
+        assert not registry.check_failures()
+        start_worker = self.start_worker
+
+        def failing_start(process, processes, *, attempt=0):
+            if process.node_rank == fail_rank:
+                if fail_rank:
+                    assert registry.get_process("agg_0_mock-node-01_r1") is not None
+                raise RuntimeError("srun launch failed")
+            return start_worker(process, processes, attempt=attempt)
+
+        with patch.object(self, "start_worker", failing_start):
+            reconcile()
+        partial = registry.get_process("agg_0_mock-node-01_r1")
+        if fail_rank:
+            assert partial is not None and not partial.is_running
+        else:
+            assert partial is None
+        assert registry.check_failures() is critical
+        return int(critical)
+
+    with (
+        patch("srtctl.cli.do_sweep.start_process_monitor") as monitor,
+        patch.object(SweepOrchestrator, "run_benchmark", fail_and_reconcile),
+    ):
+        assert run_mock_sweep(
+            config_path=config_path,
+            output_dir=output_dir,
+            job_id="42042",
+            options=MockOptions(nodelist=("mock-node-01", "mock-node-02"), child_duration_s=600, phase_pause_s=0),
+        ) == int(critical)
+    restarts = json.loads((output_dir / "logs" / "worker_restarts.json").read_text())
+    assert restarts["events"][-1]["outcome"] == "launch_failed"
+    lockfile = yaml.safe_load((output_dir / "recipe.lock.yaml").read_text())
+    assert lockfile["lock"]["worker_restarts"] == restarts
+
+
+@pytest.mark.parametrize("frontend_type", ["sglang", "vllm", "trtllm_serve"])
+def test_mock_direct_replacement_becomes_ready_on_its_public_port(tmp_path: Path, frontend_type: str) -> None:
+    config = deepcopy(MINIMAL_CONFIG)
+    config["engine"] = "trtllm" if frontend_type == "trtllm_serve" else frontend_type
+    config["frontend"] = {"type": frontend_type, "enable_multiple_frontends": False}
+    config["roles"]["agg"]["restart"] = {"policy": "on-failure", "backoff_seconds": 0}
+    config_path = tmp_path / "restart.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    output_dir = tmp_path / "outputs" / "42042"
+
+    def restart_and_probe(self, registry, stop_event, reporter):
+        reconcile = monitor.call_args.kwargs["reconcile"]
+        reconcile.__self__.probe_interval = 0
+        original = registry.get_process("agg_0_mock-node-01")
+        assert original is not None
+        original.popen.kill()
+        reconcile()
+        reconcile()
+        reconcile()
+        probe.assert_called_once_with("127.0.0.1", self.runtime.frontend_port, "/health", 200, request_timeout=2.0)
+        assert self.backend_processes[0].http_port != self.runtime.frontend_port
+        assert not registry.check_failures()
+        return 0
+
+    with (
+        patch("srtctl.cli.do_sweep.start_process_monitor") as monitor,
+        patch("srtctl.core.supervisor.probe_http", return_value=True) as probe,
+        patch.object(SweepOrchestrator, "run_benchmark", restart_and_probe),
+    ):
+        assert (
+            run_mock_sweep(
+                config_path=config_path,
+                output_dir=output_dir,
+                job_id="42042",
+                options=MockOptions(child_duration_s=600, phase_pause_s=0),
+            )
+            == 0
+        )
+    restarts = json.loads((output_dir / "logs" / "worker_restarts.json").read_text())
+    assert restarts["events"][-1]["outcome"] == "ready"
 
 
 def test_run_mock_sweep_produces_expected_artifacts(tmp_path: Path) -> None:
