@@ -86,6 +86,7 @@ nav:
       - Workloads:
           - TileRT: tilert.md
           - Shadow Engine Recovery: shadow-engine-recovery.md
+          - SGLang Fast Engine Recovery: sglang-weight-cache.md
           - Miles RL Post-Training: miles.md
   - Run and Operate:
       - Monitoring: monitoring.md

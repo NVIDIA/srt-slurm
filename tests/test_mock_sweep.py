@@ -255,6 +255,80 @@ def test_mock_direct_replacement_becomes_ready_on_its_public_port(tmp_path: Path
     assert restarts["events"][-1]["outcome"] == "ready"
 
 
+def test_mock_weight_cache_daemons_survive_an_engine_relaunch(tmp_path: Path) -> None:
+    recipe = Path(__file__).resolve().parent.parent / "examples/features/sglang-weight-cache.yaml"
+    config = yaml.safe_load(recipe.read_text())
+    config["model"].update(path="hf:fake/mock-model", container="nvcr.io/fake:latest")
+    config_path = tmp_path / "weight-cache.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    output_dir = tmp_path / "outputs" / "42042"
+    launches = []
+
+    def restart_engine(self, registry, stop_event, reporter):
+        reconcile = monitor.call_args.kwargs["reconcile"]
+        supervisor = reconcile.__self__
+        clock = [0.0]
+        supervisor._clock = lambda: clock[0]
+        supervisor.probe_interval = 0
+        daemon_names = [f"service_weight-cache_agg_{i}_mock-node-01" for i in range(2)]
+        daemons = [registry.get_process(name) for name in daemon_names]
+        assert all(proc is not None and proc.is_running and proc.critical for proc in daemons)
+        daemon_launches = [call for call in launches if call.get("step_name", "").startswith("service_weight-cache_")]
+        workers = [call for call in launches if call.get("step_name", "").startswith("agg_")]
+        assert len(daemon_launches) == len(workers) == 2
+        for daemon, worker in zip(daemon_launches, workers, strict=True):
+            for key in (
+                "CUDA_VISIBLE_DEVICES",
+                "SGLANG_WEIGHT_CACHE_SOCKET_TEMPLATE",
+                "SGLANG_WEIGHT_CACHE_READY_TEMPLATE",
+            ):
+                assert daemon["env_to_set"][key] == worker["env_to_set"][key]
+            assert "{device_uuid}" in daemon["env_to_set"]["SGLANG_WEIGHT_CACHE_SOCKET_TEMPLATE"]
+            assert worker["command"][-2:] == ["--weight-cache-mode", "client"]
+
+        original = registry.get_process("agg_0_mock-node-01")
+        untouched = registry.get_process("agg_1_mock-node-01")
+        assert original is not None and untouched is not None
+        original.popen.kill()
+        reconcile()
+        clock[0] = 5.0
+        reconcile()
+        reconcile()
+
+        replacement = registry.get_process("agg_0_mock-node-01_r1")
+        assert replacement is not None and replacement.is_running and replacement.supervised
+        assert registry.get_process(untouched.name) is untouched and untouched.is_running
+        for name, daemon in zip(daemon_names, daemons, strict=True):
+            assert registry.get_process(name) is daemon and daemon.is_running
+        assert len([call for call in launches if call.get("step_name", "").startswith("service_weight-cache_")]) == 2
+        for key in ("nodelist", "env_to_set", "container_mounts", "command", "output"):
+            assert launches[-1][key] == workers[0][key]
+        probe.assert_called_once_with(
+            "127.0.0.1", self.backend_processes[0].http_port, "/health", 200, request_timeout=2.0
+        )
+        assert not registry.check_failures()
+        return 0
+
+    with (
+        patch("srtctl.cli.do_sweep.start_process_monitor") as monitor,
+        patch("srtctl.core.supervisor.probe_http", return_value=True) as probe,
+        patch.object(SweepOrchestrator, "run_benchmark", restart_engine),
+    ):
+        assert (
+            run_mock_sweep(
+                config_path=config_path,
+                output_dir=output_dir,
+                job_id="42042",
+                options=MockOptions(child_duration_s=600, phase_pause_s=0, on_srun=launches.append),
+            )
+            == 0
+        )
+    restarts = json.loads((output_dir / "logs" / "worker_restarts.json").read_text())
+    assert restarts["events"][-1]["outcome"] == "ready"
+    lockfile = yaml.safe_load((output_dir / "recipe.lock.yaml").read_text())
+    assert lockfile["lock"]["worker_restarts"] == restarts
+
+
 def test_run_mock_sweep_produces_expected_artifacts(tmp_path: Path) -> None:
     cfg = _write_config(tmp_path)
     output_dir = tmp_path / "outputs" / "42042"
