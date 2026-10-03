@@ -1724,6 +1724,15 @@ class TelemetryConfig:
     collect_interval_ms: int = 1000
     storage_subdir: str = "power"
     required: bool = False
+    # Before any server starts, verify every allocation node reports an
+    # NTP-synchronised system clock. Sample timestamps (orchestrator host) and
+    # window boundaries (benchmark client host) are compared directly, so an
+    # unsynchronised node silently misaligns the measurement. Fails the job
+    # when ``required`` is true; otherwise the run continues and the manifest
+    # records ``clock_sync_unverified`` with ``publication_valid: false``.
+    # Set false on clusters where timedatectl/chronyc/ntpq are unavailable to
+    # unprivileged users.
+    clock_sync_check: bool = True
     startup_timeout_seconds: float = 30.0
     request_timeout_seconds: float = 2.0
     # None derives a safe shutdown budget from request_timeout_seconds.
@@ -3200,9 +3209,11 @@ class SrtConfig:
         """Validate DCGM power telemetry.
 
         It runs its collector in the orchestrator process, so it needs neither
-        the scraper image nor node_exporter. Sample and window timestamps must
-        share one host clock, which is why the benchmark client stays on the
-        head node.
+        the scraper image nor node_exporter. Sample timestamps come from the
+        orchestrator host and window boundaries from the benchmark client host;
+        both are ``time.time()`` and are assumed NTP-synchronised within the
+        allocation, so the client may run on any node (``benchmark.placement.node``,
+        including ``dedicated``).
         """
         telemetry = self.telemetry
         exporter = telemetry.dcgm_exporter
@@ -3235,8 +3246,6 @@ class SrtConfig:
         if self.benchmark.type not in supported_benchmarks:
             supported = ", ".join(sorted(supported_benchmarks))
             raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
-        if self.benchmark.placement.location != "head":
-            raise ValidationError("telemetry requires benchmark.placement.node: head")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra_dedicated_node:

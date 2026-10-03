@@ -267,6 +267,7 @@ DCGM power telemetry for benchmark measurement windows.
 | `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles. Replaces the retired ``default_frequency``, which despite its name was a period in seconds (1000ms == the old 1.0 default). |
 | `storage_subdir` | str | `'power'` |  |
 | `required` | bool | `False` |  |
+| `clock_sync_check` | bool | `True` | Before any server starts, verify every allocation node reports an NTP-synchronised system clock. Sample timestamps (orchestrator host) and window boundaries (benchmark client host) are compared directly, so an unsynchronised node silently misaligns the measurement. Fails the job when ``required`` is true; otherwise the run continues and the manifest records ``clock_sync_unverified`` with ``publication_valid: false``. Set false on clusters where timedatectl/chronyc/ntpq are unavailable to unprivileged users. |
 | `startup_timeout_seconds` | float | `30.0` |  |
 | `request_timeout_seconds` | float | `2.0` |  |
 | `collector_join_timeout_seconds` | float \| None | `None` | None derives a safe shutdown budget from request_timeout_seconds. |

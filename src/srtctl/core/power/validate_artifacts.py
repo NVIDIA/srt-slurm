@@ -98,6 +98,7 @@ _RUNTIME_ONLY_REASON_CODES = frozenset(
         Reason.COLLECTOR_INTERRUPTED,
         Reason.COLLECTOR_JOIN_TIMEOUT,
         Reason.BENCHMARK_CHILD_REAP_TIMEOUT,
+        Reason.CLOCK_SYNC_UNVERIFIED,
     }
 )
 
