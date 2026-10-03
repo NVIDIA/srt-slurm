@@ -22,7 +22,25 @@ from srtctl.core.schema_docs import (
 )
 from srtctl.core.validation import preflight_config_variants, validate_topology
 
-DOC_PATH = Path(__file__).resolve().parents[3] / "docs" / "config-reference.md"
+DOCS_DIR = Path(__file__).resolve().parents[3] / "docs"
+# Hand-written recipe pages searched for prose context; field facts come from the schema, not from here.
+DOC_PATHS = tuple(
+    DOCS_DIR / name
+    for name in (
+        "config-reference.md",
+        "cluster-config.md",
+        "engines.md",
+        "topology.md",
+        "frontends.md",
+        "benchmarks.md",
+        "observability.md",
+        "runtime-env.md",
+        "profiling.md",
+        "services.md",
+        "overrides.md",
+        "sweeps.md",
+    )
+)
 COMPUTE_SIDE_HINT = (
     "Host-side srtslurm.yaml is not used by srtctl MCP. For cluster defaults, "
     "aliases, containers, model paths, filesystem checks, or dry-run behavior, "
@@ -46,7 +64,7 @@ def schema_summary() -> dict[str, Any]:
 
 
 def explain_field(path: str) -> dict[str, Any]:
-    """Describe a config field path from the schema, with config-reference prose as supplemental context.
+    """Describe a config field path from the schema, with recipe-guide prose as supplemental context.
 
     ``schema.leaf`` carries the field's type, default, description, and allowed values straight from the
     dataclasses (the data behind docs/schema-reference.md). When the path does not resolve,
@@ -66,12 +84,14 @@ def explain_field(path: str) -> dict[str, Any]:
 
 
 def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict[str, Any]:
-    """Search config-reference.md and return matching snippets."""
+    """Search the hand-written recipe pages (DOC_PATHS) and return matching snippets with their page."""
     sections = _parse_doc_sections()
     if not query:
         return {
-            "doc_path": str(DOC_PATH),
-            "matches": [{"heading": section["heading"]} for section in sections[: max_matches or 5]],
+            "docs_dir": str(DOCS_DIR),
+            "matches": [
+                {"doc": section["doc"], "heading": section["heading"]} for section in sections[: max_matches or 5]
+            ],
         }
 
     lowered = query.lower()
@@ -90,6 +110,7 @@ def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict
             snippet = "\n".join(lines[:7]).strip()
         matches.append(
             {
+                "doc": section["doc"],
                 "heading": section["heading"],
                 "snippet": snippet,
                 "score": len(hit_indexes) + int(lowered in section["heading"].lower()),
@@ -101,6 +122,7 @@ def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict
         if leaf is not None:
             matches.append(
                 {
+                    "doc": "schema-reference.md",
                     "heading": f"Schema: {query}",
                     "snippet": (
                         f"{leaf['name']}: type={leaf['type']}, default={leaf['default']}. {leaf['description']}"
@@ -108,7 +130,7 @@ def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict
                     "score": 1,
                 }
             )
-    return {"doc_path": str(DOC_PATH), "query": query, "matches": matches[:max_matches]}
+    return {"docs_dir": str(DOCS_DIR), "query": query, "matches": matches[:max_matches]}
 
 
 def validate_config(
@@ -229,18 +251,21 @@ def _cluster_context() -> dict[str, Any]:
 
 
 def _parse_doc_sections() -> list[dict[str, str]]:
-    text = DOC_PATH.read_text()
     sections: list[dict[str, str]] = []
-    current_heading = "Introduction"
-    body: list[str] = []
-    for line in text.splitlines():
-        if line.startswith("#"):
-            if body:
-                sections.append({"heading": current_heading, "body": "\n".join(body).strip()})
-            current_heading = line.lstrip("#").strip()
-            body = []
-        else:
-            body.append(line)
-    if body:
-        sections.append({"heading": current_heading, "body": "\n".join(body).strip()})
+    for path in DOC_PATHS:
+        current_heading = "Introduction"
+        body: list[str] = []
+        in_code = False
+        for line in path.read_text().splitlines():
+            if line.startswith("```"):
+                in_code = not in_code
+            if line.startswith("#") and not in_code:
+                if body:
+                    sections.append({"doc": path.name, "heading": current_heading, "body": "\n".join(body).strip()})
+                current_heading = line.lstrip("#").strip()
+                body = []
+            else:
+                body.append(line)
+        if body:
+            sections.append({"doc": path.name, "heading": current_heading, "body": "\n".join(body).strip()})
     return sections

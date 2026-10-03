@@ -107,7 +107,7 @@ engine:
     shared_dir: /dev/shm               # node-local host path every container on the node sees
 roles:
   agg:
-    restart:                           # see docs/config-reference.md, section "restart"
+    restart:                           # see topology.md, section "restart"
       policy: always
       backoff_seconds: 5
 services:                              # optional: only to change the implied gms service

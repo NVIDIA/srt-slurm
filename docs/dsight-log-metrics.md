@@ -150,7 +150,7 @@ Batch observations use `event` semantics because multiple batches can share
 one logged second. Queries retain every line, including repeated values; the
 chart shows a labeled median and event count for coincident observations.
 It does not fabricate ordering or subsecond timestamps. The
-[synthetic SGLang example](../examples/dsight/sglang/README.md) includes both default
+[synthetic SGLang example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/dsight/sglang/README.md) includes both default
 and detailed formats and builds a report from these logs alone.
 
 ### Per-request timing records

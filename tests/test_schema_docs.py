@@ -13,6 +13,7 @@ import yaml
 from srtctl.backends import AtomBackend
 from srtctl.benchmarks import SHARED_BENCHMARK_FIELDS
 from srtctl.cli import submit as submit_cli
+from srtctl.cli.docs_gen import DOCS_DIR, stale_generated, write_generated
 from srtctl.core.config import (
     LEGACY_SECTION_KEYS,
     LEGACY_TOP_LEVEL_KEYS,
@@ -45,7 +46,6 @@ from srtctl.core.schema_docs import (
     render_schema_reference,
     resolve_field_path,
     schema_reference_is_current,
-    write_schema_reference,
 )
 
 LEGACY_DOC = Path(__file__).parent.parent / "docs" / "legacy-v1.md"
@@ -274,30 +274,45 @@ def test_engine_types_and_cluster_config_are_rendered() -> None:
     assert "<!-- GENERATED FILE" in text
 
 
-def test_cli_check_passes_on_a_fresh_file(tmp_path: Path, monkeypatch, capsys) -> None:
-    output = tmp_path / "schema-reference.md"
-    write_schema_reference(output)
-    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--check", "--output", str(output)])
+def test_cli_check_passes_on_a_fresh_docs_dir(tmp_path: Path, monkeypatch, capsys) -> None:
+    write_generated(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--check", "--docs-dir", str(tmp_path)])
     submit_cli.main()
     assert "up to date" in capsys.readouterr().out
 
 
 def test_cli_check_fails_on_a_stale_file(tmp_path: Path, monkeypatch, capsys) -> None:
-    output = tmp_path / "schema-reference.md"
-    output.write_text("# stale\n")
-    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--check", "--output", str(output)])
+    write_generated(tmp_path)
+    (tmp_path / "cli-reference.md").write_text("# stale\n")
+    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--check", "--docs-dir", str(tmp_path)])
     with pytest.raises(SystemExit) as exc_info:
         submit_cli.main()
     assert exc_info.value.code == 1
-    assert "stale" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "stale" in out and "cli-reference.md" in out
 
 
-def test_cli_writes_only_the_schema_reference(tmp_path: Path, monkeypatch) -> None:
-    output = tmp_path / "nested" / "schema-reference.md"
-    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--output", str(output)])
+def test_cli_writes_every_generated_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--docs-dir", str(tmp_path / "docs")])
     submit_cli.main()
-    assert output.read_text() == render_schema_reference()
-    assert sorted(p.name for p in output.parent.iterdir()) == ["schema-reference.md"]
+    written = sorted(str(p.relative_to(tmp_path / "docs")) for p in (tmp_path / "docs").rglob("*") if p.is_file())
+    assert written == [
+        "cli-reference.md",
+        "schema-reference.md",
+        "schema/cluster.schema.json",
+        "schema/recipe.schema.json",
+    ]
+    assert (tmp_path / "docs" / "schema-reference.md").read_text() == render_schema_reference()
+
+
+def test_checked_in_generated_docs_are_current() -> None:
+    """docs/schema/*.schema.json and docs/cli-reference.md are regenerated with the code. Fix: uv run srtctl schema-docs"""
+    assert stale_generated() == []
+
+
+def test_published_recipe_schema_is_the_json_schema() -> None:
+    published = json.loads((DOCS_DIR / "schema" / "recipe.schema.json").read_text())
+    assert published == json_schema(SrtConfig)
 
 
 def test_every_authoring_field_has_a_description() -> None:

@@ -1955,16 +1955,10 @@ def resolve_override_cmd(
         console.print(f"[green]Wrote:[/] {p}")
 
 
-def main():
-    # If no args at all, launch interactive mode
-    if len(sys.argv) == 1:
-        from srtctl.cli.interactive import run_interactive
-
-        sys.exit(run_interactive())
-
-    setup_logging()
-
+def build_parser() -> argparse.ArgumentParser:
+    """The `srtctl` argument parser; building it has no side effects (docs/cli-reference.md is rendered from it)."""
     parser = argparse.ArgumentParser(
+        prog="srtctl",
         description="srtctl - SLURM job submission",
         epilog="""Examples:
   srtctl                                         # Interactive mode
@@ -1980,7 +1974,7 @@ def main():
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
-  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
+  srtctl schema-docs [--check]                   # Regenerate (or verify) the generated docs
   srtctl schema [--cluster]                      # JSON Schema for recipes (or srtslurm.yaml)
   srtctl migrate -f config.yaml --in-place       # Rewrite a pre-2.0 recipe into the current schema (dir: recursive)
   srtctl skill --target claude                   # Install the srtctl agent skill into this project
@@ -2169,18 +2163,18 @@ def main():
     # Generated schema reference: srtctl schema-docs [--check] [--output PATH]
     schema_docs_parser = subparsers.add_parser(
         "schema-docs",
-        help="Regenerate docs/schema-reference.md from the code",
+        help="Regenerate the generated docs (schema reference, JSON Schemas, CLI reference) from the code",
     )
     schema_docs_parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 if the checked-in document is stale instead of rewriting it (used by CI)",
+        help="Exit 1 if a checked-in generated file is stale instead of rewriting it (used by CI)",
     )
     schema_docs_parser.add_argument(
-        "--output",
+        "--docs-dir",
         type=Path,
         default=None,
-        help="Write the schema reference to this path instead of docs/schema-reference.md",
+        help="Docs directory to write into (default: the checkout's docs/)",
     )
 
     # Machine-readable schema: srtctl schema [--cluster] [--output PATH]
@@ -2214,7 +2208,7 @@ def main():
     skill_parser.add_argument(
         "--root",
         type=Path,
-        default=Path.cwd(),
+        default=None,
         help="Project root to install under (default: the current directory)",
     )
     skill_parser.add_argument(
@@ -2242,6 +2236,19 @@ def main():
         help="Write the migrated recipe to this path (single file only; default: print to stdout)",
     )
 
+    return parser
+
+
+def main():
+    # If no args at all, launch interactive mode
+    if len(sys.argv) == 1:
+        from srtctl.cli.interactive import run_interactive
+
+        sys.exit(run_interactive())
+
+    setup_logging()
+
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.command in ("dsight", "dashboard"):
@@ -2347,19 +2354,21 @@ def main():
         sys.exit(1 if all_results else 0)
 
     if args.command == "schema-docs":
-        from srtctl.core.schema_docs import DEFAULT_OUTPUT, schema_reference_is_current, write_schema_reference
+        from srtctl.cli.docs_gen import DOCS_DIR, stale_generated, write_generated
 
-        output = args.output or DEFAULT_OUTPUT
+        docs_dir = args.docs_dir or DOCS_DIR
         if args.check:
-            if schema_reference_is_current(output):
-                console.print(f"[green]✓[/] {output} is up to date")
+            stale = stale_generated(docs_dir)
+            if not stale:
+                console.print(f"[green]✓[/] Generated docs in {docs_dir} are up to date")
                 restore_console()
                 return
-            console.print(f"[bold red]✗[/] {output} is stale; run `srtctl schema-docs` and commit the result")
+            for path in stale:
+                console.print(f"[bold red]✗[/] {path} is stale; run `srtctl schema-docs` and commit the result")
             restore_console()
             sys.exit(1)
-        written = write_schema_reference(output)
-        console.print(f"[green]✓[/] Wrote {written}")
+        for path in write_generated(docs_dir):
+            console.print(f"[green]✓[/] Wrote {path}")
         restore_console()
         return
 
@@ -2384,7 +2393,7 @@ def main():
             print(render_skill(args.target))
             restore_console()
             return
-        written = install_skill(args.target, args.root)
+        written = install_skill(args.target, args.root or Path.cwd())
         console.print(f"[green]✓[/] Wrote {written}")
         restore_console()
         return

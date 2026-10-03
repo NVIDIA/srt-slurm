@@ -739,6 +739,13 @@ def _json_type(annotation: Any, defs: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# Fields whose loader also accepts a shorthand spelling (a custom marshmallow field or a pre_load hook).
+_JSON_SHORTHANDS: dict[tuple[str, str], dict[str, Any]] = {
+    ("RoleConfig", "restart"): {"enum": ["never", "on-failure", "always"]},
+    ("ServiceConfig", "metrics"): {"$ref": "#/$defs/ServiceMetricsConfig"},
+}
+
+
 def _object_json(cls: type, defs: dict[str, Any]) -> dict[str, Any]:
     annotations = field_annotations(cls)
     items = {_yaml_key(item): item for item in fields(cast(Any, cls))}
@@ -748,6 +755,8 @@ def _object_json(cls: type, defs: dict[str, Any]) -> dict[str, Any]:
         prop: dict[str, Any] = dict(_json_type(annotations[row.key], defs))
         if row.allowed_values and not _literal_values(annotations[row.key]):
             prop = {"enum": list(row.allowed_values)}
+        if (shorthand := _JSON_SHORTHANDS.get((cls.__name__, row.key))) is not None:
+            prop = {"anyOf": [shorthand, prop]}
         if row.description:
             prop["description"] = row.description
         if row.default == "required":

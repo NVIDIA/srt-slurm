@@ -122,7 +122,7 @@ This file holds the rules for every change. Subsystem rules live next to the cod
 | Ports, liveness, cleanup, resources | `src/srtctl/core/AGENTS.md` | `docs/architecture.md` |
 | Orchestrator stages, host setup | `src/srtctl/cli/AGENTS.md` | `docs/cli.md` |
 | Status reporting | `src/srtctl/status_server/AGENTS.md` | `docs/monitoring.md` |
-| Benchmarks | `src/srtctl/benchmarks/AGENTS.md` | `docs/config-reference.md` |
+| Benchmarks | `src/srtctl/benchmarks/AGENTS.md` | `docs/benchmarks.md` |
 | DSight reports, queries and analysis | `src/srtctl/dsight/AGENTS.md` | `docs/dsight.md`, `docs/dsight-storage.md` |
 | Tests, mock orchestrator, snapshots | `tests/AGENTS.md` | `tests/README.md` |
 | Documentation | `docs/AGENTS.md` | `docs/README.md` |
@@ -178,7 +178,7 @@ See `.agents/skills/validate-without-cluster/SKILL.md`.
 
 ### Adding or Changing Any Config Field
 
-`docs/schema-reference.md` is generated from the dataclasses in `core/schema.py` and `backends/`. After adding, renaming, or re-typing a field, run `uv run srtctl schema-docs` and commit the result; CI and `tests/test_schema_docs.py` fail when the file is stale. Put the field's description in the class docstring `Attributes:` block or in a `#` comment directly above the field so it lands in the generated table; `tests/test_schema_docs.py` fails on a user-facing field without one. The same rows feed `srtctl schema` (JSON Schema) and the MCP `explain_field` tool, so do not copy field tables into `docs/config-reference.md`: link to the generated section and write only behavior there.
+`docs/schema-reference.md` is generated from the dataclasses in `core/schema.py` and `backends/`. After adding, renaming, or re-typing a field, run `uv run srtctl schema-docs` and commit the result; CI and `tests/test_schema_docs.py` fail when the file is stale. Put the field's description in the class docstring `Attributes:` block or in a `#` comment directly above the field so it lands in the generated table; `tests/test_schema_docs.py` fails on a user-facing field without one. The same rows feed `srtctl schema` (JSON Schema) and the MCP `explain_field` tool, so do not copy field tables into the hand-written recipe pages (`docs/config-reference.md` and the topic pages it indexes): link to the generated section and write only behavior there. It also writes `docs/schema/*.schema.json` and `docs/cli-reference.md` (from `build_parser()`), so rerun it after changing a CLI flag. `make docs` is the strict site build CI runs; add new pages to the `mkdocs.yml` nav. `tests/test_docs_yaml.py` schema-checks docs YAML (`<!-- docs-yaml: skip -->` opts a block out).
 
 ### Adding Config That Affects srun (Mounts, Env Vars, Options)
 

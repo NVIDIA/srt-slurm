@@ -31,8 +31,22 @@ jobs:
       - name: Run ruff format check
         run: uv run ruff format --check src/srtctl/
 
-      - name: Check docs/schema-reference.md is regenerated
+      - name: Check generated docs (schema reference, JSON Schemas, CLI reference) are regenerated
         run: uv run srtctl schema-docs --check
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - run: pip install mkdocs-material
+
+      - name: Build the docs site (strict, fails on broken links and unlisted pages)
+        run: mkdocs build --strict
 
   typecheck:
     runs-on: ubuntu-latest

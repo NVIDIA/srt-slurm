@@ -84,7 +84,7 @@ observability: { tachometer: { enabled: true } }
 
 ## Environment the launcher reads
 
-Injected by srtctl for every custom benchmark command (see [config reference, custom](config-reference.md#custom)):
+Injected by srtctl for every custom benchmark command (see [Benchmarks, custom](benchmarks.md#custom)):
 
 | Variable | Meaning |
 | --- | --- |

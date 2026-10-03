@@ -18,8 +18,8 @@ is required.
 
 | Skill | When to load it |
 | --- | --- |
-| [dsight-query](../.agents/skills/dsight-query/SKILL.md) | Query an existing report, inspect source coverage, compare runs, or gather evidence for a dashboard view. Prefer the normalized SQLite cache through the read-only CLI, Python or MCP interface. |
-| [slurm-job-sizing](../src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md) | Prepare or submit Slurm jobs: prefer short, parallel hypothesis tests for debugging; size full runs from history and phase timing distributions while preserving non-preemptible resources. |
+| [dsight-query](https://github.com/NVIDIA/srt-slurm/blob/main/.agents/skills/dsight-query/SKILL.md) | Query an existing report, inspect source coverage, compare runs, or gather evidence for a dashboard view. Prefer the normalized SQLite cache through the read-only CLI, Python or MCP interface. |
+| [slurm-job-sizing](https://github.com/NVIDIA/srt-slurm/blob/main/src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md) | Prepare or submit Slurm jobs: prefer short, parallel hypothesis tests for debugging; size full runs from history and phase timing distributions while preserving non-preemptible resources. |
 
 ## Generate on a cluster login node
 
@@ -324,7 +324,7 @@ per-request assignment of shared batch time is applied.
 
 ## Session zoom example
 
-Build the small client-only capture in [examples/dsight/fit-session](../examples/dsight/fit-session):
+Build the small client-only capture in [examples/dsight/fit-session](https://github.com/NVIDIA/srt-slurm/blob/main/examples/dsight/fit-session):
 
 ```bash
 uv run --no-dev srtctl dsight build examples/dsight/fit-session --output /tmp/dsight-fit-session

@@ -55,7 +55,7 @@ def schema_summary() -> dict[str, Any]:
 
 @mcp.tool()
 def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict[str, Any]:
-    """Search docs/config-reference.md and return relevant snippets."""
+    """Search the recipe guide pages (docs/config-reference.md, engines.md, topology.md, ...) for prose snippets."""
     return get_config_reference_impl(query=query, max_matches=max_matches)
 
 
@@ -63,7 +63,7 @@ def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict
 def explain_field(path: str) -> dict[str, Any]:
     """Explain a config field path (e.g. roles.decode.nodes): type, default, description, allowed values.
 
-    Read from the schema dataclasses; config-reference.md snippets are added as supplemental context.
+    Read from the schema dataclasses; recipe-guide snippets are added as supplemental context.
     """
     return explain_field_impl(path)
 
