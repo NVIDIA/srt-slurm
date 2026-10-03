@@ -5,6 +5,16 @@
 
 The implementation follows BTK's CPU-power source ordering for NVIDIA Grace:
 Linux ACPI ``power_meter`` socket totals first, then DCGM CPU entity field 1130.
+
+``auto`` degrades in steps rather than failing (mirrors the Rust
+``cpu-power-exporter``): ACPI is used only if at least one discovered
+socket-total sensor reads a positive value (one retry after a short delay,
+since hwmon averages can read 0 on the first poll after boot); otherwise DCGM
+is tried with fields 1130+1132, and if this libdcgm refuses that set for CPU
+entities, with 1130 alone -- the floor every earlier collector had. Each step
+down is logged. A reading of 0 W from any channel is filed as missing, never
+as a sample: ``power1_average`` reports 0 only when the sensor has produced
+no reading.
 It runs on the host (not in the model container) so sysfs and the host DCGM
 installation remain visible.
 """
@@ -16,6 +26,7 @@ import contextlib
 import csv
 import importlib
 import json
+import logging
 import math
 import os
 import signal
@@ -29,16 +40,45 @@ from typing import Any, NamedTuple
 
 from srtctl.core.power.cpu_rails import (
     COMPONENT_RAIL_KINDS,
+    DCGM_FIELD_BY_ID,
+    DCGM_FIELD_RAIL_KINDS,
     DCGM_KIND,
+    DCGM_POWER_FIELD_IDS,
+    DCGM_POWER_FIELDS,
+    DCGM_PRIMARY_FIELD_ID,
     RAIL_COLUMN_NAMES,
     TOTAL_KIND,
     classify_acpi_label,
     sensor_name,
 )
-from srtctl.core.power.cpu_sample import CpuSample, RailReading, node_total_watts, pivot_socket_samples
+from srtctl.core.power.cpu_sample import (
+    CpuSample,
+    RailReading,
+    dcgm_rail_readings,
+    node_total_watts,
+    pivot_socket_samples,
+)
 from srtctl.core.power.hwmon import is_power_meter
 
-CPU_POWER_FIELD_ID = 1130
+logger = logging.getLogger(__name__)
+
+# Field 1130: the DCGM value filed as a DCGM-mode socket's power_w. Per the
+# DCGM sysmon source it is the ACPI "CPU Power Socket N" rail, not the socket
+# envelope (cpu_rails.DCGM_FIELD_RAIL_KINDS).
+CPU_POWER_FIELD_ID = DCGM_PRIMARY_FIELD_ID
+
+# The DCGM power field sets tried in order, most informative first. A libdcgm
+# that rejects 1132 for CPU entities (older release, or a sysmon without SysIO)
+# must still come up on 1130 alone; in ``auto`` DCGM is the last resort, so
+# failing here would mean no CPU power at all.
+DCGM_FIELD_SET_CANDIDATES: tuple[tuple[int, ...], ...] = (DCGM_POWER_FIELD_IDS, (DCGM_PRIMARY_FIELD_ID,))
+
+# ACPI liveness probe: extra passes after the first all-zero read before
+# declaring the sensors dead. hwmon ``power1_average`` can legitimately read
+# 0 on the first poll after boot; a false negative would put a good node on
+# DCGM's half-size number for the whole run.
+ACPI_PROBE_RETRIES = 1
+ACPI_PROBE_RETRY_DELAY_SECONDS = 1.0
 DCGM_PYTHON_BINDING_DIRS = (
     Path("/usr/share/datacenter-gpu-manager-4/bindings/python3"),
     Path("/usr/local/dcgm/bindings/python3"),
@@ -92,8 +132,8 @@ SAMPLES_HEADER = (
     "source",
     "sensor",  # the sensor that fed power_w (provenance only)
     "socket_id",
-    "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130
-    *RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI only, blank for DCGM
+    "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130 (= the CPU rail; DCGM has no envelope field)
+    *RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI: from hwmon; DCGM: cpu_rail_w=1130, soc_w=1132, dram_w blank
     "total_power_w",  # node aggregate: sum of power_w over sockets
     *UTILIZATION_COLUMNS,
 )
@@ -219,15 +259,46 @@ class AcpiPowerMeterReader(CpuPowerReader):
             suffix = f"; available domains: {domains}" if domains else ""
             raise CpuPowerSourceUnavailable(f"no ACPI socket-total power_meter channels under {hwmon_root}{suffix}")
 
+    @property
+    def sensor_count(self) -> int:
+        return len(self._sensors)
+
     def read_watts(self) -> dict[str, float | None]:
         readings: dict[str, float | None] = {}
         for sensor in self._sensors:
             try:
                 watts = float(sensor["path"].read_text().strip()) / 1_000_000.0
-                readings[sensor["name"]] = watts if math.isfinite(watts) and watts >= 0 else None
+                # 0 from power1_average means the sensor has not produced a
+                # reading (not found / no average yet), never an idle socket;
+                # a live Grace socket draws tens of watts. File it as missing.
+                readings[sensor["name"]] = watts if math.isfinite(watts) and watts > 0 else None
             except (OSError, ValueError):
                 readings[sensor["name"]] = None
         return readings
+
+    def probe_live(
+        self, *, retries: int = ACPI_PROBE_RETRIES, delay_seconds: float = ACPI_PROBE_RETRY_DELAY_SECONDS
+    ) -> int:
+        """Number of socket-total sensors reading a positive value, retrying while none does.
+
+        Discovery alone does not make ACPI usable: a node can expose
+        ``power_meter`` channels that never report. Only the ``total`` rail
+        counts -- it is what becomes ``power_w``, and a live component rail
+        next to a dead envelope would otherwise vouch for a socket whose
+        power can never be published. Returns 0 only after every pass found
+        no live total.
+        """
+        for attempt in range(retries + 1):
+            readings = self.read_watts()
+            live = sum(
+                1 for sensor in self._sensors if sensor["domain_kind"] == TOTAL_KIND and readings[sensor["name"]]
+            )
+            if live:
+                return live
+            if attempt < retries:
+                logger.debug("no ACPI socket-total sensor reads positive; retrying probe (attempt %d)", attempt + 1)
+                time.sleep(delay_seconds)
+        return 0
 
     def classify_readings(self, readings: dict[str, float | None]) -> list[RailReading]:
         return [
@@ -292,7 +363,13 @@ def _add_standard_dcgm_binding_path() -> Path | None:
 
 
 class DcgmCpuPowerReader(CpuPowerReader):
-    """Read per-Grace-CPU instantaneous power through DCGM field 1130."""
+    """Read per-Grace-CPU power through DCGM CPU-entity fields 1130 (CPU rail) and 1132 (SysIO).
+
+    DCGM's sysmon module reads the ACPI hwmon channels itself, so these are
+    the same rails the ACPI reader sees -- minus the socket envelope, which
+    DCGM does not expose. Field 1130 is filed as ``power_w`` (unchanged) and
+    also as ``cpu_rail_w``; 1132 as ``soc_w``.
+    """
 
     source_name = "dcgm"
 
@@ -311,7 +388,8 @@ class DcgmCpuPowerReader(CpuPowerReader):
         self._agent = dcgm_agent
         self._fields = dcgm_fields
         self._structs = dcgm_structs
-        self._field_ids = [CPU_POWER_FIELD_ID, *(field.field_id for field in CPU_UTILIZATION_FIELDS)]
+        self._power_field_ids: tuple[int, ...] = DCGM_POWER_FIELD_IDS
+        self._field_ids: list[int] = []
         self._last_utilization: dict[int, dict[str, float]] = {}
         try:
             self._handle = pydcgm.DcgmHandle(ipAddress=None)
@@ -330,8 +408,8 @@ class DcgmCpuPowerReader(CpuPowerReader):
             entity.entityGroupId = dcgm_fields.DCGM_FE_CPU
             entity.entityId = cpu_id
             self._entities.append(entity)
+        unique_suffix = f"{os.getpid()}_{time.time_ns()}"
         try:
-            unique_suffix = f"{os.getpid()}_{time.time_ns()}"
             self._group = pydcgm.DcgmGroup(
                 self._handle,
                 groupName=f"srtctl_cpu_power_entities_{unique_suffix}",
@@ -339,26 +417,65 @@ class DcgmCpuPowerReader(CpuPowerReader):
             )
             for cpu_id in self._cpu_ids:
                 self._group.AddEntity(dcgm_fields.DCGM_FE_CPU, cpu_id)
-            self._field_group = pydcgm.DcgmFieldGroup(
-                self._handle,
-                name=f"srtctl_cpu_power_fields_{unique_suffix}",
-                fieldIds=list(self._field_ids),
-            )
-            self._group.samples.WatchFields(
-                self._field_group,
-                100_000,
-                60.0,
-                600,
-            )
+        except Exception as exc:
+            self.close()
+            raise CpuPowerSourceUnavailable(f"cannot build DCGM CPU entity group: {exc}") from exc
+
+        # Try every power field first; if this libdcgm rejects the set, fall
+        # back to 1130 alone rather than fail (see DCGM_FIELD_SET_CANDIDATES).
+        utilization_ids = [field.field_id for field in CPU_UTILIZATION_FIELDS]
+        errors: list[str] = []
+        for attempt, power_fields in enumerate(DCGM_FIELD_SET_CANDIDATES):
+            field_ids = [*power_fields, *utilization_ids]
+            try:
+                field_group = pydcgm.DcgmFieldGroup(
+                    self._handle,
+                    name=f"srtctl_cpu_power_fields_{unique_suffix}_{attempt}",
+                    fieldIds=field_ids,
+                )
+            except Exception as exc:  # noqa: BLE001 - pydcgm raises its own dcgmException hierarchy
+                errors.append(f"{list(power_fields)}: {exc}")
+                continue
+            try:
+                self._group.samples.WatchFields(field_group, 100_000, 60.0, 600)
+            except Exception as exc:  # noqa: BLE001 - pydcgm raises its own dcgmException hierarchy
+                errors.append(f"{list(power_fields)}: {exc}")
+                _close_quietly(field_group)
+                continue
+            self._field_group = field_group
+            self._power_field_ids = tuple(power_fields)
+            self._field_ids = field_ids
+            if attempt > 0:
+                logger.warning(
+                    "DCGM refused the full CPU power field set %s; watching the CPU rail only (no SysIO). %s",
+                    list(DCGM_POWER_FIELD_IDS),
+                    "; ".join(errors),
+                )
+            break
+        else:
+            self.close()
+            raise CpuPowerSourceUnavailable("cannot watch DCGM CPU power fields: " + "; ".join(errors))
+
+        try:
             # A live-data query does not implicitly install a DCGM watch. Force
             # the first watched update so the initial collector sample is real.
             self._agent.dcgmUpdateAllFields(self._handle.handle, True)
         except Exception as exc:
             self.close()
-            raise CpuPowerSourceUnavailable(f"cannot watch DCGM CPU power field: {exc}") from exc
+            raise CpuPowerSourceUnavailable(f"cannot seed DCGM CPU power watch: {exc}") from exc
+
+    @property
+    def power_field_ids(self) -> tuple[int, ...]:
+        """The DCGM power fields actually watched: ``(1130, 1132)``, or ``(1130,)`` after the fallback."""
+        return self._power_field_ids
 
     def read_watts(self) -> dict[str, float | None]:
-        readings = {sensor_name(DCGM_KIND, cpu_id): None for cpu_id in self._cpu_ids}
+        # One entry per (socket, DCGM power field); the sensor name carries the
+        # rail kind so classify_readings needs no lookups beyond the field table.
+        readings: dict[str, float | None] = {
+            sensor_name(kind, cpu_id): None for cpu_id in self._cpu_ids for kind in self._sensor_kinds()
+        }
+        power_fields: dict[int, dict[int, float]] = {}
         utilization: dict[int, dict[str, float]] = {}
         try:
             values = self._agent.dcgmEntitiesGetLatestValues(
@@ -377,38 +494,71 @@ class DcgmCpuPowerReader(CpuPowerReader):
             number = float(value.value.dbl)
             if not math.isfinite(number):
                 continue
-            if field_id == CPU_POWER_FIELD_ID:
-                key = sensor_name(DCGM_KIND, int(value.entityId))
-                if key in readings and number > 0:
-                    readings[key] = number
+            entity_id = int(value.entityId)
+            if entity_id not in self._cpu_ids:
+                continue
+            if field_id in DCGM_FIELD_RAIL_KINDS:
+                # Only fields this reader actually watched; a value for an
+                # unwatched field (stale cache, another client's watch) is not ours.
+                if number > 0 and field_id in self._power_field_ids:
+                    power_fields.setdefault(entity_id, {})[field_id] = number
                 continue
             column = _UTILIZATION_COLUMN_BY_FIELD_ID.get(field_id)
-            if column is not None and value.entityId in self._cpu_ids:
-                utilization.setdefault(int(value.entityId), {})[column] = number
+            if column is not None:
+                utilization.setdefault(entity_id, {})[column] = number
+        for entity_id, by_field in power_fields.items():
+            for reading in dcgm_rail_readings(entity_id, by_field):
+                readings[reading.sensor] = reading.watts
         self._last_utilization = utilization
         return readings
+
+    def _sensor_kinds(self) -> tuple[str, ...]:
+        watched = (DCGM_FIELD_RAIL_KINDS[field_id] for field_id in self._power_field_ids)
+        return (DCGM_KIND, *dict.fromkeys(watched))
 
     def read_utilization(self) -> dict[int, dict[str, float]]:
         return self._last_utilization
 
     def classify_readings(self, readings: dict[str, float | None]) -> list[RailReading]:
-        # One already-aggregated value per socket; no component rails. Whether
-        # field 1130 corresponds to the ACPI cpu_rail or the total envelope is
-        # unverified, so nothing here claims a rail kind beyond DCGM_KIND.
-        return [
-            RailReading(int(cpu_id), DCGM_KIND, name, watts)
-            for cpu_id in sorted(self._cpu_ids)
-            if (watts := readings.get(name := sensor_name(DCGM_KIND, cpu_id))) is not None
-        ]
+        # Rebuild the per-field view from the sensor names read_watts emitted,
+        # then classify through the shared table (cpu_sample.dcgm_rail_readings)
+        # so this reader and the scrape parser agree on what 1130/1132 are.
+        kind_to_field = {kind: field_id for field_id, kind in DCGM_FIELD_RAIL_KINDS.items()}
+        classified: list[RailReading] = []
+        for cpu_id in sorted(self._cpu_ids):
+            by_field: dict[int, float] = {}
+            primary = readings.get(sensor_name(DCGM_KIND, cpu_id))
+            if primary is not None:
+                by_field[DCGM_PRIMARY_FIELD_ID] = primary
+            for kind, field_id in kind_to_field.items():
+                watts = readings.get(sensor_name(kind, cpu_id))
+                if watts is not None:
+                    by_field.setdefault(field_id, watts)
+            classified.extend(dcgm_rail_readings(cpu_id, by_field))
+        return classified
 
     def metadata(self) -> dict[str, Any]:
         return {
             "source": self.source_name,
             "field_id": CPU_POWER_FIELD_ID,
-            "field_name": "DCGM_FI_DEV_CPU_POWER_UTIL_CURRENT",
-            "semantics": "instantaneous power usage in watts",
+            "field_name": DCGM_FIELD_BY_ID[CPU_POWER_FIELD_ID].name,
+            "semantics": (
+                "power_w is DCGM field 1130 = the ACPI 'CPU Power Socket N' rail (cpu_rail), not the socket "
+                "envelope; DCGM exposes no envelope field"
+            ),
+            "power_fields": [
+                {
+                    "field_id": field.field_id,
+                    "field_name": field.name,
+                    "rail_kind": field.kind,
+                    "hwmon_label": field.hwmon_label,
+                    "column": "power_w" if field.field_id == CPU_POWER_FIELD_ID else f"{field.kind}_w",
+                    "watched": field.field_id in self._power_field_ids,
+                }
+                for field in DCGM_POWER_FIELDS
+            ],
             "sensors": [{"name": sensor_name(DCGM_KIND, cpu_id), "cpu_entity_id": cpu_id} for cpu_id in self._cpu_ids],
-            "total_method": "sum of available DCGM CPU entities",
+            "total_method": "sum of field 1130 over available DCGM CPU entities",
             "aggregate_scope": "cpu_rail_only",
             "utilization_fields": [
                 {"column": field.column, "field_id": field.field_id, "field_name": field.field_name}
@@ -438,9 +588,37 @@ class DcgmCpuPowerReader(CpuPowerReader):
             self._handle = None
 
 
+def _close_quietly(obj: Any) -> None:
+    """Best-effort ``Delete()`` on a DCGM group object; a failed cleanup of a failed attempt is not news."""
+    try:
+        obj.Delete()
+    except Exception:  # cleanup of a failed attempt must not mask the real error
+        logger.debug("ignoring failure while deleting a DCGM group after a failed attempt", exc_info=True)
+
+
+def _create_acpi_reader() -> CpuPowerReader:
+    """ACPI reader that has proven at least one sensor reads a positive value."""
+    reader = AcpiPowerMeterReader()
+    live = reader.probe_live()
+    if live == 0:
+        reader.close()
+        raise CpuPowerSourceUnavailable(
+            f"no ACPI socket-total power_meter sensor read positive across {ACPI_PROBE_RETRIES + 1} probe(s) "
+            f"({reader.sensor_count} sensors discovered)"
+        )
+    logger.info("ACPI sensors report non-zero power (%d of %d); using ACPI", live, reader.sensor_count)
+    return reader
+
+
 def create_reader(source: str) -> CpuPowerReader:
-    """Create the requested reader, using BTK's Grace ordering for ``auto``."""
-    factories = {"acpi": AcpiPowerMeterReader, "dcgm": DcgmCpuPowerReader}
+    """Create the requested reader.
+
+    ``auto`` is ACPI first (the only source with the socket envelope), then
+    DCGM. Each source must prove itself before it is used -- ACPI by reading
+    a positive value on some sensor, DCGM by accepting a watch on 1130 (with
+    1132 if it can) -- and every step down the ladder is logged.
+    """
+    factories = {"acpi": _create_acpi_reader, "dcgm": DcgmCpuPowerReader}
     if source != "auto":
         try:
             return factories[source]()
@@ -452,6 +630,7 @@ def create_reader(source: str) -> CpuPowerReader:
             return factories[name]()
         except CpuPowerSourceUnavailable as exc:
             errors.append(f"{name}: {exc}")
+            logger.warning("CPU power source %s unavailable; trying the next: %s", name, exc)
     raise CpuPowerSourceUnavailable("; ".join(errors))
 
 
@@ -569,6 +748,10 @@ def main() -> int:
     args = parser.parse_args()
     if not math.isfinite(args.interval_seconds) or args.interval_seconds <= 0:
         parser.error("--interval-seconds must be finite and positive")
+    # Standalone srun process: the source-selection ladder (ACPI probe, DCGM
+    # field-set fallback) logs at INFO/WARNING and must reach the node's
+    # telemetry_cpu_power.<node>.out, so install a stderr handler here.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
     return collect(
         output_dir=args.output_dir,
         ready_dir=args.ready_dir,

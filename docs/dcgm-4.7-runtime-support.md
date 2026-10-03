@@ -65,9 +65,14 @@ or generated Slurm script.
    update, and read with `dcgmEntitiesGetLatestValues(..., flags=0)`. A live
    query returned DCGM status `-32` in the validated environment.
 8. **Keep power semantics explicit.** DCGM field 1130 is CPU-rail power, not the
-   full CPU-side socket total exposed by hwmon. Mark the manifest aggregate
-   scope as `cpu_rail_only`; do not silently compare or merge it with hwmon
-   `Total Power`.
+   full CPU-side socket total exposed by hwmon: DCGM's sysmon reads
+   `power1_average` of the hwmon channel labelled `CPU Power Socket N` for
+   1130 and `SysIO Power Socket N` for 1132, and uses `Grace Power Socket N`
+   only for the cap (1131) — NVIDIA/DCGM `modules/sysmon/DcgmSystemMonitor.cpp`,
+   `modules/sysmon/DcgmModuleSysmon.cpp`. Watch 1130 and 1132 together, file
+   1130 as `power_w` and `cpu_rail_w` and 1132 as `soc_w`, mark the manifest
+   aggregate scope as `cpu_rail_only`, and do not silently compare or merge it
+   with hwmon `Total Power`.
 9. **Clean up deterministically.** Unwatch fields, delete field/entity groups,
    shut down the embedded engine, and remove only the job-scoped extraction
    directory. Preserve the downloaded package identity and runtime provenance

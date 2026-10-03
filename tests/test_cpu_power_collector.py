@@ -84,7 +84,8 @@ def test_collector_writes_rows_from_a_reachable_node(_mock_ip, tmp_path):
     # One row per socket per scrape: power_w is the socket, total is the node sum.
     assert {row.power_w for row in rows} == {43.878, 52.35}
     assert all(row.total_power_w == 43.878 + 52.35 for row in rows)
-    assert all(row.rails == {} for row in rows)  # DCGM: no component rails
+    # DCGM: field 1130 is the CPU rail, so it is filed under cpu_rail_w too; no SysIO in this legacy body.
+    assert all(row.rails == {"cpu_rail": row.power_w} for row in rows)
 
     manifest = json.loads((tmp_path / "cpu" / "cpu_manifest.json").read_text())
     assert manifest["nodes"]["node-a"]["resolved_mode"] == "dcgm"

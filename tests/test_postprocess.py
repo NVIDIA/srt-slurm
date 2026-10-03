@@ -3,6 +3,8 @@
 
 """Tests for post-processing: benchmark extraction, S3 upload, and AI analysis."""
 
+import json
+import logging
 from unittest.mock import MagicMock, patch
 
 from srtctl.core.schema import (
@@ -882,13 +884,56 @@ class TestBuildPowerEnergyReport:
         mixin.runtime.log_dir = log_dir
         return mixin
 
-    def test_skips_quietly_when_no_power_telemetry_present(self, tmp_path):
+    def test_skips_quietly_when_no_power_telemetry_present(self, tmp_path, caplog):
         """No benchmark.out / no samples.csv (telemetry disabled) must not raise or write anything."""
         mixin = self._create_mixin(tmp_path)
 
-        mixin._build_power_energy_report()  # should not raise
+        with caplog.at_level(logging.DEBUG, logger="srtctl.cli.mixins.postprocess_stage"):
+            mixin._build_power_energy_report()  # should not raise
 
         assert not (tmp_path / "power_energy_report.json").exists()
+        skipped = [r for r in caplog.records if "Power energy report skipped" in r.getMessage()]
+        assert [r.levelno for r in skipped] == [logging.DEBUG]
+
+    def test_says_why_at_info_when_power_was_collected_but_no_report_could_be_built(self, tmp_path, caplog):
+        """A run with power CSVs and no report is a finding, not a non-event: the sweep log must carry the reason.
+
+        Here the benchmark died before aiperf wrote profile_export_aiperf.json
+        (as run 3090377 did), so the report has no profiling window.
+        """
+        log_dir = tmp_path
+        (log_dir / "benchmark.out").write_text(
+            "17:59:31.680 NOTICE   Phase profiling (profiling) started (runner.py:593)\n"
+        )
+        conc_dir = log_dir / "agentic" / "conc_4" / "aiperf_artifacts"
+        conc_dir.mkdir(parents=True)
+        (conc_dir / "profile_export.jsonl").write_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "benchmark_phase": "profiling",
+                        "request_start_ns": 10_000_000_000,
+                        "request_end_ns": 20_000_000_000,
+                    }
+                }
+            )
+            + "\n"
+        )
+        # ...but no profile_export_aiperf.json: aiperf never reached its summary step.
+        cpu_csv = log_dir / "power" / "cpu" / "samples.csv"
+        cpu_csv.parent.mkdir(parents=True)
+        cpu_csv.write_text("schema_version,timestamp_unix,hostname,source,sensor,socket_id,power_w,total_power_w\n")
+        mixin = self._create_mixin(log_dir)
+
+        with caplog.at_level(logging.DEBUG, logger="srtctl.cli.mixins.postprocess_stage"):
+            mixin._build_power_energy_report()
+
+        assert not (log_dir / "power_energy_report.json").exists()
+        skipped = [r for r in caplog.records if "Power energy report skipped" in r.getMessage()]
+        assert len(skipped) == 1
+        assert skipped[0].levelno == logging.INFO
+        assert "power samples present" in skipped[0].getMessage()
+        assert "profile_export_aiperf.json" in skipped[0].getMessage()
 
     def test_writes_report_json_for_a_valid_run(self, tmp_path):
         import csv
