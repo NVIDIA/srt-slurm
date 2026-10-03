@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """MkDocs hook: write ``llms.txt`` into the built site.
 
 One line per page in the ``nav`` (title, URL, first paragraph), grouped by nav section, plus the

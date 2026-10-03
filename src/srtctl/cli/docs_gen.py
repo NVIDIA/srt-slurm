@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Generated documentation artifacts.
 
 ``srtctl schema-docs`` writes every file in :func:`generated_artifacts` and ``srtctl schema-docs --check``
