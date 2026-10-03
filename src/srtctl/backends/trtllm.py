@@ -59,6 +59,7 @@ class TRTLLMBackend(Backend):
               max_batch_size: 64
     """
 
+    # Engine type discriminator.
     type: Literal["trtllm"] = "trtllm"
 
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and

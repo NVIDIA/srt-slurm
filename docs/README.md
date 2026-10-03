@@ -33,7 +33,9 @@ When you run `srtctl apply -f config.yaml`, the tool:
 The `srtctl-mcp` server has two halves. The schema tools (`schema_summary`,
 `explain_field`, `validate_config`, `preflight_config`, `resolve_config`,
 `get_config_reference`) are recipe-authoring helpers that work anywhere and never
-read host-side `srtslurm.yaml`. The job tools (`submit_job`, `dry_run`,
+read host-side `srtslurm.yaml`. `schema_summary` and `explain_field` answer from the
+schema dataclasses (the same data as [schema-reference.md](schema-reference.md) and
+`srtctl schema`), with `config-reference.md` prose added as context. The job tools (`submit_job`, `dry_run`,
 `job_status`, `job_logs`, `list_jobs`, `cancel_job`) drive `srtctl apply`, `sacct`,
 `squeue`, and `scancel` and read the job's output directory, so they only do
 anything when the server runs on a login node of the cluster, inside the checkout

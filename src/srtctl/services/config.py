@@ -108,6 +108,7 @@ class ServicePlacementConfig:
 class TcpProbe:
     """Ready when ``port`` accepts a TCP connection on the service node."""
 
+    # Port probed on the service node.
     port: int
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -121,8 +122,11 @@ class TcpProbe:
 class HttpProbe:
     """Ready when ``GET http://<node>:<port><path>`` returns ``status``."""
 
+    # Port probed on the service node.
     port: int
+    # URL path requested.
     path: str = "/health"
+    # HTTP status that counts as ready.
     status: int = 200
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -149,9 +153,13 @@ class ServiceMetricsConfig:
     (the exporters) supply theirs; a recipe writes the block for anything else.
     """
 
+    # Port the endpoint is served on.
     port: int
+    # URL path of the endpoint.
     path: str = "/metrics"
+    # `all` scrapes every node the service runs on; `first` only its first node.
     nodes: str = "all"
+    # Endpoint name in the Tachometer parquet (`<name>_<node>`); defaults to the service name.
     name: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -171,6 +179,7 @@ class ServiceMetricsConfig:
 class LogProbe:
     """Ready when the service's log file contains a line matching the regular expression ``pattern``."""
 
+    # Regular expression searched for in the service log.
     pattern: str
 
     Schema: ClassVar[type[Schema]] = Schema

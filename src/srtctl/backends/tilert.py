@@ -28,7 +28,9 @@ if TYPE_CHECKING:
 class TileRTBackend(Backend):
     """Launch TileRT's decode server with recipe-owned model and transport settings."""
 
+    # Engine type discriminator.
     type: Literal["tilert"] = "tilert"
+    # Model name the server reports to clients; unset uses the default served name.
     served_model_name: str | None = None
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
     # never written on `engine:`. The decode role's env and args are read from here.

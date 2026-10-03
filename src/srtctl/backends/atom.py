@@ -30,11 +30,14 @@ WorkerMode = Literal["prefill", "decode", "agg"]
 class AtomBackend(Backend):
     """Launch ``atom.entrypoints.openai_server`` on ROCm workers."""
 
+    # Engine type discriminator.
     type: Literal["atom"] = "atom"
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
     # never written on `engine:`. Per-role env and native ATOM CLI args are read from here.
     roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
+    # KV-transfer connector between prefill and decode workers.
     connector: Literal["mooncake"] = "mooncake"
+    # Mooncake transport; unset lets ATOM choose.
     mooncake_protocol: Literal["rdma", "tcp"] | None = None
 
     Schema: ClassVar[builtins.type[Schema]] = Schema

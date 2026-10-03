@@ -316,6 +316,7 @@ class VLLMBackend(Backend):
               # uses default connector (nixl)
     """
 
+    # Engine type discriminator.
     type: Literal["vllm"] = "vllm"
 
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and

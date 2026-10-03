@@ -19,9 +19,10 @@ description: Run srt-slurm (srtctl) inference benchmarks on a Slurm cluster. Use
 | Task | Read |
 |---|---|
 | Fresh checkout: install, `make setup`, first `srtslurm.yaml` | `docs/installation.md` (Run Setup, Configure srtslurm.yaml) |
-| Every `srtslurm.yaml` key, including `preflight`, `default_mounts`, aliases | `docs/config-reference.md` (Cluster Config Fields) |
+| Every `srtslurm.yaml` key, including `preflight`, `default_mounts`, aliases | `docs/schema-reference.md` (Cluster config, generated); `docs/config-reference.md` for alias resolution |
 | Pick a starting recipe by engine, frontend and topology | `examples/README.md` (Matrix) |
-| Any recipe field | `docs/config-reference.md`, or the MCP `explain_field` tool |
+| Any recipe field: type, default, allowed values, description | MCP `explain_field` (e.g. `roles.decode.nodes`), `docs/schema-reference.md` (generated), or `srtctl schema` (JSON Schema) |
+| How fields interact, worked examples | `docs/config-reference.md` |
 | Prefill/decode split, `nodes: colocate`, GPU fit | `docs/config-reference.md` (roles, Colocating decode on the prefill nodes) |
 | Dynamo install, `dynamo.source`, sidecar mode | `docs/config-reference.md` (dynamo, Native sidecar mode) |
 | etcd, NATS, exporters, Mooncake, declared sidecars | `docs/services.md` (Implicit Services) |

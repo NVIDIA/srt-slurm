@@ -159,28 +159,7 @@ This allows you to run `srtctl apply -f config.yaml` from anywhere without needi
 
 ### Cluster Config Fields
 
-The `srtslurm.yaml` file can contain the following fields:
-
-| Field                           | Type   | Description                                           |
-| ------------------------------- | ------ | ----------------------------------------------------- |
-| `default_account`               | string | Default SLURM account                                 |
-| `default_partition`             | string | Default SLURM partition                               |
-| `default_time_limit`            | string | Default job time limit                                |
-| `gpus_per_node`                 | int    | Default GPUs per node (applied to recipes that omit `resources.gpus_per_node`) |
-| `default_gpu_type`              | string | Default `resources.gpu_type` for recipes that omit it |
-| `network_interface`             | string | Network interface for NCCL                            |
-| `visible_devices_env`           | string | Worker GPU-subset mask; defaults to `CUDA_VISIBLE_DEVICES` |
-| `default_gpu_exporter`          | dict/null | Cluster GPU exporter; defaults to DCGM, explicit null disables it |
-| `srtctl_root`                   | string | Root directory for srtctl                             |
-| `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
-| `model_paths`                   | dict   | Model path aliases                                    |
-| `containers`                    | dict   | Container image aliases, resolved for every image key in a recipe (see below) |
-| `default_mounts`                | dict   | Cluster-wide container mounts                         |
-| `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
-| `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
-| `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
-| `preflight`                     | bool   | `false` skips the pre-submit path checks on every `apply` (default `true`) |
-| `reporting`                     | object | Status collector (`status`), log upload (`s3`) and failure analysis (`ai_analysis`); see below and [status-api-spec.md](status-api-spec.md) |
+Every field, with its type, default, allowed values, and description: [Cluster config](schema-reference.md#cluster-config) (generated from the code; `srtctl schema --cluster` prints it as JSON Schema). The notes below cover the keys whose behavior needs more than a line.
 
 **reporting.s3**: After a run, a small container on the head node uploads the log directory to `s3://<bucket>/<prefix>/<YYYY-MM-DD>/<job_id>/` (`endpoint_url` for MinIO or another S3-compatible store; credentials only through `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the submit shell, since the literal fields would land in the lockfile). Not everything is worth shipping: a benchmark run's directory is 250 MB to 2 GB on lustre, over 95% of it aiperf's per-interval scrape of the worker and DCGM `/metrics` endpoints, the same series tachometer already stores as parquet. The upload therefore follows a policy:
 
@@ -230,9 +209,7 @@ This is useful for portable recipes that you want to share across clusters or ha
 
 ## schema
 
-| Field    | Type    | Required | Description                                                                 |
-| -------- | ------- | -------- | --------------------------------------------------------------------------- |
-| `schema` | integer | Yes      | Recipe layout version. `2` is the layout this document describes and the only one that loads. A recipe without the key is the pre-2.0 layout in [legacy-v1.md](legacy-v1.md) and is rejected. |
+`schema: 2` is the layout this document describes and the only one that loads. A recipe without the key is the pre-2.0 layout in [legacy-v1.md](legacy-v1.md) and is rejected.
 
 Put the key first in the file, beside `base:` in an override file. Upgrade a recipe with `srtctl migrate -f recipe.yaml --in-place`, which preserves comments and key order and folds the legacy layout into `engine:`, `roles:`, `placement:`, `services:`, and `dynamo.source` (a directory is walked recursively). A `schema: 2` recipe that still carries a pre-2.0 key (`backend:`, `infra:`, `resources.prefill_nodes`, `dynamo.hash`, ...) is rejected too; the error names the keys and `srtctl migrate` rewrites them.
 
@@ -247,9 +224,7 @@ Two rules worth knowing: a `benchmark:` field the selected type does not read is
 
 ## name
 
-| Field  | Type   | Required | Description                                        |
-| ------ | ------ | -------- | -------------------------------------------------- |
-| `name` | string | Yes      | Job name, used for identification and log prefixes |
+Job name: the Slurm `--job-name` (unless `RUNNER_NAME` is set) and the run's label in results.
 
 ```yaml
 name: "deepseek-r1-benchmark"
@@ -268,11 +243,7 @@ model:
   precision: "fp8"          # fp8, fp4, bf16, etc.
 ```
 
-| Field       | Type   | Required | Description                                              |
-| ----------- | ------ | -------- | -------------------------------------------------------- |
-| `path`      | string | Yes      | Model path alias (from `srtslurm.yaml`) or absolute path |
-| `container` | string | Yes      | Container alias (from `srtslurm.yaml`) or `.sqsh` path   |
-| `precision` | string | Yes      | Model precision (informational: fp4, fp8, fp16, bf16)    |
+Fields: [ModelConfig](schema-reference.md#modelconfig).
 
 ---
 
@@ -324,7 +295,7 @@ engine:
   speedup_ratio: 100
 ```
 
-Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. Everything that is per role (the role's environment, its engine CLI flags, `extra_args`, `kv_events`) lives under [roles](#roles); everything else about the engine lives here. The generated tables under [Backend types](schema-reference.md#backend-types) list every engine-wide knob per engine; the ones worth knowing are:
+Valid types are `atom`, `sglang`, `tilert`, `trtllm`, `vllm`, and `mocker`. Everything that is per role (the role's environment, its engine CLI flags, `extra_args`, `kv_events`) lives under [roles](#roles); everything else about the engine lives here. The generated tables under [Engine types](schema-reference.md#engine-types) list every engine-wide knob per engine; the ones worth knowing are:
 
 | Engine | Engine-wide knobs |
 | --- | --- |
@@ -525,20 +496,7 @@ or vLLM Router. A frontend that permits mixed engines must define its own pairin
 rules; passing configuration validation does not prove KV-transfer compatibility
 between the installed engine versions.
 
-| Key | Type | Description |
-| --- | --- | --- |
-| `nodes` | int, or `colocate` | Nodes reserved for the role. `colocate` is valid on `decode` only and packs the decode workers onto the prefill nodes' free GPUs. `0` is rejected: say `colocate`. |
-| `workers` | int | Number of workers in the role |
-| `gpus` | int | GPUs per worker. Computed as `nodes * gpus_per_node / workers` when omitted; required on both roles when decode is colocated |
-| `env` | dict | Environment variables for every process of this role. Values support the per-worker `{node}` / `{node_id}` placeholders described under [environment](#environment) |
-| `srun_options` | dict | Additional options for this role's inference worker steps. Keys override the recipe's [srun_options](#srun_options) for these steps only |
-| `args` | dict | The engine's CLI flags for this role (`sglang` and `vllm` flags, the `trtllm` engine YAML, the mocker overrides). Any flag the engine accepts, kebab-case or snake_case, written as an ordinary YAML mapping. srtctl adds the topology flags itself (`disaggregation-mode`, ports, hosts, rank arguments); see [frontend](#frontend) for the keys each frontend owns |
-| `extra_args` | list[string] | TRT-LLM only: extra `trtllm-serve` CLI flags appended verbatim to the worker command (`frontend.type: trtllm_serve`). For the few options that configure the OpenAI server layer and have no engine YAML key, such as `--tool_parser` |
-| `kv_events` | bool or dict | Publish KV cache events for the Dynamo router; see below |
-| `sidecar` | bool | Run the native engine with a Dynamo sidecar; see [Native sidecar mode](#native-sidecar-mode) |
-| `critical` | bool | Whether a worker of this role exiting fails the run (default `true`); see [critical](#critical) |
-| `engine` | string or mapping | Required on every role when there is no top-level engine; forbidden when a top-level engine is set |
-| `container` | string | Optional image override; accepts cluster container aliases |
+Fields: [RoleConfig](schema-reference.md#roleconfig). `args` takes any flag the engine accepts, kebab-case or snake_case (the `trtllm` engine YAML, the mocker overrides); srtctl adds the topology flags itself (`disaggregation-mode`, ports, hosts, rank arguments), and [frontend](#frontend) lists the keys each frontend owns. `extra_args` is TRT-LLM only: `trtllm-serve` flags for the OpenAI server layer that have no engine YAML key, such as `--tool_parser`. `kv_events`, `sidecar`, and `critical` are covered below.
 
 `env` and `args` are ordinary YAML mappings. Nothing needs JSON or inline `{}` syntax. Boolean flags are `flag-name: true`.
 
@@ -642,12 +600,7 @@ resources:
   het_jobs: null            # SLURM heterogeneous job for prefill and decode; null: cluster default
 ```
 
-| Field             | Type   | Default            | Description                           |
-| ----------------- | ------ | ------------------ | ------------------------------------- |
-| `gpu_type`        | string | `default_gpu_type` | GPU type, e.g. "gb200", "gb300", "h100". Optional; inherits `default_gpu_type` from `srtslurm.yaml` when omitted. Still worth setting so the recipe is self-describing for result rollups |
-| `gpus_per_node`   | int    | cluster / 4        | GPUs per node; inherits the cluster `gpus_per_node` when omitted, else 4 |
-| `spread_workers`  | bool   | false              | Place each partial-node worker on its own node instead of packing several onto one node. The recipe must reserve enough nodes (e.g. `roles.decode.nodes` equal to `roles.decode.workers` when `gpus` is below `gpus_per_node`) |
-| `het_jobs`        | bool or null | null         | Submit prefill and decode as two SLURM heterogeneous-job components, each with its own `--segment`. `null` defers to the cluster's `use_het_jobs`; see [slurm-faq.md](slurm-faq.md) |
+Fields: [ResourceConfig](schema-reference.md#resourceconfig). `het_jobs: null` defers to the cluster's `use_het_jobs`; see [slurm-faq.md](slurm-faq.md).
 
 The total node count is the sum of every role's `nodes`, every service's `nodes` (a pool of whole nodes the service owns, see [pools.md](pools.md)), plus one for each `placement.node: dedicated` (frontend, benchmark client, the discovery plane through its services). Pools are carved after the engine roles' nodes, in declaration order. `srtctl dry-run` prints the resulting sbatch request and the node map.
 
@@ -690,11 +643,7 @@ slurm:
   partition: "batch"        # SLURM partition (overrides srtslurm.yaml)
 ```
 
-| Field        | Type   | Default            | Description               |
-| ------------ | ------ | ------------------ | ------------------------- |
-| `time_limit` | string | from srtslurm.yaml | Job time limit (HH:MM:SS) |
-| `account`    | string | from srtslurm.yaml | SLURM account             |
-| `partition`  | string | from srtslurm.yaml | SLURM partition           |
+Fields: [SlurmConfig](schema-reference.md#slurmconfig). Unset values come from `default_account`, `default_partition`, and `default_time_limit` in `srtslurm.yaml`.
 
 ---
 
@@ -748,18 +697,7 @@ frontend:
   # container_image: vllm-router
 ```
 
-| Field                       | Type | Default       | Description                         |
-| --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | `dynamo`; static routers `sglang-router`, `vllm-router`; direct (one aggregate worker binds the public port, no router process) `sglang`, `vllm`, `trtllm_serve` |
-| `placement.node`            | str  | head          | `head`, `first_decode`, or `dedicated`; see [placement](#placement) |
-| `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
-| `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
-| `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
-| `nginx_raise_ulimit`      | bool | false         | When true with nginx in use, run `ulimit -n 1048576` before nginx and emit `worker_rlimit_nofile 1048576` in generated `nginx.conf`. Off by default so restrictive clusters do not fail. Cluster `srtslurm.yaml` may set `nginx_raise_ulimit` for jobs that omit this field. |
-| `worker_selection`          | dict | null          | Dynamo worker-selection mapping. Written as `/logs/router_policy_config.yaml` and passed with `--router-policy-config`. Cannot be combined with a manually supplied policy-config argument or environment variable. |
-| `args`                      | dict | null          | CLI args for the frontend           |
-| `env`                       | dict | null          | Env vars for frontend processes     |
-| `container_image`           | str  | null          | Static-router image; falls back to `model.container` |
+Fields: [FrontendConfig](schema-reference.md#frontendconfig), [PlacementConfig](schema-reference.md#placementconfig). `worker_selection` is written to `/logs/router_policy_config.yaml` and passed with `--router-policy-config`, so it cannot be combined with a policy-config argument or environment variable of your own.
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
 
@@ -892,46 +830,15 @@ reach the log, so clients must flush their output (for Python clients, set
 `PYTHONUNBUFFERED: "1"` in their environment). Manual/serve-only jobs have no
 benchmark client to stream, and separate post-eval logs are not included.
 
-**Per-type fields.** Every type accepts the shared fields (`placement`, `colocate_with_frontend`, `stream_output`, `aiperf_package`, `aiperf_args`, and `concurrencies`, which power telemetry reads for its measurement windows whatever the type) plus the fields its runner reads:
-
-| `type` | Fields |
-| --- | --- |
-| `sa-bench` | `isl`, `osl`, `concurrencies`, `req_rate`, `random_range_ratio`, `num_prompts_mult`, `num_warmup_mult`, `dataset_name`, `dataset_path`, `custom_tokenizer`, `use_chat_template`, `reuse_http_connections`, `slow_down_sleep_time`, `slow_down_wait_time` |
-| `sglang-bench` | `isl`, `osl`, `concurrencies`, `req_rate` |
-| `gsm8k` | `num_examples`, `max_tokens`, `repeat`, `num_threads`, `num_shots`, `temperature`, `top_p`, `top_k` |
-| `mmlu`, `gpqa` | `num_examples`, `max_tokens`, `repeat`, `num_threads` |
-| `longbenchv2` | `num_examples`, `max_tokens`, `num_threads`, `max_context_length`, `categories` |
-| `router` | `isl`, `osl`, `num_requests`, `concurrency`, `prefix_ratios` |
-| `mooncake-router` | `mooncake_workload`, `ttft_threshold_ms`, `itl_threshold_ms` |
-| `trace-replay` | `concurrencies`, `ttft_threshold_ms`, `itl_threshold_ms`, `trace_file` |
-| `agentperf` | `isl`, `concurrencies`, `concurrency`, `agentperf_client_dir`, `agentperf_config`, `container_image`, `env` |
-| `custom` | `command`, `container_image`, `env` |
-| `lm-eval`, `manual` | shared fields only |
+**Per-type fields.** Every type accepts the shared fields (`placement`, `colocate_with_frontend`, `stream_output`, `aiperf_package`, `aiperf_args`, and `concurrencies`, which power telemetry reads for its measurement windows whatever the type) plus the fields its runner reads. [Benchmark types](schema-reference.md#benchmark-types), generated from the runner registry, lists them per type.
 
 A `schema: 2` recipe that sets a field its type does not use is rejected at load with the list of accepted fields. Before this, such a field was a silent no-op (`isl` on `gsm8k`, `num_shots` on `sa-bench`). Each runner declares its fields as `config_fields`; adding a field to a runner means adding it there.
 
-| Shared field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `placement.node` | string | `head` | `head`, `last_decode`, or `dedicated`; see [placement](#placement) |
-| `colocate_with_frontend` | bool | `true` | When both the frontend and the client ask for a dedicated node, share one reserved node; `false` reserves one node each |
-| `aiperf_package`, `aiperf_args` | string, list | none | AIPerf install spec and extra client flags for the AIPerf-backed runners |
-| `concurrencies` | list or `"NxM"` string | none | Concurrency levels; also the measurement windows telemetry reads |
+Types and defaults: [BenchmarkConfig](schema-reference.md#benchmarkconfig). `placement.node` is described under [placement](#placement); `colocate_with_frontend: false` reserves separate dedicated nodes for the frontend and the client.
 
 ### Available Benchmark Types
 
-| Type              | Description                                    |
-| ----------------- | ---------------------------------------------- |
-| `manual`          | No benchmark (default), manual testing mode    |
-| `custom`          | Arbitrary command with runtime endpoint metadata |
-| `sa-bench`        | Throughput/latency serving benchmark           |
-| `sglang-bench`    | SGLang bench_serving benchmark                 |
-| `mmlu`            | MMLU accuracy evaluation                       |
-| `gpqa`            | GPQA (Graduate-level science QA) evaluation    |
-| `longbenchv2`     | Long-context evaluation benchmark              |
-| `router`          | Router performance with prefix caching         |
-| `mooncake-router` | KV-aware routing with Mooncake trace           |
-| `agentperf`       | AgentPerf trajectory replay (agentperf-client) |
-| `mlperf`          | MLPerf Inference LoadGen (mlcommons/inference)  |
+The registered types, a one-line summary of each, and the keys each accepts are in [Benchmark types](schema-reference.md#benchmark-types). `manual` (the default) runs no client. MLPerf runs as a `custom` benchmark with a bundled script; see [mlperf](#mlperf).
 
 ### manual
 
@@ -1034,14 +941,6 @@ benchmark:
   reuse_http_connections: false      # Optional: Reuse HTTP connections (default: false)
 ```
 
-| Field                    | Type        | Required | Default | Description                                                   |
-| ------------------------ | ----------- | -------- | ------- | ------------------------------------------------------------- |
-| `isl`                    | int         | Yes      | -       | Input sequence length                                         |
-| `osl`                    | int         | Yes      | -       | Output sequence length                                        |
-| `concurrencies`          | list/string | Yes      | -       | Concurrency levels (list or "NxM" format)                     |
-| `req_rate`               | string/int  | No       | "inf"   | Request rate                                                  |
-| `reuse_http_connections` | bool        | No       | `false` | Reuse a process-scoped HTTP pool for the SA-Bench Dynamo adapter |
-
 **Concurrencies format**: Can be a list `[128, 256, 512]` or x-separated string `"128x256x512"`.
 
 When `reuse_http_connections` is enabled, each `benchmark_serving.py` process uses one keep-alive connection pool. Warmup and formal runs remain isolated in separate processes and therefore never share a pool. The option currently applies only to SA-Bench's Dynamo HTTP adapter.
@@ -1059,13 +958,6 @@ benchmark:
   req_rate: "inf"                    # Optional: Request rate (default: "inf")
 ```
 
-| Field           | Type        | Required | Default | Description                                |
-| --------------- | ----------- | -------- | ------- | ------------------------------------------ |
-| `isl`           | int         | Yes      | -       | Input sequence length                      |
-| `osl`           | int         | Yes      | -       | Output sequence length                     |
-| `concurrencies` | list/string | Yes      | -       | Concurrency levels (list or "NxM" format)  |
-| `req_rate`      | string/int  | No       | "inf"   | Request rate                               |
-
 **Concurrencies format**: Can be a list `[128, 256, 512]` or x-separated string `"128x256x512"`.
 
 ### mmlu
@@ -1081,12 +973,7 @@ benchmark:
   num_threads: 512                   # Optional: Concurrent threads
 ```
 
-| Field          | Type | Required | Default | Description                  |
-| -------------- | ---- | -------- | ------- | ---------------------------- |
-| `num_examples` | int  | No       | 200     | Number of examples to run    |
-| `max_tokens`   | int  | No       | 2048    | Max tokens per response      |
-| `repeat`       | int  | No       | 8       | Number of repeats            |
-| `num_threads`  | int  | No       | 512     | Concurrent threads           |
+Runner defaults when unset: `num_examples` 200, `max_tokens` 2048, `repeat` 8, `num_threads` 512.
 
 ### gpqa
 
@@ -1101,12 +988,7 @@ benchmark:
   num_threads: 128                   # Optional: Concurrent threads
 ```
 
-| Field          | Type | Required | Default | Description                  |
-| -------------- | ---- | -------- | ------- | ---------------------------- |
-| `num_examples` | int  | No       | 198     | Number of examples to run    |
-| `max_tokens`   | int  | No       | 32768   | Max tokens per response      |
-| `repeat`       | int  | No       | 8       | Number of repeats            |
-| `num_threads`  | int  | No       | 128     | Concurrent threads           |
+Runner defaults when unset: `num_examples` 198, `max_tokens` 32768, `repeat` 8, `num_threads` 128.
 
 ### longbenchv2
 
@@ -1124,13 +1006,7 @@ benchmark:
     - "single_doc_qa"
 ```
 
-| Field                | Type      | Required | Default | Description                    |
-| -------------------- | --------- | -------- | ------- | ------------------------------ |
-| `max_context_length` | int       | No       | 128000  | Max context length             |
-| `num_threads`        | int       | No       | 16      | Concurrent threads             |
-| `max_tokens`         | int       | No       | 16384   | Max tokens                     |
-| `num_examples`       | int       | No       | all     | Number of examples             |
-| `categories`         | list[str] | No       | all     | Task categories to run         |
+Runner defaults when unset: `max_context_length` 128000, `num_threads` 16, `max_tokens` 16384; every example and category.
 
 ### router
 
@@ -1146,13 +1022,7 @@ benchmark:
   prefix_ratios: [0.1, 0.3, 0.5, 0.7, 0.9]  # Optional: Prefix ratios to test
 ```
 
-| Field           | Type        | Required | Default                   | Description                |
-| --------------- | ----------- | -------- | ------------------------- | -------------------------- |
-| `isl`           | int         | No       | 14000                     | Input sequence length      |
-| `osl`           | int         | No       | 200                       | Output sequence length     |
-| `num_requests`  | int         | No       | 200                       | Number of requests         |
-| `concurrency`   | int         | No       | 20                        | Concurrency level          |
-| `prefix_ratios` | list/string | No       | "0.1 0.3 0.5 0.7 0.9"     | Prefix ratios to test      |
+Runner defaults when unset: `isl` 14000, `osl` 200, `num_requests` 200, `concurrency` 20, `prefix_ratios` "0.1 0.3 0.5 0.7 0.9".
 
 ### mooncake-router
 
@@ -1166,11 +1036,7 @@ benchmark:
   itl_threshold_ms: 25               # Optional: Goodput ITL threshold
 ```
 
-| Field               | Type   | Required | Default        | Description                               |
-| ------------------- | ------ | -------- | -------------- | ----------------------------------------- |
-| `mooncake_workload` | string | No       | "conversation" | Trace type (see options below)            |
-| `ttft_threshold_ms` | int    | No       | 2000           | Goodput TTFT threshold in ms              |
-| `itl_threshold_ms`  | int    | No       | 25             | Goodput ITL threshold in ms               |
+Runner defaults when unset: `mooncake_workload` "conversation", `ttft_threshold_ms` 2000, `itl_threshold_ms` 25.
 
 **Workload options**: `"mooncake"`, `"conversation"`, `"synthetic"`, `"toolagent"`
 
@@ -1197,14 +1063,7 @@ extra_mount:
   - "/path/on/host/workloads:/workloads"
 ```
 
-| Field                  | Type        | Required | Default | Description                                            |
-| ---------------------- | ----------- | -------- | ------- | ------------------------------------------------------ |
-| `agentperf_client_dir` | string      | Yes      | -       | Container path to an agentperf-client checkout         |
-| `agentperf_config`     | string      | Yes      | -       | Container path to the client's workload YAML           |
-| `concurrencies`        | list/string | Yes*     | -       | Levels, one client phase each; string form is x-separated (`"64x1010"`), matching other benchmark types |
-| `concurrency`          | int         | Yes*     | -       | Single level (alternative to `concurrencies`)          |
-
-*One of `concurrency` / `concurrencies` is required.
+Required: `agentperf_client_dir`, `agentperf_config`, and one of `concurrency` / `concurrencies` (the string form is x-separated, `"64x1010"`, as for the other types).
 
 Notes:
 - The first run of a job builds an isolated client runtime under `/tmp/agentperf-<jobid>` (uv env, pinned Rust toolchain, `rustcore` extension, tokenizer cache) and stages the trajectory and user-assignments datasets from shared storage to node-local `/tmp`; this preflight needs network egress from the benchmark node and adds several minutes before the first phase.
@@ -1281,16 +1140,7 @@ dynamo:
     wheel: "1.5.0.dev20260901" # a staged nightly wheel
 ```
 
-| Field                    | Type         | Default | Description                                            |
-| ------------------------ | ------------ | ------- | ------------------------------------------------------ |
-| `install`                | bool         | true    | Whether to install dynamo (set false if pre-installed) |
-| `source`                 | object       | null    | Exactly one of `git` + `rev` (optionally `patches`, `sha`), `pypi`, or `wheel`; see below |
-| `sidecar`                | bool         | false   | Job-wide sidecar mode; prefer `roles.<role>.sidecar: true` |
-| `sidecar_port`           | int          | 50051   | Base loopback gRPC port; co-located workers receive deterministic offsets |
-| `sidecar_binary`         | string/null  | null    | Optional standalone executable; null uses `python3 -m dynamo.<framework>.sidecar` |
-| `sidecar_args`           | list[string] | []      | Extra arguments passed to the sidecar launcher         |
-| `sidecar_startup_timeout` | int         | 3600    | Seconds to wait for the native gRPC endpoint (1 hour)   |
-| `sidecar_context_length` | int/null     | null    | TRT-LLM context length override                         |
+Fields: [DynamoConfig](schema-reference.md#dynamoconfig), [DynamoSourceConfig](schema-reference.md#dynamosourceconfig).
 
 | `source` key | Meaning |
 | --- | --- |
@@ -1406,29 +1256,11 @@ profiling:
     stop_step: 20
 ```
 
-| Field | Type | Required | Default | Description |
-| ----- | ---- | -------- | ------- | ----------- |
-| `type` | string | No | "none" | Profiling type: "none", "nsys", "nsys-time", or "torch" |
-| `nsys_trace` | string | No | "cuda,nvtx" | Nsight activity domains for non-TRT-LLM workers |
-| `trace_fork_before_exec` | bool | No | null | Override non-TRT-LLM child-process tracing; null enables it for Dynamo only |
-| `capture_range_end` | string | No | "stop" | Non-TRT-LLM Nsight behavior when a CUDA profiler range ends |
-| `nsys_library_paths` | list[string] | No | null | Paths prepended to the worker `LD_LIBRARY_PATH` |
-| `extra_nsys_args` | list[string] | No | null | Extra args for `nsys profile` |
-| `prefill` | object | Disaggregated | null | Prefill phase config |
-| `decode` | object | Disaggregated | null | Decode phase config |
-| `aggregated` | object | Aggregated | null | Aggregated phase config (the `agg` role) |
+Fields: [ProfilingConfig](schema-reference.md#profilingconfig). `prefill` and `decode` apply to disaggregated runs, `aggregated` to the `agg` role.
 
 ### ProfilingPhaseConfig
 
-Each phase config has:
-
-| Field | Type | Required | Default | Description |
-| ----- | ---- | -------- | ------- | ----------- |
-| `start_step` | int | No | null | Step to start profiling |
-| `stop_step` | int | No | null | Step to stop profiling |
-| `capture_scope` | string | No | "all" | Capture all physical processes or opt in to "selected" |
-| `worker_index` | int | No | 0 | Logical worker selected for iteration-based Nsight |
-| `worker_rank` | int | No | 0 | Physical process rank selected within the worker |
+Fields: [ProfilingPhaseConfig](schema-reference.md#profilingphaseconfig). `capture_scope: all` (the default) captures every physical process of the phase; `selected` opts in to only `worker_index` / `worker_rank`.
 
 ### Profiling Modes
 
@@ -1511,10 +1343,6 @@ output:
   log_dir: "./outputs/{job_id}/logs"
 ```
 
-| Field     | Type            | Default                      | Description              |
-| --------- | --------------- | ---------------------------- | ------------------------ |
-| `log_dir` | FormattablePath | "./outputs/{job_id}/logs"    | Directory for log files  |
-
 The `log_dir` supports FormattablePath templating. See [FormattablePath Template System](#formattablepath-template-system).
 
 ---
@@ -1531,12 +1359,7 @@ health_check:
   extra_fatal_log_patterns: []
 ```
 
-| Field                      | Type      | Default | Description                                                                                   |
-| -------------------------- | --------- | ------- | --------------------------------------------------------------------------------------------- |
-| `max_attempts`             | int       | 180     | Maximum health check attempts (180 = 30 minutes)                                              |
-| `interval_seconds`         | int       | 10      | Seconds between health check attempts                                                         |
-| `fatal_log_markers`        | bool      | true    | Fail the run when a worker log prints a line its engine names as fatal, even while the srun step is still running |
-| `extra_fatal_log_patterns` | list[str] | `[]`    | Additional regular expressions that fail the run the same way, matched against every new worker log line |
+Fields: [HealthCheckConfig](schema-reference.md#healthcheckconfig).
 
 **Notes**:
 
@@ -1575,13 +1398,7 @@ Tachometer scrapes all configured worker, frontend, DCGM, and node-exporter endp
 
 The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time. Historical `raw_prometheus.jsonl` artifacts remain readable by the post-processing ingest.
 
-| Field | Type | Default | Description |
-| ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable server-side metrics/traces, Nsight Systems capture, and host sampling |
-| `nsys` | object | `enabled: true` | NVTX tracing and CPU sampling of all worker processes/ranks and Dynamo frontends when observability is enabled; see [Profiling](profiling.md#observability-capture) |
-| `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
-| `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
-| `tachometer` | object | `enabled: null` | Native Tachometer collection settings; `enabled: null` follows `observability.enabled`, explicit `false` opts out |
+Fields: [ObservabilityConfig](schema-reference.md#observabilityconfig), [NsysObservabilityConfig](schema-reference.md#nsysobservabilityconfig). `tachometer.enabled: null` (the default) collects on every run, independent of `observability.enabled`; explicit `false` opts out. See [Profiling](profiling.md#observability-capture) for the nsys settings.
 
 `observability.enabled: true` also enables nsys with NVTX tracing and CPU sampling
 on every frontend and worker process/rank.
@@ -1626,22 +1443,18 @@ observability:
       port: 9256
 ```
 
+Every Tachometer field: [TachometerConfig](schema-reference.md#tachometerconfig). The ones whose behavior needs more than a line:
+
 | Tachometer field | Type | Default | Description |
 | ---------------- | ---- | ------- | ----------- |
-| `enabled` | bool/null | `null` | `null` means ON for every run (decoupled from `observability.enabled`); explicit `false` opts out |
-| `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
 | `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint; the single cadence knob. It also drives the launched DCGM exporter's `--collect-interval` (an explicit `dcgm_exporter.command` wins) and the host sampler. Values below `1000` speed up DCGM NVML sampling and are warned about at launch: 100ms sampling measured ~2% decode ITL overhead on GB300. Replaces the retired Hz-based `default_frequency` |
-| `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
 | `shutdown_grace_secs` | float | `120.0` | Time the scraper gets after SIGTERM to flush and compact `final.parquet` before it is killed; compaction scales with the data accumulated since the last periodic sync |
-| `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
-| `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
-| `extra_metadata` | dict | `{}` | Static string metadata added to every endpoint |
 | `default_exporters` | bool | `true` | Imply the built-in DCGM + node + process exporters when no explicit blocks are set. The exporters are [services](services.md#implicit-services) (`dcgm-exporter`, `node-exporter`, `process-exporter`); declaring one under `services:` by that name overrides it, and `srtctl dry-run` lists them |
 | `dcgm_exporter` | object/null | built-in | Defaults to `nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04` on port 9401; an explicit block overrides |
 | `node_exporter` | object/null | built-in | Defaults to `quay.io#prometheus/node-exporter:v1.8.2` on port 9101 with the `cpu`, `infiniband`, `meminfo`, `processes`, `stat`, `vmstat`, `pressure` and `meminfo_numa` collectors on worker nodes. Includes major faults and page-reclaim counters; retains process-state and NUMA-node identity. An explicit block overrides |
 | `process_exporter` | object/null | built-in | Defaults to the **host-native** `configs/process-exporter` binary (ncabatoff/process-exporter 0.8.7, installed by `make setup` for the compute arch, like `configs/nats-server` and `configs/etcd`) on port 9256, launched with plain `srun` (no container) on every allocated node (the `process-exporter` service, `placement.node: all`). Reads the host `/proc` and publishes per-process-group CPU seconds by mode, thread count, per-thread-name CPU and count (`-threads=true`), context switches, RSS and open fds. The passthrough filter retains metric names and labels, including summary sum/count suffixes, and attaches hostname and run metadata to raw rows. Groups (frontend, `dynamo_trtllm` / `dynamo_sglang` / `dynamo_vllm` handlers, `trtllm_engine` children, the SGLang engine processes `sglang_scheduler` / `sglang_dp_controller` / `sglang_detokenizer` matched on their retitled command lines, launcher, client, infra daemons) come from `<log_dir>/process-exporter.yml`, written at launch. If the binary is missing the leg is skipped with a warning (submit warns too). An explicit block may set `binary` (absolute, or relative to the srtctl checkout) or instead a `container_image` with `binary` unset to run it containerized; the upstream `FROM scratch` image is not used by default because pyxis/enroot on some clusters cannot start shell-less images |
 
-Every exporter block accepts `container_image`, `port`, `command` and `binary`. `binary` selects host-native launch (the executable runs directly under `srun`, `container_image` is ignored and may be `""`); without it the exporter runs from `container_image`. One of the two must be set.
+Every exporter block ([TelemetryExporterConfig](schema-reference.md#telemetryexporterconfig)) accepts `container_image`, `port`, `command` and `binary`. `binary` selects host-native launch (the executable runs directly under `srun`, `container_image` is ignored and may be `""`); without it the exporter runs from `container_image`. One of the two must be set.
 
 `make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release and installs the process-exporter binary for the same arch. The scraper and the process exporter run as native `srun` processes; the DCGM and node exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build the scraper from source instead. The process-exporter passthrough filter and node process-state/NUMA-label preservation require a scraper built from this revision or a release containing it; rebuild the scraper when using an older downloaded binary.
 
@@ -1673,17 +1486,7 @@ telemetry:
     source: auto
 ```
 
-| Field | Type | Default | Description |
-| ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable DCGM power collection |
-| `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; required when enabled |
-| `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles (shared by the DCGM and CPU legs); must be at most `3000` (replaces the retired `default_frequency`, which was seconds despite its name) |
-| `storage_subdir` | string | `power` | Output directory below the run log directory |
-| `required` | bool | `false` | Fail the benchmark when publishable DCGM power artifacts cannot be produced (CPU power is always best-effort; see below) |
-| `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout (shared by the DCGM and CPU legs) |
-| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout (shared by the DCGM and CPU legs) |
-| `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
-| `cpu_power_exporter` | object/null | `null` | Enables the independent CPU power leg; see below |
+Fields: [TelemetryConfig](schema-reference.md#telemetryconfig). `collect_interval_ms` is shared by the DCGM and CPU legs and must be at most `3000`.
 
 `telemetry` requires a `benchmark.type` of `sa-bench`, `custom`, `agentic`, `agentx`, or `manual` (a `manual` job has no load window, so like serve-only it captures the whole serve session; use it when an external load generator drives the endpoint), the benchmark client on the head node (`benchmark.placement.node: head`, the default), and no dedicated node for the discovery plane (an `etcd`/`nats` service with `placement.node: dedicated` moves the head off the batch host the collector runs on).
 
@@ -1691,10 +1494,7 @@ telemetry:
 
 `telemetry.cpu_power_exporter` is an independent, best-effort leg: its presence (not a separate `enabled` flag) turns CPU power collection on, and it can run with or without `dcgm_exporter` alongside it. On each worker node, srtctl launches a `cpu-power-exporter` process directly on the bare host (outside the model container, so it can read host power interfaces) and exposes it on `cpu_power_exporter.port`. It resolves the bundled Rust binary installed by `make setup` first, falling back to the ACPI-only Python stdlib exporter (`srtctl.core.cpu_power_exporter`) when that binary is absent. A head-node collector scrapes every worker's exporter on the shared `collect_interval_ms`/`request_timeout_seconds` cadence and writes per-sample rows plus a manifest under `<log_dir>/<storage_subdir>/cpu/` (`samples.csv`, `cpu_manifest.json`).
 
-| CPU power exporter field | Type | Default | Description |
-| ------------------------- | ---- | ------- | ----------- |
-| `port` | int | `9405` | Port the exporter listens on and the head-node collector scrapes |
-| `source` | `auto`/`acpi`/`dcgm` | `auto` | Passed through to the bundled binary's own `--source` flag; `auto` tries DCGM first and falls back to ACPI. Has no effect on the Python fallback exporter, which is ACPI-only |
+Fields: [CpuPowerExporterConfig](schema-reference.md#cpupowerexporterconfig). `source: auto` tries DCGM first and falls back to ACPI; it has no effect on the Python fallback exporter, which is ACPI-only.
 
 `samples.csv` carries one row per sensor reading, with columns `schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, total_power_w`. In ACPI mode, `total_power_w` is **not** a sum of the `cpu`- and `sysio`-kind rails; whenever a `grace`-kind channel exists for a socket, that channel alone is the node-level total (real hardware traces show `grace` at roughly 93-104W against `cpu`+`sysio` combined at roughly 53-58W for the same socket, i.e. `grace` measures the whole Grace SoC power boundary, not literally `cpu + sysio`). When no `grace` channel is present for a scrape, `total_power_w` is left blank for that row rather than guessed from the component rails; per-socket `power_w` values are always populated regardless. In DCGM mode, `total_power_w` is the single already-aggregate value DCGM reports per socket.
 
@@ -1711,10 +1511,6 @@ sweep:
   isl: [512, 1024, 2048]
   osl: [128, 256, 512]
 ```
-
-| Key | Type | Description |
-| --- | --- | --- |
-| `<parameter>` | list | One entry per sweep parameter; every combination of values becomes a job |
 
 Reference sweep parameters anywhere in the recipe with `{placeholder}` syntax. A string that is exactly one placeholder takes the value with its original type (an integer stays an integer); a placeholder inside a longer string is interpolated as text. Each job is named `<name>_<param><value>_<param><value>...` and is otherwise the recipe with `sweep:` removed.
 
@@ -1919,10 +1715,6 @@ container_mounts:
   "/shared/cache": "/cache"
 ```
 
-| Key (Host Path)     | Value (Container Path) | Description                       |
-| ------------------- | ---------------------- | --------------------------------- |
-| FormattablePath     | FormattablePath        | Host path -> Container mount path |
-
 Both keys and values support FormattablePath templating with placeholders and environment variables.
 
 ### Default Mounts
@@ -1972,10 +1764,6 @@ environment:
   CUDA_LAUNCH_BLOCKING: "1"
   NCCL_DEBUG: "INFO"
 ```
-
-| Key    | Value  | Description                      |
-| ------ | ------ | -------------------------------- |
-| string | string | Environment variable name=value  |
 
 ### Per-Worker Template Variables
 
@@ -2088,10 +1876,6 @@ Run a custom script before dynamo install and worker startup.
 setup_script: "install-custom-deps.sh"
 ```
 
-| Field          | Type   | Default | Description                              |
-| -------------- | ------ | ------- | ---------------------------------------- |
-| `setup_script` | string | null    | Script filename (must be in `configs/`)  |
-
 **Notes**:
 
 - Script must be located in the `configs/` directory.
@@ -2124,13 +1908,7 @@ host_setup:
   timeout_seconds: 300
 ```
 
-| Field             | Type            | Default | Description                                                              |
-| ----------------- | --------------- | ------- | ------------------------------------------------------------------------ |
-| `commands`        | list[string]    | `[]`    | Shell commands run in order on each node, joined with `&&`                |
-| `teardown`        | list[string]    | `[]`    | Commands run on each node after workers stop, on success and failure alike |
-| `nodes`           | `all`/`workers` | `all`   | `all` covers head, infra, and workers; `workers` only the worker nodes    |
-| `ignore_failure`  | bool            | `false` | Log a warning instead of failing the job when a node's commands fail      |
-| `timeout_seconds` | int             | `300`   | Per-node wall-clock budget, for `commands` and `teardown` alike           |
+Fields: [HostSetupConfig](schema-reference.md#hostsetupconfig).
 
 **How it runs**: the orchestrator itself runs on the host (not in a container), so it fans these out as one container-less `srun` per node, in parallel. Output lands in `<log_dir>/host_setup_<node>.out` and `<log_dir>/host_teardown_<node>.out`.
 
@@ -2162,10 +1940,7 @@ post_eval:
     - "{endpoint}"
 ```
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `passthrough_env` | list[string] | `[]` | Extra environment variable names copied from the orchestrator's environment into the eval process when set |
-| `command` | list[string] | none | Argv replacing the lm-eval runner. Placeholders: `{endpoint}` (frontend URL), `{infmax_workspace}`. Not shell-interpreted |
+Fields: [PostEvalConfig](schema-reference.md#postevalconfig). `command` may use `{endpoint}` (the frontend URL) and `{infmax_workspace}`; it is not shell-interpreted.
 
 `MODEL_NAME` (the served model name) and `EVAL_CONC` are always set by srtctl. `srtctl dry-run` prints the effective dispatch.
 
@@ -2211,25 +1986,7 @@ services:
     critical: false
 ```
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `name` | string | required | Unique; names `service_<name>.out` and the tracked process |
-| `type` | string | `generic` | Registered service kind; supplies defaults, injected env, and for the typed kinds the command |
-| `enabled` | bool | `true` | `false` drops the service; how an implied one is switched off |
-| `external` | string | none | `etcd`, `nats`, `mooncake-master`: address of an already-running instance; nothing launches |
-| `options` | dict | `{}` | Kind-specific knobs (`nats.max_payload_mb`, exporter `port` / `collect_interval_ms`, `mooncake-master.store_config`) |
-| `command` | list[string] | type default | Argv, not shell-interpreted; required for `generic` |
-| `args` | list[string] | `[]` | Appended to `command` |
-| `container` | string | type fallback, then job container | Image or `srtslurm.yaml` alias |
-| `env` | dict | `{}` | Service environment; placeholders like `{node_ip}` are substituted |
-| `placement.node` | string | type default | One instance for `head`/`infra`/`dedicated` (`dedicated` reserves a node); one per node for `prefill`/`decode`/`agg`/`workers`; every allocated node for `all` |
-| `start` | string | type default | `infra` (etcd, nats), `before_workers` (mooncake-master, mooncake-store), `after_frontend` (generic, exporters) |
-| `readiness` | object | type default | One probe (`port`/`tcp`, `http`, or `log`) plus `timeout_seconds` and `interval_seconds`; the job waits for it on every service node. Typed kinds gate on their well-known ports by default |
-| `inherit_discovery_env` | bool | `true` | Inject the Dynamo discovery env |
-| `critical` | bool | type default | A crash fails the run when true |
-| `source`, `build_command` | object, list[string] | none | Clone an immutable git rev and build once before launch; single-node placements only |
-| `build_timeout_seconds` | int | `1800` | `build_command` is killed when this runs out so a hung build cannot hold the allocation |
-| `preamble`, `cpus_per_task`, `cpu_bind`, `srun_options` | | none | Pass-through launch knobs for this service |
+Fields: [ServiceConfig](schema-reference.md#serviceconfig), [ServicePlacementConfig](schema-reference.md#serviceplacementconfig), [ServiceReadinessConfig](schema-reference.md#servicereadinessconfig). A typed kind supplies the defaults for `command`, `container`, `placement.node`, `start`, `readiness`, and `critical`: `start` is `infra` for etcd and nats, `before_workers` for mooncake-master and mooncake-store, and `after_frontend` for generic services and the exporters. `source` / `build_command` clone an immutable git rev and build it once before launch, on single-node placements only.
 
 The Mooncake KV store is a `mooncake-master` service plus Mooncake env on the roles; see [mooncake-kv-store.md](mooncake-kv-store.md). The v1 spelling of the discovery plane (`infra.etcd_nats_dedicated_node`, `infra.nats_max_payload_mb`) and of the Mooncake master (`backend.mooncake_kv_store`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
@@ -2237,17 +1994,13 @@ The Mooncake KV store is a `mooncake-master` service plus Mooncake env on the ro
 
 ## enable_config_dump
 
-Enable dumping worker configuration to JSON for debugging.
+Accepted for compatibility; srtctl does not read it.
 
 ```yaml
 enable_config_dump: true
 ```
 
-| Field               | Type | Default | Description                          |
-| ------------------- | ---- | ------- | ------------------------------------ |
-| `enable_config_dump`| bool | true    | Dump config JSON for debugging       |
-
-When enabled, worker startup commands include `--dump-config-to` which writes the resolved configuration to a JSON file.
+SGLang (except under the `sglang` direct frontend) and vLLM workers always get `--dump-config-to`, which writes the resolved engine configuration to a JSON file in the log directory.
 
 ---
 

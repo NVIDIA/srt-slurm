@@ -69,24 +69,27 @@ class MockerBackend(Backend):
               max-num-seqs: 128
     """
 
+    # Engine type discriminator.
     type: Literal["mocker"] = "mocker"
 
-    # Simulation parameters
+    # Simulation parameters, passed to the Dynamo mocker as the matching `--kebab-case` flags.
+
+    # Engine whose scheduler and KV-cache behavior the mocker simulates (`vllm`, `sglang`, ...).
     engine_type: str = "vllm"
-    speedup_ratio: float = 100.0
-    decode_speedup_ratio: float = 1.0
-    num_gpu_blocks_override: int = 16384
-    max_num_seqs: int = 256
-    max_num_batched_tokens: int = 8192
-    block_size: int | None = None
-    data_parallel_size: int = 1
-    num_workers: int = 1
-    startup_time: float | None = None
-    kv_transfer_bandwidth: float | None = None
-    kv_cache_dtype: str | None = None
-    enable_prefix_caching: bool = True
-    enable_chunked_prefill: bool = True
-    preemption_mode: str | None = None
+    speedup_ratio: float = 100.0  # How much faster than real time the simulated engine runs
+    decode_speedup_ratio: float = 1.0  # Extra speedup applied to decode steps only
+    num_gpu_blocks_override: int = 16384  # KV-cache blocks the simulated engine has
+    max_num_seqs: int = 256  # Maximum sequences scheduled per step
+    max_num_batched_tokens: int = 8192  # Maximum tokens scheduled per step
+    block_size: int | None = None  # KV-cache block size in tokens; unset uses the mocker default
+    data_parallel_size: int = 1  # Simulated data-parallel ranks per worker
+    num_workers: int = 1  # Mocker engines per worker process
+    startup_time: float | None = None  # Simulated model-load delay in seconds
+    kv_transfer_bandwidth: float | None = None  # Simulated prefill->decode KV transfer bandwidth
+    kv_cache_dtype: str | None = None  # KV-cache dtype the simulation sizes blocks for
+    enable_prefix_caching: bool = True  # Simulate prefix caching; false passes --no-enable-prefix-caching
+    enable_chunked_prefill: bool = True  # Simulate chunked prefill; false passes --no-enable-chunked-prefill
+    preemption_mode: str | None = None  # Scheduler preemption policy; unset uses the mocker default
 
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
     # never written on `engine:`. Per-role env and args (mocker CLI overrides) are read from here.

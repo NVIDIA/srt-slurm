@@ -23,6 +23,7 @@
   - [srtctl monitor](#srtctl-monitor)
   - [srtctl status-server](#srtctl-status-server)
   - [srtctl skill](#srtctl-skill)
+  - [srtctl schema and schema-docs](#srtctl-schema-and-schema-docs)
 - [Output](#output)
 - [Sweep Support](#sweep-support)
 - [Config Override Support](#config-override-support)
@@ -478,6 +479,20 @@ srtctl skill --target cursor            # .cursor/rules/srtctl.mdc
 srtctl skill --target claude --root /path/to/project
 srtctl skill --target claude --print    # to stdout
 ```
+
+### `srtctl schema` and `schema-docs`
+
+Both read the recipe and `srtslurm.yaml` dataclasses, so their keys, types, defaults, allowed values, and descriptions always match what `srtctl apply` loads.
+
+```bash
+srtctl schema                           # JSON Schema (draft 2020-12) for recipes and override files, to stdout
+srtctl schema --cluster                 # JSON Schema for srtslurm.yaml
+srtctl schema --output recipe.schema.json
+srtctl schema-docs                      # regenerate docs/schema-reference.md
+srtctl schema-docs --check              # exit 1 when the checked-in file is stale (CI)
+```
+
+The JSON Schema checks shape only (unknown keys, types, enums, required keys). Cross-field rules such as the role topology, placement, and the benchmark keys each `benchmark.type` accepts are checked by `srtctl dry-run`. Point an editor's YAML language server at the file, or validate with any JSON Schema library.
 
 ### `srtctl-mcp`
 

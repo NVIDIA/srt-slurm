@@ -49,7 +49,7 @@ def health() -> dict[str, str]:
 
 @mcp.tool()
 def schema_summary() -> dict[str, Any]:
-    """Return a compact summary of the top-level SrtConfig fields."""
+    """Return the top-level recipe keys (type, default, description), engine types, and benchmark types."""
     return schema_summary_impl()
 
 
@@ -61,7 +61,10 @@ def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict
 
 @mcp.tool()
 def explain_field(path: str) -> dict[str, Any]:
-    """Explain a config field path using schema introspection plus config-reference docs."""
+    """Explain a config field path (e.g. roles.decode.nodes): type, default, description, allowed values.
+
+    Read from the schema dataclasses; config-reference.md snippets are added as supplemental context.
+    """
     return explain_field_impl(path)
 
 

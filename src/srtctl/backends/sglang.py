@@ -121,7 +121,9 @@ class SGLangBackend(Backend):
               mem-fraction-static: 0.9
     """
 
+    # Engine type discriminator.
     type: Literal["sglang"] = "sglang"
+    # Accepted for compatibility; srtctl does not read it. Set `resources.gpu_type` instead.
     gpu_type: str | None = None
 
     # Mooncake KV store - launches mooncake_master on infra node and injects

@@ -16,22 +16,32 @@ Mooncake master block (filled from ``services:``); a recipe writes neither on
 ``engine``, so :data:`INTERNAL_FIELDS` leaves them out. The pre-2.0 layout is
 documented, for migration only, in the hand-written ``docs/legacy-v1.md``.
 
-Descriptions come from two places, in priority order: an ``Attributes:`` block
-in the class docstring (Google style), then the ``#`` comment block directly
-above a field or the trailing comment on its line.
+Descriptions come from three places, in priority order: an ``Attributes:`` block
+in the class docstring (Google style), a string literal directly below a field,
+then the ``#`` comment block directly above a field or the trailing comment on
+its line. Every authoring field must have one; ``tests/test_schema_docs.py``
+fails on a field without a description.
+
+The same walk backs :func:`json_schema` (``srtctl schema``) and the MCP
+``explain_field`` tool, so the Markdown tables, the JSON Schema, and the agent
+tooling read one source.
 """
 
 from __future__ import annotations
 
 import ast
 import inspect
+import json
 import re
 import textwrap
 import types
+from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import MISSING, Field, dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Literal, cast, get_args, get_origin, get_type_hints
+
+from marshmallow import validate
 
 from srtctl.backends import (
     AtomBackend,
@@ -43,9 +53,12 @@ from srtctl.backends import (
 )
 from srtctl.backends.sglang import MooncakeKVStoreConfig
 from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
+from srtctl.benchmarks import SHARED_BENCHMARK_FIELDS, get_runner_class, list_benchmarks
 from srtctl.core.config import LEGACY_TOP_LEVEL_KEYS
+from srtctl.core.formatting import FormattablePath
 from srtctl.core.roles import ROLE_NAMES
 from srtctl.core.schema import (
+    BenchmarkConfig,
     ClusterConfig,
     RoleConfig,
     SrtConfig,
@@ -79,6 +92,8 @@ class FieldDoc:
     type_label: str
     default: str
     description: str
+    # Every value the field accepts, from a ``Literal`` annotation or a ``OneOf`` validator; empty when open.
+    allowed_values: tuple[Any, ...] = ()
 
 
 # `engine` is polymorphic on `type`; the generated label would list every engine class.
@@ -129,30 +144,65 @@ def _dataclass_targets(annotation: Any) -> list[type]:
     return found
 
 
-def _type_label(annotation: Any) -> str:
-    """Human-readable type, with dataclasses linked to their section."""
+def _is_union(origin: Any) -> bool:
+    return origin is types.UnionType or str(origin) == "typing.Union"
+
+
+def _type_label(annotation: Any, *, markdown: bool = True) -> str:
+    """Human-readable type; in Markdown, dataclasses link to their section."""
     if annotation is None:
         return "unknown"
     if annotation is type(None):
         return "None"
     if _is_dataclass_type(annotation):
-        return f"[{annotation.__name__}](#{annotation.__name__.lower()})"
+        return f"[{annotation.__name__}](#{annotation.__name__.lower()})" if markdown else annotation.__name__
     origin = get_origin(annotation)
     if origin is None:
         return getattr(annotation, "__name__", str(annotation))
     if origin is Annotated:  # identity check: str(origin) differs across Python versions
-        return _type_label(get_args(annotation)[0])
+        return _type_label(get_args(annotation)[0], markdown=markdown)
     if origin is Literal:
-        return "one of " + ", ".join(f"`{value!r}`" for value in get_args(annotation))
-    if origin is types.UnionType or str(origin) == "typing.Union":
-        return " \\| ".join(_type_label(arg) for arg in get_args(annotation))
+        quote = "`" if markdown else ""
+        return "one of " + ", ".join(f"{quote}{value!r}{quote}" for value in get_args(annotation))
+    if _is_union(origin):
+        separator = " \\| " if markdown else " | "
+        return separator.join(_type_label(arg, markdown=markdown) for arg in get_args(annotation))
     args = get_args(annotation)
     origin_name = getattr(origin, "__name__", str(origin).replace("typing.", ""))
     if not args:
         return origin_name
     if origin is tuple and len(args) == 2 and args[1] is Ellipsis:
-        return f"tuple[{_type_label(args[0])}, ...]"
-    return f"{origin_name}[{', '.join(_type_label(arg) for arg in args)}]"
+        return f"tuple[{_type_label(args[0], markdown=markdown)}, ...]"
+    return f"{origin_name}[{', '.join(_type_label(arg, markdown=markdown) for arg in args)}]"
+
+
+def _literal_values(annotation: Any) -> tuple[Any, ...]:
+    """Values of a ``Literal`` annotation (through Annotated and Optional); empty when any member is open."""
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return _literal_values(get_args(annotation)[0])
+    if origin is Literal:
+        return get_args(annotation)
+    if _is_union(origin):
+        values: list[Any] = []
+        for member in get_args(annotation):
+            if member is type(None):
+                continue
+            member_values = _literal_values(member)
+            if not member_values:
+                return ()
+            values.extend(member_values)
+        return tuple(values)
+    return ()
+
+
+def _validator_values(item: Field) -> tuple[Any, ...]:
+    """Choices of a ``OneOf`` validator on the field's marshmallow field, if any."""
+    marshmallow_field = item.metadata.get("marshmallow_field")
+    for validator in getattr(marshmallow_field, "validators", None) or ():
+        if isinstance(validator, validate.OneOf):
+            return tuple(validator.choices)
+    return ()
 
 
 def _yaml_key(item: Field) -> str | None:
@@ -222,8 +272,17 @@ def _comment_descriptions(cls: type) -> dict[str, str]:
         return {}
     lines = source.splitlines()
     descriptions: dict[str, str] = {}
-    for node in class_node.body:
+    body = class_node.body
+    for position, node in enumerate(body):
         if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
+            continue
+        following = body[position + 1] if position + 1 < len(body) else None
+        if (
+            isinstance(following, ast.Expr)
+            and isinstance(following.value, ast.Constant)
+            and isinstance(following.value.value, str)
+        ):
+            descriptions[node.target.id] = " ".join(inspect.cleandoc(following.value.value).split())
             continue
         leading: list[str] = []
         index = node.lineno - 2
@@ -261,7 +320,7 @@ def _cell(text: str) -> str:
     return " ".join(text.split()).replace("|", "\\|")
 
 
-def field_docs(cls: Any) -> list[FieldDoc]:
+def field_docs(cls: Any, *, markdown: bool = True) -> list[FieldDoc]:
     """Field table rows for one dataclass, in declaration order."""
     hints = get_type_hints(cls, include_extras=True)
     descriptions = _descriptions(cls)
@@ -271,15 +330,33 @@ def field_docs(cls: Any) -> list[FieldDoc]:
         if key is None:
             continue
         annotation = hints.get(item.name, item.type)
+        literal_values = _literal_values(annotation)
+        validator_values = _validator_values(item)
+        type_label = _type_label(annotation, markdown=markdown)
+        if validator_values and not literal_values:
+            quote = "`" if markdown else ""
+            type_label = "one of " + ", ".join(f"{quote}{value!r}{quote}" for value in validator_values)
         rows.append(
             FieldDoc(
                 key=key,
-                type_label=_type_label(annotation),
+                type_label=type_label,
                 default=_default_label(item),
                 description=descriptions.get(item.name, ""),
+                allowed_values=literal_values or validator_values,
             )
         )
     return rows
+
+
+def field_annotations(cls: Any) -> dict[str, Any]:
+    """YAML key -> type annotation for every user-facing field of ``cls``."""
+    hints = get_type_hints(cls, include_extras=True)
+    out: dict[str, Any] = {}
+    for item in fields(cls):
+        key = _yaml_key(item)
+        if key is not None:
+            out[key] = hints.get(item.name, item.type)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -320,37 +397,35 @@ def _table_header() -> list[str]:
     return ["| Key | Type | Default | Description |", "|---|---|---|---|"]
 
 
-def _render_table(cls: type) -> list[str]:
-    """Field table for ``cls``: every field a recipe may write."""
+_SCHEMA_ROW_DESCRIPTION = (
+    "Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 "
+    "layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`)."
+)
+
+
+def authoring_rows(cls: type, *, markdown: bool = True) -> list[FieldDoc]:
+    """The rows a recipe (or ``srtslurm.yaml``) may write for ``cls``: internal fields dropped, special rows applied."""
     internal = INTERNAL_FIELDS.get(cls, frozenset())
-    out = _table_header()
-    for row in field_docs(cls):
+    if cls is SrtConfig:
+        internal = internal | INTERNAL_TOP_LEVEL
+    engine_type = _ENGINE_ROW.type_label if markdown else "str | mapping"
+    out: list[FieldDoc] = []
+    for row in field_docs(cls, markdown=markdown):
         if row.key in internal:
             continue
-        if cls is RoleConfig and row.key == "engine":
-            row = FieldDoc(row.key, _ENGINE_ROW.type_label, row.default, row.description)
-        out.append(_row(row))
+        if cls is SrtConfig and row.key == "engine":
+            row = FieldDoc(row.key, engine_type, _ENGINE_ROW.default, _ENGINE_ROW.description)
+        elif cls is RoleConfig and row.key == "engine":
+            row = FieldDoc(row.key, engine_type, row.default, row.description)
+        elif cls is SrtConfig and row.key == "schema":
+            row = FieldDoc(row.key, row.type_label, "required", _SCHEMA_ROW_DESCRIPTION, row.allowed_values)
+        out.append(row)
     return out
 
 
-def _render_top_level_table() -> list[str]:
-    """The recipe's top-level keys: the dataclass fields minus the keys the loader gate refuses."""
-    out = _table_header()
-    for row in field_docs(SrtConfig):
-        if row.key in INTERNAL_TOP_LEVEL:
-            continue
-        if row.key == "engine":
-            row = _ENGINE_ROW
-        elif row.key == "schema":
-            row = FieldDoc(
-                row.key,
-                row.type_label,
-                "required",
-                "Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 "
-                "layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`).",
-            )
-        out.append(_row(row))
-    return out
+def _render_table(cls: type) -> list[str]:
+    """Field table for ``cls``: every field a recipe may write."""
+    return _table_header() + [_row(row) for row in authoring_rows(cls)]
 
 
 def _render_authoring_surface() -> list[str]:
@@ -436,6 +511,68 @@ def _render_class_section(cls: type, level: int) -> list[str]:
     return lines
 
 
+def _section_classes() -> tuple[list[type], list[type], list[type]]:
+    """Recipe sections, engine-only nested types, and cluster-only nested types, in document order."""
+    nested = [cls for cls in _walk(SrtConfig, skip=_BACKEND_CLASSES) if cls not in INTERNAL_CLASSES]
+    engine_nested: list[type] = []
+    for _, cls in BACKEND_TYPES:
+        for extra in _walk(cls, skip=_BACKEND_CLASSES | set(nested)):
+            if extra not in engine_nested and extra not in INTERNAL_CLASSES:
+                engine_nested.append(extra)
+    cluster_nested = _walk(ClusterConfig, skip=_BACKEND_CLASSES | set(nested) | set(engine_nested))
+    return nested, engine_nested, cluster_nested
+
+
+def documented_classes() -> list[type]:
+    """Every dataclass with a table in the schema reference, in document order."""
+    nested, engine_nested, cluster_nested = _section_classes()
+    return [
+        SrtConfig,
+        *nested,
+        *(cls for _, cls in BACKEND_TYPES),
+        *engine_nested,
+        ClusterConfig,
+        *cluster_nested,
+    ]
+
+
+# ``benchmark.type: manual`` has no runner class to describe it.
+_MANUAL_BENCHMARK_SUMMARY = "No benchmark client runs; the job serves until it is cancelled or hits its time limit."
+
+
+def benchmark_types() -> list[tuple[str, str, tuple[str, ...]]]:
+    """``(type, summary, fields beyond the shared ones)`` for ``manual`` and every registered runner."""
+    rows: list[tuple[str, str, tuple[str, ...]]] = [("manual", _MANUAL_BENCHMARK_SUMMARY, ())]
+    for name in list_benchmarks():
+        runner = get_runner_class(name)
+        if runner is None:
+            continue
+        own = tuple(sorted(runner.config_fields - SHARED_BENCHMARK_FIELDS))
+        rows.append((name, _class_summary(runner), own))
+    return rows
+
+
+def _render_benchmark_types() -> list[str]:
+    lines = [
+        "#### Benchmark types",
+        "",
+        (
+            "`benchmark.type` selects a runner. Every type accepts the shared keys "
+            + ", ".join(f"`{key}`" for key in sorted(SHARED_BENCHMARK_FIELDS))
+            + " plus the keys in its row; a recipe that sets any other `benchmark` key fails to load. "
+            "Generated from the benchmark registry."
+        ),
+        "",
+        "| Type | Description | Keys beyond the shared ones |",
+        "|---|---|---|",
+    ]
+    for name, summary, own in benchmark_types():
+        keys = ", ".join(f"`{key}`" for key in own) or "none"
+        lines.append(f"| `{name}` | {_cell(summary)} | {keys} |")
+    lines.append("")
+    return lines
+
+
 def render_schema_reference() -> str:
     """Render the field-level reference for recipes and the cluster config."""
     lines: list[str] = [
@@ -451,7 +588,8 @@ def render_schema_reference() -> str:
             "docstring or the comment on the field. Nested types link to their own table. The pre-2.0 (v1) "
             "layout no longer loads; its key-by-key mapping onto this layout is in [legacy-v1.md](legacy-v1.md) "
             "and `srtctl migrate` rewrites it. For prose, examples, and semantics see "
-            "[config-reference.md](config-reference.md)."
+            "[config-reference.md](config-reference.md). The same data is available as JSON Schema from "
+            "`srtctl schema` and per field from the MCP `explain_field` tool."
         ),
         "",
         "## Recipe",
@@ -459,16 +597,17 @@ def render_schema_reference() -> str:
         "Top-level keys of a recipe YAML.",
         "",
     ]
-    lines.extend(_render_top_level_table())
+    lines.extend(_render_table(SrtConfig))
     lines.append("")
     lines.extend(_render_authoring_surface())
 
-    hidden_classes = INTERNAL_CLASSES
-    nested = [cls for cls in _walk(SrtConfig, skip=_BACKEND_CLASSES) if cls not in hidden_classes]
+    nested, engine_nested, cluster_nested = _section_classes()
     if nested:
         lines.extend(["## Recipe sections", ""])
         for cls in nested:
             lines.extend(_render_class_section(cls, level=3))
+            if cls is BenchmarkConfig:
+                lines.extend(_render_benchmark_types())
 
     lines.extend(
         [
@@ -478,7 +617,6 @@ def render_schema_reference() -> str:
             "",
         ]
     )
-    engine_nested: list[type] = []
     for type_name, cls in BACKEND_TYPES:
         lines.extend([f"### {cls.__name__}", "", f"`engine.type: {type_name}`", ""])
         summary = _class_summary(cls)
@@ -486,9 +624,6 @@ def render_schema_reference() -> str:
             lines.extend([summary, ""])
         lines.extend(_render_table(cls))
         lines.append("")
-        for extra in _walk(cls, skip=_BACKEND_CLASSES | set(nested)):
-            if extra not in engine_nested and extra not in hidden_classes:
-                engine_nested.append(extra)
     for cls in engine_nested:
         lines.extend(_render_class_section(cls, level=3))
 
@@ -502,7 +637,7 @@ def render_schema_reference() -> str:
     )
     lines.extend(_render_table(ClusterConfig))
     lines.append("")
-    for cls in _walk(ClusterConfig, skip=_BACKEND_CLASSES | set(nested) | set(engine_nested)):
+    for cls in cluster_nested:
         lines.extend(_render_class_section(cls, level=3))
 
     return "\n".join(lines).rstrip() + "\n"
@@ -518,3 +653,239 @@ def write_schema_reference(output: Path = DEFAULT_OUTPUT) -> Path:
 def schema_reference_is_current(output: Path = DEFAULT_OUTPUT) -> bool:
     """True when the checked-in file matches what the code renders."""
     return output.exists() and output.read_text(encoding="utf-8") == render_schema_reference()
+
+
+# ---------------------------------------------------------------------------
+# JSON Schema (``srtctl schema``)
+# ---------------------------------------------------------------------------
+
+JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
+_JSON_SCALARS: dict[Any, str] = {bool: "boolean", int: "integer", float: "number", str: "string"}
+_NO_DEFAULT = object()
+
+
+def _json_default(item: Field) -> Any:
+    if item.default is not MISSING:
+        value = item.default
+    elif (factory := cast(Any, item.default_factory)) in (dict, list, tuple):
+        value = factory()
+    else:
+        return _NO_DEFAULT
+    if isinstance(value, tuple):
+        value = list(value)
+    if not isinstance(value, str | int | float | bool | list | dict | type(None)):
+        return _NO_DEFAULT
+    try:
+        json.dumps(value)
+    except TypeError:
+        return _NO_DEFAULT
+    return value
+
+
+def _engine_json(defs: dict[str, Any]) -> dict[str, Any]:
+    """An engine is a type name or a mapping; a mapping without ``type`` loads as ``sglang``."""
+    options: list[dict[str, Any]] = [{"type": "string", "enum": [name for name, _ in BACKEND_TYPES]}]
+    options.extend(_json_type(cls, defs) for _, cls in BACKEND_TYPES)
+    return {"anyOf": options}
+
+
+def _json_type(annotation: Any, defs: dict[str, Any]) -> dict[str, Any]:
+    if annotation is Any or annotation is None:
+        return {}
+    if annotation is type(None):
+        return {"type": "null"}
+    if annotation in _JSON_SCALARS:
+        return {"type": _JSON_SCALARS[annotation]}
+    if annotation is FormattablePath:
+        return {"type": "string"}
+    if _is_dataclass_type(annotation):
+        name = annotation.__name__
+        if name not in defs:
+            defs[name] = {}
+            defs[name] = _object_json(annotation, defs)
+        return {"$ref": f"#/$defs/{name}"}
+    if annotation in (dict, Mapping):
+        return {"type": "object"}
+    if annotation in (list, tuple):
+        return {"type": "array"}
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin is Annotated:
+        return _json_type(args[0], defs)
+    if origin is Literal:
+        return {"enum": list(args)}
+    if _is_union(origin):
+        members = [arg for arg in args if arg is not type(None)]
+        if any(member in _BACKEND_CLASSES for member in members):
+            engine = _engine_json(defs)
+            if len(members) < len(args):
+                engine["anyOf"].append({"type": "null"})
+            return engine
+        return {"anyOf": [_json_type(arg, defs) for arg in args]}
+    if origin is dict or origin is Mapping or (isinstance(origin, type) and issubclass(origin, Mapping)):
+        out: dict[str, Any] = {"type": "object"}
+        value = _json_type(args[1], defs) if len(args) == 2 else {}
+        if value:
+            out["additionalProperties"] = value
+        return out
+    if origin in (list, tuple, set, frozenset) or (isinstance(origin, type) and issubclass(origin, Sequence)):
+        out = {"type": "array"}
+        item_type = args[0] if args else Any
+        items = _json_type(item_type, defs)
+        if items:
+            out["items"] = items
+        return out
+    return {}
+
+
+def _object_json(cls: type, defs: dict[str, Any]) -> dict[str, Any]:
+    annotations = field_annotations(cls)
+    items = {_yaml_key(item): item for item in fields(cast(Any, cls))}
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for row in authoring_rows(cls, markdown=False):
+        prop: dict[str, Any] = dict(_json_type(annotations[row.key], defs))
+        if row.allowed_values and not _literal_values(annotations[row.key]):
+            prop = {"enum": list(row.allowed_values)}
+        if row.description:
+            prop["description"] = row.description
+        if row.default == "required":
+            required.append(row.key)
+        else:
+            default = _json_default(items[row.key])
+            if default is not _NO_DEFAULT:
+                prop["default"] = default
+        properties[row.key] = prop
+    out: dict[str, Any] = {"type": "object", "additionalProperties": False, "properties": properties}
+    summary = _class_summary(cls)
+    if summary:
+        out["description"] = summary
+    if required:
+        out["required"] = required
+    return out
+
+
+def json_schema(root: type = SrtConfig) -> dict[str, Any]:
+    """JSON Schema (draft 2020-12) for a recipe (``SrtConfig``) or ``srtslurm.yaml`` (``ClusterConfig``).
+
+    Built from the same rows as the Markdown reference, so descriptions, defaults, and allowed values match.
+    It checks shape only; cross-field rules (topology, placement, benchmark keys per type) stay in
+    ``srtctl validate``.
+    """
+    defs: dict[str, Any] = {}
+    body = _object_json(root, defs)
+    if root is not SrtConfig:
+        title = "srt-slurm cluster config (srtslurm.yaml)"
+        return {"$schema": JSON_SCHEMA_DIALECT, "title": title, **body, "$defs": dict(sorted(defs.items()))}
+
+    body["properties"]["sweep"] = {
+        "type": "object",
+        "description": (
+            "Parameter sweep: each key maps to a list of values substituted into `{key}` placeholders; "
+            "`srtctl apply` submits one job per combination and drops this block from each."
+        ),
+        "additionalProperties": {"type": "array"},
+    }
+    defs["Recipe"] = body
+    defs["RecipeBase"] = {key: value for key, value in body.items() if key != "required"}
+    # An override file is `base` plus `override_*` / `zip_override_*` variants deep-merged over it. Variants
+    # are partial (and zip variants hold lists), so only `base` is checked field by field.
+    override_file = {
+        "type": "object",
+        "required": ["base"],
+        "additionalProperties": False,
+        "properties": {"schema": body["properties"]["schema"], "base": {"$ref": "#/$defs/RecipeBase"}},
+        "patternProperties": {"^(zip_)?override_": {"type": "object"}},
+    }
+    return {
+        "$schema": JSON_SCHEMA_DIALECT,
+        "title": "srt-slurm recipe",
+        "description": "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants).",
+        "if": {"type": "object", "required": ["base"]},
+        "then": override_file,
+        "else": {"$ref": "#/$defs/Recipe"},
+        "$defs": dict(sorted(defs.items())),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Field lookup (MCP ``explain_field``)
+# ---------------------------------------------------------------------------
+
+_SCHEMA_REFERENCE_PATH = "docs/schema-reference.md"
+_PATH_SPLIT = re.compile(r"\.|\[\d*\]")
+
+
+def describe_field(cls: type, row: FieldDoc) -> dict[str, Any]:
+    """One field as plain data: the same type, default, description, and values as its schema-reference row."""
+    out: dict[str, Any] = {
+        "name": row.key,
+        "type": row.type_label,
+        "default": row.default.replace("`", ""),
+        "description": row.description,
+        "allowed_values": list(row.allowed_values),
+        "defined_in": cls.__name__,
+        "reference": f"{_SCHEMA_REFERENCE_PATH}#{cls.__name__.lower()}",
+    }
+    if cls is BenchmarkConfig and row.key != "type":
+        if row.key in SHARED_BENCHMARK_FIELDS:
+            out["benchmark_types"] = "all"
+        else:
+            out["benchmark_types"] = [name for name, _, own in benchmark_types() if row.key in own]
+    return out
+
+
+def _next_candidates(annotation: Any) -> tuple[list[type], bool]:
+    """Dataclasses a path may descend into after a field, and whether a map key / list index comes first."""
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin is Annotated:
+        return _next_candidates(args[0])
+    if _is_union(origin):
+        members = [arg for arg in args if arg is not type(None)]
+        if any(member in _BACKEND_CLASSES for member in members):
+            return [cls for _, cls in BACKEND_TYPES], False
+        out: list[type] = []
+        keyed = False
+        for member in members:
+            found, member_keyed = _next_candidates(member)
+            out.extend(cls for cls in found if cls not in out)
+            keyed = keyed or member_keyed
+        return out, keyed
+    if annotation is not FormattablePath and _is_dataclass_type(annotation):
+        return [annotation], False
+    if args and (origin in (dict, list, tuple) or (isinstance(origin, type) and issubclass(origin, Mapping))):
+        element = args[1] if origin is not list and origin is not tuple and len(args) == 2 else args[0]
+        found, _ = _next_candidates(element)
+        return found, bool(found)
+    return [], False
+
+
+def resolve_field_path(path: str) -> dict[str, Any]:
+    """Resolve a dotted recipe path (``roles.decode.nodes``, ``engine.connector``, ``services[0].kind``).
+
+    Returns every segment's field description and the leaf; on failure, the first unknown segment and the
+    keys that were valid there.
+    """
+    segments = [segment for segment in _PATH_SPLIT.split(path.strip()) if segment]
+    candidates: list[type] = [SrtConfig]
+    expect_key = False
+    trail: list[dict[str, Any]] = []
+    for segment in segments:
+        matches = [
+            (cls, row) for cls in candidates for row in authoring_rows(cls, markdown=False) if row.key == segment
+        ]
+        if expect_key and not matches:
+            expect_key = False  # a role name, a mapping key, or a list index
+            continue
+        if not matches:
+            available = sorted({row.key for cls in candidates for row in authoring_rows(cls, markdown=False)})
+            return {"segments": trail, "leaf": None, "unresolved": segment, "available": available}
+        cls, row = matches[0]
+        entry = describe_field(cls, row)
+        if len(candidates) > 1 and all(candidate in _BACKEND_CLASSES for candidate in candidates):
+            entry["engine_types"] = [name for name, backend in BACKEND_TYPES if any(backend is c for c, _ in matches)]
+        trail.append(entry)
+        candidates, expect_key = _next_candidates(field_annotations(cls)[segment])
+    return {"segments": trail, "leaf": trail[-1] if trail else None, "unresolved": None, "available": []}

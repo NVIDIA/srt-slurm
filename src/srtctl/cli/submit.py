@@ -1973,6 +1973,7 @@ def main():
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
   srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
+  srtctl schema [--cluster]                      # JSON Schema for recipes (or srtslurm.yaml)
   srtctl migrate -f config.yaml --in-place       # Rewrite a pre-2.0 recipe into the current schema (dir: recursive)
   srtctl skill --target claude                   # Install the srtctl agent skill into this project
   srtctl --version                               # Version (from the git tag), commit, schema and lockfile versions
@@ -2174,6 +2175,23 @@ def main():
         help="Write the schema reference to this path instead of docs/schema-reference.md",
     )
 
+    # Machine-readable schema: srtctl schema [--cluster] [--output PATH]
+    schema_parser = subparsers.add_parser(
+        "schema",
+        help="Print the JSON Schema for recipes (or srtslurm.yaml with --cluster)",
+    )
+    schema_parser.add_argument(
+        "--cluster",
+        action="store_true",
+        help="Emit the schema for srtslurm.yaml instead of a recipe",
+    )
+    schema_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Write the JSON Schema to this path instead of stdout",
+    )
+
     # Recipe migration: srtctl migrate -f recipe.yaml [--in-place | --output PATH]
     skill_parser = subparsers.add_parser(
         "skill",
@@ -2334,6 +2352,20 @@ def main():
             sys.exit(1)
         written = write_schema_reference(output)
         console.print(f"[green]✓[/] Wrote {written}")
+        restore_console()
+        return
+
+    if args.command == "schema":
+        from srtctl.core.schema import ClusterConfig, SrtConfig
+        from srtctl.core.schema_docs import json_schema
+
+        text = json.dumps(json_schema(ClusterConfig if args.cluster else SrtConfig), indent=2) + "\n"
+        if args.output is None:
+            sys.stdout.write(text)
+        else:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(text, encoding="utf-8")
+            console.print(f"[green]✓[/] Wrote {args.output}")
         restore_console()
         return
 
