@@ -57,6 +57,28 @@ containers:
 
 `resources.gpu_type` and `gpus_per_node` are set to `h100` and `8`; change them to match the partition you submit to.
 
+## Optional GPU temperature
+
+To retain temperature with the existing power collector, add this telemetry block
+to a NVIDIA example and resolve `dcgm-exporter` to the exporter image in your
+cluster configuration:
+
+```yaml
+telemetry:
+  enabled: true
+  provider: dcgm-power
+  required: false
+  dcgm_exporter:
+    container_image: dcgm-exporter
+```
+
+The same exporter response supplies `DCGM_FI_DEV_POWER_USAGE` and optional
+`DCGM_FI_DEV_GPU_TEMP`. Samples v3 retain Celsius in `temperature_c`; an exporter
+without that metric leaves the cell empty. No extra sampler is launched.
+Temperature does not establish a valid energy measurement: that still requires
+benchmark measurement windows and power validation. Deploy v3-compatible readers
+before upgrading the collector. See [power telemetry](../docs/power-telemetry.md).
+
 ## Validation
 
 CI validates every file under `examples/`, expanding sweep and override files into their variants. Run the same check locally with:
