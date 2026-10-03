@@ -28,10 +28,12 @@ reporter.report_completed(exit_code, logs_url=s3_url)  # Final status
 ```
 
 **Status lifecycle** (status is the stage being entered, not readiness):
+```mermaid
+flowchart LR
+    submitted --> starting --> workers --> frontend --> benchmark --> finished["completed or failed"]
 ```
-submitted → starting → workers → frontend → benchmark → completed | failed
-stages: starting, head_infrastructure, preflight, workers, frontend, benchmark, cleanup
-```
+
+Stages: `starting`, `head_infrastructure`, `preflight`, `workers`, `frontend`, `benchmark`, `cleanup`.
 
 **create_job_record()** - Standalone function for job submission:
 

@@ -60,18 +60,22 @@ The container must ship the `gpu_memory_service` package. The `ai-dynamo` PyPI w
 
 Per worker and node, in this order:
 
-```
-node im-b200-c021                                        /dev/shm/srtctl-<job>/agg_0/
-                                                          +- gms_<GPU-UUID>_weights.sock
-  step service_gms_agg_0_<node>    gms service (per worker) +- gms_<GPU-UUID>_kv_cache.sock
-    python3 -m gpu_memory_service --device 0  ------------> +- failover.lock
-    (one server per GPU of the worker)                         ^          ^
-                                                                |          |
-  step agg_0_<node>                engine 0  ENGINE_ID=0 -------+  flock --+   holds the lock: serving
-    python3 -m dynamo.vllm ... --load-format gms --gms-shadow-mode                      (registered)
-                                                                |          |
-  step agg_0_<node>_e1             engine 1  ENGINE_ID=1 -------+  flock --+   waiting: parked shadow
-    python3 -m dynamo.vllm ... --load-format gms --gms-shadow-mode                      (not registered)
+```mermaid
+flowchart LR
+    subgraph node["node im-b200-c021"]
+        gms["step service_gms_agg_0_#60;node#62;<br/>gms service (per worker)<br/>python3 -m gpu_memory_service --device 0<br/>(one server per GPU of the worker)"]
+        engine0["step agg_0_#60;node#62;<br/>engine 0, ENGINE_ID=0<br/>python3 -m dynamo.vllm ... --load-format gms --gms-shadow-mode"]
+        engine1["step agg_0_#60;node#62;_e1<br/>engine 1, ENGINE_ID=1<br/>python3 -m dynamo.vllm ... --load-format gms --gms-shadow-mode"]
+    end
+    subgraph shm["/dev/shm/srtctl-#60;job#62;/agg_0/"]
+        sockets["gms_#60;GPU-UUID#62;_weights.sock<br/>gms_#60;GPU-UUID#62;_kv_cache.sock"]
+        lock["failover.lock"]
+    end
+    gms -- "binds" --> sockets
+    engine0 -- "maps weights" --> sockets
+    engine1 -- "maps weights" --> sockets
+    engine0 -- "flock: holds the lock, serving (registered)" --> lock
+    engine1 -. "flock: waiting, parked shadow (not registered)" .-> lock
 ```
 
 - **The gms service** (`service_gms_<role>_<index>_<node>`). A [service](services.md) implied by `engine.failover`, `type: gms`, `placement.per: worker`: one instance per worker on every worker node, in the `before_workers` phase, in the job container, with the worker's `CUDA_VISIBLE_DEVICES`. It starts one `gpu_memory_service` server per GPU of the worker, each binding a `weights` and a `kv_cache` socket in the worker's directory, and prints `GMS ready:` once every socket exists; the service stage waits for that line before moving on. Critical (a worker without its weight server cannot recover), stopped after the engines at cleanup (shutdown tier 1), when it removes the directory. Declare it by name to change its container or its readiness timeout.

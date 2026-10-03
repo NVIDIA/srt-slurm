@@ -11,7 +11,14 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS = REPO_ROOT / "docs"
-MKDOCS = yaml.safe_load((REPO_ROOT / "mkdocs.yml").read_text())
+
+
+class _MkdocsLoader(yaml.SafeLoader):
+    """Safe loading that leaves mkdocs.yml's ``!!python/name:`` tags (the mermaid fence formatter) unresolved."""
+
+
+_MkdocsLoader.add_multi_constructor("tag:yaml.org,2002:python/", lambda loader, suffix, node: suffix)
+MKDOCS = yaml.load((REPO_ROOT / "mkdocs.yml").read_text(), Loader=_MkdocsLoader)
 
 _spec = importlib.util.spec_from_file_location("mkdocs_llms_txt", REPO_ROOT / "tools" / "mkdocs_llms_txt.py")
 assert _spec and _spec.loader

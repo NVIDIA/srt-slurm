@@ -44,42 +44,15 @@ srtctl abstracts this complexity into a simple YAML interface while providing ex
 
 ### Architecture Overview
 
-```
-+------------------------------------------------------------------+
-|                         USER INTERFACE                            |
-|  srtctl apply -f config.yaml    |    srtctl dry-run -f config.yaml|
-+------------------------------------------------------------------+
-                                |
-                                v
-+------------------------------------------------------------------+
-|                        CLI LAYER                                  |
-|   submit.py (job submission)  |  interactive.py (TUI)            |
-+------------------------------------------------------------------+
-                                |
-                                v
-+------------------------------------------------------------------+
-|                    CONFIGURATION LAYER                            |
-|   schema.py (frozen dataclasses)  |  config.py (YAML loading)    |
-+------------------------------------------------------------------+
-                                |
-                                v
-+------------------------------------------------------------------+
-|                   ORCHESTRATION LAYER                             |
-|         SweepOrchestrator + Stage Mixins (Worker/Frontend/Bench)  |
-+------------------------------------------------------------------+
-                |               |                |
-                v               v                v
-+---------------+  +---------------+  +------------------+
-| BACKEND       |  | FRONTEND      |  | BENCHMARK        |
-| Backend       |  | Frontend      |  | BenchmarkRunner  |
-| (SGLang)      |  | (Dynamo/SGL)  |  | (SA-Bench/MMLU)  |
-+---------------+  +---------------+  +------------------+
-                                |
-                                v
-+------------------------------------------------------------------+
-|                    INFRASTRUCTURE LAYER                           |
-|   SLURM (srun)  |  Containers (Enroot)  |  NATS/etcd             |
-+------------------------------------------------------------------+
+```mermaid
+flowchart TD
+    UI["User interface<br/>srtctl apply -f config.yaml, srtctl dry-run -f config.yaml"] --> CLI["CLI layer<br/>submit.py (job submission), interactive.py (TUI)"]
+    CLI --> CFG["Configuration layer<br/>schema.py (frozen dataclasses), config.py (YAML loading)"]
+    CFG --> ORCH["Orchestration layer<br/>SweepOrchestrator + stage mixins (worker, frontend, benchmark)"]
+    ORCH --> BE["Backend<br/>Backend (SGLang, vLLM, TRT-LLM, ...)"]
+    ORCH --> FE["Frontend<br/>Frontend (Dynamo, SGLang router, ...)"]
+    ORCH --> BM["Benchmark<br/>BenchmarkRunner (SA-Bench, MMLU, ...)"]
+    BE & FE & BM --> INFRA["Infrastructure layer<br/>SLURM (srun), containers (Enroot), NATS/etcd"]
 ```
 
 ---
@@ -200,22 +173,15 @@ src/srtctl/cli/
 
 Entry point for `srtctl apply|dry-run -f config.yaml`:
 
-```
-User runs: srtctl apply -f config.yaml
-                |
-                v
-    +---------------------------+
-    | 1. Parse CLI arguments    |
-    | 2. load_config(path)      |
-    | 3. Generate sbatch script |
-    | 4. Submit via sbatch      |
-    +---------------------------+
-                |
-                v
-    +---------------------------+
-    | SLURM allocates nodes     |
-    | Runs sbatch script        |
-    +---------------------------+
+```mermaid
+sequenceDiagram
+    actor User
+    participant srtctl
+    participant SLURM
+    User->>srtctl: srtctl apply -f config.yaml
+    Note over srtctl: 1. parse CLI arguments<br/>2. load_config(path)<br/>3. generate the sbatch script
+    srtctl->>SLURM: 4. submit via sbatch
+    Note over SLURM: allocates nodes, runs the sbatch script
 ```
 
 #### do_sweep.py - SweepOrchestrator
@@ -448,77 +414,43 @@ src/srtctl/core/
 
 ### Layer Diagram
 
-```
-+------------------------------------------------------------------+
-|                          CLI LAYER                                |
-+------------------------------------------------------------------+
-| submit.py       | do_sweep.py    | interactive.py | setup_head.py|
-|                 |                |                |               |
-| - Parse args    | - Orchestrate  | - TUI mode     | - Start NATS |
-| - Load config   | - Stage mixins | - Job browser  | - Start etcd |
-| - Submit sbatch | - Run stages   |                |               |
-+------------------------------------------------------------------+
-                                |
-                                | SrtConfig, RuntimeContext
-                                v
-+------------------------------------------------------------------+
-|                      CONFIGURATION LAYER                          |
-+------------------------------------------------------------------+
-| schema.py                    | config.py        | runtime.py     |
-|                              |                  |                 |
-| - SrtConfig (frozen)         | - load_config()  | - RuntimeContext|
-| - ModelConfig (frozen)       | - YAML parsing   | - from_config() |
-| - RoleConfig / Topology      | - Cluster defaults| - Path compute |
-| - BackendConfig (polymorphic)| - Validation     |                 |
-+------------------------------------------------------------------+
-                                |
-                                | Endpoints, Processes
-                                v
-+------------------------------------------------------------------+
-|                     ORCHESTRATION LAYER                           |
-+------------------------------------------------------------------+
-| SweepOrchestrator                                                 |
-|   +-- WorkerStageMixin   (start_worker, start_all_workers)       |
-|   +-- FrontendStageMixin (start_nginx, start_frontend)           |
-|   +-- BenchmarkStageMixin (run_benchmark)                         |
-|                                                                   |
-| ProcessRegistry        | ManagedProcess     | Signal Handlers    |
-| - add_process()        | - name, popen      | - SIGTERM/SIGINT   |
-| - check_failures()     | - log_file, node   | - Graceful cleanup |
-| - cleanup()            | - terminate()      |                    |
-+------------------------------------------------------------------+
-                                |
-                                | Commands, Health Checks
-                                v
-+------------------------------------------------------------------+
-|                        BACKEND LAYER                              |
-+------------------------------------------------------------------+
-| Backend (ABC)                    | Implementations:              |
-| - get_srun_config()              | - SGLangBackend               |
-| - allocate_endpoints()           |   (per-process srun)          |
-| - endpoints_to_processes()       | - TRTLLMBackend               |
-| - build_worker_command()         |   (MPI-style srun)            |
-+------------------------------------------------------------------+
-                                |
-                                v
-+----------------------------------------------------------------------------------------------+
-|                                       FRONTEND LAYER                                         |
-+----------------------------------------------------------------------------------------------+
-| Frontend (ABC)           | DynamoFrontend| SGLangRouter  | TRTLLMServe | VLLMFrontend        |
-| - start_frontends()      | srun process  | srun process  | srun process| (no process)        |
-| - probe_ready()          | /health JSON  | /workers JSON | bare 200    | /health+models      |
-| - worker_launch          | dynamo        | direct        | direct      | direct              |
-+----------------------------------------------------------------------------------------------+
-                                |
-                                v
-+------------------------------------------------------------------+
-|                     INFRASTRUCTURE LAYER                          |
-+------------------------------------------------------------------+
-| slurm.py                 | processes.py       | health.py        |
-| - start_srun_process()   | - ManagedProcess   | - wait_for_port()|
-| - get_slurm_nodelist()   | - ProcessRegistry  | - wait_for_model()|
-| - get_hostname_ip()      | - Signal handlers  | - Health parsers |
-+------------------------------------------------------------------+
+```mermaid
+flowchart TD
+    subgraph CLI["CLI layer"]
+        submit["submit.py<br/>parse args, load config, submit sbatch"]
+        do_sweep["do_sweep.py<br/>orchestrate, run the stage mixins"]
+        interactive["interactive.py<br/>TUI mode, job browser"]
+        setup_head["setup_head.py<br/>start NATS, start etcd"]
+    end
+    subgraph CONFIG["Configuration layer"]
+        schema["schema.py<br/>SrtConfig, ModelConfig (frozen)<br/>RoleConfig / Topology<br/>BackendConfig (polymorphic)"]
+        config["config.py<br/>load_config(), YAML parsing<br/>cluster defaults, validation"]
+        runtime["runtime.py<br/>RuntimeContext.from_config()<br/>path computation"]
+    end
+    subgraph ORCH["Orchestration layer"]
+        sweep["SweepOrchestrator<br/>WorkerStageMixin: start_worker, start_all_workers<br/>FrontendStageMixin: start_nginx, start_frontend<br/>BenchmarkStageMixin: run_benchmark"]
+        registry["ProcessRegistry<br/>add_process(), check_failures(), cleanup()"]
+        managed["ManagedProcess<br/>name, popen, log_file, node, terminate()"]
+        signals["Signal handlers<br/>SIGTERM/SIGINT, graceful cleanup"]
+    end
+    subgraph BACKEND["Backend layer"]
+        backend["Backend (ABC)<br/>get_srun_config(), allocate_endpoints()<br/>endpoints_to_processes(), build_worker_command()"]
+        backend_impls["Implementations<br/>SGLangBackend (per-process srun)<br/>TRTLLMBackend (MPI-style srun)"]
+    end
+    subgraph FRONTEND["Frontend layer"]
+        frontend["Frontend (ABC)<br/>start_frontends(), probe_ready(), worker_launch"]
+        frontend_impls["DynamoFrontend: srun process, /health JSON, dynamo launch<br/>SGLangRouter: srun process, /workers JSON, direct launch<br/>TRTLLMServe: srun process, bare 200, direct launch<br/>VLLMFrontend: no process, /health + /v1/models, direct launch"]
+    end
+    subgraph INFRA["Infrastructure layer"]
+        slurm["slurm.py<br/>start_srun_process(), get_slurm_nodelist(), get_hostname_ip()"]
+        processes["processes.py<br/>ManagedProcess, ProcessRegistry, signal handlers"]
+        health["health.py<br/>wait_for_port(), wait_for_model(), health parsers"]
+    end
+    CLI -- "SrtConfig, RuntimeContext" --> CONFIG
+    CONFIG -- "Endpoints, Processes" --> ORCH
+    ORCH -- "Commands, health checks" --> BACKEND
+    BACKEND --> FRONTEND
+    FRONTEND --> INFRA
 ```
 
 ---
@@ -527,157 +459,67 @@ src/srtctl/core/
 
 ### Config Loading Flow
 
-```
-+------------+     +-------------+     +------------------+     +--------------+
-| YAML Config| --> | load_config | --> | cluster defaults | --> | SrtConfig    |
-| (schema 2) |     +-------------+     | engine defaults  |     | (frozen DC)  |
-+------------+                         | normalize        |     +--------------+
-                                       | services         |            |
-                                       +------------------+            |
-                                                                       v
-+------------+     +------------------+     +----------------+
-| SLURM Env  | --> | RuntimeContext   | <-- | SrtConfig      |
-| (job_id,   |     | .from_config()   |     |                |
-| nodelist)  |     +------------------+     +----------------+
-+------------+              |
-                            v
-               +-----------------------+
-               | RuntimeContext        |
-               | - job_id, run_name    |
-               | - nodes (head, worker)|
-               | - log_dir, model_path |
-               | - container_mounts    |
-               +-----------------------+
-                            |
-          +-----------------+-----------------+
-          |                 |                 |
-          v                 v                 v
-   +-------------+   +-------------+   +-------------+
-   | allocate_   |   | Backend.    |   | Frontend.   |
-   | endpoints() |   | build_cmd() |   | start()     |
-   +-------------+   +-------------+   +-------------+
-          |                 |                 |
-          v                 v                 v
-   +-------------+   +-------------+   +-------------+
-   | Endpoints   |   | Worker      |   | Router      |
-   | + Processes |   | Processes   |   | Processes   |
-   +-------------+   +-------------+   +-------------+
+```mermaid
+flowchart TD
+    yaml["YAML config (schema 2)"] --> load["load_config"]
+    load --> resolve["cluster defaults<br/>engine defaults<br/>normalize services"]
+    resolve --> cfg["SrtConfig (frozen dataclass)"]
+    env["SLURM env<br/>job_id, nodelist"] --> from_config["RuntimeContext.from_config()"]
+    cfg --> from_config
+    from_config --> ctx["RuntimeContext<br/>job_id, run_name<br/>nodes (head, worker)<br/>log_dir, model_path<br/>container_mounts"]
+    ctx --> alloc["allocate_endpoints()"] --> eps["Endpoints + Processes"]
+    ctx --> build["Backend.build_cmd()"] --> workers["Worker processes"]
+    ctx --> fstart["Frontend.start()"] --> routers["Router processes"]
 ```
 
 ### Job Submission Flow
 
-```
-User runs: srtctl apply -f config.yaml
-                |
-                v
-+-----------------------------+
-| cli/submit.py::main()       |
-| 1. Parse CLI args           |
-| 2. load_config(path)        |
-| 3. submit_with_orchestrator |
-+-----------------------------+
-                |
-                v
-+-----------------------------+
-| submit_with_orchestrator()  |
-| 1. generate_sbatch_script() |
-| 2. Write to temp file       |
-| 3. sbatch script_path       |
-| 4. Copy config to outputs/  |
-+-----------------------------+
-                |
-                v
-+-----------------------------+
-| SLURM allocates nodes       |
-| Runs sbatch script          |
-+-----------------------------+
-                |
-                v
-+-----------------------------+
-| job_script_minimal.j2       |
-| 1. mkdir output dirs        |
-| 2. pip install srtctl       |
-| 3. python -m srtctl.cli.do_sweep |
-+-----------------------------+
-                |
-                v
-+-----------------------------+
-| cli/do_sweep.py::main()     |
-| 1. load_config()            |
-| 2. get_slurm_job_id()       |
-| 3. RuntimeContext.from_config() |
-| 4. SweepOrchestrator(config, runtime) |
-| 5. orchestrator.run()       |
-+-----------------------------+
+```mermaid
+sequenceDiagram
+    actor User
+    participant submit as cli/submit.py
+    participant SLURM
+    participant script as job_script_minimal.j2
+    participant sweep as cli/do_sweep.py
+    User->>submit: srtctl apply -f config.yaml
+    Note over submit: main(): parse CLI args, load_config(path), submit_with_orchestrator()
+    Note over submit: submit_with_orchestrator(): generate_sbatch_script(), write it to a temp file, copy the config to outputs/
+    submit->>SLURM: sbatch script_path
+    SLURM->>script: allocate nodes, run the sbatch script
+    Note over script: mkdir output dirs, pip install srtctl
+    script->>sweep: python -m srtctl.cli.do_sweep
+    Note over sweep: main(): load_config(), get_slurm_job_id(), RuntimeContext.from_config(), SweepOrchestrator(config, runtime).run()
 ```
 
 ### Worker Startup Flow
 
-```
-SweepOrchestrator.start_all_workers()
-                |
-                v
-+------------------------------------+
-| For each Process in backend_processes: |
-|   1. Get endpoint_processes        |
-|   2. Build bash preamble           |
-|      - Custom setup script         |
-|      - Dynamo installation         |
-|   3. Build worker command          |
-|      - backend.build_worker_command()|
-|   4. Set environment variables     |
-|      - HEAD_NODE_IP                |
-|      - ETCD_ENDPOINTS              |
-|      - NATS_SERVER                 |
-|      - DYN_SYSTEM_PORT             |
-|      - CUDA_VISIBLE_DEVICES        |
-|   5. start_srun_process()          |
-|   6. Create ManagedProcess         |
-+------------------------------------+
-                |
-                v
-+------------------------------------+
-| start_srun_process()               |
-|   1. Build srun command            |
-|      --overlap                     |
-|      --nodes, --ntasks             |
-|      --nodelist                    |
-|      --output                      |
-|      --container-image             |
-|      --container-mounts            |
-|   2. Wrap in bash -c               |
-|      - Export env vars             |
-|      - Run preamble                |
-|      - Execute main command        |
-|   3. subprocess.Popen()            |
-+------------------------------------+
+```mermaid
+flowchart TD
+    start["SweepOrchestrator.start_all_workers()"] --> each
+    each["For each Process in backend_processes<br/>1. get endpoint_processes<br/>2. build the bash preamble: custom setup script, Dynamo installation<br/>3. build the worker command: backend.build_worker_command()<br/>4. set HEAD_NODE_IP, ETCD_ENDPOINTS, NATS_SERVER, DYN_SYSTEM_PORT, CUDA_VISIBLE_DEVICES<br/>5. start_srun_process()<br/>6. create a ManagedProcess"] --> srun
+    srun["start_srun_process()<br/>1. build the srun command: --overlap, --nodes, --ntasks, --nodelist, --output, --container-image, --container-mounts<br/>2. wrap it in bash -c: export env vars, run the preamble, execute the main command<br/>3. subprocess.Popen()"]
 ```
 
 ### Health Check Flow
 
-```
-SweepOrchestrator.run_benchmark()
-         |
-         v
-wait_for_model(host, port, n_prefill, n_decode, frontend_type)
-         |          counts from frontend.health_expectations(config, processes)
-         |
-         +-----> frontend.probe_ready(host, port, n_prefill, n_decode, config)
-         |              |
-         |       +------+-----------+----------------+
-         |       |                  |                |
-         |       v                  v                v
-         |  probe_json_health   probe_http_ok   probe_direct_server
-         |  (dynamo /health,    (trtllm-serve   (direct vllm, sglang:
-         |   routers /workers)   bare 200)       /health + /v1/models)
-         |       |                  |                |
-         |       v                  v                v
-         |   WorkerHealthResult (RequestException while the endpoint is down)
-         |   - ready: bool
-         |   - prefill_ready vs expected
-         |   - decode_ready vs expected
-         |
-         +<--- Loop until ready or timeout (the loop owns timing, abort, logging)
+```mermaid
+sequenceDiagram
+    participant orch as SweepOrchestrator.run_benchmark()
+    participant wait as wait_for_model()
+    participant fe as frontend.probe_ready()
+    orch->>wait: host, port, n_prefill, n_decode, frontend_type
+    Note over wait: counts from frontend.health_expectations(config, processes)
+    loop until ready or timeout (the loop owns timing, abort, logging)
+        wait->>fe: probe_ready(host, port, n_prefill, n_decode, config)
+        alt dynamo /health, routers /workers
+            Note over fe: probe_json_health
+        else trtllm-serve (bare 200)
+            Note over fe: probe_http_ok
+        else direct vllm, sglang (/health + /v1/models)
+            Note over fe: probe_direct_server
+        end
+        fe-->>wait: WorkerHealthResult (ready, prefill_ready vs expected, decode_ready vs expected), or RequestException while the endpoint is down
+    end
 ```
 
 ---
@@ -686,46 +528,23 @@ wait_for_model(host, port, n_prefill, n_decode, frontend_type)
 
 ### Physical Layout
 
-```
-+------------------------------------------------------------------+
-|                        SLURM JOB ALLOCATION                       |
-+------------------------------------------------------------------+
-|                                                                    |
-|  HEAD NODE (node0)                                                 |
-|  +------------------------------------------------------------+   |
-|  | sbatch script (HOST)                                        |   |
-|  |   -> python -m srtctl.cli.do_sweep (orchestrator)          |   |
-|  +------------------------------------------------------------+   |
-|  | srun container: setup_head.py                               |   |
-|  |   -> NATS server (:4222)                                    |   |
-|  |   -> etcd server (:2379)                                    |   |
-|  +------------------------------------------------------------+   |
-|  | srun container: nginx (if multiple frontends)               |   |
-|  |   -> Load balancer (:8000)                                  |   |
-|  +------------------------------------------------------------+   |
-|  | srun container: frontend_0                                  |   |
-|  |   -> dynamo.frontend or sglang_router (:8080)              |   |
-|  +------------------------------------------------------------+   |
-|                                                                    |
-|  WORKER NODE (node1) - Prefill                                    |
-|  +------------------------------------------------------------+   |
-|  | srun container: prefill_0                                   |   |
-|  |   -> dynamo.sglang or sglang.launch_server                 |   |
-|  |   -> GPUs 0-7 (TP=8)                                       |   |
-|  |   -> HTTP port 30000                                        |   |
-|  |   -> Bootstrap port 31000                                   |   |
-|  +------------------------------------------------------------+   |
-|                                                                    |
-|  WORKER NODE (node2) - Decode                                     |
-|  +------------------------------------------------------------+   |
-|  | srun container: decode_0 (GPUs 0-3)                         |   |
-|  |   -> HTTP port 30000                                        |   |
-|  +------------------------------------------------------------+   |
-|  | srun container: decode_1 (GPUs 4-7)                         |   |
-|  |   -> HTTP port 30001                                        |   |
-|  +------------------------------------------------------------+   |
-|                                                                    |
-+------------------------------------------------------------------+
+```mermaid
+flowchart TB
+    subgraph job["SLURM job allocation"]
+        subgraph head["Head node (node0)"]
+            sbatch["sbatch script (host)<br/>python -m srtctl.cli.do_sweep (orchestrator)"]
+            infra["srun container: setup_head.py<br/>NATS server :4222, etcd server :2379"]
+            nginx["srun container: nginx (if multiple frontends)<br/>load balancer :8000"]
+            frontend0["srun container: frontend_0<br/>dynamo.frontend or sglang_router :8080"]
+        end
+        subgraph node1["Worker node (node1): prefill"]
+            prefill0["srun container: prefill_0<br/>dynamo.sglang or sglang.launch_server<br/>GPUs 0-7 (TP=8)<br/>HTTP port 30000, bootstrap port 31000"]
+        end
+        subgraph node2["Worker node (node2): decode"]
+            decode0["srun container: decode_0 (GPUs 0-3)<br/>HTTP port 30000"]
+            decode1["srun container: decode_1 (GPUs 4-7)<br/>HTTP port 30001"]
+        end
+    end
 ```
 
 ### Port Allocation Strategy
@@ -735,56 +554,33 @@ a `PortKind` in the same module and is handed out by `NodePortAllocator.next(kin
 node, size)` once, in `endpoints_to_processes`; the value rides on `Process` and no
 consumer derives one port from another.
 
-```
-+-----------------------+--------+--------+----------+----------------------------------------+
-| PortKind              | Base   | Stride | Counter  | Bound by                               |
-+-----------------------+--------+--------+----------+----------------------------------------+
-| sys                   | 7500   | 1      | global   | every process (DYN_SYSTEM_PORT)         |
-| http                  | 6100   | 32     | per node | endpoint leaders (a router connects)    |
-| bootstrap             | 7200   | 1      | per node | prefill endpoints                       |
-| kv_events             | 5200   | 1      | global   | every process (block per local DP size) |
-| nixl                  | 5400   | 1      | global   | every process (block per DP size)       |
-| dp_rpc                | 8400   | 1      | per node | vLLM DP endpoints                       |
-| kvbm_zmq              | 5600   | 2      | global   | KVBM leaders (pub, ack = pub + 1)       |
-| sidecar_grpc          | 50051  | 1      | global   | Dynamo sidecars (base: sidecar_port)    |
-| nccl                  | 17500  | 1      | global   | SGLang servers                          |
-| dist_init             | 8300   | 1      | per node | SGLang multi-node endpoints (leader)    |
-| vllm_scan             | 20000  | 50     | global   | vLLM get_open_port() scan range         |
-| moriio_handshake      | 40000  | 1      | global   | vLLM MoRI-IO workers (peer handshake)   |
-| moriio_notify         | 41000  | 1      | global   | vLLM MoRI-IO workers (block per rank)   |
-| trtllm_dist_init      | 29500  | 1      | global   | TRT-LLM endpoints (leader's MASTER_PORT)|
-+-----------------------+--------+--------+----------+----------------------------------------+
-| Frontend public 8000, internal 8180 (behind nginx); etcd 2379, NATS 4222: fixed constants |
-+-----------------------------------------------------------------------------------------+
-```
+| PortKind | Base | Stride | Counter | Bound by |
+| --- | --- | --- | --- | --- |
+| `sys` | 7500 | 1 | global | every process (`DYN_SYSTEM_PORT`) |
+| `http` | 6100 | 32 | per node | endpoint leaders (a router connects) |
+| `bootstrap` | 7200 | 1 | per node | prefill endpoints |
+| `kv_events` | 5200 | 1 | global | every process (block per local DP size) |
+| `nixl` | 5400 | 1 | global | every process (block per DP size) |
+| `dp_rpc` | 8400 | 1 | per node | vLLM DP endpoints |
+| `kvbm_zmq` | 5600 | 2 | global | KVBM leaders (pub, ack = pub + 1) |
+| `sidecar_grpc` | 50051 | 1 | global | Dynamo sidecars (base: `sidecar_port`) |
+| `nccl` | 17500 | 1 | global | SGLang servers |
+| `dist_init` | 8300 | 1 | per node | SGLang multi-node endpoints (leader) |
+| `vllm_scan` | 20000 | 50 | global | vLLM `get_open_port()` scan range |
+| `moriio_handshake` | 40000 | 1 | global | vLLM MoRI-IO workers (peer handshake) |
+| `moriio_notify` | 41000 | 1 | global | vLLM MoRI-IO workers (block per rank) |
+| `trtllm_dist_init` | 29500 | 1 | global | TRT-LLM endpoints (leader's `MASTER_PORT`) |
+
+Fixed constants: frontend public port 8000, internal 8180 (behind nginx); etcd 2379, NATS 4222.
 
 ### Process Relationships
 
-```
-                    +------------------+
-                    |  ORCHESTRATOR    |
-                    | (do_sweep.py)    |
-                    | runs on HEAD     |
-                    +--------+---------+
-                             |
-           +-----------------+------------------+
-           |                 |                  |
-           v                 v                  v
-+----------+----+   +--------+-------+   +------+--------+
-| HEAD INFRA    |   | WORKERS        |   | FRONTENDS     |
-| - NATS        |   | - prefill_0..N |   | - router_0..N |
-| - etcd        |   | - decode_0..N  |   | - nginx (opt) |
-+---------------+   | - agg_0..N     |   +---------------+
-                    +----------------+
-                             |
-                             | NATS pub/sub
-                             | etcd registration
-                             v
-                    +----------------+
-                    | FRONTENDS      |
-                    | discover workers|
-                    | via NATS/etcd  |
-                    +----------------+
+```mermaid
+flowchart TD
+    orch["Orchestrator (do_sweep.py)<br/>runs on the head node"] --> headinfra["Head infra<br/>NATS, etcd"]
+    orch --> workers["Workers<br/>prefill_0..N, decode_0..N, agg_0..N"]
+    orch --> frontends["Frontends<br/>router_0..N, nginx (optional)"]
+    workers -- "NATS pub/sub, etcd registration" --> frontends
 ```
 
 ---
@@ -825,28 +621,13 @@ class RuntimeContext:
 
 ### Endpoint vs Process
 
-```
-+---------------+       +---------------+
-|   ENDPOINT    |       |    PROCESS    |
-+---------------+       +---------------+
-| Logical unit  |       | Physical unit |
-| May span nodes|  -->  | Runs on 1 node|
-| Has mode/index|       | Has ports     |
-+---------------+       +---------------+
+An endpoint is the logical unit: it may span nodes and has a mode and index. A process is the physical unit: it runs on one node and owns the ports. Example, a TP=16 endpoint on 8-GPU nodes:
 
-Example: TP=16 endpoint on 8-GPU nodes
-+-----------------------------------+
-| Endpoint (prefill, index=0)       |
-| - nodes: (node1, node2)           |
-| - gpu_indices: {0..7}             |
-+-----------------------------------+
-        |
-        +---> Process (node1, rank=0, leader)
-        |        - http_port: 30000
-        |        - bootstrap_port: 31000
-        |
-        +---> Process (node2, rank=1, follower)
-                 - http_port: 0 (not exposed)
+```mermaid
+flowchart LR
+    endpoint["Endpoint (prefill, index=0)<br/>nodes: (node1, node2)<br/>gpu_indices: 0-7"]
+    endpoint --> leader["Process (node1, rank=0, leader)<br/>http_port: 30000<br/>bootstrap_port: 31000"]
+    endpoint --> follower["Process (node2, rank=1, follower)<br/>http_port: 0 (not exposed)"]
 ```
 
 ### NodePortAllocator
@@ -1049,34 +830,13 @@ from . import mybench  # noqa: F401
 
 ### Import Hierarchy
 
-```
-                    +-------------+
-                    |  __init__   |
-                    +------+------+
-                           |
-         +-----------------+------------------+
-         |                 |                  |
-    +----v----+      +-----v-----+      +-----v-----+
-    |   cli   |      |   core    |      | backends  |
-    +---------+      +-----------+      +-----------+
-         |                 |                  |
-         |           +-----+-----+            |
-         |           |           |            |
-    +----v----+ +----v----+ +----v----+  +----v----+
-    | do_sweep| | schema  | | runtime |  | sglang  |
-    +---------+ +---------+ +---------+  +---------+
-         |           |           |
-    +----v----+ +----v----+ +----v----+
-    | mixins  | | config  | | topology|
-    +---------+ +---------+ +---------+
-         |           |           |
-    +----v----+ +----v----+ +----v----+
-    |frontends| | health  | |processes|
-    +---------+ +---------+ +---------+
-         |           |           |
-    +----v----+ +----v----+ +----v----+
-    |benchmrks| | slurm   | |formatting|
-    +---------+ +---------+ +---------+
+```mermaid
+flowchart TD
+    init["__init__"] --> cli & core & backends
+    cli --> do_sweep --> mixins --> frontends --> benchmarks
+    core --> schema --> config --> health --> slurm
+    core --> runtime --> topology --> processes --> formatting
+    backends --> sglang
 ```
 
 ### Circular Import Prevention
