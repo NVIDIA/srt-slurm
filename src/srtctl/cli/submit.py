@@ -57,6 +57,7 @@ from srtctl.core.git_state import (
     git_snapshot_sources_from_extra_mounts,
     write_git_state_snapshot,
 )
+from srtctl.core.launcher import get_launcher
 from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.runtime import Nodes
 from srtctl.core.schema import SrtConfig, installs_dynamo
@@ -251,6 +252,10 @@ def show_config_details(config: SrtConfig) -> None:
     environment variables (global and backend per-mode) so users can verify their
     config is correct before submitting.
     """
+    console.print(f"Launcher: {get_launcher().name}")
+    local_docker_args = get_srtslurm_setting("local_docker_args")
+    if local_docker_args:
+        console.print(f"Extra docker run args: {' '.join(local_docker_args)}", crop=False)
     visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
     console.print(f"GPU subset visibility variable: {visible_devices_env}")
     for role, spec in config.roles.items():
@@ -1205,6 +1210,14 @@ def submit_with_orchestrator(
         else:
             console.print(f"[yellow]⚠ HF model: {hf_result.message}[/]")
 
+    launcher = get_launcher()
+    launcher_problems = launcher.validate(config)
+    if launcher_problems:
+        raise ValueError(
+            f"{config.name} cannot run under launcher: {launcher.name}:\n"
+            + "\n".join(f"  - {problem}" for problem in launcher_problems)
+        )
+
     if dry_run:
         console.print()
         console.print(
@@ -1250,14 +1263,7 @@ def submit_with_orchestrator(
 
     keep_script = False
     try:
-        result = subprocess.run(
-            ["sbatch", script_path],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-        job_id = result.stdout.strip().split()[-1]
+        job_id = launcher.submit(Path(script_path))
 
         # Determine output directory
         # Priority: CLI -o flag > srtslurm.yaml output_dir > srtctl_root/outputs
@@ -1358,7 +1364,7 @@ def submit_with_orchestrator(
         log_dir = f"{job_output_dir}/logs"
         os.makedirs(log_dir, exist_ok=True)
         log = f"{log_dir}/sweep_{job_id}.log"
-        result = subprocess.run(
+        subprocess.run(
             ["touch", log],
             check=False,
         )
@@ -1366,9 +1372,16 @@ def submit_with_orchestrator(
         console.print(f"[bold green]✅ Job {job_id} submitted![/]")
         console.print(f"[dim]📁 Logs:[/] {log_dir}")
         console.print(f"[dim]📋 Monitor:[/] tail -f {log}")
-        console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
+        console.print(f"[dim]📊 Queue:[/] {launcher.status_hint(job_id)}")
 
         _print_running_summary(config, console, serve_only=serve_only)
+
+        exit_code = launcher.start(job_id, job_output_dir)
+        if exit_code is not None:
+            if exit_code != 0:
+                console.print(f"[bold red]❌ Job {job_id} exited {exit_code}[/] (see {log})")
+                raise SystemExit(exit_code)
+            console.print(f"[bold green]✅ Job {job_id} finished[/]")
 
         return job_id
 

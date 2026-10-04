@@ -54,6 +54,29 @@ reporting:
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container's open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
+### Launcher
+
+`launcher` picks where a job's processes run. `slurm` (the default) runs each process as an `srun` step inside the allocation `sbatch` hands out. `local` runs the whole job on the machine you type `srtctl apply` on, for a single GPU VM without Slurm. It needs Docker with the NVIDIA Container Toolkit (`docker run --gpus all` must work) and the binaries `make setup ARCH=x86_64` (or `aarch64`) installs:
+
+```yaml
+launcher: local
+# local_docker_args: ["--user", "1000:1000"]   # extra `docker run` arguments for every container
+```
+
+Under `launcher: local`, `srtctl apply` renders the same job script, stages `outputs/<job_id>/` the same way, and runs the script in the foreground with `SRTCTL_JOB_ID=local-<timestamp>` in place of `SLURM_JOB_ID`; its output is teed to `logs/sweep_<job_id>.log`. The orchestrator, health checks, benchmarks and postprocessing are unchanged; only the launcher underneath differs:
+
+| | `slurm` | `local` |
+|---|---|---|
+| Container launch | `srun --container-image ...` (pyxis/enroot) | `docker run --rm --gpus all --network host --ipc host -v <mounts> ...` |
+| Host command (`host_setup`, no container) | `srun` on each node | `bash` on this machine, in its own process group |
+| GPU subset per worker | `CUDA_VISIBLE_DEVICES` from the bash wrapper | same |
+| Graceful stop of a named step | `scancel --signal=TERM --full <job>.<step>` | `docker kill --signal=TERM srtctl_<job>_<step>` (or `killpg` for a host command) |
+| Node and address | the allocation's nodelist, IP on `network_interface` | this host, `127.0.0.1` |
+
+Every container sees every GPU and shares the host network, so the per-worker GPU masks and the ports `NodePortAllocator` already hands out to colocated workers keep processes apart. A sweep runs its points one after another. Ctrl+C stops the orchestrator, which stops its containers the same way it stops Slurm steps.
+
+`launcher: local` checks the recipe before running it and refuses one that needs more than this machine: more than one node, `resources.het_jobs`, a dedicated frontend, benchmark or infra node, service pools (`services[].nodes`), an engine that launches each endpoint as one multi-task MPI step (TRT-LLM), or a `model.container` / `roles.<role>.container` that is an enroot image file (`.sqsh`) rather than a Docker image name. Enroot URIs such as `nvcr.io#nvidia/x:tag` are rewritten to `nvcr.io/nvidia/x:tag`. Containers run as root unless `local_docker_args` sets `--user`, so files they write under `outputs/` are root-owned. `srtctl monitor` and the MCP job tools read Slurm and do not see local jobs.
+
 ### Running without `srtslurm.yaml`
 
 `srtslurm.yaml` is optional. A recipe can be fully self-sustaining as long as it supplies everything the cluster yaml would otherwise provide:

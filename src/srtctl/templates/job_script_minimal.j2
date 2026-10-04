@@ -82,7 +82,9 @@ set -e
 # Setup directories
 SRTCTL_SOURCE="{{ srtctl_source }}"
 OUTPUT_BASE="{{ output_base }}"
-OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
+# SRTCTL_JOB_ID is set by launcher: local, which runs this script without sbatch.
+JOB_ID="${SLURM_JOB_ID:-${SRTCTL_JOB_ID}}"
+OUTPUT_DIR="${OUTPUT_BASE}/${JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 {% if staged_config_dir %}
@@ -100,7 +102,7 @@ exec 2>&1
 echo "=========================================="
 echo "🚀 srtctl {% if serve_only %}Serve-Only{% else %}Sweep{% endif %} Orchestrator"
 echo "=========================================="
-echo "Job ID: ${SLURM_JOB_ID}"
+echo "Job ID: ${JOB_ID}"
 echo "Config: {{ config_path }}"
 echo "Nodes: ${SLURM_JOB_NUM_NODES}"
 echo "CPUs per node: ${SLURM_JOB_CPUS_PER_NODE:-unknown}"

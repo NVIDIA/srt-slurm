@@ -13,7 +13,6 @@ This module provides lifecycle management for srun processes, including:
 import logging
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -270,30 +269,10 @@ NamedProcesses = dict[str, ManagedProcess]
 
 
 def list_step_ids(job_id: str | None = None) -> dict[str, str] | None:
-    """``{step name: <job>.<step>}`` for the running steps of this job; None when Slurm cannot be asked."""
-    job_id = job_id or os.environ.get("SLURM_JOB_ID") or os.environ.get("SLURM_JOBID")
-    if not job_id or shutil.which("squeue") is None:
-        return None
-    try:
-        result = subprocess.run(
-            ["squeue", "--steps", f"--jobs={job_id}", "--noheader", "--format=%i %j"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("squeue --steps failed: %s", exc)
-        return None
-    if result.returncode != 0:
-        logger.warning("squeue --steps exited %d: %s", result.returncode, result.stderr.strip())
-        return None
-    steps: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            steps.setdefault(parts[1], parts[0])
-    return steps
+    """``{step name: step id}`` for the running named steps of this job; None when the launcher cannot be asked."""
+    from srtctl.core.launcher import get_launcher
+
+    return get_launcher().list_step_ids(job_id)
 
 
 def find_step_id(step_name: str, job_id: str | None = None) -> str | None:
@@ -305,38 +284,20 @@ def find_step_id(step_name: str, job_id: str | None = None) -> str | None:
 def signal_step(
     step_name: str, sig: str = "TERM", *, step_ids: dict[str, str] | None = None, full: bool = True
 ) -> bool:
-    """Signal the Slurm step named ``step_name``; True when delivered.
+    """Signal the task of the step named ``step_name`` through the selected launcher; True when delivered.
 
-    ``srun`` turns a SIGTERM aimed at itself into a step abort that SIGKILLs the
-    task, so a process that must flush on SIGTERM (tachometer compacting its
-    parquet, an engine shutting down cleanly) has to be signalled through Slurm:
-    ``scancel --signal=<sig> --full <job>.<step>``. ``step_ids`` is a listing from
-    ``list_step_ids`` to reuse instead of querying again. With ``full=False``,
-    only the tasks receive the signal; profiler wrappers use that to finalize
-    reports before stopping applications in a separate session.
+    Under Slurm, ``srun`` turns a SIGTERM aimed at itself into a step abort that
+    SIGKILLs the task, so a process that must flush on SIGTERM (tachometer
+    compacting its parquet, an engine shutting down cleanly) is signalled with
+    ``scancel --signal=<sig> --full <job>.<step>``; under ``launcher: local``, with
+    ``docker kill --signal``. ``step_ids`` is a listing from ``list_step_ids`` to
+    reuse instead of querying again. With ``full=False``, only the tasks receive the
+    signal; profiler wrappers use that to finalize reports before stopping
+    applications in a separate session.
     """
-    if shutil.which("scancel") is None:
-        return False  # not under Slurm (tests, the mock): the caller signals srun directly
-    step_id = step_ids.get(step_name) if step_ids is not None else find_step_id(step_name)
-    if step_id is None:
-        logger.warning("No running step named %s found; falling back to signalling srun", step_name)
-        return False
-    try:
-        result = subprocess.run(
-            ["scancel", f"--signal={sig}", *(["--full"] if full else []), step_id],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("scancel --signal=%s %s failed: %s", sig, step_id, exc)
-        return False
-    if result.returncode != 0:
-        logger.warning("scancel --signal=%s %s exited %d: %s", sig, step_id, result.returncode, result.stderr.strip())
-        return False
-    logger.info("Sent SIG%s to step %s (%s)", sig, step_id, step_name)
-    return True
+    from srtctl.core.launcher import get_launcher
+
+    return get_launcher().signal_step(step_name, sig, step_ids=step_ids, full=full)
 
 
 class ProcessRegistry:

@@ -100,6 +100,23 @@ def port_arithmetic(rel: str, tree: ast.Module) -> Iterator[Site]:
                 yield rel, ast.unparse(node)
 
 
+_LAUNCHER_NAMES = ("slurm", "local")
+
+
+def launcher_name_branches(rel: str, tree: ast.Module) -> Iterator[Site]:
+    if rel == "core/launcher.py":
+        return
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        if not any("launcher" in ast.unparse(o) for o in operands):
+            continue
+        for o in operands:
+            if isinstance(o, ast.Constant) and o.value in _LAUNCHER_NAMES:
+                yield rel, f"launcher vs {o.value!r}"
+
+
 @dataclass(frozen=True)
 class Rule:
     name: str
@@ -143,6 +160,13 @@ RULES = [
                 ("core/schema.py", "frontend.type vs 'vllm-router'"),
             }
         ),
+    ),
+    Rule(
+        "Names go in tables, never in branches (launchers)",
+        launcher_name_branches,
+        "Ask the Launcher (core/launcher.py) instead of comparing its name: add a method to the Launcher ABC "
+        "and implement it on SlurmLauncher and LocalLauncher.",
+        frozenset(),
     ),
     Rule(
         "Every listener a process opens comes from the allocator",

@@ -45,8 +45,7 @@ class TestManagedProcess:
             log_file=Path("/tmp/test.log"),
         )
 
-        # exit_code comes from popen.returncode
-        assert mock_popen.returncode == 1
+        assert mp.exit_code == 1
 
     def test_terminate_does_not_raise_when_kill_wait_times_out(self):
         """A child that survives SIGKILL must not raise out of terminate()."""
@@ -345,7 +344,7 @@ class TestTieredCleanup:
     def test_without_slurm_tools_signal_step_declines_quietly(self):
         from srtctl.core.processes import signal_step
 
-        with patch("srtctl.core.processes.shutil.which", return_value=None):
+        with patch("srtctl.core.launcher.shutil.which", return_value=None):
             assert signal_step("anything") is False
 
 
@@ -353,8 +352,8 @@ def test_profile_wrapper_uses_task_only_step_signal():
     from srtctl.core.processes import signal_step
 
     with (
-        patch("srtctl.core.processes.shutil.which", return_value="/bin/scancel"),
-        patch("srtctl.core.processes.subprocess.run", return_value=MagicMock(returncode=0)) as run,
+        patch("srtctl.core.launcher.shutil.which", return_value="/bin/scancel"),
+        patch("srtctl.core.launcher.subprocess.run", return_value=MagicMock(returncode=0)) as run,
     ):
         assert signal_step("profiled", step_ids={"profiled": "123.4"}, full=False)
     assert run.call_args.args[0] == ["scancel", "--signal=TERM", "123.4"]
