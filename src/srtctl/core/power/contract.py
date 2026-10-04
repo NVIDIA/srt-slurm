@@ -205,6 +205,11 @@ def is_finite_number(value: Any) -> TypeGuard[int | float]:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def is_valid_temperature_c(value: float) -> bool:
+    """Shared value domain; scrape and CSV readers own their distinct rejection effects."""
+    return math.isfinite(value) and -273.15 <= value < DCGM_INT32_BLANK
+
+
 def dedupe(values: list[str]) -> tuple[str, ...]:
     """First-seen-order deduplication for reason-code accumulation."""
     return tuple(dict.fromkeys(values))

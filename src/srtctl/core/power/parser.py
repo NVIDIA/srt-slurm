@@ -19,12 +19,12 @@ from dataclasses import dataclass
 from prometheus_client.parser import text_string_to_metric_families
 
 from srtctl.core.power.contract import (
-    DCGM_INT32_BLANK,
     POWER_METRIC,
     TEMPERATURE_METRIC,
     UTILIZATION_METRICS,
     Reason,
     dedupe,
+    is_valid_temperature_c,
 )
 
 _MIG_LABELS = ("GPU_I_ID", "GPU_I_PROFILE")
@@ -178,7 +178,7 @@ def _collect_temperature(
         return
     gpu_index = _parse_index(labels.get("gpu"))
     gpu_uuid = (labels.get("UUID") or "").strip()
-    if gpu_index is None or not gpu_uuid or not math.isfinite(value) or not -273.15 <= value < DCGM_INT32_BLANK:
+    if gpu_index is None or not gpu_uuid or not is_valid_temperature_c(value):
         return
     key = (gpu_index, gpu_uuid)
     if key in temperatures:
