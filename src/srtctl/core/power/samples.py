@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from srtctl.core.power.contract import (
-    DCGM_INT32_BLANK,
     SAMPLES_HEADER,
     SAMPLES_HEADER_V1,
     SAMPLES_HEADER_V2,
@@ -28,6 +27,7 @@ from srtctl.core.power.contract import (
     UTILIZATION_METRICS,
     Reason,
     dedupe,
+    is_valid_temperature_c,
 )
 
 
@@ -231,7 +231,7 @@ def _parse_row(raw: list[str], expected_version: int) -> SampleRow | None:
         temperature = None
         if expected_version == SAMPLES_SCHEMA_VERSION and raw[9]:
             temperature = float(raw[9])
-            if not math.isfinite(temperature) or not -273.15 <= temperature < DCGM_INT32_BLANK:
+            if not is_valid_temperature_c(temperature):
                 return None
     except ValueError:
         return None
