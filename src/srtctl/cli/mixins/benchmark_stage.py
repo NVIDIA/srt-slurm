@@ -36,6 +36,7 @@ from srtctl.runtime_scripts.nsys_window import finish as finish_nsys_windows
 
 _BENCHMARK_TERMINATE_TIMEOUT = 15.0
 _BENCHMARK_KILL_TIMEOUT = 10.0
+_BENCHMARK_STEP = "benchmark"
 # How often manual mode checks for failures and for terminal services finishing.
 MANUAL_POLL_SECONDS = 5.0
 
@@ -520,6 +521,7 @@ class BenchmarkStageMixin:
         bench_node = self._benchmark_node()
         proc = start_srun_process(
             command=cmd,
+            step_name=_BENCHMARK_STEP,
             nodelist=[bench_node],
             output=str(log_file),
             container_image=str(container_image),
@@ -566,6 +568,7 @@ class BenchmarkStageMixin:
             if proc.poll() is None:
                 outcome = terminate_and_reap(
                     proc,
+                    step_name=_BENCHMARK_STEP,
                     terminate_timeout=_BENCHMARK_TERMINATE_TIMEOUT,
                     kill_timeout=_BENCHMARK_KILL_TIMEOUT,
                 )

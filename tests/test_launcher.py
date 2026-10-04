@@ -147,6 +147,24 @@ class TestLocalDockerCommand:
             assert local.signal_step("tachometer", "TERM")
         assert run.call_args.args[0] == ["docker", "kill", "--signal=TERM", "srtctl_local-test_tachometer"]
 
+    def test_relaunched_step_gets_a_fresh_container_name(self, local, cluster):
+        cluster(launcher="local")
+        popen = MagicMock()
+        popen.poll.return_value = None
+        with patch("srtctl.core.launcher.subprocess.Popen", return_value=popen) as run:
+            for _ in range(2):
+                local.launch(LaunchSpec(command=["true"], container_image="img:1", step_name="benchmark"))
+        names = [call.args[0][call.args[0].index("--name") + 1] for call in run.call_args_list]
+        assert names[0] == "srtctl_local-test_benchmark"
+        assert names[1] != names[0]
+        assert local.list_step_ids() == {"benchmark": names[1]}
+
+    def test_launch_command_is_logged_at_info(self, local, cluster, caplog):
+        cluster(launcher="local")
+        with patch("srtctl.core.launcher.subprocess.Popen", return_value=MagicMock()), caplog.at_level("INFO"):
+            local.launch(LaunchSpec(command=["true"], container_image="img:1", step_name="w"))
+        assert any("local command: docker run" in r.getMessage() for r in caplog.records)
+
 
 class TestLocalHostProcesses:
     def test_host_command_runs_the_wrapper_and_writes_output(self, local, cluster, tmp_path):

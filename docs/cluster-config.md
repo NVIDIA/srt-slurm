@@ -75,6 +75,8 @@ Under `launcher: local`, `srtctl apply` renders the same job script, stages `out
 
 Every container sees every GPU and shares the host network, so the per-worker GPU masks and the ports `NodePortAllocator` already hands out to colocated workers keep processes apart. A sweep runs its points one after another. Ctrl+C stops the orchestrator, which stops its containers the same way it stops Slurm steps.
 
+[`examples/local/vllm-agg-1gpu.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/local/vllm-agg-1gpu.yaml) is a one-GPU recipe tested this way.
+
 `launcher: local` checks the recipe before running it and refuses one that needs more than this machine: more than one node, `resources.het_jobs`, a dedicated frontend, benchmark or infra node, service pools (`services[].nodes`), an engine that launches each endpoint as one multi-task MPI step (TRT-LLM), or a `model.container` / `roles.<role>.container` that is an enroot image file (`.sqsh`) rather than a Docker image name. Enroot URIs such as `nvcr.io#nvidia/x:tag` are rewritten to `nvcr.io/nvidia/x:tag`. Containers run as root unless `local_docker_args` sets `--user`, so files they write under `outputs/` are root-owned. `srtctl monitor` and the MCP job tools read Slurm and do not see local jobs.
 
 ### Running without `srtslurm.yaml`

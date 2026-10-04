@@ -110,6 +110,29 @@ class TestTerminateAndReap:
         mock_popen.terminate.assert_called_once()
         mock_popen.kill.assert_called_once()
 
+    def test_named_step_is_signalled_through_the_launcher(self):
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = None
+        mock_popen.wait.side_effect = [TimeoutExpired(cmd="bench", timeout=1), -9]
+
+        with patch("srtctl.core.processes.signal_step", return_value=True) as signal:
+            outcome = terminate_and_reap(mock_popen, terminate_timeout=0.01, kill_timeout=0.01, step_name="benchmark")
+
+        assert outcome.force_killed is True
+        assert [c.args for c in signal.call_args_list] == [("benchmark", "TERM"), ("benchmark", "KILL")]
+        mock_popen.terminate.assert_not_called()
+        mock_popen.kill.assert_not_called()
+
+    def test_unsignalled_step_falls_back_to_the_client(self):
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = None
+        mock_popen.wait.return_value = 0
+
+        with patch("srtctl.core.processes.signal_step", return_value=False):
+            terminate_and_reap(mock_popen, terminate_timeout=0.01, step_name="benchmark")
+
+        mock_popen.terminate.assert_called_once()
+
 
 class TestProcessRegistry:
     """Tests for ProcessRegistry."""

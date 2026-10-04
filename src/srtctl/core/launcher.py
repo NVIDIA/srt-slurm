@@ -393,9 +393,13 @@ class LocalLauncher(Launcher):
         return self.job_id() or "local"
 
     def _container_name(self, step_name: str | None) -> str:
+        # A relaunched step (restart, a second benchmark) gets a fresh name: the
+        # previous ``--rm`` container may not be removed yet.
         with self._lock:
             self._counter += 1
-            suffix = step_name or f"proc{self._counter}"
+            suffix = (
+                step_name if step_name and step_name not in self._steps else f"{step_name or 'proc'}{self._counter}"
+            )
         return _CONTAINER_NAME_UNSAFE.sub("_", f"srtctl_{self._job_label()}_{suffix}")
 
     @staticmethod
@@ -466,7 +470,7 @@ class LocalLauncher(Launcher):
             cmd = self.build_task_command(spec)
             if spec.srun_export_env:
                 env = {**os.environ, **spec.srun_export_env}
-        logger.debug("local command: %s", shlex.join(cmd))
+        logger.info("local command: %s", shlex.join(cmd))
 
         if spec.output:
             Path(spec.output).parent.mkdir(parents=True, exist_ok=True)

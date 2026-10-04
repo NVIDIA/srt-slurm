@@ -40,18 +40,28 @@ class TerminationOutcome:
 
 
 def terminate_and_reap(
-    popen: subprocess.Popen, *, terminate_timeout: float = 10.0, kill_timeout: float = 5.0
+    popen: subprocess.Popen,
+    *,
+    terminate_timeout: float = 10.0,
+    kill_timeout: float = 5.0,
+    step_name: str | None = None,
 ) -> TerminationOutcome:
-    """Terminate, then kill, while preserving whether SIGKILL was required."""
+    """Terminate, then kill, while preserving whether SIGKILL was required.
+
+    With ``step_name``, each signal goes to the launched task through ``signal_step``
+    (``scancel``, ``docker kill``) and falls back to signalling ``popen`` itself.
+    """
     if popen.poll() is not None:
         return TerminationOutcome(reaped=True, force_killed=False)
-    popen.terminate()
+    if not (step_name and signal_step(step_name, "TERM")):
+        popen.terminate()
     try:
         popen.wait(timeout=terminate_timeout)
         return TerminationOutcome(reaped=True, force_killed=False)
     except subprocess.TimeoutExpired:
         logger.warning("Process did not terminate, killing...")
-    popen.kill()
+    if not (step_name and signal_step(step_name, "KILL")):
+        popen.kill()
     try:
         popen.wait(timeout=kill_timeout)
         return TerminationOutcome(reaped=True, force_killed=True)
@@ -181,7 +191,7 @@ class ManagedProcess:
                 return
             except subprocess.TimeoutExpired:
                 logger.warning(
-                    "Step %s (%s) did not exit %.0fs after SIGTERM; terminating srun", self.step_name, self.name, wait
+                    "Step %s (%s) did not exit %.0fs after SIGTERM; escalating", self.step_name, self.name, wait
                 )
         outcome = terminate_and_reap(self.popen, terminate_timeout=wait, kill_timeout=5)
         if not outcome.reaped:
@@ -217,7 +227,7 @@ class ManagedProcess:
             return False
         if self._stop_escalations == 0 and self._stopped_via_step:
             logger.warning(
-                "Step %s (%s) did not exit %.0fs after SIGTERM; terminating srun",
+                "Step %s (%s) did not exit %.0fs after SIGTERM; escalating",
                 self.step_name,
                 self.name,
                 self.terminate_timeout,
@@ -246,12 +256,12 @@ class ManagedProcess:
             pass
         if self._stopped_via_step:
             logger.warning(
-                "Step %s (%s) did not exit %.0fs after SIGTERM; terminating srun",
+                "Step %s (%s) did not exit %.0fs after SIGTERM; escalating",
                 self.step_name,
                 self.name,
                 self.terminate_timeout,
             )
-            outcome = terminate_and_reap(self.popen, terminate_timeout=5, kill_timeout=5)
+            outcome = terminate_and_reap(self.popen, terminate_timeout=5, kill_timeout=5, step_name=self.step_name)
         else:
             logger.warning("Process %s did not exit %.0fs after SIGTERM, killing...", self.name, self.terminate_timeout)
             self.popen.kill()
