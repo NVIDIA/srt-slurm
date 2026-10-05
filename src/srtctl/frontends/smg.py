@@ -26,7 +26,6 @@ class SMGFrontend(StaticRouterFrontend):
     """Shepherd Model Gateway in front of any engine's direct HTTP workers."""
 
     type: ClassVar[str] = "smg"
-    required_backend: ClassVar[str | None] = None
     executable: ClassVar[tuple[str, ...]] = ("smg", "launch")
     pd_flag: ClassVar[str] = "--pd-disaggregation"
     process_name: ClassVar[str] = "smg"
