@@ -56,8 +56,6 @@ class TokenSpeedBackend(Backend):
 
     # Engine type discriminator.
     type: Literal["tokenspeed"] = "tokenspeed"
-    # The gRPC engine starts no HTTP listener, so a direct worker serves no Prometheus text.
-    native_metrics_path: ClassVar[str] = "/metrics"
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
     # never written on `engine:`. Per-role env and TokenSpeed CLI args are read from here.
     roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
