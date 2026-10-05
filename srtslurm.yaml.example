@@ -17,14 +17,19 @@ default_time_limit: "04:00:00"
 # default_gpu_exporter: null
 # Or configure your cluster's exporter once; tachometer scrapes it and
 # `telemetry: {enabled: true}` recipes measure GPU power with it (recipe
-# exporter settings still win). `power_profile` names the row in
-# srtctl.core.power.profile that says which metric and labels carry the watts:
-# `dcgm` (default) or `amd-device-metrics` for rocm/device-metrics-exporter.
+# exporter settings still win). `power` says which metric and labels carry
+# the watts; unset means DCGM. For rocm/device-metrics-exporter:
 # default_gpu_exporter:
 #   container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
 #   command: "/home/amd/tools/entrypoint.sh"   # the image entrypoint; pyxis runs the command, not ENTRYPOINT
 #   port: 5000                                  # the exporter's fixed default; it takes no port flag
-#   power_profile: amd-device-metrics
+#   power:
+#     metric: gpu_power_usage
+#     scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+#     index_label: gpu_id
+#     identity_label: serial_number
+#     utilization:
+#       gpu_util_pct: gpu_gfx_activity
 
 # Some clusters see intermittent git smart-HTTP failures negotiating HTTP/2
 # against github.com (stalls, or truncated responses git misreports as

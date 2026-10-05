@@ -284,7 +284,7 @@ DCGM power telemetry for benchmark measurement windows.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `False` | Collect GPU power over each benchmark concurrency window. |
-| `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` | GPU power exporter image, port, optional command and `power_profile`. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used. |
+| `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` | GPU power exporter image, port, optional command and `power` metrics. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used. |
 | `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles. Replaces the retired ``default_frequency``, which despite its name was a period in seconds (1000ms == the old 1.0 default). |
 | `storage_subdir` | str | `'power'` | Output directory below the run's log directory. |
 | `required` | bool | `False` | Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort. |
@@ -469,7 +469,7 @@ Configuration for a metrics exporter deployed on worker nodes.
 | `port` | int | required | Port the exporter serves `/metrics` on, on every worker node. |
 | `command` | str \| None | `None` | Command line replacing the image's default entrypoint arguments. |
 | `binary` | str \| None | `None` | Host executable to run without a container; relative paths resolve against the srtctl checkout. |
-| `power_profile` | str | `'dcgm'` | GPU power profile naming the exporter's power metric, device labels, and default `command`: `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter). |
+| `power` | [GpuPowerMetricsConfig](#gpupowermetricsconfig) \| None | `None` | Power metric and device labels for GPU power telemetry; unset means DCGM. |
 
 ### CpuPowerExporterConfig
 
@@ -593,6 +593,21 @@ S3 upload configuration for log artifacts.
 | `secret_access_key` | str \| None | `None` | AWS secret access key (falls back to AWS_SECRET_ACCESS_KEY env var) |
 | `exclude` | list[str] \| None | `None` | Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`. Set to `[]` to ship the whole directory. |
 | `archive` | list[str] \| None | `None` | Patterns (Python glob, `**` allowed) packed into one `bundle.tar.zst` uploaded next to the loose files and left out of the plain sync. Omit for the default, aiperf's per-request `profile_export.jsonl`; set to `[]` for no archive. |
+
+### GpuPowerMetricsConfig
+
+Where a GPU exporter's `/metrics` body carries each GPU's watts.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `metric` | str | required | Prometheus metric carrying each GPU's power draw in watts. |
+| `scope` | str | required | What the watts measure, recorded in the power manifest as `power_scope`. |
+| `index_label` | str | required | Label carrying the node-local GPU index srt-slurm allocates by. |
+| `identity_label` | str | required | Label that is stable for one physical GPU across the run; fills `gpu_uuid`. |
+| `utilization` | dict[str, str] | `{}` | Optional utilization riders: artifact column (`gpu_util_pct`, `sm_active`) to exporter metric. |
+| `instance_labels` | list[str] | `[]` | Labels marking logical sub-device samples (MIG instances, partitions); such samples are dropped. |
+| `tachometer_filter` | str | `'passthrough'` | Filter tachometer applies when it also scrapes this exporter. |
+| `tachometer_gpu_metadata` | bool | `False` | Attach per-GPU worker labels in tachometer (needs DCGM-style `gpu` labels). |
 
 ### TcpProbe
 

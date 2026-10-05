@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Strict, profile-driven exporter power parsing.
+"""Strict, mapping-driven exporter power parsing.
 
-The profile's power metric is mandatory and decides which GPUs produce a
-reading. The profile's utilization metrics are optional riders: they attach to a
+The mapping's power metric is mandatory and decides which GPUs produce a
+reading. The mapping's utilization metrics are optional riders: they attach to a
 GPU's power reading when present and valid, and are dropped silently otherwise.
-Device identity comes from the profile's index and identity labels; any
+Device identity comes from the mapping's index and identity labels; any
 exporter hostname label is deliberately ignored because the collector already
-knows which allocated node it polled. Samples carrying one of the profile's
+knows which allocated node it polled. Samples carrying one of the mapping's
 instance labels (MIG instances, partitions) are unsupported and dropped.
 """
 
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from prometheus_client.parser import text_string_to_metric_families
 
 from srtctl.core.power.contract import Reason, dedupe
-from srtctl.core.power.profile import DEFAULT_POWER_PROFILE, PowerMetricProfile
+from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class ParsedScrape:
     reason_codes: tuple[str, ...] = ()
 
 
-def parse_power_scrape(text: str, profile: PowerMetricProfile = DEFAULT_POWER_PROFILE) -> ParsedScrape:
+def parse_power_scrape(text: str, mapping: PowerMetricMapping = DCGM_POWER_MAPPING) -> ParsedScrape:
     """Parse one exporter ``/metrics`` body into publishable power readings."""
     reasons: list[str] = []
     try:
@@ -57,16 +57,16 @@ def parse_power_scrape(text: str, profile: PowerMetricProfile = DEFAULT_POWER_PR
     power_by_index: dict[int, tuple[str, float]] = {}
     duplicated_power: set[int] = set()
     saw_power_sample = False
-    utilization_by_metric = {metric.metric: metric for metric in profile.utilization_metrics}
+    utilization_by_metric = {metric.metric: metric for metric in mapping.utilization_metrics}
     # column -> gpu_index -> value; a duplicate poisons that (column, gpu) pair.
-    utilization: dict[str, dict[int, float]] = {metric.column: {} for metric in profile.utilization_metrics}
-    duplicated_utilization: dict[str, set[int]] = {metric.column: set() for metric in profile.utilization_metrics}
+    utilization: dict[str, dict[int, float]] = {metric.column: {} for metric in mapping.utilization_metrics}
+    duplicated_utilization: dict[str, set[int]] = {metric.column: set() for metric in mapping.utilization_metrics}
 
     for family in families:
         for sample in family.samples:
-            if sample.name == profile.power_metric:
+            if sample.name == mapping.power_metric:
                 saw_power_sample = True
-                _collect_power(sample.labels, sample.value, power_by_index, duplicated_power, reasons, profile)
+                _collect_power(sample.labels, sample.value, power_by_index, duplicated_power, reasons, mapping)
                 continue
             spec = utilization_by_metric.get(sample.name)
             if spec is None:
@@ -77,7 +77,7 @@ def parse_power_scrape(text: str, profile: PowerMetricProfile = DEFAULT_POWER_PR
                 spec.max_value,
                 utilization[spec.column],
                 duplicated_utilization[spec.column],
-                profile,
+                mapping,
             )
 
     if duplicated_power:
@@ -106,18 +106,18 @@ def _collect_power(
     by_index: dict[int, tuple[str, float]],
     duplicated: set[int],
     reasons: list[str],
-    profile: PowerMetricProfile,
+    mapping: PowerMetricMapping,
 ) -> None:
-    if any(labels.get(label) for label in profile.instance_labels):
+    if any(labels.get(label) for label in mapping.instance_labels):
         reasons.append(Reason.MIG_INSTANCE_UNSUPPORTED)
         return
 
-    gpu_index = _parse_index(labels.get(profile.gpu_index_label))
+    gpu_index = _parse_index(labels.get(mapping.gpu_index_label))
     if gpu_index is None:
         reasons.append(Reason.GPU_INDEX_MISSING)
         return
 
-    gpu_uuid = (labels.get(profile.gpu_identity_label) or "").strip()
+    gpu_uuid = (labels.get(mapping.gpu_identity_label) or "").strip()
     if not gpu_uuid:
         reasons.append(Reason.GPU_UUID_MISSING)
         return
@@ -138,12 +138,12 @@ def _collect_utilization(
     max_value: float,
     by_index: dict[int, float],
     duplicated: set[int],
-    profile: PowerMetricProfile,
+    mapping: PowerMetricMapping,
 ) -> None:
     """Optional metric: every rejection is silent, so no reason list is threaded through."""
-    if any(labels.get(label) for label in profile.instance_labels):
+    if any(labels.get(label) for label in mapping.instance_labels):
         return
-    gpu_index = _parse_index(labels.get(profile.gpu_index_label))
+    gpu_index = _parse_index(labels.get(mapping.gpu_index_label))
     if gpu_index is None:
         return
     if not math.isfinite(value) or value < 0 or value > max_value:

@@ -40,8 +40,15 @@ telemetry:
   # This block can instead be default_gpu_exporter in srtslurm.yaml.
   dcgm_exporter:
     container_image: docker://rocm/device-metrics-exporter:v1.5.2
+    command: /home/amd/tools/entrypoint.sh
     port: 5000
-    power_profile: amd-device-metrics
+    power:
+      metric: gpu_power_usage
+      scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+      index_label: gpu_id
+      identity_label: serial_number
+      utilization:
+        gpu_util_pct: gpu_gfx_activity
 
 benchmark:
   type: sa-bench

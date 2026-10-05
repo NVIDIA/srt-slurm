@@ -55,8 +55,8 @@ from srtctl.core.formatting import (
 )
 
 # Leaf modules (stdlib and prometheus-free imports), so these cannot cycle back into schema.
-from srtctl.core.power.contract import CONTAINER_LOG_DIR
-from srtctl.core.power.profile import POWER_PROFILES
+from srtctl.core.power.contract import CONTAINER_LOG_DIR, UTILIZATION_METRICS, UtilizationMetric
+from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
@@ -1519,6 +1519,35 @@ class ProfilingConfig:
 
 
 @dataclass(frozen=True)
+class GpuPowerMetricsConfig:
+    """Where a GPU exporter's `/metrics` body carries each GPU's watts.
+
+    Unset on an exporter block means DCGM (`DCGM_FI_DEV_POWER_USAGE`, labels
+    `gpu` / `UUID`). Set it for any other exporter, for example
+    rocm/device-metrics-exporter (`gpu_power_usage`, labels `gpu_id` / `serial_number`).
+    """
+
+    # Prometheus metric carrying each GPU's power draw in watts.
+    metric: str
+    # What the watts measure, recorded in the power manifest as `power_scope`.
+    scope: str
+    # Label carrying the node-local GPU index srt-slurm allocates by.
+    index_label: str
+    # Label that is stable for one physical GPU across the run; fills `gpu_uuid`.
+    identity_label: str
+    # Optional utilization riders: artifact column (`gpu_util_pct`, `sm_active`) to exporter metric.
+    utilization: dict[str, str] = field(default_factory=dict)
+    # Labels marking logical sub-device samples (MIG instances, partitions); such samples are dropped.
+    instance_labels: list[str] = field(default_factory=list)
+    # Filter tachometer applies when it also scrapes this exporter.
+    tachometer_filter: str = "passthrough"
+    # Attach per-GPU worker labels in tachometer (needs DCGM-style `gpu` labels).
+    tachometer_gpu_metadata: bool = False
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class TelemetryExporterConfig:
     """Configuration for a metrics exporter deployed on worker nodes.
 
@@ -1543,11 +1572,31 @@ class TelemetryExporterConfig:
     command: str | None = None
     # Host executable to run without a container; relative paths resolve against the srtctl checkout.
     binary: str | None = None
-    # GPU power profile naming the exporter's power metric, device labels, and default `command`:
-    # `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter).
-    power_profile: str = "dcgm"
+    # Power metric and device labels for GPU power telemetry; unset means DCGM.
+    power: GpuPowerMetricsConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def power_mapping(self) -> PowerMetricMapping:
+        """How the power collector reads this exporter's scrape."""
+        power = self.power
+        if power is None:
+            return DCGM_POWER_MAPPING
+        contract = {metric.column: metric for metric in UTILIZATION_METRICS}
+        return PowerMetricMapping(
+            power_metric=power.metric,
+            power_scope=power.scope,
+            gpu_index_label=power.index_label,
+            gpu_identity_label=power.identity_label,
+            utilization_metrics=tuple(
+                UtilizationMetric(column, metric, contract[column].unit, contract[column].max_value)
+                for column, metric in power.utilization.items()
+            ),
+            instance_labels=tuple(power.instance_labels),
+            tachometer_filter=power.tachometer_filter,
+            tachometer_gpu_metadata=power.tachometer_gpu_metadata,
+        )
 
 
 # Built-in exporter defaults (sweep path only; the --bash lifecycle keys on the
@@ -1861,7 +1910,7 @@ class TelemetryConfig:
 
     # Collect GPU power over each benchmark concurrency window.
     enabled: bool = False
-    # GPU power exporter image, port, optional command and `power_profile`. When `enabled` with
+    # GPU power exporter image, port, optional command and `power` metrics. When `enabled` with
     # no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.
     dcgm_exporter: TelemetryExporterConfig | None = None
     # Milliseconds between collector cycles. Replaces the retired
@@ -3397,11 +3446,16 @@ class SrtConfig:
             raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
-        if exporter.power_profile not in POWER_PROFILES:
-            known = ", ".join(sorted(POWER_PROFILES))
-            raise ValidationError(
-                f"telemetry.dcgm_exporter.power_profile={exporter.power_profile!r} is unknown; known profiles: {known}"
-            )
+        if exporter.power is not None:
+            if exporter.command is None:
+                raise ValidationError("telemetry.dcgm_exporter.command is required when `power` is set")
+            columns = {metric.column for metric in UTILIZATION_METRICS}
+            unknown = sorted(set(exporter.power.utilization) - columns)
+            if unknown:
+                raise ValidationError(
+                    f"telemetry.dcgm_exporter.power.utilization has unknown columns {unknown}; "
+                    f"known columns: {', '.join(sorted(columns))}"
+                )
 
         for name in ("startup_timeout_seconds",):
             if not _is_finite_positive(getattr(telemetry, name)):

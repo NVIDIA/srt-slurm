@@ -19,7 +19,7 @@ from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
 from srtctl.core.power.manifest import ExpectedWindow
-from srtctl.core.power.profile import POWER_PROFILES
+from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
@@ -169,9 +169,9 @@ class TelemetryStageMixin:
     def start_power_telemetry(self, registry: ProcessRegistry) -> PowerTelemetrySession | None:
         """Start GPU power telemetry when it is enabled.
 
-        The exporter block's ``power_profile`` row (DCGM by default) supplies
-        the default launch command and tells the collector which metric and
-        labels to read; nothing here depends on the GPU vendor.
+        The exporter block's ``power`` config (DCGM when unset) tells the
+        collector which metric and labels to read; nothing here depends on the
+        GPU vendor.
 
         Every provider-originated startup failure becomes session state once the
         session exists, so the orchestrator can still finalize artifacts and
@@ -185,10 +185,10 @@ class TelemetryStageMixin:
         if exporter_config is None:
             return None
 
-        profile = POWER_PROFILES[exporter_config.power_profile]
+        mapping = exporter_config.power_mapping
         worker_nodes = self._telemetry_nodes()
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
-        command = resolve_exporter_command(exporter_config, profile.default_command_template)
+        command = resolve_exporter_command(exporter_config, DCGM_EXPORTER_COMMAND_TEMPLATE)
 
         session = PowerTelemetrySession(
             settings=PowerSessionSettings(
@@ -206,7 +206,7 @@ class TelemetryStageMixin:
                 exporter_command=command,
                 network_interface=self.runtime.network_interface,
                 producer_git_commit=read_producer_commit(),
-                profile=profile,
+                mapping=mapping,
             ),
             expected_devices=build_expected_devices(self.backend_processes),
             expected_windows=[
@@ -219,7 +219,7 @@ class TelemetryStageMixin:
         self._power_session = session
         self._power_telemetry_ready = False
         session.initialize()
-        logger.info("Starting GPU power telemetry (profile %s, artifacts under %s)", profile.name, power_dir)
+        logger.info("Starting GPU power telemetry (%s, artifacts under %s)", mapping.power_metric, power_dir)
 
         def own(process: ManagedProcess) -> None:
             registry.add_process(process)
@@ -231,7 +231,7 @@ class TelemetryStageMixin:
                 name="telemetry_dcgm_exporter",
                 nodelist=worker_nodes,
                 log_file=self.runtime.log_dir / "telemetry_dcgm_exporter.out",
-                default_command_template=profile.default_command_template,
+                default_command_template=DCGM_EXPORTER_COMMAND_TEMPLATE,
                 use_bash_wrapper=False,  # distroless exporter images have no shell
                 critical=False,  # an exit is telemetry invalidity, not a sweep-critical failure
                 on_started=own,
@@ -596,22 +596,22 @@ class TelemetryStageMixin:
     def _power_exporter_targets(self) -> list[ServiceMetricsTarget]:
         """Tachometer targets for the exporter power telemetry runs itself (no implied dcgm-exporter service).
 
-        The profile row says how tachometer should filter the body; DCGM rows
-        keep the ``dcgm`` filter and per-GPU worker labels, other exporters pass through.
+        The exporter's power mapping says how tachometer should filter the body;
+        DCGM keeps the ``dcgm`` filter and per-GPU worker labels, other exporters pass through.
         """
         power = self.config.telemetry
         if not (power.enabled and power.dcgm_exporter is not None):
             return []
-        profile = POWER_PROFILES[power.dcgm_exporter.power_profile]
+        mapping = power.dcgm_exporter.power_mapping
         nodes = sorted({process.node for process in self.backend_processes})
         return [
             ServiceMetricsTarget(
                 service="dcgm-exporter",
                 node=node,
                 url=f"http://{node}:{power.dcgm_exporter.port}/metrics",
-                filter=profile.tachometer_filter,
-                endpoint=profile.name,
-                gpu_metadata=profile.tachometer_gpu_metadata,
+                filter=mapping.tachometer_filter,
+                endpoint="dcgm" if mapping.tachometer_filter == "dcgm" else "gpu-power",
+                gpu_metadata=mapping.tachometer_gpu_metadata,
             )
             for node in nodes
         ]

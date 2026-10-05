@@ -37,7 +37,6 @@ from srtctl.core.power.contract import (
     sha256_file,
 )
 from srtctl.core.power.manifest import STATUS_COMPLETE, ArtifactError, ExpectedWindow, WindowValidation
-from srtctl.core.power.profile import POWER_PROFILES
 from srtctl.core.power.samples import ObservedDevice, SampleRow, derive_observed_devices, read_samples
 from srtctl.core.power.topology import (
     WORKER_ROLES,
@@ -265,24 +264,16 @@ def _check_wire_contract(manifest: dict[str, Any]) -> list[str]:
     if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION:
         failures.append(f"schema_version is {schema_version!r}, expected {SCHEMA_VERSION!r}")
 
-    # Manifests written before profiles existed carry no ``power_profile`` and are DCGM.
-    profile_name = manifest.get("power_profile", "dcgm")
-    profile = POWER_PROFILES.get(profile_name) if isinstance(profile_name, str) else None
-    if profile is None:
-        known = ", ".join(sorted(POWER_PROFILES))
-        failures.append(f"power_profile is {profile_name!r}, expected one of: {known}")
-    expectations: list[tuple[str, Any]] = [
+    for key, expected in (
         ("producer", PRODUCER),
         ("unit", POWER_UNIT),
         ("timestamp_source", CLOCK_SOURCE),
-    ]
-    if profile is not None:
-        expectations.extend((("source_metric", profile.power_metric), ("power_scope", profile.power_scope)))
-    for key, expected in expectations:
+    ):
         if manifest.get(key) != expected:
             failures.append(f"{key} is {manifest.get(key)!r}, expected {expected!r}")
 
-    for key in ("producer_version", "job_id", "run_name"):
+    # The exporter config chooses the power metric, so any recorded metric and scope is valid.
+    for key in ("producer_version", "job_id", "run_name", "source_metric", "power_scope"):
         value = manifest.get(key)
         if not (isinstance(value, str) and value):
             failures.append(f"{key} is not a non-empty string")

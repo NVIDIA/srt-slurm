@@ -17,7 +17,7 @@ from srtctl.core.power.contract import (
     SCHEMA_VERSION,
     dedupe,
 )
-from srtctl.core.power.profile import DEFAULT_POWER_PROFILE, PowerMetricProfile
+from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.power.samples import ObservedDevice
 from srtctl.core.power.topology import ExpectedDevice
 
@@ -35,7 +35,7 @@ class DcgmExporterIdentity:
     """Exactly which exporter image produced the samples.
 
     Serialized under the historical ``dcgm_exporter`` manifest key for every
-    profile; the profile itself is recorded separately as ``power_profile``.
+    exporter; ``source_metric`` and ``power_scope`` record what it measured.
 
     ``container_image_sha256`` is ``None`` when the resolved image is not a
     regular file (for example a registry URI pulled at srun time).
@@ -117,7 +117,7 @@ class PowerManifest:
     expected_devices: list[ExpectedDevice]
     expected_windows: list[ExpectedWindow]
     producer_git_commit: str | None = None
-    profile: PowerMetricProfile = DEFAULT_POWER_PROFILE
+    mapping: PowerMetricMapping = DCGM_POWER_MAPPING
     status: str = STATUS_STARTING
     stopped_at_unix: float | None = None
     publication_valid: bool | None = None
@@ -148,14 +148,13 @@ class PowerManifest:
             "producer": PRODUCER,
             "producer_version": PRODUCER_VERSION,
             "producer_git_commit": self.producer_git_commit,
-            "power_profile": self.profile.name,
-            "source_metric": self.profile.power_metric,
+            "source_metric": self.mapping.power_metric,
             "unit": POWER_UNIT,
-            "power_scope": self.profile.power_scope,
+            "power_scope": self.mapping.power_scope,
             "samples_schema_version": SAMPLES_SCHEMA_VERSION,
             "utilization_metrics": [
                 {"column": metric.column, "source_metric": metric.metric, "unit": metric.unit}
-                for metric in self.profile.utilization_metrics
+                for metric in self.mapping.utilization_metrics
             ],
             "timestamp_source": CLOCK_SOURCE,
             "job_id": self.job_id,

@@ -1,0 +1,71 @@
+# srt-slurm
+
+> `srtctl` is a command-line tool for running distributed LLM inference benchmarks on SLURM clusters.
+
+Field-level facts (keys, types, defaults, allowed values) are generated from the code: start with the Schema Reference or the JSON Schemas below; the other pages explain behavior and workflows.
+
+## Home
+
+- [Home](https://nvidia.github.io/srt-slurm/): `srtctl` is a command-line tool for running distributed LLM inference benchmarks on SLURM clusters.
+
+## Get Started
+
+- [Installation](https://nvidia.github.io/srt-slurm/installation/): These commands might not work on all clusters. You can use AI to figure out the right set of commands for your cluster.
+- [Cluster Config](https://nvidia.github.io/srt-slurm/cluster-config/): How srtctl finds `srtslurm.yaml`, what its defaults and aliases do to a recipe, and how to run without one. Every key with its type and default: Cluster config (generated).
+- [CLI Guide](https://nvidia.github.io/srt-slurm/cli/): `srtctl` is the main command-line interface for submitting benchmark jobs to SLURM. This page covers workflows and behavior; every subcommand's arguments, with their defaults, are generated from the parser into the CLI Reference.
+
+## Write a Recipe
+
+- [Recipe Guide](https://nvidia.github.io/srt-slurm/config-reference/): How to write a job recipe in the 2.0 (`schema: 2`) layout: what each block means, how the blocks interact, and worked examples.
+- [Engines](https://nvidia.github.io/srt-slurm/engines/): The top-level `engine:` block: which inference engine runs, and the engine-wide knobs whose behavior needs more than a table row. Per-engine field tables: Engine types (generated).
+- [Topology and Placement](https://nvidia.github.io/srt-slurm/topology/): How a recipe asks for nodes and GPUs: `roles`, `placement`, `resources`, `slurm`, and the raw `sbatch_directives` / `srun_options` escape hatches.
+- [Frontends: Frontends and Dynamo](https://nvidia.github.io/srt-slurm/frontends/): The `frontend:` block (which router fronts the workers) and the `dynamo:` block (how Dynamo is installed and wired). Router-specific pages: SGLang Router, vLLM Router.
+- [Frontends: SGLang Router](https://nvidia.github.io/srt-slurm/sglang-router/): This page explains the sglang router mode for prefill-decode (PD) disaggregation, an alternative to the default Dynamo frontend architecture.
+- [Frontends: vLLM Router](https://nvidia.github.io/srt-slurm/vllm-router/): `frontend.type: vllm-router` runs the official vLLM Router in front of direct `vllm serve` workers. srtctl supplies the statically allocated worker URLs; vLLM remains responsible for the DP/TP/PP engine topology inside each worker.
+- [Benchmarks: Benchmarks](https://nvidia.github.io/srt-slurm/benchmarks/): The `benchmark:` block (which client runs against the endpoint) and `post_eval:`. Scoring details for the accuracy suites: Accuracy Benchmarks.
+- [Benchmarks: Accuracy Benchmarks](https://nvidia.github.io/srt-slurm/accuracy/): In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, `lm-eval`, and AIME (via the script under `configs/aime/`).
+- [Paths, Mounts, and Environment](https://nvidia.github.io/srt-slurm/runtime-env/): What the containers see: `FormattablePath` templates, mounts, environment variables, and the setup hooks that run before workers start.
+- [Services: Services](https://nvidia.github.io/srt-slurm/services/): The top-level `services:` block declares long-running processes that srtctl launches and tracks next to the inference workers, the frontend, and the benchmark client.
+- [Services: Pools](https://nvidia.github.io/srt-slurm/pools/): A pool is a set of whole nodes that a service owns. Engine roles (`roles.prefill`, `roles.decode`, `roles.agg`) own their nodes through `nodes:`; a service owns nodes the same way, through `services[].nodes`.
+- [Services: Mooncake KV Store](https://nvidia.github.io/srt-slurm/mooncake-kv-store/): For nodes with a known physical-GPU-to-HCA mapping, opt in through the v2 `mooncake-master` service options:
+- [Config Overrides](https://nvidia.github.io/srt-slurm/overrides/): Config overrides let you define a single YAML file with a shared `base` configuration and multiple named variants. Each variant is submitted as an independent SLURM job.
+- [Parameter Sweeps](https://nvidia.github.io/srt-slurm/sweeps/): Parameter sweeps let you run multiple configurations with a single command. Sweeps are automatically detected from config files that contain a `sweep:` section.
+- [Workloads: TileRT](https://nvidia.github.io/srt-slurm/tilert/): Use `roles.prefill.engine: vllm`, `roles.decode.engine: tilert`, and `frontend.type: tilert-router`. Do not set a top-level `engine` alongside role engines. Set `frontend.enable_multiple_frontends: false`. Recipes:
+- [Workloads: Shadow Engine Recovery](https://nvidia.github.io/srt-slurm/shadow-engine-recovery/): Shadow engine recovery keeps a fully initialized standby `dynamo.vllm` engine parked on the same GPUs as the serving engine.
+- [Workloads: SGLang Fast Engine Recovery](https://nvidia.github.io/srt-slurm/sglang-weight-cache/): SGLang's weight cache daemon is a persistent GPU process that loads the model once, keeps the post-quantized, TP-sharded tensors in HBM, and hands CUDA IPC handles to any engine on the same GPU.
+- [Workloads: Miles RL Post-Training](https://nvidia.github.io/srt-slurm/miles/): srt-slurm launches a Miles training run as a services-only job: a `ray` service brings up the cluster, and a `custom` benchmark step runs the bundled launcher `benchmarks/rl/miles/launch.sh`, which hands the cluster to Miles's own launch ...
+
+## Run and Operate
+
+- [Monitoring](https://nvidia.github.io/srt-slurm/monitoring/): `srtctl monitor` is a live terminal dashboard that brings everything into one place: SLURM queue state, job lifecycle stage, worker readiness, and benchmark metrics — all auto-refreshing without juggling `squeue` and `tail -f`.
+- [SLURM FAQ](https://nvidia.github.io/srt-slurm/slurm-faq/): Some SLURM clusters don't support certain SBATCH directives. If you encounter errors during job submission, you may need to adjust these settings in your `srtslurm.yaml`.
+- [Status API](https://nvidia.github.io/srt-slurm/status-api-spec/): srtslurm can optionally report job status to one or more HTTP collectors via fire-and-forget POST/PUT requests. `srtctl status-server` is a collector that ships with srtctl; any server implementing the endpoints below works.
+
+## Analyze
+
+- [Observability and Telemetry](https://nvidia.github.io/srt-slurm/observability/): The `observability:` preset (nsys, OTEL, Tachometer) and the `telemetry:` providers (GPU and CPU power). Profiler settings: Profiling.
+- [Profiling](https://nvidia.github.io/srt-slurm/profiling/): srtctl supports two profiling backends for performance analysis: Torch Profiler and NVIDIA Nsight Systems (nsys).
+- [Per-run Performance Analysis](https://nvidia.github.io/srt-slurm/perf-analysis/): The agent writes this report from the run's saved artifacts; srtctl does not generate it automatically.
+- [Power: GPU Power Telemetry](https://nvidia.github.io/srt-slurm/power-telemetry/): The `dcgm-power` telemetry provider records raw per-GPU watts for every allocated worker node, the topology needed to map each GPU to a `prefill`, `decode`, or `agg` role, and the exact formal benchmark window for every measured ...
+- [Power: CPU Power Telemetry](https://nvidia.github.io/srt-slurm/cpu-power-telemetry/): Host-side CPU power collection for NVIDIA Grace nodes, run alongside GPU DCGM power telemetry as an independent, best-effort leg.
+- [Power: DCGM 4.7 Runtime Support](https://nvidia.github.io/srt-slurm/dcgm-4.7-runtime-support/): This document records the work needed for srt-slurm to consume a user-supplied DCGM 4.7 ARM64 runtime package. It is a design checklist, not an implemented feature.
+- [Component Performance Dashboard](https://nvidia.github.io/srt-slurm/component-dashboard/): A single self-contained HTML page with Overview / Frontend / Router / Engine / Session / Log analysis tabs, built offline from the artifacts an srt-slurm job already captures.
+- [DSight: DSight Trace Explorer](https://nvidia.github.io/srt-slurm/dsight/): DSight aligns client requests, Dynamo lifecycle spans, worker metrics, hardware samples, and existing Nsight exports on one timeline.
+- [DSight: Data Flow](https://nvidia.github.io/srt-slurm/dsight-data-flow/): Use this page to answer: Which file supplies this part of the dashboard, and what happens to its data along the way? See DSight for build commands, input discovery and detailed timing definitions.
+- [DSight: Log Metrics](https://nvidia.github.io/srt-slurm/dsight-log-metrics/): The Metrics panel reads one normalized series/catalog schema. Its inputs are Tachometer Parquet/Arrow captures and supported worker logs.
+- [DSight: Storage](https://nvidia.github.io/srt-slurm/dsight-storage/): DSight writes `trace-data.sqlite` for indexed local queries and an HTML catalog with compressed detail files for static browser delivery. Both contain the same normalized evidence.
+
+## Reference
+
+- [Schema Reference](https://nvidia.github.io/srt-slurm/schema-reference/): Field-level reference for the recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from the dataclasses in `srtctl.core.schema` and `srtctl.backends`.
+- [CLI Reference](https://nvidia.github.io/srt-slurm/cli-reference/): Every `srtctl` subcommand and argument, generated from the parser itself. Workflows, examples, and what each command does are in the CLI Guide. Running `srtctl` with no arguments starts the interactive mode.
+- [Legacy (v1) Recipe Layout](https://nvidia.github.io/srt-slurm/legacy-v1/): Recipes without `schema: 2` (or with `schema: 1`) use the pre-2.0 layout: worker topology under `resources`, the engine and its per-mode settings under `backend`, the discovery plane under `infra`, and placement as per-block booleans.
+
+## Internals
+
+- [Architecture](https://nvidia.github.io/srt-slurm/architecture/): srtctl (SLURM Runtime Control) is a Python-first orchestration framework for LLM inference benchmarks on SLURM clusters. It provides:
+
+## Machine-readable
+
+- [Recipe JSON Schema](https://nvidia.github.io/srt-slurm/schema/recipe.schema.json): draft 2020-12 schema for recipes and override files (`srtctl schema`); use with `# yaml-language-server: $schema=<this URL>`.
+- [Cluster config JSON Schema](https://nvidia.github.io/srt-slurm/schema/cluster.schema.json): schema for `srtslurm.yaml` (`srtctl schema --cluster`).

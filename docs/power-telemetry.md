@@ -6,7 +6,7 @@ allocated worker node, the topology needed to map each GPU to a `prefill`,
 measured concurrency. It never integrates power into energy and never branches
 on model, precision, or recipe; consumers integrate watts over the recorded
 window themselves. The provider name is historical: the exporter that supplies
-the watts is selected per cluster or recipe (see [Exporter profiles](#exporter-profiles)).
+the watts is selected per cluster or recipe (see [Exporter power metrics](#exporter-power-metrics)).
 
 ## How it works
 
@@ -67,39 +67,33 @@ The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.
 
-## Exporter profiles
+## Exporter power metrics
 
 The collector, parser, manifest and validator do not know which GPU vendor they
-are measuring. Every exporter the collector can scrape is one row of
-`POWER_PROFILES` in `srtctl/core/power/profile.py`, selected by the
-`power_profile` field of the exporter block (`telemetry.dcgm_exporter`, or the
-cluster `default_gpu_exporter` it inherits). A row names:
+are measuring. The `power` block of the exporter config (`telemetry.dcgm_exporter`,
+or the cluster `default_gpu_exporter` it inherits) says where the watts are:
 
-- the Prometheus metric carrying watts, and the `power_scope` recorded in the manifest;
-- the label carrying the node-local GPU index (must match the index srt-slurm
-  allocates by) and the label carrying a stable per-device identity (fills the
-  `gpu_uuid` column);
-- optional utilization riders mapped onto the fixed `gpu_util_pct` and
-  `sm_active` columns (a row may fill fewer columns; the rest stay empty);
-- labels that mark logical sub-devices (MIG instances, partitions) the artifact
-  cannot represent;
-- the default launch command and how tachometer filters the same endpoint.
+| Field | Meaning | DCGM (when `power` is unset) |
+| --- | --- | --- |
+| `metric` | Prometheus metric carrying each GPU's watts | `DCGM_FI_DEV_POWER_USAGE` |
+| `scope` | What the watts measure, recorded as `power_scope` | `gpu_device_board_as_reported_by_dcgm` |
+| `index_label` | Node-local GPU index; must match the index srt-slurm allocates by | `gpu` |
+| `identity_label` | Stable per-device identity; fills `gpu_uuid` | `UUID` |
+| `utilization` | Optional riders: `gpu_util_pct` / `sm_active` column to metric | `DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_PROF_SM_ACTIVE` |
+| `instance_labels` | Labels marking logical sub-devices (MIG, partitions); dropped | `GPU_I_ID`, `GPU_I_PROFILE` |
+| `tachometer_filter` / `tachometer_gpu_metadata` | How tachometer treats the same endpoint | `dcgm` / `true` |
 
-| `power_profile` | Exporter | Power metric | Index / identity labels | Utilization |
-| --- | --- | --- | --- | --- |
-| `dcgm` (default) | NVIDIA dcgm-exporter | `DCGM_FI_DEV_POWER_USAGE` | `gpu` / `UUID` | `DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_PROF_SM_ACTIVE` |
-| `amd-device-metrics` | [rocm/device-metrics-exporter](https://github.com/ROCm/device-metrics-exporter) | `gpu_power_usage` | `gpu_id` / `serial_number` | `gpu_gfx_activity` |
+A `power` block replaces the DCGM defaults as a whole, and requires an explicit
+`command`. Units of the utilization columns come from the artifact contract,
+not the config. The artifact layout is identical for every exporter.
+`manifest.json` records `source_metric`, `power_scope` and `utilization_metrics`,
+so a consumer can tell the measurement boundaries apart without the config.
 
-The artifact layout is identical for every row. `manifest.json` records the
-row as `power_profile`, and `source_metric` / `power_scope` /
-`utilization_metrics` describe that row's measurement, so a consumer can tell
-the boundaries apart without config. `srtctl-validate-power` checks those keys
-against the named row.
+### AMD (rocm/device-metrics-exporter)
 
-### AMD (`amd-device-metrics`)
-
-The exporter is AMD's Prometheus exporter container, the direct analog of
-dcgm-exporter. Cluster-level configuration, so that recipes need not change:
+[rocm/device-metrics-exporter](https://github.com/ROCm/device-metrics-exporter)
+is AMD's Prometheus exporter container, the direct analog of dcgm-exporter.
+Cluster-level configuration, so that recipes need not change:
 
 ```yaml
 # srtslurm.yaml
@@ -108,16 +102,21 @@ default_gpu_exporter:
   container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
   command: "/home/amd/tools/entrypoint.sh"
   port: 5000
-  power_profile: amd-device-metrics
+  power:
+    metric: gpu_power_usage
+    scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+    index_label: gpu_id
+    identity_label: serial_number
+    utilization:
+      gpu_util_pct: gpu_gfx_activity
 ```
 
 The same block works under `telemetry.dcgm_exporter` in a recipe, as shown in the
-[single-node AMD example](../examples/features/amd-power-telemetry.yaml). Notes:
+[single-node AMD example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/amd-power-telemetry.yaml). Notes:
 
 - Pyxis runs the given command, not the image `ENTRYPOINT`; the entrypoint
   script starts the `gpuagent` daemon the exporter reads from and then execs
-  the exporter, so it is the command (also the profile's default when
-  `command` is omitted).
+  the exporter, so it is the command.
 - The exporter has no port flag. It listens on 5000 unless a
   `/etc/metrics/config.json` sets `ServerPort`; keep `port: 5000` unless the
   command mounts such a file.
@@ -148,7 +147,7 @@ never interpolated, averaged, or role-attributed — role and heterogeneous
 group live once in the manifest topology.
 
 `manifest.json` records producer identity (version, git commit, exporter image
-and its SHA-256, `power_profile`), the sample interval, expected and observed device sets, the
+and its SHA-256), the power metric and scope, the sample interval, expected and observed device sets, the
 topology mapping, the expected window list, the SHA-256 of the finalized
 `samples.csv` bytes, terminal status, per-window coverage validation, and
 reason codes. `status` is the lifecycle outcome;

@@ -219,7 +219,7 @@ class TestTachometerConfig:
         inherit the power template's 100ms — 10 Hz NVML sampling measured
         ~2% ITL p50 overhead on GB300 decode (isolation runs, 2026-09-06);
         the power path keeps 100ms because dense sampling is its purpose."""
-        from srtctl.core.power.profile import DCGM_EXPORTER_COMMAND_TEMPLATE
+        from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE
         from srtctl.services.implicit import find_service
         from srtctl.services.registry import ServiceLaunchContext, get_service_kind
 

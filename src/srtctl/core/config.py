@@ -290,7 +290,7 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
 
     # The same cluster exporter serves GPU power telemetry: a recipe that enables
     # telemetry without naming any collector inherits it (image, port, command and
-    # power_profile), so one recipe measures power on NVIDIA and AMD clusters alike.
+    # power metrics), so one recipe measures power on NVIDIA and AMD clusters alike.
     # Recipes that name a GPU exporter, or that enable only a CPU leg, are untouched;
     # without this the inherited case was the "nothing to collect" validation error.
     telemetry = config.get("telemetry")

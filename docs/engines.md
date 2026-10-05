@@ -14,7 +14,7 @@ Set `visible_devices_env: ROCR_VISIBLE_DEVICES` in the cluster profile for ROCm
 workers. GPU subsets then use only that mask, without applying a second mask to
 already-renumbered devices. Set `default_gpu_exporter: null` to disable the
 NVIDIA GPU exporter, or configure an exporter image, port, command and
-`power_profile` once for the cluster. Other telemetry is unchanged; an explicit
+`power` metrics once for the cluster. Other telemetry is unchanged; an explicit
 recipe exporter wins.
 
 ```yaml
@@ -23,12 +23,18 @@ default_gpu_exporter:
   container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
   command: "/home/amd/tools/entrypoint.sh"
   port: 5000
-  power_profile: amd-device-metrics
+  power:
+    metric: gpu_power_usage
+    scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+    index_label: gpu_id
+    identity_label: serial_number
+    utilization:
+      gpu_util_pct: gpu_gfx_activity
 ```
 
 With this block a recipe that sets `telemetry: {enabled: true}` and nothing else
 under `telemetry` collects GPU power from the AMD exporter; see
-[GPU power telemetry](power-telemetry.md#exporter-profiles).
+[GPU power telemetry](power-telemetry.md#exporter-power-metrics).
 
 For vLLM builds without `--device-ids`, set `engine.set_visible_devices: true`.
 This is one explicit boolean, not automatic vLLM version detection. The default

@@ -1,0 +1,3116 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/benchmarks/">
+      
+      
+        <link rel="prev" href="../vllm-router/">
+      
+      
+        <link rel="next" href="../accuracy/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Benchmarks - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#benchmarks" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Benchmarks
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../installation/" class="md-tabs__link">
+          
+  
+  
+  Get Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Write a Recipe
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Run and Operate
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../observability/" class="md-tabs__link">
+          
+  
+  
+  Analyze
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../schema-reference/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Internals
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Get Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write a Recipe
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Write a Recipe
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recipe Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../topology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topology and Placement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../frontends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Frontends and Dynamo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3_5" id="__nav_3_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        benchmark
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="benchmark">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#available-benchmark-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Available Benchmark Types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#manual" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        manual
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        custom
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="custom">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#agentx-with-a-custom-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AgentX with a custom benchmark
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sa-bench-serving-accuracy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sa-bench (Serving Accuracy)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sglang-bench" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sglang-bench
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mmlu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mmlu
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpqa" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpqa
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#longbenchv2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        longbenchv2
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#router" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        router
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mooncake-router" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mooncake-router
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agentperf" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agentperf
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mlperf" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mlperf
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#post_eval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        post_eval
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runtime-env/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Paths, Mounts, and Environment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_7" id="__nav_3_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Services
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_10" id="__nav_3_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workloads
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Workloads
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tilert/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TileRT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../shadow-engine-recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Shadow Engine Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-weight-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Fast Engine Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run and Operate
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Run and Operate
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Analyze
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Analyze
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability and Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../perf-analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-run Performance Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_4" id="__nav_5_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Power
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Power
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_6" id="__nav_5_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    DSight
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight-data-flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Flow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight-log-metrics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Log Metrics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Internals
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Internals
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        benchmark
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="benchmark">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#available-benchmark-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Available Benchmark Types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#manual" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        manual
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        custom
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="custom">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#agentx-with-a-custom-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AgentX with a custom benchmark
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sa-bench-serving-accuracy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sa-bench (Serving Accuracy)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sglang-bench" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sglang-bench
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mmlu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mmlu
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpqa" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpqa
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#longbenchv2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        longbenchv2
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#router" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        router
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mooncake-router" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mooncake-router
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agentperf" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agentperf
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mlperf" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mlperf
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#post_eval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        post_eval
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/benchmarks.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h1>
+<p>The <code>benchmark:</code> block (which client runs against the endpoint) and <code>post_eval:</code>. Scoring details for the accuracy suites: <a href="../accuracy/">Accuracy Benchmarks</a>.</p>
+<h2 id="benchmark">benchmark<a class="headerlink" href="#benchmark" title="Permanent link">&para;</a></h2>
+<p>Benchmark configuration. The <code>type</code> field determines which benchmark runner is used and what additional fields are available.</p>
+<p>Set <code>benchmark.stream_output: true</code> to mirror <code>benchmark.out</code> to the orchestrator's
+stdout while the benchmark runs (default: <code>false</code>). This works with custom and
+built-in benchmark clients and preserves the complete log file and client exit
+status. For a one-off run, use <code>srtctl apply -f recipe.yaml --set benchmark.stream_output=true</code>.
+The output appears in the Slurm job log; CI must follow that log to display it
+live. <code>apply</code> still submits asynchronously. Streaming forwards bytes as they
+reach the log, so clients must flush their output (for Python clients, set
+<code>PYTHONUNBUFFERED: "1"</code> in their environment). Manual/serve-only jobs have no
+benchmark client to stream, and separate post-eval logs are not included.</p>
+<p><strong>Per-type fields.</strong> Every type accepts the shared fields (<code>placement</code>, <code>colocate_with_frontend</code>, <code>stream_output</code>, <code>aiperf_package</code>, <code>aiperf_args</code>, and <code>concurrencies</code>, which power telemetry reads for its measurement windows whatever the type) plus the fields its runner reads. <a href="../schema-reference/#benchmark-types">Benchmark types</a>, generated from the runner registry, lists them per type.</p>
+<p>A <code>schema: 2</code> recipe that sets a field its type does not use is rejected at load with the list of accepted fields. Before this, such a field was a silent no-op (<code>isl</code> on <code>gsm8k</code>, <code>num_shots</code> on <code>sa-bench</code>). Each runner declares its fields as <code>config_fields</code>; adding a field to a runner means adding it there.</p>
+<p>Types and defaults: <a href="../schema-reference/#benchmarkconfig">BenchmarkConfig</a>. <code>placement.node</code> is described under <a href="../topology/#placement">placement</a>; <code>colocate_with_frontend: false</code> reserves separate dedicated nodes for the frontend and the client.</p>
+<h3 id="available-benchmark-types">Available Benchmark Types<a class="headerlink" href="#available-benchmark-types" title="Permanent link">&para;</a></h3>
+<p>The registered types, a one-line summary of each, and the keys each accepts are in <a href="../schema-reference/#benchmark-types">Benchmark types</a>. <code>manual</code> (the default) runs no client. MLPerf runs as a <code>custom</code> benchmark with a bundled script; see <a href="#mlperf">mlperf</a>.</p>
+<h3 id="manual">manual<a class="headerlink" href="#manual" title="Permanent link">&para;</a></h3>
+<p>No benchmark is run. Use for manual testing and debugging.</p>
+<p>For a one-off serving run, <code>srtctl apply -f config.yaml --serve-only</code> provides the same behavior without changing the recipe's configured benchmark.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"manual"</span>
+</code></pre></div>
+<h3 id="custom">custom<a class="headerlink" href="#custom" title="Permanent link">&para;</a></h3>
+<p>Run an arbitrary command with <code>bash -lc</code>. The command is passed verbatim; srt-slurm does not expand <code>{placeholder}</code> expressions. Use environment variables for runtime-discovered values:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">custom</span>
+<span class="w">  </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">&gt;-</span>
+<span class="w">    </span><span class="no">./run-benchmark.sh "$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT"</span>
+<span class="w">  </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">MY_BENCHMARK_OPTION</span><span class="p">:</span><span class="w"> </span><span class="s">"value"</span>
+</code></pre></div>
+<p>Every custom benchmark command receives frontend metadata plus mode-specific metadata for each logical worker leader:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Format</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SRT_FRONTEND_HOST</code></td>
+<td>IP</td>
+<td>Frontend/orchestrator IP</td>
+</tr>
+<tr>
+<td><code>SRT_FRONTEND_PORT</code></td>
+<td>port</td>
+<td>Frontend public port</td>
+</tr>
+<tr>
+<td><code>SRT_PREFILL_IPS</code></td>
+<td>comma-separated IPs</td>
+<td>Prefill worker leader IPs</td>
+</tr>
+<tr>
+<td><code>SRT_PREFILL_ENDPOINTS</code></td>
+<td>comma-separated <code>IP:port</code></td>
+<td>Prefill worker endpoints</td>
+</tr>
+<tr>
+<td><code>SRT_DECODE_IPS</code></td>
+<td>comma-separated IPs</td>
+<td>Decode worker leader IPs</td>
+</tr>
+<tr>
+<td><code>SRT_DECODE_ENDPOINTS</code></td>
+<td>comma-separated <code>IP:port</code></td>
+<td>Decode worker endpoints</td>
+</tr>
+<tr>
+<td><code>SRT_AGG_IPS</code></td>
+<td>comma-separated IPs</td>
+<td>Aggregated worker leader IPs</td>
+</tr>
+<tr>
+<td><code>SRT_AGG_ENDPOINTS</code></td>
+<td>comma-separated <code>IP:port</code></td>
+<td>Aggregated worker endpoints</td>
+</tr>
+<tr>
+<td><code>AIPERF_SERVER_METRICS_URLS</code></td>
+<td>comma-separated HTTP URLs</td>
+<td>AIPerf-compatible <code>/metrics</code> URLs for all logical workers</td>
+</tr>
+<tr>
+<td><code>SRT_SERVICE_&lt;NAME&gt;_NODES</code></td>
+<td>comma-separated hostnames</td>
+<td>Nodes each launched service runs on, in placement order; <code>&lt;NAME&gt;</code> is the service name upper-cased with non-alphanumerics as <code>_</code></td>
+</tr>
+<tr>
+<td><code>SRT_SERVICE_&lt;NAME&gt;_IPS</code></td>
+<td>comma-separated IPs</td>
+<td>The same nodes' fabric IPs (the first is the head of a <code>ray</code> service)</td>
+</tr>
+<tr>
+<td><code>SRT_SERVICE_&lt;NAME&gt;_NODE_COUNT</code></td>
+<td>int</td>
+<td>How many nodes the service spans</td>
+</tr>
+<tr>
+<td><code>SRT_GPUS_PER_NODE</code></td>
+<td>int</td>
+<td><code>resources.gpus_per_node</code></td>
+</tr>
+<tr>
+<td><code>SRT_WORKER_NODES</code></td>
+<td>comma-separated hostnames</td>
+<td>Every engine worker node (empty when the job has no engine roles)</td>
+</tr>
+</tbody>
+</table>
+<p>Only variables for roles present in the recipe are emitted. Entries follow logical topology order (prefill index, decode index, or aggregated index). Multi-node follower ranks are excluded because they do not own separate engines; co-located logical workers retain repeated IPs and distinct ports so list positions remain aligned. With a Dynamo frontend, endpoint and metrics URLs use each leader's <code>DYN_SYSTEM_PORT</code>; other frontends use the worker HTTP port. If KVBM metrics are configured, their URLs are appended to <code>AIPERF_SERVER_METRICS_URLS</code> after the logical worker URLs.</p>
+<p>Two caveats for <code>AIPERF_SERVER_METRICS_URLS</code>:</p>
+<ul>
+<li><strong>Dynamo TRT-LLM worker URLs are advertised when engine metrics are enabled.</strong> This is the default via <code>engine.publish_metrics: true</code> (<code>--publish-metrics</code>) when the combined setting is omitted; <code>engine.publish_events_and_metrics: true</code> also enables them. False or unset uses <code>engine.publish_metrics</code> to decide whether to publish metrics and advertise worker URLs. URLs are omitted when metrics-only is false and the legacy combined flag is false or unset, including with observability enabled. This applies to built-in AIPerf and custom benchmarks, excluding sidecars, whose behavior is unchanged. Runtime-only metrics may still exist but do not constitute an engine-metrics capture. With <code>frontend.type: trtllm_serve</code> the gate is the worker's own engine config instead: its <code>/prometheus/metrics</code> URL is advertised when that role's <code>args.return_perf_metrics</code> is true (the srtctl default for trtllm_serve recipes; an explicit <code>false</code> drops the URL). KVBM URLs are unaffected; KVBM serves its own endpoint regardless of the flag.</li>
+<li><strong>An explicit <code>AIPERF_SERVER_METRICS_URLS</code> in the recipe <code>environment:</code> wins.</strong> Injection is skipped when the variable is already set, so a curated endpoint list is never clobbered.</li>
+</ul>
+<p>Values in <code>benchmark.env</code> are applied last and can explicitly override any automatically injected variable.</p>
+<h4 id="agentx-with-a-custom-benchmark">AgentX with a custom benchmark<a class="headerlink" href="#agentx-with-a-custom-benchmark" title="Permanent link">&para;</a></h4>
+<p>The repository's <code>benchmarks/</code> directory is mounted at <code>/benchmarks</code> in job containers. Add this
+benchmark block to a serving recipe:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">custom</span>
+<span class="w">  </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/benchmarks/agentx.sh</span>
+<span class="w">  </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">MODEL</span><span class="p">:</span><span class="w"> </span><span class="s">"&lt;Hugging</span><span class="nv"> </span><span class="s">Face</span><span class="nv"> </span><span class="s">model</span><span class="nv"> </span><span class="s">ID&gt;"</span>
+<span class="w">    </span><span class="nt">MODEL_PREFIX</span><span class="p">:</span><span class="w"> </span><span class="s">"&lt;InferenceX</span><span class="nv"> </span><span class="s">model</span><span class="nv"> </span><span class="s">prefix&gt;"</span>
+<span class="w">    </span><span class="nt">FRAMEWORK</span><span class="p">:</span><span class="w"> </span><span class="s">"&lt;framework&gt;"</span>
+<span class="w">    </span><span class="nt">PRECISION</span><span class="p">:</span><span class="w"> </span><span class="s">"&lt;precision&gt;"</span>
+<span class="w">    </span><span class="nt">CONC</span><span class="p">:</span><span class="w"> </span><span class="s">"8"</span>
+<span class="w">    </span><span class="nt">RESULT_FILENAME</span><span class="p">:</span><span class="w"> </span><span class="s">"agentx_c8"</span>
+<span class="w">    </span><span class="nt">DURATION</span><span class="p">:</span><span class="w"> </span><span class="s">"900"</span>
+</code></pre></div>
+<p>The launcher checks these seven values before downloading anything. It clones InferenceX <code>main</code>
+and its AIPerf submodule into temporary storage, runs InferenceX's <code>srt_agentic.sh</code> against the
+ready srt-slurm frontend, and removes the checkout afterward. AIPerf artifacts and the aggregate
+JSON are written under <code>/logs/agentic</code> by default. The benchmark container needs network access
+to GitHub, package downloads, and the AgentX trace dataset. The launch log records the resolved
+InferenceX and AIPerf commits.</p>
+<p>Set <code>AGENTX_INFERENCEX_REF</code> in <code>benchmark.env</code> to pin an InferenceX commit for repeatable runs.
+<code>CONC_LIST</code> can specify multiple space-separated concurrency values; <code>CONC</code> is still required.
+The launcher supplies InferenceX's common AIPerf settings and accepts overrides through
+<code>benchmark.env</code>. Power capture is off unless <code>ENABLE_AGENTX_POWER=1</code>; when enabled, configure
+the power inputs required by the InferenceX harness. <code>RESULT_DIR</code> and <code>AGENTIC_OUTPUT_DIR</code> may be
+overridden to other persistent container paths.</p>
+<p>The service variables are how a custom command drives something the job brought up rather than an inference endpoint: a job with no engine roles (<code>frontend.type: none</code>, a service that owns the nodes through <code>services[].nodes</code>) still runs its benchmark step, and the command finds the service through <code>SRT_SERVICE_*</code>. Launchers and clients that are not core live in the repo-root <code>benchmarks/</code> folder, mounted in every job container at <code>/benchmarks</code> (like <code>configs/</code> at <code>/configs</code>); <code>benchmarks/rl/miles/launch.sh</code> starts a <a href="../miles/">Miles</a> RL run against a <code>ray</code> service.</p>
+<h3 id="sa-bench-serving-accuracy">sa-bench (Serving Accuracy)<a class="headerlink" href="#sa-bench-serving-accuracy" title="Permanent link">&para;</a></h3>
+<p>Throughput and latency benchmark at various concurrency levels.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"sa-bench"</span>
+<span class="w">  </span><span class="nt">isl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1024</span><span class="w">                          </span><span class="c1"># Required: Input sequence length</span>
+<span class="w">  </span><span class="nt">osl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1024</span><span class="w">                          </span><span class="c1"># Required: Output sequence length</span>
+<span class="w">  </span><span class="nt">concurrencies</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">256</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">512</span><span class="p p-Indicator">]</span><span class="w">          </span><span class="c1"># Required: Concurrency levels to test</span>
+<span class="w">  </span><span class="nt">req_rate</span><span class="p">:</span><span class="w"> </span><span class="s">"inf"</span><span class="w">                    </span><span class="c1"># Optional: Request rate (default: "inf")</span>
+<span class="w">  </span><span class="nt">reuse_http_connections</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">      </span><span class="c1"># Optional: Reuse HTTP connections (default: false)</span>
+</code></pre></div>
+<p><strong>Concurrencies format</strong>: Can be a list <code>[128, 256, 512]</code> or x-separated string <code>"128x256x512"</code>.</p>
+<p>When <code>reuse_http_connections</code> is enabled, each <code>benchmark_serving.py</code> process uses one keep-alive connection pool. Warmup and formal runs remain isolated in separate processes and therefore never share a pool. The option currently applies only to SA-Bench's Dynamo HTTP adapter.</p>
+<h3 id="sglang-bench">sglang-bench<a class="headerlink" href="#sglang-bench" title="Permanent link">&para;</a></h3>
+<p>SGLang <code>bench_serving</code> benchmark at various concurrency levels.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"sglang-bench"</span>
+<span class="w">  </span><span class="nt">isl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1024</span><span class="w">                          </span><span class="c1"># Required: Input sequence length</span>
+<span class="w">  </span><span class="nt">osl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1024</span><span class="w">                          </span><span class="c1"># Required: Output sequence length</span>
+<span class="w">  </span><span class="nt">concurrencies</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">256</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">512</span><span class="p p-Indicator">]</span><span class="w">          </span><span class="c1"># Required: Concurrency levels to test</span>
+<span class="w">  </span><span class="nt">req_rate</span><span class="p">:</span><span class="w"> </span><span class="s">"inf"</span><span class="w">                    </span><span class="c1"># Optional: Request rate (default: "inf")</span>
+</code></pre></div>
+<p><strong>Concurrencies format</strong>: Can be a list <code>[128, 256, 512]</code> or x-separated string <code>"128x256x512"</code>.</p>
+<h3 id="mmlu">mmlu<a class="headerlink" href="#mmlu" title="Permanent link">&para;</a></h3>
+<p>MMLU accuracy evaluation using sglang.test.run_eval.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"mmlu"</span>
+<span class="w">  </span><span class="nt">num_examples</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span><span class="w">                  </span><span class="c1"># Optional: Number of examples</span>
+<span class="w">  </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2048</span><span class="w">                   </span><span class="c1"># Optional: Max tokens per response</span>
+<span class="w">  </span><span class="nt">repeat</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span><span class="w">                          </span><span class="c1"># Optional: Number of repeats</span>
+<span class="w">  </span><span class="nt">num_threads</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">512</span><span class="w">                   </span><span class="c1"># Optional: Concurrent threads</span>
+</code></pre></div>
+<p>Runner defaults when unset: <code>num_examples</code> 200, <code>max_tokens</code> 2048, <code>repeat</code> 8, <code>num_threads</code> 512.</p>
+<h3 id="gpqa">gpqa<a class="headerlink" href="#gpqa" title="Permanent link">&para;</a></h3>
+<p>Graduate-level science QA evaluation using sglang.test.run_eval.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"gpqa"</span>
+<span class="w">  </span><span class="nt">num_examples</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">198</span><span class="w">                  </span><span class="c1"># Optional: Number of examples</span>
+<span class="w">  </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">32768</span><span class="w">                  </span><span class="c1"># Optional: Max tokens per response</span>
+<span class="w">  </span><span class="nt">repeat</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span><span class="w">                          </span><span class="c1"># Optional: Number of repeats</span>
+<span class="w">  </span><span class="nt">num_threads</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">128</span><span class="w">                   </span><span class="c1"># Optional: Concurrent threads</span>
+</code></pre></div>
+<p>Runner defaults when unset: <code>num_examples</code> 198, <code>max_tokens</code> 32768, <code>repeat</code> 8, <code>num_threads</code> 128.</p>
+<h3 id="longbenchv2">longbenchv2<a class="headerlink" href="#longbenchv2" title="Permanent link">&para;</a></h3>
+<p>Long-context evaluation benchmark.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"longbenchv2"</span>
+<span class="w">  </span><span class="nt">max_context_length</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">128000</span><span class="w">         </span><span class="c1"># Optional: Max context length</span>
+<span class="w">  </span><span class="nt">num_threads</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16</span><span class="w">                    </span><span class="c1"># Optional: Concurrent threads</span>
+<span class="w">  </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16384</span><span class="w">                  </span><span class="c1"># Optional: Max tokens</span>
+<span class="w">  </span><span class="nt">num_examples</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span><span class="w">                 </span><span class="c1"># Optional: Number of examples (all if null)</span>
+<span class="w">  </span><span class="nt">categories</span><span class="p">:</span><span class="w">                        </span><span class="c1"># Optional: Task categories</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"multi_doc_qa"</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"single_doc_qa"</span>
+</code></pre></div>
+<p>Runner defaults when unset: <code>max_context_length</code> 128000, <code>num_threads</code> 16, <code>max_tokens</code> 16384; every example and category.</p>
+<h3 id="router">router<a class="headerlink" href="#router" title="Permanent link">&para;</a></h3>
+<p>Router performance benchmark with prefix caching. <strong>Requires <code>frontend.type: sglang-router</code></strong>.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"router"</span>
+<span class="w">  </span><span class="nt">isl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">14000</span><span class="w">                         </span><span class="c1"># Optional: Input sequence length</span>
+<span class="w">  </span><span class="nt">osl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span><span class="w">                           </span><span class="c1"># Optional: Output sequence length</span>
+<span class="w">  </span><span class="nt">num_requests</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span><span class="w">                  </span><span class="c1"># Optional: Number of requests</span>
+<span class="w">  </span><span class="nt">concurrency</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20</span><span class="w">                    </span><span class="c1"># Optional: Concurrency level</span>
+<span class="w">  </span><span class="nt">prefix_ratios</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">0.1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0.3</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0.5</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0.7</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0.9</span><span class="p p-Indicator">]</span><span class="w">  </span><span class="c1"># Optional: Prefix ratios to test</span>
+</code></pre></div>
+<p>Runner defaults when unset: <code>isl</code> 14000, <code>osl</code> 200, <code>num_requests</code> 200, <code>concurrency</code> 20, <code>prefix_ratios</code> "0.1 0.3 0.5 0.7 0.9".</p>
+<h3 id="mooncake-router">mooncake-router<a class="headerlink" href="#mooncake-router" title="Permanent link">&para;</a></h3>
+<p>KV-aware routing benchmark using Mooncake conversation trace.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"mooncake-router"</span>
+<span class="w">  </span><span class="nt">mooncake_workload</span><span class="p">:</span><span class="w"> </span><span class="s">"conversation"</span><span class="w">  </span><span class="c1"># Optional: Trace type</span>
+<span class="w">  </span><span class="nt">ttft_threshold_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span><span class="w">            </span><span class="c1"># Optional: Goodput TTFT threshold</span>
+<span class="w">  </span><span class="nt">itl_threshold_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">25</span><span class="w">               </span><span class="c1"># Optional: Goodput ITL threshold</span>
+</code></pre></div>
+<p>Runner defaults when unset: <code>mooncake_workload</code> "conversation", <code>ttft_threshold_ms</code> 2000, <code>itl_threshold_ms</code> 25.</p>
+<p><strong>Workload options</strong>: <code>"mooncake"</code>, <code>"conversation"</code>, <code>"synthetic"</code>, <code>"toolagent"</code></p>
+<p>Dataset characteristics (conversation trace):
+- 12,031 requests over ~59 minutes (3.4 req/s)
+- Avg input: 12,035 tokens, Avg output: 343 tokens
+- 36.64% cache efficiency potential</p>
+<h3 id="agentperf">agentperf<a class="headerlink" href="#agentperf" title="Permanent link">&para;</a></h3>
+<p>Trajectory-replay benchmark using the standalone <a href="https://github.com/ArtificialAnalysis-External/agentperf-client">agentperf-client</a>, a deterministic agentic load generator with a Rust streaming core. The client checkout is mounted into the container (pin the commit for comparable runs); the workload definition (trajectory dataset, user-assignments file, <code>settling_time_seconds</code>, <code>phase_timeout_seconds</code>, stop criteria) lives in the client's own config YAML. srtctl injects the endpoint, model and concurrency at run time via the client's <code>--base-url</code> / <code>--model</code> / <code>--concurrencies</code> flags. Note the client validates the workload YAML <em>before</em> merging CLI overrides, so the YAML must still carry syntactically valid placeholder <code>base_url</code>, <code>model</code> and <code>concurrencies</code> values, and <code>phase_timeout_seconds</code> must satisfy the client's ramp-up bound for the <em>injected</em> concurrency (<code>phase_timeout_seconds &gt;= (concurrency - 1) / user_spawn_rate + settling_time_seconds + min_measurement_seconds</code>).</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="s">"agentperf"</span>
+<span class="w">  </span><span class="nt">agentperf_client_dir</span><span class="p">:</span><span class="w"> </span><span class="s">"/agentperf-client"</span><span class="w">       </span><span class="c1"># Container path to the client checkout</span>
+<span class="w">  </span><span class="nt">agentperf_config</span><span class="p">:</span><span class="w"> </span><span class="s">"/workloads/agentperf.yaml"</span><span class="w">   </span><span class="c1"># Container path to the client's workload YAML</span>
+<span class="w">  </span><span class="nt">concurrencies</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">1010</span><span class="p p-Indicator">]</span><span class="w">                           </span><span class="c1"># One benchmark phase per level</span>
+<span class="w">  </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">AGENTPERF_EXTRA_ARGS</span><span class="p">:</span><span class="w"> </span><span class="s">"--seed</span><span class="nv"> </span><span class="s">100"</span><span class="w">            </span><span class="c1"># Optional: appended to agentperf/run.py verbatim</span>
+
+<span class="nt">extra_mount</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"/path/on/host/agentperf-client:/agentperf-client"</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"/path/on/host/workloads:/workloads"</span>
+</code></pre></div>
+<p>Required: <code>agentperf_client_dir</code>, <code>agentperf_config</code>, and one of <code>concurrency</code> / <code>concurrencies</code> (the string form is x-separated, <code>"64x1010"</code>, as for the other types).</p>
+<p>Notes:
+- The first run of a job builds an isolated client runtime under <code>/tmp/agentperf-&lt;jobid&gt;</code> (uv env, pinned Rust toolchain, <code>rustcore</code> extension, tokenizer cache) and stages the trajectory and user-assignments datasets from shared storage to node-local <code>/tmp</code>; this preflight needs network egress from the benchmark node and adds several minutes before the first phase.
+- The user-assignments file referenced by the workload YAML must cover the highest concurrency level (<code>assign_trajectories</code> fails loudly otherwise).
+- Results land under <code>&lt;log_dir&gt;/agentperf/</code> (per-phase <code>*__traj*.{jsonl,txt,json}</code>, <code>requests.jsonl</code>, <code>phase_manifest.jsonl</code>); <code>rollup.py</code> normalizes them into <code>benchmark-rollup.json</code>.
+- Two runs must not share a results dir concurrently (the client resets <code>phase_manifest.jsonl</code> at start).
+- <code>telemetry:</code> (DCGM power measurement windows) is not supported with agentperf; the schema rejects non-sa-bench benchmark types at config load. Tachometer (<code>observability.enabled</code>) works normally.</p>
+<h3 id="mlperf">mlperf<a class="headerlink" href="#mlperf" title="Permanent link">&para;</a></h3>
+<p>MLPerf runs as a <strong><code>custom</code> benchmark driving the MLPerf team's <code>inference-endpoint</code> client</strong>, not as a benchmark type. srt-slurm carries no MLPerf-specific schema at all; the driver is a script at <code>/srtctl-benchmarks/mlperf/bench.sh</code>, mounted for every benchmark type.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">benchmark</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">custom</span>
+<span class="w">  </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bash /srtctl-benchmarks/mlperf/bench.sh</span>
+<span class="w">  </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">MLPERF_CLIENT_CONFIG</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/configs/dsr1-interactive-submission.yaml</span>
+<span class="w">    </span><span class="nt">MLPERF_MODE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">both</span><span class="w">            </span><span class="c1"># both (default) | perf | acc</span>
+
+<span class="nt">extra_mount</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"/path/to/client-configs:/configs"</span>
+</code></pre></div>
+<p><strong>The client config is passed through, not re-modelled.</strong> It carries ~60 nested settings (model params, two datasets with accuracy scoring, load pattern, a ZeroMQ transport block, drain/warmup/early-stopping) and its shape moves with the client version. Expressing any of it as srt-slurm settings would be a losing race and lossy: anything not modelled becomes unsettable. The script rewrites exactly two values, being the only two the config cannot know before the cluster exists:</p>
+<table>
+<thead>
+<tr>
+<th>Rewritten</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>endpoint_config.endpoints</code></td>
+<td>frontend IPs are assigned by Slurm at run time</td>
+</tr>
+<tr>
+<td><code>report_dir</code></td>
+<td>so results land with the job's other logs and get collected</td>
+</tr>
+</tbody>
+</table>
+<p>Everything else is passed through untouched, including unresolved <code>${VAR}</code> placeholders that the client expands itself at load time. This mirrors the MLPerf team's own launcher (<code>endpoints-launch</code>, <code>NVIDIA/src/sflow/tools/generate_endpoint_yaml.py</code>), which rewrites one key and leaves the rest.</p>
+<p>Start from a template in the client repo (<code>src/inference_endpoint/config/templates/submission_template.yaml</code>) or one of the ~45 point configs in <code>endpoints-launch</code> under <code>NVIDIA/src/configs/&lt;system&gt;/&lt;model&gt;/point_*/client.yaml</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MLPERF_CLIENT_CONFIG</code></td>
+<td>Yes</td>
+<td>-</td>
+<td>Container path to the client config</td>
+</tr>
+<tr>
+<td><code>MLPERF_MODE</code></td>
+<td>No</td>
+<td><code>both</code></td>
+<td><code>perf</code>, <code>acc</code>, or <code>both</code>. These are the client's own mode names; note they are <em>not</em> the <code>performance</code>/<code>accuracy</code> spellings used for dataset types inside the client config</td>
+</tr>
+<tr>
+<td><code>MLPERF_ENDPOINTS</code></td>
+<td>No</td>
+<td>the injected frontend</td>
+<td>Comma-separated list, for client-side load balancing</td>
+</tr>
+<tr>
+<td><code>MLPERF_CLIENT_BIN</code></td>
+<td>No</td>
+<td><code>inference-endpoint</code></td>
+<td>Client executable</td>
+</tr>
+</tbody>
+</table>
+<p>Notes:</p>
+<ul>
+<li><strong>Do not mount the client config at <code>/configs</code>.</strong> srt-slurm mounts its own <code>configs/</code> there, holding the <code>nats-server</code> and <code>etcd</code> binaries the head node starts from; an <code>extra_mount</code> onto the same path shadows them and the job dies early with <code>NATS binary not found: /configs/nats-server</code>, which reads like a broken install rather than a mount collision. Use any other path.</li>
+<li><strong>Run it in the MLPerf endpoint client image</strong> (<code>endpoint_client_*.sqsh</code>). The client ships pre-installed there, so there is nothing to build; the script checks it is on <code>PATH</code> and fails with that message if not.</li>
+<li><strong>The endpoint is injected, never defaulted.</strong> srt-slurm sets <code>SRT_FRONTEND_HOST</code> / <code>SRT_FRONTEND_PORT</code> for every custom benchmark, and the script errors if they are absent rather than quietly benchmarking localhost.</li>
+<li><strong><code>MLPERF_ENDPOINTS</code> is how you get more than one frontend.</strong> The client load-balances across the list itself, which is how MLPerf gets past the roughly 28k-connection ceiling of a single <code>ip:port</code>; its own submission configs ask for 84,000. srt-slurm exposes a single frontend today, so at submission scale this override is currently the only route.</li>
+<li>The script writes <code>benchmark-rollup.json</code> itself, which is the artifact srt-slurm's postprocess already reads. Per-run metrics are deliberately absent: this client does not use LoadGen and writes its own report format, which has not been observed here yet, and a fabricated parser would be worse than an honest gap. The record points at <code>report_dir</code> and lists what landed there.</li>
+</ul>
+<h2 id="post_eval">post_eval<a class="headerlink" href="#post_eval" title="Permanent link">&para;</a></h2>
+<p>How the accuracy evaluation is dispatched when the job environment sets <code>RUN_EVAL=true</code> (run after the benchmark) or <code>EVAL_ONLY=true</code> (run instead of it). srtctl forwards a built-in list of workflow variables into the eval process (<code>RUN_EVAL</code>, <code>EVAL_ONLY</code>, <code>MODEL</code>, <code>ISL</code>, <code>OSL</code>, <code>PREFILL_TP</code>, ...); this block extends that list and can replace the command, so a runner sets config instead of patching srtctl's source.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">post_eval</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">passthrough_env</span><span class="p">:</span><span class="w">          </span><span class="c1"># forwarded into the eval process when set in the job environment</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">EVAL_FRAMEWORK</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">EVAL_CONC</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">EVAL_LIMIT</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">EVAL_SUITE</span>
+<span class="w">  </span><span class="nt">command</span><span class="p">:</span><span class="w">                  </span><span class="c1"># optional; replaces the built-in lm-eval runner command</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bash</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/infmax-workspace/benchmarks/evals/run.sh</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"{endpoint}"</span>
+</code></pre></div>
+<p>Fields: <a href="../schema-reference/#postevalconfig">PostEvalConfig</a>. <code>command</code> may use <code>{endpoint}</code> (the frontend URL) and <code>{infmax_workspace}</code>; it is not shell-interpreted.</p>
+<p><code>MODEL_NAME</code> (the served model name) and <code>EVAL_CONC</code> are always set by srtctl. <code>srtctl dry-run</code> prints the effective dispatch.</p>
+<p>Eval steps inherit the recipe's <code>srun_options</code>, including container flags such as <code>container-writable</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
