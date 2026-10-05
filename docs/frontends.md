@@ -272,6 +272,38 @@ This path requires the same Python-supervised Rust frontend `--grpc-port`
 integration described below. Native vLLM headless support alone is insufficient
 to provide the leader's sidecar transport.
 
-Hybrid sidecars require compatible changes in **both** projects: vLLM's Python `serve` command must support `--grpc-port` for its Rust frontend, the Rust Control service must report `ParallelismInfo.data_parallel_size_local`, and Dynamo's sidecar must register that local range using the reported global start rank. Stock vLLM 0.29.0 does not supply these interfaces. Pin a compatible image or source build; merely upgrading the Dynamo wheel is insufficient. To use a specific Rust binary in the multi-node path, set `VLLM_RUST_FRONTEND_PATH` in the recipe's worker environment. srtctl preserves that path and supplies the Rust frontend selection automatically.
+Hybrid sidecars require compatible changes in **both** projects: vLLM's Python `serve` command must support `--grpc-port` for its Rust frontend ([vLLM #59659](https://github.com/vllm-project/vllm/pull/59659)), the Rust Control service must report `ParallelismInfo.data_parallel_size_local` ([vLLM #57116](https://github.com/vllm-project/vllm/pull/57116)), and Dynamo's sidecar must register that local range using the reported global start rank. Equivalent backports are sufficient. The `--grpc-port` requirement also applies to the leader of a cross-node TP/PP replica. Without it, Python exits with an unrecognized-argument error before the sidecar starts; switching to `vllm-rs serve` cannot recover hybrid DP because its launcher does not implement that topology.
+
+Pin a compatible image or source build; merely upgrading the Dynamo wheel is insufficient. srtctl does not automatically verify these capabilities in the worker image. To use a specific Rust binary in the multi-node path, set `VLLM_RUST_FRONTEND_PATH` in the recipe's worker environment. srtctl preserves that path and supplies the Rust frontend selection automatically.
 
 vLLM sidecar mode sets `VLLM_PLUGINS` to an empty value by default. This prevents image-installed plugins from replacing native engine output types that must match the fixed `vllm-rs` MessagePack contract. A recipe can explicitly set `VLLM_PLUGINS` in a role's `env` when every selected plugin is compatible with the sidecar protocol.
+
+#### vLLM sidecar versions and timeline
+
+The following checks describe the **native vLLM sidecar path**, as of **2026-10-05**. They are interface requirements, not an end-to-end qualification of every model, connector, or topology. Direct vLLM jobs and other backends have different requirements.
+
+For multi-node hybrid DP, use srt-slurm with [#420](https://github.com/NVIDIA/srt-slurm/pull/420) (`4bb5f649`), a vLLM main/nightly build containing [#59659](https://github.com/vllm-project/vllm/pull/59659) (`9d2a6f52b2`) and [#57116](https://github.com/vllm-project/vllm/pull/57116) (`9639cbde04`), and a Dynamo main/nightly build containing [#14697](https://github.com/ai-dynamo/dynamo/pull/14697) (`805a77f053`). Equivalent backports also satisfy these interfaces. Cross-node TP/PP additionally needs srt-slurm [#457](https://github.com/NVIDIA/srt-slurm/pull/457) (`71113bbd`); its leader needs the Python gRPC-port support, while the hybrid local-DP ownership requirement applies to hybrid DP.
+
+Release dates alone do not establish that a change is included: release branches can omit changes already merged to main. The table below was checked against the tagged source, including the Python CLI field, the protobuf local-DP field, and Dynamo's local-range discovery code.
+
+| Component / stock release | Relevant interfaces included | Remaining requirement for multi-node hybrid DP |
+| --- | --- | --- |
+| [vLLM 0.29.0](https://github.com/vllm-project/vllm/tree/v0.29.0) | Neither Python `--grpc-port` nor local-DP Control metadata | Both #59659 and #57116, plus a compatible Dynamo build |
+| [vLLM 0.30.0](https://github.com/vllm-project/vllm/tree/v0.30.0) | Engine-error propagation and selected-token logprob fixes; neither hybrid prerequisite | Both #59659 and #57116, plus a compatible Dynamo build |
+| [vLLM 0.31.0](https://github.com/vllm-project/vllm/tree/v0.31.0) | Local-DP metadata, `vllm-proto` 0.4.0 (including the local-DP field introduced in 0.3.0), appended-output-field compatibility, and `vllm-rs` on the CUDA image's `PATH` | Still lacks Python `--grpc-port` (#59659); backport it or use a main/nightly build containing it |
+| [Dynamo 1.5.0](https://github.com/ai-dynamo/dynamo/tree/v1.5.0) | Wheel-installed vLLM sidecar launcher and complete-group DP routing | Lacks hybrid local-range ownership (#14697); use a main/nightly build containing it or an equivalent backport |
+
+For example, **vLLM 0.31.0 plus #59659**, together with **Dynamo containing #14697**, satisfies these hybrid launch/discovery prerequisites. Stock vLLM 0.31.0 plus stock Dynamo 1.5.0 does not. Pin matching `ai-dynamo` and `ai-dynamo-runtime` artifacts, and keep Python vLLM and its Rust frontend from the same build. Single-node sidecars already use `vllm-rs serve`, so they do not require Python's `--grpc-port` addition; the image must still provide the compatible Rust executable on `PATH`.
+
+Merge dates below use America/Los_Angeles time. The `vllm-proto` crate version is separate from the vLLM Python package version.
+
+| Merge date (2026) | Change | Effect on srt-slurm sidecars |
+| --- | --- | --- |
+| Aug 27 | [Dynamo #13923](https://github.com/ai-dynamo/dynamo/pull/13923) | Adds the wheel-installed `python3 -m dynamo.vllm.sidecar` launcher |
+| Sep 11–14 | [vLLM #56405](https://github.com/vllm-project/vllm/pull/56405), [#56406](https://github.com/vllm-project/vllm/pull/56406) | Propagates engine generation errors and preserves selected-token logprob mode; these are serving fixes, not the hybrid launch prerequisites |
+| Sep 16 | [vLLM #57116](https://github.com/vllm-project/vllm/pull/57116), [#57233](https://github.com/vllm-project/vllm/pull/57233) | Reports the frontend's local DP size and bumps `vllm-proto` to 0.3.0 for downstream consumers |
+| Sep 16 | [vLLM #56533](https://github.com/vllm-project/vllm/pull/56533) | Accepts appended `EngineCoreOutput` fields, avoiding failures from plugins such as vLLM-Omni; does not add full Omni serving support |
+| Sep 18 | [Dynamo #14697](https://github.com/ai-dynamo/dynamo/pull/14697) | Consumes local-DP metadata and registers each frontend's actual rank range and per-rank KV capacity |
+| Sep 18 | [srt-slurm #420](https://github.com/NVIDIA/srt-slurm/pull/420), [#457](https://github.com/NVIDIA/srt-slurm/pull/457) | Launches Python-supervised Rust frontends per hybrid-DP node, or one frontend with headless followers for cross-node TP/PP |
+| Sep 21 | [vLLM #57606](https://github.com/vllm-project/vllm/pull/57606) | Exposes the bundled `vllm-rs` on the CUDA image's `PATH`; this is an image packaging fix |
+| Oct 2 | [vLLM #59659](https://github.com/vllm-project/vllm/pull/59659) | Exposes Python `vllm serve --grpc-port`, removing the need for a CLI backport on a main build containing this change |
