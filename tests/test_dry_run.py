@@ -71,6 +71,21 @@ def test_cluster_gpu_visibility_is_visible(tmp_path, monkeypatch, capsys):
     assert "GPU subset visibility variable: ROCR_VISIBLE_DEVICES" in capsys.readouterr().out
 
 
+def test_role_restart_policy_and_limits_are_visible(capsys):
+    config = _make_config(
+        {"roles": {"decode": {"restart": {"policy": "on-failure", "max_restarts": 2, "backoff_seconds": 4}}}}
+    )
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert "decode: restart=on-failure, max_restarts=2, backoff_seconds=4, max_backoff_seconds=300" in output
+    assert "prefill: restart=" not in output
+
+
+def test_default_restart_policy_keeps_dry_run_unchanged(capsys):
+    show_config_details(_make_config())
+    assert "restart=" not in capsys.readouterr().out
+
+
 def test_role_engines_images_and_environments_are_visible(capsys):
     data = yaml.safe_load(Path("examples/vllm/vllm-router-disagg.yaml").read_text())
     engine = data.pop("engine")
@@ -409,6 +424,22 @@ class TestDryRunSrunOptions:
         output = capsys.readouterr().out
         assert "--export=ALL" in output
         assert "--cpu-bind=none" in output
+
+    def test_role_srun_options_shown(self, capsys):
+        config = _make_config(
+            {
+                "srun_options": {"mem": "0"},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1, "gpus": 2, "srun_options": {"mem": "1000M"}},
+                    "decode": {"nodes": "colocate", "workers": 1, "gpus": 6, "srun_options": {"mem": "3000M"}},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "srun options: --mem=0" in output
+        assert "prefill worker srun options (override recipe): --mem=1000M" in output
+        assert "decode worker srun options (override recipe): --mem=3000M" in output
 
     def test_no_srun_options_no_output(self, capsys):
         config = _make_config()

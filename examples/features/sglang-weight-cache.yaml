@@ -1,0 +1,84 @@
+# SGLang fast engine recovery: SGLang's weight cache daemon next to every worker,
+# and a restart policy that relaunches a dead engine in place.
+#
+# One generic per-worker service runs `python -m sglang.srt.weight_cache.daemon`
+# in the worker's CUDA_VISIBLE_DEVICES. It loads the model once and exports every
+# tensor as CUDA IPC handles; the engine starts with `--weight-cache-mode client`
+# and maps them instead of reading the weights from disk, so an engine relaunched
+# by `roles.<role>.restart` skips the weight load. Nothing here is specific to
+# srtctl beyond services and the restart policy. Needs SGLang v0.5.19 or newer
+# (env-configurable socket paths). See docs/sglang-weight-cache.md for what runs,
+# the limits, and how to test a relaunch. Aliases resolve through srtslurm.yaml.
+
+schema: 2
+name: "qwen3-0.6b-sglang-weight-cache"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"               # an image with SGLang v0.5.19 or newer
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+frontend:
+  type: sglang-router
+  enable_multiple_frontends: false
+
+engine: sglang
+
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 2
+    restart:
+      policy: always                # relaunch an exited engine in place; it maps the cached weights
+      backoff_seconds: 5
+    env:
+      PYTHONUNBUFFERED: "1"
+      # Same templates on the daemon and the engine. /tmp (SGLang's default) is a
+      # per-container tmpfs under enroot; /dev/shm is the host's, seen by every step.
+      SGLANG_WEIGHT_CACHE_SOCKET_TEMPLATE: "/dev/shm/sglang-wc/{device_uuid}.sock"
+      SGLANG_WEIGHT_CACHE_READY_TEMPLATE: "/dev/shm/sglang-wc/{device_uuid}.ready"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 2
+      weight-cache-mode: client     # map the daemon's tensors; disk load only if no daemon is there
+      mem-fraction-static: 0.5
+      context-length: 4096
+
+services:
+  - name: weight-cache
+    type: generic
+    start: before_workers           # up before the engines, stopped after them
+    critical: true                  # an engine SIGKILLs itself when its daemon dies
+    placement:
+      node: agg
+      per: worker                   # one daemon group per worker, in that worker's device mask
+    env:
+      PYTHONUNBUFFERED: "1"
+      SGLANG_WEIGHT_CACHE_SOCKET_TEMPLATE: "/dev/shm/sglang-wc/{device_uuid}.sock"
+      SGLANG_WEIGHT_CACHE_READY_TEMPLATE: "/dev/shm/sglang-wc/{device_uuid}.ready"
+    preamble: "mkdir -p /dev/shm/sglang-wc"
+    # The engine's model, parallelism, dtype and quantization flags, exactly: the
+    # engine refuses a daemon whose fingerprint differs.
+    command:
+      - python3
+      - -m
+      - sglang.srt.weight_cache.daemon
+      - --model-path
+      - /model
+      - --tensor-parallel-size
+      - "2"
+    readiness:
+      log:
+        pattern: "All 2 weight cache daemons on node 0 are ready"
+      timeout_seconds: 900
+
+benchmark:
+  type: manual                      # serve until scancel; kill an engine process and watch it come back

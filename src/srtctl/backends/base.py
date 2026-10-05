@@ -2,13 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Base types and protocols for backend configurations.
+Base classes and shared behavior for backend configurations.
 """
 
+from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional
 
 from marshmallow import ValidationError, fields
 
@@ -61,32 +62,18 @@ class SrunConfig:
     kill_on_bad_exit: bool = False
 
 
-class RoleSettings(Protocol):
+class RoleSettings(ABC):
     """What an engine reads from one role of the recipe (``roles.<role>``).
 
-    ``srtctl.core.schema.RoleConfig`` satisfies this. Engines depend on the shape
-    only, so the schema can import the engines without a cycle.
+    ``srtctl.core.schema.RoleConfig`` inherits this data contract. Keeping the
+    contract here lets the schema import engines without a cycle. Concrete
+    dataclasses supply the fields and defaults.
     """
 
-    @property
-    def env(self) -> Mapping[str, str]:
-        """Environment for every worker of the role."""
-        ...
-
-    @property
-    def args(self) -> Mapping[str, Any]:
-        """The engine's own CLI flags for the role."""
-        ...
-
-    @property
-    def extra_args(self) -> Sequence[str]:
-        """Raw extra CLI arguments (TRT-LLM only)."""
-        ...
-
-    @property
-    def kv_events(self) -> "bool | Mapping[str, Any] | None":
-        """``true`` for the default publisher, a mapping of publisher settings, or None."""
-        ...
+    env: Mapping[str, str]
+    args: Mapping[str, Any]
+    extra_args: Sequence[str]
+    kv_events: bool | Mapping[str, Any] | None
 
 
 class BoundRolesField(fields.Field):
@@ -127,10 +114,10 @@ def role_kv_events(roles: Mapping[str, RoleSettings], mode: str, defaults: Mappi
     return {**defaults, **kv_events}
 
 
-class BackendProtocol(Protocol):
-    """Protocol that all backend configurations must implement.
+class Backend(ABC):
+    """Abstract base class for backend configurations.
 
-    This allows frozen dataclasses to act as backends by implementing these methods.
+    Concrete frozen dataclasses inherit optional defaults and implement the launch hooks.
     Each backend is responsible for:
     1. Allocating logical endpoints (serving units)
     2. Converting endpoints to physical processes
@@ -138,9 +125,10 @@ class BackendProtocol(Protocol):
     """
 
     @property
+    @abstractmethod
     def type(self) -> str:
         """Backend type identifier."""
-        ...
+        raise NotImplementedError
 
     @property
     def mooncake_kv_store(self) -> "MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | None":
@@ -149,7 +137,7 @@ class BackendProtocol(Protocol):
         Set, it implies the mooncake-master service and the MOONCAKE_* worker
         environment from get_mooncake_worker_env.
         """
-        ...
+        return None
 
     @property
     def failover(self) -> "VLLMFailoverConfig | None":
@@ -158,24 +146,17 @@ class BackendProtocol(Protocol):
         Set, it implies the gms service and the per-worker environment from
         get_failover_environment.
         """
-        ...
+        return None
 
-    @property
-    def roles(self) -> Mapping[str, RoleSettings]:
-        """The roles this engine runs (``roles.<role>`` of the recipe), bound by SrtConfig.
-
-        Per-role environment, engine arguments, extra CLI arguments and KV-event
-        settings are read from here; ``get_environment_for_mode`` and
-        ``get_config_for_mode`` are the per-mode views.
-        """
-        ...
+    # Bound recipe roles; concrete dataclasses own the field and its serialization.
+    roles: Mapping[str, RoleSettings]
 
     def get_srun_config(self) -> SrunConfig:
         """Get srun configuration for this backend.
 
         Returns SrunConfig with MPI settings and launch strategy.
         """
-        ...
+        return SrunConfig()
 
     def fatal_log_patterns(self, mode: str) -> tuple[str, ...]:
         """Regular expressions that, printed in a worker's log, mean the engine is gone.
@@ -186,16 +167,17 @@ class BackendProtocol(Protocol):
         engine answer ``()``; an engine behind a launcher that keeps the step
         alive names the lines the launcher prints once the engine has died.
         """
-        ...
+        return ()
 
     def get_config_for_mode(self, mode: str) -> dict[str, Any]:
         """The role's engine arguments (``roles.<role>.args``) for a worker mode (prefill/decode/agg)."""
-        ...
+        return role_args(self.roles, mode)
 
     def get_environment_for_mode(self, mode: str) -> dict[str, str]:
         """The role's environment (``roles.<role>.env``) for a worker mode, before engine defaults."""
-        ...
+        return role_env(self.roles, mode)
 
+    @abstractmethod
     def allocate_endpoints(
         self,
         num_prefill: int,
@@ -209,8 +191,9 @@ class BackendProtocol(Protocol):
         spread_workers: bool = False,
     ) -> list["Endpoint"]:
         """Allocate logical endpoints based on resource requirements."""
-        ...
+        raise NotImplementedError
 
+    @abstractmethod
     def endpoints_to_processes(
         self,
         endpoints: list["Endpoint"],
@@ -220,8 +203,9 @@ class BackendProtocol(Protocol):
         dynamo_sidecar: bool = False,
     ) -> list["Process"]:
         """Convert logical endpoints to physical processes."""
-        ...
+        raise NotImplementedError
 
+    @abstractmethod
     def build_worker_command(
         self,
         process: "Process",
@@ -233,7 +217,7 @@ class BackendProtocol(Protocol):
         profiling: "ProfilingConfig | None" = None,
     ) -> list[str]:
         """Build command to start a worker process."""
-        ...
+        raise NotImplementedError
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
@@ -248,15 +232,15 @@ class BackendProtocol(Protocol):
         Returns:
             Dict of environment variable names to values.
         """
-        ...
+        return {}
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
         """MOONCAKE_* environment for a worker; empty when mooncake_kv_store is None."""
-        ...
+        return {}
 
     def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
         """Shadow engine recovery environment for a worker; empty when failover is None."""
-        ...
+        return {}
 
     def should_set_visible_devices(self) -> bool:
         """Whether the worker stage pins each process to its GPUs with the cluster's device mask.
@@ -265,8 +249,8 @@ class BackendProtocol(Protocol):
         ROCR_VISIBLE_DEVICES). True for engines that read the environment; an
         engine that takes its devices on the command line answers False.
         """
-        ...
+        return True
 
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from backend config, or return default."""
-        ...
+        return default

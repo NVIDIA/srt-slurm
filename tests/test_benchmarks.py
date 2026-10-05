@@ -245,7 +245,7 @@ class TestCustomBenchmarkRunner:
     ):
         from types import SimpleNamespace
 
-        from srtctl.backends import TRTLLMProtocol
+        from srtctl.backends import TRTLLMBackend
         from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
 
         class Stage(BenchmarkStageMixin):
@@ -253,7 +253,7 @@ class TestCustomBenchmarkRunner:
             def backend_processes(self):
                 return processes
 
-        # Mirrors TRTLLMProtocol.get_config_for_mode: the engine yaml section for
+        # Mirrors TRTLLMBackend.get_config_for_mode: the engine yaml section for
         # a worker mode ("agg" maps to the "aggregated" section).
         engine_sections = trtllm_config or {}
 
@@ -268,7 +268,7 @@ class TestCustomBenchmarkRunner:
         if backend_type == "trtllm":
             from srtctl.core.schema import RoleConfig
 
-            backend = TRTLLMProtocol(
+            backend = TRTLLMBackend(
                 publish_metrics=publish_metrics,
                 publish_events_and_metrics=publish_events_and_metrics,
                 roles={
@@ -1397,7 +1397,7 @@ class TestGSM8KRunner:
     def _sglang_config(self, **benchmark_kwargs):
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
-        # Default backend is SGLangProtocol.
+        # Default backend is SGLangBackend.
         return SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/image", precision="fp4"),
@@ -1406,14 +1406,14 @@ class TestGSM8KRunner:
         )
 
     def _vllm_config(self, served_model_name="Qwen3.5-397B-A17B-NVFP4", **benchmark_kwargs):
-        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.backends.vllm import VLLMBackend
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig, RoleConfig
 
         return SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/image", precision="fp4"),
             resources=ResourceConfig(gpu_type="gb200"),
-            engine=VLLMProtocol(),
+            engine=VLLMBackend(),
             roles={"decode": RoleConfig(args={"served-model-name": served_model_name})},
             benchmark=BenchmarkConfig(type="gsm8k", **benchmark_kwargs),
         )

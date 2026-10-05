@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import yaml
 
-from srtctl.backends.vllm import VLLMProtocol
+from srtctl.backends.vllm import VLLMBackend
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
@@ -42,7 +42,7 @@ ROUTER_POLICY_CONFIG_FILENAME = "router_policy_config.yaml"
 ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
 
 
-def _vllm_mode_config(backend: VLLMProtocol, mode: str) -> dict[str, Any]:
+def _vllm_mode_config(backend: VLLMBackend, mode: str) -> dict[str, Any]:
     """The recipe's vLLM args (``roles.<role>.args``) for a health mode name (prefill, decode, aggregated)."""
     return backend.get_config_for_mode(cast("WorkerMode", "agg" if mode == "aggregated" else mode))
 
@@ -50,7 +50,7 @@ def _vllm_mode_config(backend: VLLMProtocol, mode: str) -> dict[str, Any]:
 def vllm_data_parallel_size(config: Any, mode: str) -> int:
     """Return vLLM data parallel size for a mode, defaulting to one."""
     backend = config.backend
-    if not isinstance(backend, VLLMProtocol):
+    if not isinstance(backend, VLLMBackend):
         return 1
     mode_config = _vllm_mode_config(backend, mode)
     return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
@@ -69,7 +69,7 @@ def vllm_health_entries(
     spans nodes.
     """
     backend = config.backend
-    if not isinstance(backend, VLLMProtocol):
+    if not isinstance(backend, VLLMBackend):
         return logical_workers
     dp_size = vllm_data_parallel_size(config, mode)
     if dp_size > 1 and backend.dp_launch_mode == "per_node":
@@ -175,7 +175,7 @@ class DynamoFrontend(DynamicFrontend):
         logical worker.
         """
         logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
-        if not isinstance(config.backend, VLLMProtocol):
+        if not isinstance(config.backend, VLLMBackend):
             return logical_prefill, logical_decode, worker_desc
         if config.topology.num_agg > 0:
             n_prefill = 0
@@ -194,7 +194,7 @@ class DynamoFrontend(DynamicFrontend):
         topology: Any,  # FrontendTopology
         runtime: "RuntimeContext",
         config: Any,  # SrtConfig
-        backend: Any,  # BackendProtocol
+        backend: Any,  # Backend
         backend_processes: list["Process"],
         stop_event: "threading.Event | None" = None,  # unused: returns immediately
     ) -> list["ManagedProcess"]:

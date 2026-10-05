@@ -13,12 +13,13 @@ indexed query semantics, static detail format and browser API.
 Before using DSight, agents must read this guide and load the applicable skills
 below by reading their `SKILL.md` files. This applies when building or querying
 reports, analyzing existing results, preparing dashboard views, or changing
-DSight code. The skills are maintained alongside DSight; no global installation
+DSight code. The skills are maintained in this repository; no global installation
 is required.
 
 | Skill | When to load it |
 | --- | --- |
-| [dsight-query](../src/srtctl/dsight/skills/dsight-query/SKILL.md) | Query an existing report, inspect source coverage, compare runs, or gather evidence for a dashboard view. Prefer the normalized SQLite cache through the read-only CLI, Python or MCP interface. |
+| [dsight-query](https://github.com/NVIDIA/srt-slurm/blob/main/.agents/skills/dsight-query/SKILL.md) | Query an existing report, inspect source coverage, compare runs, or gather evidence for a dashboard view. Prefer the normalized SQLite cache through the read-only CLI, Python or MCP interface. |
+| [slurm-job-sizing](https://github.com/NVIDIA/srt-slurm/blob/main/src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md) | Prepare or submit Slurm jobs: prefer short, parallel hypothesis tests for debugging; size full runs from history and phase timing distributions while preserving non-preemptible resources. |
 
 ## Generate on a cluster login node
 
@@ -323,7 +324,7 @@ per-request assignment of shared batch time is applied.
 
 ## Session zoom example
 
-Build the small client-only capture in [examples/dsight/fit-session](../examples/dsight/fit-session):
+Build the small client-only capture in [examples/dsight/fit-session](https://github.com/NVIDIA/srt-slurm/blob/main/examples/dsight/fit-session):
 
 ```bash
 uv run --no-dev srtctl dsight build examples/dsight/fit-session --output /tmp/dsight-fit-session
@@ -423,7 +424,7 @@ The implementation separates these responsibilities:
   and SGLang. Each can provide any subset of NVTX names/prefixes, a single-line
   log decoder and exact metric definitions. Log decoders return typed identity, iteration and snapshot observations.
   Decoding has no clocks, joins, filesystem access or UI state.
-- `log_metrics/base.py` defines the `LogMetricGenerator` Protocol and immutable
+- `log_metrics/base.py` defines the `LogMetricGenerator` abstract base class and immutable
   metric definitions/events. `log_metrics/tokenspeed.py` implements its
   Dynamo–TokenSpeed dialect, and `log_metrics/sglang.py` implements SGLang batch
   snapshots and completed-request statistics. `log_metrics/reader.py` normalizes all registered

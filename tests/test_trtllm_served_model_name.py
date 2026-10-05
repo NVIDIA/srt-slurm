@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from srtctl.backends.trtllm import TRTLLMProtocol
+from srtctl.backends.trtllm import TRTLLMBackend
 from srtctl.core.schema import DynamoConfig, RoleConfig
 from srtctl.core.topology import Process
 
@@ -23,20 +23,20 @@ class TestTRTLLMServedModelName:
     """
 
     def test_defaults_to_the_checkpoint_directory_name(self):
-        assert TRTLLMProtocol().get_served_model_name("deepseek_r1-torch-fp4-v2") == "deepseek_r1-torch-fp4-v2"
+        assert TRTLLMBackend().get_served_model_name("deepseek_r1-torch-fp4-v2") == "deepseek_r1-torch-fp4-v2"
 
     def test_configured_name_wins(self):
-        backend = TRTLLMProtocol(served_model_name="deepseek-ai/deepseek-r1")
+        backend = TRTLLMBackend(served_model_name="deepseek-ai/deepseek-r1")
         assert backend.get_served_model_name("deepseek_r1-torch-fp4-v2") == "deepseek-ai/deepseek-r1"
 
     def test_empty_string_falls_back_to_the_default(self):
         """An empty value in a recipe should not serve the model under an empty name."""
-        assert TRTLLMProtocol(served_model_name="").get_served_model_name("ckpt") == "ckpt"
+        assert TRTLLMBackend(served_model_name="").get_served_model_name("ckpt") == "ckpt"
 
     def test_is_not_written_into_the_engine_yaml(self):
         """trtllm_config becomes the engine's YAML file, and this is a launcher
         flag, so it must not leak in there."""
-        backend = TRTLLMProtocol(
+        backend = TRTLLMBackend(
             served_model_name="deepseek-ai/deepseek-r1", roles={"agg": RoleConfig(args={"tensor_parallel_size": 4})}
         )
         rendered = backend.get_config_for_mode("agg")
@@ -46,7 +46,7 @@ class TestTRTLLMServedModelName:
 
     def test_reaches_the_worker_command(self):
         """The worker must actually be launched with the configured name."""
-        backend = TRTLLMProtocol(served_model_name="deepseek-ai/deepseek-r1")
+        backend = TRTLLMBackend(served_model_name="deepseek-ai/deepseek-r1")
         runtime = MagicMock()
         runtime.model_path = Path("/models/deepseek_r1-torch-fp4-v2")
         runtime.request_plane = "nats"
@@ -60,7 +60,7 @@ class TestTRTLLMServedModelName:
 
     @pytest.mark.parametrize("name", ["org/model", None])
     def test_direct_worker_receives_explicit_name(self, tmp_path: Path, name: str | None) -> None:
-        backend = TRTLLMProtocol(served_model_name=name)
+        backend = TRTLLMBackend(served_model_name=name)
         runtime = SimpleNamespace(
             model_path=Path("/weights/checkpoint"),
             worker_model_arg="/model",

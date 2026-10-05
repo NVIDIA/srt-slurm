@@ -40,7 +40,7 @@ class CustomBenchmarkRunner(BenchmarkRunner):
     * Runtime-discovered frontend and logical worker endpoints are injected
       through ``SRT_*`` environment variables. Custom AIPerf commands also
       receive ``AIPERF_SERVER_METRICS_URLS``. Multi-node follower ranks are
-      intentionally excluded; see ``docs/config-reference.md`` for the full
+      intentionally excluded; see ``docs/benchmarks.md`` for the full
       contract.
     """
 

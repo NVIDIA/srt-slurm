@@ -5,7 +5,7 @@ Config overrides let you define a single YAML file with a shared `base` configur
 ## Table of Contents
 
 - [Overview](#overview)
-- [base + override\_\*](#base--override_)
+- [base + override\_\*](#base-override_)
 - [zip\_override\_\*](#zip_override_)
 - [Selector Syntax](#selector-syntax)
 - [Combining All Modes](#combining-all-modes)
@@ -88,6 +88,7 @@ To also submit the base config: `srtctl apply -f config.yaml:base`.
 
 If an `override_*` section includes a `name:` field, it is used as the job name. Otherwise, the name is auto-generated as `{base_name}_{suffix}`:
 
+<!-- docs-yaml: skip -->
 ```yaml
 override_maxtpt:
   name: "my-job-max-throughput"   # used as-is
@@ -110,6 +111,7 @@ override_lowmem:                  # no name → auto-generates "my-job_lowmem"
 
 `zip_override_*` sections generate **N jobs** by zipping list-valued leaves in parallel — like Python's `zip()`. Use this to sweep a set of parameters that belong together.
 
+<!-- docs-yaml: skip -->
 ```yaml
 base:
   name: "my-job"
@@ -236,6 +238,7 @@ srtctl dry-run -f config.yaml:*maxtpt*
 
 You can mix `override_*` and `zip_override_*` in a single file:
 
+<!-- docs-yaml: skip -->
 ```yaml
 base:
   name: "my-job"

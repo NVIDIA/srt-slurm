@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from marshmallow import ValidationError
 
-from srtctl.backends import VLLMProtocol
+from srtctl.backends import VLLMBackend
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
 from srtctl.core.schema import FrontendConfig, PlacementConfig, ResourceConfig, RoleConfig, SrtConfig
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process
@@ -44,7 +44,7 @@ def test_static_router_aggregate_command_advertises_all_bases(frontend_type: str
         ],
         "0.0.0.0",
         8000,
-        VLLMProtocol(),
+        VLLMBackend(),
     )
 
     assert command[command.index("--worker-urls") + 1 : -4] == [
@@ -63,7 +63,7 @@ def test_vllm_router_pd_command_uses_nixl_bootstrap_ports() -> None:
         ],
         "0.0.0.0",
         8000,
-        VLLMProtocol(),
+        VLLMBackend(),
     )
 
     assert command[:2] == ["vllm-router", "--vllm-pd-disaggregation"]
@@ -75,7 +75,7 @@ def test_vllm_router_pd_command_uses_nixl_bootstrap_ports() -> None:
 
 def test_discovery_connector_router_registers_workers_instead_of_listing_them() -> None:
     """With MoRI-IO the Router runs in discovery mode: connector and ZMQ address flags, no worker URLs."""
-    backend = VLLMProtocol(connector="moriio")
+    backend = VLLMBackend(connector="moriio")
     command = VLLMRouterFrontend().build_router_command(
         [
             RouterWorker("prefill", "http://10.0.0.1:6100"),
@@ -97,8 +97,8 @@ def test_discovered_workers_advertise_no_nixl_bootstrap_port() -> None:
     process = Process("p0", frozenset({0}), 7500, 6100, "prefill", 0, nixl_port=5400)
     frontend = VLLMRouterFrontend()
 
-    assert frontend.worker_bootstrap_port(VLLMProtocol(), process) == 5400
-    assert frontend.worker_bootstrap_port(VLLMProtocol(connector="moriio"), process) is None
+    assert frontend.worker_bootstrap_port(VLLMBackend(), process) == 5400
+    assert frontend.worker_bootstrap_port(VLLMBackend(connector="moriio"), process) is None
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ def test_discovery_connector_recipe_rules(recipe: dict, message: str) -> None:
                 "decode": RoleConfig(nodes=1, workers=1, args=decode_args),
             },
             frontend=FrontendConfig(**frontend),
-            engine=VLLMProtocol(connector="moriio"),
+            engine=VLLMBackend(connector="moriio"),
         )
 
 
@@ -158,14 +158,14 @@ def test_a_discovering_router_lists_no_worker_urls_and_no_bootstrap_port() -> No
             return True
 
     workers = [RouterWorker("prefill", "http://10.0.0.1:6100", 5400), RouterWorker("decode", "http://10.0.0.2:6100")]
-    command = DiscoveringRouter().build_router_command(workers, "0.0.0.0", 8000, VLLMProtocol())
+    command = DiscoveringRouter().build_router_command(workers, "0.0.0.0", 8000, VLLMBackend())
     process = Process("p0", frozenset({0}), 7500, 6100, "prefill", 0, nixl_port=5400)
 
     assert command[:2] == ["vllm-router", "--vllm-pd-disaggregation"]
     assert "--prefill" not in command and "--decode" not in command
     assert command[-4:] == ["--host", "0.0.0.0", "--port", "8000"]
-    assert DiscoveringRouter().worker_bootstrap_port(VLLMProtocol(), process) is None
-    assert VLLMRouterFrontend().worker_bootstrap_port(VLLMProtocol(), process) == 5400
+    assert DiscoveringRouter().worker_bootstrap_port(VLLMBackend(), process) is None
+    assert VLLMRouterFrontend().worker_bootstrap_port(VLLMBackend(), process) == 5400
 
 
 def test_collect_workers_uses_positive_http_ports_and_configured_interface() -> None:
@@ -177,7 +177,7 @@ def test_collect_workers_uses_positive_http_ports_and_configured_interface() -> 
     ]
 
     with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=["10.0.0.1", "10.0.0.2"]) as resolve:
-        workers = frontend.collect_workers(VLLMProtocol(), processes, "ib0")
+        workers = frontend.collect_workers(VLLMBackend(), processes, "ib0")
 
     assert workers == [
         RouterWorker("prefill", "http://10.0.0.1:6100", 5400),
@@ -187,7 +187,7 @@ def test_collect_workers_uses_positive_http_ports_and_configured_interface() -> 
 
 
 def test_dep4_expansion_and_health_counts_follow_upstream_per_node_topology() -> None:
-    backend = VLLMProtocol(
+    backend = VLLMBackend(
         roles={
             "prefill": RoleConfig(args={"data-parallel-size": 4}),
             "decode": RoleConfig(args={"data-parallel-size": 4}),
@@ -216,7 +216,7 @@ def test_dep4_expansion_and_health_counts_follow_upstream_per_node_topology() ->
 
 def test_multinode_dep8_routes_node_local_hybrid_pools_without_rank_reexpansion() -> None:
     """A later node owns global ranks 4..7, not another local 0..3 namespace."""
-    backend = VLLMProtocol(
+    backend = VLLMBackend(
         roles={
             "prefill": RoleConfig(args={"data-parallel-size": 8}),
             "decode": RoleConfig(args={"data-parallel-size": 8}),
@@ -271,7 +271,7 @@ def test_multinode_hybrid_pool_schema_matches_router_expansion(expansion: int) -
 
 
 def test_cross_node_model_parallel_base_is_not_dp_expanded() -> None:
-    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"data-parallel-size": 2, "tensor-parallel-size": 8})})
+    backend = VLLMBackend(roles={"agg": RoleConfig(args={"data-parallel-size": 2, "tensor-parallel-size": 8})})
     process = Process("n0", frozenset(range(4)), 7500, 6100, "agg", 0)
 
     assert routed_process_dp_size(backend, process) == 1
@@ -279,7 +279,7 @@ def test_cross_node_model_parallel_base_is_not_dp_expanded() -> None:
 
 def test_managed_args_derive_dp_and_startup_timeout_without_overriding_user_policy() -> None:
     frontend = VLLMRouterFrontend()
-    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"data-parallel-size": 4})})
+    backend = VLLMBackend(roles={"agg": RoleConfig(args={"data-parallel-size": 4})})
     processes = [Process("n0", frozenset(range(4)), 7500, 6100, "agg", 0)]
     config = SimpleNamespace(
         frontend=SimpleNamespace(args={"policy": "consistent_hash"}),
@@ -347,7 +347,7 @@ def test_vllm_router_setup_preamble_is_adapter_specific() -> None:
 
 
 def test_schema_rejects_backend_mismatch_and_deprecated_per_gpu_dp() -> None:
-    from srtctl.backends import SGLangProtocol
+    from srtctl.backends import SGLangBackend
 
     common = {
         "name": "router",
@@ -356,17 +356,17 @@ def test_schema_rejects_backend_mismatch_and_deprecated_per_gpu_dp() -> None:
         "frontend": FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
     }
     with pytest.raises(ValidationError, match="requires backend.type: vllm"):
-        SrtConfig(**common, engine=SGLangProtocol(), roles={"agg": RoleConfig(nodes=1, workers=1)})
+        SrtConfig(**common, engine=SGLangBackend(), roles={"agg": RoleConfig(nodes=1, workers=1)})
     with pytest.raises(ValidationError, match="requires backend.dp_launch_mode: per_node"):
         SrtConfig(
             **common,
-            engine=VLLMProtocol(dp_launch_mode="per_gpu"),
+            engine=VLLMBackend(dp_launch_mode="per_gpu"),
             roles={"agg": RoleConfig(nodes=1, workers=1, args={"data-parallel-size": 8})},
         )
 
 
 def test_vllm_router_preserves_upstream_multinode_tp_serve() -> None:
-    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"tensor-parallel-size": 8})})
+    backend = VLLMBackend(roles={"agg": RoleConfig(args={"tensor-parallel-size": 8})})
     endpoint = Endpoint("agg", 0, ("n0", "n1"), frozenset(range(4)), gpus_per_node=4)
     processes = backend.endpoints_to_processes(
         [endpoint], port_allocator=NodePortAllocator(), frontend_type="vllm-router"
@@ -385,7 +385,7 @@ def test_vllm_router_preserves_upstream_multinode_tp_serve() -> None:
 
 
 def test_vllm_router_per_node_dep4_launches_one_api_per_node_pool() -> None:
-    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"data-parallel-size": 8})})
+    backend = VLLMBackend(roles={"agg": RoleConfig(args={"data-parallel-size": 8})})
     endpoint = Endpoint("agg", 0, ("n0", "n1"), frozenset(range(4)), gpus_per_node=4)
     processes = backend.endpoints_to_processes(
         [endpoint], port_allocator=NodePortAllocator(), frontend_type="vllm-router"
@@ -406,7 +406,7 @@ def test_vllm_router_per_node_dep4_launches_one_api_per_node_pool() -> None:
 
 def test_single_node_dp_preserves_native_vllm_topology() -> None:
     """A single server owns local DP ranks; srt-slurm must not split it."""
-    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"tensor-parallel-size": 2, "data-parallel-size": 2})})
+    backend = VLLMBackend(roles={"agg": RoleConfig(args={"tensor-parallel-size": 2, "data-parallel-size": 2})})
     endpoint = Endpoint("agg", 0, ("n0",), frozenset(range(4)), gpus_per_node=4)
     processes = backend.endpoints_to_processes(
         [endpoint], port_allocator=NodePortAllocator(), frontend_type="vllm-router"
@@ -423,7 +423,7 @@ def test_single_node_dp_preserves_native_vllm_topology() -> None:
 
 
 def test_dp_size_one_is_not_a_distributed_launch_mode() -> None:
-    backend = VLLMProtocol(roles={"agg": RoleConfig(args={"data-parallel-size": 1})})
+    backend = VLLMBackend(roles={"agg": RoleConfig(args={"data-parallel-size": 1})})
 
     assert backend.find_dp_modes() == []
     assert backend._is_dp_mode("agg") is False
@@ -440,7 +440,7 @@ def test_router_validates_pcp_as_part_of_the_vllm_world_size() -> None:
     with pytest.raises(ValidationError, match=r"DP\*TP\*PP\*PCP=2\*8=16 GPUs"):
         SrtConfig(
             **common,
-            engine=VLLMProtocol(),
+            engine=VLLMBackend(),
             roles={
                 "agg": RoleConfig(
                     nodes=1, workers=1, args={"data-parallel-size": 2, "prefill-context-parallel-size": 8}
@@ -450,7 +450,7 @@ def test_router_validates_pcp_as_part_of_the_vllm_world_size() -> None:
 
 
 def test_vllm_router_pd_worker_uses_direct_vllm_and_nixl_connector() -> None:
-    backend = VLLMProtocol(roles={"prefill": RoleConfig(args={"tensor-parallel-size": 4})})
+    backend = VLLMBackend(roles={"prefill": RoleConfig(args={"tensor-parallel-size": 4})})
     process = Process("p0", frozenset(range(4)), 7500, 6100, "prefill", 0, nixl_port=5400)
 
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):

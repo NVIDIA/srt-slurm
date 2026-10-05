@@ -5,10 +5,10 @@ description: Analyze existing DSight reports through the read-only SQLite-backed
 
 # Query DSight evidence
 
-Read the [DSight guide](../../../../../docs/dsight.md) before using this workflow.
-Use the [storage reference](../../../../../docs/dsight-storage.md) for the current
+Read the [DSight guide](../../../docs/dsight.md) before using this workflow.
+Use the [storage reference](../../../docs/dsight-storage.md) for the current
 schema, query filters, pagination and browser API. The
-[data-flow guide](../../../../../docs/dsight-data-flow.md) explains source joins
+[data-flow guide](../../../docs/dsight-data-flow.md) explains source joins
 and which evidence reaches each UI view.
 
 ## Select the matching artifact

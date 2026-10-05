@@ -448,9 +448,9 @@ def _config(backend=None):
     """The recipe a probe may read: only the backend matters, and only the vLLM Router reads it (discovery mode)."""
     from types import SimpleNamespace
 
-    from srtctl.backends import VLLMProtocol
+    from srtctl.backends import VLLMBackend
 
-    return SimpleNamespace(backend=backend if backend is not None else VLLMProtocol())
+    return SimpleNamespace(backend=backend if backend is not None else VLLMBackend())
 
 
 class TestFrontendProbes:
@@ -523,7 +523,7 @@ class TestFrontendProbes:
 
     def test_vllm_router_discovery_mode_is_ready_on_the_routers_health(self, monkeypatch):
         """With a discovery connector the Router's /health, 503 until both roles registered, is the gate."""
-        from srtctl.backends import VLLMProtocol
+        from srtctl.backends import VLLMBackend
         from srtctl.core import health
         from srtctl.frontends import get_frontend
 
@@ -535,7 +535,7 @@ class TestFrontendProbes:
             return _http(next(statuses))
 
         monkeypatch.setattr(health.requests, "get", fake_get)
-        config = _config(backend=VLLMProtocol(connector="moriio"))
+        config = _config(backend=VLLMBackend(connector="moriio"))
         router = get_frontend("vllm-router")
         waiting = router.probe_ready("router", 8000, 1, 1, config)
         ready = router.probe_ready("router", 8000, 1, 1, config)

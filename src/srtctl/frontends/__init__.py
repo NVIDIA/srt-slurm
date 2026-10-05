@@ -21,7 +21,7 @@ Supported frontend types:
 from srtctl.frontends.atomesh import AtomeshFrontend
 from srtctl.frontends.base import (
     FRONTEND_NONE,
-    FrontendProtocol,
+    Frontend,
     get_frontend,
     list_frontend_types,
     register_frontend,
@@ -40,7 +40,7 @@ __all__ = [
     "AtomeshFrontend",
     "DynamicFrontend",
     "DynamoFrontend",
-    "FrontendProtocol",
+    "Frontend",
     "SGLangFrontend",
     "SGLangRouterFrontend",
     "TRTLLMServeFrontend",

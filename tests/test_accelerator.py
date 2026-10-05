@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from srtctl.backends import VLLMProtocol
+from srtctl.backends import VLLMBackend
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.schema import ClusterConfig, SrtConfig
@@ -36,7 +36,7 @@ def test_worker_mask_uses_cluster_setting(indices, enabled, sidecar, expected):
     )
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
-        backend=VLLMProtocol(set_visible_devices=enabled),
+        backend=VLLMBackend(set_visible_devices=enabled),
         dynamo=SimpleNamespace(sidecar=sidecar),
     )
     mixin.config.backend_for_role = lambda mode: mixin.config.backend

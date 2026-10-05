@@ -11,7 +11,7 @@ import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env, role_for_mode
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_env, role_for_mode
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, TRTLLM_DIST_INIT_PORTS
 
@@ -40,11 +40,11 @@ TRTLLM_FATAL_LOG_PATTERNS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
-class TRTLLMProtocol:
-    """TRTLLM protocol - implements BackendProtocol.
+class TRTLLMBackend(Backend):
+    """TRTLLM backend configuration and launch implementation.
 
     This frozen dataclass both holds configuration AND implements the
-    BackendProtocol methods for process allocation and launching.
+    Backend methods for process allocation and launching.
 
     Example YAML:
         engine: trtllm
@@ -59,6 +59,7 @@ class TRTLLMProtocol:
               max_batch_size: 64
     """
 
+    # Engine type discriminator.
     type: Literal["trtllm"] = "trtllm"
 
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
@@ -162,7 +163,7 @@ class TRTLLMProtocol:
         return ("--publish-metrics",) if self.publish_metrics else ()
 
     # =========================================================================
-    # BackendProtocol Implementation
+    # Backend Implementation
     # =========================================================================
 
     def get_srun_config(self) -> "SrunConfig":
@@ -180,51 +181,21 @@ class TRTLLMProtocol:
             kill_on_bad_exit=True,
         )
 
-    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
+    def fatal_log_patterns(self, mode: str) -> tuple[str, ...]:
         """The launcher's task-exit line and the executor's start-up failure, for every mode."""
         return TRTLLM_FATAL_LOG_PATTERNS
-
-    @property
-    def mooncake_kv_store(self) -> None:
-        """TRT-LLM has no Mooncake KV store block."""
-        return None
-
-    @property
-    def failover(self) -> None:
-        """TRT-LLM has no shadow engine recovery."""
-        return None
-
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        return {}
-
-    def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
-        return {}
-
-    def should_set_visible_devices(self) -> bool:
-        return True
-
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """The role's engine arguments (``roles.<role>.args``), the engine YAML."""
-        return role_args(self.roles, mode)
 
     def get_extra_args_for_mode(self, mode: WorkerMode) -> list[str]:
         """Extra trtllm-serve CLI flags for this mode (``roles.<role>.extra_args``)."""
         role = role_for_mode(self.roles, mode)
         return list(role.extra_args) if role is not None else []
 
-    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
+    def get_environment_for_mode(self, mode: str) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
         env = {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
         if self.numa_cpu_bind:
             env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
         return env
-
-    def get_process_environment(self, process: "Process") -> dict[str, str]:
-        """Get process-specific environment variables.
-
-        TRTLLM doesn't currently require process-specific env vars.
-        """
-        return {}
 
     def get_served_model_name(self, default: str) -> str:
         """Get the configured served model name, or return default."""

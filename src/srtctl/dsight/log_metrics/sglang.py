@@ -9,7 +9,7 @@ import math
 import re
 
 from ..sources import SourceIdentity
-from .base import LogMetricDefinition, LogMetricEvent
+from .base import LogMetricDefinition, LogMetricEvent, LogMetricGenerator
 
 _RANK = re.compile(r"(DP|PP|ATTN_CP|MOE_DP|TP|EP)(\d+)")
 _PREFIX = r"\[(?P<time>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?)" rf"(?P<ranks>(?: {_RANK.pattern})*)\] "
@@ -122,7 +122,7 @@ def _scoped_event(match: re.Match[str], phase: str, values: list[tuple[str, floa
     )
 
 
-class SGLangLogMetrics:
+class SGLangLogMetrics(LogMetricGenerator):
     name = "sglang"
     definitions = tuple(
         LogMetricDefinition(

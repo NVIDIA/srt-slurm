@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal
 
 from ..sources import SourceIdentity
 
@@ -43,7 +44,7 @@ class LogMetricEvent:
     time_resolution_s: float = 0.001
 
 
-class LogMetricGenerator(Protocol):
+class LogMetricGenerator(ABC):
     """One stateless parser per dialect; the reader owns clocks, scope and evidence.
 
     Definitions use log_<component>_<name>, where component identifies the producer
@@ -57,9 +58,12 @@ class LogMetricGenerator(Protocol):
     """
 
     @property
+    @abstractmethod
     def name(self) -> str: ...
 
     @property
+    @abstractmethod
     def definitions(self) -> tuple[LogMetricDefinition, ...]: ...
 
+    @abstractmethod
     def parse_line(self, line: str, source: SourceIdentity) -> LogMetricEvent | None: ...

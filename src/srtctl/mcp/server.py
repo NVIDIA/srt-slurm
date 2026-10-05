@@ -49,19 +49,22 @@ def health() -> dict[str, str]:
 
 @mcp.tool()
 def schema_summary() -> dict[str, Any]:
-    """Return a compact summary of the top-level SrtConfig fields."""
+    """Return the top-level recipe keys (type, default, description), engine types, and benchmark types."""
     return schema_summary_impl()
 
 
 @mcp.tool()
 def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict[str, Any]:
-    """Search docs/config-reference.md and return relevant snippets."""
+    """Search the recipe guide pages (docs/config-reference.md, engines.md, topology.md, ...) for prose snippets."""
     return get_config_reference_impl(query=query, max_matches=max_matches)
 
 
 @mcp.tool()
 def explain_field(path: str) -> dict[str, Any]:
-    """Explain a config field path using schema introspection plus config-reference docs."""
+    """Explain a config field path (e.g. roles.decode.nodes): type, default, description, allowed values.
+
+    Read from the schema dataclasses; recipe-guide snippets are added as supplemental context.
+    """
     return explain_field_impl(path)
 
 

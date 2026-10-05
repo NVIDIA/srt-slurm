@@ -8,9 +8,9 @@ from __future__ import annotations
 import pytest
 from marshmallow import ValidationError
 
-from srtctl.backends import SGLangProtocol
+from srtctl.backends import SGLangBackend
 from srtctl.core.config import resolve_config_with_defaults
-from srtctl.core.schema import RoleConfig, SrtConfig
+from srtctl.core.schema import RestartPolicy, RoleConfig, SrtConfig
 
 
 def _roles_sglang_disagg() -> dict:
@@ -66,7 +66,7 @@ def test_roles_load_as_role_configs_and_bind_the_engine() -> None:
         args={"tensor-parallel-size": 2, "disaggregation-mode": "prefill"},
     )
     assert cfg.roles["decode"].colocated
-    assert isinstance(cfg.engine, SGLangProtocol)
+    assert isinstance(cfg.engine, SGLangBackend)
 
     topology = cfg.topology
     assert (topology.num_prefill, topology.num_decode) == (6, 2)
@@ -346,7 +346,7 @@ def test_per_role_kv_events_and_sidecar() -> None:
             name="k",
             model={"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
             resources={"gpu_type": "h100", "gpus_per_node": 8},
-            engine=SGLangProtocol(roles={"agg": RoleConfig(kv_events=True)}),
+            engine=SGLangBackend(roles={"agg": RoleConfig(kv_events=True)}),
             roles={"agg": RoleConfig(nodes=1, workers=1)},
         )
 
@@ -369,3 +369,55 @@ def test_per_role_critical_feeds_the_worker_flag() -> None:
     recipe["resources"]["decode_critical"] = False
     with pytest.raises(ValueError, match=r"pre-2\.0 \(v1\) layout: resources\.decode_critical"):
         resolve_config_with_defaults(recipe, None)
+
+
+@pytest.mark.parametrize("policy", ["never", "on-failure", "always"])
+def test_role_restart_shorthand_and_mapping_are_equivalent(policy: str) -> None:
+    recipe = _roles_sglang_disagg()
+    recipe["roles"]["prefill"]["restart"] = policy
+    recipe["roles"]["decode"]["restart"] = {"policy": policy}
+    loaded = _load(recipe)
+    expected = RestartPolicy(policy=policy)
+    assert loaded.roles["prefill"].restart == expected
+    assert loaded.roles["decode"].restart == expected
+    assert loaded.topology.worker_restart("prefill") == expected
+    assert loaded.topology.worker_restart("agg") == RestartPolicy()
+    dumped = SrtConfig.Schema().dump(loaded)
+    assert dumped["roles"]["prefill"]["restart"]["policy"] == policy
+    assert SrtConfig.Schema().load(dumped).roles == loaded.roles
+
+
+def test_role_restart_options_and_default() -> None:
+    recipe = _roles_sglang_disagg()
+    recipe["roles"]["decode"]["restart"] = {
+        "policy": "on-failure",
+        "max_restarts": 5,
+        "backoff_seconds": 2,
+        "max_backoff_seconds": 20,
+    }
+    loaded = _load(recipe)
+    assert loaded.topology.worker_restart("decode") == RestartPolicy(
+        policy="on-failure", max_restarts=5, backoff_seconds=2, max_backoff_seconds=20
+    )
+    assert loaded.topology.worker_restart("prefill") == RestartPolicy()
+    assert "decode_restart" not in SrtConfig.Schema().dump(loaded)["resources"]
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        (3, "restart must be a policy name or a mapping"),
+        ([], "restart must be a policy name or a mapping"),
+        (None, "Field may not be null"),
+        ("sometimes", "Must be one of: never, on-failure, always"),
+        ({"max_restarts": -1}, "restart.max_restarts"),
+        ({"backoff_seconds": -1}, "restart.backoff_seconds"),
+        ({"backoff_seconds": 10, "max_backoff_seconds": 5}, "restart.max_backoff_seconds"),
+        ({"typo": 1}, "Unknown field"),
+    ],
+)
+def test_role_restart_rejects_invalid_config(value, error: str) -> None:
+    recipe = _roles_sglang_disagg()
+    recipe["roles"]["decode"]["restart"] = value
+    with pytest.raises(ValidationError, match=error):
+        _load(recipe)

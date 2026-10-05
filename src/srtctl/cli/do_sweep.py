@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
+from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMBackend
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
@@ -47,6 +47,7 @@ from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
+from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
 from srtctl.ports import (
@@ -82,7 +83,7 @@ class SweepOrchestrator(
 
     @property
     def backend(self):
-        """Access the backend config (implements BackendProtocol)."""
+        """Access the backend config (implements Backend)."""
         return self.config.backend
 
     @functools.cached_property
@@ -136,7 +137,7 @@ class SweepOrchestrator(
         start, pointing at the Mooncake master on the infra node.
         """
         backend = self.config.backend
-        if not isinstance(backend, VLLMProtocol) or backend.mooncake_kv_store is None:
+        if not isinstance(backend, VLLMBackend) or backend.mooncake_kv_store is None:
             return
         store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
         store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
@@ -639,7 +640,10 @@ class SweepOrchestrator(
         registry = ProcessRegistry(job_id=self.runtime.job_id)
         stop_event = threading.Event()
         setup_signal_handlers(stop_event, registry)
-        start_process_monitor(stop_event, registry)
+        # The supervisor relaunches workers whose role has a restart policy; it
+        # runs inside the monitor tick, ahead of the critical-failure check.
+        supervisor = self.build_worker_supervisor(registry, stop_event)
+        start_process_monitor(stop_event, registry, reconcile=supervisor.reconcile)
 
         exit_code = 1
 
@@ -685,6 +689,7 @@ class SweepOrchestrator(
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
             worker_procs = self.start_all_workers()
             registry.add_processes(worker_procs)
+            self.track_workers(supervisor, worker_procs)
 
             # Stage 3: Frontend
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")
@@ -767,6 +772,8 @@ class SweepOrchestrator(
             self._run_host_teardown()
             if exit_code != 0:
                 registry.print_failure_details()
+            if restart_summary := supervisor.summary_line():
+                logger.warning("%s; details in %s", restart_summary, self.runtime.log_dir / WORKER_RESTARTS_FILENAME)
             # Deliberately AFTER _run_host_teardown(): the final pass plus its
             # thread-join can take up to DEFAULT_JOIN_TIMEOUT_SECONDS, and on
             # the SLURM walltime-kill path this feature exists to survive

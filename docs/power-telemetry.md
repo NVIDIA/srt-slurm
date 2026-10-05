@@ -39,7 +39,6 @@ benchmark:
 
 telemetry:
   enabled: true
-  provider: dcgm-power
   collect_interval_ms: 1000         # milliseconds between collector cycles; must be <= 3000
   storage_subdir: power             # relative to the run log directory
   required: true                    # exit non-zero when artifacts are unpublishable
@@ -51,13 +50,13 @@ telemetry:
     port: 9401
 ```
 
-`dcgm-power` needs **only** `dcgm_exporter`. Unlike `provider: scraper` it does
+`dcgm-power` needs **only** `dcgm_exporter`: there is no `provider` key, and it does
 not require the top-level `container_image` or a `node_exporter`, because the
 collector runs inside srtctl. Config loading validates the block and rejects
 inconsistent values with actionable messages; in particular
 `collect_interval_ms` must not exceed the 3-second max sample gap the validator
 accepts, or every window would fail `sample_gap_exceeded`. Telemetry stays
-disabled by default and existing `provider: scraper` recipes are unchanged.
+disabled by default.
 The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.

@@ -1,34 +1,6 @@
-# CLI Reference
+# CLI Guide
 
-`srtctl` is the main command-line interface for submitting benchmark jobs to SLURM.
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Interactive Mode](#interactive-mode)
-  - [Example Browser](#example-browser)
-  - [Configuration Summary](#configuration-summary)
-  - [Interactive Actions Menu](#interactive-actions-menu)
-  - [sbatch Preview](#sbatch-preview)
-  - [Parameter Modification](#parameter-modification)
-  - [Sweep Preview](#sweep-preview)
-  - [Submission Confirmation](#submission-confirmation)
-  - [Workflow Examples](#workflow-examples)
-- [Commands](#commands)
-  - [srtctl apply](#srtctl-apply)
-  - [srtctl dry-run](#srtctl-dry-run)
-  - [srtctl render](#srtctl-render)
-  - [srtctl resolve-override](#srtctl-resolve-override)
-  - [srtctl migrate](#srtctl-migrate)
-  - [srtctl monitor](#srtctl-monitor)
-  - [srtctl status-server](#srtctl-status-server)
-  - [srtctl skill](#srtctl-skill)
-- [Output](#output)
-- [Sweep Support](#sweep-support)
-- [Config Override Support](#config-override-support)
-- [Tips](#tips)
-
----
+`srtctl` is the main command-line interface for submitting benchmark jobs to SLURM. This page covers workflows and behavior; every subcommand's arguments, with their defaults, are generated from the parser into the [CLI Reference](cli-reference.md).
 
 ## Quick Start
 
@@ -250,19 +222,7 @@ Submit a job or sweep to SLURM.
 srtctl apply -f <config.yaml> [options]
 ```
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Path to YAML config file, directory, or `file:selector` for overrides (required) |
-| `--sweep` | Force sweep mode (usually auto-detected) |
-| `--setup-script` | Custom setup script from `configs/` |
-| `--tags` | Comma-separated tags for the run |
-| `--serve-only` | Deploy the endpoint without running a benchmark; serve until cancellation |
-| `--set KEY=VALUE` | Override one recipe value by dotted path before validation (repeatable). Also on `dry-run`, `preflight`, `resolve-override` |
-| `--unset KEY` | Remove one recipe key by dotted path before validation (repeatable) |
-| `-y, --yes` | Skip confirmation prompts |
-| `--no-preflight` | Skip the pre-submit `model.path` / `model.container` / telemetry filesystem checks for this run. `preflight: false` in `srtslurm.yaml` does the same for every run on a cluster whose paths exist only on compute nodes |
+Every argument: [CLI Reference](cli-reference.md#srtctl-apply).
 
 `--set` and `--unset` are the supported way to tweak a recipe from a script instead of editing the YAML. Paths are dotted, `[N]` indexes a list, and quotes protect a segment that contains dots (`container_mounts."/a/b.c"`). Values parse as YAML: `720` is an int, `"720"` a string, `[4, 8]` a list; a mapping such as `{"rope_type": "yarn"}` stays a literal string because that is how engine flags take JSON. Overrides are applied to the raw document before cluster defaults, sweep expansion, and validation, so an explicit `--set` always wins and `{placeholder}` values still expand. On an override file the value is written into `base` and every `override_*` / `zip_override_*` variant, so no variant can shadow it. The applied overrides are listed in each `--json` record as `applied_overrides`, and the `config.yaml` copied into the job directory reflects them. The source file is never modified.
 
@@ -309,12 +269,7 @@ Preview what would be submitted without actually submitting.
 srtctl dry-run -f <config.yaml> [options]
 ```
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Path to YAML config file, directory, or `file:selector` for overrides (required) |
-| `--sweep` | Force sweep mode |
+Every argument: [CLI Reference](cli-reference.md#srtctl-dry-run).
 
 **Examples:**
 
@@ -383,13 +338,7 @@ exactly as for `apply`, and are found the same way: `srtslurm.yaml` in the worki
 directory (or its two parents), or the file `SRTSLURM_CONFIG` points at. A launcher
 that runs `render` from somewhere else should set `SRTSLURM_CONFIG`.
 
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Path to YAML config file, or `file:selector` for one override variant (required) |
-| `--to` | Directory to render into (required) |
-| `--serve-only` | Render a serve-only job (deploy, hold, no benchmark) |
-| `--setup-script` | Custom setup script in `configs/` |
-| `--no-preflight` | Skip the pre-render model/container/telemetry filesystem checks |
+Every argument: [CLI Reference](cli-reference.md#srtctl-render).
 
 ### `srtctl resolve-override`
 
@@ -399,12 +348,7 @@ Expand an override config and write the specialised YAML file(s) without submitt
 srtctl resolve-override -f <config.yaml> [options]
 ```
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Override YAML file, or `file:selector` to resolve a specific variant (required) |
-| `--stdout` | Print resolved YAML to stdout instead of writing files |
+Every argument: [CLI Reference](cli-reference.md#srtctl-resolve-override).
 
 **Examples:**
 
@@ -478,6 +422,20 @@ srtctl skill --target cursor            # .cursor/rules/srtctl.mdc
 srtctl skill --target claude --root /path/to/project
 srtctl skill --target claude --print    # to stdout
 ```
+
+### `srtctl schema` and `schema-docs`
+
+Both read the recipe and `srtslurm.yaml` dataclasses, so their keys, types, defaults, allowed values, and descriptions always match what `srtctl apply` loads.
+
+```bash
+srtctl schema                           # JSON Schema (draft 2020-12) for recipes and override files, to stdout
+srtctl schema --cluster                 # JSON Schema for srtslurm.yaml
+srtctl schema --output recipe.schema.json
+srtctl schema-docs                      # regenerate docs/schema-reference.md, docs/schema/*.schema.json, docs/cli-reference.md
+srtctl schema-docs --check              # exit 1 when a checked-in generated file is stale (CI)
+```
+
+The JSON Schema checks shape only (unknown keys, types, enums, required keys). Cross-field rules such as the role topology, placement, and the benchmark keys each `benchmark.type` accepts are checked by `srtctl dry-run`. Point an editor's YAML language server at the published copy with `# yaml-language-server: $schema=https://nvidia.github.io/srt-slurm/schema/recipe.schema.json` as a recipe's first line, or validate with any JSON Schema library.
 
 ### `srtctl-mcp`
 
