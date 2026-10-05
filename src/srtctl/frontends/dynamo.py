@@ -32,10 +32,10 @@ from srtctl.services.implicit import (
 )
 
 if TYPE_CHECKING:
+    from srtctl.backends.base import WorkerMode
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
-    from srtctl.types import WorkerMode
 
 logger = logging.getLogger(__name__)
 

@@ -23,7 +23,7 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args, role_kv_events
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DIST_INIT_PORTS,
@@ -33,7 +33,6 @@ from srtctl.ports import (
     MOONCAKE_MASTER_PORT,
     NCCL_PORTS,
 )
-from srtctl.types import WorkerMode
 
 logger = logging.getLogger(__name__)
 

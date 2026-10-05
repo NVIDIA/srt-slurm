@@ -14,6 +14,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
+from srtctl.backends.base import WorkerMode
 from srtctl.backends.vllm import VLLMBackend, VLLMFailoverConfig
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
@@ -24,7 +25,6 @@ from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, star
 from srtctl.core.supervisor import EndpointKey, WorkerSupervisor
 from srtctl.frontends import get_frontend
 from srtctl.services.implicit import discovery_env
-from srtctl.types import WorkerMode
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

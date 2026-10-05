@@ -21,6 +21,7 @@ After (Python):
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from srtctl.backends.base import WorkerMode
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
     DYN_SYSTEM_PORT_BASE,
@@ -32,7 +33,6 @@ from srtctl.ports import (
     SYS_PORTS,
     PortKind,
 )
-from srtctl.types import WorkerMode
 
 
 @dataclass

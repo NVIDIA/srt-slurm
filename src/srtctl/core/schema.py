@@ -48,7 +48,7 @@ from srtctl.backends import (
     VLLMBackend,
     VLLMMooncakeKVStoreConfig,
 )
-from srtctl.backends.base import RoleSettings
+from srtctl.backends.base import RoleSettings, WorkerMode
 from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
@@ -60,7 +60,6 @@ from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_T
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
 from srtctl.services.config import ServiceConfig
-from srtctl.types import WorkerMode
 
 if TYPE_CHECKING:
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process

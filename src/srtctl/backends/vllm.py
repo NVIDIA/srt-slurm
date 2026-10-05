@@ -27,7 +27,7 @@ from typing import (
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args, role_kv_events
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
@@ -50,7 +50,6 @@ from srtctl.ports import (
     VLLM_MASTER_PORT_STRIDE,
     VLLM_SCAN_PORTS,
 )
-from srtctl.types import WorkerMode
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext

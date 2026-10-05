@@ -11,10 +11,9 @@ import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_env, role_for_mode
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_env, role_for_mode
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, TRTLLM_DIST_INIT_PORTS
-from srtctl.types import WorkerMode
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig

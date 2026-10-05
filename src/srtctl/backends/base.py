@@ -9,12 +9,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias
 
 from marshmallow import ValidationError, fields
 
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
-from srtctl.types import WorkerMode
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -24,6 +23,9 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
+
+
+WorkerMode: TypeAlias = Literal["prefill", "decode", "agg"]
 
 
 class BackendType(str, Enum):
