@@ -33,7 +33,7 @@ from srtctl.frontends.base import Frontend, frontend_args_to_cli
 class DynamicFrontend(Frontend):
     """Base class for frontends that discover their workers through registration."""
 
-    def worker_metrics_path(self, backend: Any) -> str:
+    def worker_metrics_path(self, backend: Any, mode: str) -> str | None:
         """Every rank's Dynamo system server answers ``/metrics``, whatever the engine."""
         return self.metrics_path
 

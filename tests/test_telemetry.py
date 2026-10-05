@@ -811,7 +811,7 @@ class TestTachometerConfigGeneration:
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_no_worker_metrics_path_adds_no_worker_targets(self, _mock_get_hostname_ip):
-        """``worker_metrics_path=None`` (a job with no workers to scrape) skips every worker target."""
+        """A mode with no metrics path (gRPC workers, or a job with no workers) gets no worker target."""
         runtime = MagicMock()
         runtime.log_dir = Path("/runs/12345/logs")
         process = Process(
@@ -830,7 +830,7 @@ class TestTachometerConfigGeneration:
             frontend_topology=topology,
             runtime=runtime,
             tachometer=TachometerConfig(enabled=True),
-            worker_metrics_path=None,
+            worker_metrics_paths={"agg": None},
         )
 
         assert "backend_" not in config_text
@@ -1027,7 +1027,10 @@ class TestTachometerConfigGeneration:
             runtime=runtime,
             tachometer=tachometer,
             frontend_type="trtllm_serve",
-            worker_metrics_path=get_frontend("trtllm_serve").worker_metrics_path(TRTLLMBackend()),
+            worker_metrics_paths={
+                mode: get_frontend("trtllm_serve").worker_metrics_path(TRTLLMBackend(), mode)
+                for mode in ("prefill", "decode", "agg")
+            },
         )
 
         # Worker leaders: OpenAI http_port at the Prometheus mount.

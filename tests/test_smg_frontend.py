@@ -52,9 +52,7 @@ def test_grpc_workers_are_advertised_as_grpc_urls() -> None:
     """A backend whose mode serves gRPC (vLLM ``grpc: true``) is advertised as ``grpc://``."""
     from srtctl.core.schema import RoleConfig
 
-    backend = VLLMBackend(
-        roles={"prefill": RoleConfig(args={"grpc": True}), "decode": RoleConfig(args={"grpc": True})}
-    )
+    backend = VLLMBackend(roles={"prefill": RoleConfig(args={"grpc": True}), "decode": RoleConfig(args={"grpc": True})})
     processes = [
         Process("node0", frozenset({0}), 7500, 6100, "prefill", 0),
         Process("node1", frozenset({0}), 7501, 6100, "decode", 0),
@@ -238,8 +236,15 @@ def test_vllm_pd_runs_grpc_workers_with_nixl() -> None:
 )
 def test_workers_are_scraped_on_their_engine_metrics_route(engine, path: str) -> None:
     """A routed worker is the engine's own server; trtllm-serve's /metrics is JSON iteration stats."""
-    assert SMGFrontend().worker_metrics_path(engine) == path
+    assert SMGFrontend().worker_metrics_path(engine, "agg") == path
     assert SMGFrontend.metrics_path == "/metrics"
+
+
+def test_grpc_workers_are_not_scraped() -> None:
+    """vLLM's gRPC server starts no HTTP listener, so a gRPC role has no worker metrics path."""
+    backend = load_config(EXAMPLES_DIR / "vllm/smg-disagg-grpc.yaml").backend
+    assert SMGFrontend().worker_metrics_path(backend, "prefill") is None
+    assert SMGFrontend().worker_metrics_path(backend, "decode") is None
 
 
 def test_trtllm_example_launches_smg_in_front_of_trtllm_serve() -> None:

@@ -382,7 +382,7 @@ class Frontend(ABC):
 
     @abstractmethod
     def worker_api_port(self, mode) -> Literal["public", "allocated"]: ...
-    def worker_metrics_path(self, backend) -> str: ...  # direct: backend.prometheus_metrics_path; Dynamo: /metrics
+    def worker_metrics_path(self, backend, mode) -> str | None: ...  # direct: backend.prometheus_metrics_path (None for gRPC); Dynamo: /metrics
     @abstractmethod
     def worker_metrics_port(self, process, runtime) -> int | None: ...
     @abstractmethod

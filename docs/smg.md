@@ -63,8 +63,8 @@ NIXL
 gives both roles `NixlConnector` and the per-worker NIXL side channel. In gRPC mode SMG
 tokenizes and applies the chat template itself; pass `tool-call-parser` /
 `reasoning-parser` in `frontend.args` when the model needs them. vLLM's gRPC server
-starts no HTTP listener, so these workers serve no Prometheus `/metrics`; SMG's own
-metrics stay on its Prometheus port. See
+starts no HTTP listener, so these workers serve no Prometheus `/metrics` and srtctl does
+not scrape them; SMG's own metrics stay on its Prometheus port. See
 [`examples/vllm/smg-disagg-grpc.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/smg-disagg-grpc.yaml).
 
 TRT-LLM P/D is not available behind SMG: its gRPC P/D table has no TRT-LLM entry

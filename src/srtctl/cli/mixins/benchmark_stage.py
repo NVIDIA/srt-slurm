@@ -746,7 +746,6 @@ class BenchmarkStageMixin:
                 (not self.config.dynamo.sidecar and backend.dynamo_metrics_flags) or backend.publish_events_and_metrics
             )
         )
-        metrics_path = frontend.worker_metrics_path(backend)
         if logical_workers_only:
             # Sidecars use native worker commands, so publish_metrics does not
             # control their existing logical-worker URL discovery. Their native
@@ -754,7 +753,11 @@ class BenchmarkStageMixin:
             if self.config.dynamo.sidecar:
                 if logical_endpoints is None:
                     logical_endpoints = self._logical_worker_endpoints()
-                urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
+                urls = [
+                    f"http://{host}:{port}{path}"
+                    for mode, host, port in logical_endpoints
+                    if (path := frontend.worker_metrics_path(backend, mode)) is not None
+                ]
             elif not dynamo_trtllm_metrics_disabled:
                 for process in self.backend_processes:
                     if frontend.worker_endpoint_port(process, self.config, self.runtime) is None:
@@ -762,7 +765,8 @@ class BenchmarkStageMixin:
                     # Routability does not imply metrics support. The frontend
                     # owns both the supported ranks/roles and the metrics port.
                     port = frontend.worker_metrics_port(process, self.runtime)
-                    if port is None:
+                    metrics_path = frontend.worker_metrics_path(backend, process.endpoint_mode)
+                    if port is None or metrics_path is None:
                         continue
                     host = get_hostname_ip(process.node, self.runtime.network_interface)
                     urls.append(f"http://{host}:{port}{metrics_path}")
@@ -775,7 +779,8 @@ class BenchmarkStageMixin:
             # never reaches a trtllm-serve worker.
             for process in self.backend_processes:
                 port = frontend.worker_metrics_port(process, self.runtime)
-                if port is None:
+                metrics_path = frontend.worker_metrics_path(backend, process.endpoint_mode)
+                if port is None or metrics_path is None:
                     continue
                 if is_trtllm and not self.config.backend.get_config_for_mode(process.endpoint_mode).get(
                     "return_perf_metrics"
@@ -792,7 +797,8 @@ class BenchmarkStageMixin:
         elif not dynamo_trtllm_metrics_disabled:
             for process in self.backend_processes:
                 port = frontend.worker_metrics_port(process, self.runtime)
-                if port is None:
+                metrics_path = frontend.worker_metrics_path(backend, process.endpoint_mode)
+                if port is None or metrics_path is None:
                     continue
                 host = get_hostname_ip(process.node, self.runtime.network_interface)
                 urls.append(f"http://{host}:{port}{metrics_path}")

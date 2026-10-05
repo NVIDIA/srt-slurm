@@ -92,12 +92,13 @@ class Frontend(ABC):
     #: Path where this frontend's router (or its direct endpoint) serves Prometheus metrics.
     metrics_path: ClassVar[str] = "/metrics"
 
-    def worker_metrics_path(self, backend: Any) -> str:
-        """Path a worker serves Prometheus metrics at on ``worker_metrics_port``.
+    def worker_metrics_path(self, backend: Any, mode: str) -> str | None:
+        """Path a worker of ``mode`` serves Prometheus metrics at on ``worker_metrics_port``.
 
-        A direct worker is the engine's own server, so ``backend.prometheus_metrics_path``.
+        A direct worker is the engine's own server, so ``backend.prometheus_metrics_path``;
+        ``None`` when the mode's workers serve gRPC, which has no HTTP metrics route.
         """
-        return backend.prometheus_metrics_path
+        return None if backend.is_grpc_mode(mode) else backend.prometheus_metrics_path
 
     @abstractmethod
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
