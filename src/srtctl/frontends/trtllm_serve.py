@@ -55,7 +55,7 @@ class TRTLLMServeFrontend(Frontend):
         return "public" if mode == "agg" else "allocated"
 
     # The disaggregated orchestrator serves Prometheus text at /prometheus/metrics, as
-    # its trtllm-serve workers do (TRTLLMBackend.native_metrics_path).
+    # its trtllm-serve workers do (TRTLLMBackend.prometheus_metrics_path).
     metrics_path: ClassVar[str] = "/prometheus/metrics"
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:

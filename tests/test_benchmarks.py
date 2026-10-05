@@ -280,7 +280,7 @@ class TestCustomBenchmarkRunner:
         else:
             backend = SimpleNamespace(
                 type=backend_type,
-                native_metrics_path="/metrics",
+                prometheus_metrics_path="/metrics",
                 publish_metrics=publish_metrics,
                 publish_events_and_metrics=publish_events_and_metrics,
                 prefill_environment=prefill_environment or {},

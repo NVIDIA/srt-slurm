@@ -127,10 +127,10 @@ class Backend(ABC):
     3. Building commands to start those processes
     """
 
-    #: Path where the engine's own OpenAI server (a ``direct`` worker) serves
-    #: Prometheus text on its HTTP port. Frontends whose workers are the engine's
-    #: own server read it for the metrics URLs (``worker_metrics_path``).
-    native_metrics_path: ClassVar[str] = "/metrics"
+    #: Path where the engine's own HTTP server serves Prometheus text. Frontends
+    #: whose workers are the engine's own server (``direct``) scrape it; see
+    #: ``Frontend.worker_metrics_path``.
+    prometheus_metrics_path: ClassVar[str] = "/metrics"
 
     @property
     @abstractmethod

@@ -145,7 +145,7 @@ and [`examples/sglang/smg-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob
   tachometer's frontend target there
   ([`main.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/main.rs#L741-L748)).
   Workers are scraped on their own HTTP ports, as with the other static routers, at
-  the engine's Prometheus route (`native_metrics_path`): `/metrics`, or
+  the engine's Prometheus route (`prometheus_metrics_path`): `/metrics`, or
   `/prometheus/metrics` for trtllm-serve, whose `/metrics` is JSON iteration stats.
   trtllm-serve mounts that route only with `return_perf_metrics: true`
   ([`openai_server.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/089dce4f30b36bb979ce157e26eb2ece4b52c7e0/tensorrt_llm/serve/openai_server.py#L890-L913)),
