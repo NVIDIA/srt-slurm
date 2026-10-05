@@ -806,7 +806,7 @@ def main():
 
         job_id = get_launcher().job_id()
         if not job_id:
-            logger.error("Not running inside a job (SLURM_JOB_ID, or SRTCTL_JOB_ID under launcher: local, not set)")
+            logger.error("Not running inside a job (SLURM_JOB_ID, or SRTCTL_JOB_ID under launcher: docker, not set)")
             sys.exit(1)
 
         # Type narrowing: job_id is str after the check above

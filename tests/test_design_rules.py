@@ -100,11 +100,11 @@ def port_arithmetic(rel: str, tree: ast.Module) -> Iterator[Site]:
                 yield rel, ast.unparse(node)
 
 
-_LAUNCHER_NAMES = ("slurm", "local")
+_LAUNCHER_NAMES = ("slurm", "docker")
 
 
 def launcher_name_branches(rel: str, tree: ast.Module) -> Iterator[Site]:
-    if rel == "core/launcher.py":
+    if rel in ("core/launcher.py", "core/docker.py"):
         return
     for node in ast.walk(tree):
         if not isinstance(node, ast.Compare):
@@ -164,8 +164,8 @@ RULES = [
     Rule(
         "Names go in tables, never in branches (launchers)",
         launcher_name_branches,
-        "Ask the Launcher (core/launcher.py) instead of comparing its name: add a method to the Launcher ABC "
-        "and implement it on SlurmLauncher and LocalLauncher.",
+        "Ask the Launcher (core/launcher.py, core/docker.py) instead of comparing its name: add a method to the Launcher ABC "
+        "and implement it on SlurmLauncher and DockerLauncher.",
         frozenset(),
     ),
     Rule(

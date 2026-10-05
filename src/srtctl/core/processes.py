@@ -299,7 +299,7 @@ def signal_step(
     Under Slurm, ``srun`` turns a SIGTERM aimed at itself into a step abort that
     SIGKILLs the task, so a process that must flush on SIGTERM (tachometer
     compacting its parquet, an engine shutting down cleanly) is signalled with
-    ``scancel --signal=<sig> --full <job>.<step>``; under ``launcher: local``, with
+    ``scancel --signal=<sig> --full <job>.<step>``; under ``launcher: docker``, with
     ``docker kill --signal``. ``step_ids`` is a listing from ``list_step_ids`` to
     reuse instead of querying again. With ``full=False``, only the tasks receive the
     signal; profiler wrappers use that to finalize reports before stopping

@@ -253,9 +253,9 @@ def show_config_details(config: SrtConfig) -> None:
     config is correct before submitting.
     """
     console.print(f"Launcher: {get_launcher().name}")
-    local_docker_args = get_srtslurm_setting("local_docker_args")
-    if local_docker_args:
-        console.print(f"Extra docker run args: {' '.join(local_docker_args)}", crop=False)
+    docker_args = get_srtslurm_setting("docker_args")
+    if docker_args:
+        console.print(f"Extra docker run args: {' '.join(docker_args)}", crop=False)
     visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
     console.print(f"GPU subset visibility variable: {visible_devices_env}")
     for role, spec in config.roles.items():

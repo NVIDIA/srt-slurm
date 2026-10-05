@@ -1,4 +1,4 @@
-# examples/local/vllm-agg-1gpu.yaml
+# examples/docker/vllm-agg-1gpu.yaml
 # exit_code: 0
 # srun calls: 9
 

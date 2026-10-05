@@ -82,7 +82,7 @@ set -e
 # Setup directories
 SRTCTL_SOURCE="{{ srtctl_source }}"
 OUTPUT_BASE="{{ output_base }}"
-# SRTCTL_JOB_ID is set by launcher: local, which runs this script without sbatch.
+# SRTCTL_JOB_ID is set by launcher: docker, which runs this script without sbatch.
 JOB_ID="${SLURM_JOB_ID:-${SRTCTL_JOB_ID}}"
 OUTPUT_DIR="${OUTPUT_BASE}/${JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
@@ -133,7 +133,7 @@ export PATH="${SRTCTL_SOURCE}/bin:$HOME/.local/bin:$PATH"
 
 # Under Slurm, use a compute-specific venv so we don't pick up the login node's .venv/
 # (which may be built for a different arch, e.g. x86_64 login vs aarch64 compute).
-# A local job (SRTCTL_JOB_ID, launcher: local) runs on the machine that ran apply, so it uses .venv.
+# A launcher: docker job (SRTCTL_JOB_ID) runs on the machine that ran apply, so it uses .venv.
 if [ -n "${SRTCTL_JOB_ID:-}" ]; then
     export UV_PROJECT_ENVIRONMENT="${SRTCTL_SOURCE}/.venv"
 else

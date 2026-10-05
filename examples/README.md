@@ -36,7 +36,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/lmcache-server-disagg.yaml` | The same tier on the prefill side only: the server placed on prefill nodes and a hand-written `MultiConnector` (NIXL plus LMCache MP) in the prefill args, which srtctl passes through untouched |
 | `features/lmcache-server-sglang.yaml` | The same server next to aggregated SGLang workers: SGLang's `enable-lmcache` flag, with srtctl pointing each worker at the server on its node (`LMCACHE_MP_HOST`/`LMCACHE_MP_PORT`). Needs an SGLang image that ships LMCache (the `sglang-lmcache` alias) |
 | `features/vllm-failover.yaml` | `engine.failover:` shadow engine recovery: a GPU Memory Service sidecar and a parked standby engine per vLLM worker, relaunched in place after a crash. Needs a container that ships `gpu_memory_service` (the `dynamo-vllm` alias, an `nvcr.io/nvidia/ai-dynamo/vllm-runtime` image). See [../docs/shadow-engine-recovery.md](../docs/shadow-engine-recovery.md) |
-| `local/vllm-agg-1gpu.yaml` | One vLLM worker on one GPU with direct image and `hf:` model references, for `launcher: local` on a GPU VM without Slurm. See [../docs/cluster-config.md](../docs/cluster-config.md#launcher) |
+| `docker/vllm-agg-1gpu.yaml` | One vLLM worker on one GPU with direct image and `hf:` model references, for `launcher: docker` on a GPU VM without Slurm. See [../docs/cluster-config.md](../docs/cluster-config.md#launcher) |
 | `features/worker-restart.yaml` | `roles.<role>.restart:` relaunching a killed worker in place with backoff; serves with `benchmark.type: manual` so you can SIGKILL a worker step and watch the sweep log |
 
 ## Cluster aliases

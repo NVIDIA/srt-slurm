@@ -220,7 +220,7 @@ def test_the_ready_marker_records_the_health_gate(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("env", "venv"),
-    [({"SLURM_JOB_ID": "123"}, ".venv-compute"), ({"SRTCTL_JOB_ID": "local-1"}, ".venv")],
+    [({"SLURM_JOB_ID": "123"}, ".venv-compute"), ({"SRTCTL_JOB_ID": "docker-1"}, ".venv")],
 )
 def test_job_script_picks_the_venv_for_the_launcher(recipe: Path, env: dict[str, str], venv: str) -> None:
     body = submit.generate_minimal_sbatch_script(config=SrtConfig.from_yaml(recipe), config_path=recipe)

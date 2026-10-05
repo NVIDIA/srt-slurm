@@ -1,13 +1,13 @@
-# vLLM aggregated on one GPU, for `launcher: local` (a single GPU VM without Slurm).
+# vLLM aggregated on one GPU, for `launcher: docker` (a single GPU VM without Slurm).
 #
-# Set `launcher: local` in srtslurm.yaml, then `srtctl apply -f` this file; see
+# Set `launcher: docker` in srtslurm.yaml, then `srtctl apply -f` this file; see
 # docs/cluster-config.md#launcher. The same recipe also runs under Slurm.
 # vllm/vllm-openai:v0.11.0 has no --device-ids, so the worker's GPU comes from
 # an environment mask (set_visible_devices). A worker that owns the whole node
 # gets no automatic mask, so CUDA_VISIBLE_DEVICES pins it here.
 
 schema: 2
-name: "qwen3-0.6b-vllm-local-agg"
+name: "qwen3-0.6b-vllm-docker-agg"
 
 model:
   path: "hf:Qwen/Qwen3-0.6B"

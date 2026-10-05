@@ -318,12 +318,12 @@
     "launcher": {
       "enum": [
         "slurm",
-        "local"
+        "docker"
       ],
       "description": "Where processes run: `slurm` (srun steps inside an sbatch allocation) or `local` (one job on this machine, containers under `docker run`). See docs/cluster-config.md#launcher.",
       "default": "slurm"
     },
-    "local_docker_args": {
+    "docker_args": {
       "anyOf": [
         {
           "type": "array",
@@ -335,7 +335,7 @@
           "type": "null"
         }
       ],
-      "description": "Extra `docker run` arguments for every container under `launcher: local`, e.g. `[\"--user\", \"1000:1000\"]`.",
+      "description": "Extra `docker run` arguments for every container under `launcher: docker`, e.g. `[\"--user\", \"1000:1000\"]`.",
       "default": null
     }
   },

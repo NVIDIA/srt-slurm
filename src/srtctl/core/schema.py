@@ -444,9 +444,9 @@ class ClusterConfig:
     preflight: bool = True
     # Where processes run: `slurm` (srun steps inside an sbatch allocation) or `local`
     # (one job on this machine, containers under `docker run`). See docs/cluster-config.md#launcher.
-    launcher: Literal["slurm", "local"] = "slurm"
-    # Extra `docker run` arguments for every container under `launcher: local`, e.g. `["--user", "1000:1000"]`.
-    local_docker_args: list[str] | None = None
+    launcher: Literal["slurm", "docker"] = "slurm"
+    # Extra `docker run` arguments for every container under `launcher: docker`, e.g. `["--user", "1000:1000"]`.
+    docker_args: list[str] | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
