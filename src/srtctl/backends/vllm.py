@@ -30,7 +30,6 @@ from marshmallow_dataclass import dataclass
 from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
-    BOOTSTRAP_PORTS,
     DP_RPC_PORTS,
     DYN_SYSTEM_PORT_BASE,
     HTTP_PORTS,
@@ -897,7 +896,9 @@ class VLLMBackend(Backend):
         if frontend.worker_launch == "direct" and not frontend.expands_node_local_dp:
             # One `vllm serve` owns every DP rank of the endpoint, and only the
             # leader serves the API, so the standard topology applies.
-            processes = endpoints_to_processes(endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar)
+            processes = endpoints_to_processes(
+                endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar, bootstrap_ports=False
+            )
         elif not any(self._is_dp_mode(ep.mode) for ep in endpoints):
             # Standard TP mode: one process per node, or one per engine of the
             # worker under backend.failover (engine 0 plus its shadows).
@@ -906,6 +907,7 @@ class VLLMBackend(Backend):
                 port_allocator=allocator,
                 engines_per_process=self.engines_per_process,
                 sidecar_grpc=dynamo_sidecar,
+                bootstrap_ports=False,
             )
         elif self.dp_launch_mode == "per_node":
             processes = self._dp_per_node_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
@@ -958,11 +960,6 @@ class VLLMBackend(Backend):
                             endpoint_mode=endpoint.mode,
                             endpoint_index=endpoint.index,
                             node_rank=node_rank,
-                            bootstrap_port=(
-                                allocator.next(BOOTSTRAP_PORTS, node)
-                                if endpoint.mode == "prefill" and is_leader
-                                else None
-                            ),
                             kv_events_port=allocator.next(KV_EVENTS_PORTS),
                             nixl_port=allocator.next(NIXL_PORTS),
                             kvbm_zmq_port=allocator.next(KVBM_ZMQ_PORTS),
@@ -993,11 +990,6 @@ class VLLMBackend(Backend):
                             endpoint_mode=endpoint.mode,
                             endpoint_index=endpoint.index,
                             node_rank=dp_rank,  # dp_rank stored in node_rank for now
-                            bootstrap_port=(
-                                allocator.next(BOOTSTRAP_PORTS, node)
-                                if endpoint.mode == "prefill" and is_leader
-                                else None
-                            ),
                             kv_events_port=allocator.next(KV_EVENTS_PORTS),
                             nixl_port=nixl_base_port,
                             dp_rpc_port=dp_rpc_port,
@@ -1027,7 +1019,9 @@ class VLLMBackend(Backend):
         for endpoint in endpoints:
             if not self._is_dp_mode(endpoint.mode):
                 processes.extend(
-                    endpoints_to_processes([endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc)
+                    endpoints_to_processes(
+                        [endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc, bootstrap_ports=False
+                    )
                 )
                 continue
 
@@ -1050,7 +1044,9 @@ class VLLMBackend(Backend):
                         f"{dp_size * nodes_per_dp_rank} nodes total, but the endpoint has {len(endpoint.nodes)}"
                     )
                 processes.extend(
-                    endpoints_to_processes([endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc)
+                    endpoints_to_processes(
+                        [endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc, bootstrap_ports=False
+                    )
                 )
                 continue
 
@@ -1075,7 +1071,6 @@ class VLLMBackend(Backend):
                         endpoint_mode=endpoint.mode,
                         endpoint_index=endpoint.index,
                         node_rank=dp_start_rank,
-                        bootstrap_port=(allocator.next(BOOTSTRAP_PORTS, node) if endpoint.mode == "prefill" else None),
                         # One KV-event publisher per local DP rank: reserve the block.
                         kv_events_port=allocator.next(KV_EVENTS_PORTS, size=local_dp_size),
                         nixl_port=nixl_base_port,

@@ -13,7 +13,6 @@ from srtctl.backends import SGLangBackend
 from srtctl.core.schema import PlacementConfig, SrtConfig, RoleConfig
 from srtctl.ports import (
     KV_EVENTS_PORT_BASE,
-    SGLANG_BOOTSTRAP_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
     SGLANG_NCCL_PORT_BASE,
@@ -2004,7 +2003,8 @@ class TestVLLMPrefillDecodeColocation:
         assert prefill.node == decode.node == "node0"
         assert prefill.http_port == SGLANG_HTTP_PORT_BASE
         assert decode.http_port == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
-        assert prefill.bootstrap_port == SGLANG_BOOTSTRAP_PORT_BASE
+        # vLLM hands KV over its NIXL side channel; it has no bootstrap rendezvous.
+        assert prefill.bootstrap_port is None
 
         bound_ports = [
             port
@@ -2052,11 +2052,7 @@ class TestVLLMPrefillDecodeColocation:
         leader_ports = [
             port for process in prefill + decode for port in (process.http_port, process.bootstrap_port) if port
         ]
-        assert sorted(leader_ports) == [
-            SGLANG_HTTP_PORT_BASE,
-            SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE,
-            SGLANG_BOOTSTRAP_PORT_BASE,
-        ]
+        assert sorted(leader_ports) == [SGLANG_HTTP_PORT_BASE, SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE]
 
         prefill_actual_nixl_ports = {next(iter(p.nixl_port for p in prefill)) + p.node_rank for p in prefill}
         decode_actual_nixl_ports = {next(iter(p.nixl_port for p in decode)) + p.node_rank for p in decode}
@@ -2689,7 +2685,7 @@ class TestVLLMDataParallelMode:
         assert {p.dp_rpc_port for p in processes} == {VLLM_DATA_PARALLEL_RPC_PORT}
         assert {p.het_group for p in processes} == {1}
         assert all(p.http_port > 0 for p in processes)
-        assert all(p.bootstrap_port is not None for p in processes)
+        assert all(p.bootstrap_port is None for p in processes)
 
     def test_dp_per_node_mode_allocates_non_overlapping_endpoint_ports(self):
         """Co-located per-node DP endpoints get disjoint coordination ranges."""

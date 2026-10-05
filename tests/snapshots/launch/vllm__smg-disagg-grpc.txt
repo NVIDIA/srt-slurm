@@ -60,7 +60,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    smg launch --pd-disaggregation --prefill grpc://127.0.0.1:6100 7200 --decode grpc://127.0.0.1:6100 --host 0.0.0.0 --port 8000 --prometheus-port 29000
+    smg launch --pd-disaggregation --prefill grpc://127.0.0.1:6100 --decode grpc://127.0.0.1:6100 --host 0.0.0.0 --port 8000 --prometheus-port 29000
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

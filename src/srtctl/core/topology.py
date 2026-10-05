@@ -569,6 +569,7 @@ def endpoints_to_processes(
     port_allocator: NodePortAllocator | None = None,
     engines_per_process: int = 1,
     sidecar_grpc: bool = False,
+    bootstrap_ports: bool = True,
 ) -> list[Process]:
     """Convert endpoints to physical processes, one per node of each endpoint.
 
@@ -587,6 +588,8 @@ def endpoints_to_processes(
             engine of a node then gets its own Process (same GPUs and node_rank,
             distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
         sidecar_grpc: Allocate a Dynamo sidecar gRPC port for every process.
+        bootstrap_ports: Allocate the prefill bootstrap port; ``False`` for an engine
+            that has no bootstrap rendezvous (vLLM hands KV over its NIXL side channel).
 
     Returns:
         List of Process objects
@@ -601,7 +604,7 @@ def endpoints_to_processes(
         # engine's processes); each engine of a worker binds its own.
         leader_node = endpoint.nodes[0]
         endpoint_bootstrap_ports = [
-            allocator.next(BOOTSTRAP_PORTS, leader_node) if endpoint.mode == "prefill" else None
+            allocator.next(BOOTSTRAP_PORTS, leader_node) if bootstrap_ports and endpoint.mode == "prefill" else None
             for _ in range(engines_per_process)
         ]
 
