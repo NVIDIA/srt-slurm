@@ -88,7 +88,8 @@ srtctl writes three files into the log directory (every container sees it at `/l
   the spelling v0.10 and v0.11 both accept. A recipe that configures discovery itself is
   rejected.
 - `llm-d-envoy.yaml`: the guide's Envoy configuration with the public port, an admin
-  listener srtctl can reach, no request timeout, and an access log
+  listener srtctl can reach, no request timeout, `/metrics` answered with 404 (routed, it
+  would return a different worker's counters on every scrape), and an access log
   (`llm-d-envoy-access.log`) recording, for every request, the endpoint the EPP picked
   (`upstream=`) and the prefill worker it named (`prefiller=`).
 

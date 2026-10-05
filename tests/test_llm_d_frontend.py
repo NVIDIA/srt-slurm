@@ -234,6 +234,9 @@ def test_start_frontends_writes_the_router_files_and_starts_epp_then_envoy(tmp_p
     assert envoy["admin"]["address"]["socket_address"]["port_value"] == LLM_D_ENVOY_ADMIN_PORT
     listener = envoy["static_resources"]["listeners"][0]["address"]["socket_address"]
     assert listener == {"address": "0.0.0.0", "port_value": 8000}
+    routes = envoy["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0]["typed_config"]["route_config"]
+    metrics_route = routes["virtual_hosts"][0]["routes"][0]
+    assert metrics_route["match"] == {"path": "/metrics"} and metrics_route["direct_response"] == {"status": 404}
     epp_cluster = envoy["static_resources"]["clusters"][1]["load_assignment"]["endpoints"][0]["lb_endpoints"][0]
     assert epp_cluster["endpoint"]["address"]["socket_address"]["port_value"] == LLM_D_EPP_GRPC_PORT
 

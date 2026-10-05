@@ -2,8 +2,8 @@
 # Follows llm-d's no-Kubernetes guide:
 # https://github.com/llm-d/llm-d/blob/7fb84b0adf8e1d41eb2cef105fc1aafaf5a9b64f/guides/no-kubernetes-deployment/router/envoy/envoy.yaml
 # Differences: the admin listener binds every interface so srtctl can probe /ready from the
-# orchestrator, requests carry no timeout (agentic requests stream for minutes), and an access
-# log records the endpoint the EPP picked for every request.
+# orchestrator, requests carry no timeout (agentic requests stream for minutes), /metrics is not
+# routed, and an access log records the endpoint the EPP picked for every request.
 
 admin:
   address:
@@ -36,6 +36,14 @@ static_resources:
                     - name: llm-d
                       domains: ["*"]
                       routes:
+                        # A load-balanced /metrics would be a different worker's counters on every scrape;
+                        # the workers and the EPP serve their own. Answered here, without asking the EPP.
+                        - match: {path: "/metrics"}
+                          direct_response: {status: 404}
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_proc:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                              disabled: true
                         - match: {prefix: "/"}
                           route: {cluster: original_destination_cluster, timeout: 0s}
                 http_filters:
