@@ -15,15 +15,8 @@ resources:
   gpus_per_node: 4
 engine:
   type: trtllm
-    # --publish-metrics only (no KV events). ai-dynamo 1.6.0.dev20261004
-    # (a) carries ai-dynamo/dynamo#12162 (performance metrics decoupled from KV events), so the
-    #     trtllm_* engine gauges (kv_cache_hit_rate, kv_cache_utilization, ...) are exported without
-    #     the attention-DP KV-event hang;
-    # (b) parses --publish-metrics (the 1.5.0 release only knows --publish-events-and-metrics and
-    #     exits with "Unrecognized argument: --publish-metrics");
-    # Note: 1.6.0.dev20260923+ import redis.asyncio at worker startup (dynamo.common.multimodal), and
-    # srtctl installs the wheel --no-deps, so the container must provide redis.
-    # srtctl advertises the worker leaders' /metrics to AIPerf.
+  # Omit metrics flags for this Dynamo build.
+  publish_metrics: false
   publish_events_and_metrics: false
 roles:
   prefill:
