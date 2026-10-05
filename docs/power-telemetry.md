@@ -111,7 +111,8 @@ default_gpu_exporter:
   power_profile: amd-device-metrics
 ```
 
-The same block works under `telemetry.dcgm_exporter` in a recipe. Notes:
+The same block works under `telemetry.dcgm_exporter` in a recipe, as shown in the
+[single-node AMD example](../examples/features/amd-power-telemetry.yaml). Notes:
 
 - Pyxis runs the given command, not the image `ENTRYPOINT`; the entrypoint
   script starts the `gpuagent` daemon the exporter reads from and then execs
