@@ -1,4 +1,4 @@
-.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check snapshots snapshots-check tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
+.PHONY: lint test test-cov ci check setup cleanup examples docs schema-docs schema-docs-check snapshots snapshots-check tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
@@ -29,6 +29,9 @@ schema-docs:
 # Fail if docs/schema-reference.md is stale (also enforced by CI and tests/test_schema_docs.py)
 schema-docs-check:
 	uv run srtctl schema-docs --check
+
+docs:
+	uvx --with mkdocs-material mkdocs build --strict
 
 snapshots:
 	uv run python tests/launch_snapshots.py

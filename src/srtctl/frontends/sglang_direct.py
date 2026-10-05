@@ -16,19 +16,18 @@ import threading
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.health import WorkerHealthResult, probe_direct_server
-from srtctl.frontends.base import agg_leader_nodes, logical_health_expectations, register_frontend
+from srtctl.frontends.base import Frontend, agg_leader_nodes, register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
-    from srtctl.services.implicit import EffectiveService
 
 logger = logging.getLogger(__name__)
 
 
 @register_frontend("sglang")
-class SGLangFrontend:
+class SGLangFrontend(Frontend):
     """Direct SGLang OpenAI server frontend.
 
     Intentionally narrow: exactly one aggregate worker, which binds the public
@@ -36,9 +35,6 @@ class SGLangFrontend:
     """
 
     required_backend: ClassVar[str | None] = "sglang"
-    model_name_role: ClassVar[str | None] = None
-    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
-    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def type(self) -> str:
@@ -47,8 +43,6 @@ class SGLangFrontend:
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """The one ``sglang.launch_server`` is the endpoint, so it binds the public port."""
         return "public"
-
-    metrics_path: ClassVar[str] = "/metrics"
 
     def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
         """The aggregate leader binds the public port; its followers serve nothing."""
@@ -63,9 +57,6 @@ class SGLangFrontend:
         """The leader's server on the public port carries the control routes; followers have none."""
         return runtime.frontend_port if process.is_leader else None
 
-    def profiling_control_is_leader_only(self, config: Any) -> bool:
-        return False
-
     def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
         return agg_leader_nodes(processes)
 
@@ -77,9 +68,6 @@ class SGLangFrontend:
     ) -> WorkerHealthResult:
         """The worker's own /health, then /v1/models must list the model."""
         return probe_direct_server(host, port)
-
-    def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
-        return logical_health_expectations(config)
 
     def validate(self, config: Any) -> None:
         """One aggregate ``sglang.launch_server`` owns the public port.
@@ -105,20 +93,6 @@ class SGLangFrontend:
             )
         if config.dynamo.sidecar:
             raise ValueError("frontend.type: sglang does not support dynamo.sidecar; use frontend.type: dynamo")
-
-    def get_backend_health_urls(
-        self,
-        backend: Any,
-        backend_processes: list[Process],
-        network_interface: str | None = None,
-    ) -> list[str]:
-        return []
-
-    def implied_services(self, config: Any) -> list[EffectiveService]:
-        return []
-
-    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
-        return None
 
     def start_frontends(
         self,

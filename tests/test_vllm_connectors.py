@@ -11,20 +11,20 @@ import json
 
 import pytest
 
-from srtctl.backends import VLLMProtocol
+from srtctl.backends import VLLMBackend
 from srtctl.backends.vllm import _CONNECTOR_MAP, KVConnector, kv_connector_row
 from srtctl.core.schema import RoleConfig
 
 
 def test_table_presets_serialize_exactly_as_before():
     """The JSON handed to --kv-transfer-config is byte-identical to the former dict presets."""
-    assert VLLMProtocol(connector="nixl").kv_transfer_config("prefill") == json.dumps(
+    assert VLLMBackend(connector="nixl").kv_transfer_config("prefill") == json.dumps(
         {"kv_connector": "NixlConnector", "kv_role": "kv_both"}
     )
-    assert VLLMProtocol(connector="LMCache").kv_transfer_config("decode") == json.dumps(
+    assert VLLMBackend(connector="LMCache").kv_transfer_config("decode") == json.dumps(
         {"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"}
     )
-    assert VLLMProtocol(connector="lmcache-mp").kv_transfer_config("prefill") == json.dumps(
+    assert VLLMBackend(connector="lmcache-mp").kv_transfer_config("prefill") == json.dumps(
         {
             "kv_connector": "LMCacheMPConnector",
             "kv_connector_module_path": "lmcache.integration.vllm.lmcache_mp_connector",
@@ -32,7 +32,7 @@ def test_table_presets_serialize_exactly_as_before():
             "kv_connector_extra_config": {"lmcache.mp.host": "tcp://localhost", "lmcache.mp.port": 8750},
         }
     )
-    assert VLLMProtocol(connector="kvbm").kv_transfer_config("decode") == json.dumps(
+    assert VLLMBackend(connector="kvbm").kv_transfer_config("decode") == json.dumps(
         {
             "kv_connector": "DynamoConnector",
             "kv_connector_module_path": "kvbm.vllm_integration.connector",
@@ -42,7 +42,7 @@ def test_table_presets_serialize_exactly_as_before():
 
 
 def test_role_override_wins_for_that_role_only():
-    backend = VLLMProtocol(connector="nixl", roles={"decode": RoleConfig(args={"connector": "lmcache"})})
+    backend = VLLMBackend(connector="nixl", roles={"decode": RoleConfig(args={"connector": "lmcache"})})
 
     assert backend.connector_for_mode("prefill") == "nixl"
     assert backend.connector_for_mode("decode") == "lmcache"
@@ -51,13 +51,13 @@ def test_role_override_wins_for_that_role_only():
 
 @pytest.mark.parametrize("connector", [None, "none", "null", "NONE"])
 def test_no_connector_means_no_transfer_config(connector):
-    assert VLLMProtocol(connector=connector).kv_transfer_config("prefill") is None
+    assert VLLMBackend(connector=connector).kv_transfer_config("prefill") is None
     assert kv_connector_row(connector) is None
 
 
 def test_raw_json_passes_through_and_has_no_table_row():
     raw = json.dumps({"kv_connector": "MyConnector", "kv_role": "kv_both"})
-    backend = VLLMProtocol(connector=raw)
+    backend = VLLMBackend(connector=raw)
 
     assert backend.kv_transfer_config("prefill") == raw
     assert backend.kv_connector_for_mode("prefill") is None
@@ -66,8 +66,8 @@ def test_raw_json_passes_through_and_has_no_table_row():
 def test_only_the_discovery_row_discovers_workers():
     """Rows list their workers on the router command line unless they say otherwise; today that is only MoRI-IO."""
     assert {name for name, row in _CONNECTOR_MAP.items() if row.discovery} == {"moriio"}
-    assert VLLMProtocol().discovers_workers() is False
-    assert VLLMProtocol(connector="moriio").discovers_workers() is True
+    assert VLLMBackend().discovers_workers() is False
+    assert VLLMBackend(connector="moriio").discovers_workers() is True
 
 
 def test_a_mode_dependent_role_follows_the_worker_mode():
@@ -94,7 +94,7 @@ def test_direct_aggregate_worker_runs_only_its_role_connector(aggregated, expect
     from srtctl.core.topology import Process
     from srtctl.core.schema import RoleConfig
 
-    backend = VLLMProtocol(connector="nixl", roles={"agg": RoleConfig(args=aggregated)})
+    backend = VLLMBackend(connector="nixl", roles={"agg": RoleConfig(args=aggregated)})
     process = Process(
         node="node0",
         gpu_indices=frozenset(range(8)),

@@ -194,7 +194,7 @@ a sidecar in the Kubernetes sense. The instance runs in that worker's device vie
 `{worker_index}`, `{worker_node_rank}`, `{worker_gpus}` and `{worker_gpu_count}`. Its step and log are
 `service_<name>_<role>_<index>_<node>`. Because the instances of one node share its network namespace,
 a per-worker service's `readiness` must be a log probe. The GPU Memory Service of
-[shadow engine recovery](shadow-engine-recovery.md) is the built-in per-worker kind:
+[shadow engine recovery](shadow-engine-recovery.md) is the built-in per-worker kind, and [SGLang fast engine recovery](sglang-weight-cache.md) runs SGLang's weight cache daemon as a plain `generic` per-worker service:
 
 ```yaml
 services:

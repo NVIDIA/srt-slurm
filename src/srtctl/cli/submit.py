@@ -36,7 +36,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
 
-from srtctl.backends import VLLMMooncakeKVStoreConfig, VLLMProtocol
+from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -253,14 +253,22 @@ def show_config_details(config: SrtConfig) -> None:
     """
     visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
     console.print(f"GPU subset visibility variable: {visible_devices_env}")
+    for role, spec in config.roles.items():
+        policy = spec.restart
+        if policy.enabled:
+            console.print(
+                f"{role}: restart={policy.policy}, max_restarts={policy.max_restarts}, "
+                f"backoff_seconds={policy.backoff_seconds:g}, max_backoff_seconds={policy.max_backoff_seconds:g}",
+                crop=False,
+            )
     if config.role_backends or config.role_containers:
         for role, backend in config.active_role_backends():
             console.print(f"{role}: engine={backend.type}, container={config.worker_container_for_role(role)}")
 
     if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
-        from srtctl.backends.trtllm import TRTLLMProtocol
+        from srtctl.backends.trtllm import TRTLLMBackend
 
-        if isinstance(config.backend, TRTLLMProtocol):
+        if isinstance(config.backend, TRTLLMBackend):
             descriptions = {
                 "--publish-metrics": "metrics only",
                 "--publish-events-and-metrics": "metrics and KV events",
@@ -274,9 +282,9 @@ def show_config_details(config: SrtConfig) -> None:
                 )
             )
 
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
-    if isinstance(config.backend, TRTLLMProtocol):
+    if isinstance(config.backend, TRTLLMBackend):
         if config.backend.numa_memory_bind == "local":
             console.print("TRT-LLM NUMA: GPU-local CPU binding and strict GPU-local memory binding (--bind-memory)")
         # Engine-yaml statistics keys srtctl defaults at config load
@@ -301,7 +309,7 @@ def show_config_details(config: SrtConfig) -> None:
     if config.frontend.type == "vllm":
         from srtctl.backends.vllm import find_vllm_orchestration_recipe_flags
 
-        if isinstance(config.backend, VLLMProtocol):
+        if isinstance(config.backend, VLLMBackend):
             orchestration_flags = find_vllm_orchestration_recipe_flags(config.backend)
             if orchestration_flags:
                 for role, flag_name in orchestration_flags:
@@ -573,6 +581,10 @@ def show_config_details(config: SrtConfig) -> None:
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
+    for mode, role in config.roles.items():
+        if role.srun_options:
+            opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in role.srun_options.items())
+            console.print(f"[dim]{mode} worker srun options (override recipe):[/] {opts}")
 
     # Dynamo install runs apt-get/pip as root inside the container, so srtctl injects
     # ENROOT_REMAP_ROOT=yes (via srun --export) on the worker + dynamo-frontend launches.
@@ -764,7 +776,7 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
-            if isinstance(backend, VLLMProtocol):
+            if isinstance(backend, VLLMBackend):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON
                 # so operators can sanity-check protocol/device_name/sizes
@@ -1215,7 +1227,7 @@ def submit_with_orchestrator(
     # Validate setup before submitting (not during dry-run)
     srtctl_root = get_srtslurm_setting("srtctl_root")
     srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
-    validate_setup(srtctl_source)
+    validate_setup(srtctl_source, config)
 
     if render_dir is not None:
         return _render_to_dir(
@@ -1943,16 +1955,10 @@ def resolve_override_cmd(
         console.print(f"[green]Wrote:[/] {p}")
 
 
-def main():
-    # If no args at all, launch interactive mode
-    if len(sys.argv) == 1:
-        from srtctl.cli.interactive import run_interactive
-
-        sys.exit(run_interactive())
-
-    setup_logging()
-
+def build_parser() -> argparse.ArgumentParser:
+    """The `srtctl` argument parser; building it has no side effects (docs/cli-reference.md is rendered from it)."""
     parser = argparse.ArgumentParser(
+        prog="srtctl",
         description="srtctl - SLURM job submission",
         epilog="""Examples:
   srtctl                                         # Interactive mode
@@ -1968,7 +1974,8 @@ def main():
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
-  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
+  srtctl schema-docs [--check]                   # Regenerate (or verify) the generated docs
+  srtctl schema [--cluster]                      # JSON Schema for recipes (or srtslurm.yaml)
   srtctl migrate -f config.yaml --in-place       # Rewrite a pre-2.0 recipe into the current schema (dir: recursive)
   srtctl skill --target claude                   # Install the srtctl agent skill into this project
   srtctl --version                               # Version (from the git tag), commit, schema and lockfile versions
@@ -2156,18 +2163,35 @@ def main():
     # Generated schema reference: srtctl schema-docs [--check] [--output PATH]
     schema_docs_parser = subparsers.add_parser(
         "schema-docs",
-        help="Regenerate docs/schema-reference.md from the code",
+        help="Regenerate the generated docs (schema reference, JSON Schemas, CLI reference) from the code",
     )
     schema_docs_parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 if the checked-in document is stale instead of rewriting it (used by CI)",
+        help="Exit 1 if a checked-in generated file is stale instead of rewriting it (used by CI)",
     )
     schema_docs_parser.add_argument(
+        "--docs-dir",
+        type=Path,
+        default=None,
+        help="Docs directory to write into (default: the checkout's docs/)",
+    )
+
+    # Machine-readable schema: srtctl schema [--cluster] [--output PATH]
+    schema_parser = subparsers.add_parser(
+        "schema",
+        help="Print the JSON Schema for recipes (or srtslurm.yaml with --cluster)",
+    )
+    schema_parser.add_argument(
+        "--cluster",
+        action="store_true",
+        help="Emit the schema for srtslurm.yaml instead of a recipe",
+    )
+    schema_parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Write the schema reference to this path instead of docs/schema-reference.md",
+        help="Write the JSON Schema to this path instead of stdout",
     )
 
     # Recipe migration: srtctl migrate -f recipe.yaml [--in-place | --output PATH]
@@ -2184,7 +2208,7 @@ def main():
     skill_parser.add_argument(
         "--root",
         type=Path,
-        default=Path.cwd(),
+        default=None,
         help="Project root to install under (default: the current directory)",
     )
     skill_parser.add_argument(
@@ -2212,6 +2236,19 @@ def main():
         help="Write the migrated recipe to this path (single file only; default: print to stdout)",
     )
 
+    return parser
+
+
+def main():
+    # If no args at all, launch interactive mode
+    if len(sys.argv) == 1:
+        from srtctl.cli.interactive import run_interactive
+
+        sys.exit(run_interactive())
+
+    setup_logging()
+
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.command in ("dsight", "dashboard"):
@@ -2317,19 +2354,35 @@ def main():
         sys.exit(1 if all_results else 0)
 
     if args.command == "schema-docs":
-        from srtctl.core.schema_docs import DEFAULT_OUTPUT, schema_reference_is_current, write_schema_reference
+        from srtctl.cli.docs_gen import DOCS_DIR, stale_generated, write_generated
 
-        output = args.output or DEFAULT_OUTPUT
+        docs_dir = args.docs_dir or DOCS_DIR
         if args.check:
-            if schema_reference_is_current(output):
-                console.print(f"[green]✓[/] {output} is up to date")
+            stale = stale_generated(docs_dir)
+            if not stale:
+                console.print(f"[green]✓[/] Generated docs in {docs_dir} are up to date")
                 restore_console()
                 return
-            console.print(f"[bold red]✗[/] {output} is stale; run `srtctl schema-docs` and commit the result")
+            for path in stale:
+                console.print(f"[bold red]✗[/] {path} is stale; run `srtctl schema-docs` and commit the result")
             restore_console()
             sys.exit(1)
-        written = write_schema_reference(output)
-        console.print(f"[green]✓[/] Wrote {written}")
+        for path in write_generated(docs_dir):
+            console.print(f"[green]✓[/] Wrote {path}")
+        restore_console()
+        return
+
+    if args.command == "schema":
+        from srtctl.core.schema import ClusterConfig, SrtConfig
+        from srtctl.core.schema_docs import json_schema
+
+        text = json.dumps(json_schema(ClusterConfig if args.cluster else SrtConfig), indent=2) + "\n"
+        if args.output is None:
+            sys.stdout.write(text)
+        else:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(text, encoding="utf-8")
+            console.print(f"[green]✓[/] Wrote {args.output}")
         restore_console()
         return
 
@@ -2340,7 +2393,7 @@ def main():
             print(render_skill(args.target))
             restore_console()
             return
-        written = install_skill(args.target, args.root)
+        written = install_skill(args.target, args.root or Path.cwd())
         console.print(f"[green]✓[/] Wrote {written}")
         restore_console()
         return

@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srtctl.backends import SGLangProtocol, TRTLLMProtocol, VLLMProtocol
+from srtctl.backends import SGLangBackend, TRTLLMBackend, VLLMBackend
 from srtctl.core.schema import DynamoConfig, RoleConfig
 from srtctl.core.topology import Endpoint, Process
 
@@ -61,7 +61,7 @@ def _runtime(tmp_path: Path | None = None) -> MagicMock:
 def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     leader = _process(mode="prefill")
     follower = _process(node="node1", node_rank=1, mode="prefill", sys_port=7501)
-    backend = SGLangProtocol(roles={"prefill": RoleConfig(args={"tensor-parallel-size": 8})})
+    backend = SGLangBackend(roles={"prefill": RoleConfig(args={"tensor-parallel-size": 8})})
 
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         leader_command = backend.build_worker_command(leader, [leader, follower], _runtime())
@@ -82,7 +82,7 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
 
 def test_sglang_sidecar_respects_an_explicit_incremental_streaming_setting() -> None:
     process = _process(mode="agg")
-    backend = SGLangProtocol(
+    backend = SGLangBackend(
         roles={"agg": RoleConfig(args={"tensor-parallel-size": 4, "incremental-streaming-output": False})}
     )
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
@@ -91,7 +91,7 @@ def test_sglang_sidecar_respects_an_explicit_incremental_streaming_setting() -> 
     # An explicit false is honored: a false bool renders as no flag at all, and srtctl must not
     # add its own copy on top. An explicit true renders exactly once.
     assert "incremental-streaming-output" not in leader_script
-    backend_true = SGLangProtocol(
+    backend_true = SGLangBackend(
         roles={"agg": RoleConfig(args={"tensor-parallel-size": 4, "incremental-streaming-output": True})}
     )
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
@@ -104,7 +104,7 @@ def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
     # aggregated topology never got --kv-events-config and the sidecar's
     # kv_event_sources stayed at 0 (every routed request scored 0.00 cache overlap).
     process = _process(mode="agg", kv_events_port=5557)
-    backend = SGLangProtocol(
+    backend = SGLangBackend(
         roles={
             "prefill": RoleConfig(kv_events=True),
             "decode": RoleConfig(kv_events=True),
@@ -127,7 +127,7 @@ def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
 def test_vllm_sidecar_exposes_each_nodes_hybrid_dp_range(dp_size: int) -> None:
     # Regression: a headless follower has no local gRPC/sidecar endpoint, so
     # Dynamo cannot route to that node independently of the group leader.
-    backend = VLLMProtocol(
+    backend = VLLMBackend(
         connector=None,
         roles={
             "decode": RoleConfig(args={"data-parallel-size": dp_size, "enable-expert-parallel": True}, kv_events=True)
@@ -171,7 +171,7 @@ def test_vllm_sidecar_exposes_each_nodes_hybrid_dp_range(dp_size: int) -> None:
 def test_vllm_sidecar_rejects_frontend_options_that_bypass_hybrid_lb(override: dict) -> None:
     # A valid recipe must not disable the local frontend or select Python gRPC
     # while srtctl waits for a Rust Control service on that node.
-    backend = VLLMProtocol(connector=None, roles={"decode": RoleConfig(args={"data-parallel-size": 8, **override})})
+    backend = VLLMBackend(connector=None, roles={"decode": RoleConfig(args={"data-parallel-size": 8, **override})})
     endpoint = Endpoint(
         mode="decode",
         index=0,
@@ -199,7 +199,7 @@ def test_vllm_sidecar_rejects_frontend_options_that_bypass_hybrid_lb(override: d
 def test_vllm_sidecar_multi_node_replica_has_one_frontend(parallelism: dict) -> None:
     # Regression: exposing a sidecar on a TP follower either hangs startup or
     # registers an engine incapable of serving independent requests.
-    backend = VLLMProtocol(
+    backend = VLLMBackend(
         connector=None,
         roles={
             "agg": RoleConfig(
@@ -331,7 +331,7 @@ def test_headless_follower_termination_reaps_engine(tmp_path: Path) -> None:
 @pytest.mark.parametrize("memory_bind", [False, True, "local"])
 def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, memory_bind) -> None:
     process = _process()
-    backend = TRTLLMProtocol(
+    backend = TRTLLMBackend(
         roles={"agg": RoleConfig(args={"tensor_parallel_size": 4, "max_seq_len": 4096})},
         numa_cpu_bind=memory_bind is not False,
         numa_memory_bind=memory_bind,
@@ -350,7 +350,7 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, memory_bin
 
 
 def test_trtllm_sidecar_rejects_disaggregated_workers(tmp_path: Path) -> None:
-    backend = TRTLLMProtocol()
+    backend = TRTLLMBackend()
 
     with pytest.raises(ValueError, match="supports aggregated workers only"):
         backend.build_worker_command(_process(mode="prefill"), [], _runtime(tmp_path))

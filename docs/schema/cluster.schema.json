@@ -1,0 +1,676 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "srt-slurm cluster config (srtslurm.yaml)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "cluster": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Cluster name for status reporting",
+      "default": null
+    },
+    "default_account": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Slurm account for recipes that omit `slurm.account`.",
+      "default": null
+    },
+    "default_partition": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Slurm partition for recipes that omit `slurm.partition`.",
+      "default": null
+    },
+    "default_time_limit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Job time limit (HH:MM:SS) for recipes that omit `slurm.time_limit`.",
+      "default": null
+    },
+    "gpus_per_node": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "GPUs per node for recipes that omit `resources.gpus_per_node`.",
+      "default": null
+    },
+    "default_gpu_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one recipe move between clusters of different GPU types without an edit.",
+      "default": null
+    },
+    "network_interface": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname.",
+      "default": null
+    },
+    "visible_devices_env": {
+      "type": "string",
+      "description": "GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES.",
+      "default": "CUDA_VISIBLE_DEVICES"
+    },
+    "default_gpu_exporter": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TelemetryExporterConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Recipe exporter settings win. Explicit null disables the GPU default only."
+    },
+    "use_gpus_per_node_directive": {
+      "type": "boolean",
+      "description": "Emit `#SBATCH --gpus-per-node`. Set false on clusters that reject or ignore it.",
+      "default": true
+    },
+    "use_segment_sbatch_directive": {
+      "type": "boolean",
+      "description": "Emit `#SBATCH --segment` so the allocation stays inside one topology segment (NVL72 domain).",
+      "default": true
+    },
+    "use_exclusive_sbatch_directive": {
+      "type": "boolean",
+      "description": "Emit `#SBATCH --exclusive` to keep other jobs off the allocated nodes.",
+      "default": false
+    },
+    "use_het_jobs": {
+      "type": "boolean",
+      "description": "Default for ``ResourceConfig.het_jobs`` when the recipe doesn't set it. When True (and recipe doesn't override), the prefill side and decode side are submitted as two SLURM heterogeneous-job components, each with its own ``--segment``. Lets asymmetric layouts (e.g. prefill 12 + decode 10 nodes on GB200/GB300) preserve NVL72 affinity per side.",
+      "default": false
+    },
+    "default_sbatch_directives": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Extra `#SBATCH --key=value` lines added to every job; a recipe's `sbatch_directives` wins per key.",
+      "default": null
+    },
+    "default_health_check": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`health_check` block (`max_attempts`, `interval_seconds`) used when a recipe has none.",
+      "default": null
+    },
+    "srtctl_root": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout.",
+      "default": null
+    },
+    "output_dir": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Custom output directory for job logs",
+      "default": null
+    },
+    "record_launch_plan": {
+      "type": "boolean",
+      "description": "Cluster-wide default for recording exact realized srun commands. Recipes can opt in independently with output.record_launch_plan.",
+      "default": false
+    },
+    "model_paths": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Alias -> path map; a recipe's `model.path` may name an alias instead of a path.",
+      "default": null
+    },
+    "containers": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Alias -> image map, resolved for every container key in a recipe (`model.container`, `roles.<role>.container`, ...).",
+      "default": null
+    },
+    "cloud": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Free-form cloud settings. Accepted for compatibility; srtctl does not read it.",
+      "default": null
+    },
+    "default_mounts": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Cluster-level container mounts (host_path -> container_path) Applied to all jobs on this cluster, useful for cluster-specific paths",
+      "default": null
+    },
+    "default_bash_preamble": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Shell snippet prepended to every container srun (after env exports, before the main command). Useful for cluster-wide ulimits, e.g. ``\"ulimit -n 1048576 -s unlimited -u 1048576\"``. Silently dropped for sruns that bypass the bash wrapper (distroless containers).",
+      "default": null
+    },
+    "default_host_setup": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HostSetupConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Commands run on every allocated node's bare host, outside the container, before workers start. Recipes override with their own `host_setup:` block.",
+      "default": null
+    },
+    "reporting": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReportingConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Status collectors, S3 log upload, and failure analysis for every job on this cluster.",
+      "default": null
+    },
+    "telemetry": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "opaque dict, parsed by try_start_snapshotter",
+      "default": null
+    },
+    "nginx_raise_ulimit": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``. Clusters that disallow raising nofile for nginx containers should use false.",
+      "default": null
+    },
+    "git_http_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Works around intermittent git smart-HTTP/HTTP2 failures cloning github.com (stalls, or truncated responses git misreports as \"could not read Username\" auth-prompt failures). See git_clone_command_prefix() in core/config.py -- applied to every git clone/fetch srtctl performs.",
+      "default": null
+    },
+    "preflight": {
+      "type": "boolean",
+      "description": "Run the pre-submit model.path / model.container / telemetry filesystem checks on ``srtctl apply``. Set false on clusters whose model or image paths exist only on compute nodes (node-local NVMe such as /raid), where the login node cannot stat them; every apply then behaves as if --no-preflight had been passed. The framework still fails loudly at runtime if a path is genuinely missing on the compute node.",
+      "default": true
+    }
+  },
+  "description": "Cluster configuration from srtslurm.yaml.",
+  "$defs": {
+    "AIAnalysisConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether to run AI analysis on benchmark failures",
+          "default": false
+        },
+        "openrouter_api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "OpenRouter API key (falls back to OPENROUTER_API_KEY env var)",
+          "default": null
+        },
+        "gh_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GitHub token for gh CLI (falls back to GH_TOKEN env var)",
+          "default": null
+        },
+        "repos_to_search": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "GitHub repos to search for related PRs"
+        },
+        "pr_search_days": {
+          "type": "integer",
+          "description": "Number of days to look back for PRs",
+          "default": 14
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Custom prompt template (uses DEFAULT_AI_ANALYSIS_PROMPT if None) Available variables: {log_dir}, {repos}, {pr_days}",
+          "default": null
+        }
+      },
+      "description": "AI-powered failure analysis configuration."
+    },
+    "HostSetupConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Shell commands run in order on each node, joined with ``&&``.",
+          "default": []
+        },
+        "teardown": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Shell commands run on each node after workers stop. Runs even when the job fails, so state that outlives the allocation (locked clocks persist for the next tenant) gets reset.",
+          "default": []
+        },
+        "nodes": {
+          "enum": [
+            "all",
+            "workers"
+          ],
+          "description": "Which nodes to target. \"all\" covers head, infra, and workers; \"workers\" covers only the nodes running backend workers.",
+          "default": "all"
+        },
+        "ignore_failure": {
+          "type": "boolean",
+          "description": "When True, a failing node logs a warning instead of failing the job.",
+          "default": false
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "Per-node wall-clock budget for commands and for teardown.",
+          "default": 300
+        }
+      },
+      "description": "Commands run on the bare host of each allocated node, outside the container."
+    },
+    "ReportingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReportingStatusConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Status collector endpoints that receive job lifecycle events. Unset sends nothing.",
+          "default": null
+        },
+        "ai_analysis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AIAnalysisConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Failure analysis run after a failed job. Unset disables it.",
+          "default": null
+        },
+        "s3": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/S3Config"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Upload of the log directory to S3-compatible storage after the run. Unset disables it.",
+          "default": null
+        }
+      },
+      "description": "Reporting configuration for status updates, AI analysis, and log exports."
+    },
+    "ReportingStatusConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Base URL of one status collector; srtctl POSTs job lifecycle events there (see status-api-spec.md).",
+          "default": null
+        },
+        "endpoints": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Several collectors, each sent every event; merged with `endpoint`, deduplicated, trailing slash dropped.",
+          "default": null
+        },
+        "token_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Name of the environment variable holding the bearer token the reporter sends as ``Authorization: Bearer`` on every request (default SRTCTL_STATUS_TOKEN). Only the variable name belongs in a recipe: the resolved config is written to the lockfile and the log directory, so a literal token there would leak.",
+          "default": null
+        },
+        "logging-stream-interval": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds between uploads of raw logs and Tachometer captures to every endpoint. Unset disables streaming; lifecycle events are unaffected.",
+          "default": null
+        }
+      },
+      "description": "Status reporting configuration."
+    },
+    "S3Config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bucket": {
+          "type": "string",
+          "description": "S3 bucket name"
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional prefix/path within bucket (e.g., \"srtslurm/logs\")",
+          "default": null
+        },
+        "region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "AWS region (e.g., \"us-west-2\")",
+          "default": null
+        },
+        "endpoint_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Custom S3-compatible endpoint URL (optional)",
+          "default": null
+        },
+        "access_key_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "AWS access key ID (falls back to AWS_ACCESS_KEY_ID env var)",
+          "default": null
+        },
+        "secret_access_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "AWS secret access key (falls back to AWS_SECRET_ACCESS_KEY env var)",
+          "default": null
+        },
+        "exclude": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`. Set to `[]` to ship the whole directory.",
+          "default": null
+        },
+        "archive": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Patterns (Python glob, `**` allowed) packed into one `bundle.tar.zst` uploaded next to the loose files and left out of the plain sync. Omit for the default, aiperf's per-request `profile_export.jsonl`; set to `[]` for no archive.",
+          "default": null
+        }
+      },
+      "description": "S3 upload configuration for log artifacts.",
+      "required": [
+        "bucket"
+      ]
+    },
+    "TelemetryExporterConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "container_image": {
+          "type": "string",
+          "description": "Exporter image (registry URI or `containers` alias); ignored, and may be `\"\"`, when `binary` is set."
+        },
+        "port": {
+          "type": "integer",
+          "description": "Port the exporter serves `/metrics` on, on every worker node."
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Command line replacing the image's default entrypoint arguments.",
+          "default": null
+        },
+        "binary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Host executable to run without a container; relative paths resolve against the srtctl checkout.",
+          "default": null
+        }
+      },
+      "description": "Configuration for a metrics exporter deployed on worker nodes.",
+      "required": [
+        "container_image",
+        "port"
+      ]
+    }
+  }
+}

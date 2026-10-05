@@ -4,16 +4,26 @@
 """Tests for SLURM command construction."""
 
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+from srtctl.cli.mixins.worker_stage import WorkerStageMixin, worker_step_name
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
+from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import HealthCheckConfig, ObservabilityConfig, ResourceConfig, Topology
+from srtctl.core.schema import (
+    HealthCheckConfig,
+    ObservabilityConfig,
+    ResourceConfig,
+    RestartPolicy,
+    RoleConfig,
+    Topology,
+)
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
 
 
@@ -197,6 +207,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         backend=backend,
         backend_for_role=lambda _mode: backend,
         role_containers={},
+        roles={"prefill": RoleConfig(), "decode": RoleConfig(), "agg": RoleConfig()},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -210,7 +221,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
-        srun_options=[],
+        srun_options={},
     )
     process = SimpleNamespace(
         endpoint_mode="prefill",
@@ -269,6 +280,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         backend=backend,
         backend_for_role=lambda _mode: backend,
         role_containers={},
+        roles={"prefill": RoleConfig(), "decode": RoleConfig(), "agg": RoleConfig()},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -281,7 +293,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
-        srun_options=[],
+        srun_options={},
     )
     process = SimpleNamespace(
         endpoint_mode="prefill",
@@ -393,6 +405,113 @@ def test_worker_stage_no_remap_root_for_sglang_frontend(tmp_path: Path) -> None:
         mixin.start_worker(process, [process])
 
     assert mock_srun.call_args.kwargs["srun_export_env"] is None
+
+
+def test_worker_step_name_suffixes_relaunches_only() -> None:
+    assert worker_step_name("decode", 1, "node-b") == "decode_1_node-b"
+    assert worker_step_name("decode", 1, "node-b", 0) == "decode_1_node-b"
+    assert worker_step_name("decode", 1, "node-b", 2) == "decode_1_node-b_r2"
+
+
+def test_worker_stage_relaunch_suffixes_the_step_and_reuses_the_log_path(tmp_path: Path) -> None:
+    """A supervisor relaunch is the same process spec under a new step name (the old log was rotated away)."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        managed = mixin.start_worker(process, [process], attempt=2)
+
+    assert mock_srun.call_args.kwargs["step_name"] == "prefill_0_node-a_r2"
+    assert mock_srun.call_args.kwargs["output"] == str(tmp_path / "node-a_prefill_w0.out")
+    assert managed.name == managed.step_name == "prefill_0_node-a_r2"
+    assert managed.log_file == tmp_path / "node-a_prefill_w0.out"
+
+
+def test_relaunch_endpoint_follows_the_backend_launch_strategy(tmp_path: Path) -> None:
+    mixin, leader = _remap_worker_mixin(tmp_path, frontend_type="sglang-router", dynamo_install=False)
+    follower = SimpleNamespace(**{**vars(leader), "node": "node-b"})
+    mixin.runtime.nodes.worker.append("node-b")
+    patches = (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    )
+
+    # Per-process launching (SGLang): one step per rank of the endpoint.
+    mixin.backend.get_srun_config.return_value = SimpleNamespace(
+        launch_per_endpoint=False, mpi=None, oversubscribe=False, cpu_bind=None, kill_on_bad_exit=False
+    )
+    with patches[0], patches[1] as mock_srun:
+        procs = list(mixin.relaunch_endpoint([leader, follower], attempt=1))
+    assert [p.name for p in procs] == ["prefill_0_node-a_r1", "prefill_0_node-b_r1"]
+    assert [call.kwargs["nodelist"] for call in mock_srun.call_args_list] == [["node-a"], ["node-b"]]
+
+    # Per-endpoint launching (TRT-LLM): one MPI step spanning every node.
+    mixin.backend.get_srun_config.return_value = SimpleNamespace(
+        launch_per_endpoint=True, mpi="pmix", oversubscribe=False, cpu_bind=None, kill_on_bad_exit=True
+    )
+    with patches[0], patches[1] as mock_srun:
+        procs = list(mixin.relaunch_endpoint([leader, follower], attempt=3))
+    assert [p.name for p in procs] == ["prefill_0_node-a_r3"]
+    assert mock_srun.call_args.kwargs["nodelist"] == ["node-a", "node-b"]
+    assert mock_srun.call_args.kwargs["step_name"] == "prefill_0_node-a_r3"
+
+
+def test_worker_ready_probe_targets_the_port_the_frontend_health_checks(tmp_path: Path) -> None:
+    mixin, leader = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    leader.http_port = 8100
+    leader.is_leader = True
+    with patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.7"):
+        assert mixin.worker_ready_probe([leader]) == ("10.0.0.7", 5000)  # DYN_SYSTEM_PORT under dynamo
+        mixin.config.frontend.type = "sglang-router"
+        assert mixin.worker_ready_probe([leader]) == ("10.0.0.7", 8100)  # the engine's own HTTP port
+        leader.http_port = 0
+        assert mixin.worker_ready_probe([leader]) is None
+
+
+@pytest.mark.parametrize("frontend_type", ["sglang", "vllm", "trtllm_serve"])
+def test_direct_worker_restart_probes_the_public_port(tmp_path: Path, frontend_type: str) -> None:
+    mixin, leader = _remap_worker_mixin(tmp_path, frontend_type=frontend_type, dynamo_install=False)
+    leader.endpoint_mode = "agg"
+    leader.is_leader = True
+    leader.http_port = 8100
+    mixin.runtime.frontend_port = 8180
+    with patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.7"):
+        assert mixin.worker_ready_probe([leader]) == ("10.0.0.7", 8180)
+
+
+def test_track_workers_supervises_only_roles_with_a_restart_policy(tmp_path: Path) -> None:
+    base, prefill = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    decode = SimpleNamespace(**{**vars(prefill), "endpoint_mode": "decode"})
+
+    class Stage(WorkerStageMixin):
+        backend_processes: ClassVar[list] = [prefill, decode]  # shadows the abstract property
+
+    stage = Stage()
+    stage.config = base.config
+    stage.runtime = base.runtime
+    stage.config.roles = {"decode": RoleConfig(restart=RestartPolicy(policy="on-failure"))}
+    stage.config.topology = Topology(stage.config.roles, gpus_per_node=8)
+    stage.config.health_check = SimpleNamespace(max_attempts=3, interval_seconds=10)
+
+    registry = ProcessRegistry(job_id="1")
+    supervisor = stage.build_worker_supervisor(registry, threading.Event())
+    assert supervisor.ready_timeout == 30.0  # the same budget as the initial health gate
+
+    worker_procs = {}
+    for name in ("prefill_0_node-a", "decode_0_node-a"):
+        popen = MagicMock(spec=subprocess.Popen)
+        popen.poll.return_value = None
+        popen.pid = 1
+        worker_procs[name] = ManagedProcess(name=name, popen=popen, step_name=name)
+    registry.add_processes(worker_procs)
+
+    stage.track_workers(supervisor, worker_procs)
+
+    assert worker_procs["decode_0_node-a"].supervised is True
+    assert worker_procs["prefill_0_node-a"].supervised is False
+    assert stage.worker_endpoint_groups() == {("prefill", 0, 0): [prefill], ("decode", 0, 0): [decode]}
 
 
 def test_sglang_workers_skip_the_post_sigterm_crash_diagnostics_by_default(tmp_path: Path) -> None:
@@ -519,14 +638,46 @@ def test_trtllm_native_kv_event_host_override_is_preserved(tmp_path: Path) -> No
     assert mock_srun.call_args.kwargs["env_to_set"]["DYN_TRTLLM_KV_EVENT_HOSTS"] == "override-a,override-b"
 
 
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+@pytest.mark.parametrize("mode,expected_mem", [("prefill", "1000M"), ("decode", "2000M"), ("agg", "0")])
+def test_role_srun_options_override_recipe_on_worker_steps(
+    tmp_path: Path, launch_method: str, mode: str, expected_mem: str
+) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin.runtime.srun_options = {"cpu-bind": "none", "mem": "0"}
+    mixin.config.roles = {
+        "prefill": RoleConfig(srun_options={"mem": "1000M"}),
+        "decode": RoleConfig(srun_options={"mem": "2000M"}),
+        "agg": RoleConfig(),
+    }
+    process.endpoint_mode = mode
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        if launch_method == "start_worker":
+            mixin.start_worker(process, [process])
+        else:
+            mixin.start_endpoint_worker([process])
+
+    options = mock_srun.call_args.kwargs["srun_options"]
+    assert (options["cpu-bind"], options["mem"]) == ("none", expected_mem)
+    assert mixin.runtime.srun_options == {"cpu-bind": "none", "mem": "0"}
+
+
 def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "trtllm"
     mixin.config.dynamo.sidecar = True
-    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
     mixin.runtime.srun_options = {"exclusive": "", "kill-on-bad-exit": "0"}
+    mixin.config.roles["prefill"] = RoleConfig(
+        srun_options={"mem": "1000M", "kill-on-bad-exit": "0", "ntasks-per-node": "99"}
+    )
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -539,6 +690,7 @@ def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> N
         "exclusive": "",
         "kill-on-bad-exit": "1",
         "ntasks-per-node": "8",
+        "mem": "1000M",
     }
 
 
@@ -705,6 +857,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         backend=backend,
         backend_for_role=lambda _mode: backend,
         role_containers={},
+        roles={"prefill": RoleConfig(), "decode": RoleConfig(), "agg": RoleConfig()},
     )
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
@@ -717,7 +870,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
-        srun_options=[],
+        srun_options={},
     )
     process = SimpleNamespace(
         endpoint_mode="decode",
@@ -747,20 +900,20 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
 def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int, visibility_env: str) -> None:
     import os
 
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.runtime.gpus_per_node = 4
     mixin.runtime.visible_devices_env = visibility_env
     mixin.backend.type = "trtllm"
     mixin.runtime.srun_options = {"cpu-bind": "none", "kill-on-bad-exit": "1"}
-    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
     mixin.backend.build_worker_command.return_value = [
         "bash",
         "-c",
         f'printf "%s|%s|%s" "${visibility_env}" "$MASTER_ADDR" "$MASTER_PORT"',
     ]
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=2,
         num_decode=0,
         num_agg=0,
@@ -770,7 +923,7 @@ def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int, visibility_e
         gpus_per_node=4,
         available_nodes=("node0", "node1", "node2"),
     )
-    processes = TRTLLMProtocol().endpoints_to_processes([endpoints[worker]])
+    processes = TRTLLMBackend().endpoints_to_processes([endpoints[worker]])
     with (
         patch.dict("os.environ", {"SLURM_NTASKS_PER_NODE": "4"}),
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
@@ -808,13 +961,13 @@ def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int, visibility_e
 
 @pytest.mark.parametrize("override", [False, True])
 def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: Path, override: bool) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.backend.type = "trtllm"
     if override:
         mixin.runtime.environment = {"MASTER_ADDR": "custom-host", "MASTER_PORT": "12345"}
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=2,
         num_decode=0,
         num_agg=0,
@@ -824,7 +977,7 @@ def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: 
         gpus_per_node=4,
         available_nodes=("node0",),
     )
-    processes = TRTLLMProtocol().endpoints_to_processes(endpoints)
+    processes = TRTLLMBackend().endpoints_to_processes(endpoints)
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
         patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.1"),
@@ -839,13 +992,13 @@ def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: 
 
 @pytest.mark.parametrize("gpu_count, nodes, per_node", [(32, 8, 4), (2, 1, 2)])
 def test_endpoint_launch_uniform_nodes(tmp_path: Path, gpu_count: int, nodes: int, per_node: int) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
     from srtctl.core.topology import endpoints_to_processes
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.runtime.gpus_per_node = 4
-    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=1,
         num_decode=0,
         num_agg=0,
@@ -869,12 +1022,12 @@ def test_endpoint_launch_uniform_nodes(tmp_path: Path, gpu_count: int, nodes: in
 
 
 def test_endpoint_rejects_incompatible_local_rank_mapping(tmp_path: Path) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
     from srtctl.core.topology import endpoints_to_processes
 
     mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
     mixin.backend.type = "trtllm"
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=1,
         num_decode=0,
         num_agg=0,
@@ -898,12 +1051,12 @@ def test_trtllm_endpoint_step_kills_on_bad_exit_without_sidecar(tmp_path: Path) 
     One launcher task exiting non-zero then ends the whole step, so srun exits and the
     registry sees the failure, instead of leaving the follower ranks blocked forever.
     """
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "trtllm"
     mixin.config.dynamo.sidecar = False
-    mixin.backend.get_srun_config.return_value = TRTLLMProtocol().get_srun_config()
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -916,10 +1069,10 @@ def test_trtllm_endpoint_step_kills_on_bad_exit_without_sidecar(tmp_path: Path) 
 
 
 def test_sglang_worker_step_is_not_killed_on_bad_exit(tmp_path: Path) -> None:
-    from srtctl.backends.sglang import SGLangProtocol
+    from srtctl.backends.sglang import SGLangBackend
 
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
-    mixin.backend.get_srun_config.return_value = SGLangProtocol().get_srun_config()
+    mixin.backend.get_srun_config.return_value = SGLangBackend().get_srun_config()
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),

@@ -482,13 +482,13 @@ class TestSharedNodeDisaggExample:
 
 
 class TestMooncakeKVStore:
-    """Tests for mooncake_kv_store configuration on SGLangProtocol."""
+    """Tests for mooncake_kv_store configuration on SGLangBackend."""
 
     def test_mooncake_worker_env_not_set(self):
         """No mooncake_kv_store → get_mooncake_worker_env returns empty dict."""
-        from srtctl.backends.sglang import SGLangProtocol
+        from srtctl.backends.sglang import SGLangBackend
 
-        backend = SGLangProtocol()
+        backend = SGLangBackend()
         assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
 
     def test_mooncake_worker_env_minimal(self):
@@ -497,10 +497,10 @@ class TestMooncakeKVStore:
             MOONCAKE_HTTP_METADATA_PORT,
             MOONCAKE_MASTER_PORT,
             MooncakeKVStoreConfig,
-            SGLangProtocol,
+            SGLangBackend,
         )
 
-        backend = SGLangProtocol(mooncake_kv_store=MooncakeKVStoreConfig())
+        backend = SGLangBackend(mooncake_kv_store=MooncakeKVStoreConfig())
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
         assert env == {
             "MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
@@ -514,10 +514,10 @@ class TestMooncakeKVStore:
             MOONCAKE_HTTP_METADATA_PORT,
             MOONCAKE_MASTER_PORT,
             MooncakeKVStoreConfig,
-            SGLangProtocol,
+            SGLangBackend,
         )
 
-        backend = SGLangProtocol(
+        backend = SGLangBackend(
             mooncake_kv_store=MooncakeKVStoreConfig(
                 env={
                     "MOONCAKE_MASTER": "should-be-ignored:9999",
@@ -531,9 +531,9 @@ class TestMooncakeKVStore:
 
     def test_mooncake_worker_env_local_hostname_user_can_override(self):
         """User-supplied MOONCAKE_LOCAL_HOSTNAME in env overrides the auto-resolved value."""
-        from srtctl.backends.sglang import MooncakeKVStoreConfig, SGLangProtocol
+        from srtctl.backends.sglang import MooncakeKVStoreConfig, SGLangBackend
 
-        backend = SGLangProtocol(
+        backend = SGLangBackend(
             mooncake_kv_store=MooncakeKVStoreConfig(env={"MOONCAKE_LOCAL_HOSTNAME": "custom-rdma-nic"})
         )
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
@@ -541,9 +541,9 @@ class TestMooncakeKVStore:
 
     def test_mooncake_worker_env_passthrough(self):
         """mooncake_kv_store.env values are merged with MOONCAKE_MASTER."""
-        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangProtocol
+        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangBackend
 
-        backend = SGLangProtocol(
+        backend = SGLangBackend(
             mooncake_kv_store=MooncakeKVStoreConfig(
                 env={
                     "MOONCAKE_PROTOCOL": "rdma",
@@ -733,17 +733,17 @@ class TestVLLMMooncakeKVStore:
 
     def test_vllm_mooncake_worker_env_not_set(self):
         """No mooncake_kv_store → get_mooncake_worker_env returns empty dict."""
-        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.backends.vllm import VLLMBackend
 
-        backend = VLLMProtocol()
+        backend = VLLMBackend()
         assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
 
     def test_vllm_mooncake_worker_env_uses_shared_ports(self):
         """vLLM reuses the shared mooncake_master port pair from srtctl.ports."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
         from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 
-        backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
+        backend = VLLMBackend(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
         assert env == {
             "MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
@@ -754,10 +754,10 @@ class TestVLLMMooncakeKVStore:
 
     def test_vllm_mooncake_master_overrides_user_env(self):
         """User-supplied MOONCAKE_MASTER is always overridden by srtslurm."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
         from srtctl.ports import MOONCAKE_MASTER_PORT
 
-        backend = VLLMProtocol(
+        backend = VLLMBackend(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
                 env={"MOONCAKE_MASTER": "should-be-ignored:9999"}
             )
@@ -767,9 +767,9 @@ class TestVLLMMooncakeKVStore:
 
     def test_vllm_mooncake_local_hostname_user_can_override(self):
         """User MOONCAKE_LOCAL_HOSTNAME overrides the auto-resolved value."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
 
-        backend = VLLMProtocol(
+        backend = VLLMBackend(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
                 env={"MOONCAKE_LOCAL_HOSTNAME": "rdma-nic-ip"}
             )
@@ -939,10 +939,10 @@ roles:
 
     def test_vllm_mooncake_store_config_unset_yields_only_master_address(self):
         """No store_config from user → JSON only contains the auto-injected master_server_address."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
         from srtctl.ports import MOONCAKE_MASTER_PORT
 
-        backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
+        backend = VLLMBackend(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
         cfg = backend.build_mooncake_store_config("10.0.0.1")
         # srtslurm intentionally does not default hardware-specific fields
         # (protocol, device_name, global_segment_size, …) — users must set
@@ -951,10 +951,10 @@ roles:
 
     def test_vllm_mooncake_store_config_user_overrides(self):
         """User store_config values pass through; master_server_address is always auto."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
         from srtctl.ports import MOONCAKE_MASTER_PORT
 
-        backend = VLLMProtocol(
+        backend = VLLMBackend(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
                 store_config={
                     "metadata_server": "http://my-metadata:9000",
@@ -977,9 +977,9 @@ roles:
 
     def test_vllm_mooncake_store_config_passes_unknown_keys_through(self):
         """Unknown keys in store_config pass through so new vLLM fields work without code changes."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
 
-        backend = VLLMProtocol(
+        backend = VLLMBackend(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
                 store_config={"new_upstream_field": "some_value", "another_new_field": 42}
             )
@@ -993,10 +993,10 @@ roles:
         from srtctl.backends.vllm import (
             MOONCAKE_STORE_CONFIG_CONTAINER_PATH,
             VLLMMooncakeKVStoreConfig,
-            VLLMProtocol,
+            VLLMBackend,
         )
 
-        backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
+        backend = VLLMBackend(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
         assert env["MOONCAKE_CONFIG_PATH"] == MOONCAKE_STORE_CONFIG_CONTAINER_PATH
         assert MOONCAKE_STORE_CONFIG_CONTAINER_PATH == "/logs/mooncake_store_config.json"

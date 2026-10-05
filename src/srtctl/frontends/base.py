@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-The frontend protocol and registry.
+The frontend abstract base class and registry.
 
 A frontend owns everything the rest of srtctl needs to know about the router
 (or the direct server that stands in for one): which backend it pairs with,
@@ -11,8 +11,11 @@ which rank serves metrics or an endpoint, how readiness is probed and counted,
 the services it implies, and how its process starts.
 """
 
+import inspect
 import threading
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
 if TYPE_CHECKING:
     from srtctl.core.health import WorkerHealthResult
@@ -28,8 +31,8 @@ if TYPE_CHECKING:
 FRONTEND_NONE = "none"
 
 
-class FrontendProtocol(Protocol):
-    """Protocol that all frontend implementations must implement.
+class Frontend(ABC):
+    """Base class for frontend implementations, with shared optional defaults.
 
     Each frontend answers, for the rest of srtctl:
     1. Which backend it pairs with and what its recipe rules are
@@ -52,28 +55,30 @@ class FrontendProtocol(Protocol):
 
     #: Backend type this frontend requires, or ``None`` for any backend.
     #: ``SrtConfig._validate_frontend`` enforces it at config load.
-    required_backend: ClassVar[str | None]
+    required_backend: ClassVar[str | None] = None
 
     #: Role that accepts the public request's model name; None uses decode/agg/prefill order.
-    model_name_role: ClassVar[str | None]
+    model_name_role: ClassVar[str | None] = None
 
     #: How this frontend's workers are launched. ``dynamo`` workers are
     #: ``dynamo.<engine>`` processes that register with the Dynamo runtime;
     #: ``direct`` workers are the engine's own OpenAI server (``vllm serve``,
     #: ``sglang.launch_server``, ``trtllm-serve``). Backends read this instead
     #: of comparing frontend names.
-    worker_launch: ClassVar[Literal["dynamo", "direct"]]
+    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
 
     #: The router expands each advertised URL into its node-local hybrid-LB DP
     #: ranks (vLLM Router). The vLLM backend launches one hybrid-LB API per node
     #: for such a frontend and refuses the deprecated per_gpu layout.
-    expands_node_local_dp: ClassVar[bool]
+    expands_node_local_dp: ClassVar[bool] = False
 
     @property
+    @abstractmethod
     def type(self) -> str:
         """Frontend type identifier (e.g., 'dynamo', 'sglang')."""
-        ...
+        raise NotImplementedError
 
+    @abstractmethod
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """Which port a direct worker of ``mode`` binds.
 
@@ -82,11 +87,12 @@ class FrontendProtocol(Protocol):
         its own ``Process.http_port``. Dynamo workers serve no HTTP API and never
         consult this.
         """
-        ...
+        raise NotImplementedError
 
     #: Path where this frontend's workers and router serve Prometheus metrics.
-    metrics_path: ClassVar[str]
+    metrics_path: ClassVar[str] = "/metrics"
 
+    @abstractmethod
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
         """Port on ``process.node`` serving Prometheus metrics at ``metrics_path`` for this rank.
 
@@ -94,8 +100,9 @@ class FrontendProtocol(Protocol):
         server, or a layout the frontend does not scrape. Every rank of a Dynamo
         worker serves its own system port; this is the telemetry view.
         """
-        ...
+        raise NotImplementedError
 
+    @abstractmethod
     def worker_endpoint_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
         """Port a benchmark addresses this worker's HTTP endpoint on, one per logical worker.
 
@@ -103,15 +110,16 @@ class FrontendProtocol(Protocol):
         a leader). Feeds the ``PREFILL_IPS``-style benchmark env and custom
         benchmarks' metrics URLs.
         """
-        ...
+        raise NotImplementedError
 
+    @abstractmethod
     def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
         """Port carrying this rank's profiler control routes for iteration-triggered captures, or ``None``."""
-        ...
+        raise NotImplementedError
 
     def profiling_control_is_leader_only(self, config: Any) -> bool:
         """Whether one control server per logical endpoint, on its leader, fronts every rank."""
-        ...
+        return False
 
     def direct_endpoint_nodes(self, processes: list["Process"]) -> list[str]:
         """Nodes whose worker is itself the public endpoint, in topology order.
@@ -119,11 +127,12 @@ class FrontendProtocol(Protocol):
         Empty when a router process owns the public port; then the frontend
         topology's nodes are the endpoint.
         """
-        ...
+        return []
 
+    @abstractmethod
     def worker_ready_port(self, process: "Process") -> int:
         """Port polled for a worker's own ``/health`` during sequential endpoint start."""
-        ...
+        raise NotImplementedError
 
     def health_expectations(self, config: Any, processes: list["Process"] | None) -> tuple[int, int, str]:
         """Expected ``(prefill, decode)`` counts in the units this frontend's readiness reports, plus a description.
@@ -134,8 +143,9 @@ class FrontendProtocol(Protocol):
         frontend counts logical workers. ``processes`` is ``None`` before the
         topology is known; implementations fall back to logical counts then.
         """
-        ...
+        return logical_health_expectations(config)
 
+    @abstractmethod
     def probe_ready(
         self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
     ) -> "WorkerHealthResult":
@@ -147,24 +157,23 @@ class FrontendProtocol(Protocol):
         the recipe, for frontends whose readiness contract depends on it (the
         vLLM Router in discovery mode).
         """
-        ...
+        raise NotImplementedError
 
-    def validate(self, config: Any) -> None:
+    def validate(self, config: Any) -> None:  # noqa: B027 - optional recipe validation hook
         """Recipe-level rules for this frontend.
 
         Raise ``ValueError`` with the user-facing message; the schema reports it
         as a load-time ValidationError so ``srtctl dry-run`` catches it before an
         allocation is spent. The backend pairing is checked before this runs.
         """
-        ...
 
     def implied_services(self, config: Any) -> list["EffectiveService"]:
         """Services this frontend needs that the recipe did not name (Dynamo: its discovery plane)."""
-        ...
+        return []
 
     def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
         """Port of a Prometheus listener separate from the routing port, or ``None`` when metrics share it."""
-        ...
+        return None
 
     def get_backend_health_urls(
         self,
@@ -173,14 +182,15 @@ class FrontendProtocol(Protocol):
         network_interface: str | None = None,
     ) -> list[str]:
         """Return backend URLs that must be directly healthy before traffic."""
-        ...
+        return []
 
+    @abstractmethod
     def start_frontends(
         self,
         topology: Any,  # FrontendTopology
         runtime: "RuntimeContext",
         config: Any,  # SrtConfig
-        backend: Any,  # BackendProtocol
+        backend: Any,  # Backend
         backend_processes: list["Process"],
         stop_event: "threading.Event | None" = None,
     ) -> list["ManagedProcess"]:
@@ -190,7 +200,7 @@ class FrontendProtocol(Protocol):
             topology: FrontendTopology describing where to run frontends
             runtime: Runtime context with paths and settings
             config: Full SrtConfig
-            backend: Backend protocol for mode-specific info
+            backend: Backend implementation for mode-specific info
             backend_processes: List of backend worker processes
             stop_event: Optional event to abort any readiness waits a frontend
                 performs while starting (frontends that return immediately ignore it)
@@ -198,7 +208,7 @@ class FrontendProtocol(Protocol):
         Returns:
             List of ManagedProcess instances for started frontends
         """
-        ...
+        raise NotImplementedError
 
 
 def frontend_args_to_cli(args: dict[str, Any] | None) -> list[str]:
@@ -239,13 +249,19 @@ def agg_leader_nodes(processes: list["Process"]) -> list[str]:
     return list(dict.fromkeys(p.node for p in ordered if p.endpoint_mode == "agg" and p.is_leader))
 
 
-_FRONTENDS: dict[str, type] = {}
+_FrontendT = TypeVar("_FrontendT", bound=Frontend)
+
+_FRONTENDS: dict[str, type[Frontend]] = {}
 
 
-def register_frontend(name: str):
+def register_frontend(name: str) -> Callable[[type[_FrontendT]], type[_FrontendT]]:
     """Class decorator registering a frontend implementation under ``frontend.type: <name>``."""
 
-    def decorator(cls):
+    def decorator(cls: type[_FrontendT]) -> type[_FrontendT]:
+        if not issubclass(cls, Frontend):
+            raise TypeError(f"Frontend {name!r} must inherit from Frontend")
+        if inspect.isabstract(cls):
+            raise TypeError(f"Frontend {name!r} must implement all abstract methods before registration")
         _FRONTENDS[name] = cls
         return cls
 
@@ -265,7 +281,7 @@ def list_frontend_types() -> list[str]:
     return sorted([*_FRONTENDS, FRONTEND_NONE])
 
 
-def get_frontend(frontend_type: str) -> FrontendProtocol:
+def get_frontend(frontend_type: str) -> Frontend:
     """Instantiate the registered frontend implementation for ``frontend_type``.
 
     Raises:

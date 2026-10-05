@@ -21,8 +21,8 @@ import yaml
 from srtctl.core.health import WorkerHealthResult, probe_http_ok, wait_for_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends.base import (
+    Frontend,
     frontend_args_to_cli,
-    logical_health_expectations,
     numactl_prefix,
     register_frontend,
 )
@@ -31,13 +31,12 @@ if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
-    from srtctl.services.implicit import EffectiveService
 
 logger = logging.getLogger(__name__)
 
 
 @register_frontend("trtllm_serve")
-class TRTLLMServeFrontend:
+class TRTLLMServeFrontend(Frontend):
     """Direct aggregate or disaggregated trtllm-serve frontend.
 
     Aggregate mode launches no extra process because the worker itself binds the
@@ -46,9 +45,6 @@ class TRTLLMServeFrontend:
     """
 
     required_backend: ClassVar[str | None] = "trtllm"
-    model_name_role: ClassVar[str | None] = None
-    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
-    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def type(self) -> str:
@@ -77,12 +73,6 @@ class TRTLLMServeFrontend:
     def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
         return self.worker_endpoint_port(process, config, runtime)
 
-    def profiling_control_is_leader_only(self, config: Any) -> bool:
-        return False
-
-    def direct_endpoint_nodes(self, processes: list["Process"]) -> list[str]:
-        return []
-
     def worker_ready_port(self, process: "Process") -> int:
         """A trtllm-serve worker reports /health on its own OpenAI port."""
         return process.http_port
@@ -92,9 +82,6 @@ class TRTLLMServeFrontend:
     ) -> WorkerHealthResult:
         """A 200 from /health is ready: the body may be empty, and every worker was gated before the orchestrator started."""
         return probe_http_ok(host, port, "/health", f"trtllm-serve frontend healthy at http://{host}:{port}/health")
-
-    def health_expectations(self, config: Any, processes: list["Process"] | None) -> tuple[int, int, str]:
-        return logical_health_expectations(config)
 
     def validate(self, config: Any) -> None:
         """One direct aggregate worker or one disaggregated orchestrator; either way one public endpoint."""
@@ -107,20 +94,6 @@ class TRTLLMServeFrontend:
                 "frontend.type: trtllm_serve aggregate mode requires exactly one "
                 "aggregate worker (set roles.agg.workers: 1)"
             )
-
-    def get_backend_health_urls(
-        self,
-        backend: Any,
-        backend_processes: list["Process"],
-        network_interface: str | None = None,
-    ) -> list[str]:
-        return []
-
-    def implied_services(self, config: Any) -> list["EffectiveService"]:
-        return []
-
-    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
-        return None
 
     @staticmethod
     def _build_ser(config: Any, prefill_urls: list[str], decode_urls: list[str], port: int) -> dict[str, Any]:
@@ -148,7 +121,7 @@ class TRTLLMServeFrontend:
         topology: Any,  # FrontendTopology
         runtime: "RuntimeContext",
         config: Any,  # SrtConfig
-        backend: Any,  # BackendProtocol
+        backend: Any,  # Backend
         backend_processes: list["Process"],
         stop_event: "threading.Event | None" = None,
     ) -> list["ManagedProcess"]:

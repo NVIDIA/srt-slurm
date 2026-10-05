@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
+from srtctl.backends import AtomBackend
+from srtctl.benchmarks import SHARED_BENCHMARK_FIELDS
 from srtctl.cli import submit as submit_cli
+from srtctl.cli.docs_gen import DOCS_DIR, stale_generated, write_generated
 from srtctl.core.config import (
     LEGACY_SECTION_KEYS,
     LEGACY_TOP_LEVEL_KEYS,
@@ -17,17 +21,31 @@ from srtctl.core.config import (
     resolve_config_with_defaults,
 )
 from srtctl.core.migrate import migrate_recipe_text
-from srtctl.core.schema import ObservabilityConfig, ResourceConfig, SrtConfig
+from srtctl.core.schema import (
+    ClusterConfig,
+    CpuPowerExporterConfig,
+    DynamoConfig,
+    ModelConfig,
+    ObservabilityConfig,
+    ProfilingPhaseConfig,
+    ResourceConfig,
+    SrtConfig,
+    SweepConfig,
+)
 from srtctl.core.schema_docs import (
     BACKEND_TYPES,
     DEFAULT_OUTPUT,
     INTERNAL_CLASSES,
     INTERNAL_FIELDS,
     INTERNAL_TOP_LEVEL,
+    authoring_rows,
+    benchmark_types,
+    documented_classes,
     field_docs,
+    json_schema,
     render_schema_reference,
+    resolve_field_path,
     schema_reference_is_current,
-    write_schema_reference,
 )
 
 LEGACY_DOC = Path(__file__).parent.parent / "docs" / "legacy-v1.md"
@@ -40,9 +58,9 @@ def test_checked_in_schema_reference_is_current() -> None:
     Fix with: uv run srtctl schema-docs
     """
     assert DEFAULT_OUTPUT.exists(), f"{DEFAULT_OUTPUT} is missing; run `srtctl schema-docs`"
-    assert schema_reference_is_current(), (
-        f"{DEFAULT_OUTPUT.name} is stale relative to the code; run `srtctl schema-docs` and commit the result"
-    )
+    assert (
+        schema_reference_is_current()
+    ), f"{DEFAULT_OUTPUT.name} is stale relative to the code; run `srtctl schema-docs` and commit the result"
 
 
 def test_render_is_deterministic() -> None:
@@ -85,12 +103,12 @@ def test_schema_reference_documents_only_the_recipe_layout() -> None:
     assert "`backend.type:" not in text
     assert "## Backend types" not in text
     assert "`sglang_config`" not in text  # per-mode config is internal; roles.<role>.args in a recipe
-    assert "| `schema` | int | required |" in text
+    assert "| `schema` | one of `2` | required |" in text
 
 
 def test_internal_fields_are_the_engines_per_mode_fields() -> None:
     """The docs hide exactly the per-mode engine fields a recipe spells under roles.<role>."""
-    assert INTERNAL_TOP_LEVEL == frozenset(LEGACY_TOP_LEVEL_KEYS)
+    assert frozenset(LEGACY_TOP_LEVEL_KEYS) == INTERNAL_TOP_LEVEL
     assert set(INTERNAL_FIELDS) == {cls for _, cls in BACKEND_TYPES}
     for _, cls in BACKEND_TYPES:
         assert INTERNAL_FIELDS[cls] <= {row.key for row in field_docs(cls)}
@@ -244,10 +262,10 @@ def test_engine_types_and_cluster_config_are_rendered() -> None:
     for heading in (
         "## Recipe",
         "## Engine types",
-        "### SGLangProtocol",
-        "### TRTLLMProtocol",
-        "### VLLMProtocol",
-        "### MockerProtocol",
+        "### SGLangBackend",
+        "### TRTLLMBackend",
+        "### VLLMBackend",
+        "### MockerBackend",
         "## Cluster config",
     ):
         assert heading in text, heading
@@ -256,27 +274,162 @@ def test_engine_types_and_cluster_config_are_rendered() -> None:
     assert "<!-- GENERATED FILE" in text
 
 
-def test_cli_check_passes_on_a_fresh_file(tmp_path: Path, monkeypatch, capsys) -> None:
-    output = tmp_path / "schema-reference.md"
-    write_schema_reference(output)
-    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--check", "--output", str(output)])
+def test_cli_check_passes_on_a_fresh_docs_dir(tmp_path: Path, monkeypatch, capsys) -> None:
+    write_generated(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--check", "--docs-dir", str(tmp_path)])
     submit_cli.main()
     assert "up to date" in capsys.readouterr().out
 
 
 def test_cli_check_fails_on_a_stale_file(tmp_path: Path, monkeypatch, capsys) -> None:
-    output = tmp_path / "schema-reference.md"
-    output.write_text("# stale\n")
-    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--check", "--output", str(output)])
+    write_generated(tmp_path)
+    (tmp_path / "cli-reference.md").write_text("# stale\n")
+    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--check", "--docs-dir", str(tmp_path)])
     with pytest.raises(SystemExit) as exc_info:
         submit_cli.main()
     assert exc_info.value.code == 1
-    assert "stale" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "stale" in out and "cli-reference.md" in out
 
 
-def test_cli_writes_only_the_schema_reference(tmp_path: Path, monkeypatch) -> None:
-    output = tmp_path / "nested" / "schema-reference.md"
-    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--output", str(output)])
+def test_cli_writes_every_generated_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--docs-dir", str(tmp_path / "docs")])
     submit_cli.main()
-    assert output.read_text() == render_schema_reference()
-    assert sorted(p.name for p in output.parent.iterdir()) == ["schema-reference.md"]
+    written = sorted(str(p.relative_to(tmp_path / "docs")) for p in (tmp_path / "docs").rglob("*") if p.is_file())
+    assert written == [
+        "cli-reference.md",
+        "schema-reference.md",
+        "schema/cluster.schema.json",
+        "schema/recipe.schema.json",
+    ]
+    assert (tmp_path / "docs" / "schema-reference.md").read_text() == render_schema_reference()
+
+
+def test_checked_in_generated_docs_are_current() -> None:
+    """docs/schema/*.schema.json and docs/cli-reference.md are regenerated with the code. Fix: uv run srtctl schema-docs"""
+    assert stale_generated() == []
+
+
+def test_published_recipe_schema_is_the_json_schema() -> None:
+    published = json.loads((DOCS_DIR / "schema" / "recipe.schema.json").read_text())
+    assert published == json_schema(SrtConfig)
+
+
+def test_every_authoring_field_has_a_description() -> None:
+    """Agents read these rows (and `srtctl schema`, and MCP explain_field) instead of the prose.
+
+    Fix by adding a `#` comment directly above the field, a trailing comment, or an `Attributes:` entry.
+    """
+    missing = [
+        f"{cls.__name__}.{row.key}"
+        for cls in documented_classes()
+        for row in authoring_rows(cls)
+        if not row.description.strip()
+    ]
+    assert missing == []
+
+
+def test_allowed_values_come_from_literals_and_validators() -> None:
+    def values(cls: type, key: str) -> tuple:
+        return next(row.allowed_values for row in authoring_rows(cls) if row.key == key)
+
+    assert values(SweepConfig, "mode") == ("zip", "grid")
+    assert values(ProfilingPhaseConfig, "capture_scope") == ("selected", "all")
+    assert values(CpuPowerExporterConfig, "source") == ("auto", "acpi", "dcgm")
+    assert values(AtomBackend, "mooncake_protocol") == ("rdma", "tcp")
+    assert values(DynamoConfig, "request_plane") == DynamoConfig._VALID_REQUEST_PLANES
+    assert values(SrtConfig, "schema") == (2,)
+    assert values(ModelConfig, "path") == ()
+
+
+def test_attribute_docstring_becomes_description() -> None:
+    row = next(row for row in field_docs(CpuPowerExporterConfig) if row.key == "source")
+    assert row.description.startswith("Power reading back-end")
+
+
+def test_benchmark_types_table_matches_the_registry() -> None:
+    from srtctl.benchmarks import list_benchmarks
+    from srtctl.benchmarks.base import benchmark_config_fields
+
+    rows = {name: own for name, _, own in benchmark_types()}
+    assert set(rows) == set(list_benchmarks()) | {"manual"}
+    for name, own in rows.items():
+        assert set(own) | SHARED_BENCHMARK_FIELDS == benchmark_config_fields(name)
+    text = render_schema_reference()
+    assert "#### Benchmark types" in text
+    assert "| `sa-bench` |" in text
+
+
+def _example_documents() -> list[tuple[Path, dict]]:
+    root = Path(__file__).parent.parent / "examples"
+    return [(path, yaml.safe_load(path.read_text())) for path in sorted(root.rglob("*.yaml"))]
+
+
+def test_json_schema_accepts_every_example() -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = jsonschema.Draft202012Validator(json_schema(SrtConfig))
+    jsonschema.Draft202012Validator.check_schema(validator.schema)
+    failures = {
+        str(path): [error.message for error in validator.iter_errors(doc)]
+        for path, doc in _example_documents()
+        if not validator.is_valid(doc)
+    }
+    assert failures == {}
+
+
+def test_json_schema_rejects_what_the_loader_rejects() -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = jsonschema.Draft202012Validator(json_schema(SrtConfig))
+    base = {
+        "schema": 2,
+        "name": "t",
+        "model": {"path": "/m", "container": "/c.sqsh", "precision": "bf16"},
+        "resources": {"gpu_type": "h100"},
+        "engine": "sglang",
+        "roles": {"agg": {"nodes": 1}},
+    }
+    assert validator.is_valid(base)
+    assert not validator.is_valid({**base, "bogus": 1})
+    assert not validator.is_valid({**base, "model": {**base["model"], "bogus": 1}})
+    assert not validator.is_valid({**base, "dynamo": {"request_plane": "udp"}})
+    assert not validator.is_valid({**base, "engine": "nope"})
+    assert not validator.is_valid({key: value for key, value in base.items() if key != "name"})
+    assert validator.is_valid({**base, "engine": {"type": "vllm", "connector": "nixl"}})
+    assert validator.is_valid({"schema": 2, "base": {k: v for k, v in base.items() if k != "schema"}, "override_x": {}})
+
+
+def test_cluster_json_schema_describes_srtslurm_yaml() -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json_schema(ClusterConfig)
+    validator = jsonschema.Draft202012Validator(schema)
+    assert "default_account" in schema["properties"]
+    assert schema["properties"]["default_account"]["description"]
+    assert validator.is_valid({"default_account": "a", "containers": {"sglang": "/c.sqsh"}})
+    assert not validator.is_valid({"default_acount": "a"})
+
+
+def test_resolve_field_path_walks_maps_lists_and_engines() -> None:
+    assert resolve_field_path("roles.decode.nodes")["leaf"]["defined_in"] == "RoleConfig"
+    assert resolve_field_path("services[0].readiness.http.port")["leaf"]["defined_in"] == "HttpProbe"
+    connector = resolve_field_path("engine.connector")["leaf"]
+    assert {"atom", "vllm"} <= set(connector["engine_types"])
+    isl = resolve_field_path("benchmark.isl")["leaf"]
+    assert "sa-bench" in isl["benchmark_types"]
+    missing = resolve_field_path("model.bogus")
+    assert missing["leaf"] is None
+    assert missing["unresolved"] == "bogus"
+    assert "path" in missing["available"]
+
+
+def test_cli_schema_prints_json_schema(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["srtctl", "schema"])
+    submit_cli.main()
+    schema = json.loads(capsys.readouterr().out)
+    assert schema["$defs"]["Recipe"]["properties"]["name"]["description"]
+
+
+def test_cli_schema_writes_cluster_schema(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "srtslurm.schema.json"
+    monkeypatch.setattr(sys, "argv", ["srtctl", "schema", "--cluster", "--output", str(output)])
+    submit_cli.main()
+    assert json.loads(output.read_text()) == json_schema(ClusterConfig)

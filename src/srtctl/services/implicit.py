@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+from srtctl.backends.vllm import VLLMBackend, VLLMMooncakeKVStoreConfig
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
 
@@ -88,7 +88,7 @@ def connector_services(config: SrtConfig) -> list[EffectiveService]:
     several do. A declared service of that type owns the placement instead.
     """
     backend = config.backend
-    if not isinstance(backend, VLLMProtocol):
+    if not isinstance(backend, VLLMBackend):
         return []
     resources = config.topology
     workers: dict[WorkerMode, int] = {

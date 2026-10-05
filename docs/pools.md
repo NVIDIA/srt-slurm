@@ -44,7 +44,7 @@ Nodes:
   total: 4
 ```
 
-The full recipe is [examples/features/pools.yaml](../examples/features/pools.yaml).
+The full recipe is [examples/features/pools.yaml](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/pools.yaml).
 
 ## Owners and riders
 
@@ -137,7 +137,7 @@ head_ip="${SRT_SERVICE_TRAIN_IPS%%,*}"
 nodes="$SRT_SERVICE_TRAIN_NODE_COUNT"
 ```
 
-See the `custom` section of [config-reference.md](config-reference.md#custom) for the full variable table.
+See the `custom` section of [Benchmarks](benchmarks.md#custom) for the full variable table.
 
 ## Telemetry and teardown
 

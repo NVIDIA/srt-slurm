@@ -5,7 +5,7 @@
 
 from types import SimpleNamespace
 
-from srtctl.backends import SGLangProtocol, VLLMProtocol
+from srtctl.backends import SGLangBackend, VLLMBackend
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
 from srtctl.frontends.dynamo import vllm_data_parallel_size
 from srtctl.core.schema import RoleConfig
@@ -23,9 +23,9 @@ def _config(
 ):
     """Build a stand-in for SrtConfig around a real backend dataclass, with only the fields the helpers read."""
     if backend_type == "vllm":
-        backend = VLLMProtocol(roles=roles or {}, dp_launch_mode=dp_launch_mode)
+        backend = VLLMBackend(roles=roles or {}, dp_launch_mode=dp_launch_mode)
     else:
-        backend = SGLangProtocol()
+        backend = SGLangBackend()
     return SimpleNamespace(
         frontend=SimpleNamespace(type=frontend_type),
         backend=backend,

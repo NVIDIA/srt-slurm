@@ -19,11 +19,12 @@ description: Run srt-slurm (srtctl) inference benchmarks on a Slurm cluster. Use
 | Task | Read |
 |---|---|
 | Fresh checkout: install, `make setup`, first `srtslurm.yaml` | `docs/installation.md` (Run Setup, Configure srtslurm.yaml) |
-| Every `srtslurm.yaml` key, including `preflight`, `default_mounts`, aliases | `docs/config-reference.md` (Cluster Config Fields) |
+| Every `srtslurm.yaml` key, including `preflight`, `default_mounts`, aliases | `docs/schema-reference.md` (Cluster config, generated); `docs/cluster-config.md` for alias resolution |
 | Pick a starting recipe by engine, frontend and topology | `examples/README.md` (Matrix) |
-| Any recipe field | `docs/config-reference.md`, or the MCP `explain_field` tool |
-| Prefill/decode split, `nodes: colocate`, GPU fit | `docs/config-reference.md` (roles, Colocating decode on the prefill nodes) |
-| Dynamo install, `dynamo.source`, sidecar mode | `docs/config-reference.md` (dynamo, Native sidecar mode) |
+| Any recipe field: type, default, allowed values, description | MCP `explain_field` (e.g. `roles.decode.nodes`), `docs/schema-reference.md` (generated), or `srtctl schema` (JSON Schema) |
+| How fields interact, worked examples | `docs/config-reference.md` |
+| Prefill/decode split, `nodes: colocate`, GPU fit | `docs/topology.md` (roles, Colocating decode on the prefill nodes) |
+| Dynamo install, `dynamo.source`, sidecar mode | `docs/frontends.md` (dynamo, Native sidecar mode) |
 | etcd, NATS, exporters, Mooncake, declared sidecars | `docs/services.md` (Implicit Services) |
 | Move a v1 recipe (`backend:`, `infra:`, `resources.*_nodes`) to schema 2 | `docs/cli.md` (srtctl migrate), `docs/legacy-v1.md` for the key mapping |
 | `apply` flags: `--set`, `--serve-only`, `--tags`, `--json`, `--no-preflight` | `docs/cli.md` (srtctl apply) |

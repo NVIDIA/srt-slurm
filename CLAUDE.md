@@ -28,13 +28,30 @@ uv run ruff check --fix src/srtctl/
 uv run ruff format src/srtctl/
 ```
 
+## Per-run Performance Analysis
+
+For **every Slurm run you launch or analyze**, write and maintain
+`<run_dir>/perf-analysis.md` in the actual job output directory on the cluster.
+Read and follow [the report requirements](docs/perf-analysis.md).
+
+Include TTFT p50/p95/p99, ITL p50/p99, throughput and the applicable agentic
+Pareto/SLO metrics, with units, sources and missing-data explanations. For a
+performance diagnosis, debugging task or improvement, explain how the metrics,
+files, DSight/dashboard views and skills advance the goal.
+
 ## Using DSight
 
 Before using DSight, read [docs/dsight.md](docs/dsight.md) and load the applicable
 [DSight skills](docs/dsight.md#agent-skills) by reading the linked skill files.
 This includes building or querying reports, analyzing existing results,
-preparing dashboard views, and changing DSight code. These skills live under
-`src/srtctl/dsight/skills/` and are part of this repository.
+preparing dashboard views, and changing DSight code. The `dsight-query` skill
+lives under `.agents/skills/` with the other repository agent skills.
+
+Before preparing or submitting Slurm jobs, use
+[slurm-job-sizing](src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md)
+to size allocation time, warmup and measured traffic to the task. It covers
+short, parallel hypothesis tests and full benchmarks sized from history and phase
+timing distributions, while preserving non-preemptible resources.
 
 ## Pull Request Descriptions
 
@@ -67,7 +84,7 @@ chat, agent session, or corporate environment.
 Follow these patterns when extending the codebase:
 
 - **Frozen dataclasses for config** - Use `@dataclass(frozen=True)` for all configuration objects. Immutability prevents accidental mutation and makes code easier to reason about.
-- **Protocol over ABC** - Prefer `typing.Protocol` for interface definitions (see `BackendProtocol`). Enables duck typing without inheritance coupling.
+- **Abstract base classes with inheritance** - Define shared interfaces with `abc.ABC` (see `Backend` and `Frontend`). Implementations inherit their base, implement required `@abstractmethod` hooks, and reuse optional defaults. Keep configuration fields on concrete frozen dataclasses.
 - **marshmallow_dataclass for validation** - Combine dataclasses with marshmallow schemas for type-safe config loading with validation. Custom fields (e.g., `BackendConfigField`) handle polymorphic deserialization.
 - **Factory classmethods** - Use `@classmethod` named `from_*` for construction (e.g., `RuntimeContext.from_config()`, `SrtConfig.from_yaml()`). Keep `__init__` simple.
 - **TYPE_CHECKING guard** - Import type-only dependencies under `if TYPE_CHECKING:` to avoid circular imports. Use string annotations for forward refs.
@@ -84,9 +101,9 @@ Read these before adding a feature. Each rule names the existing pattern to reus
 
 - **Names go in tables, never in branches.** A connector, vendor, router, exporter, or engine name is compared as a string in exactly one place: the table or registry that owns it (`_CONNECTOR_MAP` in `backends/vllm.py`, `@register_service`, `@register_benchmark`, `get_frontend`). Consumers read attributes of the row, not the name. If a change adds `if x == "<name>"` in two files, or repeats a `Literal["a", "b"]` across modules, it is a missing table row or a missing config field.
 - **Cluster differences live in `srtslurm.yaml`.** Anything that varies by cluster or hardware (NIC, visible-devices env var, default GPU exporter, sbatch directives, mounts, host setup) is a `ClusterConfig` field in `core/schema.py` following `network_interface` and the `default_*` blocks, read once into `RuntimeContext`. A vendor enum in Python is the wrong tool for this. Never call `load_cluster_config()` from a schema property or a stage: it is uncached and creates a second source of truth.
-- **One resolver per overridable setting.** A setting the recipe can set at engine level and override per role (`roles.<role>.args.connector`, DP size) has one accessor on the backend in the `get_config_for_mode` style (`VLLMProtocol.connector_for_mode`, with `kv_connector_for_mode` for the table row and `kv_transfer_config(mode)` for the flag), and every consumer uses it: command builder, process env, frontend, and schema validator. Two readers of the raw fields disagree the moment a role override appears.
-- **Frontends own readiness; backends own worker commands and ports.** `core/health.py` and the stage mixins contain no `frontend_type == "..."` checks and no `getattr(frontend, "hook", fallback)` probing. The frontend implements the protocol hook; if a hook is missing, add it to `FrontendProtocol`. A frontend asks a backend a question through a method (`backend.is_grpc_mode(mode)`), never by reading its fields by name.
-- **Backends answer through `BackendProtocol`, never through `getattr`.** The stage mixins, schema validators, services, and dry-run ask `backend.mooncake_kv_store`, `backend.failover`, `backend.get_environment_for_mode(mode)`, `backend.get_srun_config().sequential_node_start`; a backend without the feature returns `None` or `{}`. `getattr(backend, "x", default)` and `hasattr(backend, "f")` do not appear in `src/`: they pass on every backend, so a typo or a rename fails silently at runtime. Logic that is genuinely one engine's narrows with `isinstance(backend, VLLMProtocol)` and reads typed fields. When a consumer needs a new answer, add the member to `BackendProtocol` and implement it on every backend, including the neutral default.
+- **One resolver per overridable setting.** A setting the recipe can set at engine level and override per role (`roles.<role>.args.connector`, DP size) has one accessor on the backend in the `get_config_for_mode` style (`VLLMBackend.connector_for_mode`, with `kv_connector_for_mode` for the table row and `kv_transfer_config(mode)` for the flag), and every consumer uses it: command builder, process env, frontend, and schema validator. Two readers of the raw fields disagree the moment a role override appears.
+- **Frontends own readiness; backends own worker commands and ports.** `core/health.py` and the stage mixins contain no `frontend_type == "..."` checks and no `getattr(frontend, "hook", fallback)` probing. The frontend implements or inherits the base-class hook; if a hook is missing, add it to `Frontend`. A frontend asks a backend a question through a method (`backend.is_grpc_mode(mode)`), never by reading its fields by name.
+- **Backends answer through `Backend`, never through `getattr`.** The stage mixins, schema validators, services, and dry-run ask `backend.mooncake_kv_store`, `backend.failover`, `backend.get_environment_for_mode(mode)`, `backend.get_srun_config().sequential_node_start`; a backend without the feature returns `None` or `{}`. `getattr(backend, "x", default)` and `hasattr(backend, "f")` do not appear in `src/`: they pass on every backend, so a typo or a rename fails silently at runtime. Logic that is genuinely one engine's narrows with `isinstance(backend, VLLMBackend)` and reads typed fields. When a consumer needs a new answer, add the member to `Backend` with a shared neutral default when appropriate; require an abstract hook when every backend must supply its own behavior.
 - **Every listener a process opens comes from the allocator.** Two processes can share a node in this repo (`nodes: colocate`, DP endpoints), so any port a worker binds (HTTP, bootstrap, side channel, handshake, notify, metrics) is allocated by `NodePortAllocator` and carried on `Process`. An upstream default port left in a generated config is a collision on the first colocated recipe. See Ports in `src/srtctl/core/AGENTS.md`.
 - **Modes are not types.** A new `frontend.type`, `services[].type`, or `engine.type` is for a different process with its own launch, health API, and registration model. A different CLI shape, transport, or discovery mode of the same binary is an override inside the existing class: `trtllm_serve` handles aggregate and disaggregated in one type, `sglang-router` picks http or grpc per mode. A new frontend type is one registered module; the only remaining name checks are for Dynamo- and sglang-router-specific features (request tracing, the gateway's own metrics listener, `slow_down`).
 - **Check upstream before working around it.** When a change encodes an upstream behavior (what a health endpoint returns, which keys a connector reads, what a flag does), read the upstream source at the version the container ships and cite the commit in the PR. Do not add a probe, shim, or port-scan workaround for something upstream already handles.
@@ -105,7 +122,7 @@ This file holds the rules for every change. Subsystem rules live next to the cod
 | Ports, liveness, cleanup, resources | `src/srtctl/core/AGENTS.md` | `docs/architecture.md` |
 | Orchestrator stages, host setup | `src/srtctl/cli/AGENTS.md` | `docs/cli.md` |
 | Status reporting | `src/srtctl/status_server/AGENTS.md` | `docs/monitoring.md` |
-| Benchmarks | `src/srtctl/benchmarks/AGENTS.md` | `docs/config-reference.md` |
+| Benchmarks | `src/srtctl/benchmarks/AGENTS.md` | `docs/benchmarks.md` |
 | DSight reports, queries and analysis | `src/srtctl/dsight/AGENTS.md` | `docs/dsight.md`, `docs/dsight-storage.md` |
 | Tests, mock orchestrator, snapshots | `tests/AGENTS.md` | `tests/README.md` |
 | Documentation | `docs/AGENTS.md` | `docs/README.md` |
@@ -161,7 +178,7 @@ See `.agents/skills/validate-without-cluster/SKILL.md`.
 
 ### Adding or Changing Any Config Field
 
-`docs/schema-reference.md` is generated from the dataclasses in `core/schema.py` and `backends/`. After adding, renaming, or re-typing a field, run `uv run srtctl schema-docs` and commit the result; CI and `tests/test_schema_docs.py` fail when the file is stale. Put the field's description in the class docstring `Attributes:` block or in a `#` comment directly above the field so it lands in the generated table.
+`docs/schema-reference.md` is generated from the dataclasses in `core/schema.py` and `backends/`. After adding, renaming, or re-typing a field, run `uv run srtctl schema-docs` and commit the result; CI and `tests/test_schema_docs.py` fail when the file is stale. Put the field's description in the class docstring `Attributes:` block or in a `#` comment directly above the field so it lands in the generated table; `tests/test_schema_docs.py` fails on a user-facing field without one. The same rows feed `srtctl schema` (JSON Schema) and the MCP `explain_field` tool, so do not copy field tables into the hand-written recipe pages (`docs/config-reference.md` and the topic pages it indexes): link to the generated section and write only behavior there. It also writes `docs/schema/*.schema.json` and `docs/cli-reference.md` (from `build_parser()`), so rerun it after changing a CLI flag. `make docs` is the strict site build CI runs; add new pages to the `mkdocs.yml` nav. `tests/test_docs_yaml.py` schema-checks docs YAML (`<!-- docs-yaml: skip -->` opts a block out).
 
 ### Adding Config That Affects srun (Mounts, Env Vars, Options)
 

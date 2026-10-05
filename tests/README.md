@@ -144,10 +144,10 @@ with patch.dict(os.environ, H100Rack.slurm_env()):
 
 ```python
 def test_new_sglang_flag():
-    from srtctl.backends import SGLangProtocol
+    from srtctl.backends import SGLangBackend
     from srtctl.core.schema import RoleConfig
 
-    config = SGLangProtocol(roles={"prefill": RoleConfig(args={"my-new-flag": "value"})})
+    config = SGLangBackend(roles={"prefill": RoleConfig(args={"my-new-flag": "value"})})
     flags = config.get_config_for_mode("prefill")
     assert "my-new-flag" in flags
 ```

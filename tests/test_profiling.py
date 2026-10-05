@@ -422,8 +422,8 @@ class TestProfilingValidation:
     @pytest.mark.parametrize("selector", [{}, {"worker_index": 1}, {"worker_rank": 1}])
     def test_nsys_all_scope_warns_on_ignored_selectors(self, caplog, backend_type, phase_name, explicit_all, selector):
         """Implicit and explicit all scope warn on ignored selectors without narrowing capture."""
-        from srtctl.backends.sglang import SGLangProtocol
-        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.backends.sglang import SGLangBackend
+        from srtctl.backends.vllm import VLLMBackend
         from srtctl.core.schema import (
             ModelConfig,
             ProfilingConfig,
@@ -451,7 +451,7 @@ class TestProfilingValidation:
                 model=ModelConfig(path="/model", container="/container", precision="fp8"),
                 resources=ResourceConfig(gpu_type="h100"),
                 roles=roles,
-                engine=VLLMProtocol() if backend_type == "vllm" else SGLangProtocol(),
+                engine=VLLMBackend() if backend_type == "vllm" else SGLangBackend(),
                 profiling=ProfilingConfig(type="nsys", **phases),
             )
 
@@ -591,7 +591,7 @@ class TestProfilingValidation:
         """profiler-config.* in vllm_config conflicts with the auto-injected one."""
         from marshmallow import ValidationError
 
-        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.backends.vllm import VLLMBackend
         from srtctl.core.schema import (
             ModelConfig,
             ProfilingConfig,
@@ -610,7 +610,7 @@ class TestProfilingValidation:
                     "prefill": RoleConfig(nodes=1, workers=1),
                     "decode": RoleConfig(nodes=1, workers=1, args={"profiler-config.profiler": "cuda"}),
                 },
-                engine=VLLMProtocol(),
+                engine=VLLMBackend(),
                 profiling=ProfilingConfig(
                     type="nsys",
                     prefill=ProfilingPhaseConfig(start_step=0, stop_step=10),
@@ -620,7 +620,7 @@ class TestProfilingValidation:
 
     def test_vllm_nsys_without_profiler_config_ok(self):
         """Steps live only in the profiling: block -> no conflict, validation passes."""
-        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.backends.vllm import VLLMBackend
         from srtctl.core.schema import (
             ModelConfig,
             ProfilingConfig,
@@ -639,7 +639,7 @@ class TestProfilingValidation:
                 "prefill": RoleConfig(nodes=1, workers=1),
                 "decode": RoleConfig(nodes=1, workers=1, args={"tensor-parallel-size": 1}),
             },
-            engine=VLLMProtocol(),
+            engine=VLLMBackend(),
             profiling=ProfilingConfig(
                 type="nsys",
                 prefill=ProfilingPhaseConfig(start_step=0, stop_step=10),
@@ -673,13 +673,13 @@ class TestVllmNsysProfilerConfig:
         from types import SimpleNamespace
 
         import srtctl.core.slurm as slurm_mod
-        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.backends.vllm import VLLMBackend
         from srtctl.core.topology import Process
         from srtctl.core.schema import RoleConfig
 
         monkeypatch.setattr(slurm_mod, "get_hostname_ip", lambda node, interface=None: "10.0.0.1")
 
-        backend = VLLMProtocol(roles={"decode": RoleConfig(args=decode_cfg or {"tensor-parallel-size": 1})})
+        backend = VLLMBackend(roles={"decode": RoleConfig(args=decode_cfg or {"tensor-parallel-size": 1})})
         process = Process(
             node="node0",
             gpu_indices=frozenset({0}),
@@ -757,7 +757,7 @@ class TestProfilingTargetSelection:
         from pathlib import Path
         from types import SimpleNamespace
 
-        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.backends.vllm import VLLMBackend
         from srtctl.cli.mixins import benchmark_stage
         from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
         from srtctl.cli.mixins.worker_stage import WorkerStageMixin
@@ -776,7 +776,7 @@ class TestProfilingTargetSelection:
             def backend_processes(self):
                 return self._processes
 
-        backend = VLLMProtocol(dp_launch_mode=launch_mode)
+        backend = VLLMBackend(dp_launch_mode=launch_mode)
         phase = ProfilingPhaseConfig(start_step=10, stop_step=30)
         config = SrtConfig(
             name="profiling-default",

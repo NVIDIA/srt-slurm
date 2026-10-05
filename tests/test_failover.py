@@ -20,7 +20,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, VLLMFailoverConfig, VLLMProtocol, failover_worker_dir
+from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, VLLMFailoverConfig, VLLMBackend, failover_worker_dir
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.submit import show_config_details
 from srtctl.core.runtime import Nodes, RuntimeContext
@@ -130,7 +130,7 @@ def _process(engine_id: int = 0, gpus: frozenset[int] = frozenset({3}), node_ran
 
 def test_defaults_and_engines_per_worker() -> None:
     config = _load()
-    assert isinstance(config.backend, VLLMProtocol)
+    assert isinstance(config.backend, VLLMBackend)
     failover = config.backend.failover
     assert failover == VLLMFailoverConfig()
     assert failover.shadow_engines == 1

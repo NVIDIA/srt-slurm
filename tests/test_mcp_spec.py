@@ -43,7 +43,8 @@ def test_explain_field_resolves_nested_reporting_endpoint() -> None:
     result = explain_field("reporting.status.endpoint")
     assert result["resolved"] is True
     assert result["schema"]["leaf"]["name"] == "endpoint"
-    assert result["schema"]["leaf"]["type"] == "UnionType[str, NoneType]"
+    assert result["schema"]["leaf"]["type"] == "str | None"
+    assert "status collector" in result["schema"]["leaf"]["description"]
 
 
 def test_validate_config_accepts_minimal_recipe() -> None:
@@ -237,3 +238,36 @@ def test_server_registers_the_spec_and_job_tools() -> None:
         "resolve_config",
     } <= names
     assert {"submit_job", "dry_run", "job_status", "job_logs", "list_jobs", "cancel_job"} <= names
+
+
+def test_schema_summary_carries_descriptions_and_types() -> None:
+    summary = schema_summary()
+    by_name = {field["name"]: field for field in summary["top_level_fields"]}
+    assert by_name["model"]["description"]
+    assert by_name["schema"]["allowed_values"] == [2]
+    assert "sglang" in summary["engine_types"]
+    assert any(entry["type"] == "sa-bench" for entry in summary["benchmark_types"])
+
+
+def test_explain_field_reads_the_schema_not_the_prose() -> None:
+    result = explain_field("dynamo.request_plane")
+    leaf = result["schema"]["leaf"]
+    assert result["resolved"] is True
+    assert leaf["allowed_values"] == ["nats", "tcp", "http"]
+    assert leaf["default"] == "'tcp'"
+    assert leaf["description"]
+    assert leaf["reference"] == "docs/schema-reference.md#dynamoconfig"
+
+
+def test_explain_field_resolves_roles_and_engine_keys() -> None:
+    assert explain_field("roles.prefill.gpus")["schema"]["leaf"]["defined_in"] == "RoleConfig"
+    engine = explain_field("engine.mooncake_protocol")["schema"]["leaf"]
+    assert engine["allowed_values"] == ["rdma", "tcp"]
+    assert engine["engine_types"] == ["atom"]
+
+
+def test_explain_field_reports_the_valid_keys_for_a_typo() -> None:
+    result = explain_field("benchmark.concurency")
+    assert result["resolved"] is False
+    assert result["schema"]["unresolved"] == "concurency"
+    assert "concurrency" in result["schema"]["available"]

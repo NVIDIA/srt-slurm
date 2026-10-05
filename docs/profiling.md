@@ -229,6 +229,8 @@ profiling:
 
 ### Parameters
 
+Every field, type, and default: [ProfilingConfig](schema-reference.md#profilingconfig) and [ProfilingPhaseConfig](schema-reference.md#profilingphaseconfig) (generated).
+
 | Parameter               | Description                                   | Default  |
 | ----------------------- | --------------------------------------------- | -------- |
 | `prefill.start_step`    | Step number to begin prefill profiling        | `0`      |
