@@ -3355,16 +3355,9 @@
           "default": null
         },
         "power_profile": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "type": "string",
           "description": "GPU power profile naming the exporter's power metric, device labels, and default `command`: `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter).",
-          "default": null
+          "default": "dcgm"
         }
       },
       "description": "Configuration for a metrics exporter deployed on worker nodes.",

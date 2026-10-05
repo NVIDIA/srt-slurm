@@ -19,7 +19,7 @@ from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
 from srtctl.core.power.manifest import ExpectedWindow
-from srtctl.core.power.profile import DCGM_EXPORTER_COMMAND_TEMPLATE, get_power_profile
+from srtctl.core.power.profile import POWER_PROFILES
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
@@ -35,9 +35,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# DCGM_EXPORTER_COMMAND_TEMPLATE is re-exported from srtctl.core.power.profile,
-# where every power exporter's default command lives next to its metric mapping.
-__all__ = ["DCGM_EXPORTER_COMMAND_TEMPLATE", "TelemetryStageMixin", "read_producer_commit", "resolve_exporter_command"]
 # Time tachometer gets after SIGTERM to compact its in-memory arrow rows to parquet.
 TACHOMETER_STEP_NAME = "tachometer"
 
@@ -188,7 +185,7 @@ class TelemetryStageMixin:
         if exporter_config is None:
             return None
 
-        profile = get_power_profile(exporter_config.power_profile)
+        profile = POWER_PROFILES[exporter_config.power_profile]
         worker_nodes = self._telemetry_nodes()
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
         command = resolve_exporter_command(exporter_config, profile.default_command_template)
@@ -605,7 +602,7 @@ class TelemetryStageMixin:
         power = self.config.telemetry
         if not (power.enabled and power.dcgm_exporter is not None):
             return []
-        profile = get_power_profile(power.dcgm_exporter.power_profile)
+        profile = POWER_PROFILES[power.dcgm_exporter.power_profile]
         nodes = sorted({process.node for process in self.backend_processes})
         return [
             ServiceMetricsTarget(

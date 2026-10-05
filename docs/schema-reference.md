@@ -469,7 +469,7 @@ Configuration for a metrics exporter deployed on worker nodes.
 | `port` | int | required | Port the exporter serves `/metrics` on, on every worker node. |
 | `command` | str \| None | `None` | Command line replacing the image's default entrypoint arguments. |
 | `binary` | str \| None | `None` | Host executable to run without a container; relative paths resolve against the srtctl checkout. |
-| `power_profile` | str \| None | `None` | GPU power profile naming the exporter's power metric, device labels, and default `command`: `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter). |
+| `power_profile` | str | `'dcgm'` | GPU power profile naming the exporter's power metric, device labels, and default `command`: `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter). |
 
 ### CpuPowerExporterConfig
 

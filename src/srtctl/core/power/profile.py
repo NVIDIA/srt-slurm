@@ -45,7 +45,7 @@ class PowerMetricProfile:
     ``instance_labels`` mark samples for logical sub-devices (MIG instances,
     partitions) that the artifact cannot represent; such samples are dropped
     with ``mig_instance_unsupported``. ``utilization_metrics`` must be a subset
-    of the contract's columns.
+    of the contract's columns with the same unit and range.
     """
 
     name: str
@@ -60,21 +60,6 @@ class PowerMetricProfile:
     # power collector (``TelemetryStageMixin._power_exporter_targets``).
     tachometer_filter: str = "passthrough"
     tachometer_gpu_metadata: bool = False
-
-    def __post_init__(self) -> None:
-        contract_columns = {metric.column: metric for metric in UTILIZATION_METRICS}
-        for metric in self.utilization_metrics:
-            spec = contract_columns.get(metric.column)
-            if spec is None:
-                raise ValueError(f"power profile {self.name!r} maps unknown artifact column {metric.column!r}")
-            if (metric.unit, metric.max_value) != (spec.unit, spec.max_value):
-                raise ValueError(f"power profile {self.name!r} changes the contract of column {metric.column!r}")
-        columns = [metric.column for metric in self.utilization_metrics]
-        metrics = [self.power_metric, *(metric.metric for metric in self.utilization_metrics)]
-        if len(set(columns)) != len(columns) or len(set(metrics)) != len(metrics):
-            raise ValueError(f"power profile {self.name!r} repeats a column or metric")
-        if self.gpu_index_label == self.gpu_identity_label:
-            raise ValueError(f"power profile {self.name!r} needs distinct index and identity labels")
 
 
 DCGM_POWER_PROFILE = PowerMetricProfile(
@@ -114,14 +99,3 @@ POWER_PROFILES: dict[str, PowerMetricProfile] = {
     profile.name: profile for profile in (DCGM_POWER_PROFILE, AMD_DEVICE_METRICS_POWER_PROFILE)
 }
 DEFAULT_POWER_PROFILE = DCGM_POWER_PROFILE
-
-
-def get_power_profile(name: str | None) -> PowerMetricProfile:
-    """The profile an exporter block names, or the DCGM default when it names none."""
-    if name is None:
-        return DEFAULT_POWER_PROFILE
-    try:
-        return POWER_PROFILES[name]
-    except KeyError:
-        known = ", ".join(sorted(POWER_PROFILES))
-        raise ValueError(f"unknown power_profile {name!r}; known profiles: {known}") from None

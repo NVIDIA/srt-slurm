@@ -1545,7 +1545,7 @@ class TelemetryExporterConfig:
     binary: str | None = None
     # GPU power profile naming the exporter's power metric, device labels, and default `command`:
     # `dcgm` (default) or `amd-device-metrics` (rocm/device-metrics-exporter).
-    power_profile: str | None = None
+    power_profile: str = "dcgm"
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -3397,7 +3397,7 @@ class SrtConfig:
             raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
-        if exporter.power_profile is not None and exporter.power_profile not in POWER_PROFILES:
+        if exporter.power_profile not in POWER_PROFILES:
             known = ", ".join(sorted(POWER_PROFILES))
             raise ValidationError(
                 f"telemetry.dcgm_exporter.power_profile={exporter.power_profile!r} is unknown; known profiles: {known}"

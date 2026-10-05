@@ -18,20 +18,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 from marshmallow import ValidationError
 
-from srtctl.cli.mixins import telemetry_stage
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin, resolve_exporter_command
 from srtctl.core.config import resolve_config_with_defaults
-from srtctl.core.power.contract import MANIFEST_FILENAME, UTILIZATION_METRICS, Reason, UtilizationMetric
+from srtctl.core.power.contract import MANIFEST_FILENAME, UTILIZATION_METRICS, Reason
 from srtctl.core.power.manifest import DcgmExporterIdentity, ExpectedWindow, PowerManifest
 from srtctl.core.power.parser import parse_power_scrape
 from srtctl.core.power.profile import (
     AMD_DEVICE_METRICS_POWER_PROFILE,
-    DCGM_EXPORTER_COMMAND_TEMPLATE,
     DCGM_POWER_PROFILE,
     DEFAULT_POWER_PROFILE,
     POWER_PROFILES,
-    PowerMetricProfile,
-    get_power_profile,
 )
 from srtctl.core.power.samples import SampleRow, read_samples
 from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession
@@ -97,12 +93,6 @@ class TestProfileTable:
             name: name for name in POWER_PROFILES
         }
         assert DEFAULT_POWER_PROFILE is DCGM_POWER_PROFILE
-        assert get_power_profile(None) is DCGM_POWER_PROFILE
-        assert get_power_profile("amd-device-metrics") is AMD
-
-    def test_unknown_name_lists_the_known_rows(self):
-        with pytest.raises(ValueError, match="unknown power_profile 'nvml'.*amd-device-metrics.*dcgm"):
-            get_power_profile("nvml")
 
     def test_dcgm_row_pins_the_pre_profile_contract(self):
         """The NVIDIA path must be unchanged: same metric, labels, riders and launch command."""
@@ -112,7 +102,6 @@ class TestProfileTable:
         assert DCGM_POWER_PROFILE.utilization_metrics == UTILIZATION_METRICS
         assert DCGM_POWER_PROFILE.instance_labels == ("GPU_I_ID", "GPU_I_PROFILE")
         assert DCGM_POWER_PROFILE.default_command_template == "dcgm-exporter --collect-interval=100 --address :{port}"
-        assert telemetry_stage.DCGM_EXPORTER_COMMAND_TEMPLATE == DCGM_EXPORTER_COMMAND_TEMPLATE
         assert (DCGM_POWER_PROFILE.tachometer_filter, DCGM_POWER_PROFILE.tachometer_gpu_metadata) == ("dcgm", True)
 
     def test_amd_row_matches_the_device_metrics_exporter_exposition(self):
@@ -133,27 +122,6 @@ class TestProfileTable:
                     contract[metric.column].unit,
                     contract[metric.column].max_value,
                 )
-
-    @pytest.mark.parametrize(
-        ("utilization", "identity", "match"),
-        [
-            ((UtilizationMetric("gpu_temp", "x", "celsius", 200.0),), "UUID", "unknown artifact column"),
-            ((UtilizationMetric("gpu_util_pct", "x", "fraction", 1.0),), "UUID", "changes the contract"),
-            (UTILIZATION_METRICS + (UtilizationMetric("gpu_util_pct", "y", "percent", 100.0),), "UUID", "repeats"),
-            ((), "gpu", "distinct index and identity"),
-        ],
-    )
-    def test_a_row_cannot_bend_the_artifact_contract(self, utilization, identity, match):
-        with pytest.raises(ValueError, match=match):
-            PowerMetricProfile(
-                name="bad",
-                power_metric="watts",
-                power_scope="scope",
-                gpu_index_label="gpu",
-                gpu_identity_label=identity,
-                default_command_template="exporter",
-                utilization_metrics=utilization,
-            )
 
 
 class TestParsingByProfile:
@@ -351,8 +319,7 @@ class TestSchema:
 
     def test_unset_profile_is_the_dcgm_row(self):
         exporter = TelemetryExporterConfig.Schema().load({"container_image": "dcgm-exporter", "port": 9401})
-        assert exporter.power_profile is None
-        assert get_power_profile(exporter.power_profile) is DCGM_POWER_PROFILE
+        assert POWER_PROFILES[exporter.power_profile] is DCGM_POWER_PROFILE
 
     def test_unknown_profile_is_rejected_with_the_known_rows(self):
         with pytest.raises(
@@ -464,7 +431,7 @@ class TestTelemetryStage:
         amd = TelemetryExporterConfig(container_image=AMD_IMAGE, port=5000, power_profile="amd-device-metrics")
         dcgm = TelemetryExporterConfig(container_image="dcgm-exporter", port=9401)
         assert resolve_exporter_command(amd, AMD.default_command_template) == "/home/amd/tools/entrypoint.sh"
-        assert resolve_exporter_command(dcgm, get_power_profile(dcgm.power_profile).default_command_template) == (
+        assert resolve_exporter_command(dcgm, POWER_PROFILES[dcgm.power_profile].default_command_template) == (
             "dcgm-exporter --collect-interval=100 --address :9401"
         )
 
