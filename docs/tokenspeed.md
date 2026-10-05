@@ -11,8 +11,8 @@ Use `engine: tokenspeed` with `frontend.type: dynamo` or `frontend.type: smg`.
 
 Recipes:
 
-- Dynamo: [aggregated](../examples/tokenspeed/dynamo-agg.yaml), [prefill/decode](../examples/tokenspeed/dynamo-disagg.yaml)
-- SMG: [aggregated](../examples/tokenspeed/smg-agg.yaml), [prefill/decode](../examples/tokenspeed/smg-disagg.yaml)
+- Dynamo: [aggregated](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/dynamo-agg.yaml), [prefill/decode](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/dynamo-disagg.yaml)
+- SMG: [aggregated](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/smg-agg.yaml), [prefill/decode](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/smg-disagg.yaml)
 
 Configuration loading rejects the engine-specific routers (`sglang-router`,
 `vllm-router`, ...), `dynamo.sidecar`, and `roles.<role>.kv_events`.
