@@ -14,6 +14,7 @@ from marshmallow_dataclass import dataclass
 from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_env, role_for_mode
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, TRTLLM_DIST_INIT_PORTS
+from srtctl.types import WorkerMode
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
@@ -21,8 +22,6 @@ if TYPE_CHECKING:
     from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
-# Type alias for worker modes
-WorkerMode = Literal["prefill", "decode", "agg"]
 
 # Log lines that mean the engine behind a TRT-LLM worker step is gone while the
 # step itself may stay up. ``trtllm-llmapi-launch`` runs the engine as a child of
@@ -181,7 +180,7 @@ class TRTLLMBackend(Backend):
             kill_on_bad_exit=True,
         )
 
-    def fatal_log_patterns(self, mode: str) -> tuple[str, ...]:
+    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
         """The launcher's task-exit line and the executor's start-up failure, for every mode."""
         return TRTLLM_FATAL_LOG_PATTERNS
 
@@ -190,7 +189,7 @@ class TRTLLMBackend(Backend):
         role = role_for_mode(self.roles, mode)
         return list(role.extra_args) if role is not None else []
 
-    def get_environment_for_mode(self, mode: str) -> dict[str, str]:
+    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
         env = {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
         if self.numa_cpu_bind:

@@ -20,7 +20,6 @@ After (Python):
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal
 
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
@@ -33,9 +32,7 @@ from srtctl.ports import (
     SYS_PORTS,
     PortKind,
 )
-
-# Worker mode type
-WorkerMode = Literal["prefill", "decode", "agg"]
+from srtctl.types import WorkerMode
 
 
 @dataclass

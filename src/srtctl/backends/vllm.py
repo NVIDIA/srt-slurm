@@ -50,14 +50,13 @@ from srtctl.ports import (
     VLLM_MASTER_PORT_STRIDE,
     VLLM_SCAN_PORTS,
 )
+from srtctl.types import WorkerMode
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
-# Type alias for worker modes
-WorkerMode = Literal["prefill", "decode", "agg"]
 DPLaunchMode = Literal["per_gpu", "per_node"]
 
 logger = logging.getLogger(__name__)

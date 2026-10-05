@@ -24,7 +24,7 @@ from srtctl.services.config import ServiceConfig, ServicePlacementConfig
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
-    from srtctl.core.topology import WorkerMode
+    from srtctl.types import WorkerMode
 
 ETCD_SERVICE_NAME = "etcd"
 NATS_SERVICE_NAME = "nats"

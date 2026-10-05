@@ -33,6 +33,7 @@ from srtctl.ports import (
     MOONCAKE_MASTER_PORT,
     NCCL_PORTS,
 )
+from srtctl.types import WorkerMode
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,6 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
-
-# Type alias for worker modes
-WorkerMode = Literal["prefill", "decode", "agg"]
 
 
 def _dist_init_port(process: "Process") -> int:

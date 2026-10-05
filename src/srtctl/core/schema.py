@@ -60,9 +60,10 @@ from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_T
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
 from srtctl.services.config import ServiceConfig
+from srtctl.types import WorkerMode
 
 if TYPE_CHECKING:
-    from srtctl.core.topology import Endpoint, NodePortAllocator, Process, WorkerMode
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 logger = logging.getLogger(__name__)
 
@@ -3209,7 +3210,7 @@ class SrtConfig:
                     "for you."
                 )
 
-    def _profiling_worker_ranks(self, mode: Literal["prefill", "decode", "agg"]) -> set[int]:
+    def _profiling_worker_ranks(self, mode: WorkerMode) -> set[int]:
         """Derive selectable physical ranks from the configured worker layout."""
         from srtctl.core.topology import Endpoint
 
