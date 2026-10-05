@@ -65,7 +65,7 @@ tokenizes and applies the chat template itself; pass `tool-call-parser` /
 `reasoning-parser` in `frontend.args` when the model needs them. vLLM's gRPC server
 starts no HTTP listener, so these workers serve no Prometheus `/metrics`; SMG's own
 metrics stay on its Prometheus port. See
-[`examples/vllm/smg-disagg-grpc.yaml`](../examples/vllm/smg-disagg-grpc.yaml).
+[`examples/vllm/smg-disagg-grpc.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/smg-disagg-grpc.yaml).
 
 TRT-LLM P/D is not available behind SMG: its gRPC P/D table has no TRT-LLM entry
 ([`pd_protocol.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/routers/grpc/common/stages/pd_protocol.rs#L63-L85)),
@@ -86,7 +86,7 @@ from SGLang workers and registers any other HTTP worker as a plain worker
 for vLLM it needs gRPC workers
 ([`discover_dp.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/workflow/steps/local/discover_dp.rs#L127-L141)),
 which srtctl does not configure. See
-[`examples/vllm/smg-dep16.yaml`](../examples/vllm/smg-dep16.yaml).
+[`examples/vllm/smg-dep16.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/smg-dep16.yaml).
 
 ## Configuration
 
@@ -110,10 +110,10 @@ frontend:
 - `enable_multiple_frontends` / `num_additional_frontends`: as for every router,
   several SMG replicas behind nginx, or one SMG on the public port.
 
-See [`examples/vllm/smg-agg.yaml`](../examples/vllm/smg-agg.yaml) (vLLM, aggregated),
-[`examples/vllm/smg-dep16.yaml`](../examples/vllm/smg-dep16.yaml) (vLLM, two-node DP16 with EP),
-[`examples/trtllm/smg-agg.yaml`](../examples/trtllm/smg-agg.yaml) (TRT-LLM, aggregated)
-and [`examples/sglang/smg-disagg.yaml`](../examples/sglang/smg-disagg.yaml) (SGLang, P/D).
+See [`examples/vllm/smg-agg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/smg-agg.yaml) (vLLM, aggregated),
+[`examples/vllm/smg-dep16.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/smg-dep16.yaml) (vLLM, two-node DP16 with EP),
+[`examples/trtllm/smg-agg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/smg-agg.yaml) (TRT-LLM, aggregated)
+and [`examples/sglang/smg-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/sglang/smg-disagg.yaml) (SGLang, P/D).
 
 ## Launch and readiness
 
