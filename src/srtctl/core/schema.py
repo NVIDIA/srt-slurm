@@ -2530,7 +2530,8 @@ class FrontendConfig:
 
     Attributes:
         type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
-            Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "atomesh", and
+            Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d"
+            (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and
             "tilert-router" (static routers); "sglang", "vllm", and
             "trtllm_serve" (direct: the single aggregate worker binds the public
             port, no router process); "none" (services-only job: no router, no
@@ -2564,6 +2565,13 @@ class FrontendConfig:
             writes this mapping under the top-level ``worker_selection`` key in a
             generated router policy YAML and passes it to the Dynamo frontend via
             ``--router-policy-config``.
+        epp_config: llm-d Endpoint Picker configuration (``EndpointPickerConfig``:
+            ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``.
+            srtctl writes it to a file with the ``file-discovery`` plugin and
+            ``dataLayer.discovery`` added, so the EPP reads the job's workers from
+            the endpoints file srtctl renders. Required for prefill/decode jobs
+            (the scheduler's P/D profiles); omitted, an aggregate job runs the
+            EPP's built-in default profile.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
         container_image: Optional router-specific image. Static routers use the
@@ -2583,6 +2591,7 @@ class FrontendConfig:
     nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     nginx_keepalive_timeout: str = "600s"
     worker_selection: dict[str, Any] | None = None
+    epp_config: dict[str, Any] | None = None
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
     container_image: str | None = None

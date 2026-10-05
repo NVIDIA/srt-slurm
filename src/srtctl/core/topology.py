@@ -162,6 +162,8 @@ class Process:
             their own ports and their own srun step.
         kvbm_zmq_port: KVBM leader ZMQ pub port (ack is the next port); the leader's is used
         sidecar_grpc_port: Dynamo sidecar gRPC listener, allocated when the job runs sidecars
+        proxy_port: listener of the proxy the router sends this routable worker's traffic
+            through (llm-d's P/D sidecar), allocated when the frontend proxies its mode
         nccl_port: SGLang local TP rendezvous port, one per server process
         dist_init_port: SGLang multi-node dist-init port; the same value on every process of an endpoint
         grpc_http_port: HTTP sidecar (/metrics, profiler routes) of an SGLang gRPC-mode leader
@@ -191,6 +193,7 @@ class Process:
     engine_id: int = 0
     kvbm_zmq_port: int | None = None
     sidecar_grpc_port: int | None = None
+    proxy_port: int | None = None
     nccl_port: int | None = None
     dist_init_port: int | None = None
     grpc_http_port: int | None = None

@@ -180,6 +180,15 @@ class Frontend(ABC):
         """Services this frontend needs that the recipe did not name (Dynamo: its discovery plane)."""
         return []
 
+    def proxied_worker_modes(self, config: Any) -> frozenset[str]:
+        """Worker modes the router reaches through a per-worker proxy instead of the worker's own port.
+
+        Every routable worker of these modes gets ``Process.proxy_port`` from the
+        allocator (``core.worker_backends.worker_processes``); the frontend implies
+        the service that binds it (llm-d: its P/D sidecar on decode workers).
+        """
+        return frozenset()
+
     def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
         """Port of a Prometheus listener separate from the routing port, or ``None`` when metrics share it."""
         return None

@@ -48,7 +48,7 @@ directory. `examples/features/services.yaml` is a runnable version of this.
 ```yaml
 services:
   - name: my-sidecar             # required, unique across the list
-    type: generic                # generic (default) | etcd | nats | mooncake-master | dcgm-exporter | node-exporter | mooncake-store | lmcache-server
+    type: generic                # generic (default) | etcd | nats | mooncake-master | dcgm-exporter | node-exporter | mooncake-store | lmcache-server | llm-d-sidecar
     enabled: true                # false drops the service (the way to switch an implied one off)
     external: null               # typed kinds only: use an instance that already runs at this address
     command:                     # argv, not shell-interpreted; required for generic
@@ -135,6 +135,7 @@ Things the recipe asks for elsewhere are services the job runs without an entry;
 | a declared `mooncake-master` entry (see [Mooncake KV Store](mooncake-kv-store.md)) | `mooncake-master` | the infra node, phase `before_workers` |
 | a vLLM role with `connector: lmcache-mp` (engine-level or `roles.<role>.args.connector`), unless a `lmcache-server` entry is declared | `lmcache-server` | that role's nodes, or every worker node when several roles use it, phase `before_workers` |
 | `engine.failover` (see [Shadow Engine Recovery](shadow-engine-recovery.md)) | `gms` | one instance per vLLM worker (`placement.per: worker`), phase `before_workers` |
+| `frontend.type: llm-d` with prefill and decode workers (see [llm-d Router](llm-d.md)) | `llm-d-sidecar` | one instance per routable decode worker (`placement.per: worker`), phase `before_workers` |
 | tachometer on (the default; `observability.tachometer.enabled`) | `dcgm-exporter`, `node-exporter` | every worker node, phase `after_frontend` |
 
 `srtctl dry-run` lists them next to the declared ones, marked `implied by:`. A declared entry with
@@ -191,7 +192,7 @@ node are rejected before anything launches; give them disjoint placements or por
 of the placed role(s) on each selected node (`node` must be `prefill`, `decode`, `agg`, or `workers`),
 a sidecar in the Kubernetes sense. The instance runs in that worker's device view (its
 `CUDA_VISIBLE_DEVICES`, the same pinning the worker's engine steps get) and sees `{worker_role}`,
-`{worker_index}`, `{worker_node_rank}`, `{worker_gpus}` and `{worker_gpu_count}`. Its step and log are
+`{worker_index}`, `{worker_node_rank}`, `{worker_gpus}` and `{worker_gpu_count}`, plus `{worker_http_port}` when the worker serves an API and `{worker_proxy_port}` when the frontend reaches it through a proxy (`Process.proxy_port`). The kind decides which workers get an instance: every one by default; the `llm-d-sidecar` only the routable decode workers it fronts. Its step and log are
 `service_<name>_<role>_<index>_<node>`. Because the instances of one node share its network namespace,
 a per-worker service's `readiness` must be a log probe. The GPU Memory Service of
 [shadow engine recovery](shadow-engine-recovery.md) is the built-in per-worker kind, and [SGLang fast engine recovery](sglang-weight-cache.md) runs SGLang's weight cache daemon as a plain `generic` per-worker service:
@@ -305,6 +306,7 @@ environment its process needs; the launch path is shared by every kind. Register
 | `mooncake-store` | `python -m mooncake.mooncake_store_service` | `before_workers` | `true` | Requires a `mooncake-master` entry. Container falls back to the master's. Injects the master's address. |
 | `lmcache-server` | `lmcache server` bound to the RPC and HTTP ports srtctl owns (8750, 8751) | `before_workers` | `true` | One per worker node (`placement.node: workers`); vLLM ranks reach it over localhost with `connector: lmcache-mp`, which implies it. SGLang workers started with `enable-lmcache` get `LMCACHE_MP_HOST`/`LMCACHE_MP_PORT` pointing at it unless the recipe sets `lmcache-config-file` or `LMCACHE_MP_HOST`. Services do not inherit the top-level `environment:`, so set `PYTHONHASHSEED` in its `env:` when the workers set it. `args` are appended (`--l1-size-gb`, `--chunk-size`, `--max-workers`, ...). Ready when `GET /healthcheck` answers; LMCache must be installed in the job container. |
 | `ray` | `ray start --head ...` on the first instance, `ray start --address=<head>:6379 ...` on the rest, both `--block` | `before_workers` | `true` | One Ray cluster across the service's nodes; see [Ray cluster](#ray-cluster). Placement `workers` (default), `head`, or `all`. `options`: `port` (GCS, 6379), `dashboard_port` (8265), `num_gpus` (the node's count). `args` are appended to every `ray start`. |
+| `llm-d-sidecar` | `pd-sidecar --port=<proxy port> --model-server-port=<worker port> --kv-connector=<protocol> --secure-proxy=false` in `frontend.container_image`, else the job container | `before_workers` | `true` | Implied by `frontend.type: llm-d` for prefill/decode; see [llm-d Router](llm-d.md). `placement.per: worker` on decode: one instance per routable decode worker, bound to its allocated `Process.proxy_port`. `command` replaces the executable, `args` are appended. Ready when `GET /health` on its port answers. |
 | `gms` | one `python3 -m gpu_memory_service --device k` per GPU of the worker, supervised by bash, in the job container | `before_workers` | `true` | Implied by `engine.failover`; see [Shadow Engine Recovery](shadow-engine-recovery.md). `placement.per: worker` (required): one instance per vLLM worker in that worker's device view, sockets and lock file under `<shared_dir>/srtctl-<job>/<role>_<index>`. Ready when its log says `GMS ready:`; `readiness.timeout_seconds` (default 120) also bounds the servers' startup. |
 
 ### Ray cluster

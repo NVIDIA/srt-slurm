@@ -437,6 +437,32 @@ class VLLMBackend(Backend):
         """The connector table row for a mode; None for no connector or a raw JSON ``--kv-transfer-config``."""
         return kv_connector_row(self.connector_for_mode(mode))
 
+    def kv_connector_class(self, mode: WorkerMode) -> str | None:
+        """The vLLM connector class a mode's workers run: ``kv_connector`` of their ``--kv-transfer-config``.
+
+        A ``kv-transfer-config`` written in the role's args wins, as it does on the
+        command line; otherwise the mode's connector (a table row or raw JSON).
+        None when the mode runs no connector.
+        """
+        explicit = next(
+            (
+                value
+                for key, value in self.get_config_for_mode(mode).items()
+                if normalize_vllm_config_key(key) == "kv-transfer-config"
+            ),
+            None,
+        )
+        if explicit is not None:
+            payload = explicit if isinstance(explicit, Mapping) else json.loads(str(explicit))
+            return payload.get("kv_connector")
+        row = self.kv_connector_for_mode(mode)
+        if row is not None:
+            return row.kv_connector
+        connector = self.connector_for_mode(mode)
+        if not connector or connector.lower() in ("null", "none"):
+            return None
+        return json.loads(connector).get("kv_connector")
+
     def discovers_workers(self) -> bool:
         """Whether the prefill/decode workers register with the router over its discovery endpoint.
 
