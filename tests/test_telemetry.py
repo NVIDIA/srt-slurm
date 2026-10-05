@@ -810,6 +810,32 @@ class TestTachometerConfigGeneration:
         assert 'name = "frontend0"' in config_text
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_no_worker_metrics_path_adds_no_worker_targets(self, _mock_get_hostname_ip):
+        """``worker_metrics_path=None`` (a job with no workers to scrape) skips every worker target."""
+        runtime = MagicMock()
+        runtime.log_dir = Path("/runs/12345/logs")
+        process = Process(
+            node="node-a",
+            gpu_indices=frozenset({0}),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=[process],
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=TachometerConfig(enabled=True),
+            worker_metrics_path=None,
+        )
+
+        assert "backend_" not in config_text
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_storage_leaf_is_never_pre_created(self, _mock_get_hostname_ip, tmp_path):
         """Regression guard for the pre-existing-storage-dir abort.
 
