@@ -4,8 +4,8 @@ Use `engine: tokenspeed` with `frontend.type: dynamo`. Every worker runs Dynamo'
 TokenSpeed backend, `python3 -m dynamo.tokenspeed`, which registers with the Dynamo
 frontend like the other Dynamo engines. Recipes:
 
-- [Aggregated](../examples/tokenspeed/dynamo-agg.yaml)
-- [Prefill/decode](../examples/tokenspeed/dynamo-disagg.yaml)
+- [Aggregated](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/dynamo-agg.yaml)
+- [Prefill/decode](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/dynamo-disagg.yaml)
 
 Configuration loading rejects any other frontend, `dynamo.sidecar`, and
 `roles.<role>.kv_events`.

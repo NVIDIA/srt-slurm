@@ -236,8 +236,8 @@ Use `engine: tokenspeed` with `frontend.type: dynamo` to launch
 `python3 -m dynamo.tokenspeed` workers, aggregated or prefill/decode. TokenSpeed flags
 go under `roles.<role>.args`; srtctl sets the model, host, ports and multi-node
 rendezvous. See [TokenSpeed](tokenspeed.md) and the
-[aggregated](../examples/tokenspeed/dynamo-agg.yaml) and
-[prefill/decode](../examples/tokenspeed/dynamo-disagg.yaml) recipes.
+[aggregated](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/dynamo-agg.yaml) and
+[prefill/decode](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tokenspeed/dynamo-disagg.yaml) recipes.
 
 ## ATOM with AToMesh
 
