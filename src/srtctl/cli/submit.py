@@ -301,8 +301,7 @@ def show_config_details(config: SrtConfig) -> None:
                 f"return_perf_metrics={_engine_bool(section.get('return_perf_metrics'))}"
             )
         rows.append(
-            "(engine yaml; the iteration-level trtllm_* gauges and the dashboard's KV-utilisation panels "
-            "need enable_iter_perf_stats: true)"
+            "(engine yaml; the iteration-level trtllm_* gauges need enable_iter_perf_stats: true)"
         )
         console.print(Panel("\n".join(rows), title="TRT-LLM Engine Statistics", border_style="cyan"))
 

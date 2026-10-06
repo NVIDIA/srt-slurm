@@ -149,7 +149,7 @@ The flags are mutually exclusive. Explicit `engine.publish_events_and_metrics: t
 
 **Migration from the previous publication behavior:** `engine.publish_events_and_metrics: false` previously omitted both publication flags. It now uses `publish_metrics`, which defaults to true. Recipes that used false to disable publication, especially on older Dynamo builds that reject `--publish-metrics`, must also set `engine.publish_metrics: false`. To publish metrics on those older builds, select `engine.publish_events_and_metrics: true` instead. Null remains accepted for existing serialized recipes and behaves the same as false.
 
-**KV events and observability:** `observability.enabled: true` no longer automatically enables TRT-LLM KV events. Router KV-event dashboard panels (`ro_kv_events_applied`, `ro_kv_event_warnings`, and `ro_kv_events_dropped`) require an explicit event-publication opt-in. On Dynamo builds supporting the independent controls, keep the default metrics-only flag and set `DYN_TRTLLM_PUBLISH_KV_EVENTS: "true"` in every worker role that should publish events:
+**KV events and observability:** `observability.enabled: true` no longer automatically enables TRT-LLM KV events. On Dynamo builds supporting the independent controls, keep the default metrics-only flag and set `DYN_TRTLLM_PUBLISH_KV_EVENTS: "true"` in every worker role that should publish events:
 
 ```yaml
 engine:
