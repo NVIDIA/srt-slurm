@@ -2569,9 +2569,9 @@ class FrontendConfig:
             ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``.
             srtctl writes it to a file with the ``file-discovery`` plugin and
             ``dataLayer.discovery`` added, so the EPP reads the job's workers from
-            the endpoints file srtctl renders. Required for prefill/decode jobs
-            (the scheduler's P/D profiles); omitted, an aggregate job runs the
-            EPP's built-in default profile.
+            the endpoints file srtctl renders. Omitted, srtctl runs the scorers of
+            llm-d's no-Kubernetes guide (in prefill and decode profiles for a
+            prefill/decode job).
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
         container_image: Optional router-specific image. Static routers use the

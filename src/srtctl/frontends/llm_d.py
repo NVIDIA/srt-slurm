@@ -105,6 +105,44 @@ def _container_path(name: str) -> str:
     return str(Path("/logs") / name)
 
 
+# Scorers and weights of llm-d's no-Kubernetes guide
+# (guides/no-kubernetes-deployment/router/epp/config.yaml), the scheduler srtctl runs when a
+# recipe gives no frontend.epp_config. A prefill/decode job scores prefill workers with all
+# of them and decode workers by load alone.
+_DEFAULT_SCORERS = {
+    "queue-scorer": 2,
+    "kv-cache-utilization-scorer": 2,
+    "prefix-cache-scorer": 3,
+    "no-hit-lru-scorer": 2,
+}
+_DEFAULT_DECODE_SCORERS = ("queue-scorer", "kv-cache-utilization-scorer")
+
+
+def default_epp_config(pd: bool) -> dict[str, Any]:
+    """The scheduler for a recipe without ``frontend.epp_config``: the guide's scorers, split into P/D profiles for ``pd``."""
+
+    def profile(name: str, scorers: Any, role_filter: str | None = None) -> dict[str, Any]:
+        refs = [{"pluginRef": scorer, "weight": _DEFAULT_SCORERS[scorer]} for scorer in scorers]
+        return {"name": name, "plugins": [{"pluginRef": role_filter}, *refs] if role_filter else refs}
+
+    plugins: list[dict[str, Any]] = [{"type": scorer} for scorer in _DEFAULT_SCORERS]
+    if not pd:
+        return {"plugins": plugins, "schedulingProfiles": [profile("default", _DEFAULT_SCORERS)]}
+    plugins += [
+        {"type": "prefill-filter"},
+        {"type": "decode-filter"},
+        {"type": "always-disagg-pd-decider"},
+        {"type": "disagg-profile-handler", "parameters": {"deciders": {"prefill": "always-disagg-pd-decider"}}},
+    ]
+    return {
+        "plugins": plugins,
+        "schedulingProfiles": [
+            profile("prefill", _DEFAULT_SCORERS, "prefill-filter"),
+            profile("decode", _DEFAULT_DECODE_SCORERS, "decode-filter"),
+        ],
+    }
+
+
 def epp_config_document(epp_config: dict[str, Any] | None, endpoints_path: str) -> dict[str, Any]:
     """The recipe's ``EndpointPickerConfig`` with srtctl's file discovery added.
 
@@ -229,7 +267,7 @@ class LLMDFrontend(StaticRouterFrontend):
             )
         self._validate_kv_events(config)
         if _is_pd(config):
-            if not epp_config.get("schedulingProfiles"):
+            if frontend.epp_config is not None and not epp_config.get("schedulingProfiles"):
                 raise ValueError(
                     "frontend.type: llm-d with prefill and decode workers needs frontend.epp_config with "
                     "prefill and decode schedulingProfiles and a disaggregation profile handler"
@@ -424,7 +462,10 @@ class LLMDFrontend(StaticRouterFrontend):
 
         endpoints = self.endpoints_document(backend_processes, runtime.network_interface)
         (runtime.log_dir / ENDPOINTS_FILE).write_text(yaml.safe_dump(endpoints, sort_keys=False))
-        epp_document = epp_config_document(config.frontend.epp_config, _container_path(ENDPOINTS_FILE))
+        epp_config = config.frontend.epp_config
+        epp_document = epp_config_document(
+            default_epp_config(_is_pd(config)) if epp_config is None else epp_config, _container_path(ENDPOINTS_FILE)
+        )
         if _plugins(epp_document, PRECISE_PREFIX_PRODUCER) or _plugins(epp_document, TOKEN_PRODUCER):
             epp_document = with_kv_events(
                 epp_document,

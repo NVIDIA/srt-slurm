@@ -140,9 +140,16 @@ engine:
 ```
 
 `frontend.args` are passed to the EPP; the pool, configuration, and port flags are
-srtctl's. Prefill/decode needs `epp_config` with `prefill` and `decode` scheduling
-profiles and the `disagg-profile-handler`; an aggregate job without `epp_config` runs
-the EPP's built-in default profile. See
+srtctl's. A prefill/decode `epp_config` needs `prefill` and `decode` scheduling profiles
+and the `disagg-profile-handler`. Without `epp_config`, srtctl runs the scorers of llm-d's
+no-Kubernetes guide
+([`config.yaml`](https://github.com/llm-d/llm-d/blob/7fb84b0adf8e1d41eb2cef105fc1aafaf5a9b64f/guides/no-kubernetes-deployment/router/epp/config.yaml)):
+queue depth (2), KV-cache utilization (2), approximate prefix cache (3), and
+no-hit LRU (2). A prefill/decode job gets them as a `prefill` profile, a `decode`
+profile that scores by queue depth and KV-cache utilization alone, and the
+`disagg-profile-handler` with `always-disagg-pd-decider`. (The EPP's own default applies
+only to a configuration file without plugins, and srtctl's always carries file
+discovery.) See
 [`examples/vllm/llm-d-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-disagg.yaml) and
 [`examples/vllm/llm-d-agg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-agg.yaml).
 

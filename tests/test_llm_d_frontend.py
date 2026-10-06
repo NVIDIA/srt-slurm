@@ -149,11 +149,54 @@ def test_declared_sidecar_must_sit_on_proxied_workers() -> None:
         _load(recipe)
 
 
-def test_pd_requires_an_epp_scheduler() -> None:
+def test_pd_epp_config_needs_scheduling_profiles() -> None:
     recipe = _recipe()
-    del recipe["frontend"]["epp_config"]
+    del recipe["frontend"]["epp_config"]["schedulingProfiles"]
     with pytest.raises(ValidationError, match="needs frontend.epp_config"):
         _load(recipe)
+
+
+@pytest.mark.parametrize("path", [AGG, DISAGG])
+def test_without_epp_config_srtctl_runs_the_guide_scorers(path: Path, tmp_path: Path) -> None:
+    """The EPP's own default only applies to a plugin-less file; srtctl's always carries discovery."""
+    recipe = _recipe(path)
+    del recipe["frontend"]["epp_config"]
+    config = _load(recipe)
+    runtime = SimpleNamespace(
+        network_interface=None,
+        log_dir=tmp_path,
+        container_image="model.sqsh",
+        container_mounts={},
+        environment={},
+        srun_options={},
+        nodes=SimpleNamespace(het_group_for=lambda node: None),
+    )
+    processes = [Process("node0", frozenset({0}), 7500, 6100, "agg", 0)]
+    with (
+        patch("srtctl.frontends.static_router.get_hostname_ip", return_value="10.0.0.1"),
+        patch.object(LLMDFrontend, "wait_for_workers"),
+        patch.object(LLMDFrontend, "start_process", return_value=MagicMock()),
+    ):
+        LLMDFrontend().start_frontends(
+            SimpleNamespace(frontend_nodes=["node0"], frontend_port=8000), runtime, config, config.backend, processes
+        )
+    epp = yaml.safe_load((tmp_path / EPP_CONFIG_FILE).read_text())
+    profiles = {profile["name"]: profile["plugins"] for profile in epp["schedulingProfiles"]}
+    guide = [
+        {"pluginRef": "queue-scorer", "weight": 2},
+        {"pluginRef": "kv-cache-utilization-scorer", "weight": 2},
+        {"pluginRef": "prefix-cache-scorer", "weight": 3},
+        {"pluginRef": "no-hit-lru-scorer", "weight": 2},
+    ]
+    if path == AGG:
+        assert profiles == {"default": guide}
+    else:
+        assert profiles == {
+            "prefill": [{"pluginRef": "prefill-filter"}, *guide],
+            "decode": [{"pluginRef": "decode-filter"}, *guide[:2]],
+        }
+        assert {"type": "always-disagg-pd-decider"} in epp["plugins"]
+    assert epp["plugins"][-1]["type"] == "file-discovery"
 
 
 def test_recipe_cannot_configure_discovery() -> None:
