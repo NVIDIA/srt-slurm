@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-FileCopyrightText: Copyright (c) 2026 SemiAnalysis LLC. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -18,7 +19,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args
 from srtctl.backends.sglang import _config_to_cli_args
 from srtctl.ports import DIST_INIT_PORTS, DYN_SYSTEM_PORT_BASE, TOKENSPEED_PORTS
 
@@ -27,7 +28,6 @@ if TYPE_CHECKING:
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
-WorkerMode = Literal["prefill", "decode", "agg"]
 
 # TokenSpeed's leader binds a control-plane cluster from its --dist-init-addr port:
 # the port itself, five ports above it, and one scheduler port per attention-DP rank.
@@ -62,7 +62,7 @@ class TokenSpeedBackend(Backend):
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
-    def is_grpc_mode(self, mode: str) -> bool:
+    def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """A direct TokenSpeed worker is always the gRPC engine (``smg_grpc_servicer.tokenspeed``)."""
         return True
 
