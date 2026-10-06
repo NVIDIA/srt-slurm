@@ -354,14 +354,12 @@ class TestS3Config:
         """A same-named file from another benchmark type (a custom runner's inputs.json) must not be dropped."""
         from srtctl.core.schema import DEFAULT_S3_EXCLUDE
 
-        aiperf_patterns = [p for p in DEFAULT_S3_EXCLUDE if not p.startswith("perf_dashboard")]
-        assert aiperf_patterns, DEFAULT_S3_EXCLUDE
-        for pattern in aiperf_patterns:
+        assert DEFAULT_S3_EXCLUDE
+        for pattern in DEFAULT_S3_EXCLUDE:
             assert pattern.startswith(("artifacts/*/", "sa-bench_*/*/")), pattern
         for name in ("server_metrics_export.jsonl", "gpu_telemetry_export.jsonl", "inputs.json"):
             assert f"artifacts/*/{name}" in DEFAULT_S3_EXCLUDE
             assert f"sa-bench_*/*/{name}" in DEFAULT_S3_EXCLUDE
-        assert "perf_dashboard_bundle/*" in DEFAULT_S3_EXCLUDE and "perf_dashboard.json" in DEFAULT_S3_EXCLUDE
 
     def test_full_config(self):
         """Test S3Config with all fields."""
@@ -983,7 +981,7 @@ class TestArchiveScript:
             "artifacts/run_c32/server_metrics_export.jsonl": "m" * 5000,
             "artifacts/run_c128/profile_export.jsonl": "b" * 5000,
             "sa-bench_isl_128/conc_4/aiperf_artifacts/profile_export.jsonl": "c" * 5000,
-            "perf_dashboard_bundle/profile_export.jsonl": "d" * 5000,  # a copy; not an archive default
+            "custom/profile_export.jsonl": "d" * 5000,  # another runner; not an archive default
             "sweep_1.log": "log",
         }
         for rel, body in files.items():

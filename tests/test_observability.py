@@ -351,10 +351,7 @@ class TestExpandObservability:
             SrtConfig.Schema().load(cfg)
 
     def test_retired_build_dashboard_knob_is_rejected(self):
-        """The perf dashboard is built on every run, so the knob that used to gate it
-        is gone. A recipe still carrying it must fail at submit time: silently
-        accepting `build_dashboard: false` would promise a capture-only run and then
-        render one anyway."""
+        """Recipes carrying the removed dashboard option must fail at submit time."""
         cfg = _trtllm_config(enabled=True, build_dashboard=False)
 
         with pytest.raises(ValidationError, match="build_dashboard"):

@@ -31,7 +31,7 @@ description: Run srt-slurm (srtctl) inference benchmarks on a Slurm cluster. Use
 | Sweeps and override files | `docs/sweeps.md`, `docs/overrides.md` |
 | What a job wrote and how to read it | `docs/monitoring.md` (Log Structure, benchmark.out) |
 | Build/query the offline client, worker and hardware timeline | `docs/dsight.md`; `srtctl dsight build` then `srtctl dsight query` or MCP `query_trace` |
-| Metrics and the per-run dashboard | `docs/component-dashboard.md` |
+| Metrics and performance analysis | `docs/observability.md`, `docs/dsight.md` |
 
 ## MCP
 

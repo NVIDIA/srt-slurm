@@ -360,10 +360,7 @@ def test_mock_sweep_does_not_prepare_or_render_dashboard(tmp_path: Path, benchma
     output_dir = tmp_path / "outputs" / "42046"
 
     # Inject the benchmark outcome while exercising the real cleanup/postprocess path.
-    with (
-        patch.object(SweepOrchestrator, "run_benchmark", return_value=benchmark_exit_code),
-        patch("srtctl.analysis.perf_dashboard.build") as dashboard_build,
-    ):
+    with patch.object(SweepOrchestrator, "run_benchmark", return_value=benchmark_exit_code):
         exit_code = run_mock_sweep(
             config_path=cfg,
             output_dir=output_dir,
@@ -373,7 +370,6 @@ def test_mock_sweep_does_not_prepare_or_render_dashboard(tmp_path: Path, benchma
 
     assert exit_code == benchmark_exit_code
     assert (output_dir / "recipe.lock.yaml").is_file(), "post-processing still runs"
-    dashboard_build.assert_not_called()  # entry point for both dashboard ingestion and rendering
     assert not list((output_dir / "logs").glob("perf_dashboard*"))
 
 

@@ -83,7 +83,7 @@ def test_job_status_reads_sacct_metadata_stage_and_errors(tmp_path: Path, monkey
     (job / "logs" / "sweep_12807.log").write_text(
         "2026-09-08 18:46:56 [INFO] Starting service etcd (etcd) on c012\n"
         "2026-09-08 18:49:59 [INFO] Cleaning up 8 processes (8 running)...\n"
-        "2026-09-08 18:50:18 [ERROR] perf dashboard [ingest] KeyError\n"
+        "2026-09-08 18:50:18 [ERROR] S3 upload failed\n"
     )
     (job / "logs" / "benchmark-rollup.json").write_text(json.dumps({"runs": [{"throughput_toks": 42}]}))
     monkeypatch.setattr(job_tools.shutil, "which", lambda name: "/usr/bin/sacct")
@@ -99,7 +99,7 @@ def test_job_status_reads_sacct_metadata_stage_and_errors(tmp_path: Path, monkey
     assert status["slurm"]["nodelist"] == "c[012-013]"
     assert status["metadata"]["model"]["path"] == "m"
     assert status["stage"].endswith("Cleaning up 8 processes (8 running)...")
-    assert status["errors"] == ["2026-09-08 18:50:18 [ERROR] perf dashboard [ingest] KeyError"]
+    assert status["errors"] == ["2026-09-08 18:50:18 [ERROR] S3 upload failed"]
     assert status["benchmark_rollup"]["runs"][0]["throughput_toks"] == 42
 
 

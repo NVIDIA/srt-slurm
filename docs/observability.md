@@ -15,7 +15,7 @@ The capture window aligns with the load, the same window the benchmark client's 
 
 Tachometer scrapes all configured worker, frontend, DCGM, and node-exporter endpoints, independently of the benchmark client's `AIPERF_SERVER_METRICS_URLS` polling. This keeps the raw capture complete even when the client also collects metrics.
 
-The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time. Historical `raw_prometheus.jsonl` artifacts remain readable by the post-processing ingest.
+The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time.
 
 Fields: [ObservabilityConfig](schema-reference.md#observabilityconfig), [NsysObservabilityConfig](schema-reference.md#nsysobservabilityconfig). `tachometer.enabled: null` (the default) collects on every run, independent of `observability.enabled`; explicit `false` opts out. See [Profiling](profiling.md#observability-capture) for the nsys settings.
 
@@ -30,7 +30,7 @@ top-level `profiling` mode takes precedence. The serving container must provide 
 NVTX support. See [Observability capture](profiling.md#observability-capture)
 for timing, sampling, injection, and report-finalization settings.
 
-The component perf dashboard is built explicitly after a run; `enabled` decides which capture legs exist and therefore which tabs a later build carries. Jobs do not automatically run dashboard ingestion or rendering. See [Component Performance Dashboard](component-dashboard.md).
+[DSight](dsight.md) is the performance viewer for retained run artifacts. Build reports explicitly after a run with `srtctl dsight build`; available captures determine which views a report can show. Jobs do not automatically generate reports. The legacy component dashboard and its ingestion/rendering commands have been removed.
 
 SGLang workers always receive `--enable-metrics` unless the recipe sets it: native
 `sglang.launch_server` serves `/metrics` only with the flag, and `dynamo.sglang`
@@ -79,7 +79,7 @@ Every exporter block ([TelemetryExporterConfig](schema-reference.md#telemetryexp
 
 The pressure collector reports PSI only when the host exposes the corresponding `/proc/pressure` files; missing metrics indicate unavailable data. NUMA memory and allocation metrics retain the exported `node` label as `numa_node` in raw metric names, separately from host metadata. With `observability.enabled: true`, the existing local host sampler also records cumulative PSI stall totals in microseconds in its `psi` JSONL field. That optional sampler covers the sweep/orchestrator host only; it does not extend exporter placement to dedicated frontend or client nodes. Collector overhead has not been measured for this change.
 
-Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself; srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans; explicit dashboard ingestion converts the Parquet into the dashboard's `server_metrics_export.jsonl`.
+Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself; srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans. DSight reads the captured Parquet directly; see its [input discovery and selection](dsight.md#inputs).
 
 The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent.
 

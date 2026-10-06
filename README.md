@@ -39,5 +39,5 @@ The `srtctl-mcp` server, the recipe JSON Schema for editors, and `llms.txt` are 
 - Every field, type, default and allowed value: [Schema Reference](docs/schema-reference.md) (generated from the code)
 - Every command and flag: [CLI Guide](docs/cli.md) and [CLI Reference](docs/cli-reference.md) (generated)
 - Run and debug: [Monitoring](docs/monitoring.md), [SLURM FAQ](docs/slurm-faq.md)
-- Analyze: [Profiling](docs/profiling.md), [DSight](docs/dsight.md), [Component Performance Dashboard](docs/component-dashboard.md)
+- Analyze: [Profiling](docs/profiling.md), [DSight](docs/dsight.md)
 - Old recipes: [Legacy (v1) layout](docs/legacy-v1.md); `srtctl migrate` rewrites them

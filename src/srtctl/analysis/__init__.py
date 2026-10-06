@@ -4,8 +4,7 @@
 """Benchmark-window analysis that is not a metrics scraper.
 
 :mod:`.host_sampler` reads ``/proc`` for what no ``/metrics`` endpoint publishes
-(host CPU saturation, fd headroom, per-process context switches);
-:mod:`.perf_dashboard` drives the tachometer parquet and the other run artifacts
-through ``src/ingest`` into the per-run HTML dashboard. All metrics scraping is
-tachometer's.
+(host CPU saturation, fd headroom, per-process context switches).
+:mod:`.metric_catalog` provides captured-metric presentation semantics for DSight.
+All metrics scraping is tachometer's.
 """
