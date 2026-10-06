@@ -355,7 +355,7 @@ def test_run_mock_sweep_produces_expected_artifacts(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("benchmark_exit_code", [0, 7])
-def test_mock_sweep_does_not_prepare_or_render_dashboard(tmp_path: Path, benchmark_exit_code: int) -> None:
+def test_mock_sweep_postprocesses_and_propagates_exit_code(tmp_path: Path, benchmark_exit_code: int) -> None:
     cfg = _write_config(tmp_path)
     output_dir = tmp_path / "outputs" / "42046"
 
@@ -370,6 +370,7 @@ def test_mock_sweep_does_not_prepare_or_render_dashboard(tmp_path: Path, benchma
 
     assert exit_code == benchmark_exit_code
     assert (output_dir / "recipe.lock.yaml").is_file(), "post-processing still runs"
+    # Guard against reintroducing dashboard artifacts into automatic post-processing.
     assert not list((output_dir / "logs").glob("perf_dashboard*"))
 
 

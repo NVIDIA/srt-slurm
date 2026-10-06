@@ -502,6 +502,21 @@ class BenchmarkStageMixin:
         logger.info("Command: %s", shlex.join(cmd))
         logger.info("Log: %s", log_file)
 
+        # Host/process telemetry for the benchmark window. The Prometheus
+        # families describe what Dynamo publishes; they say nothing about the
+        # machine underneath, where host CPU saturation, lock convoys and fd
+        # exhaustion live. Follows observability.enabled; best-effort contract.
+        #
+        # `is True` is deliberate, not a truthiness check: this mixin is
+        # routinely driven with a mocked config whose every attribute is
+        # truthy, and plain truthiness would silently switch it on there.
+        observability = getattr(self.config, "observability", None)
+        host_sampler = None
+        if getattr(observability, "enabled", False) is True:
+            from srtctl.analysis.host_sampler import try_start_host_sampler
+
+            host_sampler = try_start_host_sampler(self.runtime.log_dir, observability, stop_event)
+
         bench_node = self._benchmark_node()
         proc = start_srun_process(
             command=cmd,
@@ -565,6 +580,8 @@ class BenchmarkStageMixin:
             if output_stream is not None:
                 output_stream.poll(final=True)
                 logger.info("End of streamed benchmark logs")
+            if host_sampler is not None:
+                host_sampler.stop()
 
     def _get_benchmark_profiling_env(
         self,

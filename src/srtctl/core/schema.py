@@ -1895,8 +1895,7 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
 
 
 # Env that makes Dynamo emit one JSONL ``SPAN_CLOSED`` line per closed span on
-# the component's stdout. This is the *only* source for the per-request trace
-# leg of the offline perf tooling; without it those panels have no input.
+# the component's stdout.
 # DYN_LOG=debug is required because the span events are emitted at DEBUG level.
 ANALYTICS_SPAN_ENV: dict[str, str] = {
     "DYN_LOGGING_SPAN_EVENTS": "true",

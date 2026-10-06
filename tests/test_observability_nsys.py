@@ -267,7 +267,10 @@ def test_benchmark_success_requires_a_completed_capture(tmp_path, completed):
     proc.poll.return_value = proc.returncode = 0
     if completed:
         write_json(tmp_path / "profiles/.control/client.json", {"active": False, "completed": 1})
-    with patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc):
+    with (
+        patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
+        patch("srtctl.analysis.host_sampler.try_start_host_sampler", return_value=None),
+    ):
         result = stage._run_benchmark_script(runner, tmp_path / "benchmark.out", threading.Event())
     assert result == (0 if completed else 1)
 
