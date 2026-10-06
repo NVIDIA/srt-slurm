@@ -51,9 +51,10 @@ def test_prefix_only_recipe_inherits_bucket_endpoint_and_upload_policy() -> None
     assert recipe == original_recipe and cluster == original_cluster
 
 
-def test_omitted_s3_inherits_cluster_settings() -> None:
+@pytest.mark.parametrize("recipe", [{}, {"reporting": {"status": {"endpoint": "https://status.example.com"}}}])
+def test_omitted_s3_inherits_cluster_settings(recipe: dict) -> None:
     reporting = _resolve(
-        {"reporting": {"status": {"endpoint": "https://status.example.com"}}},
+        recipe,
         {"reporting": {"s3": CLUSTER_S3}},
     )
     assert reporting is not None and reporting.s3 is not None
