@@ -37,6 +37,7 @@ from srtctl.ports import (
     WORKER_PROXY_PORT_BASE,
 )
 from srtctl.services.implicit import effective_services
+from srtctl.services.llm_d_sidecar import sidecar_kv_connector
 from srtctl.services.registry import ServiceLaunchContext, get_service_kind
 from tests.launch_snapshots import EXAMPLES_DIR, render_launch_plan
 
@@ -220,8 +221,27 @@ def test_explicit_kv_transfer_config_selects_the_protocol() -> None:
     recipe["roles"]["decode"]["args"]["kv-transfer-config"] = '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
     config = _load(recipe)
     assert isinstance(config.backend, VLLMBackend)
-    assert config.backend.kv_connector_class("decode") == "NixlConnector"
-    assert config.backend.kv_connector_class("prefill") is None
+    assert config.backend.kv_connector_classes("decode") == ("NixlConnector",)
+    assert config.backend.kv_connector_classes("prefill") == ()
+
+
+def test_multi_connector_maps_through_its_transfer_connector() -> None:
+    """NIXL next to CPU offloading (llm-d's tiered wide-EP guide) still speaks nixlv2."""
+    recipe = _recipe()
+    recipe["engine"]["connector"] = None
+    recipe["roles"]["decode"]["args"]["kv-transfer-config"] = {
+        "kv_connector": "MultiConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "connectors": [
+                {"kv_connector": "OffloadingConnector", "kv_role": "kv_both"},
+                {"kv_connector": "NixlConnector", "kv_role": "kv_both"},
+            ]
+        },
+    }
+    config = _load(recipe)
+    assert config.backend.kv_connector_classes("decode") == ("MultiConnector", "OffloadingConnector", "NixlConnector")
+    assert sidecar_kv_connector(config.backend) == "nixlv2"
 
 
 def test_one_router_replica() -> None:

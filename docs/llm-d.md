@@ -62,14 +62,16 @@ srtctl sets `--port` (the worker's `Process.proxy_port`), `--model-server-port` 
 The allocator hands out the proxy port (`PROXY_PORTS`) for every routable worker of a
 mode the frontend proxies (`Frontend.proxied_worker_modes`), so two decode workers on
 one node never collide. The `--kv-connector` protocol comes from the decode workers' vLLM
-connector class (`VLLMBackend.kv_connector_class`, which reads a role's own
+connector class (`VLLMBackend.kv_connector_classes`, which reads a role's own
 `kv-transfer-config` before `connector`):
 
 | Decode connector | Sidecar protocol |
 | --- | --- |
 | `NixlConnector` | `nixlv2` |
 
-Any other decode connector is rejected at load time.
+A `MultiConnector` maps through the first connector it wraps that has a protocol, so
+NIXL next to vLLM's `OffloadingConnector` (CPU KV offloading, as in llm-d's tiered
+wide-EP guide) runs `nixlv2`. Any other decode connector is rejected at load time.
 
 ## Endpoint discovery
 

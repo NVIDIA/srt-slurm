@@ -45,19 +45,23 @@ _PREVIEW_PORTS = ["--port=<worker_proxy_port>", "--model-server-port=<worker_htt
 
 
 def sidecar_kv_connector(backend: Any) -> str:
-    """The ``--kv-connector`` protocol for the decode workers' KV connector; raises ``ValueError`` when unmapped."""
+    """The ``--kv-connector`` protocol for the decode workers' KV connector; raises ``ValueError`` when unmapped.
+
+    A ``MultiConnector`` (P/D transfer next to KV offloading) maps through the first
+    connector it wraps that has a protocol.
+    """
     from srtctl.backends.vllm import VLLMBackend
 
     # The sidecar drives vLLM's KV transfer protocol; another engine's decode has no row.
-    connector = backend.kv_connector_class("decode") if isinstance(backend, VLLMBackend) else None
-    try:
-        return SIDECAR_KV_CONNECTORS[str(connector)]
-    except KeyError:
+    connectors = backend.kv_connector_classes("decode") if isinstance(backend, VLLMBackend) else ()
+    protocol = next((SIDECAR_KV_CONNECTORS[name] for name in connectors if name in SIDECAR_KV_CONNECTORS), None)
+    if protocol is None:
         supported = ", ".join(f"{name} ({protocol})" for name, protocol in SIDECAR_KV_CONNECTORS.items())
         raise ValueError(
-            f"the llm-d P/D sidecar has no protocol for the {backend.type} decode KV connector {connector!r}; "
-            f"supported (vLLM): {supported}"
-        ) from None
+            f"the llm-d P/D sidecar has no protocol for the {backend.type} decode KV connector "
+            f"{' > '.join(connectors) or None!r}; supported (vLLM, alone or in a MultiConnector): {supported}"
+        )
+    return protocol
 
 
 @register_service(LLM_D_SIDECAR_TYPE)

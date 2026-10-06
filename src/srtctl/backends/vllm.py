@@ -437,12 +437,13 @@ class VLLMBackend(Backend):
         """The connector table row for a mode; None for no connector or a raw JSON ``--kv-transfer-config``."""
         return kv_connector_row(self.connector_for_mode(mode))
 
-    def kv_connector_class(self, mode: WorkerMode) -> str | None:
-        """The vLLM connector class a mode's workers run: ``kv_connector`` of their ``--kv-transfer-config``.
+    def kv_connector_classes(self, mode: WorkerMode) -> tuple[str, ...]:
+        """The vLLM connector classes a mode's workers run: ``kv_connector`` of their ``--kv-transfer-config``.
 
-        A ``kv-transfer-config`` written in the role's args wins, as it does on the
-        command line; otherwise the mode's connector (a table row or raw JSON).
-        None when the mode runs no connector.
+        A ``MultiConnector`` is followed by the classes of the connectors it wraps
+        (``kv_connector_extra_config.connectors``). A ``kv-transfer-config`` written
+        in the role's args wins, as it does on the command line; otherwise the mode's
+        connector (a table row or raw JSON). Empty when the mode runs no connector.
         """
         explicit = next(
             (
@@ -452,16 +453,20 @@ class VLLMBackend(Backend):
             ),
             None,
         )
+        row = self.kv_connector_for_mode(mode)
+        connector = self.connector_for_mode(mode)
         if explicit is not None:
             payload = explicit if isinstance(explicit, Mapping) else json.loads(str(explicit))
-            return payload.get("kv_connector")
-        row = self.kv_connector_for_mode(mode)
-        if row is not None:
-            return row.kv_connector
-        connector = self.connector_for_mode(mode)
-        if not connector or connector.lower() in ("null", "none"):
-            return None
-        return json.loads(connector).get("kv_connector")
+        elif row is not None:
+            return (row.kv_connector,)
+        elif not connector or connector.lower() in ("null", "none"):
+            return ()
+        else:
+            payload = json.loads(connector)
+        wrapped = (payload.get("kv_connector_extra_config") or {}).get("connectors") or []
+        return tuple(
+            name for name in (payload.get("kv_connector"), *(inner.get("kv_connector") for inner in wrapped)) if name
+        )
 
     def discovers_workers(self) -> bool:
         """Whether the prefill/decode workers register with the router over its discovery endpoint.
