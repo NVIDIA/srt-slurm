@@ -3,10 +3,7 @@
 
 """Tests for post-processing: benchmark extraction, S3 upload, and AI analysis."""
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from srtctl.core.schema import (
     DEFAULT_AI_ANALYSIS_PROMPT,
@@ -396,91 +393,6 @@ class TestS3Config:
         assert config.region == "eu-west-1"
 
 
-class TestS3ReportingResolution:
-    """The uploader uses resolved S3 settings without reloading cluster defaults."""
-
-    def _create_mixin(self, reporting):
-        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
-
-        mixin = PostProcessStageMixin()
-        mixin.config = SimpleNamespace(reporting=reporting)
-        return mixin
-
-    def test_recipe_s3_wins_over_conflicting_cluster_settings(self):
-        job_s3 = S3Config(bucket="recipe-bucket", prefix="recipe-prefix", exclude=[], archive=[])
-        mixin = self._create_mixin(ReportingConfig(s3=job_s3))
-        with patch(
-            "srtctl.cli.mixins.postprocess_stage.load_cluster_config",
-            return_value={"reporting": {"s3": {"bucket": "cluster-bucket", "prefix": "cluster-prefix"}}},
-        ) as load_cluster:
-            assert mixin._get_s3_config() is job_s3
-        load_cluster.assert_not_called()
-
-    def test_recipe_s3_works_without_cluster_config(self):
-        job_s3 = S3Config(bucket="recipe-bucket")
-        mixin = self._create_mixin(ReportingConfig(s3=job_s3))
-        with patch("srtctl.cli.mixins.postprocess_stage.load_cluster_config", return_value=None) as load_cluster:
-            assert mixin._get_s3_config() is job_s3
-        load_cluster.assert_not_called()
-
-    @pytest.mark.parametrize("reporting", [None, ReportingConfig(), ReportingConfig(status=ReportingStatusConfig())])
-    def test_disabled_s3_is_not_restored_from_cluster_config(self, reporting):
-        mixin = self._create_mixin(reporting)
-        cluster_s3 = {"bucket": "cluster-bucket", "prefix": "cluster-prefix", "exclude": [], "archive": []}
-        with patch(
-            "srtctl.cli.mixins.postprocess_stage.load_cluster_config", return_value={"reporting": {"s3": cluster_s3}}
-        ) as load_cluster:
-            assert mixin._get_s3_config() is None
-        load_cluster.assert_not_called()
-
-    def test_upload_uses_recipe_overrides_and_inherited_endpoint(self, tmp_path):
-        from srtctl.core.config import resolve_config_with_defaults
-
-        cluster = {
-            "reporting": {
-                "s3": {
-                    "bucket": "cluster-bucket",
-                    "endpoint_url": "https://storage.example.com",
-                    "exclude": ["*.jsonl"],
-                    "archive": ["*.out"],
-                }
-            }
-        }
-        resolved = resolve_config_with_defaults(
-            {
-                "schema": 2,
-                "reporting": {
-                    "s3": {
-                        "bucket": "recipe-bucket",
-                        "prefix": "recipe-prefix",
-                        "exclude": [],
-                        "archive": [],
-                    }
-                },
-            },
-            cluster,
-        )
-        mixin = self._create_mixin(ReportingConfig.Schema().load(resolved["reporting"]))
-        mixin.runtime = MagicMock(log_dir=tmp_path, job_id="12345")
-        mixin.runtime.nodes.head = "node001"
-        mixin.runtime.nodes.het_group_for.return_value = None
-        proc = MagicMock(returncode=0)
-        with (
-            patch(
-                "srtctl.cli.mixins.postprocess_stage.load_cluster_config",
-                return_value=cluster,
-            ) as load_cluster,
-            patch("srtctl.cli.mixins.postprocess_stage.start_srun_process", return_value=proc) as launch,
-        ):
-            url = mixin._run_postprocess_container()
-        assert url.startswith("s3://recipe-bucket/recipe-prefix/") and url.endswith("/12345/")
-        script = launch.call_args.kwargs["command"][2]
-        assert f"aws s3 sync /logs {url}" in script
-        assert "--endpoint-url https://storage.example.com" in script
-        assert "--exclude" not in script and "Packing" not in script
-        load_cluster.assert_not_called()
-
-
 class TestReportingConfig:
     """Tests for ReportingConfig dataclass."""
 
@@ -712,12 +624,44 @@ class TestS3UploadFaultTolerance:
         """Test _run_postprocess_container returns None when S3 not configured."""
         mixin = self._create_mixin_with_runtime(tmp_path)
 
-        # Mock _get_s3_config to return None
-        mixin._get_s3_config = MagicMock(return_value=None)
+        mixin.config.reporting = ReportingConfig(s3=None)
+        with patch(
+            "srtctl.cli.mixins.postprocess_stage.load_cluster_config",
+            return_value={"reporting": {"s3": {"bucket": "cluster-bucket"}}},
+        ) as load_cluster:
+            assert mixin._run_postprocess_container() is None
+        load_cluster.assert_not_called()
 
-        result = mixin._run_postprocess_container()
+    def test_upload_uses_recipe_overrides_and_inherited_endpoint(self, tmp_path):
+        from srtctl.core.config import resolve_config_with_defaults
 
-        assert result is None
+        cluster_s3 = {
+            "bucket": "cluster-bucket",
+            "endpoint_url": "https://storage.example.com",
+            "exclude": ["*.jsonl"],
+            "archive": ["*.out"],
+        }
+        recipe_s3 = {"bucket": "recipe-bucket", "prefix": "recipe-prefix", "exclude": [], "archive": []}
+        cluster = {"reporting": {"s3": cluster_s3}}
+        resolved = resolve_config_with_defaults({"schema": 2, "reporting": {"s3": recipe_s3}}, cluster)
+        mixin = self._create_mixin_with_runtime(tmp_path)
+        mixin.config.reporting = ReportingConfig.Schema().load(resolved["reporting"])
+        mixin.runtime.nodes.het_group_for.return_value = None
+        proc = MagicMock(returncode=0)
+        with (
+            patch(
+                "srtctl.cli.mixins.postprocess_stage.load_cluster_config",
+                return_value=cluster,
+            ) as load_cluster,
+            patch("srtctl.cli.mixins.postprocess_stage.start_srun_process", return_value=proc) as launch,
+        ):
+            url = mixin._run_postprocess_container()
+        assert url.startswith("s3://recipe-bucket/recipe-prefix/") and url.endswith("/12345/")
+        script = launch.call_args.kwargs["command"][2]
+        assert f"aws s3 sync /logs {url}" in script
+        assert "--endpoint-url https://storage.example.com" in script
+        assert "--exclude" not in script and "Packing" not in script
+        load_cluster.assert_not_called()
 
     def test_srun_failure_does_not_raise(self, tmp_path):
         """Test _run_postprocess_container handles srun failure gracefully."""
