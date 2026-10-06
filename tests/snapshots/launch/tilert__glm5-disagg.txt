@@ -55,6 +55,7 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+use_bash_wrapper: True
 command: |
     python -m tilert.pd_vllm.pd_router --vllm-url http://127.0.0.1:6100 --decode 127.0.0.1:5401:6100 --host 0.0.0.0 --port 8000 --parser none --model-path zai-org/GLM-5.1-FP8 --queue-timeout 1800
 

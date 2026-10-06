@@ -68,6 +68,8 @@ class StaticRouterFrontend(Frontend):
     # Probe every advertised HTTP worker for 200 before launching the router. A router whose
     # static registration expires when model loading outlasts its startup window sets this.
     wait_for_workers_before_start: ClassVar[bool] = False
+    # Standalone/distroless router images have no shell.
+    use_bash_wrapper: ClassVar[bool] = True
 
     @property
     def health_endpoint(self) -> str:
@@ -291,6 +293,7 @@ class StaticRouterFrontend(Frontend):
                 container_mounts=runtime.container_mounts,
                 env_to_set=router_env or None,
                 bash_preamble=self.build_bash_preamble(config),
+                use_bash_wrapper=self.use_bash_wrapper,
                 het_group=runtime.nodes.het_group_for(node),
                 step_name=step_name,
                 srun_options=runtime.srun_options,

@@ -3,6 +3,7 @@
 
 """Tests for SLURM command construction."""
 
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -108,6 +109,49 @@ def test_cluster_bash_preamble_warns_when_bash_wrapper_disabled(caplog) -> None:
     # Distroless path runs the binary directly; preamble cannot apply.
     assert "bash" not in srun_cmd
     assert any("default_bash_preamble" in record.message for record in caplog.records)
+
+
+def test_direct_executable_receives_environment_without_comma_splitting() -> None:
+    with (
+        patch.dict(os.environ, {"REMOVE_FROM_CHILD": "present"}),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as popen,
+    ):
+        start_srun_process(
+            ["/usr/local/bin/sgl-router"],
+            use_bash_wrapper=False,
+            env_to_set={"NIC_LIST": "nic0,nic1", "TEMPLATE_DEFAULTS": '{"thinking":true,"mode":"a b"}'},
+            env_to_unset=["REMOVE_FROM_CHILD"],
+        )
+        child_env = popen.call_args.kwargs["env"]
+        assert child_env["NIC_LIST"] == "nic0,nic1"
+        assert child_env["TEMPLATE_DEFAULTS"] == '{"thinking":true,"mode":"a b"}'
+        assert "REMOVE_FROM_CHILD" not in child_env
+        assert os.environ["REMOVE_FROM_CHILD"] == "present"
+    command = popen.call_args.args[0]
+    assert "--export=ALL" in command and "bash" not in command
+    assert "nic0,nic1" not in command
+
+
+def test_direct_container_env_overrides_image_defaults_without_mutating_options() -> None:
+    options = {"container-env": "KEEP,NIC_LIST"}
+    with (
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as popen,
+    ):
+        start_srun_process(
+            ["/usr/local/bin/sgl-router"],
+            container_image="router-image",
+            use_bash_wrapper=False,
+            env_to_set={"NIC_LIST": "nic0,nic1", "RUST_LOG": "debug"},
+            srun_options=options,
+        )
+    assert "--container-env=KEEP,NIC_LIST,RUST_LOG" in popen.call_args.args[0]
+    assert options == {"container-env": "KEEP,NIC_LIST"}
+    with pytest.raises(ValueError, match="env_to_unset"):
+        start_srun_process(
+            ["router"], container_image="router-image", use_bash_wrapper=False, env_to_unset=["RUST_LOG"]
+        )
 
 
 def test_srun_options_use_equals_separator() -> None:

@@ -53,6 +53,7 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+use_bash_wrapper: True
 command: |
     vllm-router --vllm-pd-disaggregation --kv-connector moriio --vllm-discovery-address 0.0.0.0:36367 --host 0.0.0.0 --port 8000 --worker-startup-timeout-secs 1800 --policy consistent_hash
 

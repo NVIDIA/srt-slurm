@@ -32,6 +32,8 @@ from srtctl.ports import (
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     NCCL_PORTS,
+    SGLANG_KV_REPLAY_PORTS,
+    SGLANG_LOAD_PORTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -198,6 +200,42 @@ class SGLangBackend(Backend):
         """``roles.<role>.kv_events`` for a worker mode over the ZMQ defaults; None when it publishes none."""
         return role_kv_events(self.roles, mode, {"publisher": "zmq", "topic": "kv-events"})
 
+    def _publisher_count(self, mode: WorkerMode) -> int:
+        """Independent caches: replica DP times attention DP (legacy DP-attention uses dp-size)."""
+        args = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
+        return int(args.get("dp-size", args.get("data-parallel-size", 1))) * int(
+            args.get("attn-dp-size", args.get("attention-data-parallel-size", 1))
+        )
+
+    def _load_publishing_enabled(self, mode: WorkerMode) -> bool:
+        args = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
+        value = args.get("load-publish-endpoint")
+        return bool(value) and str(value).strip().lower() != "off"
+
+    def _publisher_args(self, process: "Process", config: dict[str, Any]) -> list[str]:
+        """Render allocated KV/replay/load listeners for both native and sidecar workers."""
+        mode = process.endpoint_mode
+        kv_cfg = self.get_kv_events_config_for_mode(mode)
+        if not kv_cfg:
+            if self._load_publishing_enabled(mode):
+                raise ValueError(f"roles.{mode}.args.load-publish-endpoint requires roles.{mode}.kv_events")
+            return []
+        if process.kv_events_port is None:
+            raise ValueError("KV events require an allocated publisher port")
+        kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
+        if kv_cfg.get("replay_endpoint"):
+            if process.kv_replay_port is None:
+                raise ValueError("KV replay requires an allocated replay port")
+            kv_cfg["replay_endpoint"] = f"tcp://*:{process.kv_replay_port}"
+        result = ["--kv-events-config", json.dumps(kv_cfg)]
+        if self._load_publishing_enabled(mode):
+            if process.load_publish_port is None:
+                raise ValueError("Load publishing requires an allocated publisher port")
+            config.pop("load-publish-endpoint", None)
+            config.pop("load_publish_endpoint", None)
+            result.extend(["--load-publish-endpoint", f"tcp://*:{process.load_publish_port}"])
+        return result
+
     def allocate_endpoints(
         self,
         num_prefill: int,
@@ -237,7 +275,13 @@ class SGLangBackend(Backend):
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
 
         allocator = port_allocator_for(port_allocator, base_sys_port)
-        processes = endpoints_to_processes(endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar)
+        publisher_count = max(
+            (self._publisher_count(e.mode) for e in endpoints if self.get_kv_events_config_for_mode(e.mode)),
+            default=1,
+        )
+        processes = endpoints_to_processes(
+            endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar, kv_events_size=publisher_count
+        )
         # dist-init is bound by the endpoint's leader; every process of the
         # endpoint names the same port, allocated per leader node so two
         # endpoints led from one node do not collide.
@@ -250,6 +294,16 @@ class SGLangBackend(Backend):
                 process,
                 nccl_port=allocator.next(NCCL_PORTS),
                 dist_init_port=dist_init_ports[(process.endpoint_mode, process.endpoint_index)],
+                load_publish_port=(
+                    allocator.next(SGLANG_LOAD_PORTS, size=self._publisher_count(process.endpoint_mode))
+                    if self._load_publishing_enabled(process.endpoint_mode)
+                    else None
+                ),
+                kv_replay_port=(
+                    allocator.next(SGLANG_KV_REPLAY_PORTS, size=self._publisher_count(process.endpoint_mode))
+                    if (self.get_kv_events_config_for_mode(process.endpoint_mode) or {}).get("replay_endpoint")
+                    else None
+                ),
             )
             for process in processes
         ]
@@ -394,12 +448,7 @@ class SGLangBackend(Backend):
         if dump_config_path and not use_sglang:
             cmd.extend(["--dump-config-to", str(dump_config_path)])
 
-        # Add kv-events-config if enabled for this mode and we have an allocated port
-        kv_cfg = self.get_kv_events_config_for_mode(mode)
-        if kv_cfg and process.kv_events_port is not None:
-            # Add the endpoint with the allocated port
-            kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
-            cmd.extend(["--kv-events-config", json.dumps(kv_cfg)])
+        cmd.extend(self._publisher_args(process, config))
 
         # Add request plane (dynamo frontend only)
         if not use_sglang:
@@ -486,10 +535,7 @@ class SGLangBackend(Backend):
 
         # The SGLang sidecar discovers the publisher; SGLang still needs this
         # flag to enable it and advertise the topology-assigned endpoint.
-        kv_cfg = self.get_kv_events_config_for_mode(mode)
-        if kv_cfg and process.kv_events_port is not None:
-            kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
-            engine.extend(["--kv-events-config", json.dumps(kv_cfg)])
+        engine.extend(self._publisher_args(process, config))
 
         if not any(key in config for key in ("incremental-streaming-output", "incremental_streaming_output")):
             # The Dynamo sidecar treats every gRPC chunk as a delta. Without this flag this SGLang

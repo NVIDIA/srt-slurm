@@ -30,7 +30,7 @@ def test_interactive_discovers_curated_examples():
 
     assert SGLANG_ROUTER_DISAGG in examples
     assert MOCKER_EXAMPLE in examples
-    assert len(TOPOLOGY_EXAMPLES) == 16
+    assert len(TOPOLOGY_EXAMPLES) == 17
 
 
 # =============================================================================
@@ -417,13 +417,12 @@ class TestSharedNodeDisaggExample:
 
             prefill_eps = [e for e in endpoints if e.mode == "prefill"]
             decode_eps = [e for e in endpoints if e.mode == "decode"]
-            assert len(prefill_eps) == 1
-            assert len(decode_eps) == 1
-            assert prefill_eps[0].nodes[0] == nodes[0]
-            assert decode_eps[0].nodes[0] == nodes[0], "decode should share the prefill node"
+            assert len(prefill_eps) == r.num_prefill
+            assert len(decode_eps) == r.num_decode
+            assert all(e.nodes == (nodes[0],) for e in endpoints), "all workers should share the prefill node"
 
-            prefill_gpus = set(prefill_eps[0].gpu_indices)
-            decode_gpus = set(decode_eps[0].gpu_indices)
+            prefill_gpus = set().union(*(e.gpu_indices for e in prefill_eps))
+            decode_gpus = set().union(*(e.gpu_indices for e in decode_eps))
             assert prefill_gpus.isdisjoint(decode_gpus), f"GPU overlap: prefill {prefill_gpus}, decode {decode_gpus}"
 
     @pytest.mark.parametrize("example_path", DISAGG_EXAMPLES, ids=lambda p: f"{p.parent.name}/{p.name}")
@@ -450,7 +449,7 @@ class TestSharedNodeDisaggExample:
             processes = endpoints_to_processes(endpoints)
             node0_processes = [p for p in processes if p.node == nodes[0]]
 
-            assert len(node0_processes) == 2, f"Expected 1 prefill + 1 decode process, got {len(node0_processes)}"
+            assert len(node0_processes) == r.num_prefill + r.num_decode
 
             seen: set[int] = set()
             for proc in node0_processes:
@@ -459,7 +458,7 @@ class TestSharedNodeDisaggExample:
                     seen.add(gpu)
                 expected_cvd = ",".join(str(g) for g in sorted(proc.gpu_indices))
                 assert proc.cuda_visible_devices == expected_cvd
-            assert seen == {0, 1}, f"Expected GPUs 0 and 1 in use, got {seen}"
+            assert seen == set(range(r.num_prefill + r.num_decode))
 
     @pytest.mark.parametrize("example_path", DISAGG_EXAMPLES, ids=lambda p: f"{p.parent.name}/{p.name}")
     def test_disagg_total_allocation_fits(self, example_path):

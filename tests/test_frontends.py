@@ -70,6 +70,7 @@ class TestFrontendRegistry:
             "atomesh",
             "dynamo",
             "none",
+            "sgl-router",
             "sglang",
             "sglang-router",
             "tilert-router",

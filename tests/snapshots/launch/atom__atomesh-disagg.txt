@@ -51,6 +51,7 @@ container_mounts:
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+use_bash_wrapper: True
 command: |
     atomesh launch --pd-disaggregation --prefill http://127.0.0.1:6100 --decode http://127.0.0.1:6100 --host 0.0.0.0 --port 8000 --backend atom
 

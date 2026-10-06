@@ -72,6 +72,7 @@ nav:
       - Frontends:
           - Frontends and Dynamo: frontends.md
           - SGLang Router: sglang-router.md
+          - Standalone SGLang KV-aware Router: sgl-router.md
           - vLLM Router: vllm-router.md
       - Benchmarks:
           - Benchmarks: benchmarks.md

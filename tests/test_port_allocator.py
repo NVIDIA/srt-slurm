@@ -24,6 +24,8 @@ from srtctl.ports import (
     MORIIO_NOTIFY_PORTS,
     NCCL_PORTS,
     NIXL_PORTS,
+    SGLANG_KV_REPLAY_PORTS,
+    SGLANG_LOAD_PORTS,
     SIDECAR_GRPC_PORTS,
     SYS_PORTS,
     TRTLLM_DIST_INIT_PORTS,
@@ -93,6 +95,8 @@ class TestNodePortAllocator:
             MORIIO_NOTIFY_PORTS,
             TRTLLM_DIST_INIT_PORTS,
             SIDECAR_GRPC_PORTS,
+            SGLANG_KV_REPLAY_PORTS,
+            SGLANG_LOAD_PORTS,
         ]
         assert len({kind.name for kind in kinds}) == len(kinds)
         assert len({kind.base for kind in kinds}) == len(kinds)
@@ -132,6 +136,8 @@ def test_example_topologies_bind_no_port_twice(recipe: Path):
             "kvbm_zmq": process.kvbm_zmq_port,
             "sidecar_grpc": process.sidecar_grpc_port,
             "nccl": process.nccl_port,
+            "sglang_load": process.load_publish_port,
+            "sglang_kv_replay": process.kv_replay_port,
             "vllm_scan": process.vllm_scan_port,
             "moriio_handshake": process.moriio_handshake_port,
             "moriio_notify": process.moriio_notify_port,
@@ -148,6 +154,8 @@ def test_example_topologies_bind_no_port_twice(recipe: Path):
         "sys_port",
         "kv_events_port",
         "nccl_port",
+        "load_publish_port",
+        "kv_replay_port",
         "vllm_scan_port",
         "moriio_handshake_port",
         "moriio_notify_port",

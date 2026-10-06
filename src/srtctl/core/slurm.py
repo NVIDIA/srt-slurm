@@ -220,8 +220,11 @@ def start_srun_process(
         container_image: Container image path (optional)
         container_mounts: Dict of host_path -> container_path mounts
         env_to_pass_through: Environment variable names to pass through
-        env_to_set: Environment variables to set (name -> value)
-        env_to_unset: Environment variable names to unset before the preamble and command
+        env_to_set: Environment variables to set (name -> value); direct container
+            launches preserve these through Pyxis's container-env option.
+        env_to_unset: Environment variable names to unset before the preamble and command.
+            Container unsets require the bash wrapper; an image can define variables
+            that are absent from the host environment.
         bash_preamble: Bash commands to run before the main command
         step_name: Name the Slurm step (``srun --job-name``) so it can be found in
             ``squeue --steps`` and signalled with ``scancel --signal`` later. SIGTERM
@@ -250,6 +253,13 @@ def start_srun_process(
         )
     """
     srun_cmd = ["srun"]
+    if not use_bash_wrapper and container_image:
+        if env_to_unset:
+            raise ValueError("env_to_unset in a container requires use_bash_wrapper=True")
+        if env_to_set:
+            srun_options = dict(srun_options or {})
+            preserved = [name for name in srun_options.get("container-env", "").split(",") if name]
+            srun_options["container-env"] = ",".join(dict.fromkeys([*preserved, *env_to_set]))
 
     # ensures srun runs in the same job context
     slurm_job_id = get_slurm_job_id()
@@ -314,6 +324,18 @@ def start_srun_process(
         exports = ",".join(f"{k}={v}" for k, v in srun_export_env.items())
         srun_cmd.append(f"--export=ALL,{exports}")
 
+    # Direct executables still need per-process environment settings. Pass
+    # values through the child environment, not --export's comma-separated
+    # syntax (JSON and device lists commonly contain commas).
+    process_env = None
+    if not use_bash_wrapper and (env_to_set or env_to_unset):
+        process_env = dict(os.environ)
+        process_env.update(env_to_set or {})
+        for name in env_to_unset or ():
+            process_env.pop(name, None)
+        if not srun_export_env and not (srun_options and "export" in srun_options):
+            srun_cmd.append("--export=ALL")
+
     # Build the actual command to run
     if use_bash_wrapper:
         # Build bash command with environment setup
@@ -371,7 +393,7 @@ def start_srun_process(
         srun_cmd,
         stdout=subprocess.PIPE if not output else None,
         stderr=subprocess.STDOUT if not output else None,
-        env=None,  # Inherit environment
+        env=process_env,
     )
 
     return proc
