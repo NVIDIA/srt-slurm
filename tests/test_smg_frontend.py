@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from marshmallow import ValidationError
 
 from srtctl.backends import SGLangBackend, TRTLLMBackend, VLLMBackend
 from srtctl.core.config import load_config
@@ -259,3 +260,37 @@ def test_trtllm_example_launches_smg_in_front_of_trtllm_serve() -> None:
     assert all("--port 8000" not in line for line in workers)
     launch = next(line.strip() for line in plan.splitlines() if line.strip().startswith("smg launch"))
     assert launch.startswith("smg launch --worker-urls http://127.0.0.1:6100 http://127.0.0.1:6132 ")
+
+
+def _pd_config(prefill_engine, decode_engine=None) -> SrtConfig:
+    roles = {
+        "prefill": RoleConfig(nodes=1, workers=1, gpus=1, engine=prefill_engine),
+        "decode": RoleConfig(nodes=1, workers=1, gpus=1, engine=decode_engine or prefill_engine),
+    }
+    return SrtConfig(
+        name="smg",
+        model={"path": "model", "container": "image", "precision": "bf16"},
+        resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+        roles=roles,
+        frontend=FrontendConfig(type="smg", enable_multiple_frontends=False),
+    )
+
+
+@pytest.mark.parametrize(
+    ("prefill", "decode", "match"),
+    [
+        (VLLMBackend(), None, "only over gRPC"),
+        (TRTLLMBackend(), None, "does not support TRT-LLM"),
+        (SGLangBackend(), VLLMBackend(), "same engine in both roles"),
+    ],
+    ids=["vllm-over-http", "trtllm", "mixed-engines"],
+)
+def test_unsupported_pd_layouts_are_rejected_at_load(prefill, decode, match) -> None:
+    with pytest.raises(ValidationError, match=match):
+        _pd_config(prefill, decode)
+
+
+def test_supported_pd_layouts_load() -> None:
+    assert _pd_config(SGLangBackend()).frontend.type == "smg"
+    for recipe in ("sglang/smg-disagg.yaml", "vllm/smg-disagg-grpc.yaml"):
+        assert load_config(EXAMPLES_DIR / recipe).frontend.type == "smg"

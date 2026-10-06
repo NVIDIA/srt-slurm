@@ -47,7 +47,7 @@ SGLang's bootstrap rendezvous (`bootstrap_host` / `bootstrap_port` / `bootstrap_
 A vLLM worker registered by URL carries no KV connector, so SMG sends the request through
 and the decode worker recomputes the prompt
 ([upstream test note](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/e2e_test/router/test_pd_topologies.py#L105-L110)).
-srtctl does not reject that layout, but it is not a KV-disaggregated run.
+srtctl rejects that layout.
 
 vLLM P/D therefore runs over gRPC. With `grpc: true` in both roles' `args` each worker is
 `vllm serve --grpc`, vLLM's gRPC server, which the `smg-grpc-servicer` package provides
@@ -69,7 +69,7 @@ not scrape them; SMG's own metrics stay on its Prometheus port. See
 
 TRT-LLM P/D is not available behind SMG: its gRPC P/D table has no TRT-LLM entry
 ([`pd_protocol.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/routers/grpc/common/stages/pd_protocol.rs#L63-L85)),
-and over HTTP SMG relays only vLLM-style `kv_transfer_params`. Use `trtllm-serve` disaggregated
+and over HTTP SMG relays only vLLM-style `kv_transfer_params`, so srtctl rejects it. Use `trtllm-serve` disaggregated
 serving (`frontend.type: trtllm_serve`) or Dynamo for TRT-LLM P/D.
 
 ## vLLM data parallel

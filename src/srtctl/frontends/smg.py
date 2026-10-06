@@ -33,6 +33,18 @@ class SMGFrontend(StaticRouterFrontend):
     # worker to register; a large model can load for longer, so every worker is probed first.
     wait_for_workers_before_start: ClassVar[bool] = True
 
+    def validate(self, config: Any) -> None:
+        """Reject prefill/decode layouts SMG cannot disaggregate (see docs/smg.md)."""
+        if not config.topology.is_disaggregated:
+            return
+        prefill, decode = config.backend_for_role("prefill"), config.backend_for_role("decode")
+        if prefill.type != decode.type:
+            raise ValueError("frontend.type: smg prefill/decode needs the same engine in both roles")
+        if prefill.type == "trtllm":
+            raise ValueError("frontend.type: smg does not support TRT-LLM prefill/decode")
+        if prefill.type == "vllm" and not (prefill.is_grpc_mode("prefill") and decode.is_grpc_mode("decode")):
+            raise ValueError("frontend.type: smg runs vLLM prefill/decode only over gRPC; set grpc: true in both roles")
+
     def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
         """SMG serves Prometheus on its own listener, not on the routing port."""
         return SMG_METRICS_PORT
