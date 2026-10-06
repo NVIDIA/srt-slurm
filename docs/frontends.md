@@ -206,6 +206,7 @@ Fields: [DynamoConfig](schema-reference.md#dynamoconfig), [DynamoSourceConfig](s
 **Notes**:
 
 - Set `install: false` if your container already has dynamo pre-installed.
+- `source.wheel` stages the exact `ai-dynamo` and `ai-dynamo-runtime` wheels, then installs them with dependency resolution inside the container. Missing Python dependencies are fetched from PyPI and the NVIDIA package index, so compute nodes need access to those indexes. The install helper honors `DYNAMO_INDEX_URL` and `DYNAMO_EXTRA_INDEX_URL` in its environment to override the default indexes.
 - `source` is the same shape `services[].source` uses.
 - `rev` must be immutable: a commit SHA, a tag such as `v1.4.2`, or `refs/pull/<n>/head` for an unmerged PR. `main`, `master`, and `HEAD` are rejected; pin the commit you mean.
 - `srtctl apply` resolves a non-commit `rev` with `git ls-remote`, writes the commit as `source.sha` into the submitted `config.yaml` (comments preserved, the recipe on disk is untouched), and echoes it as `pinned_sources` in `--json` output. The job builds that commit and the `/configs/dynamo-wheels` cache is keyed by it, so two runs of one recipe cannot silently build different code because the PR moved. If the login node cannot reach the remote, the submit continues with a warning and the compute node fetches the ref by name.
