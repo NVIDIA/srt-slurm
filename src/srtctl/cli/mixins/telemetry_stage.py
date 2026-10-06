@@ -578,6 +578,7 @@ class TelemetryStageMixin:
             if not endpoints:
                 continue
             all_nodes = service_nodes(service)
+            metrics_filter, endpoint_prefix, gpu_metadata = kind.metrics_scrape(service)
             for endpoint in endpoints:
                 nodes = all_nodes[:1] if endpoint.nodes == "first" else all_nodes
                 for node in nodes:
@@ -586,9 +587,9 @@ class TelemetryStageMixin:
                             service=service.name,
                             node=node,
                             url=f"http://{node}:{endpoint.port}{endpoint.path}",
-                            filter=kind.metrics_filter,
-                            endpoint=endpoint.name or kind.metrics_endpoint_prefix,
-                            gpu_metadata=kind.metrics_gpu_metadata,
+                            filter=metrics_filter,
+                            endpoint=endpoint.name or endpoint_prefix,
+                            gpu_metadata=gpu_metadata,
                         )
                     )
         return targets

@@ -192,6 +192,14 @@ class DcgmExporterService(_ExporterKind):
     metrics_filter = "dcgm"
     metrics_endpoint_prefix = "dcgm"
     metrics_gpu_metadata = True
+    # The scrape options let a non-DCGM GPU exporter (``gpu_labels`` / ``gpu_metrics``)
+    # fill this role; the implied service sets them from the exporter's power mapping.
+    option_keys = ("port", "collect_interval_ms", "metrics_filter", "metrics_gpu_metadata")
+
+    def metrics_scrape(self, service: ServiceConfig) -> tuple[str, str | None, bool]:
+        metrics_filter = str(service.options.get("metrics_filter", self.metrics_filter))
+        gpu_metadata = bool(service.options.get("metrics_gpu_metadata", self.metrics_gpu_metadata))
+        return metrics_filter, ("dcgm" if metrics_filter == "dcgm" else "gpu-power"), gpu_metadata
 
     def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
         if service.command is not None:

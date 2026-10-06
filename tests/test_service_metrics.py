@@ -229,6 +229,30 @@ def test_power_telemetry_owning_dcgm_replaces_the_implied_exporter(tmp_path: Pat
     ]
 
 
+def test_implied_gpu_exporter_is_scraped_with_its_power_mapping(tmp_path: Path) -> None:
+    """Tachometer on, power telemetry off: a non-DCGM cluster exporter keeps its own filter, not DCGM's."""
+    amd = {
+        "container_image": "amd-exporter",
+        "port": 5000,
+        "command": "/home/amd/tools/entrypoint.sh",
+        "gpu_labels": {"index": "gpu_id", "identity": "serial_number"},
+        "gpu_metrics": {"power": {"metric": "gpu_power_usage", "scope": "amd"}},
+    }
+    dcgm = SweepOrchestrator(config=_load(), runtime=_runtime(tmp_path))
+    config = _load(observability={"tachometer": {"enabled": True, "default_gpu_exporter": amd}})
+    orchestrator = SweepOrchestrator(config=config, runtime=_runtime(tmp_path))
+
+    target = _targets(orchestrator)[("dcgm-exporter", "node1")]
+    assert (target.url, target.filter, target.endpoint_name, target.gpu_metadata) == (
+        "http://node1:5000/metrics",
+        "passthrough",
+        "gpu-power_node1",
+        False,
+    )
+    target = _targets(dcgm)[("dcgm-exporter", "node1")]
+    assert (target.filter, target.endpoint_name, target.gpu_metadata) == ("dcgm", "dcgm_node1", True)
+
+
 def test_generated_config_carries_the_targets(tmp_path: Path) -> None:
     orchestrator = SweepOrchestrator(config=_load(), runtime=_runtime(tmp_path))
     with (

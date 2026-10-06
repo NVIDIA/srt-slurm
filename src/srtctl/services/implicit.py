@@ -175,7 +175,12 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                         placement=ServicePlacementConfig(node="compute"),
                         container=dcgm.container_image,
                         command=dcgm.command.format(port=dcgm.port).split() if dcgm.command else None,
-                        options={"port": dcgm.port, "collect_interval_ms": tachometer.collect_interval_ms},
+                        options={
+                            "port": dcgm.port,
+                            "collect_interval_ms": tachometer.collect_interval_ms,
+                            "metrics_filter": dcgm.power_mapping.tachometer_filter,
+                            "metrics_gpu_metadata": dcgm.power_mapping.tachometer_gpu_metadata,
+                        },
                     ),
                     implicit=True,
                     reason="observability.tachometer default exporters",
