@@ -16,9 +16,23 @@ from pathlib import Path
 
 import pytest
 
-from tests.launch_snapshots import REPO_ROOT, SNAPSHOT_DIR, example_recipes, render_launch_plan, snapshot_path
+from tests.launch_snapshots import (
+    REPO_ROOT,
+    SNAPSHOT_DIR,
+    _normalize,
+    example_recipes,
+    render_launch_plan,
+    snapshot_path,
+)
 
 RECIPES = example_recipes()
+
+
+def test_s3_upload_date_does_not_change_the_launch_snapshot():
+    first = "s3://bucket/prefix/2026-10-06/4242/"
+    second = "s3://bucket/prefix/2026-10-07/4242/"
+    assert _normalize(first, {}) == _normalize(second, {}) == "s3://bucket/prefix/<date>/4242/"
+    assert _normalize("/logs/2026-10-06/", {}) == "/logs/2026-10-06/"
 
 
 @pytest.mark.parametrize("recipe", RECIPES, ids=lambda p: p.relative_to(REPO_ROOT).as_posix())

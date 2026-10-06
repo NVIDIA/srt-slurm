@@ -622,12 +622,44 @@ class TestS3UploadFaultTolerance:
         """Test _run_postprocess_container returns None when S3 not configured."""
         mixin = self._create_mixin_with_runtime(tmp_path)
 
-        # Mock _get_s3_config to return None
-        mixin._get_s3_config = MagicMock(return_value=None)
+        mixin.config.reporting = ReportingConfig(s3=None)
+        with patch(
+            "srtctl.cli.mixins.postprocess_stage.load_cluster_config",
+            return_value={"reporting": {"s3": {"bucket": "cluster-bucket"}}},
+        ) as load_cluster:
+            assert mixin._run_postprocess_container() is None
+        load_cluster.assert_not_called()
 
-        result = mixin._run_postprocess_container()
+    def test_upload_uses_recipe_overrides_and_inherited_endpoint(self, tmp_path):
+        from srtctl.core.config import resolve_config_with_defaults
 
-        assert result is None
+        cluster_s3 = {
+            "bucket": "cluster-bucket",
+            "endpoint_url": "https://storage.example.com",
+            "exclude": ["*.jsonl"],
+            "archive": ["*.out"],
+        }
+        recipe_s3 = {"bucket": "recipe-bucket", "prefix": "recipe-prefix", "exclude": [], "archive": []}
+        cluster = {"reporting": {"s3": cluster_s3}}
+        resolved = resolve_config_with_defaults({"schema": 2, "reporting": {"s3": recipe_s3}}, cluster)
+        mixin = self._create_mixin_with_runtime(tmp_path)
+        mixin.config.reporting = ReportingConfig.Schema().load(resolved["reporting"])
+        mixin.runtime.nodes.het_group_for.return_value = None
+        proc = MagicMock(returncode=0)
+        with (
+            patch(
+                "srtctl.cli.mixins.postprocess_stage.load_cluster_config",
+                return_value=cluster,
+            ) as load_cluster,
+            patch("srtctl.cli.mixins.postprocess_stage.start_srun_process", return_value=proc) as launch,
+        ):
+            url = mixin._run_postprocess_container()
+        assert url.startswith("s3://recipe-bucket/recipe-prefix/") and url.endswith("/12345/")
+        script = launch.call_args.kwargs["command"][2]
+        assert f"aws s3 sync /logs {url}" in script
+        assert "--endpoint-url https://storage.example.com" in script
+        assert "--exclude" not in script and "Packing" not in script
+        load_cluster.assert_not_called()
 
     def test_srun_failure_does_not_raise(self, tmp_path):
         """Test _run_postprocess_container handles srun failure gracefully."""

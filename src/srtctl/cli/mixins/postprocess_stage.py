@@ -119,29 +119,12 @@ class PostProcessStageMixin:
             return None
 
     def _get_s3_config(self) -> S3Config | None:
-        """Load S3 config from cluster config (under reporting.s3).
+        """Read S3 settings already resolved with cluster defaults.
 
         Returns:
             S3Config if configured, None otherwise
         """
-        cluster_config = load_cluster_config()
-        if not cluster_config:
-            return None
-
-        reporting = cluster_config.get("reporting")
-        if not reporting:
-            return None
-
-        s3_dict = reporting.get("s3")
-        if not s3_dict:
-            return None
-
-        try:
-            schema = S3Config.Schema()
-            return schema.load(s3_dict)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to parse reporting.s3 config: %s", e)
-            return None
+        return self.config.reporting.s3 if self.config.reporting is not None else None
 
     def _resolve_secret(self, config_value: str | None, env_var: str) -> str | None:
         """Resolve a secret from config or environment variable.

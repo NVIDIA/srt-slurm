@@ -42,6 +42,10 @@ reporting:
     # archive: ["artifacts/**/profile_export.jsonl", "*.out"]   # also pack the worker logs
 ```
 
+Recipe `reporting.s3` fields override the cluster settings individually. Omitted fields inherit the cluster's bucket, prefix, endpoint, region, and upload policy; fields absent from both use the built-in defaults. For example, `reporting: {s3: {prefix: my-experiment}}` inherits the cluster bucket and endpoint while changing only the upload prefix. Without a cluster bucket, the recipe must supply `bucket`.
+
+Lists replace inherited lists: `exclude: []` clears exclusions and `archive: []` disables archiving. An explicit `null` clears an inherited optional field to its built-in default; `s3: null` or `reporting: null` disables S3 uploading. These settings are resolved before validation and the uploader uses that resolved configuration without rereading the cluster file. Other reporting blocks retain their existing whole-block defaulting. See [the recipe example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/s3-reporting.yaml).
+
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
 **containers**: A map from alias to image path or registry URI. One resolver replaces image aliases in `model.container`, `roles.<role>.container`, frontend/benchmark images, exporter images and `services[].container`. Literal paths and registry URIs pass through untouched. Free-form maps (`environment`, `roles.<role>.env`, `roles.<role>.args`, `services[].env`, `container_mounts`) and the `identity` block are never rewritten.
@@ -62,7 +66,7 @@ reporting:
 - Use absolute paths for `model.path`, `model.container`, and any other container fields; alias resolution is a no-op without the yaml's `containers:` / `model_paths:` maps.
 - List every cluster-side mount the job needs in `extra_mount` (e.g. the lustre share that holds your model weights and `.sqsh` files). `default_mounts` is the only `srtslurm.yaml` field with no recipe-level equivalent until you spell mounts out yourself.
 - Set `resources.gpus_per_node` explicitly.
-- Status reporting and S3 log upload are skipped (their config lives under `reporting:` in the cluster yaml).
+- Supply `reporting.status` in the recipe for status updates and `reporting.s3` for S3 log upload; either can be configured without a cluster yaml. Without either recipe setting or cluster defaults, that reporting is skipped.
 
 Workers' nats and etcd come from the dynamo/sglang container, not the yaml, so disagg/agg topologies still work end-to-end. `srtctl_root` falls back to the package install path automatically.
 

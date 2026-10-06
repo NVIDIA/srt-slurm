@@ -125,6 +125,8 @@ def _normalize(text: str, replacements: dict[str, str]) -> str:
         text = text.replace(needle, placeholder)
     for pattern in _RANDOM_VALUES:
         text = pattern.sub("<random>", text)
+    # Artifact upload destinations include the current UTC date.
+    text = re.sub(r"(s3://[^\s\"']+/)\d{4}-\d{2}-\d{2}/", r"\1<date>/", text)
     return text
 
 
