@@ -906,7 +906,36 @@ class TestPublication:
 
         report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
         assert report.ok is False
-        assert any("publication_valid" in failure for failure in report.failures), report.failures
+        # The validator must *agree* with the producer that this package is unpublishable
+        # (stored false, recomputed false) -- not fail only because the two disagree.
+        assert "stored publication_valid is false" in report.failures, report.failures
+        assert not any("recomputed True" in failure for failure in report.failures), report.failures
+
+    def test_offline_validator_rejects_a_tampered_verdict_on_an_unverified_clock(self, tmp_path, exporters):
+        """Flipping stored publication_valid to true must not make a clock-unverified package pass."""
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), sample_interval_seconds=0.2, required=False
+        )
+        session.record_clock_sync_failures(["node-b"])
+        session.initialize()
+        assert session.start_and_wait_for_readiness() is True
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+        session.stop_and_finalize(allow_window_mutation=True)
+
+        tampered = json.loads(session.manifest_path.read_text())
+        tampered["publication_valid"] = True
+        session.manifest_path.write_text(json.dumps(tampered))
+
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+        assert report.ok is False
+        assert any("publication_valid is True, recomputed False" in failure for failure in report.failures), (
+            report.failures
+        )
 
     def test_no_clock_sync_failures_is_a_noop(self, tmp_path, exporters):
         session = _session(tmp_path, _endpoints(("node-a", exporters(_body("a")).url)))
