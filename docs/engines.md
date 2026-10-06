@@ -32,6 +32,8 @@ default_gpu_exporter:
       scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
     gpu_util:
       metric: gpu_gfx_activity
+    temperature:
+      metric: gpu_junction_temperature
 ```
 
 With this block a recipe that sets `telemetry: {enabled: true}` and nothing else

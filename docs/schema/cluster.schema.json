@@ -450,6 +450,18 @@
           ],
           "description": "Fraction of time SMs (or compute units) were active, 0-1.",
           "default": null
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU temperature, Celsius.",
+          "default": null
         }
       },
       "description": "The per-GPU metrics GPU power telemetry records from a GPU exporter.",

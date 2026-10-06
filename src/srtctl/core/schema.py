@@ -55,7 +55,7 @@ from srtctl.core.formatting import (
 )
 
 # Leaf modules (stdlib and prometheus-free imports), so these cannot cycle back into schema.
-from srtctl.core.power.contract import CONTAINER_LOG_DIR, UTILIZATION_METRICS, UtilizationMetric
+from srtctl.core.power.contract import CONTAINER_LOG_DIR, TEMPERATURE_METRIC, UTILIZATION_METRICS, UtilizationMetric
 from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
@@ -1559,8 +1559,8 @@ class GpuMetricsConfig:
     """The per-GPU metrics GPU power telemetry records from a GPU exporter.
 
     `power` is required; the others are optional and their columns stay empty
-    when unset. Units are fixed by the artifact: `gpu_util` is a percent and
-    `sm_active` a 0-1 fraction.
+    when unset. Units are fixed by the artifact: `gpu_util` is a percent,
+    `sm_active` a 0-1 fraction, and `temperature` Celsius.
     """
 
     # Power draw in watts.
@@ -1569,6 +1569,8 @@ class GpuMetricsConfig:
     gpu_util: GpuMetricConfig | None = None
     # Fraction of time SMs (or compute units) were active, 0-1.
     sm_active: GpuMetricConfig | None = None
+    # GPU temperature, Celsius.
+    temperature: GpuMetricConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1579,6 +1581,7 @@ DCGM_GPU_METRICS = GpuMetricsConfig(
     power=GpuPowerMetricConfig(metric=DCGM_POWER_MAPPING.power_metric, scope=DCGM_POWER_MAPPING.power_scope),
     gpu_util=GpuMetricConfig(metric="DCGM_FI_DEV_GPU_UTIL"),
     sm_active=GpuMetricConfig(metric="DCGM_FI_PROF_SM_ACTIVE"),
+    temperature=GpuMetricConfig(metric=TEMPERATURE_METRIC),
 )
 
 
@@ -1637,6 +1640,7 @@ class TelemetryExporterConfig:
                 if rider is not None
             ),
             instance_labels=tuple(labels.instance),
+            temperature_metric=metrics.temperature.metric if metrics.temperature is not None else None,
             tachometer_filter=self.tachometer_filter or ("dcgm" if is_dcgm else "passthrough"),
             tachometer_gpu_metadata=is_dcgm if self.tachometer_gpu_metadata is None else self.tachometer_gpu_metadata,
         )

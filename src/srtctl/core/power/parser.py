@@ -4,7 +4,7 @@
 """Strict, mapping-driven exporter power parsing.
 
 The mapping's power metric is mandatory and decides which GPUs produce a
-reading. GPU temperature and the mapping's utilization metrics are optional riders: they attach to a
+reading. The mapping's temperature and utilization metrics are optional riders: they attach to a
 GPU's power reading when present and valid, and are dropped silently otherwise.
 Device identity comes from the mapping's index and identity labels; any
 exporter hostname label is deliberately ignored because the collector already
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from prometheus_client.parser import text_string_to_metric_families
 
-from srtctl.core.power.contract import TEMPERATURE_METRIC, Reason, dedupe, is_valid_temperature_c
+from srtctl.core.power.contract import Reason, dedupe, is_valid_temperature_c
 from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 
 
@@ -71,7 +71,7 @@ def parse_power_scrape(text: str, mapping: PowerMetricMapping = DCGM_POWER_MAPPI
                 saw_power_sample = True
                 _collect_power(sample.labels, sample.value, power_by_index, duplicated_power, reasons, mapping)
                 continue
-            if sample.name == TEMPERATURE_METRIC:
+            if mapping.temperature_metric is not None and sample.name == mapping.temperature_metric:
                 _collect_temperature(sample.labels, sample.value, temperatures, duplicated_temperatures, mapping)
                 continue
             spec = utilization_by_metric.get(sample.name)

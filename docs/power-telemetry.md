@@ -17,7 +17,7 @@ the watts is selected per cluster or recipe (see [GPU exporter labels and metric
   from the physical head node, so all sample timestamps and benchmark
   boundaries come from one clock.
 - The profile's power metric (`DCGM_FI_DEV_POWER_USAGE` for DCGM) determines
-  which GPUs have power readings; optional utilization and `DCGM_FI_DEV_GPU_TEMP`
+  which GPUs have power readings; optional utilization and temperature
   readings accompany them. Device identity comes from the profile's index and identity labels
   (`gpu` and `UUID` for DCGM).
 - **No in-tree benchmark stamps measurement windows yet**, so every run is
@@ -90,6 +90,8 @@ gpu_metrics:
     metric: DCGM_FI_DEV_GPU_UTIL
   sm_active:
     metric: DCGM_FI_PROF_SM_ACTIVE
+  temperature:
+    metric: DCGM_FI_DEV_GPU_TEMP
 ```
 
 ```yaml
@@ -103,13 +105,15 @@ gpu_metrics:
     scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
   gpu_util:
     metric: gpu_gfx_activity
+  temperature:
+    metric: gpu_junction_temperature
 ```
 
 - `gpu_labels.index` must carry the node-local GPU index srt-slurm allocates by;
   `identity` must be stable per physical GPU (it fills `gpu_uuid`); samples
   carrying an `instance` label (MIG instances, partitions) are dropped.
 - `gpu_metrics.power` is required and `scope` is recorded as `power_scope`.
-  `gpu_util` (percent) and `sm_active` (0-1 fraction) are optional; their
+  `gpu_util` (percent), `sm_active` (0-1 fraction) and `temperature` (Celsius) are optional; their
   columns stay empty when unset. Units are fixed by the artifact, not the config.
 - A non-DCGM `power` metric needs `gpu_labels` and an explicit `command`, so the
   DCGM defaults are never applied to another exporter by accident.
@@ -118,7 +122,7 @@ gpu_metrics:
   `false` otherwise.
 
 The artifact layout is identical for every exporter. `manifest.json` records
-`source_metric`, `power_scope` and `utilization_metrics`, so a consumer can tell
+`source_metric`, `power_scope`, `utilization_metrics` and `temperature_metric`, so a consumer can tell
 the measurement boundaries apart without the config.
 
 ### AMD (rocm/device-metrics-exporter)
@@ -143,6 +147,8 @@ default_gpu_exporter:
       scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
     gpu_util:
       metric: gpu_gfx_activity
+    temperature:
+      metric: gpu_junction_temperature
 ```
 
 The same block works under `telemetry.dcgm_exporter` in a recipe, as shown in the
@@ -180,10 +186,11 @@ one row per observation, `(scrape_seq, hostname, gpu_index)` unique. Rows are
 never interpolated, averaged, or role-attributed — role and heterogeneous
 group live once in the manifest topology.
 
-GPU temperature is optional Celsius from `DCGM_FI_DEV_GPU_TEMP` in the same
+GPU temperature is optional Celsius from `gpu_metrics.temperature` (`DCGM_FI_DEV_GPU_TEMP`
+for DCGM, `gpu_junction_temperature` on AMD MI3xx) in the same
 exporter response as power; collection adds no request, process, or wait.
 Temperature must match the power reading's GPU index and UUID. Missing,
-duplicate, non-finite, MIG, or DCGM blank/error values leave the temperature
+duplicate, non-finite, instance-labelled, or DCGM blank/error values leave the temperature
 cell empty without invalidating power. Older v1/v2 files remain readable;
 v3 readers must be deployed before upgrading producers. Consumers must show
 missing temperatures as unavailable, never zero. The exporter must expose the

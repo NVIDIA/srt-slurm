@@ -156,6 +156,7 @@ class PowerManifest:
                 {"column": metric.column, "source_metric": metric.metric, "unit": metric.unit}
                 for metric in self.mapping.utilization_metrics
             ],
+            "temperature_metric": self.mapping.temperature_metric,
             "timestamp_source": CLOCK_SOURCE,
             "job_id": self.job_id,
             "run_name": self.run_name,

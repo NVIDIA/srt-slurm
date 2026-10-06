@@ -76,7 +76,7 @@ telemetry:
 ```
 
 The same exporter response supplies `DCGM_FI_DEV_POWER_USAGE` and optional
-`DCGM_FI_DEV_GPU_TEMP`. Samples v3 retain Celsius in `temperature_c`; an exporter
+`DCGM_FI_DEV_GPU_TEMP` (other exporters name theirs in `gpu_metrics.temperature`). Samples v3 retain Celsius in `temperature_c`; an exporter
 without that metric leaves the cell empty. No extra sampler is launched.
 Temperature does not establish a valid energy measurement: that still requires
 benchmark measurement windows and power validation. Deploy v3-compatible readers

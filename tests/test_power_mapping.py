@@ -498,3 +498,38 @@ def test_dry_run_names_the_power_metric(capsys):
     assert "power_metric" in out and "gpu_power_usage" in out
     show_config_details(_srt_config(TelemetryExporterConfig(container_image="dcgm-exporter", port=9401)))
     assert "DCGM_FI_DEV_POWER_USAGE" in capsys.readouterr().out
+
+
+class TestTemperature:
+    def test_dcgm_records_gpu_temp_by_default(self):
+        assert DCGM_POWER_MAPPING.temperature_metric == "DCGM_FI_DEV_GPU_TEMP"
+        payload = _manifest().to_dict()
+        assert payload["temperature_metric"] == "DCGM_FI_DEV_GPU_TEMP"
+
+    def test_configured_temperature_metric_fills_the_column_by_the_mapping_labels(self):
+        exporter = TelemetryExporterConfig.Schema().load(
+            {
+                **AMD_GPU_CONFIG,
+                "container_image": AMD_IMAGE,
+                "port": 5000,
+                "command": "x",
+                "gpu_metrics": {
+                    **AMD_GPU_CONFIG["gpu_metrics"],
+                    "temperature": {"metric": "gpu_junction_temperature"},
+                },
+            }
+        )
+        mapping = exporter.power_mapping
+        body = _amd_body(count=1) + (
+            "# TYPE gpu_junction_temperature gauge\n"
+            'gpu_junction_temperature{gpu_id="0",serial_number="SN0"} 61.0\n'
+            # DCGM's temperature means nothing to this mapping.
+            'DCGM_FI_DEV_GPU_TEMP{gpu_id="0",serial_number="SN0"} 99.0\n'
+        )
+        assert [r.temperature_c for r in parse_power_scrape(body, mapping).readings] == [61.0]
+        assert _manifest(mapping).to_dict()["temperature_metric"] == "gpu_junction_temperature"
+
+    def test_unset_temperature_leaves_the_column_empty(self):
+        assert AMD.temperature_metric is None
+        body = _amd_body(count=1) + 'gpu_junction_temperature{gpu_id="0",serial_number="SN0"} 61.0\n'
+        assert [r.temperature_c for r in parse_power_scrape(body, AMD).readings] == [None]

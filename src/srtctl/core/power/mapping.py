@@ -16,7 +16,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from srtctl.core.power.contract import POWER_METRIC, POWER_SCOPE, UTILIZATION_METRICS, UtilizationMetric
+from srtctl.core.power.contract import (
+    POWER_METRIC,
+    POWER_SCOPE,
+    TEMPERATURE_METRIC,
+    UTILIZATION_METRICS,
+    UtilizationMetric,
+)
 
 # Power telemetry's DCGM template: 100ms NVML sampling is its purpose (dense power
 # curves inside sa-bench measurement windows). Never used for tachometer.
@@ -34,7 +40,8 @@ class PowerMetricMapping:
     ``instance_labels`` mark samples for logical sub-devices (MIG instances,
     partitions) that the artifact cannot represent; such samples are dropped
     with ``mig_instance_unsupported``. ``utilization_metrics`` fill contract
-    columns with the contract's unit and range.
+    columns with the contract's unit and range. ``temperature_metric``, when
+    set, fills the optional ``temperature_c`` column in Celsius.
     """
 
     power_metric: str
@@ -43,6 +50,7 @@ class PowerMetricMapping:
     gpu_identity_label: str
     utilization_metrics: tuple[UtilizationMetric, ...] = ()
     instance_labels: tuple[str, ...] = ()
+    temperature_metric: str | None = None
     # What tachometer applies when it also scrapes this exporter alongside the
     # power collector (``TelemetryStageMixin._power_exporter_targets``).
     tachometer_filter: str = "passthrough"
@@ -56,6 +64,7 @@ DCGM_POWER_MAPPING = PowerMetricMapping(
     gpu_identity_label="UUID",
     utilization_metrics=UTILIZATION_METRICS,
     instance_labels=("GPU_I_ID", "GPU_I_PROFILE"),
+    temperature_metric=TEMPERATURE_METRIC,
     tachometer_filter="dcgm",
     tachometer_gpu_metadata=True,
 )
