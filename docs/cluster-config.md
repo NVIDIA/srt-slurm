@@ -44,7 +44,7 @@ reporting:
 
 Recipe `reporting.s3` fields override the cluster settings individually. Omitted fields inherit the cluster's bucket, prefix, endpoint, region, and upload policy; fields absent from both use the built-in defaults. For example, `reporting: {s3: {prefix: my-experiment}}` inherits the cluster bucket and endpoint while changing only the upload prefix. Without a cluster bucket, the recipe must supply `bucket`.
 
-Lists replace inherited lists: `exclude: []` clears exclusions and `archive: []` disables archiving. An explicit `null` clears an inherited optional field to its built-in default; `s3: null` or `reporting: null` disables S3 uploading. These settings are resolved before validation and the uploader uses that resolved configuration without rereading the cluster file. Other reporting blocks retain their existing whole-block defaulting. See [the recipe example](../examples/features/s3-reporting.yaml).
+Lists replace inherited lists: `exclude: []` clears exclusions and `archive: []` disables archiving. An explicit `null` clears an inherited optional field to its built-in default; `s3: null` or `reporting: null` disables S3 uploading. These settings are resolved before validation and the uploader uses that resolved configuration without rereading the cluster file. Other reporting blocks retain their existing whole-block defaulting. See [the recipe example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/s3-reporting.yaml).
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
