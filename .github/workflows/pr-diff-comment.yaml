@@ -63,6 +63,15 @@ jobs:
               return;
             }
 
+            if (additions === 0 && deletions === 0) {
+              if (comment) {
+                await github.rest.issues.deleteComment({
+                  ...context.repo, comment_id: comment.id,
+                });
+              }
+              return;
+            }
+
             if (!comment) {
               await github.rest.issues.createComment({
                 ...context.repo, issue_number: pr.number, body,
