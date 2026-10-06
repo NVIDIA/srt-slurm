@@ -4,9 +4,6 @@ model:
   path: /lustre/fsw/coreai_comparch_inferencex/rihuo/GLM-5.2-NVFP4
   container: /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-release-arm64-1-3-0rc28-dev202609210001.sqsh
   precision: fp4
-dynamo:
-  install: false
-  request_plane: tcp
 health_check:
   max_attempts: 270
   interval_seconds: 10
@@ -42,10 +39,6 @@ roles:
       UCX_RNDV_SCHEME: put_zcopy
       TRTLLM_KVCACHE_SEND_BUFFER_COUNT: "1"
       TRTLLM_KVCACHE_RECV_BUFFER_COUNT: "1"
-      DYN_TRTLLM_ENABLE_ATTENTION_DP: "1"
-      DYN_ENGINE_CONV_AFFINITY: "1"
-      DYN_TOKENIZER: fastokens
-      DYN_PUBLISH_KV_EVENTS: "0"
     args:
       attention_dp_config:
         enable_kv_cache_aware_routing: false
@@ -120,10 +113,6 @@ roles:
       UCX_RNDV_SCHEME: put_zcopy
       TRTLLM_KVCACHE_SEND_BUFFER_COUNT: "1"
       TRTLLM_KVCACHE_RECV_BUFFER_COUNT: "1"
-      DYN_TRTLLM_ENABLE_ATTENTION_DP: "1"
-      DYN_ENGINE_CONV_AFFINITY: "1"
-      DYN_TOKENIZER: fastokens
-      DYN_PUBLISH_KV_EVENTS: "0"
     args:
       cache_transceiver_config:
         backend: NIXL
@@ -178,26 +167,20 @@ roles:
     nodes: 4
     gpus: 4
 frontend:
-  type: dynamo
+  type: trtllm_serve
   enable_multiple_frontends: false
-  env:
-    ETCD_LEASE_TTL: '120'
-    DYN_ROUTER_QUEUE_THRESHOLD: None
-    DYN_ROUTER_TEMPERATURE: '0'
-    DYN_TOKENIZER_CACHE: '1'
-    DYN_TOKENIZER_CACHE_BYTES: '8000000000'
-    DYN_TOKENIZER: fastokens
-    DYN_TCP_REQUEST_TIMEOUT: '30'
-    DYN_LOG: warn
-    DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
-  args:
-    router-mode: kv
-    no-kv-events: true
-    active-decode-blocks-threshold: None
-    active-prefill-tokens-threshold: None
-    active-prefill-tokens-threshold-frac: None
   placement:
     node: head
+  ctx_router:
+    type: conversation
+  gen_router:
+    type: conversation
+  server_config_extra:
+    backend: pytorch
+    gen_strip_message_history: true
+    gen_tokids_ctxbytes: true
+    return_perf_metrics: false
+    perf_metrics_max_requests: 100000
 benchmark:
   type: custom
   command: |
@@ -210,6 +193,11 @@ benchmark:
     fi
     ARTIFACT_DIR="/logs/agentic/conc_60/aiperf_artifacts"
     mkdir -p "$ARTIFACT_DIR"
+    metrics_args=()
+    if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
+      IFS=',' read -r -a metrics_urls <<< "$AIPERF_SERVER_METRICS_URLS"
+      metrics_args=(--server-metrics "${metrics_urls[@]}")
+    fi
     "$AIPERF_VENV/bin/aiperf" profile --scenario inferencex-agentx-mvp \
       --url "http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT" \
       --endpoint /v1/chat/completions --endpoint-type chat --streaming \
@@ -221,7 +209,7 @@ benchmark:
       --concurrency 60 --benchmark-duration 3600 \
       --failed-request-threshold 0.1 --warmup-requests-per-lane 10 \
       --trace-idle-gap-cap-seconds 300 --warmup-grace-period 1800 \
-      --no-server-metrics --output-artifact-dir "$ARTIFACT_DIR"
+      "${metrics_args[@]}" --output-artifact-dir "$ARTIFACT_DIR"
   env:
     AIPERF_DATASET_CONFIGURATION_TIMEOUT: "1800"
     AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: "1800"
@@ -230,15 +218,10 @@ benchmark:
     AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/aiperf_mmap_cache
     HF_HUB_CACHE: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache
     AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES: "0"
-    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
-    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: '0'
     OPENAI_API_KEY: EMPTY
   placement:
     node: last_decode
 
-name: dynamo-disagg-gb300-3p4d-tep4-c60-b5-mtp5
+name: trtllm-serve-disagg-gb300-3p4d-tep4-c60-b5-mtp5
 extra_mount:
   - "/lustre:/lustre"
-  - "/lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels"
-
-setup_script: install_dynamo_wheel.sh
