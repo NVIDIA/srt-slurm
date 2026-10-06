@@ -296,10 +296,18 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         for note in resolve_container_aliases(config, containers):
             logger.debug(note)
 
-    # Apply reporting defaults (if not specified in user config)
-    if "reporting" not in config and cluster_config.get("reporting"):
-        config["reporting"] = cluster_config["reporting"]
+    # Other reporting blocks keep their whole-block defaulting. S3 settings
+    # inherit individually so a recipe can override just its artifact prefix.
+    cluster_reporting = cluster_config.get("reporting")
+    if "reporting" not in config and cluster_reporting:
+        config["reporting"] = copy.deepcopy(cluster_reporting)
         logger.debug("Applied cluster reporting config")
+    elif isinstance(config.get("reporting"), dict) and isinstance(cluster_reporting, dict):
+        reporting = config["reporting"]
+        if "s3" not in reporting and "s3" in cluster_reporting:
+            reporting["s3"] = copy.deepcopy(cluster_reporting["s3"])
+        elif isinstance(reporting.get("s3"), dict) and isinstance(cluster_reporting.get("s3"), dict):
+            reporting["s3"] = deep_merge(cluster_reporting["s3"], reporting["s3"])
 
     if "health_check" not in config and cluster_config.get("default_health_check"):
         config["health_check"] = cluster_config["default_health_check"]

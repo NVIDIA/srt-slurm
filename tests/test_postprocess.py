@@ -397,7 +397,7 @@ class TestS3Config:
 
 
 class TestS3ReportingResolution:
-    """Recipe S3 settings override cluster defaults as a complete block."""
+    """The uploader uses resolved S3 settings without reloading cluster defaults."""
 
     def _create_mixin(self, reporting):
         from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
@@ -424,29 +424,43 @@ class TestS3ReportingResolution:
         load_cluster.assert_not_called()
 
     @pytest.mark.parametrize("reporting", [None, ReportingConfig(), ReportingConfig(status=ReportingStatusConfig())])
-    def test_missing_recipe_s3_retains_cluster_fallback(self, reporting):
+    def test_disabled_s3_is_not_restored_from_cluster_config(self, reporting):
         mixin = self._create_mixin(reporting)
         cluster_s3 = {"bucket": "cluster-bucket", "prefix": "cluster-prefix", "exclude": [], "archive": []}
         with patch(
             "srtctl.cli.mixins.postprocess_stage.load_cluster_config", return_value={"reporting": {"s3": cluster_s3}}
-        ):
-            assert mixin._get_s3_config() == S3Config.Schema().load(cluster_s3)
-
-    @pytest.mark.parametrize("cluster", [None, {}, {"reporting": {}}, {"reporting": {"s3": {"prefix": "invalid"}}}])
-    def test_missing_or_invalid_cluster_s3_returns_none(self, cluster):
-        mixin = self._create_mixin(None)
-        with patch("srtctl.cli.mixins.postprocess_stage.load_cluster_config", return_value=cluster):
+        ) as load_cluster:
             assert mixin._get_s3_config() is None
+        load_cluster.assert_not_called()
 
-    def test_upload_uses_recipe_destination_and_policy(self, tmp_path):
-        job_s3 = S3Config(
-            bucket="recipe-bucket",
-            prefix="recipe-prefix",
-            endpoint_url="https://storage.example.com",
-            exclude=[],
-            archive=[],
+    def test_upload_uses_recipe_overrides_and_inherited_endpoint(self, tmp_path):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        cluster = {
+            "reporting": {
+                "s3": {
+                    "bucket": "cluster-bucket",
+                    "endpoint_url": "https://storage.example.com",
+                    "exclude": ["*.jsonl"],
+                    "archive": ["*.out"],
+                }
+            }
+        }
+        resolved = resolve_config_with_defaults(
+            {
+                "schema": 2,
+                "reporting": {
+                    "s3": {
+                        "bucket": "recipe-bucket",
+                        "prefix": "recipe-prefix",
+                        "exclude": [],
+                        "archive": [],
+                    }
+                },
+            },
+            cluster,
         )
-        mixin = self._create_mixin(ReportingConfig(s3=job_s3))
+        mixin = self._create_mixin(ReportingConfig.Schema().load(resolved["reporting"]))
         mixin.runtime = MagicMock(log_dir=tmp_path, job_id="12345")
         mixin.runtime.nodes.head = "node001"
         mixin.runtime.nodes.het_group_for.return_value = None
@@ -454,9 +468,7 @@ class TestS3ReportingResolution:
         with (
             patch(
                 "srtctl.cli.mixins.postprocess_stage.load_cluster_config",
-                return_value={
-                    "reporting": {"s3": {"bucket": "cluster-bucket", "exclude": ["*.jsonl"], "archive": ["*.out"]}}
-                },
+                return_value=cluster,
             ) as load_cluster,
             patch("srtctl.cli.mixins.postprocess_stage.start_srun_process", return_value=proc) as launch,
         ):

@@ -26,8 +26,6 @@ Every field, with its type, default, allowed values, and description: [Cluster c
 
 **reporting.s3**: After a run, a small container on the head node uploads the log directory to `s3://<bucket>/<prefix>/<YYYY-MM-DD>/<job_id>/` (`endpoint_url` for MinIO or another S3-compatible store; credentials only through `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the submit shell, since the literal fields would land in the lockfile). Not everything is worth shipping: a benchmark run's directory is 250 MB to 2 GB on lustre, over 95% of it aiperf's per-interval scrape of the worker and DCGM `/metrics` endpoints, the same series tachometer already stores as parquet. The upload therefore follows a policy:
 
-The resolved recipe's `reporting.s3` takes precedence over the cluster setting. A recipe-supplied S3 block replaces the cluster S3 block in full, including `exclude` and `archive`; omitted fields use the S3 defaults rather than inheriting individual cluster values. If the resolved recipe has no S3 block, the uploader falls back to `srtslurm.yaml`. See [the recipe example](../examples/features/s3-reporting.yaml).
-
 | Shipped as-is | Packed into `bundle.tar.zst` (`archive`) | Skipped (`exclude`) |
 |---|---|---|
 | config, lockfile, job JSON, sbatch script, git state, fingerprints, resource snapshot; sweep, worker, frontend, service and benchmark logs; results JSON, rollup, `profile_export_aiperf.*`; `perf_dashboard.html` (if present); `tachometer/` parquet | `artifacts/**/profile_export.jsonl`, `sa-bench_*/**/profile_export.jsonl` (aiperf's per-request records, 13 to 40 MB raw, under 1 MB compressed) | `server_metrics_export.jsonl`, `server_metrics_export.json`, `gpu_telemetry_export.jsonl` and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (the aiperf artifact roots; a same-named file from another benchmark type is not touched), `perf_dashboard_bundle/*`, `perf_dashboard.json` |
@@ -43,6 +41,10 @@ reporting:
     # exclude: []                                # ship everything
     # archive: ["artifacts/**/profile_export.jsonl", "*.out"]   # also pack the worker logs
 ```
+
+Recipe `reporting.s3` fields override the cluster settings individually. Omitted fields inherit the cluster's bucket, prefix, endpoint, region, and upload policy; fields absent from both use the built-in defaults. For example, `reporting: {s3: {prefix: my-experiment}}` inherits the cluster bucket and endpoint while changing only the upload prefix. Without a cluster bucket, the recipe must supply `bucket`.
+
+Lists replace inherited lists: `exclude: []` clears exclusions and `archive: []` disables archiving. An explicit `null` clears an inherited optional field to its built-in default; `s3: null` or `reporting: null` disables S3 uploading. These settings are resolved before validation and the uploader uses that resolved configuration without rereading the cluster file. Other reporting blocks retain their existing whole-block defaulting. See [the recipe example](../examples/features/s3-reporting.yaml).
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 

@@ -1,7 +1,10 @@
 # vLLM aggregated, router-free, with recipe-owned artifact reporting.
 # Customize the bucket and prefix for your storage. Source AWS_ACCESS_KEY_ID and
 # AWS_SECRET_ACCESS_KEY in the submit environment; never put credentials here.
-# This S3 block replaces cluster reporting.s3, including its upload policy.
+# Recipe S3 fields override cluster defaults individually. Fields omitted here
+# inherit the cluster endpoint, region, and other settings.
+# To inherit the cluster bucket and policy too, set only:
+# reporting: {s3: {prefix: qwen3-0.6b-recipe}}
 #
 # Aliases resolve through srtslurm.yaml; see examples/README.md. Without that
 # file, provide explicit model/container paths and the required Slurm settings.
@@ -47,6 +50,6 @@ reporting:
   s3:
     bucket: "srt-logs"
     prefix: "qwen3-0.6b-recipe"
-    # Empty lists request every artifact as a loose object, without an archive.
+    # Empty lists replace any cluster policy: every artifact stays a loose object.
     exclude: []
     archive: []
