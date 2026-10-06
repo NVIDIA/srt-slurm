@@ -263,7 +263,7 @@ class Backend(ABC):
         """Get served model name from backend config, or return default."""
         return default
 
-    def is_grpc_mode(self, mode: str) -> bool:
+    def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """Whether the mode's workers serve gRPC instead of HTTP.
 
         A static router reads it to advertise ``grpc://`` worker URLs. Defaults

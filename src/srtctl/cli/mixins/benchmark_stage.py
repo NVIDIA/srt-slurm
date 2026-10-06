@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from srtctl.backends.base import WorkerMode
 from srtctl.backends.trtllm import TRTLLMBackend
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
@@ -150,7 +151,7 @@ class BenchmarkStageMixin:
 
         return placed_node(self.backend_processes, placement, self.runtime.nodes.head, kind="benchmark.placement.node")
 
-    def _logical_worker_endpoints(self) -> list[tuple[str, str, int]]:
+    def _logical_worker_endpoints(self) -> list[tuple[WorkerMode, str, int]]:
         """Return ``(mode, IP, port)`` for every routable worker endpoint.
 
         Positive HTTP ports identify Router-facing node-local vLLM pools;
@@ -163,7 +164,7 @@ class BenchmarkStageMixin:
         frontend = self.frontend
         if frontend is None:
             return []
-        endpoints: list[tuple[str, str, int]] = []
+        endpoints: list[tuple[WorkerMode, str, int]] = []
         for process in self.backend_processes:
             port = frontend.worker_endpoint_port(process, self.config, self.runtime)
             if port is None:
@@ -172,7 +173,7 @@ class BenchmarkStageMixin:
             endpoints.append((process.endpoint_mode, host, port))
         return endpoints
 
-    def _profiling_worker_endpoints(self) -> list[tuple[str, str, int]]:
+    def _profiling_worker_endpoints(self) -> list[tuple[WorkerMode, str, int]]:
         """Return only the process endpoints that control this capture.
 
         Iteration-triggered Nsight captures for vLLM and SGLang target either
@@ -188,7 +189,7 @@ class BenchmarkStageMixin:
         if frontend is None:
             return []
         leader_only_control = frontend.profiling_control_is_leader_only(self.config)
-        endpoints: list[tuple[str, str, int]] = []
+        endpoints: list[tuple[WorkerMode, str, int]] = []
         selected_modes: set[str] = set()
         for process in self.backend_processes:
             worker_index = process.endpoint_index
@@ -298,7 +299,7 @@ class BenchmarkStageMixin:
         )
 
     @staticmethod
-    def _get_worker_endpoint_env(endpoints: list[tuple[str, str, int]]) -> dict[str, str]:
+    def _get_worker_endpoint_env(endpoints: list[tuple[WorkerMode, str, int]]) -> dict[str, str]:
         """Build mode-specific benchmark environment from logical endpoints."""
         env: dict[str, str] = {}
         prefixes = {"prefill": "PREFILL", "decode": "DECODE", "agg": "AGG"}
@@ -586,7 +587,7 @@ class BenchmarkStageMixin:
     def _get_benchmark_profiling_env(
         self,
         runner: "BenchmarkRunner",
-        profiling_endpoints: list[tuple[str, str, int]] | None = None,
+        profiling_endpoints: list[tuple[WorkerMode, str, int]] | None = None,
     ) -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         env: dict[str, str] = {}
@@ -719,7 +720,7 @@ class BenchmarkStageMixin:
 
     def _get_aiperf_server_metrics_env(
         self,
-        logical_endpoints: list[tuple[str, str, int]] | None = None,
+        logical_endpoints: list[tuple[WorkerMode, str, int]] | None = None,
         *,
         logical_workers_only: bool = False,
     ) -> dict[str, str]:

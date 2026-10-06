@@ -25,6 +25,7 @@ from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends.base import Frontend, numactl_prefix
 
 if TYPE_CHECKING:
+    from srtctl.backends.base import WorkerMode
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
@@ -160,7 +161,7 @@ class StaticRouterFrontend(Frontend):
         """Return adapter-managed CLI arguments derived from srtctl config."""
         return []
 
-    def worker_scheme(self, backend: Any, mode: str) -> str:
+    def worker_scheme(self, backend: Any, mode: WorkerMode) -> str:
         """Return the protocol used to reach one worker endpoint: gRPC when the backend's mode serves it."""
         return "grpc" if backend.is_grpc_mode(mode) else "http"
 

@@ -177,7 +177,7 @@ class SGLangBackend(Backend):
             "MOONCAKE_TE_META_DATA_SERVER": (f"http://{infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata"),
         }
 
-    def is_grpc_mode(self, mode: str) -> bool:
+    def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """Check if gRPC mode is enabled for a worker mode."""
         config = self.get_config_for_mode(mode)
         return config.get("grpc-mode", False)

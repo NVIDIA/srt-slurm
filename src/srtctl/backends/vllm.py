@@ -598,7 +598,7 @@ class VLLMBackend(Backend):
         filename = "mooncake_store_config_gpu" + "-".join(map(str, gpu_ids)) + ".json"
         return filename, payload
 
-    def is_grpc_mode(self, mode: str) -> bool:
+    def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """``roles.<role>.args.grpc: true`` renders ``vllm serve --grpc`` (served by smg-grpc-servicer)."""
         config = self.get_config_for_mode(mode)
         return any(normalize_vllm_config_key(key) == "grpc" and value is True for key, value in config.items())

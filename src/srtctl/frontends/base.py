@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
 if TYPE_CHECKING:
+    from srtctl.backends.base import WorkerMode
     from srtctl.core.health import WorkerHealthResult
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
@@ -92,7 +93,7 @@ class Frontend(ABC):
     #: Path where this frontend's router (or its direct endpoint) serves Prometheus metrics.
     metrics_path: ClassVar[str] = "/metrics"
 
-    def worker_metrics_path(self, backend: Any, mode: str) -> str | None:
+    def worker_metrics_path(self, backend: Any, mode: "WorkerMode") -> str | None:
         """Path a worker of ``mode`` serves Prometheus metrics at on ``worker_metrics_port``.
 
         A direct worker is the engine's own server, so ``backend.prometheus_metrics_path``;
