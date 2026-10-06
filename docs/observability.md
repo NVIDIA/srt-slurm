@@ -11,11 +11,11 @@ observability:
   enabled: true
 ```
 
-The capture window aligns with the load, the same window the benchmark client's own `AIPERF_SERVER_METRICS_URLS` polling covers: on benchmark runs the scraper starts once the server passes the health gate (bring-up produces only dead-endpoint noise while workers load) and is stopped **gracefully** when the client exits, with a configurable grace period for compacting `final.parquet` before post-processing reads it. Runs without a discrete load window (serve-only, `manual`, eval-only) capture the whole serve session as before. Signal handlers and the critical-process monitor still use the process registry's existing teardown budget; the benchmark shutdown grace does not override those paths.
+The capture window aligns with the load, the same window the benchmark client's own `AIPERF_SERVER_METRICS_URLS` polling covers: on benchmark runs the scraper starts once the server passes the health gate (bring-up produces only dead-endpoint noise while workers load) and is stopped **gracefully** when the client exits, with a configurable grace period for compacting `final.parquet`. Runs without a discrete load window (serve-only, `manual`, eval-only) capture the whole serve session as before. Signal handlers and the critical-process monitor still use the process registry's existing teardown budget; the benchmark shutdown grace does not override those paths.
 
 Tachometer scrapes all configured worker, frontend, DCGM, and node-exporter endpoints, independently of the benchmark client's `AIPERF_SERVER_METRICS_URLS` polling. This keeps the raw capture complete even when the client also collects metrics.
 
-The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time. Historical `raw_prometheus.jsonl` artifacts remain readable by the post-processing ingest.
+The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time.
 
 Fields: [ObservabilityConfig](schema-reference.md#observabilityconfig), [NsysObservabilityConfig](schema-reference.md#nsysobservabilityconfig). `tachometer.enabled: null` (the default) collects on every run, independent of `observability.enabled`; explicit `false` opts out. See [Profiling](profiling.md#observability-capture) for the nsys settings.
 
@@ -29,8 +29,6 @@ warmup through teardown, or `nsys.enabled: false` to opt out. An enabled
 top-level `profiling` mode takes precedence. The serving container must provide nsys and the required
 NVTX support. See [Observability capture](profiling.md#observability-capture)
 for timing, sampling, injection, and report-finalization settings.
-
-The component perf dashboard is built explicitly after a run; `enabled` decides which capture legs exist and therefore which tabs a later build carries. Jobs do not automatically run dashboard ingestion or rendering. See [Component Performance Dashboard](component-dashboard.md).
 
 SGLang workers always receive `--enable-metrics` unless the recipe sets it: native
 `sglang.launch_server` serves `/metrics` only with the flag, and `dynamo.sglang`
@@ -66,7 +64,7 @@ Every Tachometer field: [TachometerConfig](schema-reference.md#tachometerconfig)
 
 | Tachometer field | Type | Default | Description |
 | ---------------- | ---- | ------- | ----------- |
-| `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint; the single cadence knob. It also drives the launched DCGM exporter's `--collect-interval` (an explicit `dcgm_exporter.command` wins) and the host sampler. Values below `1000` speed up DCGM NVML sampling and are warned about at launch: 100ms sampling measured ~2% decode ITL overhead on GB300. Replaces the retired Hz-based `default_frequency` |
+| `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint; the single cadence knob. It also drives the launched DCGM exporter's `--collect-interval` (an explicit `dcgm_exporter.command` wins). Values below `1000` speed up DCGM NVML sampling and are warned about at launch: 100ms sampling measured ~2% decode ITL overhead on GB300. Replaces the retired Hz-based `default_frequency` |
 | `shutdown_grace_secs` | float | `120.0` | Time the scraper gets after SIGTERM to flush and compact `final.parquet` before it is killed; compaction scales with the data accumulated since the last periodic sync |
 | `default_exporters` | bool | `true` | Imply the built-in DCGM + node + process exporters when no explicit blocks are set. The exporters are [services](services.md#implicit-services) (`dcgm-exporter`, `node-exporter`, `process-exporter`); declaring one under `services:` by that name overrides it, and `srtctl dry-run` lists them |
 | `dcgm_exporter` | object/null | built-in | Defaults to `nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04` on port 9401; an explicit block overrides |
@@ -77,9 +75,9 @@ Every exporter block ([TelemetryExporterConfig](schema-reference.md#telemetryexp
 
 `make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release and installs the process-exporter binary for the same arch. The scraper and the process exporter run as native `srun` processes; the DCGM and node exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build the scraper from source instead. The process-exporter passthrough filter and node process-state/NUMA-label preservation require a scraper built from this revision or a release containing it; rebuild the scraper when using an older downloaded binary.
 
-The pressure collector reports PSI only when the host exposes the corresponding `/proc/pressure` files; missing metrics indicate unavailable data. NUMA memory and allocation metrics retain the exported `node` label as `numa_node` in raw metric names, separately from host metadata. With `observability.enabled: true`, the existing local host sampler also records cumulative PSI stall totals in microseconds in its `psi` JSONL field. That optional sampler covers the sweep/orchestrator host only; it does not extend exporter placement to dedicated frontend or client nodes. Collector overhead has not been measured for this change.
+The pressure collector reports PSI only when the host exposes the corresponding `/proc/pressure` files; missing metrics indicate unavailable data. NUMA memory and allocation metrics retain the exported `node` label as `numa_node` in raw metric names, separately from host metadata. Collector overhead has not been measured for this change.
 
-Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself; srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans; explicit dashboard ingestion converts the Parquet into the dashboard's `server_metrics_export.jsonl`.
+Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself; srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans.
 
 The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent.
 

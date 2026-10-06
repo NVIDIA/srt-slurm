@@ -226,9 +226,7 @@ class AIAnalysisConfig:
 # What ``aws s3 sync`` skips by default. Patterns follow the AWS CLI rules (relative to the
 # log directory, ``*`` matches across directories). The aiperf per-interval scrapes of the
 # worker and DCGM ``/metrics`` endpoints are the same time series tachometer stores as
-# parquet, at 50 to 100 times the bytes; ``perf_dashboard_bundle/`` is the re-renderable
-# intermediate and holds a reshaped copy of that scrape; ``perf_dashboard.json`` duplicates
-# the self-contained ``perf_dashboard.html``. A 2.2 GB run becomes about 60 MB.
+# parquet, at 50 to 100 times the bytes.
 #
 # The aiperf patterns are scoped to the two directories the aiperf-driven runners write
 # to (trace-replay, agentperf and mooncake-router under ``artifacts/<run>/``, sa-bench under
@@ -243,8 +241,6 @@ _AIPERF_METRIC_SCRAPES = (
 )
 DEFAULT_S3_EXCLUDE: tuple[str, ...] = (
     *(f"{root}/{name}" for root in _AIPERF_ARTIFACT_ROOTS for name in _AIPERF_METRIC_SCRAPES),
-    "perf_dashboard_bundle/*",
-    "perf_dashboard.json",
 )
 # What goes into the compressed archive uploaded next to the loose files: aiperf's
 # per-request records, the raw truth behind every latency number (13 to 40 MB raw, under
@@ -278,8 +274,7 @@ class S3Config:
     # Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across
     # directories). Omit for the defaults: aiperf's per-interval metrics scrapes and
     # `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that
-    # series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`. Set to `[]` to ship
-    # the whole directory.
+    # series as parquet). Set to `[]` to ship the whole directory.
     exclude: list[str] | None = None
     # Patterns (Python glob, `**` allowed) packed into one `bundle.tar.zst` uploaded next to the
     # loose files and left out of the plain sync. Omit for the default, aiperf's per-request
@@ -1747,11 +1742,6 @@ class ObservabilityConfig:
     the effective publication flags give those endpoints engine metrics — see
     ``BenchmarkStageMixin``.)
 
-    The component perf dashboard is built explicitly after a run (see
-    :mod:`srtctl.analysis.perf_dashboard`). ``enabled`` decides which capture
-    legs exist and therefore which tabs a later build carries. A run without
-    server-side capture can still render from the client export and worker logs.
-
     Attributes:
         enabled: Master analytics knob. Default: False.
         enable_otel: If True, inject OTEL environment variables into all workers
@@ -1765,8 +1755,7 @@ class ObservabilityConfig:
 
     The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
     ``scrape_output`` knobs (the in-job RAW Prometheus scraper) are rejected
-    at load like any unknown key; the ingest still reads historical
-    ``raw_prometheus.jsonl`` artifacts (the ingest no longer reads them either).
+    at load like any unknown key.
     """
 
     enabled: bool = False

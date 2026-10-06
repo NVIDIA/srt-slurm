@@ -285,21 +285,6 @@ class TestTachometerConfig:
         )
         assert command(custom) == ["/bin/node_exporter", "--custom", ":9101"]
 
-    def test_host_sampler_follows_the_scrape_knob(self, tmp_path):
-        """The host sampler's cadence derives from the same single knob."""
-        import threading
-
-        from srtctl.analysis.host_sampler import try_start_host_sampler
-
-        config = _make_config(tachometer=TachometerConfig(enabled=True, collect_interval_ms=4000))
-        sampler = try_start_host_sampler(tmp_path, config.observability, threading.Event())
-        try:
-            assert sampler is not None
-            assert sampler.interval_seconds == 4.0
-        finally:
-            if sampler is not None:
-                sampler.stop()
-
     def test_default_exporters_false_disables_built_ins(self):
         tachometer = TachometerConfig(default_exporters=False)
         assert tachometer.resolved_dcgm_exporter is None
