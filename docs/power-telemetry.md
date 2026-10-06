@@ -16,9 +16,9 @@ the watts is selected per cluster or recipe (see [GPU exporter labels and metric
 - A collector thread inside the orchestrator polls every exporter concurrently
   from the physical head node, so all sample timestamps and benchmark
   boundaries come from one clock.
-- The profile's power metric (`DCGM_FI_DEV_POWER_USAGE` for DCGM) determines
+- The exporter's power metric (`DCGM_FI_DEV_POWER_USAGE` for DCGM) determines
   which GPUs have power readings; optional utilization and temperature
-  readings accompany them. Device identity comes from the profile's index and identity labels
+  readings accompany them. Device identity comes from the exporter's index and identity labels
   (`gpu` and `UUID` for DCGM).
 - **No in-tree benchmark stamps measurement windows yet**, so every run is
   currently unpublishable: it records `MEASUREMENT_WINDOW` reason codes, and
@@ -57,7 +57,8 @@ telemetry:
 `dcgm-power` needs **only** `dcgm_exporter`. A recipe that sets
 `telemetry.enabled: true` with no `dcgm_exporter` and no CPU leg inherits the
 cluster's `default_gpu_exporter` block from `srtslurm.yaml`, so one recipe can
-measure power on clusters with different GPUs. There is no `provider` key, and it does
+measure power on clusters with different GPUs. An inherited `command` replaces the
+built-in 100 ms DCGM command, so the exporter samples at whatever rate it sets. There is no `provider` key, and it does
 not require the top-level `container_image` or a `node_exporter`, because the
 collector runs inside srtctl. Config loading validates the block and rejects
 inconsistent values with actionable messages; in particular

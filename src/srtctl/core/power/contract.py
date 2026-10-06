@@ -32,8 +32,9 @@ CLOCK_SOURCE = "head_node_unix_clock"
 GPU_UTIL_METRIC = "DCGM_FI_DEV_GPU_UTIL"
 SM_ACTIVE_METRIC = "DCGM_FI_PROF_SM_ACTIVE"
 TEMPERATURE_METRIC = "DCGM_FI_DEV_GPU_TEMP"
-# DCGM reserves this value and larger integers for blank/error sentinels.
-DCGM_INT32_BLANK = 0x7FFFFFF0
+# Physical sanity bound for GPU temperature; exporter blank/error sentinels (DCGM's
+# are near 2**31) fall far outside it.
+MAX_TEMPERATURE_C = 200.0
 
 
 @dataclass(frozen=True)
@@ -207,7 +208,7 @@ def is_finite_number(value: Any) -> TypeGuard[int | float]:
 
 def is_valid_temperature_c(value: float) -> bool:
     """Shared value domain; scrape and CSV readers own their distinct rejection effects."""
-    return math.isfinite(value) and -273.15 <= value < DCGM_INT32_BLANK
+    return math.isfinite(value) and -273.15 <= value <= MAX_TEMPERATURE_C
 
 
 def dedupe(values: list[str]) -> tuple[str, ...]:

@@ -211,7 +211,11 @@ def _parse_row(raw: list[str], expected_version: int) -> SampleRow | None:
 
     Each header admits only its matching version and width; files cannot mix generations.
     """
-    expected_width = {1: len(SAMPLES_HEADER_V1), 2: len(SAMPLES_HEADER_V2), 3: len(SAMPLES_HEADER)}[expected_version]
+    expected_width = {
+        SAMPLES_SCHEMA_VERSION_V1: len(SAMPLES_HEADER_V1),
+        SAMPLES_SCHEMA_VERSION_V2: len(SAMPLES_HEADER_V2),
+        SAMPLES_SCHEMA_VERSION: len(SAMPLES_HEADER),
+    }[expected_version]
     if len(raw) != expected_width:
         return None
     try:

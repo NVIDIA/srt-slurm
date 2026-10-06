@@ -55,7 +55,14 @@ from srtctl.core.formatting import (
 )
 
 # Leaf modules (stdlib and prometheus-free imports), so these cannot cycle back into schema.
-from srtctl.core.power.contract import CONTAINER_LOG_DIR, TEMPERATURE_METRIC, UTILIZATION_METRICS, UtilizationMetric
+from srtctl.core.power.contract import (
+    CONTAINER_LOG_DIR,
+    GPU_UTIL_METRIC,
+    SM_ACTIVE_METRIC,
+    TEMPERATURE_METRIC,
+    UTILIZATION_METRICS,
+    UtilizationMetric,
+)
 from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
@@ -1576,11 +1583,15 @@ class GpuMetricsConfig:
 
 
 # DCGM, the default for exporter blocks that set neither `gpu_labels` nor `gpu_metrics`.
-DCGM_GPU_LABELS = GpuLabelsConfig(index="gpu", identity="UUID", instance=["GPU_I_ID", "GPU_I_PROFILE"])
+DCGM_GPU_LABELS = GpuLabelsConfig(
+    index=DCGM_POWER_MAPPING.gpu_index_label,
+    identity=DCGM_POWER_MAPPING.gpu_identity_label,
+    instance=list(DCGM_POWER_MAPPING.instance_labels),
+)
 DCGM_GPU_METRICS = GpuMetricsConfig(
     power=GpuPowerMetricConfig(metric=DCGM_POWER_MAPPING.power_metric, scope=DCGM_POWER_MAPPING.power_scope),
-    gpu_util=GpuMetricConfig(metric="DCGM_FI_DEV_GPU_UTIL"),
-    sm_active=GpuMetricConfig(metric="DCGM_FI_PROF_SM_ACTIVE"),
+    gpu_util=GpuMetricConfig(metric=GPU_UTIL_METRIC),
+    sm_active=GpuMetricConfig(metric=SM_ACTIVE_METRIC),
     temperature=GpuMetricConfig(metric=TEMPERATURE_METRIC),
 )
 

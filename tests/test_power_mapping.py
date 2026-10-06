@@ -406,6 +406,13 @@ class TestClusterDefaultFlowsIntoPowerTelemetry:
         resolved = resolve_config_with_defaults(_recipe(telemetry), {"default_gpu_exporter": AMD_CLUSTER_EXPORTER})
         assert "dcgm_exporter" not in resolved["telemetry"]
 
+    def test_a_disabled_cpu_leg_still_inherits_the_gpu_exporter(self):
+        resolved = resolve_config_with_defaults(
+            _recipe({"enabled": True, "cpu_power": {"enabled": False}}),
+            {"default_gpu_exporter": AMD_CLUSTER_EXPORTER},
+        )
+        assert resolved["telemetry"]["dcgm_exporter"]["kind"] == "custom"
+
     def test_a_cluster_without_a_gpu_exporter_leaves_the_original_validation_error(self):
         resolved = resolve_config_with_defaults(_recipe({"enabled": True}), {"default_gpu_exporter": None})
         with pytest.raises(ValidationError, match="nothing to collect"):
