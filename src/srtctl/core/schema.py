@@ -1519,32 +1519,67 @@ class ProfilingConfig:
 
 
 @dataclass(frozen=True)
-class GpuPowerMetricsConfig:
-    """Where a GPU exporter's `/metrics` body carries each GPU's watts.
+class GpuLabelsConfig:
+    """The labels that identify a GPU in every sample of a GPU exporter's scrape."""
 
-    Unset on an exporter block means DCGM (`DCGM_FI_DEV_POWER_USAGE`, labels
-    `gpu` / `UUID`). Set it for any other exporter, for example
-    rocm/device-metrics-exporter (`gpu_power_usage`, labels `gpu_id` / `serial_number`).
-    """
+    # Label carrying the node-local GPU index srt-slurm allocates by.
+    index: str
+    # Label that is stable for one physical GPU across the run; recorded as `gpu_uuid`.
+    identity: str
+    # Labels marking logical sub-device samples (MIG instances, partitions); such samples are dropped.
+    instance: list[str] = field(default_factory=list)
 
-    # Prometheus metric carrying each GPU's power draw in watts.
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class GpuMetricConfig:
+    """One per-GPU metric in a GPU exporter's scrape."""
+
+    # Prometheus metric name.
+    metric: str
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class GpuPowerMetricConfig:
+    """The per-GPU power metric in a GPU exporter's scrape, in watts."""
+
+    # Prometheus metric name.
     metric: str
     # What the watts measure, recorded in the power manifest as `power_scope`.
     scope: str
-    # Label carrying the node-local GPU index srt-slurm allocates by.
-    index_label: str
-    # Label that is stable for one physical GPU across the run; fills `gpu_uuid`.
-    identity_label: str
-    # Optional utilization riders: artifact column (`gpu_util_pct`, `sm_active`) to exporter metric.
-    utilization: dict[str, str] = field(default_factory=dict)
-    # Labels marking logical sub-device samples (MIG instances, partitions); such samples are dropped.
-    instance_labels: list[str] = field(default_factory=list)
-    # Filter tachometer applies when it also scrapes this exporter.
-    tachometer_filter: str = "passthrough"
-    # Attach per-GPU worker labels in tachometer (needs DCGM-style `gpu` labels).
-    tachometer_gpu_metadata: bool = False
 
     Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class GpuMetricsConfig:
+    """The per-GPU metrics GPU power telemetry records from a GPU exporter.
+
+    `power` is required; the others are optional and their columns stay empty
+    when unset. Units are fixed by the artifact: `gpu_util` is a percent and
+    `sm_active` a 0-1 fraction.
+    """
+
+    # Power draw in watts.
+    power: GpuPowerMetricConfig
+    # GPU utilization, percent.
+    gpu_util: GpuMetricConfig | None = None
+    # Fraction of time SMs (or compute units) were active, 0-1.
+    sm_active: GpuMetricConfig | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+# DCGM, the default for exporter blocks that set neither `gpu_labels` nor `gpu_metrics`.
+DCGM_GPU_LABELS = GpuLabelsConfig(index="gpu", identity="UUID", instance=["GPU_I_ID", "GPU_I_PROFILE"])
+DCGM_GPU_METRICS = GpuMetricsConfig(
+    power=GpuPowerMetricConfig(metric=DCGM_POWER_MAPPING.power_metric, scope=DCGM_POWER_MAPPING.power_scope),
+    gpu_util=GpuMetricConfig(metric="DCGM_FI_DEV_GPU_UTIL"),
+    sm_active=GpuMetricConfig(metric="DCGM_FI_PROF_SM_ACTIVE"),
+)
 
 
 @dataclass(frozen=True)
@@ -1572,30 +1607,38 @@ class TelemetryExporterConfig:
     command: str | None = None
     # Host executable to run without a container; relative paths resolve against the srtctl checkout.
     binary: str | None = None
-    # Power metric and device labels for GPU power telemetry; unset means DCGM.
-    power: GpuPowerMetricsConfig | None = None
+    # GPU power telemetry: labels identifying a GPU in the scrape; unset means DCGM (`gpu`, `UUID`).
+    gpu_labels: GpuLabelsConfig | None = None
+    # GPU power telemetry: per-GPU metrics to record; unset means DCGM.
+    gpu_metrics: GpuMetricsConfig | None = None
+    # Tachometer filter for this exporter when power telemetry runs it; unset means `dcgm` for DCGM, else `passthrough`.
+    tachometer_filter: str | None = None
+    # Attach per-GPU worker labels in tachometer; unset means true for DCGM only.
+    tachometer_gpu_metadata: bool | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
     @property
     def power_mapping(self) -> PowerMetricMapping:
         """How the power collector reads this exporter's scrape."""
-        power = self.power
-        if power is None:
-            return DCGM_POWER_MAPPING
+        labels = self.gpu_labels or DCGM_GPU_LABELS
+        metrics = self.gpu_metrics or DCGM_GPU_METRICS
+        is_dcgm = metrics.power.metric == DCGM_POWER_MAPPING.power_metric
         contract = {metric.column: metric for metric in UTILIZATION_METRICS}
+        riders = (("gpu_util_pct", metrics.gpu_util), ("sm_active", metrics.sm_active))
         return PowerMetricMapping(
-            power_metric=power.metric,
-            power_scope=power.scope,
-            gpu_index_label=power.index_label,
-            gpu_identity_label=power.identity_label,
+            power_metric=metrics.power.metric,
+            power_scope=metrics.power.scope,
+            gpu_index_label=labels.index,
+            gpu_identity_label=labels.identity,
             utilization_metrics=tuple(
-                UtilizationMetric(column, metric, contract[column].unit, contract[column].max_value)
-                for column, metric in power.utilization.items()
+                UtilizationMetric(column, rider.metric, contract[column].unit, contract[column].max_value)
+                for column, rider in riders
+                if rider is not None
             ),
-            instance_labels=tuple(power.instance_labels),
-            tachometer_filter=power.tachometer_filter,
-            tachometer_gpu_metadata=power.tachometer_gpu_metadata,
+            instance_labels=tuple(labels.instance),
+            tachometer_filter=self.tachometer_filter or ("dcgm" if is_dcgm else "passthrough"),
+            tachometer_gpu_metadata=is_dcgm if self.tachometer_gpu_metadata is None else self.tachometer_gpu_metadata,
         )
 
 
@@ -1910,7 +1953,7 @@ class TelemetryConfig:
 
     # Collect GPU power over each benchmark concurrency window.
     enabled: bool = False
-    # GPU power exporter image, port, optional command and `power` metrics. When `enabled` with
+    # GPU power exporter image, port, command, labels and metrics. When `enabled` with
     # no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.
     dcgm_exporter: TelemetryExporterConfig | None = None
     # Milliseconds between collector cycles. Replaces the retired
@@ -3446,16 +3489,12 @@ class SrtConfig:
             raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
-        if exporter.power is not None:
+        if exporter.gpu_metrics is not None and exporter.power_mapping.power_metric != DCGM_POWER_MAPPING.power_metric:
+            # The DCGM defaults would silently launch dcgm-exporter or read DCGM labels.
             if exporter.command is None:
-                raise ValidationError("telemetry.dcgm_exporter.command is required when `power` is set")
-            columns = {metric.column for metric in UTILIZATION_METRICS}
-            unknown = sorted(set(exporter.power.utilization) - columns)
-            if unknown:
-                raise ValidationError(
-                    f"telemetry.dcgm_exporter.power.utilization has unknown columns {unknown}; "
-                    f"known columns: {', '.join(sorted(columns))}"
-                )
+                raise ValidationError("telemetry.dcgm_exporter.command is required for a non-DCGM gpu_metrics.power")
+            if exporter.gpu_labels is None:
+                raise ValidationError("telemetry.dcgm_exporter.gpu_labels is required for a non-DCGM gpu_metrics.power")
 
         for name in ("startup_timeout_seconds",):
             if not _is_finite_positive(getattr(telemetry, name)):

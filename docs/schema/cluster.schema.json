@@ -378,59 +378,102 @@
       },
       "description": "AI-powered failure analysis configuration."
     },
-    "GpuPowerMetricsConfig": {
+    "GpuLabelsConfig": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "metric": {
-          "type": "string",
-          "description": "Prometheus metric carrying each GPU's power draw in watts."
-        },
-        "scope": {
-          "type": "string",
-          "description": "What the watts measure, recorded in the power manifest as `power_scope`."
-        },
-        "index_label": {
+        "index": {
           "type": "string",
           "description": "Label carrying the node-local GPU index srt-slurm allocates by."
         },
-        "identity_label": {
+        "identity": {
           "type": "string",
-          "description": "Label that is stable for one physical GPU across the run; fills `gpu_uuid`."
+          "description": "Label that is stable for one physical GPU across the run; recorded as `gpu_uuid`."
         },
-        "utilization": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Optional utilization riders: artifact column (`gpu_util_pct`, `sm_active`) to exporter metric.",
-          "default": {}
-        },
-        "instance_labels": {
+        "instance": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "description": "Labels marking logical sub-device samples (MIG instances, partitions); such samples are dropped.",
           "default": []
-        },
-        "tachometer_filter": {
-          "type": "string",
-          "description": "Filter tachometer applies when it also scrapes this exporter.",
-          "default": "passthrough"
-        },
-        "tachometer_gpu_metadata": {
-          "type": "boolean",
-          "description": "Attach per-GPU worker labels in tachometer (needs DCGM-style `gpu` labels).",
-          "default": false
         }
       },
-      "description": "Where a GPU exporter's `/metrics` body carries each GPU's watts.",
+      "description": "The labels that identify a GPU in every sample of a GPU exporter's scrape.",
+      "required": [
+        "index",
+        "identity"
+      ]
+    },
+    "GpuMetricConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "type": "string",
+          "description": "Prometheus metric name."
+        }
+      },
+      "description": "One per-GPU metric in a GPU exporter's scrape.",
+      "required": [
+        "metric"
+      ]
+    },
+    "GpuMetricsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "power": {
+          "$ref": "#/$defs/GpuPowerMetricConfig",
+          "description": "Power draw in watts."
+        },
+        "gpu_util": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU utilization, percent.",
+          "default": null
+        },
+        "sm_active": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fraction of time SMs (or compute units) were active, 0-1.",
+          "default": null
+        }
+      },
+      "description": "The per-GPU metrics GPU power telemetry records from a GPU exporter.",
+      "required": [
+        "power"
+      ]
+    },
+    "GpuPowerMetricConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "type": "string",
+          "description": "Prometheus metric name."
+        },
+        "scope": {
+          "type": "string",
+          "description": "What the watts measure, recorded in the power manifest as `power_scope`."
+        }
+      },
+      "description": "The per-GPU power metric in a GPU exporter's scrape, in watts.",
       "required": [
         "metric",
-        "scope",
-        "index_label",
-        "identity_label"
+        "scope"
       ]
     },
     "HostSetupConfig": {
@@ -715,16 +758,52 @@
           "description": "Host executable to run without a container; relative paths resolve against the srtctl checkout.",
           "default": null
         },
-        "power": {
+        "gpu_labels": {
           "anyOf": [
             {
-              "$ref": "#/$defs/GpuPowerMetricsConfig"
+              "$ref": "#/$defs/GpuLabelsConfig"
             },
             {
               "type": "null"
             }
           ],
-          "description": "Power metric and device labels for GPU power telemetry; unset means DCGM.",
+          "description": "GPU power telemetry: labels identifying a GPU in the scrape; unset means DCGM (`gpu`, `UUID`).",
+          "default": null
+        },
+        "gpu_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU power telemetry: per-GPU metrics to record; unset means DCGM.",
+          "default": null
+        },
+        "tachometer_filter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tachometer filter for this exporter when power telemetry runs it; unset means `dcgm` for DCGM, else `passthrough`.",
+          "default": null
+        },
+        "tachometer_gpu_metadata": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Attach per-GPU worker labels in tachometer; unset means true for DCGM only.",
           "default": null
         }
       },

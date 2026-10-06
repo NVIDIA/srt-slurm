@@ -3,9 +3,9 @@
 
 """Which Prometheus metric and labels carry a GPU's watts in an exporter's scrape.
 
-The power collector is exporter-agnostic. An exporter block's ``power`` config
-resolves to one :class:`PowerMetricMapping`; with no ``power`` config it is
-:data:`DCGM_POWER_MAPPING`. The parser, session, manifest, and telemetry stage
+The power collector is exporter-agnostic. An exporter block's ``gpu_labels`` and
+``gpu_metrics`` resolve to one :class:`PowerMetricMapping`; unset, they are DCGM
+(:data:`DCGM_POWER_MAPPING`). The parser, session, manifest, and telemetry stage
 read the mapping; none of them compares a vendor or exporter name. The artifact
 contract (``samples.csv`` columns, manifest keys, reason codes) is the same for
 every mapping; the manifest records the metric and scope so a reader can

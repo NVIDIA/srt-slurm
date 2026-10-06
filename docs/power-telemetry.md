@@ -6,7 +6,7 @@ allocated worker node, the topology needed to map each GPU to a `prefill`,
 measured concurrency. It never integrates power into energy and never branches
 on model, precision, or recipe; consumers integrate watts over the recorded
 window themselves. The provider name is historical: the exporter that supplies
-the watts is selected per cluster or recipe (see [Exporter power metrics](#exporter-power-metrics)).
+the watts is selected per cluster or recipe (see [GPU exporter labels and metrics](#gpu-exporter-labels-and-metrics)).
 
 ## How it works
 
@@ -67,27 +67,58 @@ The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.
 
-## Exporter power metrics
+## GPU exporter labels and metrics
 
 The collector, parser, manifest and validator do not know which GPU vendor they
-are measuring. The `power` block of the exporter config (`telemetry.dcgm_exporter`,
-or the cluster `default_gpu_exporter` it inherits) says where the watts are:
+are measuring. Two optional blocks on the exporter config (`telemetry.dcgm_exporter`,
+or the cluster `default_gpu_exporter` it inherits) describe the exporter's scrape.
+Each defaults to DCGM when unset, so NVIDIA configs need neither. Written out,
+the DCGM defaults and the AMD exporter have the same shape:
 
-| Field | Meaning | DCGM (when `power` is unset) |
-| --- | --- | --- |
-| `metric` | Prometheus metric carrying each GPU's watts | `DCGM_FI_DEV_POWER_USAGE` |
-| `scope` | What the watts measure, recorded as `power_scope` | `gpu_device_board_as_reported_by_dcgm` |
-| `index_label` | Node-local GPU index; must match the index srt-slurm allocates by | `gpu` |
-| `identity_label` | Stable per-device identity; fills `gpu_uuid` | `UUID` |
-| `utilization` | Optional riders: `gpu_util_pct` / `sm_active` column to metric | `DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_PROF_SM_ACTIVE` |
-| `instance_labels` | Labels marking logical sub-devices (MIG, partitions); dropped | `GPU_I_ID`, `GPU_I_PROFILE` |
-| `tachometer_filter` / `tachometer_gpu_metadata` | How tachometer treats the same endpoint | `dcgm` / `true` |
+```yaml
+# NVIDIA dcgm-exporter: the defaults, written out
+gpu_labels:
+  index: gpu
+  identity: UUID
+  instance: [GPU_I_ID, GPU_I_PROFILE]
+gpu_metrics:
+  power:
+    metric: DCGM_FI_DEV_POWER_USAGE
+    scope: gpu_device_board_as_reported_by_dcgm
+  gpu_util:
+    metric: DCGM_FI_DEV_GPU_UTIL
+  sm_active:
+    metric: DCGM_FI_PROF_SM_ACTIVE
+```
 
-A `power` block replaces the DCGM defaults as a whole, and requires an explicit
-`command`. Units of the utilization columns come from the artifact contract,
-not the config. The artifact layout is identical for every exporter.
-`manifest.json` records `source_metric`, `power_scope` and `utilization_metrics`,
-so a consumer can tell the measurement boundaries apart without the config.
+```yaml
+# AMD rocm/device-metrics-exporter
+gpu_labels:
+  index: gpu_id
+  identity: serial_number
+gpu_metrics:
+  power:
+    metric: gpu_power_usage
+    scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+  gpu_util:
+    metric: gpu_gfx_activity
+```
+
+- `gpu_labels.index` must carry the node-local GPU index srt-slurm allocates by;
+  `identity` must be stable per physical GPU (it fills `gpu_uuid`); samples
+  carrying an `instance` label (MIG instances, partitions) are dropped.
+- `gpu_metrics.power` is required and `scope` is recorded as `power_scope`.
+  `gpu_util` (percent) and `sm_active` (0-1 fraction) are optional; their
+  columns stay empty when unset. Units are fixed by the artifact, not the config.
+- A non-DCGM `power` metric needs `gpu_labels` and an explicit `command`, so the
+  DCGM defaults are never applied to another exporter by accident.
+- `tachometer_filter` and `tachometer_gpu_metadata` set how tachometer treats the
+  same endpoint; unset, they are `dcgm` / `true` for DCGM and `passthrough` /
+  `false` otherwise.
+
+The artifact layout is identical for every exporter. `manifest.json` records
+`source_metric`, `power_scope` and `utilization_metrics`, so a consumer can tell
+the measurement boundaries apart without the config.
 
 ### AMD (rocm/device-metrics-exporter)
 
@@ -102,13 +133,15 @@ default_gpu_exporter:
   container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
   command: "/home/amd/tools/entrypoint.sh"
   port: 5000
-  power:
-    metric: gpu_power_usage
-    scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
-    index_label: gpu_id
-    identity_label: serial_number
-    utilization:
-      gpu_util_pct: gpu_gfx_activity
+  gpu_labels:
+    index: gpu_id
+    identity: serial_number
+  gpu_metrics:
+    power:
+      metric: gpu_power_usage
+      scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+    gpu_util:
+      metric: gpu_gfx_activity
 ```
 
 The same block works under `telemetry.dcgm_exporter` in a recipe, as shown in the

@@ -169,7 +169,7 @@ class TelemetryStageMixin:
     def start_power_telemetry(self, registry: ProcessRegistry) -> PowerTelemetrySession | None:
         """Start GPU power telemetry when it is enabled.
 
-        The exporter block's ``power`` config (DCGM when unset) tells the
+        The exporter block's ``gpu_labels`` and ``gpu_metrics`` (DCGM when unset) tell the
         collector which metric and labels to read; nothing here depends on the
         GPU vendor.
 
