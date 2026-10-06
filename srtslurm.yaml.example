@@ -24,6 +24,7 @@ default_time_limit: "04:00:00"
 #   container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
 #   command: "/home/amd/tools/entrypoint.sh"   # the image entrypoint; pyxis runs the command, not ENTRYPOINT
 #   port: 5000                                  # the exporter's fixed default; it takes no port flag
+#   kind: custom
 #   gpu_labels:
 #     index: gpu_id
 #     identity: serial_number

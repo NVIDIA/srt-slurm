@@ -469,10 +469,9 @@ Configuration for a metrics exporter deployed on worker nodes.
 | `port` | int | required | Port the exporter serves `/metrics` on, on every worker node. |
 | `command` | str \| None | `None` | Command line replacing the image's default entrypoint arguments. |
 | `binary` | str \| None | `None` | Host executable to run without a container; relative paths resolve against the srtctl checkout. |
+| `kind` | one of `'dcgm'`, `'custom'` | `'dcgm'` | GPU exporter kind: `dcgm` (built-in DCGM command, labels, metrics and tachometer scrape) or `custom` (any other exporter; set `command`, `gpu_labels` and `gpu_metrics`, and tachometer keeps its rows as served). |
 | `gpu_labels` | [GpuLabelsConfig](#gpulabelsconfig) \| None | `None` | GPU power telemetry: labels identifying a GPU in the scrape; unset means DCGM (`gpu`, `UUID`). |
 | `gpu_metrics` | [GpuMetricsConfig](#gpumetricsconfig) \| None | `None` | GPU power telemetry: per-GPU metrics to record; unset means DCGM. |
-| `tachometer_filter` | str \| None | `None` | Tachometer filter for this exporter when power telemetry runs it; unset means `dcgm` for DCGM, else `passthrough`. |
-| `tachometer_gpu_metadata` | bool \| None | `None` | Attach per-GPU worker labels in tachometer; unset means true for DCGM only. |
 
 ### CpuPowerExporterConfig
 

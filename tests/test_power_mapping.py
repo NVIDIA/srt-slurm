@@ -21,7 +21,7 @@ from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin, resolve_expor
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.power.contract import MANIFEST_FILENAME, UTILIZATION_METRICS, Reason
 from srtctl.core.power.manifest import DcgmExporterIdentity, ExpectedWindow, PowerManifest
-from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE, DCGM_POWER_MAPPING
+from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE, DCGM_POWER_MAPPING, TACHOMETER_SCRAPE
 from srtctl.core.power.parser import parse_power_scrape
 from srtctl.core.power.samples import read_samples
 from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession
@@ -44,6 +44,7 @@ from srtctl.core.topology import Process
 AMD_IMAGE = "docker://rocm/device-metrics-exporter:v1.5.2"
 AMD_SCOPE = "gpu_device_power_as_reported_by_amd_device_metrics_exporter"
 AMD_GPU_CONFIG = {
+    "kind": "custom",
     "gpu_labels": {"index": "gpu_id", "identity": "serial_number"},
     "gpu_metrics": {
         "power": {"metric": "gpu_power_usage", "scope": AMD_SCOPE},
@@ -104,7 +105,6 @@ class TestMapping:
         assert DCGM_POWER_MAPPING.utilization_metrics == UTILIZATION_METRICS
         assert DCGM_POWER_MAPPING.instance_labels == ("GPU_I_ID", "GPU_I_PROFILE")
         assert DCGM_EXPORTER_COMMAND_TEMPLATE == "dcgm-exporter --collect-interval=100 --address :{port}"
-        assert (DCGM_POWER_MAPPING.tachometer_filter, DCGM_POWER_MAPPING.tachometer_gpu_metadata) == ("dcgm", True)
 
     def test_amd_power_block_resolves_with_contract_units(self):
         assert AMD.power_metric == "gpu_power_usage"
@@ -114,7 +114,6 @@ class TestMapping:
             ("gpu_util_pct", "gpu_gfx_activity", "percent", 100.0)
         ]
         assert AMD.instance_labels == ()
-        assert (AMD.tachometer_filter, AMD.tachometer_gpu_metadata) == ("passthrough", False)
 
 
 class TestParsingByMapping:
@@ -314,6 +313,7 @@ class TestSchema:
         with pytest.raises(ValidationError, match="gpu_temp"):
             TelemetryExporterConfig.Schema().load(
                 {
+                    **AMD_GPU_CONFIG,
                     "container_image": AMD_IMAGE,
                     "port": 5000,
                     "gpu_metrics": {
@@ -323,22 +323,29 @@ class TestSchema:
                 }
             )
 
-    @pytest.mark.parametrize(
-        ("drop", "match"),
-        [("command", "command is required"), ("gpu_labels", "gpu_labels is required")],
-    )
-    def test_a_non_dcgm_power_metric_cannot_fall_back_to_dcgm_defaults(self, drop, match):
+    @pytest.mark.parametrize("drop", ["command", "gpu_labels", "gpu_metrics"])
+    def test_a_custom_exporter_states_command_labels_and_metrics(self, drop):
         fields = {"container_image": AMD_IMAGE, "port": 5000, "command": "x", **AMD_GPU_CONFIG}
         del fields[drop]
-        with pytest.raises(ValidationError, match=match):
-            _srt_config(TelemetryExporterConfig.Schema().load(fields))
+        with pytest.raises(ValidationError, match="`kind: custom` GPU exporter needs"):
+            TelemetryExporterConfig.Schema().load(fields)
 
-    def test_tachometer_handling_follows_the_power_metric_and_can_be_overridden(self):
-        assert (AMD.tachometer_filter, AMD.tachometer_gpu_metadata) == ("passthrough", False)
-        overridden = TelemetryExporterConfig(
-            container_image="x", port=1, tachometer_filter="custom", tachometer_gpu_metadata=True
-        ).power_mapping
-        assert (overridden.tachometer_filter, overridden.tachometer_gpu_metadata) == ("custom", True)
+    def test_an_unknown_kind_is_rejected(self):
+        with pytest.raises(ValidationError, match="kind"):
+            TelemetryExporterConfig.Schema().load({"container_image": "x", "port": 1, "kind": "amd"})
+
+    def test_kind_not_the_metric_name_decides_dcgm(self):
+        """Another DCGM power field stays DCGM: the default command and DCGM labels still apply."""
+        exporter = TelemetryExporterConfig.Schema().load(
+            {
+                "container_image": "dcgm-exporter",
+                "port": 9401,
+                "gpu_metrics": {"power": {"metric": "DCGM_FI_DEV_POWER_USAGE_INSTANT", "scope": "board"}},
+            }
+        )
+        assert exporter.kind == "dcgm" and exporter.command is None
+        assert exporter.power_mapping.gpu_index_label == "gpu"
+        assert TACHOMETER_SCRAPE[exporter.kind] == TACHOMETER_SCRAPE["dcgm"]
 
 
 AMD_CLUSTER_EXPORTER = {

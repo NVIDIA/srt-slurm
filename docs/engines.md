@@ -23,6 +23,7 @@ default_gpu_exporter:
   container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
   command: "/home/amd/tools/entrypoint.sh"
   port: 5000
+  kind: custom
   gpu_labels:
     index: gpu_id
     identity: serial_number

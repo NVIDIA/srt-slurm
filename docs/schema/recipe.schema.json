@@ -3464,6 +3464,14 @@
           "description": "Host executable to run without a container; relative paths resolve against the srtctl checkout.",
           "default": null
         },
+        "kind": {
+          "enum": [
+            "dcgm",
+            "custom"
+          ],
+          "description": "GPU exporter kind: `dcgm` (built-in DCGM command, labels, metrics and tachometer scrape) or `custom` (any other exporter; set `command`, `gpu_labels` and `gpu_metrics`, and tachometer keeps its rows as served).",
+          "default": "dcgm"
+        },
         "gpu_labels": {
           "anyOf": [
             {
@@ -3486,30 +3494,6 @@
             }
           ],
           "description": "GPU power telemetry: per-GPU metrics to record; unset means DCGM.",
-          "default": null
-        },
-        "tachometer_filter": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Tachometer filter for this exporter when power telemetry runs it; unset means `dcgm` for DCGM, else `passthrough`.",
-          "default": null
-        },
-        "tachometer_gpu_metadata": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Attach per-GPU worker labels in tachometer; unset means true for DCGM only.",
           "default": null
         }
       },

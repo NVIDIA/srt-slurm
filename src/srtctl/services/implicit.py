@@ -178,8 +178,7 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                         options={
                             "port": dcgm.port,
                             "collect_interval_ms": tachometer.collect_interval_ms,
-                            "metrics_filter": dcgm.power_mapping.tachometer_filter,
-                            "metrics_gpu_metadata": dcgm.power_mapping.tachometer_gpu_metadata,
+                            "kind": dcgm.kind,
                         },
                     ),
                     implicit=True,

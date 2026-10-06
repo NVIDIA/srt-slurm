@@ -19,7 +19,7 @@ from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
 from srtctl.core.power.manifest import ExpectedWindow
-from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE
+from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE, TACHOMETER_SCRAPE
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
@@ -603,16 +603,16 @@ class TelemetryStageMixin:
         power = self.config.telemetry
         if not (power.enabled and power.dcgm_exporter is not None):
             return []
-        mapping = power.dcgm_exporter.power_mapping
+        scrape = TACHOMETER_SCRAPE[power.dcgm_exporter.kind]
         nodes = sorted({process.node for process in self.backend_processes})
         return [
             ServiceMetricsTarget(
                 service="dcgm-exporter",
                 node=node,
                 url=f"http://{node}:{power.dcgm_exporter.port}/metrics",
-                filter=mapping.tachometer_filter,
-                endpoint="dcgm" if mapping.tachometer_filter == "dcgm" else "gpu-power",
-                gpu_metadata=mapping.tachometer_gpu_metadata,
+                filter=scrape.filter,
+                endpoint=scrape.endpoint,
+                gpu_metadata=scrape.gpu_metadata,
             )
             for node in nodes
         ]

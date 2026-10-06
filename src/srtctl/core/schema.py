@@ -1610,23 +1610,28 @@ class TelemetryExporterConfig:
     command: str | None = None
     # Host executable to run without a container; relative paths resolve against the srtctl checkout.
     binary: str | None = None
+    # GPU exporter kind: `dcgm` (built-in DCGM command, labels, metrics and tachometer
+    # scrape) or `custom` (any other exporter; set `command`, `gpu_labels` and
+    # `gpu_metrics`, and tachometer keeps its rows as served).
+    kind: Literal["dcgm", "custom"] = "dcgm"
     # GPU power telemetry: labels identifying a GPU in the scrape; unset means DCGM (`gpu`, `UUID`).
     gpu_labels: GpuLabelsConfig | None = None
     # GPU power telemetry: per-GPU metrics to record; unset means DCGM.
     gpu_metrics: GpuMetricsConfig | None = None
-    # Tachometer filter for this exporter when power telemetry runs it; unset means `dcgm` for DCGM, else `passthrough`.
-    tachometer_filter: str | None = None
-    # Attach per-GPU worker labels in tachometer; unset means true for DCGM only.
-    tachometer_gpu_metadata: bool | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.kind == "custom" and (
+            (self.command is None and self.binary is None) or self.gpu_labels is None or self.gpu_metrics is None
+        ):
+            raise ValidationError("a `kind: custom` GPU exporter needs `command`, `gpu_labels` and `gpu_metrics`")
 
     @property
     def power_mapping(self) -> PowerMetricMapping:
         """How the power collector reads this exporter's scrape."""
         labels = self.gpu_labels or DCGM_GPU_LABELS
         metrics = self.gpu_metrics or DCGM_GPU_METRICS
-        is_dcgm = metrics.power.metric == DCGM_POWER_MAPPING.power_metric
         contract = {metric.column: metric for metric in UTILIZATION_METRICS}
         riders = (("gpu_util_pct", metrics.gpu_util), ("sm_active", metrics.sm_active))
         return PowerMetricMapping(
@@ -1641,8 +1646,6 @@ class TelemetryExporterConfig:
             ),
             instance_labels=tuple(labels.instance),
             temperature_metric=metrics.temperature.metric if metrics.temperature is not None else None,
-            tachometer_filter=self.tachometer_filter or ("dcgm" if is_dcgm else "passthrough"),
-            tachometer_gpu_metadata=is_dcgm if self.tachometer_gpu_metadata is None else self.tachometer_gpu_metadata,
         )
 
 
@@ -3493,12 +3496,6 @@ class SrtConfig:
             raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
-        if exporter.gpu_metrics is not None and exporter.power_mapping.power_metric != DCGM_POWER_MAPPING.power_metric:
-            # The DCGM defaults would silently launch dcgm-exporter or read DCGM labels.
-            if exporter.command is None:
-                raise ValidationError("telemetry.dcgm_exporter.command is required for a non-DCGM gpu_metrics.power")
-            if exporter.gpu_labels is None:
-                raise ValidationError("telemetry.dcgm_exporter.gpu_labels is required for a non-DCGM gpu_metrics.power")
 
         for name in ("startup_timeout_seconds",):
             if not _is_finite_positive(getattr(telemetry, name)):

@@ -51,10 +51,6 @@ class PowerMetricMapping:
     utilization_metrics: tuple[UtilizationMetric, ...] = ()
     instance_labels: tuple[str, ...] = ()
     temperature_metric: str | None = None
-    # What tachometer applies when it also scrapes this exporter alongside the
-    # power collector (``TelemetryStageMixin._power_exporter_targets``).
-    tachometer_filter: str = "passthrough"
-    tachometer_gpu_metadata: bool = False
 
 
 DCGM_POWER_MAPPING = PowerMetricMapping(
@@ -65,6 +61,21 @@ DCGM_POWER_MAPPING = PowerMetricMapping(
     utilization_metrics=UTILIZATION_METRICS,
     instance_labels=("GPU_I_ID", "GPU_I_PROFILE"),
     temperature_metric=TEMPERATURE_METRIC,
-    tachometer_filter="dcgm",
-    tachometer_gpu_metadata=True,
 )
+
+
+@dataclass(frozen=True)
+class TachometerScrape:
+    """How tachometer scrapes a GPU exporter of one ``kind``."""
+
+    filter: str
+    endpoint: str
+    # Per-GPU worker metadata joins on DCGM-shaped rows only.
+    gpu_metadata: bool
+
+
+# Keyed by the exporter config's ``kind``.
+TACHOMETER_SCRAPE: dict[str, TachometerScrape] = {
+    "dcgm": TachometerScrape(filter="dcgm", endpoint="dcgm", gpu_metadata=True),
+    "custom": TachometerScrape(filter="passthrough", endpoint="gpu-power", gpu_metadata=False),
+}

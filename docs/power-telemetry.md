@@ -71,10 +71,19 @@ flight when shutdown starts plus the final bracketing scrape.
 ## GPU exporter labels and metrics
 
 The collector, parser, manifest and validator do not know which GPU vendor they
-are measuring. Two optional blocks on the exporter config (`telemetry.dcgm_exporter`,
-or the cluster `default_gpu_exporter` it inherits) describe the exporter's scrape.
-Each defaults to DCGM when unset, so NVIDIA configs need neither. Written out,
-the DCGM defaults and the AMD exporter have the same shape:
+are measuring. The exporter config (`telemetry.dcgm_exporter`, or the cluster
+`default_gpu_exporter` it inherits) states it explicitly:
+
+- `kind: dcgm` (the default) is NVIDIA dcgm-exporter: the built-in 100 ms
+  `dcgm-exporter` command, the DCGM labels and metrics below, and tachometer's
+  `dcgm` filter with per-GPU worker labels (endpoint `dcgm_<node>`). `gpu_labels`
+  and `gpu_metrics` may still override the DCGM ones (another DCGM power field,
+  say); nothing is inferred from metric names.
+- `kind: custom` is any other exporter. It must set `command`, `gpu_labels` and
+  `gpu_metrics`, and tachometer keeps its rows as served (`passthrough` filter,
+  endpoint `gpu-power_<node>`, no per-GPU worker labels).
+
+Written out, the DCGM defaults and the AMD exporter have the same shape:
 
 ```yaml
 # NVIDIA dcgm-exporter: the defaults, written out
@@ -96,6 +105,7 @@ gpu_metrics:
 
 ```yaml
 # AMD rocm/device-metrics-exporter
+kind: custom
 gpu_labels:
   index: gpu_id
   identity: serial_number
@@ -115,11 +125,6 @@ gpu_metrics:
 - `gpu_metrics.power` is required and `scope` is recorded as `power_scope`.
   `gpu_util` (percent), `sm_active` (0-1 fraction) and `temperature` (Celsius) are optional; their
   columns stay empty when unset. Units are fixed by the artifact, not the config.
-- A non-DCGM `power` metric needs `gpu_labels` and an explicit `command`, so the
-  DCGM defaults are never applied to another exporter by accident.
-- `tachometer_filter` and `tachometer_gpu_metadata` set how tachometer treats the
-  same endpoint; unset, they are `dcgm` / `true` for DCGM and `passthrough` /
-  `false` otherwise.
 
 The artifact layout is identical for every exporter. `manifest.json` records
 `source_metric`, `power_scope`, `utilization_metrics` and `temperature_metric`, so a consumer can tell
@@ -138,6 +143,7 @@ default_gpu_exporter:
   container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
   command: "/home/amd/tools/entrypoint.sh"
   port: 5000
+  kind: custom
   gpu_labels:
     index: gpu_id
     identity: serial_number
