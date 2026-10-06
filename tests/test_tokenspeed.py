@@ -159,3 +159,31 @@ def test_smg_runs_grpc_engines_on_their_tokenspeed_port(tmp_path: Path) -> None:
     ]
     # The prefill follower node joins the leader's engine and is not routed.
     assert router.count("--prefill") == 1
+
+
+def test_mooncake_master_service_points_the_l3_store_at_it(tmp_path: Path) -> None:
+    """A mooncake-master service gives every worker the MOONCAKE_* environment of its L3 store."""
+    recipe = _recipe(
+        roles={"agg": {"nodes": 1, "workers": 2, "gpus": 4, "args": {"kvstore-storage-backend": "mooncake"}}},
+        services=[{"name": "mooncake-master", "type": "mooncake-master"}],
+    )
+    config_path = tmp_path / "recipe.yaml"
+    config_path.write_text(yaml.safe_dump(recipe))
+    launches: list[dict[str, Any]] = []
+
+    exit_code = run_mock_sweep(
+        config_path=config_path,
+        output_dir=tmp_path / "outputs" / "4244",
+        job_id="4244",
+        options=MockOptions(child_duration_s=0.05, phase_pause_s=0.01, nodelist=("node-01",), on_srun=launches.append),
+    )
+
+    assert exit_code == 0
+    assert any(launch["command"][0] == "mooncake_master" for launch in launches)
+    workers = [launch for launch in launches if "dynamo.tokenspeed" in launch["command"]]
+    assert len(workers) == 2
+    for worker in workers:
+        env = worker["env_to_set"]
+        assert env["MOONCAKE_MASTER"].endswith(":8700")
+        assert env["MOONCAKE_TE_META_DATA_SERVER"].endswith(":8701/metadata")
+        assert _flag(shlex.split(" ".join(worker["command"])), "--kvstore-storage-backend") == "mooncake"

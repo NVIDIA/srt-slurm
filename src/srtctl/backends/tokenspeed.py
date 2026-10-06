@@ -20,7 +20,7 @@ from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args
-from srtctl.backends.sglang import _config_to_cli_args
+from srtctl.backends.sglang import MooncakeKVStoreConfig, SGLangBackend, _config_to_cli_args
 from srtctl.ports import DIST_INIT_PORTS, DYN_SYSTEM_PORT_BASE, TOKENSPEED_PORTS
 
 if TYPE_CHECKING:
@@ -59,8 +59,14 @@ class TokenSpeedBackend(Backend):
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
     # never written on `engine:`. Per-role env and TokenSpeed CLI args are read from here.
     roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
+    # Set by a `mooncake-master` service. TokenSpeed's Mooncake Store L3 cache
+    # (`kvstore-storage-backend: mooncake`) reads the master from the MOONCAKE_* environment.
+    mooncake_kv_store: MooncakeKVStoreConfig | None = None
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+
+    # The same MOONCAKE_* variables SGLang's Mooncake store client reads.
+    get_mooncake_worker_env = SGLangBackend.get_mooncake_worker_env
 
     def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """A direct TokenSpeed worker is always the gRPC engine (``smg_grpc_servicer.tokenspeed``)."""
