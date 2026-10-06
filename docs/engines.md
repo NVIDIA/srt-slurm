@@ -30,7 +30,7 @@ default_gpu_exporter:
   gpu_metrics:
     power:
       metric: gpu_power_usage
-      scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+      scope: amd_device_metrics_exporter_gpu_power_usage
     gpu_util:
       metric: gpu_gfx_activity
     temperature:

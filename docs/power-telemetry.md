@@ -112,7 +112,7 @@ gpu_labels:
 gpu_metrics:
   power:
     metric: gpu_power_usage
-    scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+    scope: amd_device_metrics_exporter_gpu_power_usage
   gpu_util:
     metric: gpu_gfx_activity
   temperature:
@@ -130,11 +130,11 @@ The artifact layout is identical for every exporter. `manifest.json` records
 `source_metric`, `power_scope`, `utilization_metrics` and `temperature_metric`, so a consumer can tell
 the measurement boundaries apart without the config.
 
-### AMD (rocm/device-metrics-exporter)
+### Example: a `kind: custom` exporter
 
-[rocm/device-metrics-exporter](https://github.com/ROCm/device-metrics-exporter)
-is AMD's Prometheus exporter container, the direct analog of dcgm-exporter.
-Cluster-level configuration, so that recipes need not change:
+Any Prometheus exporter that reports per-GPU power can be used. This example
+configures AMD's [rocm/device-metrics-exporter](https://github.com/ROCm/device-metrics-exporter)
+`v1.5.2` at the cluster level, so recipes need not change:
 
 ```yaml
 # srtslurm.yaml
@@ -150,31 +150,29 @@ default_gpu_exporter:
   gpu_metrics:
     power:
       metric: gpu_power_usage
-      scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+      scope: amd_device_metrics_exporter_gpu_power_usage
     gpu_util:
       metric: gpu_gfx_activity
     temperature:
       metric: gpu_junction_temperature
 ```
 
-The same block works under `telemetry.dcgm_exporter` in a recipe, as shown in the
-[single-node AMD example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/amd-power-telemetry.yaml). Notes:
+The command, port, label and metric names, and scope are that exporter's, at
+that version, not srt-slurm's; check them against the exporter's documentation
+for the image you pin. The same block works under `telemetry.dcgm_exporter` in a
+recipe, as in the
+[single-node example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/amd-power-telemetry.yaml).
+For any `kind: custom` exporter:
 
-- Pyxis runs the given command, not the image `ENTRYPOINT`; the entrypoint
-  script starts the `gpuagent` daemon the exporter reads from and then execs
-  the exporter, so it is the command.
-- The exporter has no port flag. It listens on 5000 unless a
-  `/etc/metrics/config.json` sets `ServerPort`; keep `port: 5000` unless the
-  command mounts such a file.
-- It needs `/dev/kfd` and `/dev/dri` inside the container, the same devices the
-  ROCm engine containers need; the launch uses the run's container mounts.
-- Metric and label names are lowercase in this exporter. `gpu_uuid` is not
-  exported by default, so the row identifies devices by `serial_number`.
-- `gpu_power_usage` is the per-device draw on bare metal (MI2xx/MI3xx). Compute
-  partitions share one serial number and report 0 W beyond the first partition;
-  a partitioned node fails device validation (`gpu_uuid_changed`), like MIG on
-  NVIDIA. Socket-level figures (`gpu_package_power`) are a different boundary
-  and are not used.
+- Pyxis runs `command`, not the image's `ENTRYPOINT`, so `command` must start
+  everything the entrypoint would.
+- `port` must be the port the exporter serves on; srt-slurm passes it to the
+  command only through a `{port}` placeholder.
+- The exporter runs with the run's container mounts; mount any device nodes it
+  needs.
+- `gpu_labels.identity` must be unique per physical GPU. GPUs that share one
+  (compute partitions, for example) fail device validation (`gpu_uuid_changed`),
+  as MIG instances do on NVIDIA.
 
 ## Artifacts
 

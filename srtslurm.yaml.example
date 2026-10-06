@@ -22,8 +22,8 @@ default_time_limit: "04:00:00"
 # rocm/device-metrics-exporter:
 # default_gpu_exporter:
 #   container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
-#   command: "/home/amd/tools/entrypoint.sh"   # the image entrypoint; pyxis runs the command, not ENTRYPOINT
-#   port: 5000                                  # the exporter's fixed default; it takes no port flag
+#   command: "/home/amd/tools/entrypoint.sh"   # pyxis runs `command`, not the image ENTRYPOINT
+#   port: 5000                                  # the port this exporter serves on
 #   kind: custom
 #   gpu_labels:
 #     index: gpu_id
@@ -31,7 +31,7 @@ default_time_limit: "04:00:00"
 #   gpu_metrics:
 #     power:
 #       metric: gpu_power_usage
-#       scope: gpu_device_power_as_reported_by_amd_device_metrics_exporter
+#       scope: amd_device_metrics_exporter_gpu_power_usage
 #     gpu_util:
 #       metric: gpu_gfx_activity
 #     temperature:
