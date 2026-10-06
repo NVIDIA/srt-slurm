@@ -181,6 +181,8 @@ frontend:
     gen_tokids_ctxbytes: true
     return_perf_metrics: false
     perf_metrics_max_requests: 100000
+  env:
+    TRTLLM_SERVER_DISABLE_GC: '1'
 benchmark:
   type: custom
   command: |
