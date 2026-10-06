@@ -24,14 +24,15 @@ description: Run srt-slurm (srtctl) inference benchmarks on a Slurm cluster. Use
 | Any recipe field: type, default, allowed values, description | MCP `explain_field` (e.g. `roles.decode.nodes`), `docs/schema-reference.md` (generated), or `srtctl schema` (JSON Schema) |
 | How fields interact, worked examples | `docs/config-reference.md` |
 | Prefill/decode split, `nodes: colocate`, GPU fit | `docs/topology.md` (roles, Colocating decode on the prefill nodes) |
-| Dynamo install, `dynamo.source`, sidecar mode | `docs/frontends.md` (dynamo, Native sidecar mode) |
+| Dynamo install, `dynamo.source` | `docs/frontends.md` (dynamo) |
+| Native sidecar mode, vLLM runtime versions and compatibility | `docs/sidecars.md` |
 | etcd, NATS, exporters, Mooncake, declared sidecars | `docs/services.md` (Implicit Services) |
 | Move a v1 recipe (`backend:`, `infra:`, `resources.*_nodes`) to schema 2 | `docs/cli.md` (srtctl migrate), `docs/legacy-v1.md` for the key mapping |
 | `apply` flags: `--set`, `--serve-only`, `--tags`, `--json`, `--no-preflight` | `docs/cli.md` (srtctl apply) |
 | Sweeps and override files | `docs/sweeps.md`, `docs/overrides.md` |
 | What a job wrote and how to read it | `docs/monitoring.md` (Log Structure, benchmark.out) |
 | Build/query the offline client, worker and hardware timeline | `docs/dsight.md`; `srtctl dsight build` then `srtctl dsight query` or MCP `query_trace` |
-| Metrics and the per-run dashboard | `docs/component-dashboard.md` |
+| Metrics and power telemetry | `docs/observability.md` |
 
 ## MCP
 

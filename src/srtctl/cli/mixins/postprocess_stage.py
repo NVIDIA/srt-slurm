@@ -413,7 +413,7 @@ class PostProcessStageMixin:
 
         Ships the run identity (config, lockfile, job JSON, sbatch script, git
         state), every orchestrator, worker, frontend and service log, the
-        benchmark results, ``perf_dashboard.html`` (if present) and the tachometer parquet as
+        benchmark results and the tachometer parquet as
         loose objects, plus one compressed archive of the patterns in
         ``reporting.s3.archive``; the patterns in ``reporting.s3.exclude`` are
         skipped (see ``DEFAULT_S3_EXCLUDE`` for why). Returns the S3 URL of the

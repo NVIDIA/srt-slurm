@@ -23,7 +23,7 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args, role_kv_events
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DIST_INIT_PORTS,
@@ -40,9 +40,6 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
-
-# Type alias for worker modes
-WorkerMode = Literal["prefill", "decode", "agg"]
 
 
 def _dist_init_port(process: "Process") -> int:

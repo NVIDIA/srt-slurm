@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias
 
 from marshmallow import ValidationError, fields
 
@@ -23,6 +23,9 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
+
+
+WorkerMode: TypeAlias = Literal["prefill", "decode", "agg"]
 
 
 class BackendType(str, Enum):
@@ -158,7 +161,7 @@ class Backend(ABC):
         """
         return SrunConfig()
 
-    def fatal_log_patterns(self, mode: str) -> tuple[str, ...]:
+    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
         """Regular expressions that, printed in a worker's log, mean the engine is gone.
 
         The process monitor fails a critical worker whose srun step is still
@@ -169,11 +172,11 @@ class Backend(ABC):
         """
         return ()
 
-    def get_config_for_mode(self, mode: str) -> dict[str, Any]:
+    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
         """The role's engine arguments (``roles.<role>.args``) for a worker mode (prefill/decode/agg)."""
         return role_args(self.roles, mode)
 
-    def get_environment_for_mode(self, mode: str) -> dict[str, str]:
+    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         """The role's environment (``roles.<role>.env``) for a worker mode, before engine defaults."""
         return role_env(self.roles, mode)
 

@@ -84,6 +84,7 @@ nav:
       - Config Overrides: overrides.md
       - Parameter Sweeps: sweeps.md
       - Workloads:
+          - Native Sidecars: sidecars.md
           - TileRT: tilert.md
           - Shadow Engine Recovery: shadow-engine-recovery.md
           - SGLang Fast Engine Recovery: sglang-weight-cache.md
@@ -100,7 +101,6 @@ nav:
           - GPU Power Telemetry: power-telemetry.md
           - CPU Power Telemetry: cpu-power-telemetry.md
           - DCGM 4.7 Runtime Support: dcgm-4.7-runtime-support.md
-      - Component Performance Dashboard: component-dashboard.md
       - DSight:
           - DSight Trace Explorer: dsight.md
           - Data Flow: dsight-data-flow.md
