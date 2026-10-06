@@ -1,6 +1,8 @@
 # Standalone upstream sgl-router, distinct from the Python Model Gateway.
 # Two local prefill workers and one decode worker; engines publish KV events,
 # replay and queued-work load on independently allocated port ranges.
+# Runtime limitation: this pinned distroless image cannot start under Pyxis,
+# which requires /bin/sh internally. See docs/sgl-router.md; no shell is injected.
 schema: 2
 name: qwen3-sgl-router-kv-aware
 slurm:

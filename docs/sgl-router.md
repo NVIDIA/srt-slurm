@@ -3,9 +3,15 @@
 `frontend.type: sgl-router` launches upstream's standalone
 `experimental/sgl-router` executable. It is distinct from
 [`sglang-router`](sglang-router.md), which launches the Python Model Gateway.
-The stock router image is distroless: srtctl runs its binary directly and
-passes environment variables without requiring a shell. `frontend.numa_bind`
-is unsupported by that image.
+The stock router image is distroless: srtctl invokes its binary directly and
+does not add a shell wrapper. `frontend.numa_bind` is unsupported by that image.
+
+**Container runtime limitation:** Pyxis itself starts an in-container shell to
+establish its namespaces, even for a direct executable command. The pinned
+distroless image therefore fails before the router starts with
+`enroot-switchroot: failed to execute: /bin/sh: No such file or directory`.
+This frontend does not make that image compatible with Pyxis; it requires a
+runtime-compatible upstream image. See [Pyxis's startup implementation](https://github.com/NVIDIA/pyxis/blob/107519944221822ea1dace4db8e7234b2eaa4cd5/pyxis_slurmstepd.c#L1056).
 
 The router discovers each HTTP worker's aggregate, prefill or decode role and
 bootstrap port from `/server_info`. srtctl supplies the static worker URLs and
@@ -13,7 +19,7 @@ served model name. `/readyz`, registry counts and circuit-breaker health from
 `/metrics`, and direct worker health together gate benchmark startup. A usable
 single worker is not sufficient when the recipe requested several.
 
-See [the complete MI300X example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/sglang/sgl-router-disagg.yaml).
+See [the MI300X topology example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/sglang/sgl-router-disagg.yaml), subject to the container-runtime limitation above.
 The router and engine need compatible versions: the example pins the stock
 router build at [ed75fe6](https://github.com/sgl-project/sglang/tree/ed75fe67f119f14afa7fd6b7491055ece381b9aa/experimental/sgl-router)
 and an engine containing [730f1f3](https://github.com/sgl-project/sglang/tree/730f1f3e5be9c781f523f856fc39c18c2ad266d6/python/sglang/srt).
