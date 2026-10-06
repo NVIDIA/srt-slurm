@@ -26,6 +26,8 @@ Every field, with its type, default, allowed values, and description: [Cluster c
 
 **reporting.s3**: After a run, a small container on the head node uploads the log directory to `s3://<bucket>/<prefix>/<YYYY-MM-DD>/<job_id>/` (`endpoint_url` for MinIO or another S3-compatible store; credentials only through `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the submit shell, since the literal fields would land in the lockfile). Not everything is worth shipping: a benchmark run's directory is 250 MB to 2 GB on lustre, over 95% of it aiperf's per-interval scrape of the worker and DCGM `/metrics` endpoints, the same series tachometer already stores as parquet. The upload therefore follows a policy:
 
+The resolved recipe's `reporting.s3` takes precedence over the cluster setting. A recipe-supplied S3 block replaces the cluster S3 block in full, including `exclude` and `archive`; omitted fields use the S3 defaults rather than inheriting individual cluster values. If the resolved recipe has no S3 block, the uploader falls back to `srtslurm.yaml`. See [the recipe example](../examples/features/s3-reporting.yaml).
+
 | Shipped as-is | Packed into `bundle.tar.zst` (`archive`) | Skipped (`exclude`) |
 |---|---|---|
 | config, lockfile, job JSON, sbatch script, git state, fingerprints, resource snapshot; sweep, worker, frontend, service and benchmark logs; results JSON, rollup, `profile_export_aiperf.*`; `perf_dashboard.html` (if present); `tachometer/` parquet | `artifacts/**/profile_export.jsonl`, `sa-bench_*/**/profile_export.jsonl` (aiperf's per-request records, 13 to 40 MB raw, under 1 MB compressed) | `server_metrics_export.jsonl`, `server_metrics_export.json`, `gpu_telemetry_export.jsonl` and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (the aiperf artifact roots; a same-named file from another benchmark type is not touched), `perf_dashboard_bundle/*`, `perf_dashboard.json` |
@@ -62,7 +64,7 @@ reporting:
 - Use absolute paths for `model.path`, `model.container`, and any other container fields; alias resolution is a no-op without the yaml's `containers:` / `model_paths:` maps.
 - List every cluster-side mount the job needs in `extra_mount` (e.g. the lustre share that holds your model weights and `.sqsh` files). `default_mounts` is the only `srtslurm.yaml` field with no recipe-level equivalent until you spell mounts out yourself.
 - Set `resources.gpus_per_node` explicitly.
-- Status reporting and S3 log upload are skipped (their config lives under `reporting:` in the cluster yaml).
+- Supply `reporting.status` in the recipe for status updates and `reporting.s3` for S3 log upload; either can be configured without a cluster yaml. Without either recipe setting or cluster defaults, that reporting is skipped.
 
 Workers' nats and etcd come from the dynamo/sglang container, not the yaml, so disagg/agg topologies still work end-to-end. `srtctl_root` falls back to the package install path automatically.
 

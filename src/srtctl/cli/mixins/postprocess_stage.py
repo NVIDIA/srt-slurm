@@ -119,11 +119,14 @@ class PostProcessStageMixin:
             return None
 
     def _get_s3_config(self) -> S3Config | None:
-        """Load S3 config from cluster config (under reporting.s3).
+        """Prefer the resolved recipe's S3 settings, falling back to cluster config.
 
         Returns:
             S3Config if configured, None otherwise
         """
+        if self.config.reporting is not None and self.config.reporting.s3 is not None:
+            return self.config.reporting.s3
+
         cluster_config = load_cluster_config()
         if not cluster_config:
             return None

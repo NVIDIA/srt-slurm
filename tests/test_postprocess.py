@@ -3,7 +3,10 @@
 
 """Tests for post-processing: benchmark extraction, S3 upload, and AI analysis."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from srtctl.core.schema import (
     DEFAULT_AI_ANALYSIS_PROMPT,
@@ -391,6 +394,79 @@ class TestS3Config:
         assert config.bucket == "test-bucket"
         assert config.prefix == "prefix"
         assert config.region == "eu-west-1"
+
+
+class TestS3ReportingResolution:
+    """Recipe S3 settings override cluster defaults as a complete block."""
+
+    def _create_mixin(self, reporting):
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        mixin = PostProcessStageMixin()
+        mixin.config = SimpleNamespace(reporting=reporting)
+        return mixin
+
+    def test_recipe_s3_wins_over_conflicting_cluster_settings(self):
+        job_s3 = S3Config(bucket="recipe-bucket", prefix="recipe-prefix", exclude=[], archive=[])
+        mixin = self._create_mixin(ReportingConfig(s3=job_s3))
+        with patch(
+            "srtctl.cli.mixins.postprocess_stage.load_cluster_config",
+            return_value={"reporting": {"s3": {"bucket": "cluster-bucket", "prefix": "cluster-prefix"}}},
+        ) as load_cluster:
+            assert mixin._get_s3_config() is job_s3
+        load_cluster.assert_not_called()
+
+    def test_recipe_s3_works_without_cluster_config(self):
+        job_s3 = S3Config(bucket="recipe-bucket")
+        mixin = self._create_mixin(ReportingConfig(s3=job_s3))
+        with patch("srtctl.cli.mixins.postprocess_stage.load_cluster_config", return_value=None) as load_cluster:
+            assert mixin._get_s3_config() is job_s3
+        load_cluster.assert_not_called()
+
+    @pytest.mark.parametrize("reporting", [None, ReportingConfig(), ReportingConfig(status=ReportingStatusConfig())])
+    def test_missing_recipe_s3_retains_cluster_fallback(self, reporting):
+        mixin = self._create_mixin(reporting)
+        cluster_s3 = {"bucket": "cluster-bucket", "prefix": "cluster-prefix", "exclude": [], "archive": []}
+        with patch(
+            "srtctl.cli.mixins.postprocess_stage.load_cluster_config", return_value={"reporting": {"s3": cluster_s3}}
+        ):
+            assert mixin._get_s3_config() == S3Config.Schema().load(cluster_s3)
+
+    @pytest.mark.parametrize("cluster", [None, {}, {"reporting": {}}, {"reporting": {"s3": {"prefix": "invalid"}}}])
+    def test_missing_or_invalid_cluster_s3_returns_none(self, cluster):
+        mixin = self._create_mixin(None)
+        with patch("srtctl.cli.mixins.postprocess_stage.load_cluster_config", return_value=cluster):
+            assert mixin._get_s3_config() is None
+
+    def test_upload_uses_recipe_destination_and_policy(self, tmp_path):
+        job_s3 = S3Config(
+            bucket="recipe-bucket",
+            prefix="recipe-prefix",
+            endpoint_url="https://storage.example.com",
+            exclude=[],
+            archive=[],
+        )
+        mixin = self._create_mixin(ReportingConfig(s3=job_s3))
+        mixin.runtime = MagicMock(log_dir=tmp_path, job_id="12345")
+        mixin.runtime.nodes.head = "node001"
+        mixin.runtime.nodes.het_group_for.return_value = None
+        proc = MagicMock(returncode=0)
+        with (
+            patch(
+                "srtctl.cli.mixins.postprocess_stage.load_cluster_config",
+                return_value={
+                    "reporting": {"s3": {"bucket": "cluster-bucket", "exclude": ["*.jsonl"], "archive": ["*.out"]}}
+                },
+            ) as load_cluster,
+            patch("srtctl.cli.mixins.postprocess_stage.start_srun_process", return_value=proc) as launch,
+        ):
+            url = mixin._run_postprocess_container()
+        assert url.startswith("s3://recipe-bucket/recipe-prefix/") and url.endswith("/12345/")
+        script = launch.call_args.kwargs["command"][2]
+        assert f"aws s3 sync /logs {url}" in script
+        assert "--endpoint-url https://storage.example.com" in script
+        assert "--exclude" not in script and "Packing" not in script
+        load_cluster.assert_not_called()
 
 
 class TestReportingConfig:
