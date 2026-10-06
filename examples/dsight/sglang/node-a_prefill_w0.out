@@ -1,0 +1,8 @@
+[2026-01-01 00:00:00.000 DP0 TP0 EP0] Prefill batch [1], #new-seq: 3, #new-token: 1024, #cached-token: 3072, token usage: 0.50, #running-req: 3, #queue-req: 2, #pending-token: 512, #bootstrap-req: 1, #inflight-req: 3, #optimistic-req: 0, cuda graph: False, input throughput (token/s): 2048.00
+[2026-01-01 00:00:01.000 DP0 TP0 EP0] ReqTimeStats(rid=request-a, bootstrap_room=1, input_len=4096, cached_input_len=3072, output_len=1, attempts=0, type=prefill): bootstrap_duration=2.00ms, queue_duration=10.00ms, forward_duration=100.00ms, transfer_speed=2.00 GB/s, transfer_total=64.00 MB
+[2026-01-01 00:00:01.000 DP0 TP0 EP0] ReqTimeStats(rid=request-b, bootstrap_room=2, input_len=4096, cached_input_len=2048, output_len=1, attempts=0, type=prefill): bootstrap_duration=2.00ms, queue_duration=10.00ms, forward_duration=110.00ms, transfer_speed=2.00 GB/s, transfer_total=64.00 MB
+[2026-01-01 00:00:01.000 DP0 TP0 EP0] ReqTimeStats(rid=request-c, bootstrap_room=3, input_len=4096, cached_input_len=0, output_len=1, attempts=0, type=prefill): bootstrap_duration=2.00ms, queue_duration=40.00ms, forward_duration=200.00ms, transfer_speed=2.00 GB/s, transfer_total=64.00 MB
+[2026-01-01 00:00:02] Prefill batch, #new-seq: 1, #new-token: 64, #cached-token: 0, #queue-req: 2
+[2026-01-01 00:00:02] Prefill batch, #new-seq: 1, #new-token: 64, #cached-token: 0, #queue-req: 2
+[2026-01-01 00:00:02] Prefill batch, #new-seq: 1, #new-token: 128, #cached-token: 0, #queue-req: 1
+[2026-01-01 00:00:03] ReqTimeStats(rid=request-bootstrap-pending, input_len=64, cached_input_len=0, output_len=1, type=prefill): bootstrap_queue_duration=25.50ms, queue_duration=2.00ms, forward_duration=10.00ms

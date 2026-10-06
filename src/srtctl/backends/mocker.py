@@ -4,7 +4,7 @@
 """
 Dynamo Mocker backend configuration.
 
-Implements BackendProtocol for the dynamo.mocker scheduler simulator.
+Backend implementation for the dynamo.mocker scheduler simulator.
 Used for smoke-testing the full srt-slurm pipeline (SLURM, mounts,
 tokenizer, discovery, frontend, benchmark) without loading model weights.
 
@@ -14,7 +14,7 @@ generates random tokens at configurable simulated latency.
 """
 
 import builtins
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import field
 from pathlib import Path
 from typing import (
@@ -27,10 +27,10 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
 
 if TYPE_CHECKING:
-    from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
@@ -40,27 +40,11 @@ WorkerMode = Literal["prefill", "decode", "agg"]
 
 
 @dataclass(frozen=True)
-class MockerServerConfig:
-    """Mocker CLI configuration per mode (prefill/decode/aggregated).
-
-    Each mode can have its own configuration dict that gets converted
-    to CLI flags when starting the mocker. Use for per-mode overrides
-    of mocker-specific parameters.
-    """
-
-    prefill: dict[str, Any] | None = None
-    decode: dict[str, Any] | None = None
-    aggregated: dict[str, Any] | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
-class MockerProtocol:
-    """Dynamo Mocker protocol - implements BackendProtocol.
+class MockerBackend(Backend):
+    """Dynamo Mocker backend configuration and launch implementation.
 
     This frozen dataclass both holds configuration AND implements the
-    BackendProtocol methods for process allocation and launching.
+    Backend methods for process allocation and launching.
 
     The mocker is a drop-in replacement for real inference backends
     (sglang, vllm, trtllm) that simulates scheduling without loading
@@ -85,78 +69,37 @@ class MockerProtocol:
               max-num-seqs: 128
     """
 
+    # Engine type discriminator.
     type: Literal["mocker"] = "mocker"
 
-    # Simulation parameters
+    # Simulation parameters, passed to the Dynamo mocker as the matching `--kebab-case` flags.
+
+    # Engine whose scheduler and KV-cache behavior the mocker simulates (`vllm`, `sglang`, ...).
     engine_type: str = "vllm"
-    speedup_ratio: float = 100.0
-    decode_speedup_ratio: float = 1.0
-    num_gpu_blocks_override: int = 16384
-    max_num_seqs: int = 256
-    max_num_batched_tokens: int = 8192
-    block_size: int | None = None
-    data_parallel_size: int = 1
-    num_workers: int = 1
-    startup_time: float | None = None
-    kv_transfer_bandwidth: float | None = None
-    kv_cache_dtype: str | None = None
-    enable_prefix_caching: bool = True
-    enable_chunked_prefill: bool = True
-    preemption_mode: str | None = None
+    speedup_ratio: float = 100.0  # How much faster than real time the simulated engine runs
+    decode_speedup_ratio: float = 1.0  # Extra speedup applied to decode steps only
+    num_gpu_blocks_override: int = 16384  # KV-cache blocks the simulated engine has
+    max_num_seqs: int = 256  # Maximum sequences scheduled per step
+    max_num_batched_tokens: int = 8192  # Maximum tokens scheduled per step
+    block_size: int | None = None  # KV-cache block size in tokens; unset uses the mocker default
+    data_parallel_size: int = 1  # Simulated data-parallel ranks per worker
+    num_workers: int = 1  # Mocker engines per worker process
+    startup_time: float | None = None  # Simulated model-load delay in seconds
+    kv_transfer_bandwidth: float | None = None  # Simulated prefill->decode KV transfer bandwidth
+    kv_cache_dtype: str | None = None  # KV-cache dtype the simulation sizes blocks for
+    enable_prefix_caching: bool = True  # Simulate prefix caching; false passes --no-enable-prefix-caching
+    enable_chunked_prefill: bool = True  # Simulate chunked prefill; false passes --no-enable-chunked-prefill
+    preemption_mode: str | None = None  # Scheduler preemption policy; unset uses the mocker default
 
-    # Environment variables per mode
-    prefill_environment: dict[str, str] = field(default_factory=dict)
-    decode_environment: dict[str, str] = field(default_factory=dict)
-    aggregated_environment: dict[str, str] = field(default_factory=dict)
-
-    # Per-mode CLI overrides
-    mocker_config: MockerServerConfig | None = None
+    # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
+    # never written on `engine:`. Per-role env and args (mocker CLI overrides) are read from here.
+    roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
-    # BackendProtocol Implementation
+    # Backend Implementation
     # =========================================================================
-
-    def get_srun_config(self) -> "SrunConfig":
-        """Mocker uses per-process launching (one srun per node)."""
-        from srtctl.backends.base import SrunConfig
-
-        return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
-
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """Get merged config dict for a worker mode."""
-        if not self.mocker_config:
-            return {}
-
-        if mode == "prefill":
-            return dict(self.mocker_config.prefill or {})
-        elif mode == "decode":
-            return dict(self.mocker_config.decode or {})
-        elif mode == "agg":
-            return dict(self.mocker_config.aggregated or {})
-        return {}
-
-    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        """Get environment variables for a worker mode."""
-        if mode == "prefill":
-            return dict(self.prefill_environment)
-        elif mode == "decode":
-            return dict(self.decode_environment)
-        elif mode == "agg":
-            return dict(self.aggregated_environment)
-        return {}
-
-    def get_process_environment(self, process: "Process") -> dict[str, str]:
-        """Get process-specific environment variables.
-
-        The mocker does not need per-process env vars (no NIXL ports, etc.).
-        """
-        return {}
-
-    def get_served_model_name(self, default: str) -> str:
-        """Get served model name — mocker uses default (model path basename)."""
-        return default
 
     def allocate_endpoints(
         self,

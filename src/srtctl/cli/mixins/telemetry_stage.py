@@ -24,6 +24,7 @@ from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
+from srtctl.core.status import log_stream_interval, tachometer_outbox
 from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, ServiceMetricsTarget, generate_tachometer_config
 
 if TYPE_CHECKING:
@@ -543,12 +544,12 @@ class TelemetryStageMixin:
         return self._resolve_bundled_binary(binary_path)
 
     def _frontend_metrics_port(self) -> int | None:
-        """Frontends whose Prometheus listener is not the routing port: the SGLang Model Gateway."""
-        if self.config.frontend.type == "sglang-router":
-            from srtctl.frontends.sglang import router_metrics_port
+        """Port of a frontend Prometheus listener separate from the routing port, if the frontend runs one."""
+        from srtctl.frontends import FRONTEND_NONE, get_frontend
 
-            return router_metrics_port(self.config.frontend.args)
-        return None
+        if self.config.frontend.type == FRONTEND_NONE:
+            return None
+        return get_frontend(self.config.frontend.type).frontend_metrics_port(self.config.frontend.args)
 
     def _service_metrics_targets(self) -> list[ServiceMetricsTarget]:
         """One tachometer target per node for every service that serves metrics.
@@ -665,6 +666,9 @@ class TelemetryStageMixin:
         ]
         if tachometer.sync_interval_secs > 0:
             cmd.extend(["--sync-interval", str(tachometer.sync_interval_secs)])
+        if log_stream_interval(self.config.reporting) is not None:
+            # Seal a new immutable segment every save interval for the live streamer.
+            cmd.extend(["--outbox-dir", str(tachometer_outbox(self.runtime.log_dir))])
 
         srun_export_env: dict[str, str] = {}
         if tachometer.compaction_threads > 0:

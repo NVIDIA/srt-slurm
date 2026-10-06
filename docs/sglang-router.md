@@ -91,14 +91,13 @@ frontend:
   enable_multiple_frontends: false
 ```
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Node 0                                                 │
-│  ┌──────────────────┐  ┌─────────────┐  ┌────────────┐ │
-│  │  sglang-router   │  │   Prefill   │  │   Decode   │ │
-│  │    :8000         │──│   Worker    │──│   Worker   │ │
-│  └──────────────────┘  └─────────────┘  └────────────┘ │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    client["Client"] --> router
+    subgraph node0["Node 0"]
+        router["sglang-router :8000"] --> prefill["Prefill worker"]
+        router --> decode["Decode worker"]
+    end
 ```
 
 - Router directly on port 8000
@@ -116,21 +115,19 @@ frontend:
   num_additional_frontends: 9 # default, total = 1 + 9 = 10 routers
 ```
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Node 0                               Node 1          Node 2         │
-│  ┌─────────┐  ┌────────────────┐     ┌──────────┐    ┌──────────┐   │
-│  │  nginx  │  │ sglang-router  │     │ sglang-  │    │ sglang-  │   │
-│  │  :8000  │──│    :30080      │     │ router   │    │ router   │   │
-│  └────┬────┘  └────────────────┘     │ :30080   │    │ :30080   │   │
-│       │                               └──────────┘    └──────────┘   │
-│       └──────────────────────────────────┴───────────────┴───────────┘
-│                                                                       │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │
-│  │   Prefill   │  │   Prefill   │  │   Decode    │  │   Decode    │  │
-│  │   Worker 0  │  │   Worker 1  │  │   Worker 0  │  │   Worker 1  │  │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    client["Client"] --> nginx["nginx :8000 (node 0)"]
+    nginx --> router0["sglang-router :30080 (node 0)"]
+    nginx --> router1["sglang-router :30080 (node 1)"]
+    nginx --> router2["sglang-router :30080 (node 2)"]
+    router0 & router1 & router2 --> workers
+    subgraph workers["Workers"]
+        prefill0["Prefill worker 0"]
+        prefill1["Prefill worker 1"]
+        decode0["Decode worker 0"]
+        decode1["Decode worker 1"]
+    end
 ```
 
 - nginx on node 0 listens on port 8000 (public)
@@ -138,7 +135,7 @@ frontend:
 - nginx round-robins requests to routers
 - Routers distributed across nodes using same logic as Dynamo frontends
 
-If the cluster rejects raising open-file limits inside the nginx container, keep the default (`frontend.nginx_raise_ulimit: false` or unset). If you need the previous high-nofile behavior, set `frontend.nginx_raise_ulimit: true` or a cluster default in `srtslurm.yaml` — see [Configuration Reference](config-reference.md#frontend).
+If the cluster rejects raising open-file limits inside the nginx container, keep the default (`frontend.nginx_raise_ulimit: false` or unset). If you need the previous high-nofile behavior, set `frontend.nginx_raise_ulimit: true` or a cluster default in `srtslurm.yaml` — see [Configuration Reference](frontends.md#frontend).
 
 ## How Router Distribution Works
 

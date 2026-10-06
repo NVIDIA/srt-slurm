@@ -15,16 +15,12 @@ from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 
 RECIPE = {
+    "schema": 2,
     "name": "render-me",
     "model": {"path": "/models/test-model", "container": "/containers/test.sqsh", "precision": "fp8"},
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "prefill_nodes": 1,
-        "decode_nodes": 1,
-        "prefill_workers": 1,
-        "decode_workers": 1,
-    },
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "engine": "sglang",
+    "roles": {"prefill": {"nodes": 1, "workers": 1}, "decode": {"nodes": 1, "workers": 1}},
     "benchmark": {"type": "manual"},
 }
 

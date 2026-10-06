@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 from .config import get_srtslurm_setting
@@ -120,9 +121,9 @@ class Nodes:
                                       colocating with whichever node ends up
                                       being head; infra falls back to head).
             engine_nodes: How many of the non-reserved nodes the engine roles
-                          own. Required when ``pools`` is given; None keeps the
-                          legacy behavior where every non-reserved node is a
-                          worker node.
+                          own. Required when ``pools`` is given; None keeps
+                          every non-reserved node a worker node (a recipe
+                          without pools).
             pools: ``(service name, node count)`` pairs for services that own
                    nodes, carved after the engine worker nodes in this order.
         """
@@ -165,8 +166,7 @@ class Nodes:
         # node of the allocation, unsandboxed. A dedicated *client* node exists
         # to isolate benchmark measurements from noisy neighbors, so it must
         # never land on that first node — reserve it from the tail instead.
-        # Non-client roles (infra, frontend) keep the original front-of-list
-        # reservation for backward compatibility.
+        # Non-client roles (infra, frontend) keep the front-of-list reservation.
         has_client = "client" in dedicated_roles
         if colocate_dedicated_nodes:
             if has_client:
@@ -247,7 +247,7 @@ class Nodes:
     ) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
         """Split the non-reserved nodes into the engine worker nodes and the service pools.
 
-        Legacy recipes (no pools) keep every node as a worker node. With pools,
+        Recipes without pools keep every node as a worker node. With pools,
         the engine roles take the first ``engine_nodes`` nodes and each pool the
         next ``count`` in declaration order; the allocation must be large enough.
         """
@@ -342,6 +342,7 @@ class RuntimeContext:
     # HuggingFace model support - True if model.path was "hf:model/name"
     is_hf_model: bool = False
     gpu_type: str | None = None
+    visible_devices_env: str = "CUDA_VISIBLE_DEVICES"
 
     # Container mounts: host_path -> container_path
     container_mounts: dict[Path, Path] = field(default_factory=dict)
@@ -363,6 +364,19 @@ class RuntimeContext:
     # Full Dynamo configuration for native sidecar launch settings.
     dynamo: "DynamoConfig | None" = None
 
+    @property
+    def container_log_dir(self) -> Path:
+        """``log_dir`` as processes inside the container see it.
+
+        ``from_config`` mounts the run's log directory at ``CONTAINER_LOG_DIR``;
+        this follows that mount so a remapped log mount needs no other change.
+        Every path handed to a containerized process (config dumps, profiler
+        output, fingerprints, benchmark artifacts) is built from this, never
+        from the host ``log_dir``, which is not visible in the container on
+        every cluster.
+        """
+        return self.container_mounts.get(self.log_dir, Path(CONTAINER_LOG_DIR))
+
     @classmethod
     def from_config(
         cls,
@@ -382,9 +396,9 @@ class RuntimeContext:
         # Get nodes from SLURM
         pools = [(svc.name, svc.nodes) for svc in config.pool_services if svc.nodes is not None]
         nodes = Nodes.from_slurm(
-            frontend_dedicated_node=config.frontend.dedicated_node,
-            client_dedicated_node=config.benchmark.client_dedicated_node,
-            etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+            frontend_dedicated_node=config.frontend.placement.dedicated,
+            client_dedicated_node=config.benchmark.placement.dedicated,
+            etcd_nats_dedicated_node=config.infra_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
             engine_nodes=config.engine_node_count if pools else None,
             pools=pools,
@@ -393,9 +407,12 @@ class RuntimeContext:
         # Compute run_name
         run_name = f"{config.name}_{job_id}"
 
-        # Resolve node IPs
-        head_node_ip = get_hostname_ip(nodes.head)
-        infra_node_ip = get_hostname_ip(nodes.infra)
+        # Resolve node IPs on the cluster-selected fabric. Some systems expose
+        # a public default route and a separate private control/data plane; the
+        # latter is what containers on peer Slurm nodes can reliably reach.
+        network_interface = get_srtslurm_setting("network_interface", "eth0")
+        head_node_ip = get_hostname_ip(nodes.head, network_interface)
+        infra_node_ip = get_hostname_ip(nodes.infra, network_interface)
 
         # Compute log directory using FormattablePath or default logic
         # Check for SRTCTL_OUTPUT_DIR from sbatch script first (ensures consistency)
@@ -446,7 +463,7 @@ class RuntimeContext:
 
         # Build container mounts
         container_mounts: dict[Path, Path] = {
-            log_dir: Path("/logs"),
+            log_dir: Path(CONTAINER_LOG_DIR),
         }
         # Only mount local model paths - HF models are downloaded at runtime
         if not is_hf_model:
@@ -532,6 +549,7 @@ class RuntimeContext:
         environment = config.dynamo.get_wheel_environment()
         environment.update(config.environment)
 
+        visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
         temp_context = cls(
             job_id=job_id,
             run_name=run_name,
@@ -543,7 +561,8 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            network_interface=network_interface,
+            visible_devices_env=visible_devices_env,
             container_mounts={},
             srun_options=dict(config.srun_options),
             environment=environment,
@@ -569,7 +588,8 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            network_interface=network_interface,
+            visible_devices_env=visible_devices_env,
             container_mounts=container_mounts,
             srun_options=dict(config.srun_options),
             environment=environment,

@@ -157,6 +157,25 @@ Frontend available at: http://watchtower-aqua-cn01:8000
 
 ### benchmark.out
 
+To also show this output live in the Slurm job's stdout, enable:
+
+```yaml
+benchmark:
+  type: custom
+  command: bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh
+  stream_output: true
+```
+
+This defaults to `false`, retains `benchmark.out`, and also works with built-in
+benchmark types. Alternatively, pass `--set benchmark.stream_output=true` to
+`srtctl apply`. A CI launcher following the Slurm job log will see the forwarded
+output. The submit command itself does not attach to the running job. Output is
+forwarded as the client flushes it; use `PYTHONUNBUFFERED=1` for Python clients
+that buffer progress messages.
+
+The stream is bracketed by `Starting benchmark output streaming to stdout` and
+`End of streamed benchmark logs`; the end marker follows the final log drain.
+
 Shows benchmark progress and results:
 
 ```

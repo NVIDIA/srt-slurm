@@ -438,17 +438,21 @@ class TestDefaultPorts:
     """Tests for centralized default port values."""
 
     def test_allocator_uses_centralized_defaults(self):
+        from srtctl.ports import BOOTSTRAP_PORTS, HTTP_PORTS, KV_EVENTS_PORTS, NIXL_PORTS
+
         allocator = NodePortAllocator()
-        assert allocator.base_http_port == SGLANG_HTTP_PORT_BASE
-        assert allocator.base_bootstrap_port == SGLANG_BOOTSTRAP_PORT_BASE
-        assert allocator.base_kv_events_port == KV_EVENTS_PORT_BASE
-        assert allocator.base_nixl_port == VLLM_NIXL_PORT_BASE
+        assert allocator.next(HTTP_PORTS, "node0") == SGLANG_HTTP_PORT_BASE
+        assert allocator.next(BOOTSTRAP_PORTS, "node0") == SGLANG_BOOTSTRAP_PORT_BASE
+        assert allocator.next(KV_EVENTS_PORTS) == KV_EVENTS_PORT_BASE
+        assert allocator.next(NIXL_PORTS) == VLLM_NIXL_PORT_BASE
 
     def test_http_ports_use_centralized_stride(self):
+        from srtctl.ports import HTTP_PORTS
+
         allocator = NodePortAllocator()
-        assert allocator.next_http_port("node0") == SGLANG_HTTP_PORT_BASE
-        assert allocator.next_http_port("node0") == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
-        assert allocator.next_http_port("node1") == SGLANG_HTTP_PORT_BASE
+        assert allocator.next(HTTP_PORTS, "node0") == SGLANG_HTTP_PORT_BASE
+        assert allocator.next(HTTP_PORTS, "node0") == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
+        assert allocator.next(HTTP_PORTS, "node1") == SGLANG_HTTP_PORT_BASE
 
     def test_endpoints_to_processes_uses_default_sys_port(self):
         endpoints = allocate_endpoints(
@@ -555,10 +559,10 @@ class TestAllocateEndpointsHet:
 
 @pytest.mark.parametrize("gpu_count, expected_counts", [(6, [4, 2]), (5, [4, 1]), (12, [4, 4, 4]), (32, [4] * 8)])
 def test_multinode_exact_gpu_count(gpu_count: int, expected_counts: list[int]) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     nodes = len(expected_counts)
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=1,
         num_decode=1,
         num_agg=0,
@@ -577,10 +581,10 @@ def test_multinode_exact_gpu_count(gpu_count: int, expected_counts: list[int]) -
 
 @pytest.mark.parametrize("gpu_count", [0, -1])
 def test_trtllm_rejects_nonpositive_worker_gpu_count(gpu_count: int) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     with pytest.raises(ValueError, match="GPUs per worker must be positive"):
-        TRTLLMProtocol().allocate_endpoints(
+        TRTLLMBackend().allocate_endpoints(
             num_prefill=1,
             num_decode=0,
             num_agg=0,
@@ -593,9 +597,9 @@ def test_trtllm_rejects_nonpositive_worker_gpu_count(gpu_count: int) -> None:
 
 
 def test_trtllm_partial_workers_stay_on_single_nodes() -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=2,
         num_decode=0,
         num_agg=0,
@@ -614,10 +618,10 @@ def test_trtllm_partial_workers_stay_on_single_nodes() -> None:
 
 
 def test_two_dep6_workers_reject_insufficient_nodes() -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     with pytest.raises(ValueError, match="Not enough nodes for GPU allocation"):
-        TRTLLMProtocol().allocate_endpoints(
+        TRTLLMBackend().allocate_endpoints(
             num_prefill=2,
             num_decode=0,
             num_agg=0,
@@ -630,9 +634,9 @@ def test_two_dep6_workers_reject_insufficient_nodes() -> None:
 
 
 def test_two_dep6_workers_spread_across_four_nodes() -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=2,
         num_decode=0,
         num_agg=0,
@@ -655,7 +659,7 @@ def test_two_dep6_workers_spread_across_four_nodes() -> None:
 
 @pytest.mark.parametrize("heterogeneous", [False, True])
 def test_two_dep6_workers_share_three_nodes(heterogeneous: bool) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     if heterogeneous:
         endpoints = allocate_endpoints_het(
@@ -669,7 +673,7 @@ def test_two_dep6_workers_share_three_nodes(heterogeneous: bool) -> None:
             pack_multinode_workers=True,
         )
     else:
-        endpoints = TRTLLMProtocol().allocate_endpoints(
+        endpoints = TRTLLMBackend().allocate_endpoints(
             num_prefill=2,
             num_decode=1,
             num_agg=0,

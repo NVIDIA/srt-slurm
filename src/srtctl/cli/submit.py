@@ -36,6 +36,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
 
+from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -250,37 +251,48 @@ def show_config_details(config: SrtConfig) -> None:
     environment variables (global and backend per-mode) so users can verify their
     config is correct before submitting.
     """
-    if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
-        from srtctl.backends.trtllm import TRTLLMProtocol
+    visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
+    console.print(f"GPU subset visibility variable: {visible_devices_env}")
+    for role, spec in config.roles.items():
+        policy = spec.restart
+        if policy.enabled:
+            console.print(
+                f"{role}: restart={policy.policy}, max_restarts={policy.max_restarts}, "
+                f"backoff_seconds={policy.backoff_seconds:g}, max_backoff_seconds={policy.max_backoff_seconds:g}",
+                crop=False,
+            )
+    if config.role_backends or config.role_containers:
+        for role, backend in config.active_role_backends():
+            console.print(f"{role}: engine={backend.type}, container={config.worker_container_for_role(role)}")
 
-        if isinstance(config.backend, TRTLLMProtocol):
+    if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
+        from srtctl.backends.trtllm import TRTLLMBackend
+
+        if isinstance(config.backend, TRTLLMBackend):
             descriptions = {
                 "--publish-metrics": "metrics only",
                 "--publish-events-and-metrics": "metrics and KV events",
             }
             publication = [f"{flag} ({descriptions[flag]})" for flag in config.backend.dynamo_metrics_flags]
-            disabled_by = (
-                "publish_events_and_metrics"
-                if config.backend.publish_events_and_metrics is False
-                else "publish_metrics"
-            )
             console.print(
                 Panel(
-                    "\n".join(publication) or f"No publication flag (backend.{disabled_by}: false)",
+                    "\n".join(publication) or "No publication flag (backend.publish_metrics: false)",
                     title="Dynamo TRT-LLM Metrics",
                     border_style="cyan",
                 )
             )
 
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
-    if isinstance(config.backend, TRTLLMProtocol):
+    if isinstance(config.backend, TRTLLMBackend):
+        if config.backend.numa_memory_bind == "local":
+            console.print("TRT-LLM NUMA: GPU-local CPU binding and strict GPU-local memory binding (--bind-memory)")
         # Engine-yaml statistics keys srtctl defaults at config load
         # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
         # expand_observability). Shown for both frontends so a run that expects
         # the iteration-level trtllm_* gauges can see before submitting that
         # enable_iter_perf_stats is off.
-        modes = ("prefill", "decode") if config.resources.is_disaggregated else ("agg",)
+        modes = ("prefill", "decode") if config.topology.is_disaggregated else ("agg",)
         rows = []
         for mode in modes:
             section = config.backend.get_config_for_mode(mode)
@@ -295,15 +307,15 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(Panel("\n".join(rows), title="TRT-LLM Engine Statistics", border_style="cyan"))
 
     if config.frontend.type == "vllm":
-        from srtctl.backends.vllm import VLLMProtocol, find_vllm_orchestration_recipe_flags
+        from srtctl.backends.vllm import find_vllm_orchestration_recipe_flags
 
-        if isinstance(config.backend, VLLMProtocol):
+        if isinstance(config.backend, VLLMBackend):
             orchestration_flags = find_vllm_orchestration_recipe_flags(config.backend)
             if orchestration_flags:
-                for mode_name, flag_name in orchestration_flags:
+                for role, flag_name in orchestration_flags:
                     console.print(
                         "[yellow]WARNING:[/] "
-                        f"vllm_config.{mode_name}.{flag_name} is set in the recipe but srtslurm "
+                        f"roles.{role}.args.{flag_name} is set in the recipe but srtslurm "
                         "derives this from the job topology at runtime; remove it from the recipe "
                         "to avoid confusion (the configured value is ignored)."
                     )
@@ -373,8 +385,8 @@ def show_config_details(config: SrtConfig) -> None:
         )
 
     # --- SLURM heterogeneous job structure ---
-    het_components = config.resources.het_components(
-        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+    het_components = config.topology.het_components(
+        infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
     if het_components is not None:
@@ -386,7 +398,7 @@ def show_config_details(config: SrtConfig) -> None:
         het_table.add_column("GPUs/node", style="white", justify="right", width=10)
         het_table.add_column("Infra", style="dim")
         for c in het_components:
-            infra_note = "first node" if c.name == "prefill" and config.infra.etcd_nats_dedicated_node else ""
+            infra_note = "first node" if c.name == "prefill" and config.infra_dedicated_node else ""
             het_table.add_row(
                 str(c.group),
                 c.name,
@@ -402,12 +414,10 @@ def show_config_details(config: SrtConfig) -> None:
     has_env = bool(config.environment or dynamo_environment)
     backend = config.backend
     mode_envs: list[tuple[str, dict[str, str]]] = []
-    for mode_name, attr in [
-        ("prefill", "prefill_environment"),
-        ("decode", "decode_environment"),
-        ("aggregated", "aggregated_environment"),
+    for mode_name, env in [
+        (mode_name, config.roles[role].env if role in config.roles else {})
+        for mode_name, role in (("prefill", "prefill"), ("decode", "decode"), ("aggregated", "agg"))
     ]:
-        env = getattr(backend, attr, {})
         if env:
             has_env = True
             mode_envs.append((mode_name, dict(env)))
@@ -415,7 +425,7 @@ def show_config_details(config: SrtConfig) -> None:
         has_env = True
         mode_envs.append(("benchmark", dict(config.benchmark.env)))
 
-    mooncake_cfg = getattr(backend, "mooncake_kv_store", None)
+    mooncake_cfg = backend.mooncake_kv_store
     if mooncake_cfg is not None and mooncake_cfg.env:
         has_env = True
         mode_envs.append(("mooncake", dict(mooncake_cfg.env)))
@@ -441,7 +451,7 @@ def show_config_details(config: SrtConfig) -> None:
         console.print("[dim]No custom environment variables configured.[/]")
 
     # --- Shadow engine recovery (engine.failover, vLLM + Dynamo GPU Memory Service) ---
-    failover = getattr(config.backend, "failover", None)
+    failover = config.backend.failover
     if failover is not None:
         from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, failover_root
 
@@ -571,6 +581,10 @@ def show_config_details(config: SrtConfig) -> None:
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
+    for mode, role in config.roles.items():
+        if role.srun_options:
+            opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in role.srun_options.items())
+            console.print(f"[dim]{mode} worker srun options (override recipe):[/] {opts}")
 
     # Dynamo install runs apt-get/pip as root inside the container, so srtctl injects
     # ENROOT_REMAP_ROOT=yes (via srun --export) on the worker + dynamo-frontend launches.
@@ -687,14 +701,20 @@ def show_config_details(config: SrtConfig) -> None:
                 if settings.capture_window == "measured_workload":
                     details.add_row("observability", "SRT_NSYS_CONTROL_SCRIPT", "/srtctl-runtime/nsys_window.py")
                     details.add_row("observability", "SRT_NSYS_CONTROL_DIR", "/logs/profiles/.control")
-                details.add_row("observability", "nsys CPU sampling", "process-tree (every target)")
+                details.add_row(
+                    "observability",
+                    "nsys CPU sampling",
+                    "disabled" if settings.cpu_sampling == "none" else f"{settings.cpu_sampling} (every target)",
+                )
                 details.add_row("observability", "nsys report timeout", f"{settings.report_timeout_secs}s")
                 details.add_row("observability", "nsys reports", "<log_dir>/profiles/{prefill,decode,agg,frontend}/")
-                details.add_row("observability", "nsys env", "DYN_ENABLE_RUST_NVTX=1")
+                details.add_row("observability", "nsys env", "DYN_ENABLE_RUST_NVTX=1; DYN_NVTX=1")
                 if config.backend_type == "trtllm":
                     details.add_row(
                         "observability", "nsys TRT-LLM env", "TLLM_PROFILE_LOG_RANKS=all; TLLM_LLMAPI_ENABLE_NVTX=1"
                     )
+                elif config.backend_type == "sglang":
+                    details.add_row("observability", "nsys SGLang env", "SGLANG_ENABLE_NVTX_SCHEDULER=1")
                 if settings.nvtx_injection_path:
                     details.add_row("observability", "NVTX_INJECTION64_PATH", settings.nvtx_injection_path)
 
@@ -750,14 +770,13 @@ def show_config_details(config: SrtConfig) -> None:
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
-            device_map = getattr(mooncake_cfg, "device_names_by_gpu", [])
-            if device_map:
-                details.add_row("mooncake", "device_names_by_gpu", str(device_map))
+            if isinstance(mooncake_cfg, VLLMMooncakeKVStoreConfig) and mooncake_cfg.device_names_by_gpu:
+                details.add_row("mooncake", "device_names_by_gpu", str(mooncake_cfg.device_names_by_gpu))
                 details.add_row("mooncake", "process config", "/logs/mooncake_store_config_gpu<physical-ids>.json")
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
-            if hasattr(backend, "build_mooncake_store_config"):
+            if isinstance(backend, VLLMBackend):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON
                 # so operators can sanity-check protocol/device_name/sizes
@@ -901,19 +920,21 @@ def generate_minimal_sbatch_script(
     env = Environment(loader=FileSystemLoader(str(template_dir)))
     template = env.get_template("job_script_minimal.j2")
 
-    het_components = config.resources.het_components(
-        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+    het_components = config.topology.het_components(
+        infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
-    if het_components is not None and (config.frontend.dedicated_node or config.benchmark.client_dedicated_node):
+    if het_components is not None and config.role_backends:
+        raise ValueError("Role engine overrides require resources.het_jobs: false")
+    if het_components is not None and (config.frontend.placement.dedicated or config.benchmark.placement.dedicated):
         # SrtConfig validation only catches resources.het_jobs: true explicitly
         # set in the recipe — it can't see a cluster-level use_het_jobs default,
         # which is only resolved here via het_components(). Catch the combo now,
         # before sbatch submits a heterogeneous allocation that Nodes.from_slurm
         # will then reject at job startup after the nodes are already granted.
         raise ValueError(
-            "frontend.dedicated_node/benchmark.client_dedicated_node are not supported with heterogeneous "
-            "SLURM jobs, and this job resolved to heterogeneous (either resources.het_jobs: true or the "
+            "frontend.placement.node: dedicated / benchmark.placement.node: dedicated are not supported with "
+            "heterogeneous SLURM jobs, and this job resolved to heterogeneous (either resources.het_jobs: true or the "
             "cluster's use_het_jobs default)"
         )
     # For het jobs the sum is informational only — the template iterates het_components
@@ -962,6 +983,15 @@ def _print_running_summary(config: SrtConfig, console: Console, *, serve_only: b
     console.print("[bold]Running:[/]")
     console.print(f"  Model:     {config.model.path}")
     console.print(f"  Container: {config.model.container}")
+    worker_counts = {
+        "prefill": config.topology.num_prefill,
+        "decode": config.topology.num_decode,
+        "agg": config.topology.num_agg,
+    }
+    for mode, count in worker_counts.items():
+        image = config.worker_container_for_role(mode)
+        if count and (image != config.model.container or config.role_backends):
+            console.print(f"  {mode.capitalize()}: {config.backend_for_role(mode).type} in {image}")
     console.print(f"  Backend:   {config.backend_type}")
     if serve_only:
         console.print("  Mode:      Serve only (no benchmark)")
@@ -1019,9 +1049,9 @@ def planned_total_nodes(config: SrtConfig) -> int:
     total_nodes = config.total_nodes
     num_dedicated_roles = sum(
         (
-            config.infra.etcd_nats_dedicated_node,
-            config.frontend.dedicated_node,
-            config.benchmark.client_dedicated_node,
+            config.infra_dedicated_node,
+            config.frontend.placement.dedicated,
+            config.benchmark.placement.dedicated,
         )
     )
     if num_dedicated_roles > 0:
@@ -1037,17 +1067,17 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
     same rules the orchestrator applies at job start; they are ``None`` for
     heterogeneous jobs, whose components are addressed differently.
     """
-    het = config.resources.het_components(
-        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+    het = config.topology.het_components(
+        infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
     if het is None:
         total_nodes = planned_total_nodes(config)
         head, client = Nodes.planned_role_indices(
             total_nodes,
-            frontend_dedicated_node=config.frontend.dedicated_node,
-            client_dedicated_node=config.benchmark.client_dedicated_node,
-            etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+            frontend_dedicated_node=config.frontend.placement.dedicated,
+            client_dedicated_node=config.benchmark.placement.dedicated,
+            etcd_nats_dedicated_node=config.infra_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
         )
         indices: dict[str, int | None] = {"frontend_node_index": head, "client_node_index": client}
@@ -1197,7 +1227,7 @@ def submit_with_orchestrator(
     # Validate setup before submitting (not during dry-run)
     srtctl_root = get_srtslurm_setting("srtctl_root")
     srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
-    validate_setup(srtctl_source)
+    validate_setup(srtctl_source, config)
 
     if render_dir is not None:
         return _render_to_dir(
@@ -1272,15 +1302,15 @@ def submit_with_orchestrator(
             "resources": {
                 "gpu_type": config.resources.gpu_type,
                 "gpus_per_node": config.resources.gpus_per_node,
-                "prefill_nodes": config.resources.prefill_nodes,
-                "decode_nodes": config.resources.decode_nodes,
-                "agg_nodes": config.resources.agg_nodes,
-                "prefill_workers": config.resources.num_prefill,
-                "decode_workers": config.resources.num_decode,
-                "agg_workers": config.resources.num_agg,
-                "gpus_per_prefill": config.resources.gpus_per_prefill,
-                "gpus_per_decode": config.resources.gpus_per_decode,
-                "gpus_per_agg": config.resources.gpus_per_agg,
+                "prefill_nodes": config.topology.prefill_nodes,
+                "decode_nodes": config.topology.decode_nodes,
+                "agg_nodes": config.topology.agg_nodes,
+                "prefill_workers": config.topology.num_prefill,
+                "decode_workers": config.topology.num_decode,
+                "agg_workers": config.topology.num_agg,
+                "gpus_per_prefill": config.topology.gpus_per_prefill,
+                "gpus_per_decode": config.topology.gpus_per_decode,
+                "gpus_per_agg": config.topology.gpus_per_agg,
             },
             # Backend and frontend
             "backend_type": config.backend_type,
@@ -1925,16 +1955,10 @@ def resolve_override_cmd(
         console.print(f"[green]Wrote:[/] {p}")
 
 
-def main():
-    # If no args at all, launch interactive mode
-    if len(sys.argv) == 1:
-        from srtctl.cli.interactive import run_interactive
-
-        sys.exit(run_interactive())
-
-    setup_logging()
-
+def build_parser() -> argparse.ArgumentParser:
+    """The `srtctl` argument parser; building it has no side effects (docs/cli-reference.md is rendered from it)."""
     parser = argparse.ArgumentParser(
+        prog="srtctl",
         description="srtctl - SLURM job submission",
         epilog="""Examples:
   srtctl                                         # Interactive mode
@@ -1949,11 +1973,10 @@ def main():
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
-  srtctl view /path/to/run-output                # Local ruter route-decision viewer
   srtctl status-server --host 0.0.0.0            # Local status collector for reporting.status.endpoint
-  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md + docs/legacy-v1.md
-  srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
-  srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
+  srtctl schema-docs [--check]                   # Regenerate (or verify) the generated docs
+  srtctl schema [--cluster]                      # JSON Schema for recipes (or srtslurm.yaml)
+  srtctl migrate -f config.yaml --in-place       # Rewrite a pre-2.0 recipe into the current schema (dir: recursive)
   srtctl skill --target claude                   # Install the srtctl agent skill into this project
   srtctl --version                               # Version (from the git tag), commit, schema and lockfile versions
 """,
@@ -1967,6 +1990,15 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # Offline artifact generation is explicit and never part of the job lifecycle.
+    from srtctl.dsight.cli import add_commands as add_dashboard_commands
+
+    add_dashboard_commands(
+        subparsers.add_parser(
+            "dsight", aliases=["dashboard"], help="Build and query an offline inference trace dashboard"
+        )
+    )
+
     def add_override_args(p):
         p.add_argument(
             "--set",
@@ -1976,7 +2008,7 @@ def main():
             dest="set_overrides",
             help=(
                 "Override a recipe value by dotted path before validation (repeatable), e.g. "
-                "--set health_check.max_attempts=720 or --set 'backend.sglang_config.prefill.dist-timeout=1800'. "
+                "--set health_check.max_attempts=720 or --set 'roles.prefill.args.dist-timeout=1800'. "
                 "Values parse as YAML scalars or lists; mappings stay literal strings. "
                 "On override files the value is written into base and every variant."
             ),
@@ -2092,13 +2124,6 @@ def main():
     monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
     monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
 
-    view_parser = subparsers.add_parser("view", help="Serve the local ruter route-decision viewer")
-    view_parser.add_argument(
-        "root", nargs="?", type=Path, default=Path("."), help="srt-slurm run directory or logs/.ruter"
-    )
-    view_parser.add_argument("--port", type=int, default=8877, help="Loopback port (default: 8877)")
-    view_parser.add_argument("--refresh", action="store_true", help="Reparse logs before loading the viewer")
-
     status_server_parser = subparsers.add_parser(
         "status-server",
         help="Run the native status collector that reporting.status.endpoint can point at",
@@ -2138,18 +2163,35 @@ def main():
     # Generated schema reference: srtctl schema-docs [--check] [--output PATH]
     schema_docs_parser = subparsers.add_parser(
         "schema-docs",
-        help="Regenerate docs/schema-reference.md (2.0 layout) and docs/legacy-v1.md (v1 layout) from the code",
+        help="Regenerate the generated docs (schema reference, JSON Schemas, CLI reference) from the code",
     )
     schema_docs_parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 if either checked-in document is stale instead of rewriting them (used by CI)",
+        help="Exit 1 if a checked-in generated file is stale instead of rewriting it (used by CI)",
     )
     schema_docs_parser.add_argument(
+        "--docs-dir",
+        type=Path,
+        default=None,
+        help="Docs directory to write into (default: the checkout's docs/)",
+    )
+
+    # Machine-readable schema: srtctl schema [--cluster] [--output PATH]
+    schema_parser = subparsers.add_parser(
+        "schema",
+        help="Print the JSON Schema for recipes (or srtslurm.yaml with --cluster)",
+    )
+    schema_parser.add_argument(
+        "--cluster",
+        action="store_true",
+        help="Emit the schema for srtslurm.yaml instead of a recipe",
+    )
+    schema_parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Write the schema reference to this path instead of docs/schema-reference.md (legacy-v1.md lands beside it)",
+        help="Write the JSON Schema to this path instead of stdout",
     )
 
     # Recipe migration: srtctl migrate -f recipe.yaml [--in-place | --output PATH]
@@ -2166,7 +2208,7 @@ def main():
     skill_parser.add_argument(
         "--root",
         type=Path,
-        default=Path.cwd(),
+        default=None,
         help="Project root to install under (default: the current directory)",
     )
     skill_parser.add_argument(
@@ -2175,7 +2217,7 @@ def main():
 
     migrate_parser = subparsers.add_parser(
         "migrate",
-        help="Upgrade a recipe (plain, override, or lock file) to the current schema version",
+        help="Rewrite a pre-2.0 recipe (plain, override, sweep, or lock file) into the current schema version",
     )
     migrate_parser.add_argument(
         "-f",
@@ -2193,13 +2235,26 @@ def main():
         default=None,
         help="Write the migrated recipe to this path (single file only; default: print to stdout)",
     )
-    migrate_parser.add_argument(
-        "--verify",
-        action="store_true",
-        help="Do not write: migrate in memory and prove the v1 and v2 recipes resolve identically (golden equality)",
-    )
 
+    return parser
+
+
+def main():
+    # If no args at all, launch interactive mode
+    if len(sys.argv) == 1:
+        from srtctl.cli.interactive import run_interactive
+
+        sys.exit(run_interactive())
+
+    setup_logging()
+
+    parser = build_parser()
     args = parser.parse_args()
+
+    if args.command in ("dsight", "dashboard"):
+        from srtctl.dsight.cli import run as run_dashboard
+
+        raise SystemExit(run_dashboard(args))
 
     json_mode = bool(getattr(args, "json_output", False))
     render_dir: Path | None = getattr(args, "render_dir", None)
@@ -2299,27 +2354,35 @@ def main():
         sys.exit(1 if all_results else 0)
 
     if args.command == "schema-docs":
-        from srtctl.core.schema_docs import (
-            DEFAULT_OUTPUT,
-            legacy_output_for,
-            schema_reference_is_current,
-            write_schema_reference,
-        )
+        from srtctl.cli.docs_gen import DOCS_DIR, stale_generated, write_generated
 
-        output = args.output or DEFAULT_OUTPUT
+        docs_dir = args.docs_dir or DOCS_DIR
         if args.check:
-            if schema_reference_is_current(output):
-                console.print(f"[green]✓[/] {output} and {legacy_output_for(output)} are up to date")
+            stale = stale_generated(docs_dir)
+            if not stale:
+                console.print(f"[green]✓[/] Generated docs in {docs_dir} are up to date")
                 restore_console()
                 return
-            console.print(
-                f"[bold red]✗[/] {output} or {legacy_output_for(output)} is stale; "
-                "run `srtctl schema-docs` and commit the result"
-            )
+            for path in stale:
+                console.print(f"[bold red]✗[/] {path} is stale; run `srtctl schema-docs` and commit the result")
             restore_console()
             sys.exit(1)
-        written = write_schema_reference(output)
-        console.print(f"[green]✓[/] Wrote {written} and {legacy_output_for(written)}")
+        for path in write_generated(docs_dir):
+            console.print(f"[green]✓[/] Wrote {path}")
+        restore_console()
+        return
+
+    if args.command == "schema":
+        from srtctl.core.schema import ClusterConfig, SrtConfig
+        from srtctl.core.schema_docs import json_schema
+
+        text = json.dumps(json_schema(ClusterConfig if args.cluster else SrtConfig), indent=2) + "\n"
+        if args.output is None:
+            sys.stdout.write(text)
+        else:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(text, encoding="utf-8")
+            console.print(f"[green]✓[/] Wrote {args.output}")
         restore_console()
         return
 
@@ -2330,35 +2393,18 @@ def main():
             print(render_skill(args.target))
             restore_console()
             return
-        written = install_skill(args.target, args.root)
+        written = install_skill(args.target, args.root or Path.cwd())
         console.print(f"[green]✓[/] Wrote {written}")
         restore_console()
         return
 
     if args.command == "migrate":
-        from srtctl.core.migrate import migrate_recipe_file, recipe_files, verify_migration_file
+        from srtctl.core.migrate import migrate_recipe_file, recipe_files
 
         files = recipe_files(args.migrate_files)
         if not files:
             console.print("[bold red]No recipe files found[/]")
             sys.exit(1)
-        if args.verify:
-            counts: dict[str, int] = {"ok": 0, "mismatch": 0, "skipped": 0, "error": 0}
-            for path in files:
-                outcome = verify_migration_file(path)
-                counts[outcome.status] += 1
-                if outcome.status == "ok":
-                    console.print(f"[green]✓[/] {path} ({outcome.variants} variant(s) resolve identically)")
-                elif outcome.status == "skipped":
-                    console.print(f"[yellow]-[/] {path}: skipped, {outcome.detail}")
-                else:
-                    console.print(f"[bold red]✗[/] {path}: {outcome.detail}")
-            console.print(
-                f"\n{counts['ok']} identical, {counts['mismatch']} mismatched, "
-                f"{counts['skipped']} skipped (v1 does not load), {counts['error']} unreadable"
-            )
-            restore_console()
-            sys.exit(1 if counts["mismatch"] or counts["error"] else 0)
         if not args.in_place and args.output is None and len(files) > 1:
             console.print("[bold red]Error:[/] printing to stdout needs a single file; use --in-place for many")
             sys.exit(1)
@@ -2395,15 +2441,6 @@ def main():
 
         sys.argv = [sys.argv[0]] + (args.args or [])
         _monitor_main()
-        return
-
-    if args.command == "view":
-        from srtctl.ruter.view import main as _view_main
-
-        view_args = [str(args.root), "--port", str(args.port)]
-        if args.refresh:
-            view_args.append("--refresh")
-        _view_main(view_args)
         return
 
     if args.command == "status-server":

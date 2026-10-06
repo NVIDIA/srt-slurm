@@ -31,14 +31,14 @@ window themselves.
 # with this exact config every run is unpublishable and `required: true` fails.
 benchmark:
   type: sa-bench          # future benchmark-side adapter must stamp the windows
-  client_placement: head  # keeps sample and window clocks on one host
+  placement:
+    node: head            # keeps sample and window clocks on one host
   isl: 8192
   osl: 1024
   concurrencies: [4]
 
 telemetry:
   enabled: true
-  provider: dcgm-power
   collect_interval_ms: 1000         # milliseconds between collector cycles; must be <= 3000
   storage_subdir: power             # relative to the run log directory
   required: true                    # exit non-zero when artifacts are unpublishable
@@ -50,13 +50,13 @@ telemetry:
     port: 9401
 ```
 
-`dcgm-power` needs **only** `dcgm_exporter`. Unlike `provider: scraper` it does
+`dcgm-power` needs **only** `dcgm_exporter`: there is no `provider` key, and it does
 not require the top-level `container_image` or a `node_exporter`, because the
 collector runs inside srtctl. Config loading validates the block and rejects
 inconsistent values with actionable messages; in particular
 `collect_interval_ms` must not exceed the 3-second max sample gap the validator
 accepts, or every window would fail `sample_gap_exceeded`. Telemetry stays
-disabled by default and existing `provider: scraper` recipes are unchanged.
+disabled by default.
 The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.
@@ -127,3 +127,58 @@ consistency instead. Exit status is `0` only when the recomputed package is
 publishable, the stored verdict is `true`, and the two agree; otherwise it is
 `1` and every failure is printed. The `--expect-*` flags optionally assert an
 expected job shape for hardware canaries.
+
+### Cumulative sample coverage
+
+Each expected GPU must also retain at least 95% of the expected sampling
+intervals across its nearest bracketing samples. Expected intervals are
+`floor((last_bracket - first_bracket) / sample_interval_seconds)`; observed
+intervals are the number of distinct sample times in that same span minus one,
+so a row written twice counts once. This avoids counting ordinary cadence
+jitter as repeated loss or allowing warmup samples to hide missing
+measurements. More than 5% missing intervals, more than one sample in twenty,
+records `sample_loss_exceeded`, even when every individual gap is below 3
+seconds. For example, sampling every 2 seconds with a recorded 1-second cadence
+fails. A manifest without a finite positive `sample_interval_seconds` fails this
+rule too, alongside the manifest field check.
+
+The 3-second maximum gap and boundary checks still apply, but on short spans
+the loss rule is the stricter one. At a 1-second cadence one dropped sample
+passes only from 20 intervals, and one 3-second hole (two missing intervals)
+only from 40; a shorter window rejects on that single loss by design, because
+one lost second is a larger share of it. Formal sa-bench windows run for
+minutes, where a single gap at the limit passes both rules. Session
+finalization and offline validation use the recorded cadence and the same
+coverage rule. Previously accepted sparse packages can fail revalidation; their
+files are not rewritten. This limits sample loss, not the numerical error in
+energy.
+
+## Diagnosing slow scrapes
+
+The collector writes best-effort `scrape-timings.jsonl` beside `samples.csv`.
+Every line carries an `event`: `scrape` per settled endpoint request,
+`cycle_write` per collection cycle, and one closing `diagnostic_summary`.
+Join a `scrape` record to its GPU rows using `(hostname, scrape_seq)`.
+Each records its start/end times, HTTP status or exception, request and parse
+durations, sample timestamp, row count and reason codes. Failed HTTP requests
+retain timing records, with null parse duration and sample timestamp, without
+inventing power samples. Requests still unsettled when the cycle deadline
+expires have no timing record.
+
+Instants are unix timestamps; durations come from the monotonic clock.
+`schedule_lag_seconds` measures request start against the background cycle's
+scheduled slot, which `cycle_write` records as `scheduled_at_unix`; manual and
+final bracketing scrapes use null for both. The collector writes a cycle's
+endpoints together, so the `cycle_write` record keyed by `scrape_seq` carries
+the batch's `writer_lock_wait_seconds`, `sample_write_seconds` and attempted
+`row_count` once. Its `sample_write_completed` reports whether the batch was appended and
+flushed; when it is false, `sample_write_error` names the exception class if
+the append raised, or is null when the session was already finalizing and
+refused the batch.
+
+Only a daemon writer performs diagnostic file I/O, outside the sample writer
+lock. Its queue holds at most 128 pending records; overflow drops diagnostics,
+not power samples. A final `diagnostic_summary` reports `dropped_records`.
+Missing summary means diagnostics may be incomplete. Shutdown waits only until
+the existing collector deadline. This optional sidecar is not publication
+validation evidence, and its absence or write failure does not invalidate power.

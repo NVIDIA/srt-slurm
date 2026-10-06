@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from srtctl.core.health import WorkerHealthResult
+from srtctl.core.health import WorkerHealthResult, probe_direct_server
+from srtctl.frontends.base import Frontend, agg_leader_nodes, register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -24,7 +25,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class VLLMFrontend:
+@register_frontend("vllm")
+class VLLMFrontend(Frontend):
     """Direct vLLM OpenAI server frontend.
 
     This frontend is intentionally narrow: a single aggregate vLLM worker, with
@@ -33,48 +35,60 @@ class VLLMFrontend:
     as Dynamo, since nothing here load-balances between endpoints.
     """
 
+    required_backend: ClassVar[str | None] = "vllm"
+
     @property
     def type(self) -> str:
         return "vllm"
 
-    @property
-    def health_endpoint(self) -> str:
-        return "/health"
+    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
+        """The one ``vllm serve`` is the endpoint, so it binds the public port in every mode it runs."""
+        return "public"
 
-    def parse_health(
-        self,
-        response_json: dict,
-        expected_prefill: int,
-        expected_decode: int,
+    def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
+        """The aggregate leader binds the public port; its followers serve nothing."""
+        if process.endpoint_mode == "agg" and process.is_leader:
+            return runtime.frontend_port
+        return None
+
+    def worker_endpoint_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        return runtime.frontend_port if process.is_leader else None
+
+    def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        """One control server for the whole worker, on the public port."""
+        return runtime.frontend_port
+
+    def profiling_control_is_leader_only(self, config: Any) -> bool:
+        return True
+
+    def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
+        return agg_leader_nodes(processes)
+
+    def worker_ready_port(self, process: Process) -> int:
+        return process.sys_port
+
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
     ) -> WorkerHealthResult:
-        return WorkerHealthResult(
-            ready=True,
-            message="vLLM OpenAI server healthy",
-            prefill_ready=expected_prefill,
-            prefill_expected=expected_prefill,
-            decode_ready=expected_decode,
-            decode_expected=expected_decode,
-        )
+        """The worker's own /health, then /v1/models must list the model."""
+        return probe_direct_server(host, port)
 
-    def get_backend_health_urls(
-        self,
-        backend: Any,
-        backend_processes: list[Process],
-        network_interface: str | None = None,
-    ) -> list[str]:
-        del backend, backend_processes, network_interface
-        return []
-
-    def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
-        if not args:
-            return []
-        result = []
-        for key, value in args.items():
-            if value is True:
-                result.append(f"--{key}")
-            elif value is not False and value is not None:
-                result.extend([f"--{key}", str(value)])
-        return result
+    def validate(self, config: Any) -> None:
+        """The one aggregate ``vllm serve`` owns the public port: no nginx fan-out, no P/D, one worker."""
+        if config.frontend.enable_multiple_frontends:
+            raise ValueError(
+                "frontend.type: vllm binds vllm serve directly; set frontend.enable_multiple_frontends: false"
+            )
+        if config.topology.is_disaggregated:
+            raise ValueError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
+        if config.topology.num_agg != 1:
+            raise ValueError(
+                f"frontend.type: vllm supports exactly one aggregate worker, got {config.topology.num_agg}. "
+                "vllm serve owns the public port directly and there is no router to load-balance "
+                "replicas, so extra workers would either idle or collide on the port. "
+                "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
+                "worker across nodes with roles.agg.nodes."
+            )
 
     def start_frontends(
         self,
@@ -92,11 +106,11 @@ class VLLMFrontend:
                 "frontend.type: vllm binds vllm serve directly to the public port; "
                 "set frontend.enable_multiple_frontends: false"
             )
-        if config.resources.is_disaggregated:
+        if config.topology.is_disaggregated:
             raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
-        if config.resources.num_agg != 1:
+        if config.topology.num_agg != 1:
             raise ValueError(
-                f"frontend.type: vllm supports exactly one aggregate worker, got {config.resources.num_agg}; "
+                f"frontend.type: vllm supports exactly one aggregate worker, got {config.topology.num_agg}; "
                 "use frontend.type: dynamo to route between multiple workers"
             )
 

@@ -18,6 +18,7 @@ must be loaded.
 Add an optional runtime block beneath `telemetry.cpu_power_exporter` only when
 the DCGM runtime feature is implemented:
 
+<!-- docs-yaml: skip -->
 ```yaml
 telemetry:
   cpu_power_exporter:

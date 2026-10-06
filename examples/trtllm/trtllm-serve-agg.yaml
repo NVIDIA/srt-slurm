@@ -26,6 +26,7 @@ frontend:
 
 engine:
   type: trtllm
+  # API model name shared by the server and benchmark/eval clients.
   served_model_name: "Qwen/Qwen3-0.6B"
 roles:
   agg:

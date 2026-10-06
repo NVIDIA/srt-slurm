@@ -14,12 +14,18 @@ the context (prefill) and generation (decode) server URLs.
 import logging
 import shlex
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import yaml
 
-from srtctl.core.health import WorkerHealthResult, check_trtllm_serve_health, wait_for_health
+from srtctl.core.health import WorkerHealthResult, probe_http_ok, wait_for_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.frontends.base import (
+    Frontend,
+    frontend_args_to_cli,
+    numactl_prefix,
+    register_frontend,
+)
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -29,7 +35,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class TRTLLMServeFrontend:
+@register_frontend("trtllm_serve")
+class TRTLLMServeFrontend(Frontend):
     """Direct aggregate or disaggregated trtllm-serve frontend.
 
     Aggregate mode launches no extra process because the worker itself binds the
@@ -37,43 +44,56 @@ class TRTLLMServeFrontend:
     ser.yaml` on the head node. Health is exposed at /health in both modes.
     """
 
+    required_backend: ClassVar[str | None] = "trtllm"
+
     @property
     def type(self) -> str:
         return "trtllm_serve"
 
-    @property
-    def health_endpoint(self) -> str:
-        return "/health"
+    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
+        """The aggregate worker is the endpoint; P/D workers sit behind the disaggregated orchestrator."""
+        return "public" if mode == "agg" else "allocated"
 
-    def parse_health(
-        self,
-        response_json: dict,
-        expected_prefill: int,
-        expected_decode: int,
+    # trtllm-serve (worker and disaggregated orchestrator alike) serves Prometheus
+    # text at /prometheus/metrics; GET /metrics on a worker is JSON iteration stats.
+    metrics_path: ClassVar[str] = "/prometheus/metrics"
+
+    def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
+        """P/D leaders serve Prometheus on their OpenAI port; followers bind nothing. Aggregate is out of scope."""
+        if process.endpoint_mode == "agg" or process.http_port <= 0:
+            return None
+        return process.http_port
+
+    def worker_endpoint_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
+        if not process.is_leader:
+            return None
+        port = runtime.frontend_port if self.worker_api_port(process.endpoint_mode) == "public" else process.http_port
+        return port if port > 0 else None
+
+    def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
+        return self.worker_endpoint_port(process, config, runtime)
+
+    def worker_ready_port(self, process: "Process") -> int:
+        """A trtllm-serve worker reports /health on its own OpenAI port."""
+        return process.http_port
+
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
     ) -> WorkerHealthResult:
-        """Parse trtllm-serve /health response (200 => ready)."""
-        return check_trtllm_serve_health(response_json, expected_prefill, expected_decode)
+        """A 200 from /health is ready: the body may be empty, and every worker was gated before the orchestrator started."""
+        return probe_http_ok(host, port, "/health", f"trtllm-serve frontend healthy at http://{host}:{port}/health")
 
-    def get_backend_health_urls(
-        self,
-        backend: Any,
-        backend_processes: list["Process"],
-        network_interface: str | None = None,
-    ) -> list[str]:
-        del backend, backend_processes, network_interface
-        return []
-
-    def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
-        """Convert frontend args dict to CLI arguments."""
-        if not args:
-            return []
-        result = []
-        for key, value in args.items():
-            if value is True:
-                result.append(f"--{key}")
-            elif value is not False and value is not None:
-                result.extend([f"--{key}", str(value)])
-        return result
+    def validate(self, config: Any) -> None:
+        """One direct aggregate worker or one disaggregated orchestrator; either way one public endpoint."""
+        if config.frontend.enable_multiple_frontends:
+            raise ValueError(
+                "frontend.type: trtllm_serve uses one public endpoint; set frontend.enable_multiple_frontends: false"
+            )
+        if not config.topology.is_disaggregated and config.topology.num_agg != 1:
+            raise ValueError(
+                "frontend.type: trtllm_serve aggregate mode requires exactly one "
+                "aggregate worker (set roles.agg.workers: 1)"
+            )
 
     @staticmethod
     def _build_ser(config: Any, prefill_urls: list[str], decode_urls: list[str], port: int) -> dict[str, Any]:
@@ -101,7 +121,7 @@ class TRTLLMServeFrontend:
         topology: Any,  # FrontendTopology
         runtime: "RuntimeContext",
         config: Any,  # SrtConfig
-        backend: Any,  # BackendProtocol
+        backend: Any,  # Backend
         backend_processes: list["Process"],
         stop_event: "threading.Event | None" = None,
     ) -> list["ManagedProcess"]:
@@ -123,7 +143,7 @@ class TRTLLMServeFrontend:
                 "frontend.enable_multiple_frontends: false"
             )
 
-        if not config.resources.is_disaggregated:
+        if not config.topology.is_disaggregated:
             agg_leaders = [
                 process for process in backend_processes if process.endpoint_mode == "agg" and process.is_leader
             ]
@@ -180,7 +200,8 @@ class TRTLLMServeFrontend:
         container_ser_path = "/logs/ser.yaml"
 
         cmd = ["trtllm-serve", "disaggregated", "--config", container_ser_path]
-        cmd.extend(self.get_frontend_args_list(config.frontend.args))
+        cmd.extend(frontend_args_to_cli(config.frontend.args))
+        cmd = numactl_prefix(config) + cmd
         logger.info("Orchestrator command: %s", shlex.join(cmd))
 
         env_to_set: dict[str, str] = {}

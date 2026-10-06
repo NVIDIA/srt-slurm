@@ -30,7 +30,7 @@ def test_interactive_discovers_curated_examples():
 
     assert SGLANG_ROUTER_DISAGG in examples
     assert MOCKER_EXAMPLE in examples
-    assert len(TOPOLOGY_EXAMPLES) == 14
+    assert len(TOPOLOGY_EXAMPLES) == 16
 
 
 # =============================================================================
@@ -196,7 +196,7 @@ class TestMockerExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
             total_nodes_needed = (r.prefill_nodes or 0) + (r.decode_nodes or 0) + (r.agg_nodes or 0)
             assert total_nodes_needed <= self.RACK.NUM_NODES, (
                 f"{example_path.name}: needs {total_nodes_needed} nodes, rack has {self.RACK.NUM_NODES}"
@@ -210,7 +210,7 @@ class TestMockerExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             endpoints = config.backend.allocate_endpoints(
                 num_prefill=r.num_prefill,
@@ -271,7 +271,7 @@ class TestH100Examples:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             endpoints = config.backend.allocate_endpoints(
                 num_prefill=r.num_prefill,
@@ -316,7 +316,7 @@ class TestCIConfigs:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(recipe_path))
-            r = config.resources
+            r = config.topology
 
             endpoints = config.backend.allocate_endpoints(
                 num_prefill=r.num_prefill,
@@ -345,7 +345,7 @@ class TestCIConfigs:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(recipe_path))
-            r = config.resources
+            r = config.topology
 
             endpoints = config.backend.allocate_endpoints(
                 num_prefill=r.num_prefill,
@@ -397,7 +397,7 @@ class TestSharedNodeDisaggExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             assert r.decode_nodes == 0, "decode_nodes should be 0 (shared node)"
             assert r.gpus_per_prefill == 1
@@ -434,7 +434,7 @@ class TestSharedNodeDisaggExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             nodes = self.RACK.nodes()[:1]
             endpoints = allocate_endpoints(
@@ -470,7 +470,7 @@ class TestSharedNodeDisaggExample:
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
             config = load_config(str(example_path))
-            r = config.resources
+            r = config.topology
 
             total_gpus_needed = r.num_prefill * r.gpus_per_prefill + r.num_decode * r.gpus_per_decode
             total_gpus_available = r.total_nodes * r.gpus_per_node
@@ -482,13 +482,13 @@ class TestSharedNodeDisaggExample:
 
 
 class TestMooncakeKVStore:
-    """Tests for mooncake_kv_store configuration on SGLangProtocol."""
+    """Tests for mooncake_kv_store configuration on SGLangBackend."""
 
     def test_mooncake_worker_env_not_set(self):
         """No mooncake_kv_store → get_mooncake_worker_env returns empty dict."""
-        from srtctl.backends.sglang import SGLangProtocol
+        from srtctl.backends.sglang import SGLangBackend
 
-        backend = SGLangProtocol()
+        backend = SGLangBackend()
         assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
 
     def test_mooncake_worker_env_minimal(self):
@@ -497,10 +497,10 @@ class TestMooncakeKVStore:
             MOONCAKE_HTTP_METADATA_PORT,
             MOONCAKE_MASTER_PORT,
             MooncakeKVStoreConfig,
-            SGLangProtocol,
+            SGLangBackend,
         )
 
-        backend = SGLangProtocol(mooncake_kv_store=MooncakeKVStoreConfig())
+        backend = SGLangBackend(mooncake_kv_store=MooncakeKVStoreConfig())
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
         assert env == {
             "MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
@@ -514,10 +514,10 @@ class TestMooncakeKVStore:
             MOONCAKE_HTTP_METADATA_PORT,
             MOONCAKE_MASTER_PORT,
             MooncakeKVStoreConfig,
-            SGLangProtocol,
+            SGLangBackend,
         )
 
-        backend = SGLangProtocol(
+        backend = SGLangBackend(
             mooncake_kv_store=MooncakeKVStoreConfig(
                 env={
                     "MOONCAKE_MASTER": "should-be-ignored:9999",
@@ -531,9 +531,9 @@ class TestMooncakeKVStore:
 
     def test_mooncake_worker_env_local_hostname_user_can_override(self):
         """User-supplied MOONCAKE_LOCAL_HOSTNAME in env overrides the auto-resolved value."""
-        from srtctl.backends.sglang import MooncakeKVStoreConfig, SGLangProtocol
+        from srtctl.backends.sglang import MooncakeKVStoreConfig, SGLangBackend
 
-        backend = SGLangProtocol(
+        backend = SGLangBackend(
             mooncake_kv_store=MooncakeKVStoreConfig(env={"MOONCAKE_LOCAL_HOSTNAME": "custom-rdma-nic"})
         )
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
@@ -541,9 +541,9 @@ class TestMooncakeKVStore:
 
     def test_mooncake_worker_env_passthrough(self):
         """mooncake_kv_store.env values are merged with MOONCAKE_MASTER."""
-        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangProtocol
+        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangBackend
 
-        backend = SGLangProtocol(
+        backend = SGLangBackend(
             mooncake_kv_store=MooncakeKVStoreConfig(
                 env={
                     "MOONCAKE_PROTOCOL": "rdma",
@@ -572,18 +572,20 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  agg_nodes: 1
-  agg_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store:
     container: nvcr.io/nvidia/mooncake:latest
     master_extra_args:
-      - --nof_eviction_high_watermark_ratio=0.9
+    - --nof_eviction_high_watermark_ratio=0.9
     env:
       MOONCAKE_PROTOCOL: rdma
-      MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: 4gb
+roles:
+  agg:
+    nodes: 1
+    workers: 1
 """)
         config = SrtConfig.Schema().load(raw)
         assert config.backend.mooncake_kv_store is not None
@@ -608,16 +610,19 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+  decode:
+    nodes: 1
+    workers: 1
 """)
         try:
             SrtConfig.Schema().load(raw)
@@ -640,20 +645,22 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
-  sglang_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       disaggregation-transfer-backend: mooncake
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       disaggregation-transfer-backend: mooncake
 """)
         config = SrtConfig.Schema().load(raw)
@@ -672,18 +679,20 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store: {}
-  sglang_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       disaggregation_transfer_backend: mooncake
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       disaggregation_transfer_backend: mooncake
 """)
         # Should not raise.
@@ -702,14 +711,16 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  agg_nodes: 1
-  agg_workers: 1
   gpu_type: h100
-backend:
+engine:
   type: sglang
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
+roles:
+  agg:
+    nodes: 1
+    workers: 1
 """)
         config = SrtConfig.Schema().load(raw)
         assert config.backend.mooncake_kv_store is not None
@@ -722,17 +733,17 @@ class TestVLLMMooncakeKVStore:
 
     def test_vllm_mooncake_worker_env_not_set(self):
         """No mooncake_kv_store → get_mooncake_worker_env returns empty dict."""
-        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.backends.vllm import VLLMBackend
 
-        backend = VLLMProtocol()
+        backend = VLLMBackend()
         assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
 
     def test_vllm_mooncake_worker_env_uses_shared_ports(self):
         """vLLM reuses the shared mooncake_master port pair from srtctl.ports."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
         from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 
-        backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
+        backend = VLLMBackend(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
         assert env == {
             "MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
@@ -743,10 +754,10 @@ class TestVLLMMooncakeKVStore:
 
     def test_vllm_mooncake_master_overrides_user_env(self):
         """User-supplied MOONCAKE_MASTER is always overridden by srtslurm."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
         from srtctl.ports import MOONCAKE_MASTER_PORT
 
-        backend = VLLMProtocol(
+        backend = VLLMBackend(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
                 env={"MOONCAKE_MASTER": "should-be-ignored:9999"}
             )
@@ -756,9 +767,9 @@ class TestVLLMMooncakeKVStore:
 
     def test_vllm_mooncake_local_hostname_user_can_override(self):
         """User MOONCAKE_LOCAL_HOSTNAME overrides the auto-resolved value."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
 
-        backend = VLLMProtocol(
+        backend = VLLMBackend(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
                 env={"MOONCAKE_LOCAL_HOSTNAME": "rdma-nic-ip"}
             )
@@ -779,23 +790,25 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     container: inferactinc/public:mk-int-20260507
     master_extra_args:
-      - --nof_eviction_high_watermark_ratio=0.9
+    - --nof_eviction_high_watermark_ratio=0.9
     env:
       MOONCAKE_PROTOCOL: rdma
-  vllm_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)
@@ -821,16 +834,19 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+  decode:
+    nodes: 1
+    workers: 1
 """)
         with pytest.raises(ValidationError, match="Mooncake connector"):
             SrtConfig.Schema().load(raw)
@@ -866,24 +882,26 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
-  vllm_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{kv_transfer_cfg}'
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{kv_transfer_cfg}'
 """)
         config = SrtConfig.Schema().load(raw)
-        assert "MooncakeStoreConnector" in config.backend.vllm_config.prefill["kv-transfer-config"]
+        assert "MooncakeStoreConnector" in config.backend.get_config_for_mode("prefill")["kv-transfer-config"]
 
     def test_vllm_mooncake_disagg_with_kv_transfer_config_passes(self):
         """vLLM disagg + mooncake_kv_store with MooncakeConnector kv-transfer-config validates clean."""
@@ -898,31 +916,33 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
-  vllm_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)
-        assert config.backend.vllm_config.prefill["kv-transfer-config"]
+        assert config.backend.get_config_for_mode("prefill")["kv-transfer-config"]
 
     def test_vllm_mooncake_store_config_unset_yields_only_master_address(self):
         """No store_config from user → JSON only contains the auto-injected master_server_address."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
         from srtctl.ports import MOONCAKE_MASTER_PORT
 
-        backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
+        backend = VLLMBackend(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
         cfg = backend.build_mooncake_store_config("10.0.0.1")
         # srtslurm intentionally does not default hardware-specific fields
         # (protocol, device_name, global_segment_size, …) — users must set
@@ -931,10 +951,10 @@ backend:
 
     def test_vllm_mooncake_store_config_user_overrides(self):
         """User store_config values pass through; master_server_address is always auto."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
         from srtctl.ports import MOONCAKE_MASTER_PORT
 
-        backend = VLLMProtocol(
+        backend = VLLMBackend(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
                 store_config={
                     "metadata_server": "http://my-metadata:9000",
@@ -957,9 +977,9 @@ backend:
 
     def test_vllm_mooncake_store_config_passes_unknown_keys_through(self):
         """Unknown keys in store_config pass through so new vLLM fields work without code changes."""
-        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
 
-        backend = VLLMProtocol(
+        backend = VLLMBackend(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
                 store_config={"new_upstream_field": "some_value", "another_new_field": 42}
             )
@@ -973,10 +993,10 @@ backend:
         from srtctl.backends.vllm import (
             MOONCAKE_STORE_CONFIG_CONTAINER_PATH,
             VLLMMooncakeKVStoreConfig,
-            VLLMProtocol,
+            VLLMBackend,
         )
 
-        backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
+        backend = VLLMBackend(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
         assert env["MOONCAKE_CONFIG_PATH"] == MOONCAKE_STORE_CONFIG_CONTAINER_PATH
         assert MOONCAKE_STORE_CONFIG_CONTAINER_PATH == "/logs/mooncake_store_config.json"
@@ -994,26 +1014,28 @@ model:
   container: nvcr.io/test:latest
   precision: bf16
 resources:
-  prefill_nodes: 1
-  decode_nodes: 1
-  prefill_workers: 1
-  decode_workers: 1
   gpu_type: gb200
-backend:
+engine:
   type: vllm
   mooncake_kv_store:
     env:
       MOONCAKE_PROTOCOL: rdma
     store_config:
-      metadata_server: "P2PHANDSHAKE"
-      global_segment_size: "100GB"
-      local_buffer_size: "4GB"
-      protocol: "rdma"
-      device_name: ""
-  vllm_config:
-    prefill:
+      metadata_server: P2PHANDSHAKE
+      global_segment_size: 100GB
+      local_buffer_size: 4GB
+      protocol: rdma
+      device_name: ''
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
-    decode:
+  decode:
+    nodes: 1
+    workers: 1
+    args:
       kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)

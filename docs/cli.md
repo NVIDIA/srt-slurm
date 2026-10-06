@@ -1,34 +1,6 @@
-# CLI Reference
+# CLI Guide
 
-`srtctl` is the main command-line interface for submitting benchmark jobs to SLURM.
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Interactive Mode](#interactive-mode)
-  - [Example Browser](#example-browser)
-  - [Configuration Summary](#configuration-summary)
-  - [Interactive Actions Menu](#interactive-actions-menu)
-  - [sbatch Preview](#sbatch-preview)
-  - [Parameter Modification](#parameter-modification)
-  - [Sweep Preview](#sweep-preview)
-  - [Submission Confirmation](#submission-confirmation)
-  - [Workflow Examples](#workflow-examples)
-- [Commands](#commands)
-  - [srtctl apply](#srtctl-apply)
-  - [srtctl dry-run](#srtctl-dry-run)
-  - [srtctl render](#srtctl-render)
-  - [srtctl resolve-override](#srtctl-resolve-override)
-  - [srtctl migrate](#srtctl-migrate)
-  - [srtctl monitor](#srtctl-monitor)
-  - [srtctl status-server](#srtctl-status-server)
-  - [srtctl skill](#srtctl-skill)
-- [Output](#output)
-- [Sweep Support](#sweep-support)
-- [Config Override Support](#config-override-support)
-- [Tips](#tips)
-
----
+`srtctl` is the main command-line interface for submitting benchmark jobs to SLURM. This page covers workflows and behavior; every subcommand's arguments, with their defaults, are generated from the parser into the [CLI Reference](cli-reference.md).
 
 ## Quick Start
 
@@ -250,19 +222,7 @@ Submit a job or sweep to SLURM.
 srtctl apply -f <config.yaml> [options]
 ```
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Path to YAML config file, directory, or `file:selector` for overrides (required) |
-| `--sweep` | Force sweep mode (usually auto-detected) |
-| `--setup-script` | Custom setup script from `configs/` |
-| `--tags` | Comma-separated tags for the run |
-| `--serve-only` | Deploy the endpoint without running a benchmark; serve until cancellation |
-| `--set KEY=VALUE` | Override one recipe value by dotted path before validation (repeatable). Also on `dry-run`, `preflight`, `resolve-override` |
-| `--unset KEY` | Remove one recipe key by dotted path before validation (repeatable) |
-| `-y, --yes` | Skip confirmation prompts |
-| `--no-preflight` | Skip the pre-submit `model.path` / `model.container` / telemetry filesystem checks for this run. `preflight: false` in `srtslurm.yaml` does the same for every run on a cluster whose paths exist only on compute nodes |
+Every argument: [CLI Reference](cli-reference.md#srtctl-apply).
 
 `--set` and `--unset` are the supported way to tweak a recipe from a script instead of editing the YAML. Paths are dotted, `[N]` indexes a list, and quotes protect a segment that contains dots (`container_mounts."/a/b.c"`). Values parse as YAML: `720` is an int, `"720"` a string, `[4, 8]` a list; a mapping such as `{"rope_type": "yarn"}` stays a literal string because that is how engine flags take JSON. Overrides are applied to the raw document before cluster defaults, sweep expansion, and validation, so an explicit `--set` always wins and `{placeholder}` values still expand. On an override file the value is written into `base` and every `override_*` / `zip_override_*` variant, so no variant can shadow it. The applied overrides are listed in each `--json` record as `applied_overrides`, and the `config.yaml` copied into the job directory reflects them. The source file is never modified.
 
@@ -309,12 +269,7 @@ Preview what would be submitted without actually submitting.
 srtctl dry-run -f <config.yaml> [options]
 ```
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Path to YAML config file, directory, or `file:selector` for overrides (required) |
-| `--sweep` | Force sweep mode |
+Every argument: [CLI Reference](cli-reference.md#srtctl-dry-run).
 
 **Examples:**
 
@@ -383,13 +338,7 @@ exactly as for `apply`, and are found the same way: `srtslurm.yaml` in the worki
 directory (or its two parents), or the file `SRTSLURM_CONFIG` points at. A launcher
 that runs `render` from somewhere else should set `SRTSLURM_CONFIG`.
 
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Path to YAML config file, or `file:selector` for one override variant (required) |
-| `--to` | Directory to render into (required) |
-| `--serve-only` | Render a serve-only job (deploy, hold, no benchmark) |
-| `--setup-script` | Custom setup script in `configs/` |
-| `--no-preflight` | Skip the pre-render model/container/telemetry filesystem checks |
+Every argument: [CLI Reference](cli-reference.md#srtctl-render).
 
 ### `srtctl resolve-override`
 
@@ -399,12 +348,7 @@ Expand an override config and write the specialised YAML file(s) without submitt
 srtctl resolve-override -f <config.yaml> [options]
 ```
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Override YAML file, or `file:selector` to resolve a specific variant (required) |
-| `--stdout` | Print resolved YAML to stdout instead of writing files |
+Every argument: [CLI Reference](cli-reference.md#srtctl-resolve-override).
 
 **Examples:**
 
@@ -428,16 +372,15 @@ See [Config Overrides — Resolving Without Submitting](overrides.md#resolving-o
 
 ### `srtctl migrate`
 
-Rewrites a v1 recipe (no `schema: 2`; `backend:`, `backend.<mode>_environment`, `infra:`, `resources.<role>_nodes` / `_workers` / `gpus_per_<role>`, `dynamo.version` / `hash` / `wheel`) into the 2.0 layout. The rewrite is deterministic and keeps comments and key order; do not translate by hand.
+Rewrites a pre-2.0 (v1) recipe (no `schema: 2`; `backend:`, `backend.<mode>_environment`, `infra:`, `resources.<role>_nodes` / `_workers` / `gpus_per_<role>`, `dynamo.version` / `hash` / `wheel`) into the 2.0 layout. Such a recipe no longer loads: `srtctl apply` and `srtctl dry-run` reject it with a pointer to this command. The rewrite is deterministic and keeps comments and key order; do not translate by hand.
 
 ```bash
 srtctl migrate -f old.yaml                 # print the schema-2 document, file untouched
 srtctl migrate -f old.yaml --in-place      # rewrite it; a directory is walked recursively
 srtctl migrate -f old.yaml --output new.yaml
-srtctl migrate -f old.yaml --verify        # migrate in memory and prove v1 and v2 resolve identically
 ```
 
-The key-by-key mapping is in [legacy-v1.md](legacy-v1.md). Notable rewrites: `decode_nodes: 0` becomes `roles.decode.nodes: colocate` with an explicit `gpus` on both roles; v1 `frontend.type: sglang` (the router) becomes `sglang-router`; `infra` becomes `services:` entries; benchmark fields the recipe's type never reads are removed because schema 2 rejects them. The migrator prints a note for each change and for what it deliberately leaves to you: `dynamo.top_of_tree` (pin a commit in `source.rev`), a dedicated etcd node under a frontend that runs no etcd, and a v1 recipe that never named a Dynamo to install (v1 pip-installed PyPI 0.8.0 implicitly; choose `dynamo.source` or `dynamo.install: false`). Finish with `--verify` and a `dry-run`.
+The key-by-key mapping is in [legacy-v1.md](legacy-v1.md). Notable rewrites: `decode_nodes: 0` becomes `roles.decode.nodes: colocate` with an explicit `gpus` on both roles; v1 `frontend.type: sglang` (the router) becomes `sglang-router`; `infra` becomes `services:` entries; benchmark fields the recipe's type never reads are removed because schema 2 rejects them. The migrator prints a note for each change and for what it deliberately leaves to you: a dedicated etcd node under a frontend that runs no etcd, and a v1 recipe that never named a Dynamo to install (v1 pip-installed PyPI 0.8.0 implicitly; choose `dynamo.source` or `dynamo.install: false`). `dynamo.top_of_tree` is kept as is; it has no immutable equivalent under `dynamo.source`, so pin a commit in `source.rev` when you can. Finish with a `dry-run`.
 
 ### `srtctl monitor`
 
@@ -479,6 +422,20 @@ srtctl skill --target cursor            # .cursor/rules/srtctl.mdc
 srtctl skill --target claude --root /path/to/project
 srtctl skill --target claude --print    # to stdout
 ```
+
+### `srtctl schema` and `schema-docs`
+
+Both read the recipe and `srtslurm.yaml` dataclasses, so their keys, types, defaults, allowed values, and descriptions always match what `srtctl apply` loads.
+
+```bash
+srtctl schema                           # JSON Schema (draft 2020-12) for recipes and override files, to stdout
+srtctl schema --cluster                 # JSON Schema for srtslurm.yaml
+srtctl schema --output recipe.schema.json
+srtctl schema-docs                      # regenerate docs/schema-reference.md, docs/schema/*.schema.json, docs/cli-reference.md
+srtctl schema-docs --check              # exit 1 when a checked-in generated file is stale (CI)
+```
+
+The JSON Schema checks shape only (unknown keys, types, enums, required keys). Cross-field rules such as the role topology, placement, and the benchmark keys each `benchmark.type` accepts are checked by `srtctl dry-run`. Point an editor's YAML language server at the published copy with `# yaml-language-server: $schema=https://nvidia.github.io/srt-slurm/schema/recipe.schema.json` as a recipe's first line, or validate with any JSON Schema library.
 
 ### `srtctl-mcp`
 
@@ -552,3 +509,31 @@ grep -E "Env:|Command:" outputs/<job_id>/logs/sweep_<job_id>.log
 - Use `srtctl apply -f` for scripting and CI pipelines
 - Always `dry-run` first for sweeps to check job count
 - Check `outputs/<job_id>/` for submitted configs and metadata
+
+### `srtctl dsight`
+
+Explicitly build or query the offline inference trace explorer. Generation is
+independent of the benchmark job workflow. Run manually in a Bash shell on a
+cluster login node with `uv` on `PATH`, Python 3.10+, a writable checkout that
+includes DSight, readable run artifacts, and a writable report parent directory.
+No Slurm allocation, GPU, running deployment, or container is required.
+
+Replace the quoted placeholders with your paths; relative paths resolve from
+the current working directory.
+
+```bash
+cd "<path_to_srt_slurm_checkout>"
+uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
+  --output "<path_to_report_directory>"
+# Optional: skip OTel processing and lifecycle breakdowns.
+uv run --no-dev srtctl dsight build "<path_to_run_directory>" \
+  --output "<path_to_report_directory>" --no-otel
+uv run --no-dev srtctl dsight query "<path_to_report_directory>" summary
+uv run --no-dev srtctl dsight query "<path_to_report_directory>" requests \
+  --from 10 --to 20 --limit 10
+```
+
+Open the generated `<path_to_report_directory>/index.html` in a browser after
+copying or publishing it. The read-only MCP `query_trace` tool uses the generated
+dataset. See [DSight](dsight.md) for inputs, environment setup, lifecycle semantics,
+Nsight imports, and the browser/Python APIs.

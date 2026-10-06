@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 try:  # mcp 1.x
-    from mcp.server.fastmcp import FastMCP as _Server
+    from mcp.server.fastmcp import FastMCP as _Server  # ty: ignore[unresolved-import]
 
     _V1 = True
 except ImportError:  # mcp 2.x renamed FastMCP to MCPServer and moved host/port to run()
@@ -15,6 +15,7 @@ except ImportError:  # mcp 2.x renamed FastMCP to MCPServer and moved host/port 
 
     _V1 = False
 
+from srtctl.dsight.mcp import register as register_dsight
 from srtctl.mcp import job_tools
 from srtctl.mcp.spec_tools import (
     explain_field as explain_field_impl,
@@ -37,7 +38,7 @@ from srtctl.mcp.spec_tools import (
 
 _HOST = os.getenv("SRTCTL_MCP_HOST", "127.0.0.1")
 _PORT = int(os.getenv("SRTCTL_MCP_PORT", "18082"))
-mcp = _Server("srtctl-spec", host=_HOST, port=_PORT) if _V1 else _Server("srtctl-spec")
+mcp = _Server("srtctl-spec", host=_HOST, port=_PORT) if _V1 else _Server("srtctl-spec")  # ty: ignore[unknown-argument]
 
 
 @mcp.tool()
@@ -48,19 +49,22 @@ def health() -> dict[str, str]:
 
 @mcp.tool()
 def schema_summary() -> dict[str, Any]:
-    """Return a compact summary of the top-level SrtConfig fields."""
+    """Return the top-level recipe keys (type, default, description), engine types, and benchmark types."""
     return schema_summary_impl()
 
 
 @mcp.tool()
 def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict[str, Any]:
-    """Search docs/config-reference.md and return relevant snippets."""
+    """Search the recipe guide pages (docs/config-reference.md, engines.md, topology.md, ...) for prose snippets."""
     return get_config_reference_impl(query=query, max_matches=max_matches)
 
 
 @mcp.tool()
 def explain_field(path: str) -> dict[str, Any]:
-    """Explain a config field path using schema introspection plus config-reference docs."""
+    """Explain a config field path (e.g. roles.decode.nodes): type, default, description, allowed values.
+
+    Read from the schema dataclasses; recipe-guide snippets are added as supplemental context.
+    """
     return explain_field_impl(path)
 
 
@@ -163,6 +167,9 @@ def list_jobs(user: str | None = None) -> dict[str, Any]:
 def cancel_job(job_id: str) -> dict[str, Any]:
     """scancel a job; srtctl stops every step it launched on the way out."""
     return job_tools.cancel_job(job_id)
+
+
+register_dsight(mcp)
 
 
 def main() -> None:

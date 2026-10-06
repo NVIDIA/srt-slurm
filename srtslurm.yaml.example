@@ -11,6 +11,16 @@ default_account: "your-gpu-account"
 default_partition: "gpu"
 default_time_limit: "04:00:00"
 
+# Cluster-specific GPU behavior. NVIDIA defaults need no configuration.
+# On ROCm/Linux, select one visibility mask and omit the NVIDIA exporter:
+# visible_devices_env: ROCR_VISIBLE_DEVICES
+# default_gpu_exporter: null
+# Or configure your cluster's exporter (recipe exporter settings still win):
+# default_gpu_exporter:
+#   container_image: "your-gpu-exporter:image"
+#   command: "your-gpu-exporter --port {port}"
+#   port: 9401
+
 # Some clusters see intermittent git smart-HTTP failures negotiating HTTP/2
 # against github.com (stalls, or truncated responses git misreports as
 # "could not read Username" auth-prompt failures) from certain network paths.

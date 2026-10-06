@@ -5,23 +5,20 @@
 
 import json
 import shlex
+import subprocess
+import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srtctl.backends import (
-    SGLangProtocol,
-    SGLangServerConfig,
-    TRTLLMProtocol,
-    TRTLLMServerConfig,
-    VLLMProtocol,
-    VLLMServerConfig,
-)
+from srtctl.backends import SGLangBackend, TRTLLMBackend, VLLMBackend
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.config import load_config
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import DynamoConfig
+from srtctl.core.schema import DynamoConfig, RoleConfig
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 
@@ -33,6 +30,9 @@ def _process(
     sys_port: int = 7500,
     kv_events_port: int | None = None,
 ) -> Process:
+    # Stand-in for what endpoints_to_processes(dynamo_sidecar=True) allocates:
+    # one sidecar gRPC port and one NCCL port per process, in process order.
+    ordinal = sys_port - 7500
     return Process(
         node=node,
         gpu_indices=frozenset(range(4)),
@@ -43,6 +43,9 @@ def _process(
         node_rank=node_rank,
         bootstrap_port=7200 if mode == "prefill" else None,
         kv_events_port=kv_events_port,
+        sidecar_grpc_port=50051 + ordinal,
+        nccl_port=17500 + ordinal,
+        dist_init_port=8300,
     )
 
 
@@ -82,7 +85,7 @@ def _sglang_endpoint(mode: str, node_count: int, gpus_per_node: int, index: int 
 def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     leader = _process(mode="prefill")
     follower = _process(node="node1", node_rank=1, mode="prefill", sys_port=7501)
-    backend = SGLangProtocol(sglang_config=SGLangServerConfig(prefill={"tensor-parallel-size": 8}))
+    backend = SGLangBackend(roles={"prefill": RoleConfig(args={"tensor-parallel-size": 8})})
 
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         leader_command = backend.build_worker_command(leader, [leader, follower], _runtime())
@@ -117,8 +120,7 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
 )
 def test_sglang_regular_dp_sidecar_leaves_nccl_ports_to_engine(mode: str, args: dict) -> None:
     """A fixed NCCL port makes regular DP's independent TP groups collide."""
-    config_mode = "aggregated" if mode == "agg" else mode
-    backend = SGLangProtocol(sglang_config=SGLangServerConfig(**{config_mode: args}))
+    backend = SGLangBackend(roles={mode: RoleConfig(args=args)})
     processes = backend.endpoints_to_processes([_sglang_endpoint(mode, 1, 2)], dynamo_sidecar=True)
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         command = backend.build_worker_command(processes[0], processes, _runtime())
@@ -132,8 +134,8 @@ def test_sglang_regular_dp_sidecar_leaves_nccl_ports_to_engine(mode: str, args: 
 
 def test_sglang_sidecar_respects_an_explicit_incremental_streaming_setting() -> None:
     process = _process(mode="agg")
-    backend = SGLangProtocol(
-        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 4, "incremental-streaming-output": False})
+    backend = SGLangBackend(
+        roles={"agg": RoleConfig(args={"tensor-parallel-size": 4, "incremental-streaming-output": False})}
     )
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         command = backend.build_worker_command(process, [process], _runtime())
@@ -141,8 +143,8 @@ def test_sglang_sidecar_respects_an_explicit_incremental_streaming_setting() -> 
     # An explicit false is honored: a false bool renders as no flag at all, and srtctl must not
     # add its own copy on top. An explicit true renders exactly once.
     assert "incremental-streaming-output" not in leader_script
-    backend_true = SGLangProtocol(
-        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 4, "incremental-streaming-output": True})
+    backend_true = SGLangBackend(
+        roles={"agg": RoleConfig(args={"tensor-parallel-size": 4, "incremental-streaming-output": True})}
     )
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         command_true = backend_true.build_worker_command(process, [process], _runtime())
@@ -154,9 +156,12 @@ def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
     # aggregated topology never got --kv-events-config and the sidecar's
     # kv_event_sources stayed at 0 (every routed request scored 0.00 cache overlap).
     process = _process(mode="agg", kv_events_port=5557)
-    backend = SGLangProtocol(
-        kv_events_config=True,
-        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 8}),
+    backend = SGLangBackend(
+        roles={
+            "prefill": RoleConfig(kv_events=True),
+            "decode": RoleConfig(kv_events=True),
+            "agg": RoleConfig(args={"tensor-parallel-size": 8}, kv_events=True),
+        }
     )
 
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
@@ -179,11 +184,7 @@ def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
     ],
 )
 def test_sglang_multinode_dp_sidecar_relays_follower_kv_events(mode: str, args: dict) -> None:
-    config_mode = "aggregated" if mode == "agg" else mode
-    backend = SGLangProtocol(
-        kv_events_config={config_mode: {"topic": "cache events"}},
-        sglang_config=SGLangServerConfig(**{config_mode: args}),
-    )
+    backend = SGLangBackend(roles={mode: RoleConfig(args=args, kv_events={"topic": "cache events"})})
     processes = backend.endpoints_to_processes([_sglang_endpoint(mode, 2, 4)], dynamo_sidecar=True)
 
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
@@ -324,7 +325,7 @@ def test_sglang_disagg_dp_example_launches_two_disjoint_worker_groups(tmp_path: 
 def test_sglang_sidecar_only_runs_on_nodes_with_publishers(
     args: dict, node_count: int, gpus_per_node: int, publisher_nodes: set[int]
 ) -> None:
-    backend = SGLangProtocol(kv_events_config=True, sglang_config=SGLangServerConfig(aggregated=args))
+    backend = SGLangBackend(roles={"agg": RoleConfig(args=args, kv_events=True)})
     processes = backend.endpoints_to_processes(
         [_sglang_endpoint("agg", node_count, gpus_per_node)], dynamo_sidecar=True
     )
@@ -340,11 +341,14 @@ def test_sglang_sidecar_only_runs_on_nodes_with_publishers(
             assert "--telemetry-only" not in sidecar
 
 
-@pytest.mark.parametrize("kv_events_config", [None, False, {"aggregated": False}, {"decode": True}])
-def test_sglang_multinode_dp_without_kv_events_has_no_follower_sidecar(kv_events_config: bool | dict | None) -> None:
-    backend = SGLangProtocol(
-        kv_events_config=kv_events_config,
-        sglang_config=SGLangServerConfig(aggregated={"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}),
+@pytest.mark.parametrize("kv_events_config", [None, False])
+def test_sglang_multinode_dp_without_kv_events_has_no_follower_sidecar(kv_events_config: bool | None) -> None:
+    backend = SGLangBackend(
+        roles={
+            "agg": RoleConfig(
+                args={"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}, kv_events=kv_events_config
+            )
+        }
     )
     processes = backend.endpoints_to_processes([_sglang_endpoint("agg", 2, 4)], dynamo_sidecar=True)
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
@@ -363,9 +367,12 @@ def test_sglang_multinode_dp_without_kv_events_has_no_follower_sidecar(kv_events
 
 
 def test_sglang_null_publisher_has_no_follower_sidecar() -> None:
-    backend = SGLangProtocol(
-        kv_events_config={"aggregated": {"publisher": "null"}},
-        sglang_config=SGLangServerConfig(aggregated={"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}),
+    backend = SGLangBackend(
+        roles={
+            "agg": RoleConfig(
+                args={"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}, kv_events={"publisher": "null"}
+            )
+        }
     )
     processes = backend.endpoints_to_processes([_sglang_endpoint("agg", 2, 4)], dynamo_sidecar=True)
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
@@ -381,9 +388,8 @@ def test_sglang_null_publisher_has_no_follower_sidecar() -> None:
 
 
 def test_sglang_colocated_dp_workers_reserve_nonoverlapping_publisher_ports() -> None:
-    backend = SGLangProtocol(
-        kv_events_config=True,
-        sglang_config=SGLangServerConfig(aggregated={"tp-size": 4, "dp-size": 4, "enable-dp-attention": True}),
+    backend = SGLangBackend(
+        roles={"agg": RoleConfig(args={"tp-size": 4, "dp-size": 4, "enable-dp-attention": True}, kv_events=True)}
     )
     endpoints = [
         Endpoint(mode="agg", index=0, nodes=("node0",), gpu_indices=frozenset(range(4)), gpus_per_node=8),
@@ -410,13 +416,11 @@ def test_sglang_colocated_dp_workers_reserve_nonoverlapping_publisher_ports() ->
 
 def test_sglang_follower_global_dp_port_offsets_do_not_collide_with_next_worker() -> None:
     allocator = NodePortAllocator()
-    multinode_backend = SGLangProtocol(
-        kv_events_config=True,
-        sglang_config=SGLangServerConfig(aggregated={"tp-size": 4, "dp-size": 4, "enable-dp-attention": True}),
+    multinode_backend = SGLangBackend(
+        roles={"agg": RoleConfig(args={"tp-size": 4, "dp-size": 4, "enable-dp-attention": True}, kv_events=True)}
     )
-    local_backend = SGLangProtocol(
-        kv_events_config={"decode": True},
-        sglang_config=SGLangServerConfig(decode={"tp-size": 2, "dp-size": 2, "enable-dp-attention": True}),
+    local_backend = SGLangBackend(
+        roles={"decode": RoleConfig(args={"tp-size": 2, "dp-size": 2, "enable-dp-attention": True}, kv_events=True)}
     )
     multinode_processes = multinode_backend.endpoints_to_processes(
         [_sglang_endpoint("agg", 2, 2)], port_allocator=allocator, dynamo_sidecar=True
@@ -446,12 +450,55 @@ def test_sglang_follower_global_dp_port_offsets_do_not_collide_with_next_worker(
     assert {follower_base + 2, follower_base + 3}.isdisjoint({local_base, local_base + 1})
 
 
-def test_vllm_sidecar_exposes_one_complete_multi_node_dp_group() -> None:
-    backend = VLLMProtocol(
+@pytest.mark.parametrize("dp_size", [8, 12])
+def test_vllm_sidecar_exposes_each_nodes_hybrid_dp_range(dp_size: int) -> None:
+    # Regression: a headless follower has no local gRPC/sidecar endpoint, so
+    # Dynamo cannot route to that node independently of the group leader.
+    backend = VLLMBackend(
         connector=None,
-        kv_events_config={"decode": True},
-        vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, "enable-expert-parallel": True}),
+        roles={
+            "decode": RoleConfig(args={"data-parallel-size": dp_size, "enable-expert-parallel": True}, kv_events=True)
+        },
     )
+    endpoint = Endpoint(
+        mode="decode",
+        index=0,
+        nodes=tuple(f"node{i}" for i in range(dp_size // 4)),
+        gpu_indices=frozenset(range(4)),
+        gpus_per_node=4,
+    )
+    processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
+    node_ips = {node: f"10.0.0.{i + 1}" for i, node in enumerate(endpoint.nodes)}
+
+    with patch("srtctl.core.slurm.get_hostname_ip", side_effect=lambda node, _interface=None: node_ips[node]):
+        commands = [backend.build_worker_command(process, processes, _runtime()) for process in processes]
+
+    assert [process.node_rank for process in processes] == list(range(0, dp_size, 4))
+    for i, (process, command) in enumerate(zip(processes, commands, strict=True)):
+        assert command[:2] == ["bash", "-lc"]
+        script = command[2]
+        engine_line = next(line for line in script.splitlines() if "vllm.entrypoints.cli.main serve" in line)
+        engine = shlex.split(engine_line)
+        assert "VLLM_USE_RUST_FRONTEND=1" in engine
+        assert engine[engine.index("--data-parallel-size") + 1] == str(dp_size)
+        assert engine[engine.index("--data-parallel-size-local") + 1] == "4"
+        assert engine[engine.index("--data-parallel-start-rank") + 1] == str(i * 4)
+        assert "--data-parallel-hybrid-lb" in engine
+        assert "--headless" not in engine
+        assert engine[engine.index("--data-parallel-address") + 1] == node_ips["node0"]
+        assert engine[engine.index("--data-parallel-rpc-port") + 1] == str(processes[0].dp_rpc_port)
+        assert engine[engine.index("--grpc-port") + 1] == str(50051 + i)
+        assert f"python3 -m dynamo.vllm.sidecar --grpc-endpoint 127.0.0.1:{50051 + i}" in script
+        assert 'wait -n "${ENGINE_PID}" "${SIDECAR_PID}"' in script
+        kv_config = json.loads(engine[engine.index("--kv-events-config") + 1])
+        assert kv_config["endpoint"] == f"tcp://{node_ips[process.node]}:{process.kv_events_port}"
+
+
+@pytest.mark.parametrize("override", [{"grpc": True}, {"data_parallel_external_lb": True}, {"api-server-count": 0}])
+def test_vllm_sidecar_rejects_frontend_options_that_bypass_hybrid_lb(override: dict) -> None:
+    # A valid recipe must not disable the local frontend or select Python gRPC
+    # while srtctl waits for a Rust Control service on that node.
+    backend = VLLMBackend(connector=None, roles={"decode": RoleConfig(args={"data-parallel-size": 8, **override})})
     endpoint = Endpoint(
         mode="decode",
         index=0,
@@ -460,46 +507,169 @@ def test_vllm_sidecar_exposes_one_complete_multi_node_dp_group() -> None:
         gpus_per_node=4,
     )
     processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
-    node_ips = {"node0": "10.0.0.1", "node1": "10.0.0.2"}
-
-    with patch("srtctl.core.slurm.get_hostname_ip", side_effect=lambda node, _interface=None: node_ips[node]):
-        leader_command = backend.build_worker_command(processes[0], processes, _runtime())
-        follower_command = backend.build_worker_command(processes[1], processes, _runtime())
-
-    assert [(process.node, process.node_rank) for process in processes] == [("node0", 0), ("node1", 4)]
-    leader_script = leader_command[2]
-    assert "--data-parallel-size 8 --data-parallel-size-local 4" in leader_script
-    assert "python3 -m dynamo.vllm.sidecar --grpc-endpoint 127.0.0.1:50051" in leader_script
-    assert follower_command[:3] == ["vllm-rs", "serve", "/model"]
-    assert "--headless" in follower_command
-    follower_kv_config = json.loads(follower_command[follower_command.index("--kv-events-config") + 1])
-    assert follower_kv_config["endpoint"] == "tcp://10.0.0.2:5204"
-    assert follower_command[-2:] == ["--data-parallel-start-rank", "4"]
-    assert "dynamo.vllm.sidecar" not in follower_command
-
-
-def test_vllm_sidecar_rejects_unimplemented_multi_node_tp() -> None:
-    leader = _process(node="node0")
-    follower = _process(node="node1", node_rank=1, sys_port=7501)
-    backend = VLLMProtocol(connector=None)
-
     with (
         patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
-        pytest.raises(ValueError, match="does not support multi-node tensor-parallel"),
+        pytest.raises(ValueError, match="sidecar hybrid mode requires"),
     ):
-        backend.build_worker_command(leader, [leader, follower], _runtime())
+        backend.build_worker_command(processes[0], processes, _runtime())
 
 
-def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "parallelism",
+    [
+        {"tensor-parallel-size": 8},
+        {"tensor_parallel_size": 8, "enable-expert-parallel": True, "data-parallel-size": 1},
+        {"tensor-parallel-size": 4, "pipeline-parallel-size": 2},
+        {"tensor-parallel-size": 16, "enable-expert-parallel": True},
+    ],
+)
+def test_vllm_sidecar_multi_node_replica_has_one_frontend(parallelism: dict) -> None:
+    # Regression: exposing a sidecar on a TP follower either hangs startup or
+    # registers an engine incapable of serving independent requests.
+    backend = VLLMBackend(
+        connector=None,
+        roles={
+            "agg": RoleConfig(
+                args={
+                    **parallelism,
+                    "api-server-count": 1,
+                    "master_addr": "stale-host",
+                    "node_rank": 7,
+                    "nnodes": 9,
+                    "master_port": 1234,
+                }
+            )
+        },
+    )
+    tp = parallelism.get("tensor-parallel-size", parallelism.get("tensor_parallel_size", 1))
+    node_count = tp * parallelism.get("pipeline-parallel-size", 1) // 4
+    endpoint = Endpoint(
+        mode="agg",
+        index=0,
+        nodes=tuple(f"node{i}" for i in range(node_count)),
+        gpu_indices=frozenset(range(4)),
+        gpus_per_node=4,
+    )
+    processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
+    runtime = _runtime()
+    runtime.network_interface = "ib0"
+
+    def node_ip(node, interface=None):
+        assert interface == "ib0"
+        return f"10.0.0.{endpoint.nodes.index(node) + 1}"
+
+    with patch("srtctl.core.slurm.get_hostname_ip", side_effect=node_ip):
+        commands = [backend.build_worker_command(p, processes, runtime) for p in processes]
+
+    engines = []
+    for rank, command in enumerate(commands):
+        subprocess.run(["bash", "-n", "-c", command[2]], check=True)
+        engine = shlex.split(
+            next(line for line in command[2].splitlines() if "vllm.entrypoints.cli.main serve" in line)
+        )
+        engines.append(engine)
+        assert "VLLM_USE_RUST_FRONTEND=1" in engine
+        for flag, value in {
+            "--nnodes": str(node_count),
+            "--node-rank": str(rank),
+            "--master-addr": "10.0.0.1",
+            "--distributed-executor-backend": "mp",
+        }.items():
+            assert engine.count(flag) == 1
+            assert engine[engine.index(flag) + 1] == value
+        assert ("--enable-expert-parallel" in engine) == bool(parallelism.get("enable-expert-parallel"))
+    master_ports = [engine[engine.index("--master-port") + 1] for engine in engines]
+    assert len(set(master_ports)) == 1 and master_ports[0] != "1234"
+    assert master_ports[0] != engines[0][engines[0].index("--port") + 1]
+    assert "dynamo.vllm.sidecar" in commands[0][2]
+    assert "--grpc-port" in engines[0]
+    assert "--headless" not in engines[0]
+    for engine, command in zip(engines[1:], commands[1:], strict=True):
+        assert "--headless" in engine
+        assert not {"--grpc", "--grpc-port", "--port", "--api-server-count"}.intersection(engine)
+        assert "dynamo.vllm.sidecar" not in command[2]
+        assert "/dev/tcp" not in command[2]
+
+    from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
+
+    config = SimpleNamespace(
+        backend=backend,
+        dynamo=runtime.dynamo,
+        frontend=SimpleNamespace(type="dynamo"),
+        topology=SimpleNamespace(num_agg=1, num_prefill=0, num_decode=0),
+    )
+    prefill, decode, _, total = _get_health_expectations(config, processes)
+    assert (prefill, decode, total) == (0, 1, 1)
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_headless_follower_exit_is_reported_as_failure(exit_code: int) -> None:
+    # A clean but unexpected follower exit must trigger ProcessRegistry's
+    # nonzero-exit detection and therefore stop the rest of the job.
+    from srtctl.backends.sidecar import build_sidecar_launch_command
+
+    command = build_sidecar_launch_command(
+        engine=["bash", "-c", f"exit {exit_code}"],
+        sidecar=None,
+        grpc_port=50051,
+        engine_name="vLLM follower",
+        startup_timeout=60,
+    )
+    # Exercise the wrapper without sourcing workstation login-shell hooks.
+    command[1] = "-c"
+    result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == (exit_code or 1)
+
+
+def test_headless_follower_termination_reaps_engine(tmp_path: Path) -> None:
+    # Job-wide cleanup signals the wrapper; its engine must not survive it.
+    from srtctl.backends.sidecar import build_sidecar_launch_command
+
+    ready = tmp_path / "ready"
+    stopped = tmp_path / "stopped"
+    engine = (
+        "import signal,time; from pathlib import Path; "
+        f"signal.signal(signal.SIGTERM, lambda *_: (Path({str(stopped)!r}).touch(), exit(0))); "
+        f"Path({str(ready)!r}).touch(); time.sleep(60)"
+    )
+    command = build_sidecar_launch_command(
+        engine=[sys.executable, "-c", engine],
+        sidecar=None,
+        grpc_port=50051,
+        engine_name="vLLM follower",
+        startup_timeout=60,
+    )
+    command[1] = "-c"
+    child = subprocess.Popen(command)
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        child.terminate()
+        child.wait(timeout=15)
+        assert stopped.exists()
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            child.wait(timeout=15)
+
+
+@pytest.mark.parametrize("memory_bind", [False, True, "local"])
+def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, memory_bind) -> None:
     process = _process()
-    backend = TRTLLMProtocol(
-        trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 4, "max_seq_len": 4096}),
+    backend = TRTLLMBackend(
+        roles={"agg": RoleConfig(args={"tensor_parallel_size": 4, "max_seq_len": 4096})},
+        numa_cpu_bind=memory_bind is not False,
+        numa_memory_bind=memory_bind,
     )
 
     command = backend.build_worker_command(process, [process], _runtime(tmp_path))
 
     script = command[2]
     assert "trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /model" in script
+    assert ("bash /configs/numa_cpu_bind.sh --bind-memory" in script) is (memory_bind == "local")
+    assert ("numactl -m 0,1" in script) is (memory_bind is True)
     assert "--grpc --host 127.0.0.1 --port 50051" in script
     assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path /model" in script
     assert "--context-length 4096" in script
@@ -507,7 +677,7 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path) -> None:
 
 
 def test_trtllm_sidecar_rejects_disaggregated_workers(tmp_path: Path) -> None:
-    backend = TRTLLMProtocol()
+    backend = TRTLLMBackend()
 
     with pytest.raises(ValueError, match="supports aggregated workers only"):
         backend.build_worker_command(_process(mode="prefill"), [], _runtime(tmp_path))

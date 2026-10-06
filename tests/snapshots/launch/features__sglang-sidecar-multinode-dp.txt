@@ -1,0 +1,383 @@
+# examples/features/sglang-sidecar-multinode-dp.yaml
+# exit_code: 0
+# srun calls: 15
+
+## service_etcd
+nodelist: node-01
+output: <output>/logs/service_etcd.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/etcd && mkdir -p /tmp/etcd
+command: |
+    /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_nats
+nodelist: node-01
+output: <output>/logs/service_nats.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/nats && mkdir -p /tmp/nats
+command: |
+    /configs/nats-server -js -sd /tmp/nats
+
+## agg_0_node-01
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_EVENT_PLANE: nats
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: nats
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7500
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    NATS_SERVER: nats://127.0.0.1:4222
+    PYTHONUNBUFFERED: 1
+    SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
+    SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
+    SGLANG_RUST_BUILD_MODE: never
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    bash -lc 'set -euo pipefail
+    ENGINE_PID=
+    SIDECAR_PID=
+    request_stop() {
+        local pid="${1:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    }
+    reap_with_timeout() {
+        local pid="${1:-}"
+        if [[ -z "${pid}" ]]; then return; fi
+        for _ in $(seq 1 10); do
+            if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+    }
+    cleanup() {
+        status=$?
+        trap - EXIT INT TERM
+        request_stop "${SIDECAR_PID}"
+        request_stop "${ENGINE_PID}"
+        reap_with_timeout "${SIDECAR_PID}"
+        reap_with_timeout "${ENGINE_PID}"
+        exit "${status}"
+    }
+    trap cleanup EXIT INT TERM
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 0 --grpc-port 50051 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:5200"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
+    ENGINE_PID=$!
+    port_ready=0
+    for _ in $(seq 1 3600); do
+        if ! kill -0 "${ENGINE_PID}" 2>/dev/null; then
+            echo "SGLang exited before native gRPC became ready" >&2
+            exit 1
+        fi
+        if (exec 3<>/dev/tcp/127.0.0.1/50051) 2>/dev/null; then
+            exec 3>&-
+            port_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "${port_ready}" != 1 ]]; then
+        echo "Timed out waiting for SGLang native gRPC on port 50051" >&2
+        exit 1
+    fi
+    python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:50051 &
+    SIDECAR_PID=$!
+    set +e
+    wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
+    status=$?
+    set -e
+    if [[ "${status}" == 0 ]]; then status=1; fi
+    exit "${status}"
+    
+    '
+
+## agg_0_node-02
+nodelist: node-02
+output: <output>/logs/node-02_agg_w0.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_EVENT_PLANE: nats
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: nats
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7501
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    NATS_SERVER: nats://127.0.0.1:4222
+    PYTHONUNBUFFERED: 1
+    SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
+    SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
+    SGLANG_RUST_BUILD_MODE: never
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    bash -lc 'set -euo pipefail
+    ENGINE_PID=
+    SIDECAR_PID=
+    request_stop() {
+        local pid="${1:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    }
+    reap_with_timeout() {
+        local pid="${1:-}"
+        if [[ -z "${pid}" ]]; then return; fi
+        for _ in $(seq 1 10); do
+            if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+    }
+    cleanup() {
+        status=$?
+        trap - EXIT INT TERM
+        request_stop "${SIDECAR_PID}"
+        request_stop "${ENGINE_PID}"
+        reap_with_timeout "${SIDECAR_PID}"
+        reap_with_timeout "${ENGINE_PID}"
+        exit "${status}"
+    }
+    trap cleanup EXIT INT TERM
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 0 --nccl-port 17501 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 1 --grpc-port 50052 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:5202"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
+    ENGINE_PID=$!
+    port_ready=0
+    for _ in $(seq 1 3600); do
+        if ! kill -0 "${ENGINE_PID}" 2>/dev/null; then
+            echo "SGLang exited before native gRPC became ready" >&2
+            exit 1
+        fi
+        if (exec 3<>/dev/tcp/127.0.0.1/50052) 2>/dev/null; then
+            exec 3>&-
+            port_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "${port_ready}" != 1 ]]; then
+        echo "Timed out waiting for SGLang native gRPC on port 50052" >&2
+        exit 1
+    fi
+    python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:50052 &
+    SIDECAR_PID=$!
+    set +e
+    wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
+    status=$?
+    set -e
+    if [[ "${status}" == 0 ]]; then status=1; fi
+    exit "${status}"
+    
+    '
+
+## frontend_0
+nodelist: node-01
+output: <output>/logs/node-01_frontend_0.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_EVENT_PLANE: nats
+    DYN_REQUEST_PLANE: nats
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+mpi: pmix
+command: |
+    python3 -m dynamo.frontend --http-port=8000 --router-mode kv
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_dcgm-exporter_node-04.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_node-exporter_node-04.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: <container>
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    SRTCTL_FRONTEND_TYPE: dynamo
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+command: |
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 64 4 inf /model Qwen/Qwen3-0.6B false 2 0 0 0.8 10 2 '' true random '' false

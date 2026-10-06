@@ -8,11 +8,18 @@ from __future__ import annotations
 import logging
 import shlex
 import threading
+from abc import abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from srtctl.core.health import WorkerHealthResult, check_static_router_health
+from srtctl.core.health import (
+    WorkerHealthResult,
+    check_static_router_health,
+    probe_json_health,
+    wait_for_http_endpoints,
+)
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.frontends.base import Frontend, numactl_prefix
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -31,20 +38,61 @@ class RouterWorker:
     bootstrap_port: int | None = None
 
 
-class StaticRouterFrontend:
-    """Base class for routers whose worker topology is supplied on the CLI."""
+class StaticRouterFrontend(Frontend):
+    """Base class for routers whose worker topology is supplied on the CLI.
 
-    type: ClassVar[str]
-    backend_type: ClassVar[str]
-    executable: ClassVar[tuple[str, ...]]
-    pd_flag: ClassVar[str]
-    process_name: ClassVar[str]
+    A subclass sets the class attributes, registers with ``@register_frontend``,
+    and overrides only the hooks whose behavior differs.
+    """
+
+    @property
+    @abstractmethod
+    def executable(self) -> tuple[str, ...]:
+        """Router executable and any fixed launch arguments."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def pd_flag(self) -> str:
+        """CLI flag enabling prefill/decode disaggregation."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def process_name(self) -> str:
+        """Name used for the router's managed process and logs."""
+        raise NotImplementedError
+
     log_label: ClassVar[str | None] = None
     allow_empty_workers: ClassVar[bool] = False
+    # Probe every advertised HTTP worker for 200 before launching the router. A router whose
+    # static registration expires when model loading outlasts its startup window sets this.
+    wait_for_workers_before_start: ClassVar[bool] = False
 
     @property
     def health_endpoint(self) -> str:
         return "/workers"
+
+    def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
+        """A routed worker binds its own allocated port; the router owns the public one."""
+        return "allocated"
+
+    def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
+        """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing."""
+        if process.is_leader and process.http_port > 0:
+            return process.http_port
+        return None
+
+    def worker_endpoint_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        if process.is_leader and process.http_port > 0:
+            return process.http_port
+        return None
+
+    def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        return process.http_port if process.http_port > 0 else None
+
+    def worker_ready_port(self, process: Process) -> int:
+        return process.sys_port
 
     def parse_health(
         self,
@@ -53,6 +101,12 @@ class StaticRouterFrontend:
         expected_decode: int,
     ) -> WorkerHealthResult:
         return check_static_router_health(response_json, expected_prefill, expected_decode)
+
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
+    ) -> WorkerHealthResult:
+        """One GET of the router's worker registry, parsed against the expected counts."""
+        return probe_json_health(host, port, self.health_endpoint, self.parse_health, expected_prefill, expected_decode)
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert config values to CLI arguments, preserving repeated values."""
@@ -79,17 +133,14 @@ class StaticRouterFrontend:
         backend_processes: list[Process],
     ) -> list[str]:
         """Return adapter-managed CLI arguments derived from srtctl config."""
-        del config, backend, backend_processes
         return []
 
     def worker_scheme(self, backend: Any, mode: str) -> str:
         """Return the protocol used to reach one worker endpoint."""
-        del backend, mode
         return "http"
 
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
         """Return the optional P/D bootstrap port advertised for a worker."""
-        del backend
         return process.bootstrap_port
 
     def resolve_worker_host(self, node: str, network_interface: str | None) -> str:
@@ -102,7 +153,6 @@ class StaticRouterFrontend:
 
     def build_bash_preamble(self, config: Any) -> str | None:
         """Return adapter-specific shell setup to run before the router."""
-        del config
         return None
 
     def collect_workers(
@@ -139,10 +189,17 @@ class StaticRouterFrontend:
         network_interface: str | None = None,
     ) -> list[str]:
         """Return extra direct readiness requirements, if any."""
-        del backend, backend_processes, network_interface
         return []
 
-    def build_router_command(self, workers: list[RouterWorker], host: str, port: int) -> list[str]:
+    def discovers_workers(self, backend: Any) -> bool:
+        """Whether the router learns its workers by registration instead of from its command line.
+
+        A discovering router gets no ``--prefill``/``--decode`` URLs; the subclass
+        adds its discovery flags. Static routers never discover.
+        """
+        return False
+
+    def build_router_command(self, workers: list[RouterWorker], host: str, port: int, backend: Any) -> list[str]:
         """Build the router CLI for aggregate or prefill/decode topologies."""
         aggregate = [worker for worker in workers if worker.mode == "agg"]
         prefills = [worker for worker in workers if worker.mode == "prefill"]
@@ -155,12 +212,13 @@ class StaticRouterFrontend:
             if not prefills or not decodes:
                 raise ValueError("Disaggregated static router topology requires prefill and decode workers")
             cmd.append(self.pd_flag)
-            for worker in prefills:
-                cmd.extend(["--prefill", worker.url])
-                if worker.bootstrap_port is not None:
-                    cmd.append(str(worker.bootstrap_port))
-            for worker in decodes:
-                cmd.extend(["--decode", worker.url])
+            if not self.discovers_workers(backend):
+                for worker in prefills:
+                    cmd.extend(["--prefill", worker.url])
+                    if worker.bootstrap_port is not None:
+                        cmd.append(str(worker.bootstrap_port))
+                for worker in decodes:
+                    cmd.extend(["--decode", worker.url])
         else:
             if not aggregate:
                 if self.allow_empty_workers:
@@ -182,22 +240,43 @@ class StaticRouterFrontend:
         backend_processes: list[Process],
         stop_event: threading.Event | None = None,
     ) -> list[ManagedProcess]:
-        del stop_event  # Static routers return immediately after launch.
         from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
-        configured_backend = getattr(getattr(config, "backend", None), "type", self.backend_type)
-        if configured_backend != self.backend_type:
+        configured_backend = getattr(getattr(config, "backend", None), "type", self.required_backend)
+        if self.required_backend is not None and configured_backend != self.required_backend:
             raise ValueError(
-                f"frontend.type: {self.type} requires backend.type: {self.backend_type} (got {configured_backend!r})"
+                f"frontend.type: {self.type} requires backend.type: {self.required_backend} "
+                f"(got {configured_backend!r})"
             )
 
         workers = self.collect_workers(backend, backend_processes, runtime.network_interface)
+        if self.wait_for_workers_before_start and config.health_check is not None:
+            health_urls = [
+                f"{worker.url.rstrip('/')}/health"
+                for worker in workers
+                if worker.url.startswith(("http://", "https://"))
+            ]
+            if health_urls:
+                logger.info(
+                    "Waiting for %d advertised backend endpoints before starting %s", len(health_urls), self.type
+                )
+                health_check = config.health_check
+                if not wait_for_http_endpoints(
+                    health_urls,
+                    poll_interval=float(health_check.interval_seconds),
+                    timeout=float(health_check.max_attempts * health_check.interval_seconds),
+                    report_every=60.0,
+                    stop_event=stop_event,
+                ):
+                    raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
+
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):
             router_log = runtime.log_dir / f"{node}_{self.log_label or self.type}_{idx}.out"
-            cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port)
+            cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port, backend)
             cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
+            cmd = numactl_prefix(config) + cmd
             logger.info("Starting %s %d on %s: %s", self.type, idx, node, shlex.join(cmd))
 
             container_image = getattr(config.frontend, "container_image", None) or str(runtime.container_image)
@@ -214,6 +293,7 @@ class StaticRouterFrontend:
                 bash_preamble=self.build_bash_preamble(config),
                 het_group=runtime.nodes.het_group_for(node),
                 step_name=step_name,
+                srun_options=runtime.srun_options,
             )
             processes.append(
                 ManagedProcess(

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from srtctl.core.power.cpu_rails import OTHER_KIND, classify_acpi_label
+from srtctl.core.power.hwmon import is_power_meter
 
 # Channel classification is shared with the scraper and host collector via
 # cpu_rails so the published ``type`` label uses the canonical rail kinds
@@ -39,10 +40,7 @@ def _find_power_meter_sensors(hwmon_root: Path = Path("/sys/class/hwmon")) -> li
     sensors: list[dict[str, Any]] = []
     seen: set[str] = set()
     for hwmon_dir in sorted(hwmon_root.glob("hwmon*")):
-        try:
-            if (hwmon_dir / "name").read_text().strip() != "power_meter":
-                continue
-        except OSError:
+        if not is_power_meter(hwmon_dir):
             continue
         for root in (hwmon_dir / "device", hwmon_dir):
             for avg_path in sorted(root.glob("power*_average")):
@@ -130,7 +128,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, fmt: str, *args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:
         pass  # suppress default access log noise
 
 

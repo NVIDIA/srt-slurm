@@ -5,7 +5,7 @@
 
 Three things used to be launched by bespoke stages with their own placement
 knobs, readiness loops, and no dry-run output: etcd and NATS for the Dynamo
-frontend, the Mooncake master for ``backend.mooncake_kv_store``, and the DCGM and
+frontend, the Mooncake master for ``engine.mooncake_kv_store``, and the DCGM and
 node exporters tachometer scrapes. They are services now. This module derives
 the implicit ones from the rest of the recipe, lets a declared entry of the same
 name take over (or drop it with ``enabled: false``), and hands the effective
@@ -17,12 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from srtctl.backends.vllm import VLLMBackend, VLLMMooncakeKVStoreConfig
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
+    from srtctl.core.topology import WorkerMode
 
 ETCD_SERVICE_NAME = "etcd"
 NATS_SERVICE_NAME = "nats"
@@ -42,8 +44,9 @@ class EffectiveService:
     reason: str = ""
 
 
-def _infra_placement(config: SrtConfig) -> ServicePlacementConfig:
-    return ServicePlacementConfig(node="dedicated" if config.infra.etcd_nats_dedicated_node else "infra")
+def infra_placement(config: SrtConfig) -> ServicePlacementConfig:
+    """Where the discovery plane and other infra services run: the infra node, or a dedicated one."""
+    return ServicePlacementConfig(node="dedicated" if config.infra_dedicated_node else "infra")
 
 
 def nats_implied_reasons(config: SrtConfig) -> list[str]:
@@ -51,12 +54,12 @@ def nats_implied_reasons(config: SrtConfig) -> list[str]:
 
     The request plane defaults to ``tcp`` and KV events default to direct ZMQ, so
     NATS is implied only by ``dynamo.request_plane: nats``, ``dynamo.event_plane: nats``,
-    or a v1 ``infra.nats_max_payload_mb`` (a knob that only means anything with NATS).
+    or a ``nats`` service entry with ``options.max_payload_mb`` (a knob that only means
+    anything with NATS).
     """
     if getattr(config.frontend, "type", None) != "dynamo":
         return []
     dynamo = getattr(config, "dynamo", None)
-    infra = getattr(config, "infra", None)
     reasons = [
         f"dynamo.{field} nats"
         for field, value in (
@@ -65,8 +68,8 @@ def nats_implied_reasons(config: SrtConfig) -> list[str]:
         )
         if value == "nats"
     ]
-    if getattr(infra, "nats_max_payload_mb", None) is not None:
-        reasons.append("infra.nats_max_payload_mb")
+    if getattr(config, "nats_max_payload_mb", None) is not None:
+        reasons.append("services[nats].options.max_payload_mb")
     return reasons
 
 
@@ -78,50 +81,70 @@ def runs_nats(config: SrtConfig) -> bool:
     return bool(nats_implied_reasons(config))
 
 
+def connector_services(config: SrtConfig) -> list[EffectiveService]:
+    """The service each vLLM role's KV connector needs on its nodes (``KVConnector.service_type``).
+
+    Placed on the one role that uses the connector, or on every worker node when
+    several do. A declared service of that type owns the placement instead.
+    """
+    backend = config.backend
+    if not isinstance(backend, VLLMBackend):
+        return []
+    resources = config.topology
+    workers: dict[WorkerMode, int] = {
+        "prefill": resources.num_prefill,
+        "decode": resources.num_decode,
+        "agg": resources.num_agg,
+    }
+    modes_by_type: dict[str, list[WorkerMode]] = {}
+    for mode, count in workers.items():
+        row = backend.kv_connector_for_mode(mode)
+        if count and row is not None and row.service_type is not None:
+            modes_by_type.setdefault(row.service_type, []).append(mode)
+    declared = {service.type for service in config.services}
+    return [
+        EffectiveService(
+            ServiceConfig(
+                name=service_type,
+                type=service_type,
+                placement=ServicePlacementConfig(node=modes[0] if len(modes) == 1 else "workers"),
+            ),
+            implicit=True,
+            reason=", ".join(f"{mode} connector {backend.connector_for_mode(mode)}" for mode in modes),
+        )
+        for service_type, modes in modes_by_type.items()
+        if service_type not in declared
+    ]
+
+
 def implied_services(config: SrtConfig) -> list[EffectiveService]:
     """Services the rest of the recipe asks for without naming them."""
     implied: list[EffectiveService] = []
 
-    if config.frontend.type == "dynamo":
-        placement = _infra_placement(config)
-        implied.append(
-            EffectiveService(
-                ServiceConfig(name=ETCD_SERVICE_NAME, type="etcd", placement=placement),
-                implicit=True,
-                reason="frontend.type dynamo",
-            )
-        )
-        # NATS is only a dependency when a plane actually rides on it. The default
-        # request plane is tcp and KV events go over direct ZMQ, so a plain Dynamo
-        # job runs etcd alone; declare a `nats` service to force one anyway.
-        nats_reasons = nats_implied_reasons(config)
-        if nats_reasons:
-            nats_options = {}
-            if config.infra.nats_max_payload_mb is not None:
-                nats_options["max_payload_mb"] = config.infra.nats_max_payload_mb
-            implied.append(
-                EffectiveService(
-                    ServiceConfig(name=NATS_SERVICE_NAME, type="nats", placement=placement, options=nats_options),
-                    implicit=True,
-                    reason=", ".join(nats_reasons),
-                )
-            )
+    # The frontend brings its own discovery plane (Dynamo: etcd, and NATS when a
+    # plane rides on it); a services-only job has no frontend. Imported lazily:
+    # the frontend implementations import this module.
+    from srtctl.frontends import FRONTEND_NONE, get_frontend
 
-    if getattr(config.backend, "failover", None) is not None:
+    if config.frontend.type != FRONTEND_NONE:
+        implied.extend(get_frontend(config.frontend.type).implied_services(config))
+
+    if config.backend.failover is not None:
         # The kind's defaults are the placement: every worker node, one instance per worker.
         implied.append(
             EffectiveService(ServiceConfig(name=GMS_SERVICE_NAME, type="gms"), implicit=True, reason="engine.failover")
         )
 
-    mooncake_cfg = getattr(config.backend, "mooncake_kv_store", None)
+    implied.extend(connector_services(config))
+
+    mooncake_cfg = config.backend.mooncake_kv_store
     if mooncake_cfg is not None:
         options = {}
-        store_config = getattr(mooncake_cfg, "store_config", None)
-        if store_config:
-            options["store_config"] = dict(store_config)
-        devices = getattr(mooncake_cfg, "device_names_by_gpu", None)
-        if devices:
-            options["device_names_by_gpu"] = list(devices)
+        if isinstance(mooncake_cfg, VLLMMooncakeKVStoreConfig):
+            if mooncake_cfg.store_config:
+                options["store_config"] = dict(mooncake_cfg.store_config)
+            if mooncake_cfg.device_names_by_gpu:
+                options["device_names_by_gpu"] = list(mooncake_cfg.device_names_by_gpu)
         implied.append(
             EffectiveService(
                 ServiceConfig(
@@ -129,11 +152,11 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                     type="mooncake-master",
                     container=mooncake_cfg.container,
                     args=list(mooncake_cfg.master_extra_args or []),
-                    placement=_infra_placement(config),
+                    placement=infra_placement(config),
                     options=options,
                 ),
                 implicit=True,
-                reason="backend.mooncake_kv_store",
+                reason="engine.mooncake_kv_store",
             )
         )
 
@@ -244,11 +267,11 @@ def discovery_env(config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
     """
     env = {
         "ETCD_ENDPOINTS": _declared_external(config, ETCD_SERVICE_NAME)
-        or f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}"
+        or f"http://{runtime.infra_node_ip}:{ETCD_CLIENT_PORT}"
     }
     if runs_nats(config):
         env["NATS_SERVER"] = (
-            _declared_external(config, NATS_SERVICE_NAME) or f"nats://{runtime.nodes.infra}:{NATS_PORT}"
+            _declared_external(config, NATS_SERVICE_NAME) or f"nats://{runtime.infra_node_ip}:{NATS_PORT}"
         )
     return env
 

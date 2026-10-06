@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 from marshmallow import ValidationError
-from test_observability import BASE_CONFIG
+from test_observability import BASE_CONFIG, _recipe
 from test_slurm import _remap_worker_mixin
 
 from srtctl.core.observability_nsys import wrap_observability_nsys
@@ -22,7 +22,7 @@ from srtctl.frontends.dynamo import DynamoFrontend
 
 def config(**overrides):
     data = deepcopy(BASE_CONFIG)
-    data.update(backend={"type": "trtllm"}, observability={"enabled": True}, benchmark={"type": "manual"})
+    data.update(engine={"type": "trtllm"}, observability={"enabled": True}, benchmark={"type": "manual"})
     data.update(overrides)
     return SrtConfig.Schema().load(data)
 
@@ -51,24 +51,26 @@ def test_preset_requires_observability_and_honors_opt_out(observability, expecte
     ],
 )
 def test_explicit_profiling_takes_precedence(profiling):
-    cfg = config(profiling=profiling, backend={"type": "sglang"})
+    cfg = config(profiling=profiling, engine={"type": "sglang"})
     assert not cfg.observability_nsys_enabled
     assert cfg.profiling.type == profiling["type"]
 
 
 def test_yaml_round_trip_retains_settings_and_benchmark(tmp_path):
-    cfg = config(
-        observability={
-            "enabled": True,
-            "nsys": {
-                "capture_window": "including_startup",
-                "report_timeout_secs": 45,
-                "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
-            },
-        }
-    )
+    observability = {
+        "enabled": True,
+        "nsys": {
+            "capture_window": "including_startup",
+            "report_timeout_secs": 45,
+            "nvtx_injection_path": "/opt/nsys/libToolsInjection64.so",
+        },
+    }
+    cfg = config(observability=observability)
+    # The YAML loaders read recipes, not schema dumps: spell the same job as a schema-2 recipe.
+    data = deepcopy(BASE_CONFIG)
+    data.update(engine={"type": "trtllm"}, observability=observability, benchmark={"type": "manual"})
     path = tmp_path / "recipe.yaml"
-    path.write_text(yaml.safe_dump(SrtConfig.Schema().dump(cfg)))
+    path.write_text(yaml.safe_dump(_recipe(data)))
     loaded = SrtConfig.from_yaml(path)
     assert loaded.observability.nsys == cfg.observability.nsys
     assert loaded.benchmark.type == "manual"
@@ -121,7 +123,7 @@ def test_capture_preset_has_fresh_barrier_and_no_benchmark_controls(tmp_path, fr
         assert "--trace=nvtx" in script
     assert "--delay" not in script
     assert "--duration" not in script and "cuda,nvtx" not in script
-    assert "--sample=process-tree" in script
+    assert "--sample=system-wide" in script
     assert "--sampling-period=26000000" in script and "--samples-per-backtrace=32" in script
     assert env["SRT_NSYS_REPORT_EXPECTED"] == "8"
     assert env["NVTX_INJECTION64_PATH"] == "/opt/nvtx.so"
@@ -141,6 +143,7 @@ def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, ena
     runtime = SimpleNamespace(
         log_dir=tmp_path,
         nodes=SimpleNamespace(infra="head", het_group_for=lambda node: None),
+        infra_node_ip="10.0.0.9",
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},
@@ -152,7 +155,7 @@ def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, ena
         command = call.kwargs["command"]
         if enabled:
             spec = json.loads(command[4])
-            assert "dynamo.frontend" in command and "--sample=process-tree" in spec["start_args"]
+            assert "dynamo.frontend" in command and "--sample=system-wide" in spec["start_args"]
             assert spec["output"].endswith(f"frontend/node-{'ab'[index]}_frontend_{index}")
             assert call.kwargs["env_to_set"]["SRT_NSYS_REPORT_EXPECTED"] == "1"
             assert proc.terminate_timeout == 210
@@ -164,7 +167,7 @@ def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, ena
 
 @pytest.mark.parametrize(("mpi", "engine_suffix"), [(False, ""), (True, ""), (False, "_e1")])
 def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mpi, engine_suffix):
-    cfg = config(backend={"type": "trtllm" if mpi else "vllm"})
+    cfg = config(engine={"type": "trtllm" if mpi else "vllm"})
     stage, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     # Validate the actual backend schema; stub only command/env construction.
     stage.config = cfg
@@ -181,7 +184,7 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
         patch.object(
             backend_class,
             "get_srun_config",
-            return_value=SimpleNamespace(mpi="pmix", oversubscribe=True, cpu_bind="none"),
+            return_value=SimpleNamespace(mpi="pmix", oversubscribe=True, cpu_bind="none", kill_on_bad_exit=False),
         ),
         patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.2"),
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
@@ -190,7 +193,7 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
         managed = stage.start_endpoint_worker([process, second]) if mpi else stage.start_worker(process, [process])
     args = launch.call_args.kwargs
     spec = json.loads(args["command"][4])
-    assert "--sample=process-tree" in spec["start_args"]
+    assert "--sample=system-wide" in spec["start_args"]
     assert args["env_to_set"]["SRT_NSYS_REPORT_EXPECTED"] == ("16" if mpi else "1")
     assert not managed.signal_full
     assert managed.terminate_timeout == cfg.observability.nsys.terminate_timeout
@@ -200,6 +203,48 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
         assert "rank%q{SLURM_PROCID}" in spec["output"]
     else:
         assert f"_w0{engine_suffix}_profile_gpu0-1-2-3-4-5-6-7" in spec["output"]
+
+
+@pytest.mark.parametrize(
+    ("backend", "frontend", "present", "absent"),
+    [
+        ("trtllm", False, {"TLLM_LLMAPI_ENABLE_NVTX", "TLLM_PROFILE_LOG_RANKS"}, {"SGLANG_ENABLE_NVTX_SCHEDULER"}),
+        ("sglang", False, {"SGLANG_ENABLE_NVTX_SCHEDULER"}, {"TLLM_LLMAPI_ENABLE_NVTX"}),
+        ("vllm", False, set(), {"SGLANG_ENABLE_NVTX_SCHEDULER", "TLLM_LLMAPI_ENABLE_NVTX"}),
+        ("sglang", True, set(), {"SGLANG_ENABLE_NVTX_SCHEDULER", "TLLM_LLMAPI_ENABLE_NVTX"}),
+    ],
+)
+def test_wrapped_processes_enable_their_nvtx_emitters(tmp_path, backend, frontend, present, absent):
+    _, env = wrap_observability_nsys(
+        ["python3", "-m", "app"],
+        config=config(engine={"type": backend}),
+        log_dir=tmp_path,
+        report_name="x",
+        frontend=frontend,
+    )
+    assert env["DYN_ENABLE_RUST_NVTX"] == "1"
+    assert env["DYN_NVTX"] == "1"
+    assert present <= env.keys()
+    assert not (absent & env.keys())
+
+
+@pytest.mark.parametrize(
+    ("cpu_sampling", "expected"),
+    [
+        ("system-wide", ["--sample=system-wide", "--cpuctxsw=system-wide", "--sampling-period=26000000"]),
+        ("process-tree", ["--sample=process-tree", "--cpuctxsw=process-tree"]),
+        ("none", ["--sample=none", "--cpuctxsw=none"]),
+    ],
+)
+def test_cpu_sampling_scope_is_configurable(tmp_path, cpu_sampling, expected):
+    cfg = config(observability={"enabled": True, "nsys": {"cpu_sampling": cpu_sampling}})
+    command, _ = wrap_observability_nsys(["python3", "-m", "app"], config=cfg, log_dir=tmp_path, report_name="x")
+    spec = json.loads(command[4])
+    assert all(flag in spec["start_args"] for flag in expected)
+    if cpu_sampling == "none":
+        assert not any(flag.startswith("--sampling-period") for flag in spec["start_args"])
+    with pytest.raises(ValidationError, match="cpu_sampling"):
+        config(observability={"enabled": True, "nsys": {"cpu_sampling": "everything"}})
 
 
 @pytest.mark.parametrize("completed", [False, True])

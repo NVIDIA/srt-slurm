@@ -68,6 +68,20 @@ details { border-top: 1px solid var(--border); } summary { padding: 8px 14px; co
 pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font: 11px/1.4 var(--mono); }
 .feed { display: flex; flex-direction: column; max-height: 38vh; border-top: 1px solid var(--border); }
 .feed .ev { grid-template-columns: 68px 90px 1fr; }
+main.wide { grid-template-columns: minmax(0, 1fr) minmax(480px, 1.8fr); }
+@media (max-width: 1100px) { main.wide { grid-template-columns: 1fr; } }
+section#detail.fill { overflow: hidden; }
+.tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.tabs[hidden], .pane[hidden] { display: none; }
+.tabs button { padding: 9px 10px 7px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); }
+.tabs button.on { border-bottom-color: var(--accent); color: var(--text); }
+.pane.fill { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.pane label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.pane select { max-width: 340px; }
+pre.logtext { flex: 1; min-height: 0; padding: 8px 12px; white-space: pre; font: 11.5px/1.45 var(--mono); }
+@media (max-width: 1100px) { pre.logtext { flex: none; height: 70vh; } }
+.note { padding: 8px 12px; color: var(--muted); font-size: 12px; }
+.note code { color: var(--text); font-family: var(--mono); }
 </style>
 </head>
 <body>
@@ -121,7 +135,25 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
     </div>
   </section>
   <section id="detail">
-    <div class="empty">select a job, or move with <kbd>&uarr;</kbd> <kbd>&darr;</kbd></div>
+    <div class="tabs" id="tabs" hidden>
+      <button type="button" data-tab="overview" class="on">overview</button>
+      <button type="button" data-tab="logs">logs</button>
+      <button type="button" data-tab="captures">tachometer</button>
+    </div>
+    <div class="pane" id="overview"><div class="empty">select a job, or move with <kbd>&uarr;</kbd> <kbd>&darr;</kbd></div></div>
+    <div class="pane fill" id="logs" hidden>
+      <div class="toolbar">
+        <select id="log-file" aria-label="log file"></select>
+        <input id="log-filter" placeholder="filter lines" style="width: 160px" aria-label="filter log lines">
+        <label><input type="checkbox" id="log-follow" checked> follow</label>
+        <button type="button" id="log-start" title="reload from the first byte (keeps the newest lines if the file is large)">from start</button>
+        <button type="button" id="log-download">download</button>
+        <div class="spacer"></div>
+        <span class="stat" id="log-stat"></span>
+      </div>
+      <pre class="logtext" id="log-text"></pre>
+    </div>
+    <div class="pane" id="captures" hidden></div>
   </section>
 </main>
 <script>
@@ -183,7 +215,7 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
   function setLive(state, text) { $("live").className = "live " + state; $("live-text").textContent = text; }
   function hint(html) { const h = $("hint"); h.hidden = !html; h.innerHTML = html || ""; $("main").classList.toggle("with-hint", !!html); }
 
-  async function api(path) {
+  async function request(path) {
     const headers = token ? { Authorization: "Bearer " + token } : {};
     let res;
     try { res = await fetch(apiBase + path, { headers, cache: "no-store" }); }
@@ -209,8 +241,9 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
     if (!res.ok) { setLive("err", "HTTP " + res.status); throw new Error(String(res.status)); }
     setLive("ok", "live " + new Date().toLocaleTimeString([], { hour12: false }));
     hint("");
-    return res.json();
+    return res;
   }
+  const api = async (path) => (await request(path)).json();
 
   function visibleJobs() {
     const q = $("q").value.trim().toLowerCase(), st = $("f-status").value, cl = $("f-cluster").value;
@@ -262,7 +295,8 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
       return `<div class="ev"><span class="t" title="${esc(e.created_at)}">${hms(e.created_at)}</span><span class="d">${delta}</span>
         <span class="m">${statusHtml(e.status)}<span class="muted mono">${esc(e.stage || "")}</span> ${esc(e.message || "")}</span></div>`;
     }).join("");
-    $("detail").innerHTML = `
+    $("tabs").hidden = false;
+    $("overview").innerHTML = `
       <div class="detail-head">
         <h2>${esc(job.job_id)} <span>${esc(job.job_name)}</span></h2>
         <div class="sub">${statusHtml(job.status)} <span class="mono">${esc(job.stage || "")}</span> ${esc(job.message || "")}</div>
@@ -282,8 +316,168 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
   }
   async function select(id) {
     if (!id) return;
-    if (selected !== id) { selected = id; renderJobs(); }
+    const changed = selected !== id;
+    if (changed) { selected = id; renderJobs(); }
     renderDetail(await api(`/api/jobs/${encodeURIComponent(id)}`));
+    if (changed) await refreshTab();
+  }
+
+  // ---- logs and Tachometer segments of the selected job ----
+  const TAIL_BYTES = 256 * 1024, READ_BYTES = 1 << 20, KEEP_LINES = 20000;
+  const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+  const jobPath = (id) => `/api/jobs/${encodeURIComponent(id)}`;
+  function bytes(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1 << 20) return (n / 1024).toFixed(1) + " KiB";
+    if (n < 1 << 30) return (n / (1 << 20)).toFixed(1) + " MiB";
+    return (n / (1 << 30)).toFixed(2) + " GiB";
+  }
+  function save(blob, name) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name.split("/").pop();
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+
+  let tab = "overview";
+  function showTab(name) {
+    tab = name;
+    document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+    ["overview", "logs", "captures"].forEach((id) => { $(id).hidden = id !== name; });
+    $("main").classList.toggle("wide", name === "logs");
+    $("detail").classList.toggle("fill", name === "logs");
+    refreshTab();
+  }
+  async function refreshTab() {
+    try {
+      if (!selected) return;
+      if (tab === "logs") await pollLog();
+      else if (tab === "captures") await loadCaptures();
+    } catch (err) { /* shown in the header */ }
+  }
+
+  // The newest KEEP_LINES complete lines are kept; a new file opens at its last TAIL_BYTES.
+  const log = { job: null, file: "", files: [], filesAt: 0, offset: null, skipFirst: false, tailing: false, lines: [], partial: "", gen: 0, busy: false };
+  const logText = $("log-text"), logBody = document.createTextNode(""), logTail = document.createTextNode("");
+  logText.append(logBody, logTail);
+  const logFilter = () => $("log-filter").value.trim().toLowerCase();
+  const shown = (line, q) => !q || line.toLowerCase().includes(q);
+
+  function resetLog(file, fromStart = false) {
+    log.gen++;
+    log.file = file;
+    log.offset = fromStart ? 0 : null;
+    log.skipFirst = false; log.tailing = false;
+    log.lines = []; log.partial = "";
+    logBody.data = ""; logTail.data = "";
+    logStat();
+  }
+  function logStat() {
+    const f = log.files.find((x) => x.file === log.file);
+    const q = logFilter(), n = q ? log.lines.filter((l) => shown(l, q)).length : log.lines.length;
+    $("log-stat").innerHTML = log.file
+      ? `<b>${n}</b>${q ? ` of ${log.lines.length}` : ""} lines &middot; read ${bytes(log.offset || 0)} of ${bytes(f ? f.size : 0)}`
+      : "";
+  }
+  function renderLog() {
+    const q = logFilter();
+    const lines = log.lines.filter((l) => shown(l, q));
+    logBody.data = lines.length ? lines.join("\n") + "\n" : "";
+    logTail.data = shown(log.partial, q) ? log.partial : "";
+    if ($("log-follow").checked) logText.scrollTop = logText.scrollHeight;
+    logStat();
+  }
+  function ingest(text) {
+    const parts = (log.partial + text.replace(ANSI, "")).split("\n");
+    log.partial = parts.pop();
+    if (log.skipFirst && parts.length) { parts.shift(); log.skipFirst = false; } // the tail starts mid-line
+    for (const line of parts) log.lines.push(line);
+    if (log.lines.length > KEEP_LINES) {
+      log.lines = log.lines.slice(-KEEP_LINES);
+      renderLog();
+      return;
+    }
+    const q = logFilter(), add = parts.filter((l) => shown(l, q));
+    if (add.length) logBody.appendData(add.join("\n") + "\n");
+    logTail.data = shown(log.partial, q) ? log.partial : "";
+    if ($("log-follow").checked) logText.scrollTop = logText.scrollHeight;
+    logStat();
+  }
+  async function loadLogFiles() {
+    const d = await api(`${jobPath(log.job)}/logs`);
+    log.files = d.files; log.filesAt = Date.now();
+    if (!log.files.some((f) => f.file === log.file)) resetLog(log.files.length ? log.files[0].file : "");
+    $("log-file").innerHTML = log.files.length
+      ? log.files.map((f) => `<option value="${esc(f.file)}"${f.file === log.file ? " selected" : ""}>${esc(f.file)} (${bytes(f.size)})</option>`).join("")
+      : '<option value="">no streamed logs</option>';
+  }
+  async function pollLog() {
+    if (log.busy) return;
+    log.busy = true;
+    let g = null;
+    try {
+      if (log.job !== selected) { log.job = selected; log.files = []; resetLog(""); }
+      if (!log.files.length || Date.now() - log.filesAt > 15000) await loadLogFiles();
+      if (!log.file) return;
+      if (log.offset === null) {
+        const f = log.files.find((x) => x.file === log.file);
+        log.offset = Math.max(0, (f ? f.size : 0) - TAIL_BYTES);
+        log.skipFirst = log.tailing = log.offset > 0;
+      }
+      g = log.gen;
+      for (let i = 0; i < 8; i++) {
+        const from = log.offset;
+        const d = await api(`${jobPath(log.job)}/logs?file=${encodeURIComponent(log.file)}&offset=${from}`);
+        if (g !== log.gen) return;
+        if (d.next_offset === from) {
+          // Legacy JSON chunks only open at a chunk boundary: fall back to the start.
+          if (log.tailing) { log.offset = 0; log.skipFirst = log.tailing = false; continue; }
+          break;
+        }
+        log.tailing = false;
+        log.offset = d.next_offset;
+        ingest(d.data);
+        if (d.next_offset - from < READ_BYTES) break;
+      }
+    } finally {
+      log.busy = false;
+      if (g !== null && log.gen !== g && tab === "logs") pollLog().catch(() => {});
+    }
+  }
+  async function downloadLog() {
+    const job = log.job, file = log.file;
+    if (!job || !file) return;
+    const parts = [];
+    for (let offset = 0; ;) {
+      const d = await api(`${jobPath(job)}/logs?file=${encodeURIComponent(file)}&offset=${offset}`);
+      if (d.next_offset === offset) break;
+      parts.push(d.data);
+      offset = d.next_offset;
+    }
+    save(new Blob(parts, { type: "text/plain" }), file);
+  }
+
+  async function loadCaptures() {
+    const id = selected;
+    const d = await api(`${jobPath(id)}/captures`);
+    if (id !== selected) return;
+    const rows = d.files.map((f) => `<tr>
+      <td class="mono" title="${esc(f.file)}">${esc(f.file)}</td><td class="num">${bytes(f.size)}</td>
+      <td>${f.complete ? "complete" : '<span class="muted">uploading</span>'}</td>
+      <td class="num muted" title="${esc(f.updated_at)}">${hms(f.updated_at)}</td>
+      <td>${f.complete ? `<button type="button" data-seg="${esc(f.file)}">download</button>` : ""}</td></tr>`).join("");
+    const size = d.files.reduce((n, f) => n + f.size, 0);
+    $("captures").innerHTML = d.files.length
+      ? `<div class="note"><b>${d.files.length}</b> Parquet segments, ${bytes(size)}. Read them with DuckDB, pyarrow or <code>srtctl.dsight.metrics.batches</code>.</div>
+        <table><thead><tr><th>segment</th><th>size</th><th>state</th><th>updated</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<div class="empty">no Tachometer segments streamed for this job</div>';
+  }
+  async function downloadCapture(file) {
+    const res = await request(`${jobPath(selected)}/captures?file=${encodeURIComponent(file)}`);
+    save(await res.blob(), file);
   }
 
   function appendEvents(events) {
@@ -324,6 +518,7 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
       } else if (Date.now() - lastJobsLoad > 30000) {
         await loadJobs(); // metadata/artifact patches emit no event
       }
+      if (tab !== "overview") await refreshTab();
     } catch (err) { /* state already shown in the header */ }
     finally { inFlight = false; schedule(); }
   }
@@ -357,6 +552,19 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
     select(rows[i].job_id).then(() => jobsEl.querySelector("tr.selected")?.scrollIntoView({ block: "nearest" }));
   });
   ["q", "f-status", "f-cluster"].forEach((id) => $(id).addEventListener("input", renderJobs));
+  $("tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (b) showTab(b.dataset.tab); });
+  $("log-file").addEventListener("change", (e) => { resetLog(e.target.value); refreshTab(); });
+  $("log-filter").addEventListener("input", renderLog);
+  $("log-follow").addEventListener("change", (e) => { if (e.target.checked) logText.scrollTop = logText.scrollHeight; });
+  logText.addEventListener("scroll", () => {
+    $("log-follow").checked = logText.scrollHeight - logText.scrollTop - logText.clientHeight < 40;
+  });
+  $("log-start").addEventListener("click", () => { resetLog(log.file, true); refreshTab(); });
+  $("log-download").addEventListener("click", () => downloadLog().catch(() => {}));
+  $("captures").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-seg]");
+    if (b) downloadCapture(b.dataset.seg).catch(() => {});
+  });
   $("interval").addEventListener("change", schedule);
   $("token-form").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -366,7 +574,7 @@ pre { margin: 0; padding: 0 14px 14px; overflow: auto; color: var(--text); font:
     localStorage.setItem(KEY, token);
     localStorage.setItem(API_KEY, storedBase);
     $("origin").textContent = apiHost();
-    feedEl.innerHTML = ""; cursor = 0; eventCount = 0; selected = null;
+    feedEl.innerHTML = ""; cursor = 0; eventCount = 0; selected = null; log.job = null;
     start();
   });
   // Elapsed for active jobs ticks locally; no request needed.

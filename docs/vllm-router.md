@@ -68,8 +68,10 @@ roles:
 ### Node-local data parallelism
 
 For DEP8 on two four-GPU nodes, upstream srt-slurm creates one hybrid-LB
-`vllm serve` process on each node. Router receives both base URLs and srtctl
-adds `--intra-node-data-parallel-size 4`, exposing all eight DP ranks.
+`vllm serve` process on each node. Router receives both base URLs as two
+node-local pools. srtctl does not apply `--intra-node-data-parallel-size` to
+this multi-node endpoint because the second pool owns global ranks 4 through
+7; vLLM's node-local hybrid load balancer selects among those ranks.
 
 ```yaml
 resources:
@@ -137,10 +139,48 @@ roles:
       data-parallel-size: 4
 ```
 
-Router has one global `--intra-node-data-parallel-size`, so every advertised
-P/D base must represent the same number of local DP ranks. srtctl derives and
-validates that value; do not set it manually unless it exactly matches the
-allocated topology.
+Router has one global `--intra-node-data-parallel-size`, so srtctl uses it only
+when every logical endpoint has one advertised base URL. Multi-node hybrid-LB
+endpoints remain unexpanded node-local pools because each later pool starts at
+a nonzero global DP rank. Do not set the option manually unless it exactly
+matches the allocated topology.
+
+### MoRI-IO discovery
+
+`engine.connector: moriio` runs the P/D pair over AMD's MoRI-IO connector (ROCm). MoRI-IO workers do not take peer addresses on the command line; they register with the Router over a ZMQ discovery endpoint and learn each other's transfer addresses from it. srtctl therefore launches the Router in discovery mode and builds each worker's connector config from the realized topology instead of listing URLs:
+
+```yaml
+frontend:
+  type: vllm-router
+  enable_multiple_frontends: false
+
+engine:
+  type: vllm
+  connector: moriio
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+  decode:
+    nodes: colocate
+    workers: 1
+    gpus: 1
+```
+
+| Piece | srtctl sets | Why |
+| --- | --- | --- |
+| Router command | `--vllm-pd-disaggregation --kv-connector moriio --vllm-discovery-address 0.0.0.0:36367`, no `--prefill`/`--decode` | Discovery mode in vllm-project/router (`RouterArgs.vllm_discovery_address`); the address is the one listener workers register with |
+| `kv_connector` / `kv_role` | `MoRIIOConnector`; `kv_producer` on prefill, `kv_consumer` on decode | The connector's role follows the worker's mode |
+| `proxy_ip`, `proxy_ping_port` | the head node's IP on the cluster interface, `36367` | Where the worker registers; hence one Router, on the head node |
+| `http_port`, `host_ip` | the worker's allocated HTTP port and its own routable IP | What the Router routes to and what peers connect to; upstream falls back to its own interface guess for `host_ip`, which is wrong on multi-homed nodes |
+| `handshake_port`, `notify_port` | allocated per process by `NodePortAllocator` (`moriio_handshake`, `moriio_notify` kinds); both reserve one port per local rank | vLLM adds rank offsets to both bases, so colocated workers need disjoint blocks. Defaults start at 26000/27000, below Linux's default ephemeral range, to avoid MoRI's other dynamically allocated listeners |
+| `read_mode` | `true` | The Router's discovery flow drives reads |
+| `VLLM_PORT` | unset for these workers | MoRI-IO opens its other listeners inside the TP child processes, which inherit `VLLM_PORT`; a fixed scan base there hands several ranks the same unbound port, so vLLM takes ephemeral ports from the kernel |
+
+Readiness is the Router's `/health`: it answers 503 `Waiting for discovered workers` until a prefill and a decode have registered, then 200 (vllm-project/router 43140bc8e2). This is a workaround for a gap in the Router, not a MoRI-IO property: in discovery mode the Router keeps registered workers in a separate registry but still serves `/workers` and `/get_server_info` from the static URL list, which is empty, so the count-based `/workers` gate srtctl uses for static routing has nothing to count. `/health` is the only endpoint that reads the discovery registry, and it only proves one worker of each role, so with several workers per role the benchmark can start before the Router knows all of them; the per-worker `/health` gate that follows proves the workers are up, not that they registered. The upstream fix is for `/workers` to merge the discovery registry (`src/routers/router_manager.rs`); when it does, `VLLMRouterFrontend.probe_ready` loses its discovery branch and the count-based probe covers both modes.
+
+Rules the recipe must satisfy: both `prefill` and `decode` run the connector (an engine-wide `connector: moriio`, or the same value in both roles' `args`), the topology is prefill/decode, `frontend.enable_multiple_frontends` is `false`, and `frontend.orchestrator_placement` is `head`. `srtctl dry-run` rejects anything else, and any other `frontend.type` with this connector. Upstream key names are those `moriio_common.py` reads (vllm-project/vllm 9679173788). `examples/vllm/vllm-router-moriio-disagg.yaml` is the reference recipe.
 
 ## Multiple Router processes
 

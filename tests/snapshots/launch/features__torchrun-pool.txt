@@ -1,0 +1,39 @@
+# examples/features/torchrun-pool.yaml
+# exit_code: 0
+# srun calls: 2
+
+## service_train_node-01
+nodelist: node-01
+output: <output>/logs/service_train_node-01.out
+container_image: nvcr.io/nvidia/pytorch:25.06-py3
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <tmp>/$SRTCTL_SOURCE_DIR/examples/features/torchrun-pool: /demo
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    GLOO_SOCKET_IFNAME: bond0
+    NCCL_SOCKET_IFNAME: bond0
+use_bash_wrapper: True
+command: |
+    torchrun --nnodes=2 --nproc-per-node=8 --node-rank=0 --master-addr=127.0.0.1 --master-port=29500 /demo/train.py
+
+## service_train_node-02
+nodelist: node-02
+output: <output>/logs/service_train_node-02.out
+container_image: nvcr.io/nvidia/pytorch:25.06-py3
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <tmp>/$SRTCTL_SOURCE_DIR/examples/features/torchrun-pool: /demo
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    GLOO_SOCKET_IFNAME: bond0
+    NCCL_SOCKET_IFNAME: bond0
+use_bash_wrapper: True
+command: |
+    torchrun --nnodes=2 --nproc-per-node=8 --node-rank=1 --master-addr=127.0.0.1 --master-port=29500 /demo/train.py

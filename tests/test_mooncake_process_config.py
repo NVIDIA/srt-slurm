@@ -4,7 +4,6 @@
 """Physical placement, not process-local CUDA numbering, selects store devices."""
 
 import json
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -12,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol, VLLMServerConfig
+from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.runtime import Nodes, RuntimeContext
@@ -22,6 +21,7 @@ from srtctl.core.schema import (
     ProfilingConfig,
     ProfilingPhaseConfig,
     ResourceConfig,
+    RoleConfig,
     SrtConfig,
 )
 from srtctl.core.topology import Process
@@ -32,7 +32,7 @@ def process(gpus, node="n0"):
 
 
 def backend(devices=()):
-    return VLLMProtocol(
+    return VLLMBackend(
         mooncake_kv_store=VLLMMooncakeKVStoreConfig(
             device_names_by_gpu=list(devices),
             store_config={"device_name": "shared", "global_segment_size": "170GB"},
@@ -44,7 +44,7 @@ def test_default_unchanged():
     b = backend()
     assert b.build_mooncake_process_config(process([0]), "infra", 4) is None
     assert b.build_mooncake_store_config("infra")["device_name"] == "shared"
-    assert VLLMProtocol().build_mooncake_process_config(process([0]), "infra", 4) is None
+    assert VLLMBackend().build_mooncake_process_config(process([0]), "infra", 4) is None
 
 
 @pytest.mark.parametrize("gpus,expected", [([2], "h2"), ([0, 1], "h0,h1"), ([2, 3], "h2,h3"), ([0, 2], "h0,h2")])
@@ -67,8 +67,13 @@ def test_shared_hca_deduplicated():
 def test_rendered_configs_match_worker_environment(tmp_path):
     workers = [process([0, 1]), process([2, 3]), process([2, 3], node="n1")]
     b = backend(["h0", "h1", "h2", "h3"])
-    runtime = SimpleNamespace(log_dir=tmp_path, infra_node_ip="infra", gpus_per_node=4)
-    context = SimpleNamespace(config=SimpleNamespace(backend=b), backend=b, runtime=runtime, backend_processes=workers)
+    runtime = SimpleNamespace(log_dir=tmp_path, container_log_dir=Path("/logs"), infra_node_ip="infra", gpus_per_node=4)
+    context = SimpleNamespace(
+        config=SimpleNamespace(backend=b, backend_for_role=lambda _mode: b),
+        backend=b,
+        runtime=runtime,
+        backend_processes=workers,
+    )
     SweepOrchestrator._write_mooncake_store_config(context)
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "mooncake_store_config.json",
@@ -87,7 +92,7 @@ def test_rendered_configs_match_worker_environment(tmp_path):
 def test_default_writer_and_worker_keep_shared_config(tmp_path):
     b = backend()
     context = SimpleNamespace(
-        config=SimpleNamespace(backend=b),
+        config=SimpleNamespace(backend=b, backend_for_role=lambda _mode: b),
         backend=b,
         runtime=SimpleNamespace(log_dir=tmp_path, infra_node_ip="infra", gpus_per_node=4),
     )
@@ -108,24 +113,22 @@ def test_worker_launch_uses_rendered_config(
     """Protect the real writer-to-srun wiring, including profiling selection."""
     roles = ["prefill", "decode"] if disaggregated else ["aggregated"]
     args = {"tensor-parallel-size": 2, "kv-transfer-config": '{"kv_connector":"MooncakeStoreConnector"}'}
-    b = replace(
-        backend(["h0", "h1", "h2", "h3"] if mapped else []),
-        vllm_config=VLLMServerConfig(**dict.fromkeys(roles, args)),
-    )
+    b = backend(["h0", "h1", "h2", "h3"] if mapped else [])
     profiling = ProfilingConfig()
     if capture_scope is not None:
         phase = ProfilingPhaseConfig(start_step=2, stop_step=5, capture_scope=capture_scope, worker_index=1)
         profiling = ProfilingConfig(type="nsys", nsys_library_paths=["/host/lib64"], **dict.fromkeys(roles, phase))
-    resources = (
-        ResourceConfig(gpus_per_node=4, prefill_nodes=2, prefill_workers=4, decode_nodes=2, decode_workers=4)
+    role_specs = (
+        {"prefill": RoleConfig(nodes=2, workers=4, args=args), "decode": RoleConfig(nodes=2, workers=4, args=args)}
         if disaggregated
-        else ResourceConfig(gpus_per_node=4, agg_nodes=2, agg_workers=4)
+        else {"agg": RoleConfig(nodes=2, workers=4, args=args)}
     )
     config = SrtConfig(
         name="mooncake-launch-test",
         model=ModelConfig(path="/model", container="/container.sqsh", precision="bf16"),
-        resources=resources,
-        backend=b,
+        resources=ResourceConfig(gpus_per_node=4),
+        roles=role_specs,
+        engine=b,
         dynamo=DynamoConfig(install=False),
         profiling=profiling,
     )

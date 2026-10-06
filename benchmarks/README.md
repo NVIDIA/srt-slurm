@@ -14,5 +14,6 @@ Core stays generic. What a custom command can rely on is the environment srt-slu
 | Folder | Contents |
 | --- | --- |
 | `rl/` | RL post-training framework launchers, one folder per framework. `rl/miles/launch.sh` drives [Miles](https://github.com/radixark/miles) against a `services[].type: ray` cluster. See `rl/README.md` and `docs/miles.md`. |
+| `agentx.sh` | Fetches the InferenceX AgentX harness and runs its srt-slurm client against the ready frontend. See [AgentX with a custom benchmark](../docs/benchmarks.md#agentx-with-a-custom-benchmark). |
 
 The built-in benchmark types (`sa-bench`, `gsm8k`, ...) keep their scripts inside the package under `src/srtctl/benchmarks/scripts/`, mounted at `/srtctl-benchmarks`; those ship with the wheel. This folder is for what lives with the checkout.

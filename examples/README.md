@@ -7,7 +7,7 @@ Small starting points, one per frontend and topology. The matrix examples serve 
 | Backend | Dynamo frontend | Native router | Router-free direct |
 | --- | --- | --- | --- |
 | SGLang | `sglang/dynamo-agg.yaml`, `sglang/dynamo-disagg.yaml` | `sglang/sglang-router-agg.yaml`, `sglang/sglang-router-disagg.yaml` | `sglang/sglang-direct-agg.yaml` |
-| vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml` | `vllm/vllm-direct-agg.yaml` |
+| vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml`, `vllm/vllm-router-moriio-disagg.yaml` (ROCm, MoRI-IO discovery) | `vllm/vllm-direct-agg.yaml` |
 | TRT-LLM | `trtllm/dynamo-agg.yaml`, `trtllm/dynamo-disagg.yaml` | `trtllm/trtllm-serve-disagg.yaml` | `trtllm/trtllm-serve-agg.yaml` |
 | Mocker | `mocker/dynamo-agg.yaml` | | |
 
@@ -33,7 +33,13 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/mlperf-client.yaml` | `benchmark.type: custom` driving the MLPerf inference-endpoint client in its own image; placeholder paths, a reference rather than a runnable example |
 | `features/infra-services.yaml` | etcd and NATS as declared services on a dedicated node with a NATS payload limit; the implied exporters overridden or switched off |
 | `features/dynamo-source.yaml` | `dynamo.source:` building Dynamo from a git tag (or a PR head via `--set dynamo.source.rev=refs/pull/<n>/head`), pinned to a commit at submit |
+| `features/node-hooks.yaml` | `host_setup:` pre-run and post-run commands on each node's bare host, driven by `configs/node-hooks.sh`: arbitrary shell commands, one per line, from `HOOK_PRE` / `HOOK_POST` block scalars in the recipe environment, with per-command logging and a state snapshot |
+| `features/lmcache-server.yaml` | `services[].type: lmcache-server` plus `connector: lmcache-mp`: an LMCache DRAM tier, one server per worker node started before the workers and gated on its healthcheck; LMCache flags go under `args`. Needs a vLLM image that ships LMCache (the `vllm-lmcache` alias). See [../docs/services.md](../docs/services.md#service-types) |
+| `features/lmcache-server-disagg.yaml` | The same tier on the prefill side only: the server placed on prefill nodes and a hand-written `MultiConnector` (NIXL plus LMCache MP) in the prefill args, which srtctl passes through untouched |
+| `features/lmcache-server-sglang.yaml` | The same server next to aggregated SGLang workers: SGLang's `enable-lmcache` flag, with srtctl pointing each worker at the server on its node (`LMCACHE_MP_HOST`/`LMCACHE_MP_PORT`). Needs an SGLang image that ships LMCache (the `sglang-lmcache` alias) |
 | `features/vllm-failover.yaml` | `engine.failover:` shadow engine recovery: a GPU Memory Service sidecar and a parked standby engine per vLLM worker, relaunched in place after a crash. Needs a container that ships `gpu_memory_service` (the `dynamo-vllm` alias, an `nvcr.io/nvidia/ai-dynamo/vllm-runtime` image). See [../docs/shadow-engine-recovery.md](../docs/shadow-engine-recovery.md) |
+| `features/worker-restart.yaml` | `roles.<role>.restart:` relaunching a killed worker in place with backoff; serves with `benchmark.type: manual` so you can SIGKILL a worker step and watch the sweep log |
+| `features/sglang-weight-cache.yaml` | SGLang fast engine recovery on the existing machinery: a generic per-worker service runs SGLang's weight cache daemon (tensors kept in HBM, handed out over CUDA IPC), the engines start with `--weight-cache-mode client` and skip the disk load, and `roles.<role>.restart` relaunches a killed engine in place. Needs SGLang v0.5.19+; see [docs/sglang-weight-cache.md](../docs/sglang-weight-cache.md) |
 
 See [Native sidecar mode](../docs/config-reference.md#native-sidecar-mode) for configuration and lifecycle behavior.
 
@@ -50,6 +56,8 @@ containers:
   vllm: /path/to/vllm.sqsh                  # vLLM image with the vllm-router executable
   trtllm: /path/to/tensorrtllm-runtime.sqsh # Dynamo TRT-LLM runtime image (ships ai-dynamo and trtllm-serve)
   dynamo-vllm: /path/to/vllm-runtime.sqsh   # Dynamo vLLM runtime image (ships ai-dynamo and gpu_memory_service), for features/vllm-failover.yaml
+  vllm-lmcache: /path/to/vllm-lmcache.sqsh  # vLLM image with LMCache installed, for features/lmcache-server.yaml and -disagg.yaml
+  sglang-lmcache: /path/to/sglang-lmcache.sqsh  # SGLang image with LMCache installed, for features/lmcache-server-sglang.yaml
 ```
 
 The matrix recipes set `resources.gpu_type` and `gpus_per_node` to `h100` and `8`; change them to match the partition you submit to. The multinode SGLang sidecar examples allocate one GPU per node: two nodes for aggregate mode, four for disaggregated mode.
@@ -66,3 +74,16 @@ for p in sorted(Path('examples').rglob('*.yaml')):
     print(validate_config_file(p) or f'ok {p}')
 "
 ```
+
+### TileRT
+
+[`tilert/glm5-disagg.yaml`](tilert/glm5-disagg.yaml) (B200, NIXL) and
+[`tilert/glm5-rocm-mooncake-disagg.yaml`](tilert/glm5-rocm-mooncake-disagg.yaml) (MI355X, Mooncake)
+use vLLM prefill and TileRT decode on 8-GPU nodes. See [TileRT setup](../docs/tilert.md)
+for image and weight requirements.
+
+### ATOM and AToMesh
+
+[`atom/atomesh-disagg.yaml`](atom/atomesh-disagg.yaml) launches native ATOM prefill
+and decode workers with the AToMesh router. Each logical worker fits on one node;
+the cluster configuration selects ROCm device visibility.

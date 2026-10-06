@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
+from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMBackend
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
@@ -45,11 +45,13 @@ from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
-from srtctl.core.status import JobStage, JobStatus, StatusReporter
+from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
+from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
 from srtctl.ports import (
     FRONTEND_PUBLIC_PORT,
+    SIDECAR_GRPC_PORTS,
 )
 from srtctl.services.implicit import uses_discovery_plane
 
@@ -80,7 +82,7 @@ class SweepOrchestrator(
 
     @property
     def backend(self):
-        """Access the backend config (implements BackendProtocol)."""
+        """Access the backend config (implements Backend)."""
         return self.config.backend
 
     @functools.cached_property
@@ -92,8 +94,10 @@ class SweepOrchestrator(
         from their own component nodelists so neither side bleeds into the
         other's topology segment.
         """
-        r = self.config.resources
+        r = self.config.topology
         if self.runtime.nodes.het:
+            if self.config.role_backends:
+                raise ValueError("Role engine overrides do not support Slurm heterogeneous allocations")
             return allocate_endpoints_het(
                 num_prefill=r.num_prefill,
                 gpus_per_prefill=r.gpus_per_prefill,
@@ -104,17 +108,7 @@ class SweepOrchestrator(
                 gpus_per_node=r.gpus_per_node,
                 pack_multinode_workers=self.backend.type == "trtllm",
             )
-        return self.backend.allocate_endpoints(
-            num_prefill=r.num_prefill,
-            num_decode=r.num_decode,
-            num_agg=r.num_agg,
-            gpus_per_prefill=r.gpus_per_prefill,
-            gpus_per_decode=r.gpus_per_decode,
-            gpus_per_agg=r.gpus_per_agg,
-            gpus_per_node=r.gpus_per_node,
-            available_nodes=self.runtime.nodes.worker,
-            spread_workers=r.spread_workers,
-        )
+        return self.config.allocate_worker_endpoints(self.runtime.nodes.worker)
 
     @functools.cached_property
     def backend_processes(self) -> list[Process]:
@@ -123,20 +117,14 @@ class SweepOrchestrator(
         Port defaults come from ``srtctl.ports`` and are allocated
         deterministically within a job.
         """
-        allocator = NodePortAllocator()
-        return self.backend.endpoints_to_processes(
-            self.endpoints,
-            port_allocator=allocator,
-            frontend_type=self.config.frontend.type,
-            dynamo_sidecar=self.config.dynamo.sidecar,
-        )
+        allocator = NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: self.config.dynamo.sidecar_port})
+        return self.config.worker_processes(self.endpoints, port_allocator=allocator)
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> None:
         """Start the discovery plane (etcd, NATS) as services.
 
         They are implied by ``frontend.type: dynamo`` and placed on the infra node
-        (a dedicated node when ``infra.etcd_nats_dedicated_node`` / a declared
-        etcd or nats service asks for it). A recipe may declare them to change
+        (a dedicated node when a declared etcd or nats service asks for it). A recipe may declare them to change
         the container or point at an external instance. See docs/services.md.
         """
         self.start_services("infra", registry)
@@ -148,7 +136,7 @@ class SweepOrchestrator(
         start, pointing at the Mooncake master on the infra node.
         """
         backend = self.config.backend
-        if not isinstance(backend, VLLMProtocol) or backend.mooncake_kv_store is None:
+        if not isinstance(backend, VLLMBackend) or backend.mooncake_kv_store is None:
             return
         store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
         store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
@@ -408,7 +396,7 @@ class SweepOrchestrator(
             logger.warning(
                 "HF model '%s' specified but HF_HOME is not set in backend environment config. "
                 "Workers will use the default HuggingFace cache (~/.cache/huggingface) which may not "
-                "be shared across nodes. Set HF_HOME in prefill_environment/decode_environment to use "
+                "be shared across nodes. Set HF_HOME in roles.<role>.env to use "
                 "a shared cache directory (e.g., HF_HOME: /lustre/fsw/.../common/cache).",
                 self.runtime.model_path,
             )
@@ -602,6 +590,7 @@ class SweepOrchestrator(
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
+            srun_options=self.runtime.srun_options,
             het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
         )
 
@@ -640,9 +629,18 @@ class SweepOrchestrator(
         registry = ProcessRegistry(job_id=self.runtime.job_id)
         stop_event = threading.Event()
         setup_signal_handlers(stop_event, registry)
-        start_process_monitor(stop_event, registry)
+        # The supervisor relaunches workers whose role has a restart policy; it
+        # runs inside the monitor tick, ahead of the critical-failure check.
+        supervisor = self.build_worker_supervisor(registry, stop_event)
+        start_process_monitor(stop_event, registry, reconcile=supervisor.reconcile)
 
         exit_code = 1
+
+        # Live log/metric streaming to the status API (reporting.status.logging-stream-interval)
+        outbox_dir = tachometer_outbox(self.runtime.log_dir) if self.config.observability.tachometer_enabled else None
+        log_streamer = LogStreamer.from_config(self.config.reporting, reporter, self.runtime.log_dir, outbox_dir)
+        if log_streamer is not None:
+            log_streamer.start()
 
         try:
             # Stage 0: Bare-host node setup (GPU clocks, kernel modules). Runs
@@ -658,7 +656,7 @@ class SweepOrchestrator(
                 logger.info("No discovery plane for frontend.type=%s", self.config.frontend.type)
 
             # Stage 1b: services workers depend on: the Mooncake master (implied by
-            # backend.mooncake_kv_store), standalone Mooncake stores, anything with
+            # engine.mooncake_kv_store), standalone Mooncake stores, anything with
             # start: before_workers. The stage registers each process as it
             # launches. See docs/services.md.
             self._write_mooncake_store_config()
@@ -680,6 +678,7 @@ class SweepOrchestrator(
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
             worker_procs = self.start_all_workers()
             registry.add_processes(worker_procs)
+            self.track_workers(supervisor, worker_procs)
 
             # Stage 3: Frontend
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")
@@ -762,6 +761,8 @@ class SweepOrchestrator(
             self._run_host_teardown()
             if exit_code != 0:
                 registry.print_failure_details()
+            if restart_summary := supervisor.summary_line():
+                logger.warning("%s; details in %s", restart_summary, self.runtime.log_dir / WORKER_RESTARTS_FILENAME)
             # Deliberately AFTER _run_host_teardown(): the final pass plus its
             # thread-join can take up to DEFAULT_JOIN_TIMEOUT_SECONDS, and on
             # the SLURM walltime-kill path this feature exists to survive
@@ -776,6 +777,8 @@ class SweepOrchestrator(
             # push logs_url to the status API. Runs before report_completed so
             # the final PUT can reassert the artifact pointer.
             self.run_postprocess(exit_code, reporter=reporter)
+            if log_streamer is not None:
+                log_streamer.stop()
             reporter.report_completed(
                 exit_code,
                 logs_url=getattr(self, "_last_logs_url", None),

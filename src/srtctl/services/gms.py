@@ -109,7 +109,7 @@ class GMSService(ServiceKind):
     default_readiness_timeout = 120
 
     def validate(self, service: ServiceConfig, config: SrtConfig) -> None:
-        if getattr(config.backend, "failover", None) is None:
+        if config.backend.failover is None:
             raise ValidationError(
                 f"services[{service.name}] (type gms) requires engine.failover, which is what the engines "
                 "load their weights through"
@@ -121,7 +121,7 @@ class GMSService(ServiceKind):
             )
 
     def _worker_dir(self, ctx: ServiceLaunchContext) -> str | None:
-        failover = getattr(ctx.config.backend, "failover", None) if ctx.config is not None else None
+        failover = ctx.config.backend.failover if ctx.config is not None else None
         if failover is None or ctx.process is None:
             return None
         from srtctl.backends.vllm import failover_worker_dir

@@ -47,7 +47,7 @@ Tests the core `allocate_endpoints` and `endpoints_to_processes` functions:
 Tests health check response parsing for different backends:
 
 - `check_dynamo_health` - Dynamo `/metrics` response parsing
-- `check_sglang_router_health` - SGLang `/workers` response parsing
+- `check_static_router_health` - SGLang `/workers` response parsing
 - Error handling for malformed responses
 - Aggregated mode (workers count as decode)
 
@@ -144,14 +144,11 @@ with patch.dict(os.environ, H100Rack.slurm_env()):
 
 ```python
 def test_new_sglang_flag():
-    from srtctl.backends import SGLangBackendConfig, SGLangServerConfig
+    from srtctl.backends import SGLangBackend
+    from srtctl.core.schema import RoleConfig
 
-    config = SGLangBackendConfig(
-        sglang_config=SGLangServerConfig(
-            prefill={"my-new-flag": "value"}
-        )
-    )
-    flags = config.sglang_config.prefill
+    config = SGLangBackend(roles={"prefill": RoleConfig(args={"my-new-flag": "value"})})
+    flags = config.get_config_for_mode("prefill")
     assert "my-new-flag" in flags
 ```
 

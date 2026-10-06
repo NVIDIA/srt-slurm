@@ -35,7 +35,11 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight
   - pymdownx.inlinehilite
   - pymdownx.tabbed:
@@ -44,36 +48,67 @@ markdown_extensions:
 plugins:
   - search
 
+hooks:
+  - tools/mkdocs_llms_txt.py
+
+exclude_docs: |
+  AGENTS.md
+  design/
+
+validation:
+  links:
+    anchors: warn
+
 nav:
-  - Getting Started:
-      - Introduction: README.md
+  - Home: README.md
+  - Get Started:
       - Installation: installation.md
-      - CLI Reference: cli.md
-  - Configuration:
-      - Configuration Reference: config-reference.md
-      - Schema Reference: schema-reference.md
+      - Cluster Config: cluster-config.md
+      - CLI Guide: cli.md
+  - Write a Recipe:
+      - Recipe Guide: config-reference.md
+      - Engines: engines.md
+      - Topology and Placement: topology.md
+      - Frontends:
+          - Frontends and Dynamo: frontends.md
+          - SGLang Router: sglang-router.md
+          - vLLM Router: vllm-router.md
+      - Benchmarks:
+          - Benchmarks: benchmarks.md
+          - Accuracy Benchmarks: accuracy.md
+      - Paths, Mounts, and Environment: runtime-env.md
+      - Services:
+          - Services: services.md
+          - Pools: pools.md
+          - Mooncake KV Store: mooncake-kv-store.md
       - Config Overrides: overrides.md
       - Parameter Sweeps: sweeps.md
-      - Legacy (v1) Recipe Layout: legacy-v1.md
-  - Architecture & Frontends:
-      - Architecture: architecture.md
-      - SGLang Router: sglang-router.md
-      - vLLM Router: vllm-router.md
-      - Mooncake KV Store: mooncake-kv-store.md
-      - Services: services.md
-      - Pools: pools.md
-      - Miles RL Post-Training: miles.md
-  - Benchmarking:
-      - Accuracy Benchmarks: accuracy.md
-      - Profiling: profiling.md
-  - Telemetry:
-      - GPU Power Telemetry: power-telemetry.md
-      - CPU Power Telemetry: cpu-power-telemetry.md
-      - DCGM 4.7 Runtime Support: dcgm-4.7-runtime-support.md
-  - Operations:
+      - Workloads:
+          - TileRT: tilert.md
+          - Shadow Engine Recovery: shadow-engine-recovery.md
+          - SGLang Fast Engine Recovery: sglang-weight-cache.md
+          - Miles RL Post-Training: miles.md
+  - Run and Operate:
       - Monitoring: monitoring.md
-      - Component Performance Dashboard: component-dashboard.md
-      - Router Post-Processing (ruter): ruter.md
       - SLURM FAQ: slurm-faq.md
+      - Status API: status-api-spec.md
+  - Analyze:
+      - Observability and Telemetry: observability.md
+      - Profiling: profiling.md
+      - Per-run Performance Analysis: perf-analysis.md
+      - Power:
+          - GPU Power Telemetry: power-telemetry.md
+          - CPU Power Telemetry: cpu-power-telemetry.md
+          - DCGM 4.7 Runtime Support: dcgm-4.7-runtime-support.md
+      - Component Performance Dashboard: component-dashboard.md
+      - DSight:
+          - DSight Trace Explorer: dsight.md
+          - Data Flow: dsight-data-flow.md
+          - Log Metrics: dsight-log-metrics.md
+          - Storage: dsight-storage.md
   - Reference:
-      - Status API Spec: status-api-spec.md
+      - Schema Reference: schema-reference.md
+      - CLI Reference: cli-reference.md
+      - Legacy (v1) Recipe Layout: legacy-v1.md
+  - Internals:
+      - Architecture: architecture.md

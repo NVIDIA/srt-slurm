@@ -35,10 +35,10 @@ __version__ = _package_version()
 # Logging utilities (should be first)
 # Backend configs
 from .backends import (
+    Backend,
     BackendConfig,
-    BackendProtocol,
     BackendType,
-    SGLangProtocol,
+    SGLangBackend,
 )
 
 # Core modules
@@ -56,9 +56,9 @@ from .core.topology import Endpoint, Process, allocate_endpoints, endpoints_to_p
 from .logging_utils import setup_logging
 
 __all__ = [
-    "BackendConfig",
     # Backends
-    "BackendProtocol",
+    "Backend",
+    "BackendConfig",
     "BackendType",
     # Endpoints
     "Endpoint",
@@ -73,7 +73,7 @@ __all__ = [
     "Process",
     "ProcessRegistry",
     "RuntimeContext",
-    "SGLangProtocol",
+    "SGLangBackend",
     "SrtConfig",
     # Version
     "__version__",

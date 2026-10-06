@@ -15,17 +15,14 @@ The DAG engine POC showed the runtime hosts a task graph well (2.9k lines, 108 t
 
 ## Concept
 
-```
-  recipe (schema 2)          workload kinds             workflow fragments (optional, sflow shape)
-  roles / frontend / workload   miles, aiperf, ...        tasks + probes + depends_on
-        │                          │                             │
-        └──────── compilers: kinds render pod-shaped steps into one plan ────────┘
-                                   │
-                          plan.json  (pools, steps, probes, edges, terminal set)
-                                   │
-        engine: resolve node-derived refs, gate on edges and probes, launch, watch, tier teardown, event log
-                                   │
-             executors: srun inside an sbatch (today) | docker on one host | kubernetes
+```mermaid
+flowchart TD
+    recipe["recipe (schema 2)<br/>roles / frontend / workload"] --> compilers
+    kinds["workload kinds<br/>miles, aiperf, ..."] --> compilers
+    fragments["workflow fragments (optional, sflow shape)<br/>tasks + probes + depends_on"] --> compilers
+    compilers["compilers: kinds render pod-shaped steps into one plan"] --> plan["plan.json<br/>pools, steps, probes, edges, terminal set"]
+    plan --> engine["engine: resolve node-derived refs, gate on edges and probes, launch, watch, tier teardown, event log"]
+    engine --> executors["executors: srun inside an sbatch (today), docker on one host, or kubernetes"]
 ```
 
 Three layers, each with one job:
@@ -217,7 +214,7 @@ Compile order: build pools from roles and placements; call role kinds; call the 
 
 - **Lifecycle per step.** INITIATED, RUNNING, READY, COMPLETED, FAILED, CANCELLED. `after_ready` and `after_done` edges. Init containers gate the main container.
 - **Async probes.** A thread pool, not the scheduler thread. The POC's synchronous `http_post` stalled every other task for up to `each_check_timeout`.
-- **One event log.** `events.jsonl` in the run directory: every transition, probe result, window stamp and progress event. Status API, MCP job tools, ruter and the dashboard read it. Only the engine writes state, which removes the monitor-versus-engine attribution race from the POC.
+- **One event log.** `events.jsonl` in the run directory: every transition, probe result, window stamp and progress event. Status API, MCP job tools and the dashboard read it. Only the engine writes state, which removes the monitor-versus-engine attribution race from the POC.
 - **Failure and teardown.** `critical` fails the run. Tiers, step names and stop signals reuse the graceful shutdown from #407 (`src/srtctl/core/processes.py:89,326`). Default `restartPolicy: Never`; `OnFailure` with a bounded count only when a job asks.
 - **Resources.** GPU ledger per pool, choosing indices for NVLink and NUMA locality. Port allocator per node and step. Kubernetes gets counts, SLURM gets indices; the compiled step carries both.
 - **Windows.** A task stamps `window <name> start|end` into the event log through a small `srtctl-mark` command. Postprocess and power reports read windows from the log rather than from benchmark-specific stamps.

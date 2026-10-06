@@ -80,9 +80,13 @@ def process_exporter_config_yaml() -> str:
     task name. The Dynamo frontend (``python3 -m dynamo.frontend``) gets its own
     group because it is the process every frontend CPU pathology lives in; the
     worker handlers are grouped by their ``dynamo.<backend>`` module name.
-    TRT-LLM engine children use a separate ``trtllm_engine`` group; the MPI
-    launcher, the benchmark client and the infra daemons are named so their CPU
-    is attributable rather than silently dropped. Unmatched processes are not
+    TRT-LLM engine children use a separate ``trtllm_engine`` group; SGLang's
+    engine processes retitle themselves (``sglang::scheduler``,
+    ``sglang::data_parallel_controller``, ``sglang::detokenizer``) and get one
+    group each, listed before the ``dynamo_sglang`` handler so a scheduler is
+    never folded into the handler's CPU; the MPI launcher, the benchmark client
+    and the infra daemons are named so their CPU is attributable rather than
+    silently dropped. Unmatched processes are not
     exported (no catch-all): the per-thread breakdown of every process on a
     352-CPU node would be high-cardinality noise.
     """
@@ -100,6 +104,15 @@ process_names:
   - name: dynamo_trtllm
     cmdline:
       - 'dynamo\\.trtllm'
+  - name: sglang_scheduler
+    cmdline:
+      - 'sglang::scheduler'
+  - name: sglang_dp_controller
+    cmdline:
+      - 'sglang::data_parallel_controller'
+  - name: sglang_detokenizer
+    cmdline:
+      - 'sglang::detokenizer'
   - name: dynamo_sglang
     cmdline:
       - 'dynamo\\.sglang'

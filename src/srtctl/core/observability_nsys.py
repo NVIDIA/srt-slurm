@@ -34,13 +34,16 @@ def wrap_observability_nsys(
     """
     settings = config.observability.nsys
     (log_dir / "profiles" / report_name).parent.mkdir(parents=True, exist_ok=True)
-    capture_args = [
-        "--sample=process-tree",
-        "--cpuctxsw=process-tree",
-        "--gpu-metrics-devices=none",
-        "--sampling-period=26000000",
-        "--samples-per-backtrace=32",
-    ]
+    capture_args = ["--gpu-metrics-devices=none"]
+    if settings.cpu_sampling == "none":
+        capture_args += ["--sample=none", "--cpuctxsw=none"]
+    else:
+        capture_args += [
+            f"--sample={settings.cpu_sampling}",
+            f"--cpuctxsw={settings.cpu_sampling}",
+            "--sampling-period=26000000",
+            "--samples-per-backtrace=32",
+        ]
     prefix = [
         config.profiling.nsys_binary,
         "profile",
@@ -54,13 +57,20 @@ def wrap_observability_nsys(
     ]
     prefix += ["-o", f"/logs/profiles/{report_name}"]
     environment = {
+        # Rust runtime ranges (route.*, preprocess.*, detokenize, transport.*) and the
+        # Python helper ranges (dynamo.common.utils.nvtx_utils) are gated separately.
         "DYN_ENABLE_RUST_NVTX": "1",
+        "DYN_NVTX": "1",
         "SRT_NSYS_REPORT_BARRIER_DIR": f"/logs/profiles/.stopped/{uuid.uuid4().hex}",
         "SRT_NSYS_REPORT_EXPECTED": str(ranks),
         "SRT_NSYS_REPORT_STOP_TIMEOUT": str(settings.report_timeout_secs),
     }
     if not frontend and config.backend_type == "trtllm":
         environment.update(TLLM_LLMAPI_ENABLE_NVTX="1", TLLM_PROFILE_LOG_RANKS="all")
+    elif not frontend and config.backend_type == "sglang":
+        # SGLang's scheduler-loop ranges live in the spawned scheduler process and are
+        # off unless this gate is set; the batch-overlap operation ranges stay opt-in.
+        environment["SGLANG_ENABLE_NVTX_SCHEDULER"] = "1"
     if settings.nvtx_injection_path:
         environment["NVTX_INJECTION64_PATH"] = settings.nvtx_injection_path
     if settings.capture_window == "measured_workload":

@@ -43,25 +43,24 @@ def test_explain_field_resolves_nested_reporting_endpoint() -> None:
     result = explain_field("reporting.status.endpoint")
     assert result["resolved"] is True
     assert result["schema"]["leaf"]["name"] == "endpoint"
-    assert result["schema"]["leaf"]["type"] == "UnionType[str, NoneType]"
+    assert result["schema"]["leaf"]["type"] == "str | None"
+    assert "status collector" in result["schema"]["leaf"]["description"]
 
 
 def test_validate_config_accepts_minimal_recipe() -> None:
     result = validate_config(
         config={
+            "schema": 2,
             "name": "mcp-test",
             "model": {
                 "path": "/tmp/model",
                 "container": "/tmp/container.sqsh",
                 "precision": "bf16",
             },
-            "resources": {
-                "gpu_type": "h100",
-                "gpus_per_node": 8,
-                "prefill_nodes": 1,
-                "decode_nodes": 1,
-                "prefill_workers": 1,
-                "decode_workers": 1,
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {
+                "prefill": {"nodes": 1, "workers": 1},
+                "decode": {"nodes": 1, "workers": 1},
             },
         },
     )
@@ -77,18 +76,15 @@ def test_preflight_config_reports_missing_container(tmp_path) -> None:
 
     result = preflight_config(
         config={
+            "schema": 2,
             "name": "mcp-test",
             "model": {
                 "path": str(model_dir),
                 "container": "missing-container",
                 "precision": "bf16",
             },
-            "resources": {
-                "gpu_type": "h100",
-                "gpus_per_node": 8,
-                "prefill_nodes": 1,
-                "decode_nodes": 1,
-            },
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"prefill": {"nodes": 1}, "decode": {"nodes": 1}},
         },
     )
 
@@ -100,48 +96,60 @@ def test_preflight_config_reports_missing_container(tmp_path) -> None:
 
 
 def test_validate_config_rejects_disagg_with_zero_prefill_workers() -> None:
-    """Reproduces the reported bad config: disagg-style block that should be aggregated."""
+    """Reproduces the reported bad config: disagg-style block that should be aggregated.
+
+    The topology check reads the roles block and names the aggregated fix.
+    """
     result = validate_config(
         config={
+            "schema": 2,
             "name": "mcp-test",
             "model": {
                 "path": "/tmp/model",
                 "container": "/tmp/container.sqsh",
                 "precision": "bf16",
             },
-            "resources": {
-                "gpu_type": "gb200",
-                "prefill_nodes": 0,
-                "decode_nodes": 1,
-                "prefill_workers": 0,
-                "decode_workers": 1,
-                "gpus_per_node": 4,
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "roles": {
+                "prefill": {"workers": 0},
+                "decode": {"nodes": 1, "workers": 1},
             },
         },
     )
     assert result["valid"] is False
     assert len(result["errors"]) == 1
     message = result["errors"][0]
-    assert "prefill_workers" in message
-    assert "agg_nodes: 1" in message
-    assert "agg_workers: 1" in message
+    assert "roles.prefill.workers" in message
+    assert "roles.agg (nodes: 1, workers: 1)" in message
+
+
+def test_validate_config_reports_a_pre_2_0_recipe_instead_of_raising() -> None:
+    result = validate_config(
+        config={
+            "name": "mcp-v1",
+            "model": {"path": "/tmp/model", "container": "/tmp/container.sqsh", "precision": "bf16"},
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
+            "backend": {"type": "sglang"},
+        },
+    )
+    assert result["valid"] is False
+    assert len(result["errors"]) == 1
+    assert "srtctl migrate" in result["errors"][0]
+    assert result["normalized"] == []
 
 
 def test_validate_config_accepts_correct_aggregated_form() -> None:
     result = validate_config(
         config={
+            "schema": 2,
             "name": "mcp-test",
             "model": {
                 "path": "/tmp/model",
                 "container": "/tmp/container.sqsh",
                 "precision": "bf16",
             },
-            "resources": {
-                "gpu_type": "gb200",
-                "gpus_per_node": 4,
-                "agg_nodes": 1,
-                "agg_workers": 1,
-            },
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         },
     )
     assert result["valid"] is True
@@ -150,29 +158,29 @@ def test_validate_config_accepts_correct_aggregated_form() -> None:
 def test_validate_config_rejects_mixed_disagg_and_agg() -> None:
     result = validate_config(
         config={
+            "schema": 2,
             "name": "mcp-test",
             "model": {
                 "path": "/tmp/model",
                 "container": "/tmp/container.sqsh",
                 "precision": "bf16",
             },
-            "resources": {
-                "gpu_type": "gb200",
-                "gpus_per_node": 4,
-                "prefill_nodes": 1,
-                "decode_nodes": 1,
-                "agg_nodes": 1,
-                "agg_workers": 1,
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "roles": {
+                "prefill": {"nodes": 1},
+                "decode": {"nodes": 1},
+                "agg": {"nodes": 1, "workers": 1},
             },
         },
     )
     assert result["valid"] is False
-    assert "Mixes disaggregated fields" in result["errors"][0]
+    assert "Mixes the disaggregated roles" in result["errors"][0]
 
 
 def test_resolve_config_returns_variants() -> None:
     result = resolve_config(
         config={
+            "schema": 2,
             "base": {
                 "name": "base",
                 "model": {
@@ -180,12 +188,8 @@ def test_resolve_config_returns_variants() -> None:
                     "container": "/tmp/container.sqsh",
                     "precision": "bf16",
                 },
-                "resources": {
-                    "gpu_type": "h100",
-                    "gpus_per_node": 8,
-                    "prefill_nodes": 1,
-                    "decode_nodes": 1,
-                },
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+                "roles": {"prefill": {"nodes": 1}, "decode": {"nodes": 1}},
             },
             "override_alt": {
                 "benchmark": {
@@ -202,18 +206,15 @@ def test_resolve_config_returns_variants() -> None:
 
 def test_mcp_tools_reject_host_side_cluster_defaults() -> None:
     config = {
+        "schema": 2,
         "name": "mcp-test",
         "model": {
             "path": "model-alias",
             "container": "container-alias",
             "precision": "bf16",
         },
-        "resources": {
-            "gpu_type": "h100",
-            "gpus_per_node": 8,
-            "agg_nodes": 1,
-            "agg_workers": 1,
-        },
+        "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+        "roles": {"agg": {"nodes": 1, "workers": 1}},
     }
 
     for tool in (validate_config, preflight_config, resolve_config):
@@ -237,3 +238,36 @@ def test_server_registers_the_spec_and_job_tools() -> None:
         "resolve_config",
     } <= names
     assert {"submit_job", "dry_run", "job_status", "job_logs", "list_jobs", "cancel_job"} <= names
+
+
+def test_schema_summary_carries_descriptions_and_types() -> None:
+    summary = schema_summary()
+    by_name = {field["name"]: field for field in summary["top_level_fields"]}
+    assert by_name["model"]["description"]
+    assert by_name["schema"]["allowed_values"] == [2]
+    assert "sglang" in summary["engine_types"]
+    assert any(entry["type"] == "sa-bench" for entry in summary["benchmark_types"])
+
+
+def test_explain_field_reads_the_schema_not_the_prose() -> None:
+    result = explain_field("dynamo.request_plane")
+    leaf = result["schema"]["leaf"]
+    assert result["resolved"] is True
+    assert leaf["allowed_values"] == ["nats", "tcp", "http"]
+    assert leaf["default"] == "'tcp'"
+    assert leaf["description"]
+    assert leaf["reference"] == "docs/schema-reference.md#dynamoconfig"
+
+
+def test_explain_field_resolves_roles_and_engine_keys() -> None:
+    assert explain_field("roles.prefill.gpus")["schema"]["leaf"]["defined_in"] == "RoleConfig"
+    engine = explain_field("engine.mooncake_protocol")["schema"]["leaf"]
+    assert engine["allowed_values"] == ["rdma", "tcp"]
+    assert engine["engine_types"] == ["atom"]
+
+
+def test_explain_field_reports_the_valid_keys_for_a_typo() -> None:
+    result = explain_field("benchmark.concurency")
+    assert result["resolved"] is False
+    assert result["schema"]["unresolved"] == "concurency"
+    assert "concurrency" in result["schema"]["available"]

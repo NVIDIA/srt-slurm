@@ -16,6 +16,8 @@ reporting:
       - "https://status.example.com"
     # Optional: which environment variable holds the bearer token (default SRTCTL_STATUS_TOKEN)
     token_env: SRTCTL_STATUS_TOKEN
+    # Optional: push new log and metric output every N seconds (off when unset)
+    logging-stream-interval: 10
 ```
 
 If not configured, status reporting is disabled and jobs run normally.
@@ -41,6 +43,8 @@ Behaviors of the native collector on top of the contract:
 ## Web UI
 
 `GET /` serves a single-page UI with no external dependencies: a jobs table (filter by text, status and cluster; elapsed time ticks for active jobs), a detail pane per job (cluster, exit code, duration, model, resources, head node, recipe, log dir, logs URL, the event timeline with deltas, and the raw metadata), and a live global event feed that follows `/api/events` with the cursor. Poll interval is selectable (2 s, 5 s, 15 s, paused). Arrow keys move between jobs; clicking a job id in the feed opens it.
+
+The detail pane has three tabs. **overview** is the view above. **logs** lists the job's streamed files and tails one through `GET /api/jobs/{id}/logs?file=...&offset=...`: a file opens at its last 256 KiB (from the start with *from start*), follows new bytes on the poll interval, keeps the newest 20,000 lines, strips ANSI color codes, filters lines by substring, and *download* fetches the whole file. **tachometer** lists the streamed Parquet segments with size and upload state and downloads complete ones; nothing is decoded in the browser.
 
 The page itself needs no token (it is static and reveals nothing). It sends the read token the viewer pastes once as `Authorization: Bearer` on every API call and keeps it in the browser's `localStorage`. Opening `/#token=<read token>` seeds it and strips the fragment from the URL; fragments are never sent to the server. `HEAD` is answered like `GET` without a body, for uptime checkers.
 
@@ -253,9 +257,81 @@ Incremental event feed for one job. Events carry a monotonically increasing `id`
 
 Same as above across every job, with an optional `job_id` filter. This is the feed for dashboards and agents that want to react to job transitions without polling each job.
 
+### POST /api/jobs/{job_id}/logs
+
+Streaming is opt-in with `reporting.status.logging-stream-interval`. The sweep
+uploads new bytes from `.out`, `.err`, `.log`, `.csv` and `.jsonl` files, using
+persistent HTTP connections and chunks of at most 1 MiB. Shutdown gives the
+worker up to five seconds for a final best-effort flush.
+
+```http
+POST /api/jobs/12345/logs?file=worker.out&offset=4096&cluster=b200
+Content-Type: application/octet-stream
+Authorization: Bearer <token>
+
+<raw file bytes>
+```
+
+`file` is a relative path and `offset` is the source byte position. The API
+stores the bytes and decodes UTF-8 when read, including characters split across
+chunks. `final=1` marks EOF at shutdown; an empty body can finalize bytes already
+sent. Response: `{"job_id": "12345", "stored": 1}` (`stored: 0` for a resend).
+Exact retries are idempotent; conflicting overlaps return 409. The legacy JSON
+`{"chunks": [{"file", "offset", "size", "data"}], "metadata": {"cluster": "b200"}}`
+format is also accepted.
+
+Files must be append-only. Uploader offsets are in memory; delivery across
+uploader restarts is not guaranteed. Logs remain on disk if uploads fail.
+
+### POST /api/jobs/{job_id}/captures
+
+While streaming is on, Tachometer seals its buffer into a new immutable
+`out-N.parquet` every save interval (instead of rewriting `current.arrow`) and
+links it into `tachometer-outbox/`, a sibling of the log directory that neither
+the S3 sync nor dsight reads. The sweep uploads each segment once, unchanged:
+
+```http
+POST /api/jobs/12345/captures?file=out-7.parquet&offset=0&total=8192&cluster=b200
+Content-Type: application/octet-stream
+Authorization: Bearer <token>
+
+<raw Parquet bytes>
+```
+
+`total` is the segment's byte length. Chunks are sequential and exact retries
+are idempotent; a different byte range or total for a stored segment returns
+409. The response is `{"job_id": "12345", "next_offset": 8192, "complete": true}`
+once every byte is stored. The sweep unlinks the outbox entry only after every
+endpoint has acknowledged the whole segment, so a failed upload is retried on
+the next flush and compaction cannot delete a segment before it is sent.
+
+The collector stores the bytes verbatim and acknowledges without decoding; each
+row therefore crosses the network once. The cluster does no decoding, row
+hashing, JSON conversion, or local indexing. `final.parquet` in the S3 upload
+remains the complete, sorted capture.
+
+When configured, `cluster` accompanies every raw upload. Shared collectors must
+use `(cluster, job_id)` for identity; the built-in collector retains its existing
+job-ID scope. Custom collectors must implement both binary upload routes before
+enabling streaming. These routes use the existing write bearer token.
+
+### GET /api/jobs/{job_id}/captures
+
+Without `file`: `{"job_id": "12345", "files": [{"file": "out-7.parquet", "size": 8192, "complete": true, "updated_at": "..."}]}`.
+
+With `file`: the raw bytes of a complete segment as `application/octet-stream`,
+or 404 while it is missing or partial. Readers decode segments themselves, for
+example with `srtctl.dsight.metrics.batches`.
+
+### GET /api/jobs/{job_id}/logs
+
+Without `file`: `{"job_id": "12345", "files": [{"file": "...", "size": 4608, "updated_at": "..."}]}`, `size` being the bytes received so far.
+
+With `file` (and optional `offset`, default 0): the contiguous content from `offset`, up to about 1 MiB, as `{"job_id", "file", "offset", "next_offset", "data"}`. Tail a file by polling with `offset = next_offset`.
+
 ### DELETE /api/jobs/{job_id}
 
-Remove a job and its events. `200 {"deleted": true, "job_id": ...}` or `404`.
+Remove a job, its events and its streamed logs and captures. `200 {"deleted": true, "job_id": ...}` or `404`.
 
 ### GET /api/health
 
@@ -296,6 +372,10 @@ from srtctl.contract import (
 ```
 
 ## Behavior
+
+Every status update includes `metadata.cluster` when set in `srtslurm.yaml`.
+Shared collectors can use `(cluster, job_id)` to distinguish runs; the built-in
+collector still keys records by job ID alone.
 
 - All requests have a 5-second timeout
 - Redirects are never followed; a 3xx, 401 or 403 is logged at WARNING and counts as a failure
