@@ -274,5 +274,3 @@ integration described below. Native vLLM headless support alone is insufficient
 to provide the leader's sidecar transport.
 
 Hybrid sidecars require compatible changes in **both** projects: vLLM's Python `serve` command must support `--grpc-port` for its Rust frontend, the Rust Control service must report `ParallelismInfo.data_parallel_size_local`, and Dynamo's sidecar must register that local range using the reported global start rank. Stock vLLM 0.29.0 does not supply these interfaces. Pin a compatible image or source build; merely upgrading the Dynamo wheel is insufficient. To use a specific Rust binary in the multi-node path, set `VLLM_RUST_FRONTEND_PATH` in the recipe's worker environment. srtctl preserves that path and supplies the Rust frontend selection automatically.
-
-vLLM sidecar mode sets `VLLM_PLUGINS` to an empty value by default. This prevents image-installed plugins from replacing native engine output types that must match the fixed `vllm-rs` MessagePack contract. A recipe can explicitly set `VLLM_PLUGINS` in a role's `env` when every selected plugin is compatible with the sidecar protocol.

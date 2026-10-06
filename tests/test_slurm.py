@@ -736,10 +736,13 @@ def test_sglang_sidecar_rust_build_mode_respects_the_recipe(tmp_path: Path) -> N
     assert "SGLANG_RUST_BUILD_MODE" not in mock_srun.call_args.kwargs["env_to_set"]
 
 
-def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
+@pytest.mark.parametrize("plugins", [None, "example_plugin", ""])
+def test_vllm_sidecar_preserves_plugin_selection(tmp_path: Path, plugins: str | None) -> None:
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "vllm"
     mixin.config.dynamo.sidecar = True
+    if plugins is not None:
+        mixin.backend.get_environment_for_mode.return_value = {"VLLM_PLUGINS": plugins}
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -748,7 +751,11 @@ def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
         mock_srun.return_value = MagicMock()
         mixin.start_worker(process, [process])
 
-    assert mock_srun.call_args.kwargs["env_to_set"]["VLLM_PLUGINS"] == ""
+    environment = mock_srun.call_args.kwargs["env_to_set"]
+    if plugins is None:
+        assert "VLLM_PLUGINS" not in environment
+    else:
+        assert environment["VLLM_PLUGINS"] == plugins
 
 
 def test_worker_control_plane_uses_routable_infra_ip(tmp_path: Path) -> None:

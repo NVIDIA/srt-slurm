@@ -233,10 +233,6 @@ class WorkerStageMixin:
         """Return mode environment with engine-specific defaults the recipe can override."""
         backend = self.config.backend_for_role(mode)
         environment = backend.get_environment_for_mode(mode)
-        if self.config.dynamo.sidecar and backend.type == "vllm":
-            # Installed plugins may replace native engine output types and
-            # break the fixed Rust/Python MessagePack contract used by vllm-rs.
-            environment.setdefault("VLLM_PLUGINS", "")
         if self.config.dynamo.sidecar and backend.type == "sglang":
             # The sidecar talks to SGLang's native gRPC server, a prebuilt Rust extension. In
             # images that run SGLang from a source checkout (the nightlies), the extension
