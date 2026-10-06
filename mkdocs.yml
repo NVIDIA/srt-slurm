@@ -84,6 +84,7 @@ nav:
       - Config Overrides: overrides.md
       - Parameter Sweeps: sweeps.md
       - Workloads:
+          - Native Sidecars: sidecars.md
           - TileRT: tilert.md
           - Shadow Engine Recovery: shadow-engine-recovery.md
           - SGLang Fast Engine Recovery: sglang-weight-cache.md
