@@ -83,10 +83,11 @@ def service_step_name(service: ServiceConfig, node: str, instances: int, process
     """Slurm step name (and log stem) for one instance of a service.
 
     ``service_<name>`` alone for a single instance, ``service_<name>_<node>`` per
-    node, ``service_<name>_<role>_<index>_<node>`` for an instance attached to a worker.
+    node, ``service_<name>_<role>_<index>_<node>`` for an instance attached to a worker
+    (plus ``_dp<r>`` when it attaches to one DP rank of a per-rank worker).
     """
     if process is not None:
-        return f"service_{service.name}_{process.endpoint_mode}_{process.endpoint_index}_{node}"
+        return f"service_{service.name}_{process.endpoint_mode}_{process.endpoint_index}_{node}{process.engine_suffix}"
     suffix = f"_{node}" if instances > 1 else ""
     return f"service_{service.name}{suffix}"
 

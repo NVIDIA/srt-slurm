@@ -47,6 +47,7 @@ from srtctl.ports import (
     LLM_D_ENVOY_ADMIN_PORT,
     LLM_D_EPP_GRPC_PORT,
     LLM_D_EPP_HEALTH_PORT,
+    LLM_D_EPP_KV_EVENTS_PORT,
     LLM_D_EPP_METRICS_PORT,
 )
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
@@ -74,6 +75,15 @@ ROLE_BY_MODE = {"prefill": "prefill", "decode": "decode", "agg": "both"}
 # Gauge of endpoints whose metrics the EPP scraped within its staleness window
 # (pkg/epp/metrics/llm_d_router_metrics.go).
 READY_ENDPOINTS_METRIC = "llm_d_epp_ready_endpoints"
+# Precise prefix-cache routing: the producer indexes the workers' KV-cache events, which
+# it receives on one ZMQ socket srtctl owns; the token producer tokenizes each prompt the
+# way the engine does, through a worker's /v1/*/render endpoints
+# (pkg/epp/framework/plugins/requestcontrol/dataproducer/{preciseprefixcache,tokenizer}).
+PRECISE_PREFIX_PRODUCER = "precise-prefix-cache-producer"
+TOKEN_PRODUCER = "token-producer"
+_MANAGED_KV_EVENTS_KEYS = frozenset({"zmqEndpoint", "discoverPods", "podDiscoveryConfig"})
+# Token-producer backends other than vLLM's render endpoints.
+_OTHER_TOKENIZERS = frozenset({"estimate", "udsTokenizerConfig"})
 # EPP flags srtctl sets; frontend.args may not repeat them.
 _MANAGED_EPP_FLAGS = frozenset(
     {"pool-name", "pool-namespace", "config-file", "config-text", "grpc-port", "grpc-health-port", "metrics-port"}
@@ -83,6 +93,11 @@ _MANAGED_EPP_FLAGS = frozenset(
 def _is_pd(config: Any) -> bool:
     topology = config.topology
     return topology.num_prefill > 0 and topology.num_decode > 0
+
+
+def _routed_port(process: Process) -> int:
+    """The port the EPP routes a worker's traffic to: its proxy's when it has one, else its own."""
+    return process.proxy_port if process.proxy_port is not None else process.http_port
 
 
 def _container_path(name: str) -> str:
@@ -108,6 +123,44 @@ def epp_config_document(epp_config: dict[str, Any] | None, endpoints_path: str) 
         },
     ]
     document["dataLayer"] = {**(document.get("dataLayer") or {}), "discovery": {"pluginRef": DISCOVERY_PLUGIN}}
+    return document
+
+
+def _plugins(epp_config: dict[str, Any] | None, plugin_type: str) -> list[dict[str, Any]]:
+    return [plugin for plugin in (epp_config or {}).get("plugins") or [] if plugin.get("type") == plugin_type]
+
+
+def _parameters(plugin: dict[str, Any]) -> dict[str, Any]:
+    return plugin.get("parameters") or {}
+
+
+def _vllm_token_producer(plugin: dict[str, Any]) -> bool:
+    return not _OTHER_TOKENIZERS & _parameters(plugin).keys()
+
+
+def with_kv_events(document: dict[str, Any], render_url: str, model_name: str) -> dict[str, Any]:
+    """Point the precise prefix-cache producer at srtctl's KV-event socket and the token producer at a worker.
+
+    The EPP binds the socket and every publishing worker connects to it (the
+    producer's global-socket mode, ``kvEventsConfig.zmqEndpoint``): its per-pod
+    mode dials one fixed port per endpoint address, which workers sharing a node
+    cannot all bind. vLLM token producers render through ``render_url``.
+    """
+    for plugin in document.get("plugins") or []:
+        parameters = _parameters(plugin)
+        if plugin.get("type") == PRECISE_PREFIX_PRODUCER:
+            kv_events = parameters.get("kvEventsConfig") or {}
+            parameters["kvEventsConfig"] = {
+                **kv_events,
+                "zmqEndpoint": f"tcp://*:{LLM_D_EPP_KV_EVENTS_PORT}",
+                "discoverPods": False,
+            }
+        elif plugin.get("type") == TOKEN_PRODUCER and _vllm_token_producer(plugin):
+            parameters.setdefault("modelName", model_name)
+            parameters["vllm"] = {**(parameters.get("vllm") or {}), "url": render_url}
+        else:
+            continue
+        plugin["parameters"] = parameters
     return document
 
 
@@ -174,6 +227,7 @@ class LLMDFrontend(StaticRouterFrontend):
                 "frontend.epp_config must not configure endpoint discovery: srtctl adds the file-discovery "
                 "plugin and dataLayer.discovery for the workers it launches"
             )
+        self._validate_kv_events(config)
         if _is_pd(config):
             if not epp_config.get("schedulingProfiles"):
                 raise ValueError(
@@ -181,6 +235,81 @@ class LLMDFrontend(StaticRouterFrontend):
                     "prefill and decode schedulingProfiles and a disaggregation profile handler"
                 )
             sidecar_kv_connector(config.backend_for_role("decode"))
+
+    def _validate_kv_events(self, config: Any) -> None:
+        """Workers publish KV-cache events exactly when the EPP has a precise prefix-cache producer to index them."""
+        epp_config = config.frontend.epp_config
+        topology = config.topology
+        publishing = [
+            mode
+            for mode, count in (
+                ("prefill", topology.num_prefill),
+                ("decode", topology.num_decode),
+                ("agg", topology.num_agg),
+            )
+            if count and config.backend_for_role(mode).get_kv_events_config_for_mode(mode)
+        ]
+        producers = _plugins(epp_config, PRECISE_PREFIX_PRODUCER)
+        if not producers:
+            if publishing:
+                raise ValueError(
+                    f"roles.{publishing[0]}.kv_events publishes KV-cache events for the EPP to index; "
+                    f"add a {PRECISE_PREFIX_PRODUCER} plugin to frontend.epp_config"
+                )
+            return
+        if not publishing:
+            raise ValueError(
+                f"frontend.epp_config's {PRECISE_PREFIX_PRODUCER} indexes the workers' KV-cache events; "
+                "set roles.<role>.kv_events on the roles it scores"
+            )
+        for producer in producers:
+            managed = _MANAGED_KV_EVENTS_KEYS & (_parameters(producer).get("kvEventsConfig") or {}).keys()
+            if managed:
+                raise ValueError(
+                    f"frontend.epp_config sets {PRECISE_PREFIX_PRODUCER} kvEventsConfig.{', '.join(sorted(managed))}, "
+                    "which srtctl manages: the EPP binds one KV-event socket the workers connect to"
+                )
+        token_producers = [plugin for plugin in _plugins(epp_config, TOKEN_PRODUCER) if _vllm_token_producer(plugin)]
+        if not token_producers:
+            raise ValueError(
+                f"{PRECISE_PREFIX_PRODUCER} needs the engine's token IDs: add a {TOKEN_PRODUCER} plugin "
+                "to frontend.epp_config (srtctl points it at a worker's render endpoint)"
+            )
+        if any("url" in (_parameters(plugin).get("vllm") or {}) for plugin in token_producers):
+            raise ValueError(f"frontend.epp_config sets {TOKEN_PRODUCER} vllm.url, which srtctl points at a worker")
+        frontend = config.frontend
+        if (
+            frontend.enable_multiple_frontends and config.engine_node_count > 1
+        ) or frontend.placement.location != "head":
+            raise ValueError(
+                "roles.<role>.kv_events: the workers publish to the EPP on the head node; set "
+                "frontend.enable_multiple_frontends: false and keep frontend.placement.node: head"
+            )
+        for mode in publishing:
+            backend = config.backend_for_role(mode)
+            if backend._is_dp_mode(mode) and not backend.is_external_lb(mode):
+                raise ValueError(
+                    f"roles.{mode}.kv_events with data-parallel-size: vLLM publishes every DP rank's events on its "
+                    "own port, so the EPP must route to the ranks themselves; set "
+                    f"roles.{mode}.args.data-parallel-external-lb: true"
+                )
+
+    def kv_events_subscriber(self, process: Process, runtime: RuntimeContext, model_name: str) -> tuple[str, int, str]:
+        """The EPP's KV-event socket on the head node; the topic names the endpoint the events belong to.
+
+        vLLM's topic is ``kv@<endpoint>@<model>``: the producer files the events under
+        that endpoint's ``address:port`` (the sidecar's port for a proxied decode
+        worker) and the model the requests name (pkg/kvevents/engineadapter/vllm_adapter.go).
+        """
+        address = self.resolve_worker_host(process.node, runtime.network_interface)
+        return runtime.head_node_ip, LLM_D_EPP_KV_EVENTS_PORT, f"kv@{address}:{_routed_port(process)}@{model_name}"
+
+    def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
+        """Every routable worker process serves its own API and metrics, an external-LB DP rank included."""
+        return process.http_port if process.http_port > 0 else None
+
+    def worker_endpoint_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        return process.http_port if process.http_port > 0 else None
 
     def proxied_worker_modes(self, config: Any) -> frozenset[str]:
         """Prefill/decode: the router reaches each decode worker through its P/D sidecar."""
@@ -243,17 +372,22 @@ class LLMDFrontend(StaticRouterFrontend):
         for process in backend_processes:
             if process.http_port <= 0:
                 continue
-            port = process.proxy_port if process.proxy_port is not None else process.http_port
             endpoints.append(
                 {
                     "name": f"{process.endpoint_mode}-{process.endpoint_index}-{process.node_rank}",
                     "namespace": POOL,
                     "address": self.resolve_worker_host(process.node, network_interface),
-                    "port": str(port),
+                    "port": str(_routed_port(process)),
                     "labels": {ROLE_LABEL: ROLE_BY_MODE[process.endpoint_mode]},
                 }
             )
         return {"endpoints": endpoints}
+
+    def render_url(self, backend_processes: list[Process], network_interface: str | None) -> str:
+        """A worker's own API (not its proxy), for the token producer: the first prefill worker, else the first."""
+        routable = [process for process in backend_processes if process.http_port > 0]
+        process = next((p for p in routable if p.endpoint_mode == "prefill"), routable[0])
+        return f"http://{self.resolve_worker_host(process.node, network_interface)}:{process.http_port}"
 
     def epp_command(self, config: Any, epp_config_path: str) -> list[str]:
         user_args = self.get_frontend_args_list(config.frontend.args)
@@ -291,6 +425,12 @@ class LLMDFrontend(StaticRouterFrontend):
         endpoints = self.endpoints_document(backend_processes, runtime.network_interface)
         (runtime.log_dir / ENDPOINTS_FILE).write_text(yaml.safe_dump(endpoints, sort_keys=False))
         epp_document = epp_config_document(config.frontend.epp_config, _container_path(ENDPOINTS_FILE))
+        if _plugins(epp_document, PRECISE_PREFIX_PRODUCER) or _plugins(epp_document, TOKEN_PRODUCER):
+            epp_document = with_kv_events(
+                epp_document,
+                self.render_url(backend_processes, runtime.network_interface),
+                backend.get_served_model_name(runtime.model_path.name),
+            )
         (runtime.log_dir / EPP_CONFIG_FILE).write_text(yaml.safe_dump(epp_document, sort_keys=False))
         (runtime.log_dir / ENVOY_CONFIG_FILE).write_text(
             envoy_config(topology.frontend_port, _container_path(ENVOY_ACCESS_LOG))

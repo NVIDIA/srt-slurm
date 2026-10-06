@@ -1,0 +1,572 @@
+# examples/vllm/llm-d-dp-ranks.yaml
+# exit_code: 0
+# srun calls: 28
+
+## agg_0_node-01_dp0
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0_dp0.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5200
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20000
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6100 --data-parallel-rank 0 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 0 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6100@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5557"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-01_dp1
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0_dp1.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5201
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20050
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6132 --data-parallel-rank 1 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 1 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6132@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5556"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-01_dp2
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0_dp2.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5202
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20100
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6164 --data-parallel-rank 2 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 2 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6164@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5555"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-01_dp3
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0_dp3.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5203
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20150
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6196 --data-parallel-rank 3 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 3 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6196@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5554"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-01_dp4
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0_dp4.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5204
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20200
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6228 --data-parallel-rank 4 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 4 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6228@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5553"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-01_dp5
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0_dp5.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5205
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20250
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6260 --data-parallel-rank 5 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 5 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6260@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5552"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-01_dp6
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0_dp6.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5206
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20300
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6292 --data-parallel-rank 6 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 6 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6292@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5551"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-01_dp7
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0_dp7.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5207
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20350
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6324 --data-parallel-rank 7 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 7 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6324@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5550"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-02_dp8
+nodelist: node-02
+output: <output>/logs/node-02_agg_w0_dp8.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5208
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20400
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6100 --data-parallel-rank 8 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 0 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6100@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5549"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-02_dp9
+nodelist: node-02
+output: <output>/logs/node-02_agg_w0_dp9.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5209
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20450
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6132 --data-parallel-rank 9 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 1 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6132@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5548"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-02_dp10
+nodelist: node-02
+output: <output>/logs/node-02_agg_w0_dp10.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5210
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20500
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6164 --data-parallel-rank 10 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 2 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6164@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5547"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-02_dp11
+nodelist: node-02
+output: <output>/logs/node-02_agg_w0_dp11.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5211
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20550
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6196 --data-parallel-rank 11 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 3 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6196@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5546"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-02_dp12
+nodelist: node-02
+output: <output>/logs/node-02_agg_w0_dp12.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5212
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20600
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6228 --data-parallel-rank 12 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 4 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6228@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5545"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-02_dp13
+nodelist: node-02
+output: <output>/logs/node-02_agg_w0_dp13.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5213
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20650
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6260 --data-parallel-rank 13 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 5 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6260@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5544"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-02_dp14
+nodelist: node-02
+output: <output>/logs/node-02_agg_w0_dp14.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5214
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20700
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6292 --data-parallel-rank 14 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 6 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6292@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5543"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## agg_0_node-02_dp15
+nodelist: node-02
+output: <output>/logs/node-02_agg_w0_dp15.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 5215
+    HEAD_NODE_IP: 127.0.0.1
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20750
+env_to_unset: VLLM_PORT
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6324 --data-parallel-rank 15 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 7 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6324@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5542"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+
+## llm-d-epp_0
+nodelist: node-01
+output: <output>/logs/node-01_llm-d-epp_0.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+command: |
+    epp --pool-name=srtctl --pool-namespace=srtctl --config-file=/logs/llm-d-epp-config.yaml --grpc-port=9002 --grpc-health-port=9003 --metrics-port=9090 --secure-serving=false
+
+## llm-d-envoy_0
+nodelist: node-01
+output: <output>/logs/node-01_llm-d-envoy_0.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+command: |
+    envoy -c /logs/llm-d-envoy.yaml --disable-hot-restart
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_dcgm-exporter_node-04.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_node-exporter_node-04.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: llm-d-vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    SRTCTL_FRONTEND_TYPE: llm-d
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+command: |
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 16x32 inf /model Qwen/Qwen3-30B-A3B false 16 0 0 0.8 10 2 '' true random '' false

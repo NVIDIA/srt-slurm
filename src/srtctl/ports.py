@@ -49,6 +49,9 @@ LLM_D_EPP_GRPC_PORT = 9002
 LLM_D_EPP_HEALTH_PORT = 9003
 LLM_D_EPP_METRICS_PORT = 9090
 LLM_D_ENVOY_ADMIN_PORT = 9901
+# The EPP's ZMQ subscriber for vLLM KV-cache events (precise prefix-cache routing): it binds
+# this port on the router node and every publishing worker connects to it (upstream's 5557).
+LLM_D_EPP_KV_EVENTS_PORT = 5557
 # First listener of a per-worker proxy a router sends a worker's traffic through
 # (llm-d's P/D sidecar in front of a decode worker); see PROXY_PORTS.
 WORKER_PROXY_PORT_BASE = 9600

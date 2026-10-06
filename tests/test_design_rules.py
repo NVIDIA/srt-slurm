@@ -152,6 +152,9 @@ RULES = [
         frozenset(
             {
                 ("backends/vllm.py", "grpc_port + 1"),
+                # Not a listener: a KV-event publisher dials the router's one subscriber port, and vLLM
+                # adds the publisher's DP rank to the port it is given, so the rank is taken off first.
+                ("backends/vllm.py", "port - rank"),
                 # KVBM_ZMQ_PORTS allocates a two-port block; the ACK port is the block's second port.
                 ("cli/mixins/worker_stage.py", "leader.kvbm_zmq_port + 1"),
             }

@@ -146,9 +146,83 @@ the EPP's built-in default profile. See
 [`examples/vllm/llm-d-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-disagg.yaml) and
 [`examples/vllm/llm-d-agg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-agg.yaml).
 
+## Routing to DP ranks
+
 A vLLM worker with `data-parallel-size` is one `vllm serve` that balances its DP ranks
 itself (the leader serves the API, other nodes run headless ranks), so it is one EPP
-endpoint, as it is one SMG worker.
+endpoint, as it is one SMG worker. Set `data-parallel-external-lb: true` in the role's
+`args` to have the EPP route to the ranks themselves, as llm-d's wide-EP guide does: srtctl
+then launches every DP rank as its own `vllm serve --data-parallel-rank <r>
+--data-parallel-address <rank 0's node>` (vLLM's external load balancing) on its own
+allocated HTTP port, on one node or across several, and lists each rank in the endpoints
+file. Each rank's step and log carry `_dp<r>` (`agg_0_<node>_dp3`, `<node>_agg_w0_dp3.out`),
+and in a prefill/decode job every decode rank gets its own P/D sidecar. vLLM accepts
+external load balancing for MoE models only. See
+[`examples/vllm/llm-d-dp-ranks.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-dp-ranks.yaml).
+
+```yaml
+roles:
+  agg:
+    gpus: 16
+    args:
+      data-parallel-size: 16
+      data-parallel-external-lb: true
+```
+
+## Precise prefix-cache routing
+
+The approximate prefix scorers guess where a prefix is cached from the requests the EPP
+routed. With `roles.<role>.kv_events` the workers report it instead: every vLLM worker of
+the role publishes its KV-cache events (blocks stored and evicted) to the EPP's
+[`precise-prefix-cache-producer`](https://github.com/llm-d/llm-d-router/tree/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/epp/framework/plugins/requestcontrol/dataproducer/preciseprefixcache),
+which indexes them per endpoint; `prefix-cache-scorer` with
+`prefixMatchInfoProducerName: precise-prefix-cache-producer` scores the endpoints from
+that index. The producer hashes the prompt's real token IDs, so the configuration also
+needs a `token-producer`, which tokenizes through a worker's `/v1/*/render` endpoints:
+
+```yaml
+frontend:
+  epp_config:
+    plugins:
+      - type: token-producer
+      - type: precise-prefix-cache-producer
+        parameters:
+          indexerConfig:
+            kvBlockIndexConfig:
+              enableMetrics: true           # index admissions and lookup hits on /metrics
+      - type: prefix-cache-scorer
+        parameters:
+          prefixMatchInfoProducerName: precise-prefix-cache-producer
+      - type: max-score-picker
+    schedulingProfiles: [...]
+roles:
+  agg:
+    kv_events: true
+```
+
+srtctl wires the rest:
+
+- The producer's `kvEventsConfig.zmqEndpoint` is `tcp://*:5557` (`discoverPods: false`):
+  the EPP binds one ZMQ socket on the router node and every worker connects to it. The
+  producer's per-pod mode dials the same port on every endpoint address, which workers
+  sharing a node cannot all bind (llm-d-router v0.11's file discovery gives every
+  endpoint rank 0).
+- Every publishing worker gets `--kv-events-config` with `endpoint:
+  tcp://<router>:5557` and `topic: kv@<address>:<port>@<served model>`, naming the
+  endpoint the EPP routes to (a decode worker's sidecar port) and the model requests
+  name; the producer files the events under that endpoint
+  ([`vllm_adapter.go`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/kvevents/engineadapter/vllm_adapter.go#L52-L58)).
+  vLLM adds a publisher's DP rank to its port, so an external-LB rank `r` is given
+  `5557 - r`.
+- The token producer's `vllm.url` is the first prefill worker's (else the first worker's)
+  own vLLM API, and `modelName` defaults to the served model name.
+
+The roles that publish and the producer go together: either without the other is
+rejected, as are a producer `kvEventsConfig` that sets the socket or discovery, a
+`token-producer` `vllm.url`, and a router not on the head node. A role with
+`data-parallel-size` publishes only with `data-parallel-external-lb: true`: each DP rank
+publishes its own events, and the EPP can place a prefix only on an endpoint that is
+that rank.
 
 ## Limitations
 
@@ -158,6 +232,7 @@ endpoint, as it is one SMG worker.
   rejected.
 - The endpoints file is written once (`watchFile: false`) and the EPP does not eject a
   worker that fails; a crashed worker or sidecar fails the job instead.
-- The EPP routes to a worker, not to one of its DP ranks.
-- Precise prefix-cache routing (KV events into the EPP) is not wired up; use the
-  approximate prefix scorers.
+- vLLM's `data-parallel-multi-port-external-lb` (one supervisor per node serving a port
+  per rank) is not used: its ranks publish KV events on per-rank ports that file
+  discovery can only reach with llm-d-router's per-endpoint `rankIndex` (after v0.11.0).
+- The precise prefix index lives in the one EPP; KV events go to that EPP alone.

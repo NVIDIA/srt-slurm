@@ -690,6 +690,18 @@ class VLLMBackend(Backend):
         dp_size = self._get_dp_size(mode)
         return dp_size is not None and int(dp_size) > 1
 
+    def is_external_lb(self, mode: WorkerMode) -> bool:
+        """Whether a DP mode's ranks are each an API server of their own (``data-parallel-external-lb``).
+
+        A router then addresses every rank: each is its own ``vllm serve
+        --data-parallel-rank`` process on its own HTTP port (vLLM's external load
+        balancing) instead of one server that balances its ranks itself.
+        """
+        return self._is_dp_mode(mode) and any(
+            normalize_vllm_config_key(key) == "data-parallel-external-lb" and value
+            for key, value in self.get_config_for_mode(mode).items()
+        )
+
     def _get_dp_size(self, mode: WorkerMode) -> int | None:
         """Get the data-parallel-size for a mode, or None if not in DP mode."""
         config = self.get_config_for_mode(mode)
@@ -908,10 +920,22 @@ class VLLMBackend(Backend):
         frontend = get_frontend(frontend_type)
         if frontend.worker_launch == "direct" and not frontend.expands_node_local_dp:
             # One `vllm serve` owns every DP rank of the endpoint, and only the
-            # leader serves the API, so the standard topology applies.
-            processes = endpoints_to_processes(
-                endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar, bootstrap_ports=False
-            )
+            # leader serves the API, so the standard topology applies; behind a
+            # router, an external-LB endpoint is one `vllm serve` per rank instead.
+            processes = []
+            for endpoint in endpoints:
+                if self.is_external_lb(endpoint.mode) and frontend.worker_api_port(endpoint.mode) == "allocated":
+                    processes.extend(
+                        self._dp_per_gpu_endpoints_to_processes(
+                            [endpoint], allocator, sidecar_grpc=dynamo_sidecar, every_rank_serves=True
+                        )
+                    )
+                else:
+                    processes.extend(
+                        endpoints_to_processes(
+                            [endpoint], port_allocator=allocator, sidecar_grpc=dynamo_sidecar, bootstrap_ports=False
+                        )
+                    )
         elif not any(self._is_dp_mode(ep.mode) for ep in endpoints):
             # Standard TP mode: one process per node, or one per engine of the
             # worker under backend.failover (engine 0 plus its shadows).
@@ -954,8 +978,13 @@ class VLLMBackend(Backend):
         allocator: NodePortAllocator,
         *,
         sidecar_grpc: bool,
+        every_rank_serves: bool = False,
     ) -> list[Process]:
-        """DP+EP mode with one process per DP rank (TP x PP GPUs each)."""
+        """DP+EP mode with one process per DP rank (TP x PP GPUs each).
+
+        Only rank 0 serves the API unless ``every_rank_serves`` (external load
+        balancing), when every rank gets its own HTTP port.
+        """
         from srtctl.core.topology import Process
 
         processes: list[Process] = []
@@ -993,16 +1022,17 @@ class VLLMBackend(Backend):
             nixl_base_port = allocator.next(NIXL_PORTS, size=dp_size)
             for node in endpoint.nodes:
                 for rank_gpus in rank_gpu_groups:
-                    is_leader = dp_rank == 0
+                    serves_api = dp_rank == 0 or every_rank_serves
                     processes.append(
                         Process(
                             node=node,
                             gpu_indices=rank_gpus,
                             sys_port=allocator.next(SYS_PORTS),
-                            http_port=allocator.next(HTTP_PORTS, node) if is_leader else 0,
+                            http_port=allocator.next(HTTP_PORTS, node) if serves_api else 0,
                             endpoint_mode=endpoint.mode,
                             endpoint_index=endpoint.index,
                             node_rank=dp_rank,  # dp_rank stored in node_rank for now
+                            dp_rank=dp_rank,
                             kv_events_port=allocator.next(KV_EVENTS_PORTS),
                             nixl_port=nixl_base_port,
                             dp_rpc_port=dp_rpc_port,
@@ -1215,18 +1245,41 @@ class VLLMBackend(Backend):
                 and not spans_nodes
             )
 
+            # Behind a router, an external-LB rank is a `vllm serve` of its own (endpoints_to_processes).
+            is_rank_server = self.is_external_lb(mode) and not binds_public_port and not frontend.expands_node_local_dp
+
             if frontend.expands_node_local_dp and is_dp_mode and self.dp_launch_mode != "per_node":
                 raise ValueError(
                     f"frontend.type: {frontend.type} with data-parallel-size requires backend.dp_launch_mode: per_node"
                 )
 
-            if node_rank == 0 or is_router_local_dp:
+            if node_rank == 0 or is_router_local_dp or is_rank_server:
                 api_port = runtime.frontend_port if binds_public_port else process.http_port
                 cmd.extend(["--host", "0.0.0.0", "--port", str(api_port)])
                 srtslurm_owned["host"] = "0.0.0.0"
                 srtslurm_owned["port"] = str(api_port)
 
-            if is_router_local_dp:
+            if is_rank_server:
+                for key in list(config):
+                    if normalize_vllm_config_key(key) in {
+                        "data-parallel-rank",
+                        "data-parallel-size-local",
+                        "data-parallel-start-rank",
+                        "data-parallel-address",
+                        "data-parallel-rpc-port",
+                    }:
+                        config.pop(key)
+                cmd.extend(
+                    [
+                        "--data-parallel-rank",
+                        str(process.dp_rank),
+                        "--data-parallel-address",
+                        leader_ip,
+                        "--data-parallel-rpc-port",
+                        str(process.dp_rpc_port or VLLM_DATA_PARALLEL_RPC_PORT),
+                    ]
+                )
+            elif is_router_local_dp:
                 for key in list(config):
                     if normalize_vllm_config_key(key) in {
                         "data-parallel-size-local",
@@ -1297,6 +1350,15 @@ class VLLMBackend(Backend):
                 device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
                 if device_ids:
                     cmd.extend(["--device-ids", device_ids])
+            kv_events = self.get_kv_events_config_for_mode(mode)
+            subscriber = frontend.kv_events_subscriber(process, runtime, served_model_name) if kv_events else None
+            if kv_events and subscriber is not None:
+                host, port, topic = subscriber
+                # vLLM adds the publisher's DP rank to the port it is given; start that far
+                # below so every rank connects to the one subscriber.
+                rank = process.dp_rank or 0
+                kv_events = {**kv_events, "endpoint": f"tcp://{host}:{port - rank}", "topic": topic}
+                cmd.extend(["--kv-events-config", json.dumps(kv_events)])
             cmd.extend(_config_to_cli_args(config))
             return cmd
 

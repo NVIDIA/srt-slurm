@@ -189,6 +189,17 @@ class Frontend(ABC):
         """
         return frozenset()
 
+    def kv_events_subscriber(
+        self, process: "Process", runtime: "RuntimeContext", model_name: str
+    ) -> tuple[str, int, str] | None:
+        """Where a worker publishes its KV-cache events for this router: ``(host, port, topic)``.
+
+        ``None`` when the router subscribes to none; a role's ``kv_events`` then
+        configures nothing on a direct worker. The engine connects its publisher
+        to ``host:port`` (adjusting for any per-rank port offset of its own).
+        """
+        return None
+
     def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
         """Port of a Prometheus listener separate from the routing port, or ``None`` when metrics share it."""
         return None

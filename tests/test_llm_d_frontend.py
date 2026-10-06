@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -26,8 +27,15 @@ from srtctl.frontends.llm_d import (
     EPP_CONFIG_FILE,
     epp_config_document,
     parse_ready_endpoints,
+    with_kv_events,
 )
-from srtctl.ports import LLM_D_ENVOY_ADMIN_PORT, LLM_D_EPP_GRPC_PORT, LLM_D_EPP_METRICS_PORT, WORKER_PROXY_PORT_BASE
+from srtctl.ports import (
+    LLM_D_ENVOY_ADMIN_PORT,
+    LLM_D_EPP_GRPC_PORT,
+    LLM_D_EPP_KV_EVENTS_PORT,
+    LLM_D_EPP_METRICS_PORT,
+    WORKER_PROXY_PORT_BASE,
+)
 from srtctl.services.implicit import effective_services
 from srtctl.services.registry import ServiceLaunchContext, get_service_kind
 from tests.launch_snapshots import EXAMPLES_DIR, render_launch_plan
@@ -316,3 +324,175 @@ def test_engine_must_be_vllm() -> None:
     recipe["roles"]["agg"]["args"] = {"served-model-name": "m"}
     with pytest.raises(ValidationError, match="requires backend"):
         _load(recipe)
+
+
+DP_RANKS = EXAMPLES_DIR / "vllm/llm-d-dp-ranks.yaml"
+
+
+def _precise(recipe: dict) -> dict:
+    """The disaggregated example with precise prefix-cache routing on its prefill worker."""
+    epp = recipe["frontend"]["epp_config"]
+    epp["plugins"] = [
+        {"type": "token-producer"},
+        {"type": "precise-prefix-cache-producer"},
+        *(plugin for plugin in epp["plugins"] if plugin["type"] != "approx-prefix-cache-producer"),
+    ]
+    recipe["roles"]["prefill"]["kv_events"] = True
+    return recipe
+
+
+def test_external_lb_ranks_are_endpoints_with_their_own_ports() -> None:
+    """data-parallel-external-lb: one `vllm serve` per DP rank, each an endpoint on its own port."""
+    config = load_config(DP_RANKS)
+    endpoints = [Endpoint("agg", 0, ("node0", "node1"), frozenset(range(8)))]
+    processes = config.worker_processes(endpoints)
+    assert [p.dp_rank for p in processes] == list(range(16))
+    assert all(p.http_port > 0 for p in processes)
+    assert len({(p.node, p.http_port) for p in processes}) == 16
+    assert processes[9].engine_suffix == "_dp9"
+    with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, _: node):
+        document = LLMDFrontend().endpoints_document(processes, None)
+    assert len(document["endpoints"]) == 16
+    frontend = LLMDFrontend()
+    assert frontend.health_expectations(config, processes) == (0, 16, "16 llm-d endpoints")
+    assert frontend.worker_metrics_port(processes[9], MagicMock()) == processes[9].http_port
+
+
+def test_external_lb_ranks_publish_kv_events_to_the_epp() -> None:
+    """Every rank connects to the EPP's one socket (vLLM adds the rank back) under its own endpoint's topic."""
+    plan = render_launch_plan(DP_RANKS)
+    assert "# exit_code: 0" in plan
+    steps = [line[3:] for line in plan.splitlines() if line.startswith("## ")]
+    assert len(steps) == len(set(steps))
+    assert "agg_0_node-02_dp9" in steps
+    rank9 = plan.split("## agg_0_node-02_dp9")[1].split("## ")[0]
+    assert "--data-parallel-rank 9 --data-parallel-address" in rank9
+    assert "--data-parallel-external-lb" in rank9 and "--headless" not in rank9
+    kv_events = json.loads(rank9.split("--kv-events-config '")[1].split("'")[0])
+    port = rank9.split("--port ")[1].split()[0]
+    assert kv_events["endpoint"] == f"tcp://127.0.0.1:{LLM_D_EPP_KV_EVENTS_PORT - 9}"
+    assert kv_events["topic"] == f"kv@127.0.0.1:{port}@Qwen/Qwen3-30B-A3B"
+    assert kv_events["publisher"] == "zmq" and kv_events["enable_kv_cache_events"] is True
+
+
+def test_external_lb_decode_ranks_each_get_a_sidecar() -> None:
+    recipe = _precise(_recipe())
+    for role in ("prefill", "decode"):
+        recipe["roles"][role]["gpus"] = 2
+        recipe["roles"][role]["args"].update({"data-parallel-size": 2, "data-parallel-external-lb": True})
+    config = _load(recipe)
+    endpoints = [
+        Endpoint("prefill", 0, ("node0",), frozenset({0, 1})),
+        Endpoint("decode", 0, ("node1",), frozenset({0, 1})),
+    ]
+    processes = config.worker_processes(endpoints)
+    decode = [p for p in processes if p.endpoint_mode == "decode"]
+    assert [p.proxy_port for p in decode] == [WORKER_PROXY_PORT_BASE, WORKER_PROXY_PORT_BASE + 1]
+    kind = get_service_kind("llm-d-sidecar")
+    assert [kind.attaches_to(p) for p in processes] == [False, False, True, True]
+    # The decode topic names the sidecar, the endpoint the EPP routes to.
+    runtime = SimpleNamespace(network_interface=None, head_node_ip="10.0.0.9")
+    with patch("srtctl.frontends.static_router.get_hostname_ip", return_value="10.0.0.2"):
+        assert LLMDFrontend().kv_events_subscriber(decode[1], runtime, "m") == (
+            "10.0.0.9",
+            LLM_D_EPP_KV_EVENTS_PORT,
+            f"kv@10.0.0.2:{WORKER_PROXY_PORT_BASE + 1}@m",
+        )
+
+
+def test_kv_events_need_the_precise_producer_and_vice_versa() -> None:
+    recipe = _recipe()
+    recipe["roles"]["prefill"]["kv_events"] = True
+    with pytest.raises(ValidationError, match="add a precise-prefix-cache-producer plugin"):
+        _load(recipe)
+    recipe = _precise(_recipe())
+    del recipe["roles"]["prefill"]["kv_events"]
+    with pytest.raises(ValidationError, match="set roles.<role>.kv_events"):
+        _load(recipe)
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (
+            lambda r: r["frontend"]["epp_config"]["plugins"][1].update(
+                {"parameters": {"kvEventsConfig": {"zmqEndpoint": "tcp://*:1"}}}
+            ),
+            "kvEventsConfig.zmqEndpoint, which srtctl manages",
+        ),
+        (lambda r: r["frontend"]["epp_config"]["plugins"].pop(0), "add a token-producer plugin"),
+        (
+            lambda r: r["frontend"]["epp_config"]["plugins"][0].update({"parameters": {"vllm": {"url": "http://x"}}}),
+            "sets token-producer vllm.url",
+        ),
+        (
+            lambda r: r["frontend"].update({"placement": {"node": "first_decode"}}),
+            "publish to the EPP on the head node",
+        ),
+        (
+            lambda r: r["roles"]["prefill"].update(
+                {"gpus": 2, "args": {**r["roles"]["prefill"]["args"], "data-parallel-size": 2}}
+            ),
+            "set roles.prefill.args.data-parallel-external-lb: true",
+        ),
+    ],
+)
+def test_precise_prefix_routing_rules(edit, message: str) -> None:
+    recipe = _precise(_recipe())
+    edit(recipe)
+    with pytest.raises(ValidationError, match=message):
+        _load(recipe)
+
+
+def test_with_kv_events_wires_the_socket_and_the_render_url() -> None:
+    document = {
+        "plugins": [
+            {"type": "token-producer"},
+            {"type": "token-producer", "name": "approx", "parameters": {"estimate": {}}},
+            {"type": "precise-prefix-cache-producer", "parameters": {"kvEventsConfig": {"concurrency": 8}}},
+            {"type": "queue-scorer"},
+        ]
+    }
+    with_kv_events(document, "http://10.0.0.1:6100", "m")
+    token, estimate, producer, scorer = document["plugins"]
+    assert token["parameters"] == {"modelName": "m", "vllm": {"url": "http://10.0.0.1:6100"}}
+    assert estimate["parameters"] == {"estimate": {}}
+    assert producer["parameters"]["kvEventsConfig"] == {
+        "concurrency": 8,
+        "zmqEndpoint": f"tcp://*:{LLM_D_EPP_KV_EVENTS_PORT}",
+        "discoverPods": False,
+    }
+    assert scorer == {"type": "queue-scorer"}
+
+
+def test_start_frontends_points_the_token_producer_at_the_prefill_worker(tmp_path: Path) -> None:
+    config = _load(_precise(_recipe()))
+    runtime = SimpleNamespace(
+        network_interface=None,
+        log_dir=tmp_path,
+        container_image="model.sqsh",
+        container_mounts={},
+        environment={},
+        srun_options={},
+        model_path=Path("/models/qwen"),
+        nodes=SimpleNamespace(het_group_for=lambda node: None),
+    )
+    processes = [
+        Process("node1", frozenset({0}), 7501, 6100, "decode", 0, proxy_port=9600),
+        Process("node0", frozenset({0}), 7500, 6101, "prefill", 0),
+    ]
+    ips = {"node0": "10.0.0.1", "node1": "10.0.0.2"}
+    with (
+        patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, _: ips[node]),
+        patch.object(LLMDFrontend, "wait_for_workers"),
+        patch.object(LLMDFrontend, "start_process", return_value=MagicMock()),
+    ):
+        LLMDFrontend().start_frontends(
+            SimpleNamespace(frontend_nodes=["node0"], frontend_port=8000), runtime, config, config.backend, processes
+        )
+    plugins = {p["type"]: p for p in yaml.safe_load((tmp_path / EPP_CONFIG_FILE).read_text())["plugins"]}
+    assert plugins["token-producer"]["parameters"] == {
+        "modelName": "Qwen/Qwen3-0.6B",
+        "vllm": {"url": "http://10.0.0.1:6101"},
+    }
+    assert plugins["precise-prefix-cache-producer"]["parameters"]["kvEventsConfig"]["discoverPods"] is False

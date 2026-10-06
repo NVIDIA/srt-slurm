@@ -156,6 +156,8 @@ class Process:
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
         node_rank: Rank within the endpoint (0 for leader)
+        dp_rank: The DP rank this process runs when the endpoint is one process per rank
+            (vLLM ``dp_launch_mode: per_gpu`` or external load balancing); None otherwise
         engine_id: Which engine of the worker this is. 0 is the one every job has;
             under ``backend.failover`` (vLLM shadow engine recovery) engines 1.. are
             the standbys, sharing node, GPUs and node_rank with engine 0 but with
@@ -191,6 +193,7 @@ class Process:
     # Inherited from the parent Endpoint when the job is heterogeneous.
     het_group: int | None = None
     engine_id: int = 0
+    dp_rank: int | None = None
     kvbm_zmq_port: int | None = None
     sidecar_grpc_port: int | None = None
     proxy_port: int | None = None
@@ -210,8 +213,13 @@ class Process:
 
     @property
     def engine_suffix(self) -> str:
-        """Step-name and log-name suffix that tells a shadow engine apart from engine 0 (``""`` for it)."""
-        return f"_e{self.engine_id}" if self.engine_id else ""
+        """Step-name and log-name suffix that tells a worker's processes on one node apart.
+
+        ``_dp<r>`` for one DP rank of a per-rank endpoint, ``_e<k>`` for a shadow
+        engine; ``""`` for the only process.
+        """
+        rank = f"_dp{self.dp_rank}" if self.dp_rank is not None else ""
+        return f"{rank}_e{self.engine_id}" if self.engine_id else rank
 
     @property
     def cuda_visible_devices(self) -> str:
