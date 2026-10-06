@@ -7,7 +7,7 @@ slurm:
   time_limit: "00:30:00"
 model:
   path: hf:Qwen/Qwen3-0.6B
-  container: 
+  container: >-
     lmsysorg/sglang-rocm:v0.5.21-rocm720-mi30x-20261006@sha256:f7430d43c728da94f001ca51d5d2e0d754c85a3a8d54a3b68bf7aa2e12e6ff6a
   precision: bf16
 resources:
@@ -15,7 +15,7 @@ resources:
   gpus_per_node: 8
 frontend:
   type: sgl-router
-  container_image: 
+  container_image: >-
     lmsysorg/sglang-staging:experimental-router-dev@sha256:b389a4ce338ecea703c3f67f0691ac657092d3412c93b73dc42192b9135f6018
   enable_multiple_frontends: false
   args:
