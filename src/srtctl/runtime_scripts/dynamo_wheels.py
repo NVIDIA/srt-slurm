@@ -242,8 +242,7 @@ def install(env: Env | None = None) -> None:
         if wheel_dir.is_dir():
             find_links_args.extend(["--find-links", str(wheel_dir)])
 
-    # Resolve ai-dynamo's own dependencies (e.g. redis) from the package indexes; the staged
-    # --find-links wheels still satisfy the exact ai-dynamo and ai-dynamo-runtime pins.
+    # Install the exact staged artifacts and resolve their dependencies from the package indexes.
     print(f"Installing ai-dynamo-runtime and ai-dynamo {version} from local wheels with dependencies")
     subprocess.run(
         [
@@ -257,8 +256,8 @@ def install(env: Env | None = None) -> None:
             "--extra-index-url",
             runtime_env.get("DYNAMO_EXTRA_INDEX_URL", DEFAULT_EXTRA_INDEX_URL),
             *find_links_args,
-            f"ai-dynamo-runtime=={version}",
-            f"ai-dynamo=={version}",
+            str(runtime_wheel),
+            str(dynamo_wheel),
         ],
         check=True,
     )

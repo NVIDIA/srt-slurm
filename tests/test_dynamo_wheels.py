@@ -102,13 +102,15 @@ def test_install_requires_runtime_wheel_for_compute_arch(monkeypatch, tmp_path: 
         ),
     ],
 )
-def test_install_resolves_dependencies_with_exact_staged_pins(
+def test_install_resolves_dependencies_with_exact_staged_files(
     monkeypatch, tmp_path: Path, index_env: dict[str, str], index_url: str, extra_index_url: str
 ):
     """Staged installs allow pip to fetch dependencies and honor index overrides."""
     version = "1.2.0.dev20260426"
-    (tmp_path / f"ai_dynamo-{version}-py3-none-any.whl").touch()
-    (tmp_path / f"ai_dynamo_runtime-{version}-cp312-abi3-manylinux_2_28_aarch64.whl").touch()
+    dynamo_wheel = tmp_path / f"ai_dynamo-{version}-py3-none-any.whl"
+    runtime_wheel = tmp_path / f"ai_dynamo_runtime-{version}-cp312-abi3-manylinux_2_28_aarch64.whl"
+    dynamo_wheel.touch()
+    runtime_wheel.touch()
     calls = []
     imports = []
 
@@ -137,5 +139,5 @@ def test_install_resolves_dependencies_with_exact_staged_pins(
     assert command[command.index("--extra-index-url") + 1] == extra_index_url
     assert command[command.index("--find-links") + 1] == str(tmp_path)
     assert "--pre" in command
-    assert command[-2:] == [f"ai-dynamo-runtime=={version}", f"ai-dynamo=={version}"]
+    assert command[-2:] == [str(runtime_wheel), str(dynamo_wheel)]
     assert imports == ["dynamo.llm"]
