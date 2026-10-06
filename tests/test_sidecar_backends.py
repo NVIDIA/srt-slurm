@@ -99,6 +99,35 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     # The sidecar consumes deltas; the engine must stream disjoint segments on every rank.
     assert "--incremental-streaming-output" in leader_script
     assert "--incremental-streaming-output" in follower_command
+    assert "--nccl-port" in leader_script
+    assert "--nccl-port" in follower_command
+
+
+@pytest.mark.parametrize("mode", ["agg", "prefill", "decode"])
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"tensor-parallel-size": 1, "data-parallel-size": 2},
+        {"tensor_parallel_size": 1, "data_parallel_size": 2},
+        {"tp-size": 1, "dp-size": 2},
+        {"tp_size": 1, "dp_size": 2},
+        {"tp-size": 1, "dp-size": 2, "enable-dp-attention": False},
+        {"tp_size": 1, "dp_size": 2, "enable_dp_attention": False},
+    ],
+)
+def test_sglang_regular_dp_sidecar_leaves_nccl_ports_to_engine(mode: str, args: dict) -> None:
+    """A fixed NCCL port makes regular DP's independent TP groups collide."""
+    config_mode = "aggregated" if mode == "agg" else mode
+    backend = SGLangProtocol(sglang_config=SGLangServerConfig(**{config_mode: args}))
+    processes = backend.endpoints_to_processes([_sglang_endpoint(mode, 1, 2)], dynamo_sidecar=True)
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        command = backend.build_worker_command(processes[0], processes, _runtime())
+    engine, sidecar = _sglang_launch_commands(command)
+    assert "--nccl-port" not in engine
+    assert "--enable-dp-attention" not in engine
+    assert "--grpc-port" in engine
+    assert sidecar is not None
+    assert ("--bootstrap-host" in sidecar) is (mode == "prefill")
 
 
 def test_sglang_sidecar_respects_an_explicit_incremental_streaming_setting() -> None:
@@ -169,6 +198,7 @@ def test_sglang_multinode_dp_sidecar_relays_follower_kv_events(mode: str, args: 
         assert engine[engine.index("--nnodes") + 1] == "2"
         assert engine[engine.index("--dist-init-addr") + 1].startswith("10.0.0.1:")
         assert "--incremental-streaming-output" in engine
+        assert "--nccl-port" in engine
         kv_config = json.loads(engine[engine.index("--kv-events-config") + 1])
         assert kv_config["endpoint"] == f"tcp://*:{processes[node_rank].kv_events_port}"
         assert kv_config["topic"] == "cache events"

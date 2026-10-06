@@ -490,7 +490,6 @@ class SGLangProtocol:
         is_leader = node_rank == 0
         leader_ip = get_hostname_ip(endpoint_nodes[0])
         grpc_port = sidecar_grpc_port(sidecar_config.sidecar_port, process)
-        nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
 
         served_model_name = self.get_served_model_name(runtime.model_path.name)
         model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
@@ -508,10 +507,18 @@ class SGLangProtocol:
                 "0.0.0.0",
                 "--port",
                 str(process.http_port),
-                "--nccl-port",
-                str(nccl_port),
             ]
         )
+
+        # Regular DP launches independent TP groups on this node. Let SGLang
+        # allocate their NCCL ports: an explicit port is reused by every group
+        # and causes the second DP rank to fail with EADDRINUSE.
+        regular_dp = _parallel_size(config, "data", "dp") > 1 and not (
+            config.get("enable-dp-attention") or config.get("enable_dp_attention")
+        )
+        if not regular_dp:
+            nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
+            engine.extend(["--nccl-port", str(nccl_port)])
 
         if mode != "agg":
             engine.extend(["--disaggregation-mode", mode, "--skip-server-warmup"])
