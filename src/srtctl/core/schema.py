@@ -1574,7 +1574,7 @@ class GpuMetricsConfig:
     power: GpuPowerMetricConfig
     # GPU utilization, percent.
     gpu_util: GpuMetricConfig | None = None
-    # Fraction of time SMs (or compute units) were active, 0-1.
+    # DCGM's SM-active fraction, 0-1; map only a metric with that meaning and range.
     sm_active: GpuMetricConfig | None = None
     # GPU temperature, Celsius.
     temperature: GpuMetricConfig | None = None
@@ -1633,6 +1633,8 @@ class TelemetryExporterConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
     def __post_init__(self) -> None:
+        if self.kind == "dcgm" and self.gpu_labels is not None:
+            raise ValidationError("`gpu_labels` needs `kind: custom`; a `kind: dcgm` exporter uses DCGM's labels")
         if self.kind == "custom" and (
             (self.command is None and self.binary is None) or self.gpu_labels is None or self.gpu_metrics is None
         ):

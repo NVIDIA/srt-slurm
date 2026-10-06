@@ -448,7 +448,7 @@
               "type": "null"
             }
           ],
-          "description": "Fraction of time SMs (or compute units) were active, 0-1.",
+          "description": "DCGM's SM-active fraction, 0-1; map only a metric with that meaning and range.",
           "default": null
         },
         "temperature": {

@@ -292,10 +292,16 @@ class TestSchema:
         assert exporter.power_mapping == DCGM_POWER_MAPPING
 
     def test_dcgm_written_out_resolves_to_the_default(self):
-        explicit = TelemetryExporterConfig(
-            container_image="dcgm-exporter", port=9401, gpu_labels=DCGM_GPU_LABELS, gpu_metrics=DCGM_GPU_METRICS
-        )
+        explicit = TelemetryExporterConfig(container_image="dcgm-exporter", port=9401, gpu_metrics=DCGM_GPU_METRICS)
         assert explicit.power_mapping == DCGM_POWER_MAPPING
+        assert DCGM_GPU_LABELS.index == DCGM_POWER_MAPPING.gpu_index_label
+
+    def test_gpu_labels_need_kind_custom(self):
+        """An AMD block that forgets `kind: custom` fails at load instead of being scraped as DCGM."""
+        fields = {"container_image": AMD_IMAGE, "port": 5000, "command": "x", **AMD_GPU_CONFIG}
+        del fields["kind"]
+        with pytest.raises(ValidationError, match="`gpu_labels` needs `kind: custom`"):
+            TelemetryExporterConfig.Schema().load(fields)
 
     def test_unset_optional_metrics_leave_their_columns_empty(self):
         exporter = TelemetryExporterConfig.Schema().load(

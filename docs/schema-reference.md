@@ -614,7 +614,7 @@ The per-GPU metrics GPU power telemetry records from a GPU exporter.
 |---|---|---|---|
 | `power` | [GpuPowerMetricConfig](#gpupowermetricconfig) | required | Power draw in watts. |
 | `gpu_util` | [GpuMetricConfig](#gpumetricconfig) \| None | `None` | GPU utilization, percent. |
-| `sm_active` | [GpuMetricConfig](#gpumetricconfig) \| None | `None` | Fraction of time SMs (or compute units) were active, 0-1. |
+| `sm_active` | [GpuMetricConfig](#gpumetricconfig) \| None | `None` | DCGM's SM-active fraction, 0-1; map only a metric with that meaning and range. |
 | `temperature` | [GpuMetricConfig](#gpumetricconfig) \| None | `None` | GPU temperature, Celsius. |
 
 ### TcpProbe

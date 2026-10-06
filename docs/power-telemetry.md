@@ -77,9 +77,10 @@ are measuring. The exporter config (`telemetry.dcgm_exporter`, or the cluster
 
 - `kind: dcgm` (the default) is NVIDIA dcgm-exporter: the built-in 100 ms
   `dcgm-exporter` command, the DCGM labels and metrics below, and tachometer's
-  `dcgm` filter with per-GPU worker labels (endpoint `dcgm_<node>`). `gpu_labels`
-  and `gpu_metrics` may still override the DCGM ones (another DCGM power field,
-  say); nothing is inferred from metric names.
+  `dcgm` filter with per-GPU worker labels (endpoint `dcgm_<node>`). Its labels
+  are fixed (`gpu_labels` needs `kind: custom`); `gpu_metrics` may still override
+  the DCGM metrics (another DCGM power field, say). Nothing is inferred from
+  metric names.
 - `kind: custom` is any other exporter. It must set `command`, `gpu_labels` and
   `gpu_metrics`, and tachometer keeps its rows as served (`passthrough` filter,
   endpoint `gpu-power_<node>`, no per-GPU worker labels).
@@ -87,7 +88,7 @@ are measuring. The exporter config (`telemetry.dcgm_exporter`, or the cluster
 Written out, the DCGM defaults and the AMD exporter have the same shape:
 
 ```yaml
-# NVIDIA dcgm-exporter: the defaults, written out
+# NVIDIA dcgm-exporter: the built-in defaults, for reference
 gpu_labels:
   index: gpu
   identity: UUID
@@ -124,7 +125,8 @@ gpu_metrics:
   `identity` must be stable per physical GPU (it fills `gpu_uuid`); samples
   carrying an `instance` label (MIG instances, partitions) are dropped.
 - `gpu_metrics.power` is required and `scope` is recorded as `power_scope`.
-  `gpu_util` (percent), `sm_active` (0-1 fraction) and `temperature` (Celsius) are optional; their
+  `gpu_util` (percent), `sm_active` (DCGM's SM-active fraction, 0-1; map only a
+  metric with that meaning and range) and `temperature` (Celsius) are optional; their
   columns stay empty when unset. Units are fixed by the artifact, not the config.
 
 The artifact layout is identical for every exporter. `manifest.json` records
