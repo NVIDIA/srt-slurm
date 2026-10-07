@@ -23,7 +23,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --enable-metrics --context-length 16384 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --enable-metrics --context-length 16384 --mem-fraction-static 0.5 --tensor-parallel-size 1
 
 ## agg_1_node-01
 nodelist: node-01
@@ -46,7 +46,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6132 --nccl-port 17501 --enable-metrics --context-length 16384 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6132 --nccl-port 17501 --enable-metrics --context-length 16384 --mem-fraction-static 0.5 --tensor-parallel-size 1
 
 ## sglang_router_0
 nodelist: node-01

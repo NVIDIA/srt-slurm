@@ -131,6 +131,19 @@ HLE (Humanity's Last Exam) runs in the same **NeMo Skills container** as [AIME](
 same way: there is no `type: hle` runner; the eval logic lives in `configs/hle/run.sh` and recipes run it
 with `type: custom`. See `examples/features/hle.yaml`.
 
+### Prerequisites for an official-benchmark run
+
+Both are needed for a result that follows the official HLE benchmark:
+
+1. **`OPENAI_API_KEY`.** The official judge is `o3-mini` (`o3-mini-2025-01-31`), which NeMo Skills
+   calls on api.openai.com by default. o3-mini needs a paid OpenAI API account; the free tier does not
+   include it. A different judge (`JUDGE_MODEL`, `JUDGE_SERVER_ADDRESS`) is fine for checking that the
+   pipeline runs, but its scores are not comparable to published HLE numbers.
+2. **Accepted `cais/hle` terms.** Open <https://huggingface.co/datasets/cais/hle> while signed in as the
+   account that owns `HF_TOKEN` and accept the terms. The dataset is gated, so a valid token without
+   accepted terms still fails in `prepare_data` with a 401/403 (the token authenticates and the dataset's
+   metadata is readable, but the data file is refused).
+
 ### Recipe shape
 
 ```yaml
@@ -148,7 +161,7 @@ benchmark:
     # NUM_THREADS: "512"
     # TEMPERATURE: "1.0"
     # TOP_P: "1.0"
-    # SEED: "42"
+    # SEED: "0"                # keep 0: the judge reads output-rs0.jsonl
     # Judge override (default: o3-mini-2025-01-31 on api.openai.com):
     # JUDGE_MODEL: "Qwen/Qwen3-235B-A22B"
     # JUDGE_SERVER_ADDRESS: "http://judge-host:8000/v1"
@@ -176,6 +189,9 @@ AIME, and keep `context-length` larger than `MAX_TOKENS`.
 3. NeMo Skills' HLE judge grades every answer.
 
 Outputs land at `/logs/accuracy/hle/eval-results/hle/metrics.json`, with overall and per-category accuracy.
+The script exits non-zero, and does not print `=== Done ===`, when that file is missing, which covers a failed
+`prepare_data` (401/403) or judge (no OpenAI credit, wrong key). Keep `SEED` at its default of `0`: NeMo Skills'
+judge reads `output-rs0.jsonl`, so any other starting seed fails the judge after generation has finished.
 
 
 ## MMLU

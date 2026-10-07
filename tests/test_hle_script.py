@@ -14,13 +14,20 @@ SCRIPT = REPO_ROOT / "configs/hle/run.sh"
 EXAMPLE = REPO_ROOT / "examples/features/hle.yaml"
 
 
-def run_script(tmp_path: Path, env: dict[str, str]) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    """Run run.sh with a stub `ns` that records its argv, one call per line."""
+def run_script(
+    tmp_path: Path, env: dict[str, str], *, write_metrics: bool = True
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run run.sh with a stub `ns` that records its argv, one call per line.
+
+    The stub writes metrics.json on `eval` unless `write_metrics` is False (a failed prepare or judge step).
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls"
     stub = bin_dir / "ns"
-    stub.write_text(f'#!/bin/bash\nprintf "%s\\n" "$*" >> "{calls}"\n')
+    metrics = tmp_path / "out/eval-results/hle/metrics.json"
+    write = f'mkdir -p "{metrics.parent}" && echo {{}} > "{metrics}"' if write_metrics else ":"
+    stub.write_text(f'#!/bin/bash\nprintf "%s\\n" "$*" >> "{calls}"\n[ "$1" = eval ] && {write}\nexit 0\n')
     stub.chmod(0o755)
 
     # The script reads its knobs from env; drop any the caller's shell happens to set.
@@ -46,7 +53,7 @@ def test_defaults_prepare_then_eval_the_text_split(tmp_path: Path) -> None:
         "--benchmarks=hle:1",
         "--split=text",
         f"--output_dir={tmp_path / 'out'}",
-        "--starting_seed=42",
+        "--starting_seed=0",
         "++inference.tokens_to_generate=400000",
         "++max_concurrent_requests=512",
         "++inference.temperature=1.0",
@@ -107,3 +114,12 @@ def test_example_runs_the_script_in_the_nemo_skills_image() -> None:
     assert config.benchmark.command is not None
     assert "/configs/hle/run.sh" in config.benchmark.command
     assert config.benchmark.env["MODEL"] == config.served_model_name
+
+
+def test_missing_metrics_fails_the_run(tmp_path: Path) -> None:
+    result, calls = run_script(tmp_path, {"MODEL": "Qwen/Qwen3-0.6B", "OPENAI_API_KEY": "sk-test"}, write_metrics=False)
+
+    assert len(calls) == 2
+    assert result.returncode == 1
+    assert "metrics.json was not written" in result.stderr
+    assert "=== Done ===" not in result.stdout

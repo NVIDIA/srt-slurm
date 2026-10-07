@@ -1,9 +1,16 @@
 # HLE (Humanity's Last Exam) accuracy eval against an SGLang-router aggregated deployment.
 #
 # `benchmark.type: custom` runs configs/hle/run.sh (`ns prepare_data hle` + `ns eval`)
-# in the NeMo Skills container, on the text-only split, graded by NeMo Skills' HLE
-# judge (o3-mini on api.openai.com by default). Export HF_TOKEN (cais/hle is gated)
-# and OPENAI_API_KEY in the shell you submit from; never write them into the recipe.
+# in the NeMo Skills container, on the text-only split.
+#
+# Two prerequisites for a run that follows the official benchmark. Export both
+# credentials in the shell you submit from; never write them into the recipe.
+#   1. OPENAI_API_KEY: the official HLE judge is o3-mini (o3-mini-2025-01-31 on
+#      api.openai.com), and it is the default here. Scores graded by any other judge
+#      (JUDGE_MODEL / JUDGE_SERVER_ADDRESS below) are not comparable to published HLE results.
+#   2. HF_TOKEN, from a Hugging Face account that has accepted the terms of the gated
+#      dataset https://huggingface.co/datasets/cais/hle. A valid token alone is not enough:
+#      without accepted terms, prepare_data fails with a 401/403.
 #
 # Aliases (`qwen3-0.6b`, `sglang`, `nemo-skills`) resolve through srtslurm.yaml; see
 # examples/README.md and docs/accuracy.md.
@@ -40,8 +47,6 @@ roles:
       mem-fraction-static: 0.5
       # Must exceed MAX_TOKENS plus the prompt.
       context-length: 16384
-      # The experimental piecewise CUDA graph faults on some nightly builds; off is the safe default.
-      disable-piecewise-cuda-graph: true
 
 benchmark:
   type: custom

@@ -28,7 +28,9 @@ MAX_TOKENS="${MAX_TOKENS:-400000}"
 NUM_THREADS="${NUM_THREADS:-512}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 TOP_P="${TOP_P:-1.0}"
-SEED="${SEED:-42}"
+# Keep 0: NeMo Skills' judge step reads output-rs0.jsonl, so a non-zero starting seed makes it
+# fail with FileNotFoundError after generation has already finished (NeMo Skills 26.03).
+SEED="${SEED:-0}"
 JUDGE_MODEL="${JUDGE_MODEL:-}"
 JUDGE_SERVER_ADDRESS="${JUDGE_SERVER_ADDRESS:-}"
 JUDGE_SERVER_TYPE="${JUDGE_SERVER_TYPE:-}"
@@ -85,6 +87,16 @@ ns eval \
   "++inference.timeout=25000000" \
   "${EXTRA_ARGS[@]}"
 
+METRICS="${OUTPUT_DIR}/eval-results/hle/metrics.json"
+
+# `ns` can exit 0 after a failed prepare_data or judge step, so check for the result itself.
+if [ ! -s "$METRICS" ]; then
+  echo "ERROR: $METRICS was not written; see the Phase 1/Phase 2 output above" >&2
+  echo "  (401/403 in prepare_data: HF_TOKEN missing or cais/hle terms not accepted;" >&2
+  echo "   429/401 from the judge: OPENAI_API_KEY has no credit or is wrong)." >&2
+  exit 1
+fi
+
 echo
 echo "=== Done ==="
-echo "Metrics: ${OUTPUT_DIR}/eval-results/hle/metrics.json"
+echo "Metrics: $METRICS"
