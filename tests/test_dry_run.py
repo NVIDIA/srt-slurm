@@ -1175,11 +1175,14 @@ def test_trtllm_mooncake_pool_is_visible_in_dry_run(tmp_path, capsys):
     from test_trtllm_mooncake import pool_recipe
 
     recipe = tmp_path / "mooncake.yaml"
-    recipe.write_text(yaml.safe_dump(pool_recipe()))
+    config = pool_recipe()
+    config["services"][1]["args"] = ["--device_name", "mlx5_0"]
+    recipe.write_text(yaml.safe_dump(config))
     show_config_details(SrtConfig.from_yaml(recipe))
     output = capsys.readouterr().out
     assert "--rpc_port 8700" in output
     assert "mooncake_donor" in output
+    assert "--device_name mlx5_0" in output
     assert "file:///logs/mooncake_master.addr" in output
     assert "mpi': 'none" in output
     assert "TRTLLM_MOONCAKE_RUN_DIR" in output

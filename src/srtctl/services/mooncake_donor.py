@@ -69,6 +69,7 @@ class MooncakeDonorService(ServiceKind):
             str(service.options.get("protocol", "rdma")),
             "--ready_file",
             f"/logs/mooncake/donor-{ctx.node}.ready",
+            *service.args,
         ]
 
     def preamble(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> str:

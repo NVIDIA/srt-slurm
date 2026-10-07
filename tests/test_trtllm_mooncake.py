@@ -98,6 +98,36 @@ def pool_recipe() -> dict:
     return yaml.safe_load(TEST_RECIPE)
 
 
+@pytest.mark.parametrize("command_override", [False, True])
+def test_donor_forwards_cli_args(tmp_path: Path, command_override: bool) -> None:
+    recipe = pool_recipe()
+    donor = recipe["services"][1]
+    donor["args"] = ["--device_name", "mlx5_0"]
+    if command_override:
+        donor["command"] = ["custom-donor"]
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(recipe))
+    config = SrtConfig.from_yaml(path)
+    service = next(service for service in config.services if service.type == "mooncake-donor")
+    preview = service.preview_command(config)
+    assert preview[-2:] == ["--device_name", "mlx5_0"]
+
+    calls: list[dict] = []
+    assert (
+        run_mock_sweep(
+            config_path=path,
+            output_dir=tmp_path / "outputs",
+            job_id="42046",
+            options=MockOptions(on_srun=calls.append),
+        )
+        == 0
+    )
+    launched = next(call["command"] for call in calls if call.get("step_name", "").startswith("service_mooncake-donor"))
+    assert launched[-2:] == ["--device_name", "mlx5_0"]
+    assert launched.count("--device_name") == 1
+    assert launched[:1] == (["custom-donor"] if command_override else ["trtllm-serve"])
+
+
 @pytest.mark.parametrize("donor_nodes", [1, 2])
 def test_pool_launches_workers_before_waiting_for_master_and_donors(tmp_path: Path, monkeypatch, donor_nodes) -> None:
     from srtctl.cli.mixins.service_stage import ServiceStageMixin
