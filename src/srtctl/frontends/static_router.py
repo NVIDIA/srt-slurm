@@ -104,7 +104,12 @@ class StaticRouterFrontend(Frontend):
         return "allocated"
 
     def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
-        """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing."""
+        """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing.
+
+        A gRPC-mode leader with an HTTP sidecar serves it there instead.
+        """
+        if process.grpc_http_port is not None:
+            return process.grpc_http_port
         if process.is_leader and process.http_port > 0:
             return process.http_port
         return None
@@ -115,6 +120,8 @@ class StaticRouterFrontend(Frontend):
         return None
 
     def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        if process.grpc_http_port is not None:
+            return process.grpc_http_port
         return process.http_port if process.http_port > 0 else None
 
     def worker_ready_port(self, process: Process) -> int:

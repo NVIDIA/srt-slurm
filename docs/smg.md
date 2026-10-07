@@ -150,6 +150,10 @@ and [`examples/sglang/smg-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob
   trtllm-serve mounts that route only with `return_perf_metrics: true`
   ([`openai_server.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/089dce4f30b36bb979ce157e26eb2ece4b52c7e0/tensorrt_llm/serve/openai_server.py#L890-L913)),
   which srtctl sets by default for every TRT-LLM role behind a direct-worker frontend.
+  An SGLang `grpc-mode: true` worker serves `/metrics` and the profiler routes on an
+  HTTP sidecar instead; srtctl allocates its port, passes it as `--grpc-http-sidecar-port`
+  (SGLang v0.5.11 or newer) and scrapes it there
+  ([`grpc_server.py`](https://github.com/sgl-project/sglang/blob/b99175dc7d8d9632c2646cda1398103c7d092306/python/sglang/srt/entrypoints/grpc_server.py#L1-L10)).
 - **Logs.** Each replica writes `<node>_smg_<index>.out` in the job log directory and
   runs as the Slurm step `smg_<index>`.
 

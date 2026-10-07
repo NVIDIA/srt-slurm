@@ -294,3 +294,30 @@ def test_supported_pd_layouts_load() -> None:
     assert _pd_config(SGLangBackend()).frontend.type == "smg"
     for recipe in ("sglang/smg-disagg.yaml", "vllm/smg-disagg-grpc.yaml"):
         assert load_config(EXAMPLES_DIR / recipe).frontend.type == "smg"
+
+
+def test_sglang_grpc_workers_are_scraped_on_their_http_sidecar() -> None:
+    """SGLang ``grpc-mode`` serves /metrics and the profiler routes on an HTTP sidecar srtctl allocates."""
+    from srtctl.core.topology import Endpoint, NodePortAllocator
+
+    backend = SGLangBackend(
+        roles={"prefill": RoleConfig(args={"grpc-mode": True}), "decode": RoleConfig(args={"grpc-mode": True})}
+    )
+    endpoints = [
+        Endpoint(mode=mode, index=0, nodes=("node0",), gpu_indices=frozenset({gpu}), gpus_per_node=8)
+        for gpu, mode in enumerate(("prefill", "decode"))
+    ]
+    processes = backend.endpoints_to_processes(endpoints, port_allocator=NodePortAllocator(), frontend_type="smg")
+    assert [process.grpc_http_port for process in processes] == [6700, 6701]
+
+    runtime = MagicMock()
+    runtime.model_path = Path("/model")
+    runtime.is_hf_model = False
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        command = backend.build_worker_command(processes[1], [processes[1]], runtime, frontend_type="smg")
+    assert command[command.index("--grpc-http-sidecar-port") + 1] == "6701"
+
+    frontend = SMGFrontend()
+    assert frontend.worker_metrics_path(backend, "decode") == "/metrics"
+    assert frontend.worker_metrics_port(processes[1], runtime) == 6701
+    assert frontend.profiling_control_port(processes[1], None, runtime) == 6701

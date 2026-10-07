@@ -164,6 +164,7 @@ class Process:
         sidecar_grpc_port: Dynamo sidecar gRPC listener, allocated when the job runs sidecars
         nccl_port: SGLang local TP rendezvous port, one per server process
         dist_init_port: SGLang multi-node dist-init port; the same value on every process of an endpoint
+        grpc_http_port: HTTP sidecar (/metrics, profiler routes) of an SGLang gRPC-mode leader
         vllm_scan_port: first port of this vLLM process's private ``get_open_port()`` scan range
         moriio_handshake_port: MoRI-IO handshake listener of a vLLM discovery-connector worker
         moriio_notify_port: first port of that worker's MoRI-IO notify block (one port per local rank)
@@ -191,6 +192,7 @@ class Process:
     sidecar_grpc_port: int | None = None
     nccl_port: int | None = None
     dist_init_port: int | None = None
+    grpc_http_port: int | None = None
     vllm_scan_port: int | None = None
     trtllm_dist_init_port: int | None = None
     moriio_handshake_port: int | None = None

@@ -28,6 +28,7 @@ from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sid
 from srtctl.ports import (
     DIST_INIT_PORTS,
     DYN_SYSTEM_PORT_BASE,
+    GRPC_HTTP_PORTS,
     LMCACHE_SERVER_PORT,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
@@ -132,6 +133,8 @@ class SGLangBackend(Backend):
     roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+    # gRPC mode serves /metrics on its HTTP sidecar (Process.grpc_http_port) when --enable-metrics is set.
+    grpc_metrics_path: ClassVar[str | None] = "/metrics"
 
     # =========================================================================
     # Backend Implementation
@@ -230,7 +233,10 @@ class SGLangBackend(Backend):
         frontend_type: str = "dynamo",
         dynamo_sidecar: bool = False,
     ) -> list["Process"]:
-        """Convert endpoints to processes, each with its NCCL rendezvous port and its endpoint's dist-init port."""
+        """Convert endpoints to processes, each with its NCCL rendezvous port and its endpoint's dist-init port.
+
+        A gRPC-mode leader also gets its HTTP sidecar port, which carries /metrics and the profiler routes.
+        """
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
 
         allocator = port_allocator_for(port_allocator, base_sys_port)
@@ -247,6 +253,11 @@ class SGLangBackend(Backend):
                 process,
                 nccl_port=allocator.next(NCCL_PORTS),
                 dist_init_port=dist_init_ports[(process.endpoint_mode, process.endpoint_index)],
+                grpc_http_port=(
+                    allocator.next(GRPC_HTTP_PORTS, process.node)
+                    if process.is_leader and self.is_grpc_mode(process.endpoint_mode)
+                    else None
+                ),
             )
             for process in processes
         ]
@@ -303,6 +314,14 @@ class SGLangBackend(Backend):
         # allocator assigns each server its own port.
         config.pop("nccl-port", None)
         config.pop("nccl_port", None)
+        # The allocator owns the gRPC-mode HTTP sidecar port (/metrics, profiler routes).
+        for key in (
+            "grpc-http-sidecar-port",
+            "grpc_http_sidecar_port",
+            "smg-http-sidecar-port",
+            "smg_http_sidecar_port",
+        ):
+            config.pop(key, None)
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
@@ -347,6 +366,8 @@ class SGLangBackend(Backend):
         cmd.extend(["--port", str(api_port)])
         if process.nccl_port is not None:
             cmd.extend(["--nccl-port", str(process.nccl_port)])
+        if use_sglang and process.grpc_http_port is not None:
+            cmd.extend(["--grpc-http-sidecar-port", str(process.grpc_http_port)])
 
         # sglang.launch_server serves Prometheus /metrics on its HTTP port only with
         # --enable-metrics; tachometer (on by default) scrapes it there. dynamo.sglang

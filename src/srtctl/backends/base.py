@@ -131,6 +131,9 @@ class Backend(ABC):
     #: whose workers are the engine's own server (``direct``) scrape it; see
     #: ``Frontend.worker_metrics_path``.
     prometheus_metrics_path: ClassVar[str] = "/metrics"
+    #: Path a gRPC-mode worker serves Prometheus text at on ``Process.grpc_http_port``;
+    #: ``None`` when the engine's gRPC server has no HTTP listener.
+    grpc_metrics_path: ClassVar[str | None] = None
 
     @property
     @abstractmethod
