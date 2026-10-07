@@ -1,11 +1,12 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, `lm-eval`, and AIME (via the script under `configs/aime/`).
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, `lm-eval`, AIME (via the script under `configs/aime/`), and HLE (via the script under `configs/hle/`).
 
 ## Table of Contents
 
 - [How Scoring Works](#how-scoring-works)
 - [AIME](#aime)
+- [HLE](#hle)
 - [MMLU](#mmlu)
 - [GPQA](#gpqa)
 - [LongBench-V2](#longbench-v2)
@@ -28,7 +29,8 @@ In srt-slurm, users can run different accuracy benchmarks by setting the benchma
 Accuracy benchmarks send a fixed dataset through the running OpenAI-compatible endpoint and compare each model
 response against the benchmark's expected answer. For AIME, NeMo Skills prompts the model to put the final answer in
 `\boxed{...}`, extracts that final boxed answer, and grades it with its math evaluator. There is no LLM judge in the
-default AIME path; the score is computed from exact/symbolic correctness.
+default AIME path; the score is computed from exact/symbolic correctness. HLE is the exception: many of its answers are
+free-form, so NeMo Skills grades each one with an LLM judge against the reference answer.
 
 When `repeat` is greater than 1, the benchmark runs multiple sampled generations per problem. NeMo Skills summarizes
 metrics across those generations, which is useful for comparing pass@1-style deterministic accuracy and sampled
@@ -121,6 +123,59 @@ produced empty output dirs and a false "Benchmark completed successfully".
 If you need a broader extractor for your model, post-process the cached
 `output-rs<seed>.jsonl` files with a Python script (raw-string regex, no shell
 layers).
+
+
+## HLE
+
+HLE (Humanity's Last Exam) runs in the same **NeMo Skills container** as [AIME](#aime) and is wired up the
+same way: there is no `type: hle` runner; the eval logic lives in `configs/hle/run.sh` and recipes run it
+with `type: custom`. See `examples/features/hle.yaml`.
+
+### Recipe shape
+
+```yaml
+benchmark:
+  type: custom
+  container_image: nemo-skills    # alias defined in srtslurm.yaml `containers:`
+                                  # or the full nvcr.io URI for Pyxis auto-pull
+  env:
+    MODEL: "Qwen/Qwen3-0.6B"      # required: must match served-model-name in the roles' args
+    # Optional knob overrides:
+    # SPLIT: "text"               # text | math | phy | cs | bio | chem | eng | human | other
+    # NUM_EXAMPLES: "100"         # default: every question in the split
+    # REPEAT: "1"                 # samples per question; each is also a judge call
+    # MAX_TOKENS: "400000"
+    # NUM_THREADS: "512"
+    # TEMPERATURE: "1.0"
+    # TOP_P: "1.0"
+    # SEED: "42"
+    # Judge override (default: o3-mini-2025-01-31 on api.openai.com):
+    # JUDGE_MODEL: "Qwen/Qwen3-235B-A22B"
+    # JUDGE_SERVER_ADDRESS: "http://judge-host:8000/v1"
+    # JUDGE_SERVER_TYPE: "openai"
+  command: |
+    bash /configs/hle/run.sh
+```
+
+Credentials do not go in the recipe. `benchmark.env` values reach the container literally (`${VAR}` is not
+expanded), and the recipe is copied into the job's logs. Export them in the shell you submit from; the job
+inherits the submission environment (Slurm's default `--export=ALL`):
+
+- `HF_TOKEN`: `cais/hle` is a gated Hugging Face dataset; accept its terms first.
+- `OPENAI_API_KEY`: the default judge. The script exits before generation when neither `OPENAI_API_KEY` nor
+  `JUDGE_SERVER_ADDRESS` is set. The served model receives the same key and ignores it.
+
+For reasoning models, set the server-side [reasoning-mode env vars](#reasoning-mode-env-vars-server-side) as for
+AIME, and keep `context-length` larger than `MAX_TOKENS`.
+
+### What the script does
+
+1. `ns prepare_data hle` fetches `cais/hle` and writes the text-only splits (questions with images are dropped).
+2. `ns eval` against `http://localhost:8000/v1` with NeMo Skills' HLE prompt, `REPEAT` samples per question,
+   and the same sampling and timeout defaults as `configs/aime/run.sh`.
+3. NeMo Skills' HLE judge grades every answer.
+
+Outputs land at `/logs/accuracy/hle/eval-results/hle/metrics.json`, with overall and per-category accuracy.
 
 
 ## MMLU
