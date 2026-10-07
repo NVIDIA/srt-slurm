@@ -98,7 +98,7 @@ class LLMDSidecarService(ServiceKind):
         return process.proxy_port is not None
 
     def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
-        command = list(service.command) if service.command is not None else list(self.default_command)
+        command = list(service.command) if service.command is not None else list(self.default_command or ())
         if ctx.process is None or ctx.config is None or ctx.process.proxy_port is None:
             managed = [*_PREVIEW_PORTS, "--kv-connector=<decode connector>"]
         else:
