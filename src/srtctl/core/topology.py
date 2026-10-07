@@ -571,6 +571,7 @@ def endpoints_to_processes(
     port_allocator: NodePortAllocator | None = None,
     engines_per_process: int = 1,
     sidecar_grpc: bool = False,
+    kv_events_port_sizes: dict[WorkerMode, int] | None = None,
     bootstrap_ports: bool = True,
 ) -> list[Process]:
     """Convert endpoints to physical processes, one per node of each endpoint.
@@ -590,6 +591,7 @@ def endpoints_to_processes(
             engine of a node then gets its own Process (same GPUs and node_rank,
             distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
         sidecar_grpc: Allocate a Dynamo sidecar gRPC port for every process.
+        kv_events_port_sizes: KV publisher port range per process, keyed by worker mode.
         bootstrap_ports: Allocate the prefill bootstrap port; ``False`` for an engine
             that has no bootstrap rendezvous (vLLM hands KV over its NIXL side channel).
 
@@ -626,7 +628,9 @@ def endpoints_to_processes(
                         node_rank=node_rank,
                         bootstrap_port=endpoint_bootstrap_ports[engine_id],
                         # Every process publishes KV events and opens a NIXL side channel of its own.
-                        kv_events_port=allocator.next(KV_EVENTS_PORTS),
+                        kv_events_port=allocator.next(
+                            KV_EVENTS_PORTS, size=(kv_events_port_sizes or {}).get(endpoint.mode, 1)
+                        ),
                         nixl_port=allocator.next(NIXL_PORTS),
                         het_group=endpoint.het_group,
                         engine_id=engine_id,

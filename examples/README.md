@@ -1,6 +1,6 @@
 # Examples
 
-Small, runnable starting points, one per frontend and topology. Every example serves the same model (Qwen3-0.6B) on one node so the files differ only in the frontend and the prefill/decode layout, and a full matrix run finishes in minutes. They are not performance claims. Copy one, change the model, GPU type, topology, and engine flags to match your target, then `srtctl dry-run -f <config>` before submitting.
+Small starting points, one per frontend and topology. The matrix examples serve the same model (Qwen3-0.6B) on one node so the files differ only in the frontend and the prefill/decode layout, and a full matrix run finishes in minutes. The feature examples include additional topologies and build prerequisites. They are not performance claims. Copy one, change the model, GPU type, topology, and engine flags to match your target, then `srtctl dry-run -f <config>` before submitting.
 
 ## Matrix
 
@@ -24,6 +24,8 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 
 | File | Shows |
 | --- | --- |
+| [features/sglang-sidecar-multinode-dp.yaml](features/sglang-sidecar-multinode-dp.yaml) | One SGLang aggregate worker across two one-GPU nodes, global TP2/attention DP2, a serving leader sidecar and a telemetry-only follower, with KV routing |
+| [features/sglang-sidecar-multinode-disagg-dp.yaml](features/sglang-sidecar-multinode-disagg-dp.yaml) | One TP2/attention DP2 prefill worker and one TP2/attention DP2 decode worker across four one-GPU nodes, with a prefill telemetry relay, NIXL transfer, and KV routing |
 | `features/sweep.yaml` | `sweep:` plus `{placeholder}` substitution; one job per combination |
 | `features/override.yaml` | `base` plus `override_*` and `zip_override_*` variants in one file |
 | `features/profiling.yaml` | `profiling:` torch capture on an aggregated worker |
@@ -39,6 +41,8 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/vllm-failover.yaml` | `engine.failover:` shadow engine recovery: a GPU Memory Service sidecar and a parked standby engine per vLLM worker, relaunched in place after a crash. Needs a container that ships `gpu_memory_service` (the `dynamo-vllm` alias, an `nvcr.io/nvidia/ai-dynamo/vllm-runtime` image). See [../docs/shadow-engine-recovery.md](../docs/shadow-engine-recovery.md) |
 | `features/worker-restart.yaml` | `roles.<role>.restart:` relaunching a killed worker in place with backoff; serves with `benchmark.type: manual` so you can SIGKILL a worker step and watch the sweep log |
 | `features/sglang-weight-cache.yaml` | SGLang fast engine recovery on the existing machinery: a generic per-worker service runs SGLang's weight cache daemon (tensors kept in HBM, handed out over CUDA IPC), the engines start with `--weight-cache-mode client` and skip the disk load, and `roles.<role>.restart` relaunches a killed engine in place. Needs SGLang v0.5.19+; see [docs/sglang-weight-cache.md](../docs/sglang-weight-cache.md) |
+
+See [Native sidecar mode](../docs/config-reference.md#native-sidecar-mode) for configuration and lifecycle behavior.
 
 ## Cluster aliases
 
@@ -58,8 +62,6 @@ containers:
   sglang-lmcache: /path/to/sglang-lmcache.sqsh  # SGLang image with LMCache installed, for features/lmcache-server-sglang.yaml
   smg: /path/to/smg.sqsh                    # Shepherd Model Gateway image (lightseekorg/smg), the router for the smg examples
 ```
-
-`resources.gpu_type` and `gpus_per_node` are set to `h100` and `8`; change them to match the partition you submit to.
 
 ## Optional GPU temperature
 
