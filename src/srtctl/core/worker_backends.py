@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from functools import partial
 from typing import TYPE_CHECKING
 
+from srtctl.backends.base import WORKER_MODES
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints
 from srtctl.ports import SIDECAR_GRPC_PORTS
 
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
 
 def role_name(mode: str) -> str:
     role = "agg" if mode == "aggregated" else mode
-    if role not in ("prefill", "decode", "agg"):
+    if role not in WORKER_MODES:
         raise ValueError(f"Unknown worker role {mode!r}")
     return role
 
@@ -67,7 +68,7 @@ def worker_processes(
     if not config.has_role_backends:
         return expand(config.backend, endpoints)
     processes: list[Process] = []
-    for role in ("prefill", "decode", "agg"):
+    for role in WORKER_MODES:
         selected = [endpoint for endpoint in endpoints if endpoint.mode == role]
         if selected:
             processes.extend(expand(config.backend_for_role(role), selected))

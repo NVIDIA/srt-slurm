@@ -51,12 +51,12 @@ from srtctl.backends import (
     TRTLLMBackend,
     VLLMBackend,
 )
+from srtctl.backends.base import WORKER_MODES
 from srtctl.backends.sglang import MooncakeKVStoreConfig
 from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
 from srtctl.benchmarks import SHARED_BENCHMARK_FIELDS, get_runner_class, list_benchmarks
 from srtctl.core.config import LEGACY_TOP_LEVEL_KEYS
 from srtctl.core.formatting import FormattablePath
-from srtctl.core.roles import ROLE_NAMES
 from srtctl.core.schema import (
     BenchmarkConfig,
     ClusterConfig,
@@ -448,7 +448,7 @@ def _render_authoring_surface() -> list[str]:
         "",
         "### roles",
         "",
-        "`roles.<role>` for `" + "`, `".join(ROLE_NAMES) + "`. The `agg` role is the aggregated deployment; "
+        "`roles.<role>` for `" + "`, `".join(WORKER_MODES) + "`. The `agg` role is the aggregated deployment; "
         "`prefill` and `decode` together are the disaggregated one. Each role is a [RoleConfig](#roleconfig): "
         "`nodes` (or `colocate` on decode, to share the prefill nodes), `workers`, `gpus`, `env`, `args`, and "
         "optionally its own `engine` and `container`.",

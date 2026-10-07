@@ -48,7 +48,7 @@ from srtctl.backends import (
     VLLMBackend,
     VLLMMooncakeKVStoreConfig,
 )
-from srtctl.backends.base import RoleSettings, WorkerMode
+from srtctl.backends.base import WORKER_MODES, RoleSettings, WorkerMode
 from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
@@ -64,7 +64,7 @@ from srtctl.core.power.contract import (
     UtilizationMetric,
 )
 from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
-from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
+from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
 from srtctl.services.config import ServiceConfig
@@ -2847,7 +2847,7 @@ class SrtConfig:
         """
         for role, spec in self.roles.items():
             if role not in ROLE_TO_MODE:
-                raise ValidationError(f"unknown role {role!r}; valid roles are {', '.join(ROLE_NAMES)}")
+                raise ValidationError(f"unknown role {role!r}; valid roles are {', '.join(WORKER_MODES)}")
             if spec.colocated and role != "decode":
                 raise ValidationError(f"roles.{role}.nodes: only the decode role can colocate (on the prefill nodes)")
             if isinstance(spec.nodes, int):

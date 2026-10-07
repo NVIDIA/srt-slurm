@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from srtctl.backends.base import WORKER_MODES
 from srtctl.core.power.contract import (
     ALL_REASON_CODES,
     CLOCK_SOURCE,
@@ -39,7 +40,6 @@ from srtctl.core.power.contract import (
 from srtctl.core.power.manifest import STATUS_COMPLETE, ArtifactError, ExpectedWindow, WindowValidation
 from srtctl.core.power.samples import ObservedDevice, SampleRow, derive_observed_devices, read_samples
 from srtctl.core.power.topology import (
-    WORKER_ROLES,
     DeviceAssignment,
     ExpectedDevice,
     resolve_het_groups,
@@ -517,8 +517,8 @@ def _text(value: Any, label: str) -> str:
 
 
 def _role(value: Any) -> str:
-    if value not in WORKER_ROLES:
-        raise ValueError(f"worker_role is not one of {WORKER_ROLES}: {value!r}")
+    if value not in WORKER_MODES:
+        raise ValueError(f"worker_role is not one of {WORKER_MODES}: {value!r}")
     return value
 
 
@@ -601,9 +601,9 @@ def _check_topology(
         counts[role] = counts.get(role, 0) + 1
 
     if expected_roles is not None:
-        unknown = sorted(set(expected_roles) - set(WORKER_ROLES))
+        unknown = sorted(set(expected_roles) - set(WORKER_MODES))
         if unknown:
-            failures.append(f"unknown expected roles: {unknown}; allowed roles are {list(WORKER_ROLES)}")
+            failures.append(f"unknown expected roles: {unknown}; allowed roles are {list(WORKER_MODES)}")
         invalid_counts = sorted(
             role
             for role, count in expected_roles.items()
@@ -615,7 +615,7 @@ def _check_topology(
         valid_expected = {
             role: count
             for role, count in expected_roles.items()
-            if role in WORKER_ROLES and isinstance(count, int) and not isinstance(count, bool) and count >= 0
+            if role in WORKER_MODES and isinstance(count, int) and not isinstance(count, bool) and count >= 0
         }
         expected_present_roles = {role for role, count in valid_expected.items() if count > 0}
         if set(counts) != expected_present_roles:

@@ -22,8 +22,9 @@ from typing import Any
 import yaml
 from ruamel.yaml.comments import CommentedMap
 
+from srtctl.backends.base import WORKER_MODES
+
 from .lockfile import verify_lock_integrity
-from .roles import ROLE_NAMES
 from .schema import ClusterConfig, SrtConfig
 
 logger = logging.getLogger(__name__)
@@ -144,7 +145,7 @@ LEGACY_TOP_LEVEL_KEYS: tuple[str, ...] = ("backend", "infra")
 LEGACY_SECTION_KEYS: dict[str, tuple[str, ...]] = {
     "resources": tuple(
         key
-        for role in ROLE_NAMES
+        for role in WORKER_MODES
         for key in (f"{role}_nodes", f"{role}_workers", f"gpus_per_{role}", f"{role}_critical")
     ),
     "frontend": ("orchestrator_placement", "dedicated_node"),

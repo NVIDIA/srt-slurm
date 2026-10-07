@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from srtctl.backends.base import WORKER_MODES
+
 from .sources import canonical_role
 
 SCHEMA = "srtctl-trace/1"
@@ -136,7 +138,7 @@ def lifecycle(request: Record) -> Record:
             )
 
     add("request.preprocessing", "Preprocessing complete")
-    for role in ("prefill", "decode", "agg"):
+    for role in WORKER_MODES:
         routes = [
             s
             for s in activities

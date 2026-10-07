@@ -39,7 +39,8 @@ from typing import Any
 
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from srtctl.core.roles import COLOCATE, ENGINE_CONFIG_KEY, ROLE_NAMES, ROLE_TO_MODE
+from srtctl.backends.base import WORKER_MODES
+from srtctl.core.roles import COLOCATE, ENGINE_CONFIG_KEY, ROLE_TO_MODE
 from srtctl.core.schema import CURRENT_SCHEMA_VERSION
 from srtctl.core.yaml_utils import dump_yaml_with_comments, load_yaml_text_with_comments
 
@@ -197,7 +198,7 @@ def _fold_roles(variant: CommentedMap, engine_key: str, label: str) -> list[str]
     engine_cfg = engine_cfg if isinstance(engine_cfg, CommentedMap) else None
 
     roles: CommentedMap | None = None
-    for role in ROLE_NAMES:
+    for role in WORKER_MODES:
         mode = ROLE_TO_MODE[role]
         moves: list[tuple[CommentedMap, str, str]] = []
         if resources is not None:
@@ -539,12 +540,12 @@ def _fold_engine(variant: CommentedMap, base: CommentedMap, label: str) -> list[
         kv_events = backend.get("kv_events_config")
         if kv_events is not None and role_specs:
             if isinstance(kv_events, dict):
-                for role_name in ROLE_NAMES:
+                for role_name in WORKER_MODES:
                     mode = ROLE_TO_MODE[role_name]
                     if mode in kv_events and role_name in role_specs:
                         role_specs[role_name]["kv_events"] = kv_events[mode]
                         notes.append(f"{label}backend.kv_events_config.{mode} -> roles.{role_name}.kv_events")
-                if all(ROLE_TO_MODE[r] not in kv_events or r in role_specs for r in ROLE_NAMES):
+                if all(ROLE_TO_MODE[r] not in kv_events or r in role_specs for r in WORKER_MODES):
                     backend.pop("kv_events_config")
                     backend.ca.items.pop("kv_events_config", None)
             elif kv_events is True:

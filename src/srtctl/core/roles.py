@@ -26,7 +26,6 @@ ENGINE_CONFIG_KEY: dict[str, str] = {
 
 # role name -> the mode name used in the engine's per-mode fields.
 ROLE_TO_MODE: dict[str, str] = {"prefill": "prefill", "decode": "decode", "agg": "aggregated"}
-ROLE_NAMES: tuple[str, ...] = ("prefill", "decode", "agg")
 
 # ``roles.decode.nodes`` value meaning "share the prefill nodes".
 COLOCATE = "colocate"

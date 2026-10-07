@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from srtctl.backends.base import WORKER_MODES
 from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMBackend
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
@@ -196,7 +197,7 @@ class SweepOrchestrator(
 
     def _get_hf_home(self) -> str | None:
         """Get HF_HOME from backend environment config."""
-        for mode in ("prefill", "decode", "agg"):
+        for mode in WORKER_MODES:
             env = self.config.backend.get_environment_for_mode(mode)
             if "HF_HOME" in env:
                 return env["HF_HOME"]
@@ -210,7 +211,7 @@ class SweepOrchestrator(
         pre-download srun runs with the same auth/endpoint context as workers.
         """
         hf_env: dict[str, str] = {}
-        for mode in ("prefill", "decode", "agg"):
+        for mode in WORKER_MODES:
             for key, val in self.config.backend.get_environment_for_mode(mode).items():
                 if key.startswith(("HF_", "HUGGING_FACE_")):
                     hf_env[key] = val

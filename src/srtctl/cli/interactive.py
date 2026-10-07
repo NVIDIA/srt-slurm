@@ -30,6 +30,8 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.tree import Tree
 
+from srtctl.backends.base import WORKER_MODES
+
 console = Console()
 
 # Custom questionary style
@@ -77,7 +79,7 @@ def display_config_summary(config: dict[str, Any], title: str = "Configuration")
         res_branch.add(f"gpu_type: [cyan]{r.get('gpu_type', 'N/A')}[/]")
         res_branch.add(f"gpus_per_node: [yellow]{r.get('gpus_per_node', 'N/A')}[/]")
         roles = config.get("roles") or {}
-        for role in ("prefill", "decode", "agg"):
+        for role in WORKER_MODES:
             spec = roles.get(role)
             if isinstance(spec, dict):
                 res_branch.add(

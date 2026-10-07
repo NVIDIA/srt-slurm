@@ -15,8 +15,6 @@ from srtctl.core.topology import Process
 
 DeviceKey = tuple[str, int]
 
-WORKER_ROLES = ("prefill", "decode", "agg")
-
 
 @dataclass(frozen=True)
 class DeviceAssignment:

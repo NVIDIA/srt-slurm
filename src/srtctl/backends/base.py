@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeAlias, get_args
 
 from marshmallow import ValidationError, fields
 
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 
 WorkerMode: TypeAlias = Literal["prefill", "decode", "agg"]
+WORKER_MODES: tuple[WorkerMode, ...] = get_args(WorkerMode)
 
 
 class BackendType(str, Enum):

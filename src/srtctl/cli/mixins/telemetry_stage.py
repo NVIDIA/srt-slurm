@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from srtctl.backends.base import WORKER_MODES
 from srtctl.core.cpu_power_session import CpuPowerSessionSettings as CpuPowerHostSessionSettings
 from srtctl.core.cpu_power_session import CpuPowerTelemetrySession
 from srtctl.core.git_state import head_commit
@@ -563,7 +564,7 @@ class TelemetryStageMixin:
         if self.config.frontend.type == FRONTEND_NONE:
             return {}
         frontend = get_frontend(self.config.frontend.type)
-        return {mode: frontend.worker_metrics_path(self.config.backend, mode) for mode in ("prefill", "decode", "agg")}
+        return {mode: frontend.worker_metrics_path(self.config.backend, mode) for mode in WORKER_MODES}
 
     def _service_metrics_targets(self) -> list[ServiceMetricsTarget]:
         """One tachometer target per node for every service that serves metrics.

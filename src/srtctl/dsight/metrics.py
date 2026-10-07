@@ -19,6 +19,7 @@ import tomli as tomllib
 from pyarrow import ipc
 
 from srtctl.analysis.metric_catalog import describe_metric
+from srtctl.backends.base import WORKER_MODES
 
 from .engines import MetricDefinition, engine_metrics
 from .point_buffer import PointBuffer
@@ -302,7 +303,7 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                 role = canonical_role(row.get("worker_role") or extra.get("worker_role", ""))
                 index = row.get("worker_index")
                 index = extra.get("worker_index", "") if index in (None, "") else index
-                worker = f"{role}-{index}" if role in ("prefill", "decode", "agg") and index != "" else None
+                worker = f"{role}-{index}" if role in WORKER_MODES and index != "" else None
                 if worker is None and "frontend" in endpoint_name:
                     worker = "frontend"
                 labels = {

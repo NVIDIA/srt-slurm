@@ -37,6 +37,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
+from srtctl.backends.base import WORKER_MODES
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -455,7 +456,7 @@ def show_config_details(config: SrtConfig) -> None:
         root = failover_root(failover.shared_dir, "<job_id>")
         restart_roles = [
             role
-            for role in ("prefill", "decode", "agg")
+            for role in WORKER_MODES
             if getattr(getattr(config.resources, f"{role}_restart", None), "enabled", False)
         ]
         relaunch = (

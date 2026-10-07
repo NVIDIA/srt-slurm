@@ -23,7 +23,15 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args, role_kv_events
+from srtctl.backends.base import (
+    WORKER_MODES,
+    Backend,
+    BoundRolesField,
+    RoleSettings,
+    WorkerMode,
+    role_args,
+    role_kv_events,
+)
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DIST_INIT_PORTS,
@@ -187,7 +195,7 @@ class SGLangBackend(Backend):
 
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from the roles' engine args, or return default."""
-        for mode in ("prefill", "agg", "decode"):
+        for mode in WORKER_MODES:
             args = role_args(self.roles, mode)
             name = args.get("served-model-name") or args.get("served_model_name")
             if name:

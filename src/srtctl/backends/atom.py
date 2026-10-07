@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args
+from srtctl.backends.base import WORKER_MODES, Backend, BoundRolesField, RoleSettings, role_args
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, LMCACHE_SERVER_PORT
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ class AtomBackend(Backend):
 
     def get_served_model_name(self, default: str) -> str:
         """The name ATOM serves: a role's ``served-model-name``, else its literal ``--model``."""
-        for mode in ("prefill", "agg", "decode"):
+        for mode in WORKER_MODES:
             args = role_args(self.roles, mode)
             name = args.get("served-model-name") or args.get("served_model_name")
             if name:
