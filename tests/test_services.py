@@ -113,6 +113,7 @@ def test_registered_kinds() -> None:
         "generic",
         "gms",
         "lmcache-server",
+        "mooncake-donor",
         "mooncake-master",
         "mooncake-store",
         "nats",

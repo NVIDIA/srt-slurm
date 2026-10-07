@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from marshmallow import ValidationError
 
-from srtctl.core.readiness import ProcessDied, probe_log, run_probe, wait_until_ready
-from srtctl.services import HttpProbe, LogProbe, ServiceReadinessConfig, TcpProbe
+from srtctl.core.readiness import ProcessDied, probe_file, probe_log, run_probe, wait_until_ready
+from srtctl.services import FileProbe, HttpProbe, LogProbe, ServiceReadinessConfig, TcpProbe
 
 
 class FakeClock:
@@ -65,6 +65,32 @@ def test_exactly_one_probe() -> None:
         ServiceReadinessConfig.Schema().load({"http": {"port": 80, "path": "health"}})
     with pytest.raises(ValidationError, match="interval_seconds must be positive"):
         ServiceReadinessConfig.Schema().load({"port": 80, "interval_seconds": 0})
+
+
+def test_file_probe_schema() -> None:
+    ready = ServiceReadinessConfig.Schema().load({"file": {"path": "mooncake/donor-{node}.ready"}})
+    assert isinstance(ready.probe, FileProbe)
+    assert ready.probe_port is None
+    assert ready.describe() == "nonempty file mooncake/donor-{node}.ready, timeout=120s"
+    with pytest.raises(ValidationError, match="exactly one probe"):
+        ServiceReadinessConfig.Schema().load({"file": {"path": "x"}, "log": {"pattern": "ready"}})
+    with pytest.raises(ValidationError, match="must not be empty"):
+        FileProbe(path=" ")
+
+
+def test_file_probe_requires_nonempty_regular_file(tmp_path: Path) -> None:
+    marker = tmp_path / "donor.ready"
+    log = tmp_path / "service.out"
+    assert not probe_file("donor.ready", log)
+    marker.touch()
+    assert not probe_file("donor.ready", log)
+    marker.write_text("10.0.0.1 687194767360\n")
+    assert run_probe(FileProbe(path="donor.ready"), host="node", log_file=log)
+    assert probe_file(str(marker), None)
+    assert not probe_file("donor.ready", None)
+    assert not probe_file(str(tmp_path), log)
+    marker.unlink()
+    assert not probe_file(str(marker), log)
 
 
 # --- probes ------------------------------------------------------------------------

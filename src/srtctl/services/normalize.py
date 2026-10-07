@@ -56,5 +56,8 @@ def expand_services(config: dict[str, Any]) -> dict[str, Any]:
         options = master.get("options") or {}
         if "device_names_by_gpu" in options:
             mapped["device_names_by_gpu"] = options["device_names_by_gpu"]
+        for key in ("eviction_ratio", "master_timeout_s", "store_role"):
+            if key in options:
+                mapped[key] = options[key]
         engine["mooncake_kv_store"] = mapped
     return config

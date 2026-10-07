@@ -14,7 +14,7 @@ from .base import Backend, BackendType, RoleSettings, SrunConfig
 from .mocker import MockerBackend
 from .sglang import MooncakeKVStoreConfig, SGLangBackend
 from .tilert import TileRTBackend
-from .trtllm import TRTLLMBackend
+from .trtllm import TRTLLMBackend, TRTLLMMooncakeKVStoreConfig
 from .vllm import VLLMBackend, VLLMFailoverConfig, VLLMMooncakeKVStoreConfig
 
 # Union type for all backend configs
@@ -36,6 +36,7 @@ __all__ = [
     "SrunConfig",
     # TRTLLM
     "TRTLLMBackend",
+    "TRTLLMMooncakeKVStoreConfig",
     # TileRT
     "TileRTBackend",
     "VLLMBackend",

@@ -33,6 +33,7 @@ from srtctl.cli.mixins import (
     TelemetryStageMixin,
     WorkerStageMixin,
 )
+from srtctl.cli.mixins.service_stage import PendingServiceReadiness
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
@@ -783,9 +784,12 @@ class SweepOrchestrator(
 
             # Stage 2: Workers
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
+            pending_services: list[PendingServiceReadiness] = []
+            self.start_services("with_workers", registry, deferred_readiness=pending_services)
             worker_procs = self.start_all_workers()
             registry.add_processes(worker_procs)
             self.track_workers(supervisor, worker_procs)
+            self.wait_services_ready(pending_services)
 
             # Stage 3: Frontend
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")

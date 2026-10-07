@@ -13,8 +13,8 @@ that supplies defaults and injects the environment that kind needs. See
 
 import builtins
 import logging
-from dataclasses import field
-from typing import Any, ClassVar
+from dataclasses import field, replace
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from marshmallow import Schema, ValidationError, pre_load
 from marshmallow_dataclass import dataclass
@@ -22,6 +22,9 @@ from marshmallow_dataclass import dataclass
 from srtctl.core.source import SourceConfig
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from srtctl.core.schema import SrtConfig
 
 # Where a service runs. head / infra are one node; prefill / decode / agg are the
 # distinct physical nodes the role's workers land on; workers is every worker node.
@@ -44,8 +47,9 @@ SERVICE_PERS: tuple[str, ...] = ("node", "worker")
 
 # When a service starts relative to the rest of the job. ``infra`` is the discovery
 # plane (etcd, NATS) that everything else may depend on; ``before_workers`` runs after
-# it and before any worker; ``after_frontend`` once workers and the frontend are healthy.
-SERVICE_STARTS: tuple[str, ...] = ("infra", "before_workers", "after_frontend")
+# it and before any worker; ``with_workers`` defers readiness until worker launch;
+# ``after_frontend`` runs once workers and the frontend are healthy.
+SERVICE_STARTS: tuple[str, ...] = ("infra", "before_workers", "with_workers", "after_frontend")
 
 # services[].source is the shared git-at-an-immutable-ref shape.
 ServiceSourceConfig = SourceConfig
@@ -194,11 +198,29 @@ class LogProbe:
 
 
 @dataclass(frozen=True)
+class FileProbe:
+    """Ready when a regular file is nonempty. Relative paths use the job log directory.
+
+    Attributes:
+        path: File path to probe; relative paths use the job log directory.
+    """
+
+    path: str
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not self.path.strip():
+            raise ValidationError("readiness.file.path must not be empty")
+
+
+@dataclass(frozen=True)
 class ServiceReadinessConfig:
     """Readiness gate: the launch blocks until the probe passes on every service node.
 
     Exactly one probe: ``tcp`` (a port accepts connections), ``http`` (a URL
-    returns a status), or ``log`` (the service log matches a pattern). ``port``
+    returns a status), ``log`` (the service log matches a pattern), or ``file``
+    (a regular file is nonempty). ``port``
     alone is shorthand for ``tcp``.
 
     Attributes:
@@ -206,6 +228,8 @@ class ServiceReadinessConfig:
         tcp: TCP connect probe.
         http: HTTP GET probe.
         log: Log-pattern probe against ``service_<name>.out``.
+        file: Nonempty-file probe on the host shared filesystem. Relative paths
+            use the job log directory; service placeholders such as ``{node}`` are expanded.
         timeout_seconds: How long to wait per node before failing the job.
         interval_seconds: Seconds between probe attempts.
     """
@@ -214,6 +238,7 @@ class ServiceReadinessConfig:
     tcp: TcpProbe | None = None
     http: HttpProbe | None = None
     log: LogProbe | None = None
+    file: FileProbe | None = None
     timeout_seconds: int = 120
     interval_seconds: int = 2
 
@@ -224,10 +249,10 @@ class ServiceReadinessConfig:
             if self.tcp is not None:
                 raise ValidationError("services[].readiness: give either port (shorthand) or tcp, not both")
             object.__setattr__(self, "tcp", TcpProbe(port=self.port))
-        probes = [name for name in ("tcp", "http", "log") if getattr(self, name) is not None]
+        probes = [name for name in ("tcp", "http", "log", "file") if getattr(self, name) is not None]
         if len(probes) != 1:
             raise ValidationError(
-                f"services[].readiness needs exactly one probe: port, tcp, http, or log; got {', '.join(probes) or 'none'}"
+                f"services[].readiness needs exactly one probe: port, tcp, http, log, or file; got {', '.join(probes) or 'none'}"
             )
         if self.timeout_seconds <= 0:
             raise ValidationError("services[].readiness.timeout_seconds must be positive")
@@ -235,8 +260,8 @@ class ServiceReadinessConfig:
             raise ValidationError("services[].readiness.interval_seconds must be positive")
 
     @property
-    def probe(self) -> TcpProbe | HttpProbe | LogProbe:
-        for name in ("tcp", "http", "log"):
+    def probe(self) -> TcpProbe | HttpProbe | LogProbe | FileProbe:
+        for name in ("tcp", "http", "log", "file"):
             value = getattr(self, name)
             if value is not None:
                 return value
@@ -254,6 +279,8 @@ class ServiceReadinessConfig:
             what = f"tcp/{probe.port}"
         elif isinstance(probe, HttpProbe):
             what = f"http://<node>:{probe.port}{probe.path} -> {probe.status}"
+        elif isinstance(probe, FileProbe):
+            what = f"nonempty file {probe.path}"
         else:
             what = f"log matches /{probe.pattern}/"
         return f"{what}, timeout={self.timeout_seconds}s"
@@ -298,9 +325,10 @@ class ServiceConfig:
         placement: Where the service runs. Defaults to the kind's placement
             (``head`` for generic services, ``infra`` for etcd/nats/mooncake-master,
             ``workers`` for the exporters).
-        start: ``after_frontend`` (default for ``generic``) or
-            ``before_workers`` (default for ``mooncake-store``).
-        readiness: Optional TCP port gate; the job waits for it on every
+        start: ``after_frontend`` (default for ``generic``), ``before_workers``
+            (default for ``mooncake-store``), or ``with_workers`` to launch
+            before workers and defer readiness until all workers are launched.
+        readiness: Optional TCP, HTTP, log, or file gate; the job waits for it on every
             service node before continuing.
         inherit_discovery_env: Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so
             the service can register with the job's Dynamo discovery plane.
@@ -458,11 +486,11 @@ class ServiceConfig:
         base = self.command if self.command is not None else list(get_service_kind(self.type).default_command or ())
         return [*base, *self.args]
 
-    def preview_command(self) -> list[str]:
+    def preview_command(self, config: "SrtConfig | None" = None) -> list[str]:
         """The command as the kind would launch it, with placeholders for runtime values (dry-run)."""
         from srtctl.services.registry import ServiceLaunchContext, get_service_kind
 
-        return get_service_kind(self.type).build_command(self, ServiceLaunchContext.preview())
+        return get_service_kind(self.type).build_command(self, replace(ServiceLaunchContext.preview(), config=config))
 
     @property
     def effective_start(self) -> str:

@@ -331,8 +331,8 @@ One entry of the top-level ``services:`` list.
 | `build_command` | list[str] \| None | `None` | Argv run once inside the service container, from the clone, before ``command`` starts. Only meaningful with ``source``. |
 | `placement` | [ServicePlacementConfig](#serviceplacementconfig) \| None | `None` | Where the service runs. Defaults to the kind's placement (``head`` for generic services, ``infra`` for etcd/nats/mooncake-master, ``workers`` for the exporters). |
 | `nodes` | int \| None | `None` | Whole nodes this service owns: its pool. Pools add to the allocation next to the engine roles' nodes and are carved after them in declaration order, so a Ray cluster, a sandbox fleet and an engine role can each have their own nodes in one recipe. An owner is placed on its own pool (``placement.node: workers``); other services join it with ``placement.pool: <name>``. |
-| `start` | str \| None | `None` | ``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``). |
-| `readiness` | [ServiceReadinessConfig](#servicereadinessconfig) \| None | `None` | Optional TCP port gate; the job waits for it on every service node before continuing. |
+| `start` | str \| None | `None` | ``after_frontend`` (default for ``generic``), ``before_workers`` (default for ``mooncake-store``), or ``with_workers`` to launch before workers and defer readiness until all workers are launched. |
+| `readiness` | [ServiceReadinessConfig](#servicereadinessconfig) \| None | `None` | Optional TCP, HTTP, log, or file gate; the job waits for it on every service node before continuing. |
 | `inherit_discovery_env` | bool | `True` | Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so the service can register with the job's Dynamo discovery plane. |
 | `critical` | bool \| None | `None` | When true a crash fails the run, like a worker dying. Default false for ``generic`` (a dead sidecar costs its own log, not the run) and true for ``mooncake-store``. Set true for anything in the live request path. |
 | `terminal` | bool | `False` | This service is the job's run: the job ends when every instance of every terminal service has exited, and the worst exit code becomes the job's. A recipe with a terminal service has no benchmark step (``benchmark.type`` stays ``manual``); a torchrun pool that trains to completion is the shape. |
@@ -527,6 +527,7 @@ Readiness gate: the launch blocks until the probe passes on every service node.
 | `tcp` | [TcpProbe](#tcpprobe) \| None | `None` | TCP connect probe. |
 | `http` | [HttpProbe](#httpprobe) \| None | `None` | HTTP GET probe. |
 | `log` | [LogProbe](#logprobe) \| None | `None` | Log-pattern probe against ``service_<name>.out``. |
+| `file` | [FileProbe](#fileprobe) \| None | `None` | Nonempty-file probe on the host shared filesystem. Relative paths use the job log directory; service placeholders such as ``{node}`` are expanded. |
 | `timeout_seconds` | int | `120` | How long to wait per node before failing the job. |
 | `interval_seconds` | int | `2` | Seconds between probe attempts. |
 
@@ -644,6 +645,14 @@ Ready when the service's log file contains a line matching the regular expressio
 |---|---|---|---|
 | `pattern` | str | required | Regular expression searched for in the service log. |
 
+### FileProbe
+
+Ready when a regular file is nonempty. Relative paths use the job log directory.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `path` | str | required | File path to probe; relative paths use the job log directory. |
+
 ### GpuPowerMetricConfig
 
 The per-GPU power metric in a GPU exporter's scrape, in watts.
@@ -756,6 +765,19 @@ Dynamo Mocker backend configuration and launch implementation.
 | `enable_prefix_caching` | bool | `True` | Simulate prefix caching; false passes --no-enable-prefix-caching |
 | `enable_chunked_prefill` | bool | `True` | Simulate chunked prefill; false passes --no-enable-chunked-prefill |
 | `preemption_mode` | str \| None | `None` | Scheduler preemption policy; unset uses the mocker default |
+
+### TRTLLMMooncakeKVStoreConfig
+
+Pool master settings for TRT-LLM's ``mooncake_store`` connector.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `container` | str \| None | `None` | Optional container override for the Mooncake master and donors. |
+| `env` | dict[str, str] | `{}` | Additional Mooncake worker environment variables. |
+| `master_extra_args` | list[str] | `[]` | Extra arguments appended to the master command. |
+| `eviction_ratio` | float | `0.05` | Fraction of the pool the master evicts when reclaiming space. |
+| `master_timeout_s` | int | `60` | Seconds pool clients wait for the master address. |
+| `store_role` | one of `'both'`, `'producer'`, `'consumer'` | `'both'` | Prefill store role: both, producer, or consumer. |
 
 ### VLLMFailoverConfig
 

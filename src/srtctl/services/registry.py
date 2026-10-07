@@ -125,6 +125,9 @@ class ServiceKind:
     # gives no ``readiness`` (all of them, in order). Empty: launch is enough.
     default_readiness_ports: ClassVar[tuple[int, ...]] = ()
     default_readiness_timeout: ClassVar[int] = 120
+    # Extra srun flags for every instance of this kind; a service entry may override them.
+    default_srun_options: ClassVar[dict[str, str]] = {}
+
     # How tachometer treats this kind's metrics: the scraper filter (``passthrough``
     # keeps names and labels as served; ``dcgm`` / ``node_exporter`` / ``backend`` are
     # the shaped ones), the endpoint name prefix (default: the service name), and
@@ -144,6 +147,10 @@ class ServiceKind:
     # True when the kind assembles its own command in ``build_command`` (etcd, the
     # exporters, ...), so the recipe need not give one.
     builds_command: ClassVar[bool] = False
+
+    def srun_options(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> dict[str, str]:
+        """Kind-owned srun flags, before recipe overrides."""
+        return dict(self.default_srun_options)
 
     def validate(self, service: ServiceConfig, config: SrtConfig) -> None:
         """Whole-recipe checks for one service (raise ``marshmallow.ValidationError``)."""

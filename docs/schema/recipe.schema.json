@@ -862,6 +862,20 @@
       },
       "description": "Where Dynamo comes from. Exactly one of ``git``, ``pypi``, or ``wheel``."
     },
+    "FileProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path to probe; relative paths use the job log directory."
+        }
+      },
+      "description": "Ready when a regular file is nonempty. Relative paths use the job log directory.",
+      "required": [
+        "path"
+      ]
+    },
     "FrontendConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -2790,7 +2804,7 @@
               "type": "null"
             }
           ],
-          "description": "``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``).",
+          "description": "``after_frontend`` (default for ``generic``), ``before_workers`` (default for ``mooncake-store``), or ``with_workers`` to launch before workers and defer readiness until all workers are launched.",
           "default": null
         },
         "readiness": {
@@ -2802,7 +2816,7 @@
               "type": "null"
             }
           ],
-          "description": "Optional TCP port gate; the job waits for it on every service node before continuing.",
+          "description": "Optional TCP, HTTP, log, or file gate; the job waits for it on every service node before continuing.",
           "default": null
         },
         "inherit_discovery_env": {
@@ -3034,6 +3048,18 @@
             }
           ],
           "description": "Log-pattern probe against ``service_<name>.out``.",
+          "default": null
+        },
+        "file": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileProbe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nonempty-file probe on the host shared filesystem. Relative paths use the job log directory; service placeholders such as ``{node}`` are expanded.",
           "default": null
         },
         "timeout_seconds": {

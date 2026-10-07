@@ -3,19 +3,18 @@
 
 """``type: mooncake-master``: the Mooncake master that stores and workers register with.
 
-Declared as a ``services:`` entry, or implied by ``engine.mooncake_kv_store``:
-either way srtctl injects ``MOONCAKE_MASTER``, ``MOONCAKE_TE_META_DATA_SERVER``,
-and ``MOONCAKE_LOCAL_HOSTNAME`` into every worker (``expand_services`` maps a
-declared entry onto the internal ``engine.mooncake_kv_store`` field so the
-engine-side validation and env injection read one field). Runs on the infra
-node, before workers, with the
-embedded HTTP metadata server and the metrics endpoint on, all three ports gated.
+Declared as a ``services:`` entry, or implied by ``engine.mooncake_kv_store``.
+``expand_services`` maps the declared entry onto the internal engine field so
+validation and worker configuration read one field. SGLang and vLLM use the
+embedded HTTP metadata server and Mooncake environment variables. TRT-LLM
+uses its pool RPC interface and the shared master address file.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from srtctl.backends.trtllm import TRTLLMBackend, TRTLLMMooncakeKVStoreConfig
 from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT, MOONCAKE_METRICS_PORT
 from srtctl.services.registry import ServiceKind, ServiceLaunchContext, register_service
 
@@ -40,6 +39,12 @@ def mooncake_master_command(extra_args: list[str] | tuple[str, ...] = ()) -> lis
     ]
 
 
+def scrub_mpi_environment() -> str:
+    """The Mooncake binaries import TensorRT-LLM, which must not join an MPI step."""
+    prefixes = "PMIX_|PMI_|OMPI_|SLURM_|SLURMD_|MPI_|OPAL_|PRTE_|HYDRA_|I_MPI_"
+    return "for var in $(env | grep -oE '^(" + prefixes + ')[A-Za-z0-9_]*=\' | tr -d =); do unset "$var"; done'
+
+
 @register_service("mooncake-master")
 class MooncakeMasterService(ServiceKind):
     """Mooncake master on the infra node; ``args`` are appended to the fixed command."""
@@ -51,12 +56,65 @@ class MooncakeMasterService(ServiceKind):
     default_readiness_ports = (MOONCAKE_MASTER_PORT, MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_METRICS_PORT)
     supports_dedicated = True
     supports_external = True
-    option_keys = ("store_config", "device_names_by_gpu")  # vLLM: worker-side Mooncake JSON configuration
+    option_keys = (
+        "store_config",
+        "device_names_by_gpu",  # vLLM worker-side JSON
+        "eviction_ratio",
+        "master_timeout_s",
+        "store_role",  # TRT-LLM pool
+    )
 
     def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
         if service.command is not None:
             return list(service.effective_command)
+        if (ctx.config is not None and isinstance(ctx.config.backend, TRTLLMBackend)) or (
+            ctx.config is None and "store_role" in service.options
+        ):
+            cfg = (
+                ctx.config.backend.mooncake_kv_store
+                if ctx.config is not None and isinstance(ctx.config.backend, TRTLLMBackend)
+                else TRTLLMMooncakeKVStoreConfig(**service.options)
+            )
+            if cfg is None:
+                raise ValueError("TRT-LLM mooncake-master requires engine.mooncake_kv_store")
+            return [
+                "trtllm-serve",
+                "mooncake_master",
+                "--rpc_port",
+                str(MOONCAKE_MASTER_PORT),
+                "--metrics_port",
+                str(MOONCAKE_METRICS_PORT),
+                "--eviction_ratio",
+                str(cfg.eviction_ratio),
+                "--address_file",
+                "/logs/mooncake_master.addr",
+                *service.args,
+            ]
         return mooncake_master_command(service.args)
+
+    def readiness(self, service: ServiceConfig, ctx: ServiceLaunchContext):
+        if ctx.config is not None and isinstance(ctx.config.backend, TRTLLMBackend):
+            from srtctl.services.config import ServiceReadinessConfig
+
+            return ServiceReadinessConfig(port=MOONCAKE_MASTER_PORT)
+        return None
+
+    def srun_options(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> dict[str, str]:
+        return {"mpi": "none"} if ctx.config is not None and isinstance(ctx.config.backend, TRTLLMBackend) else {}
+
+    def preamble(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> str | None:
+        if ctx.config is not None and isinstance(ctx.config.backend, TRTLLMBackend):
+            return f"mkdir -p /logs/mooncake/master && {scrub_mpi_environment()}"
+        return None
+
+    def default_environment(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> dict[str, str]:
+        if ctx.config is not None and isinstance(ctx.config.backend, TRTLLMBackend):
+            cfg = ctx.config.backend.mooncake_kv_store
+            return {
+                "TRTLLM_MOONCAKE_RUN_DIR": "/logs/mooncake/master",
+                "TRTLLM_MOONCAKE_MASTER_TIMEOUT": str(cfg.master_timeout_s if cfg is not None else 60),
+            }
+        return {}
 
     def container_fallback(self, config: SrtConfig) -> str | None:
         mooncake_cfg = config.backend.mooncake_kv_store

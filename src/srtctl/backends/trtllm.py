@@ -22,6 +22,55 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 
+# Dynamo constructs LLM directly, bypassing serve.py's pool provisioning.
+# Reuse tekit 6b43a830f3's context manager inside the launcher rank-zero task;
+# externally launched ranks read mooncake.json from TRTLLM_MOONCAKE_RUN_DIR.
+_DYNAMO_MOONCAKE_ENTRYPOINT = """import runpy
+import sys
+import yaml
+from tensorrt_llm.llmapi.llm_args import KvCacheConnectorConfig
+from tensorrt_llm._torch.pyexecutor.connectors.mooncake_store import maybe_provision_pool
+
+with open(sys.argv.pop(1)) as handle:
+    config = yaml.safe_load(handle)
+connector = KvCacheConnectorConfig(**config["kv_connector_config"])
+with maybe_provision_pool(connector):
+    runpy.run_module("dynamo.trtllm", run_name="__main__", alter_sys=True)
+"""
+
+
+@dataclass(frozen=True)
+class TRTLLMMooncakeKVStoreConfig:
+    """Pool master settings for TRT-LLM's ``mooncake_store`` connector.
+
+    The master address file is generated in the shared ``/logs`` mount. The
+    connector reads it via ``file:///logs/mooncake_master.addr``.
+
+    Attributes:
+        container: Optional container override for the Mooncake master and donors.
+        env: Additional Mooncake worker environment variables.
+        master_extra_args: Extra arguments appended to the master command.
+        eviction_ratio: Fraction of the pool the master evicts when reclaiming space.
+        master_timeout_s: Seconds pool clients wait for the master address.
+        store_role: Prefill store role: both, producer, or consumer.
+    """
+
+    container: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    master_extra_args: list[str] = field(default_factory=list)
+    eviction_ratio: float = 0.05
+    master_timeout_s: int = 60
+    store_role: Literal["both", "producer", "consumer"] = "both"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.master_timeout_s <= 0:
+            raise ValueError("mooncake_kv_store.master_timeout_s must be positive")
+        if not 0 < self.eviction_ratio < 1:
+            raise ValueError("mooncake_kv_store.eviction_ratio must be between 0 and 1")
+
+
 # Log lines that mean the engine behind a TRT-LLM worker step is gone while the
 # step itself may stay up. ``trtllm-llmapi-launch`` runs the engine as a child of
 # the rank-0 task and prints ``Rank<N> Task exit code: <code>`` when that child
@@ -83,6 +132,9 @@ class TRTLLMBackend(Backend):
     #       decode:
     #         extra_args: ["--tool_parser", "glm47"]
     roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
+
+    # Mooncake pool master; a declared mooncake-master service maps here.
+    mooncake_kv_store: TRTLLMMooncakeKVStoreConfig | None = None
 
     # The name clients must use in a request's "model" field.
     # Defaults to the checkpoint directory name.
@@ -191,9 +243,19 @@ class TRTLLMBackend(Backend):
         role = role_for_mode(self.roles, mode)
         return list(role.extra_args) if role is not None else []
 
+    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+        if self.mooncake_kv_store is None:
+            return {}
+        return {
+            **self.mooncake_kv_store.env,
+            "TRTLLM_MOONCAKE_MASTER_TIMEOUT": str(self.mooncake_kv_store.master_timeout_s),
+        }
+
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
         env = {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        if mode == "prefill" and self.mooncake_kv_store is not None:
+            env["TRTLLM_MOONCAKE_STORE_ROLE"] = self.mooncake_kv_store.store_role
         if self.numa_cpu_bind:
             env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
         return env
@@ -359,15 +421,20 @@ class TRTLLMBackend(Backend):
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
-        cmd = base_prefix + [
-            "python3",
-            "-m",
-            "dynamo.trtllm",
-            "--model-path",
-            model_arg,
-            "--served-model-name",
-            self.get_served_model_name(runtime.model_path.name),
-        ]
+        entrypoint = ["python3", "-m", "dynamo.trtllm"]
+        connector = config.get("kv_connector_config") or {}
+        if connector.get("mooncake_store") is not None:
+            entrypoint = ["python3", "-c", _DYNAMO_MOONCAKE_ENTRYPOINT, str(container_config_path)]
+        cmd = (
+            base_prefix
+            + entrypoint
+            + [
+                "--model-path",
+                model_arg,
+                "--served-model-name",
+                self.get_served_model_name(runtime.model_path.name),
+            ]
+        )
 
         # Only add disaggregation mode for prefill/decode, not for agg
         if mode != "agg":
