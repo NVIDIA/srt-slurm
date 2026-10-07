@@ -17,6 +17,8 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
    - `failover` / `get_failover_environment(...)` - Default to `None` / `{}`
    - `should_set_visible_devices()` - Defaults to `True`; override if the engine takes its devices on the command line
    - `get_served_model_name(default)` - Defaults to the supplied model name
+   - `prometheus_metrics_path` - Defaults to `/metrics`; where the engine's own HTTP server serves Prometheus text (trtllm-serve overrides it with `/prometheus/metrics`)
+   - `is_grpc_mode(mode)` - Defaults to `False`; override when the mode's workers serve gRPC (static routers advertise `grpc://` from it)
    - `fatal_log_patterns(mode)` - Defaults to `()`; override for launchers that survive engine failure
 4. Export from `backends/__init__.py`
 5. Add polymorphic deserialization in `BackendConfigField` in `schema.py`

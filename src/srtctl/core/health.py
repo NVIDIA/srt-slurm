@@ -270,6 +270,7 @@ def wait_for_port(
     port: int,
     timeout: float = 60.0,
     interval: float = 1.0,
+    stop_event: threading.Event | None = None,
 ) -> bool:
     """Wait for a TCP port to become available.
 
@@ -278,13 +279,14 @@ def wait_for_port(
         port: Port number
         timeout: Maximum time to wait in seconds
         interval: Time between checks in seconds
+        stop_event: Stops the wait early, e.g. when a critical process has exited
 
     Returns:
-        True if port became available, False if timeout
+        True if port became available, False if timeout or stopped
     """
     start_time = time.time()
 
-    while time.time() - start_time < timeout:
+    while time.time() - start_time < timeout and not (stop_event is not None and stop_event.is_set()):
         try:
             with socket.create_connection((host, port), timeout=1.0):
                 return True

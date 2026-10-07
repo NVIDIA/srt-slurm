@@ -13,7 +13,6 @@ from srtctl.backends import SGLangBackend
 from srtctl.core.schema import PlacementConfig, SrtConfig, RoleConfig
 from srtctl.ports import (
     KV_EVENTS_PORT_BASE,
-    SGLANG_BOOTSTRAP_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
     SGLANG_NCCL_PORT_BASE,
@@ -2004,7 +2003,8 @@ class TestVLLMPrefillDecodeColocation:
         assert prefill.node == decode.node == "node0"
         assert prefill.http_port == SGLANG_HTTP_PORT_BASE
         assert decode.http_port == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
-        assert prefill.bootstrap_port == SGLANG_BOOTSTRAP_PORT_BASE
+        # vLLM hands KV over its NIXL side channel; it has no bootstrap rendezvous.
+        assert prefill.bootstrap_port is None
 
         bound_ports = [
             port
@@ -2052,11 +2052,7 @@ class TestVLLMPrefillDecodeColocation:
         leader_ports = [
             port for process in prefill + decode for port in (process.http_port, process.bootstrap_port) if port
         ]
-        assert sorted(leader_ports) == [
-            SGLANG_HTTP_PORT_BASE,
-            SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE,
-            SGLANG_BOOTSTRAP_PORT_BASE,
-        ]
+        assert sorted(leader_ports) == [SGLANG_HTTP_PORT_BASE, SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE]
 
         prefill_actual_nixl_ports = {next(iter(p.nixl_port for p in prefill)) + p.node_rank for p in prefill}
         decode_actual_nixl_ports = {next(iter(p.nixl_port for p in decode)) + p.node_rank for p in decode}
@@ -2689,7 +2685,7 @@ class TestVLLMDataParallelMode:
         assert {p.dp_rpc_port for p in processes} == {VLLM_DATA_PARALLEL_RPC_PORT}
         assert {p.het_group for p in processes} == {1}
         assert all(p.http_port > 0 for p in processes)
-        assert all(p.bootstrap_port is not None for p in processes)
+        assert all(p.bootstrap_port is None for p in processes)
 
     def test_dp_per_node_mode_allocates_non_overlapping_endpoint_ports(self):
         """Co-located per-node DP endpoints get disjoint coordination ranges."""
@@ -2942,6 +2938,29 @@ class TestVLLMDataParallelMode:
         assert len(processes) == 1
         assert processes[0].node == "node0"
         assert processes[0].gpu_indices == frozenset(range(8))
+
+    @pytest.mark.parametrize("frontend_type", ["vllm", "smg"])
+    def test_direct_multi_node_dp_serves_one_api_on_the_leader(self, frontend_type):
+        """A direct worker that no router expands owns every DP rank; only its leader node serves the API."""
+        from srtctl.backends import VLLMBackend
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMBackend(
+            roles={"agg": RoleConfig(args={"data-parallel-size": 16, "enable-expert-parallel": True})}
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint], frontend_type=frontend_type)
+
+        assert [process.node for process in processes] == ["node0", "node1"]
+        assert processes[0].http_port > 0
+        assert processes[1].http_port == 0
 
     def test_direct_vllm_command_preserves_current_main_device_binding(self):
         """Direct vllm serve uses the public port and main's --device-ids binding."""

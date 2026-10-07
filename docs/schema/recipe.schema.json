@@ -868,7 +868,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "description": "Frontend type - \"dynamo\" (default); \"sglang-router\" (SGLang Model Gateway), \"vllm-router\", \"atomesh\", and \"tilert-router\" (static routers); \"sglang\", \"vllm\", and \"trtllm_serve\" (direct: the single aggregate worker binds the public port, no router process); \"none\" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router \"sglang\"; ``srtctl migrate`` rewrites that to \"sglang-router\".",
+          "description": "Frontend type - \"dynamo\" (default); \"sglang-router\" (SGLang Model Gateway), \"vllm-router\", \"smg\" (Shepherd Model Gateway, any backend), \"atomesh\", and \"tilert-router\" (static routers); \"sglang\", \"vllm\", and \"trtllm_serve\" (direct: the single aggregate worker binds the public port, no router process); \"none\" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router \"sglang\"; ``srtctl migrate`` rewrites that to \"sglang-router\".",
           "default": "dynamo"
         },
         "enable_multiple_frontends": {
@@ -1004,6 +1004,116 @@
         }
       },
       "description": "Frontend/router configuration."
+    },
+    "GpuLabelsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "type": "string",
+          "description": "Label carrying the node-local GPU index srt-slurm allocates by."
+        },
+        "identity": {
+          "type": "string",
+          "description": "Label that is stable for one physical GPU across the run; recorded as `gpu_uuid`."
+        },
+        "instance": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Labels marking logical sub-device samples (MIG instances, partitions); such samples are dropped.",
+          "default": []
+        }
+      },
+      "description": "The labels that identify a GPU in every sample of a GPU exporter's scrape.",
+      "required": [
+        "index",
+        "identity"
+      ]
+    },
+    "GpuMetricConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "type": "string",
+          "description": "Prometheus metric name."
+        }
+      },
+      "description": "One per-GPU metric in a GPU exporter's scrape.",
+      "required": [
+        "metric"
+      ]
+    },
+    "GpuMetricsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "power": {
+          "$ref": "#/$defs/GpuPowerMetricConfig",
+          "description": "Power draw in watts."
+        },
+        "gpu_util": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU utilization, percent.",
+          "default": null
+        },
+        "sm_active": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "DCGM's SM-active fraction, 0-1; map only a metric with that meaning and range.",
+          "default": null
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU temperature, Celsius.",
+          "default": null
+        }
+      },
+      "description": "The per-GPU metrics GPU power telemetry records from a GPU exporter.",
+      "required": [
+        "power"
+      ]
+    },
+    "GpuPowerMetricConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "type": "string",
+          "description": "Prometheus metric name."
+        },
+        "scope": {
+          "type": "string",
+          "description": "What the watts measure, recorded in the power manifest as `power_scope`."
+        }
+      },
+      "description": "The per-GPU power metric in a GPU exporter's scrape, in watts.",
+      "required": [
+        "metric",
+        "scope"
+      ]
     },
     "HealthCheckConfig": {
       "type": "object",
@@ -2519,7 +2629,7 @@
               "type": "null"
             }
           ],
-          "description": "Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`. Set to `[]` to ship the whole directory.",
+          "description": "Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet). Set to `[]` to ship the whole directory.",
           "default": null
         },
         "archive": {
@@ -3252,7 +3362,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Collect DCGM GPU power over each benchmark concurrency window.",
+          "description": "Collect GPU power over each benchmark concurrency window.",
           "default": false
         },
         "dcgm_exporter": {
@@ -3264,7 +3374,7 @@
               "type": "null"
             }
           ],
-          "description": "DCGM exporter image, port, and optional command; required when `enabled`.",
+          "description": "GPU power exporter image, port, command, labels and metrics. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.",
           "default": null
         },
         "collect_interval_ms": {
@@ -3281,6 +3391,11 @@
           "type": "boolean",
           "description": "Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort.",
           "default": false
+        },
+        "clock_sync_check": {
+          "type": "boolean",
+          "description": "Before any server starts, verify every allocation node reports an NTP-synchronised system clock. Sample timestamps (orchestrator host) and window boundaries (benchmark client host) are compared directly, so an unsynchronised node silently misaligns the measurement. Fails the job when ``required`` is true; otherwise the run continues and the manifest records ``clock_sync_unverified`` with ``publication_valid: false``. Set false on clusters where timedatectl/chronyc/ntpq are unavailable to unprivileged users.",
+          "default": true
         },
         "startup_timeout_seconds": {
           "type": "number",
@@ -3357,6 +3472,38 @@
             }
           ],
           "description": "Host executable to run without a container; relative paths resolve against the srtctl checkout.",
+          "default": null
+        },
+        "kind": {
+          "enum": [
+            "dcgm",
+            "custom"
+          ],
+          "description": "GPU exporter kind: `dcgm` (built-in DCGM command, labels, metrics and tachometer scrape) or `custom` (any other exporter; set `command`, `gpu_labels` and `gpu_metrics`, and tachometer keeps its rows as served).",
+          "default": "dcgm"
+        },
+        "gpu_labels": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuLabelsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU power telemetry: labels identifying a GPU in the scrape; unset means DCGM (`gpu`, `UUID`).",
+          "default": null
+        },
+        "gpu_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU power telemetry: per-GPU metrics to record; unset means DCGM.",
           "default": null
         }
       },

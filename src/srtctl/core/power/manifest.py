@@ -11,15 +11,13 @@ from typing import Any
 from srtctl import __version__ as PRODUCER_VERSION
 from srtctl.core.power.contract import (
     CLOCK_SOURCE,
-    POWER_METRIC,
-    POWER_SCOPE,
     POWER_UNIT,
     PRODUCER,
     SAMPLES_SCHEMA_VERSION,
     SCHEMA_VERSION,
-    UTILIZATION_METRICS,
     dedupe,
 )
+from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.power.samples import ObservedDevice
 from srtctl.core.power.topology import ExpectedDevice
 
@@ -35,6 +33,9 @@ TERMINAL_STATUSES = (STATUS_COMPLETE, STATUS_INCOMPLETE, STATUS_FAILED)
 @dataclass(frozen=True)
 class DcgmExporterIdentity:
     """Exactly which exporter image produced the samples.
+
+    Serialized under the historical ``dcgm_exporter`` manifest key for every
+    exporter; ``source_metric`` and ``power_scope`` record what it measured.
 
     ``container_image_sha256`` is ``None`` when the resolved image is not a
     regular file (for example a registry URI pulled at srun time).
@@ -116,6 +117,7 @@ class PowerManifest:
     expected_devices: list[ExpectedDevice]
     expected_windows: list[ExpectedWindow]
     producer_git_commit: str | None = None
+    mapping: PowerMetricMapping = DCGM_POWER_MAPPING
     status: str = STATUS_STARTING
     stopped_at_unix: float | None = None
     publication_valid: bool | None = None
@@ -127,6 +129,9 @@ class PowerManifest:
     window_validations: list[WindowValidation] = field(default_factory=list)
     artifact_errors: list[ArtifactError] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
+    # Nodes that failed the pre-server clock-sync probe; non-empty only on a
+    # best-effort run that chose to continue (required runs abort instead).
+    clock_sync_failures: list[str] = field(default_factory=list)
     _terminal_committed: bool = field(default=False, init=False, repr=False)
 
     def mark_terminal(self, *, status: str, stopped_at_unix: float, publication_valid: bool) -> None:
@@ -146,14 +151,15 @@ class PowerManifest:
             "producer": PRODUCER,
             "producer_version": PRODUCER_VERSION,
             "producer_git_commit": self.producer_git_commit,
-            "source_metric": POWER_METRIC,
+            "source_metric": self.mapping.power_metric,
             "unit": POWER_UNIT,
-            "power_scope": POWER_SCOPE,
+            "power_scope": self.mapping.power_scope,
             "samples_schema_version": SAMPLES_SCHEMA_VERSION,
             "utilization_metrics": [
                 {"column": metric.column, "source_metric": metric.metric, "unit": metric.unit}
-                for metric in UTILIZATION_METRICS
+                for metric in self.mapping.utilization_metrics
             ],
+            "temperature_metric": self.mapping.temperature_metric,
             "timestamp_source": CLOCK_SOURCE,
             "job_id": self.job_id,
             "run_name": self.run_name,
@@ -174,5 +180,6 @@ class PowerManifest:
             "samples_sha256": self.samples_sha256,
             "window_validations": [validation.to_dict() for validation in self.window_validations],
             "artifact_errors": [error.to_dict() for error in self.artifact_errors],
+            "clock_sync_failures": list(self.clock_sync_failures),
             "reason_codes": list(dedupe(self.reason_codes)),
         }

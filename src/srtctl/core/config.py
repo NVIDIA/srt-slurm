@@ -288,6 +288,24 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         tachometer = config.setdefault("observability", {}).setdefault("tachometer", {})
         tachometer.setdefault("default_gpu_exporter", copy.deepcopy(cluster_config["default_gpu_exporter"]))
 
+    # The same cluster exporter serves GPU power telemetry: a recipe that enables
+    # telemetry without naming any collector inherits it (image, port, command and
+    # power metrics), so one recipe measures power on NVIDIA and AMD clusters alike.
+    # Recipes that name a GPU exporter, or that enable a CPU leg, are untouched;
+    # without this the inherited case was the "nothing to collect" validation error.
+    telemetry = config.get("telemetry")
+    cluster_gpu_exporter = cluster_config.get("default_gpu_exporter")
+    if (
+        isinstance(telemetry, dict)
+        and telemetry.get("enabled")
+        and isinstance(cluster_gpu_exporter, dict)
+        and "dcgm_exporter" not in telemetry
+        and telemetry.get("cpu_power_exporter") is None
+        and not (telemetry.get("cpu_power") or {}).get("enabled")
+    ):
+        telemetry["dcgm_exporter"] = copy.deepcopy(cluster_gpu_exporter)
+        logger.debug("Applied cluster default_gpu_exporter to telemetry.dcgm_exporter")
+
     # Resolve every container alias in one pass (model.container,
     # frontend.container_image / nginx_container, benchmark.container_image,
     # exporter images, mooncake_kv_store.container, services, ...).
@@ -871,27 +889,35 @@ def expand_trtllm_serve_defaults(cfg: dict) -> dict:
     default every trtllm-serve worker endpoint answers HTTP 404 and the capture
     silently has no worker-level data.
 
-    Applies to every ``frontend.type: trtllm_serve`` recipe, to each role that
-    runs TRT-LLM, independent of ``observability.enabled``. ``roles.<role>.args``
+    Applies to every recipe whose frontend launches ``direct`` workers (the
+    engine's own server: ``trtllm_serve``, or a router such as ``smg`` in front
+    of trtllm-serve), to each role that runs TRT-LLM, independent of
+    ``observability.enabled``. ``roles.<role>.args``
     is created when absent, so a role with no engine arguments gets the default
     too. Every write is a ``setdefault``: an explicit ``return_perf_metrics:
     false`` in the recipe wins, but is reported loudly. Mutates ``cfg`` in place
     and returns it.
     """
     from srtctl.core.schema import TRTLLM_SERVE_ENGINE_DEFAULTS
+    from srtctl.frontends import FRONTEND_NONE, get_frontend, list_frontend_types
 
     frontend = cfg.get("frontend")
-    if not isinstance(frontend, dict) or frontend.get("type") != "trtllm_serve":
+    frontend_type = frontend.get("type") if isinstance(frontend, dict) else None
+    # An unset type is Dynamo; an unknown one is reported by schema validation.
+    if frontend_type in (None, FRONTEND_NONE) or frontend_type not in list_frontend_types():
+        return cfg
+    if get_frontend(frontend_type).worker_launch != "direct":
         return cfg
 
     sections = _setdefault_trtllm_role_args(cfg, TRTLLM_SERVE_ENGINE_DEFAULTS)
     opted_out = [f"roles.{role}" for role, args in sections.items() if args.get("return_perf_metrics") is False]
     if opted_out:
         logger.warning(
-            "frontend.type: trtllm_serve with return_perf_metrics: false on %s — those "
+            "frontend.type: %s with return_perf_metrics: false on %s — those "
             "trtllm-serve workers will NOT mount /prometheus/metrics (HTTP 404), so the "
             "Tachometer backend_* endpoints and the per-request Prometheus histograms "
             "will be empty for them. Remove the line to keep the default.",
+            frontend_type,
             ", ".join(opted_out),
         )
     return cfg
@@ -920,9 +946,7 @@ def expand_trtllm_engine_defaults(cfg: dict) -> dict:
     sets for trtllm-serve. What the default drops is the iteration-level
     ``trtllm_*`` gauges (``trtllm_kv_cache_*``, running / waiting requests,
     iteration latency) and, on Dynamo, the ``dynamo_component_kvstats_*`` gauges,
-    the router worker-load sample and the Planner's forward-pass metrics. No
-    benchmark client reads them; the component dashboard's KV-utilisation
-    panels do, and show no data (or the gauge's seeded 0 %) on a default run.
+    the router worker-load sample and the Planner's forward-pass metrics.
     Roles whose args select the legacy ``tensorrt`` backend are skipped: its
     ``LlmArgs`` rejects the key on containers before the backend's removal and
     always collected the statistics anyway.

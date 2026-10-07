@@ -8,20 +8,24 @@ from __future__ import annotations
 import logging
 import shlex
 import threading
+import time
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from urllib.parse import urlsplit
 
 from srtctl.core.health import (
     WorkerHealthResult,
     check_static_router_health,
     probe_json_health,
     wait_for_http_endpoints,
+    wait_for_port,
 )
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends.base import Frontend, numactl_prefix
 
 if TYPE_CHECKING:
+    from srtctl.backends.base import WorkerMode
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
@@ -36,6 +40,28 @@ class RouterWorker:
     mode: str
     url: str
     bootstrap_port: int | None = None
+
+
+def setup_script_preamble(config: Any) -> str | None:
+    """Shell that runs the recipe's ``setup_script`` in a router's own container.
+
+    A router that ships as a package (``pip install``) rather than in the model
+    image installs itself this way; the script is looked up in ``/configs`` and
+    then ``/configs/patches``, as for the workers.
+    """
+    setup_script = getattr(config, "setup_script", None)
+    if not setup_script:
+        return None
+    script_name = shlex.quote(setup_script)
+    return (
+        f"setup_script={script_name} && "
+        'script_path="/configs/${setup_script}" && '
+        'patch_script_path="/configs/patches/${setup_script}" && '
+        'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
+        'if [ -f "${script_path}" ]; then bash "${script_path}"; '
+        'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
+        'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
+    )
 
 
 class StaticRouterFrontend(Frontend):
@@ -78,7 +104,12 @@ class StaticRouterFrontend(Frontend):
         return "allocated"
 
     def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
-        """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing."""
+        """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing.
+
+        A gRPC-mode leader with an HTTP sidecar serves it there instead.
+        """
+        if process.grpc_http_port is not None:
+            return process.grpc_http_port
         if process.is_leader and process.http_port > 0:
             return process.http_port
         return None
@@ -89,6 +120,8 @@ class StaticRouterFrontend(Frontend):
         return None
 
     def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        if process.grpc_http_port is not None:
+            return process.grpc_http_port
         return process.http_port if process.http_port > 0 else None
 
     def worker_ready_port(self, process: Process) -> int:
@@ -135,9 +168,9 @@ class StaticRouterFrontend(Frontend):
         """Return adapter-managed CLI arguments derived from srtctl config."""
         return []
 
-    def worker_scheme(self, backend: Any, mode: str) -> str:
-        """Return the protocol used to reach one worker endpoint."""
-        return "http"
+    def worker_scheme(self, backend: Any, mode: WorkerMode) -> str:
+        """Return the protocol used to reach one worker endpoint: gRPC when the backend's mode serves it."""
+        return "grpc" if backend.is_grpc_mode(mode) else "http"
 
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
         """Return the optional P/D bootstrap port advertised for a worker."""
@@ -251,24 +284,34 @@ class StaticRouterFrontend(Frontend):
 
         workers = self.collect_workers(backend, backend_processes, runtime.network_interface)
         if self.wait_for_workers_before_start and config.health_check is not None:
+            health_check = config.health_check
+            timeout = float(health_check.max_attempts * health_check.interval_seconds)
             health_urls = [
                 f"{worker.url.rstrip('/')}/health"
                 for worker in workers
                 if worker.url.startswith(("http://", "https://"))
             ]
-            if health_urls:
-                logger.info(
-                    "Waiting for %d advertised backend endpoints before starting %s", len(health_urls), self.type
-                )
-                health_check = config.health_check
-                if not wait_for_http_endpoints(
-                    health_urls,
-                    poll_interval=float(health_check.interval_seconds),
-                    timeout=float(health_check.max_attempts * health_check.interval_seconds),
-                    report_every=60.0,
+            # A gRPC worker serves no HTTP /health; its port accepting connections is the signal.
+            grpc_targets = [urlsplit(worker.url) for worker in workers if worker.url.startswith("grpc://")]
+            logger.info("Waiting for %d advertised backend endpoints before starting %s", len(workers), self.type)
+            deadline = time.monotonic() + timeout
+            ready = all(
+                wait_for_port(
+                    str(target.hostname),
+                    int(target.port or 0),
+                    timeout=max(deadline - time.monotonic(), 0.0),
                     stop_event=stop_event,
-                ):
-                    raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
+                )
+                for target in grpc_targets
+            ) and wait_for_http_endpoints(
+                health_urls,
+                poll_interval=float(health_check.interval_seconds),
+                timeout=max(deadline - time.monotonic(), 0.0),
+                report_every=60.0,
+                stop_event=stop_event,
+            )
+            if not ready:
+                raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
 
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):

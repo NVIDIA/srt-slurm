@@ -1,0 +1,129 @@
+# examples/features/amd-power-telemetry.yaml
+# exit_code: 0
+# srun calls: 10
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/clock_sync_node-01.out
+command: |
+    bash -c 'if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes; then echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; if t=$(chronyc -n tracking 2>/dev/null) && grep -Eq '"'"'^Leap status *: *Normal'"'"' <<<"$t"; then echo "$(hostname): chronyc Leap status Normal"; grep -E '"'"'^(Reference ID|System time|Last offset)'"'"' <<<"$t"; exit 0; fi; if n=$(ntpq -pn 2>/dev/null) && grep -q '"'"'^[*]'"'"' <<<"$n"; then echo "$(hostname): ntpq has a selected peer"; grep '"'"'^[*]'"'"' <<<"$n"; exit 0; fi; echo "$(hostname): system clock is not NTP-synchronised" >&2; exit 1'
+
+## <unnamed>
+nodelist: node-02
+output: <output>/logs/clock_sync_node-02.out
+command: |
+    bash -c 'if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes; then echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; if t=$(chronyc -n tracking 2>/dev/null) && grep -Eq '"'"'^Leap status *: *Normal'"'"' <<<"$t"; then echo "$(hostname): chronyc Leap status Normal"; grep -E '"'"'^(Reference ID|System time|Last offset)'"'"' <<<"$t"; exit 0; fi; if n=$(ntpq -pn 2>/dev/null) && grep -q '"'"'^[*]'"'"' <<<"$n"; then echo "$(hostname): ntpq has a selected peer"; grep '"'"'^[*]'"'"' <<<"$n"; exit 0; fi; echo "$(hostname): system clock is not NTP-synchronised" >&2; exit 1'
+
+## <unnamed>
+nodelist: node-03
+output: <output>/logs/clock_sync_node-03.out
+command: |
+    bash -c 'if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes; then echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; if t=$(chronyc -n tracking 2>/dev/null) && grep -Eq '"'"'^Leap status *: *Normal'"'"' <<<"$t"; then echo "$(hostname): chronyc Leap status Normal"; grep -E '"'"'^(Reference ID|System time|Last offset)'"'"' <<<"$t"; exit 0; fi; if n=$(ntpq -pn 2>/dev/null) && grep -q '"'"'^[*]'"'"' <<<"$n"; then echo "$(hostname): ntpq has a selected peer"; grep '"'"'^[*]'"'"' <<<"$n"; exit 0; fi; echo "$(hostname): system clock is not NTP-synchronised" >&2; exit 1'
+
+## agg_0_node-01
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0.out
+container_image: sglang-rocm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0
+    HEAD_NODE_IP: 127.0.0.1
+    SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
+    SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 8000 --nccl-port 17500 --enable-metrics --context-length 4096 --mem-fraction-static 0.5 --tensor-parallel-size 1
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## <unnamed>
+nodes: 3
+ntasks: 3
+nodelist: node-01 node-02 node-03
+output: <output>/logs/telemetry_dcgm_exporter.out
+container_image: docker://rocm/device-metrics-exporter:v1.5.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: False
+command: |
+    /home/amd/tools/entrypoint.sh
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: sglang-rocm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    SRTCTL_FRONTEND_TYPE: sglang
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+    SRT_MEASUREMENT_WINDOW_DIR: /logs/power/windows
+command: |
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4x8 inf /model Qwen/Qwen3-0.6B false 8 0 0 0.8 10 2 '' true random '' false
