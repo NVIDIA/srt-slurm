@@ -33,6 +33,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/observability-vllm.yaml` | `observability.enabled: true` on a TP2 vLLM worker behind the Dynamo frontend: nsys with vLLM's NVTX scopes, tachometer, and the DCGM, node and process exporters. See [../docs/profiling.md](../docs/profiling.md#observability-capture) |
 | [`features/amd-power-telemetry.yaml`](features/amd-power-telemetry.yaml) | SGLang on MI300X with AMD device-metrics-exporter power collection. Set the `sglang-rocm` container alias and `visible_devices_env: ROCR_VISIBLE_DEVICES` in `srtslurm.yaml`. See [power telemetry](../docs/power-telemetry.md#amd-amd-device-metrics) |
 | `features/services.yaml` | `services:` sidecar (an HTTP log browser on the head node) with a `readiness:` port gate |
+| `features/hle.yaml` | `benchmark.type: custom` running `configs/hle/run.sh` (HLE through NeMo Skills, graded by an LLM judge) in the `nemo-skills` image; export `HF_TOKEN` and `OPENAI_API_KEY` before submitting. See [../docs/accuracy.md](../docs/accuracy.md#hle) |
 | `features/mlperf-client.yaml` | `benchmark.type: custom` driving the MLPerf inference-endpoint client in its own image; placeholder paths, a reference rather than a runnable example |
 | `features/infra-services.yaml` | etcd and NATS as declared services on a dedicated node with a NATS payload limit; the implied exporters overridden or switched off |
 | `features/dynamo-source.yaml` | `dynamo.source:` building Dynamo from a git tag (or a PR head via `--set dynamo.source.rev=refs/pull/<n>/head`), pinned to a commit at submit |
@@ -65,6 +66,7 @@ containers:
   sglang-lmcache: /path/to/sglang-lmcache.sqsh  # SGLang image with LMCache installed, for features/lmcache-server-sglang.yaml
   smg: /path/to/smg.sqsh                    # Shepherd Model Gateway image (lightseekorg/smg), the router for the smg examples
   llm-d-vllm: /path/to/llm-d-vllm.sqsh      # vLLM image with epp, pd-sidecar and envoy on PATH, for the llm-d examples (docs/llm-d.md#images)
+  nemo-skills: /path/to/nemo-skills.sqsh     # nvcr.io/nvidia/eval-factory/nemo-skills (ships the ns CLI), for features/hle.yaml
 ```
 
 ## Optional GPU temperature

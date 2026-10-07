@@ -1,0 +1,59 @@
+# HLE (Humanity's Last Exam) accuracy eval against an SGLang-router aggregated deployment.
+#
+# `benchmark.type: custom` runs configs/hle/run.sh (`ns prepare_data hle` + `ns eval`)
+# in the NeMo Skills container, on the text-only split, graded by NeMo Skills' HLE
+# judge (o3-mini on api.openai.com by default). Export HF_TOKEN (cais/hle is gated)
+# and OPENAI_API_KEY in the shell you submit from; never write them into the recipe.
+#
+# Aliases (`qwen3-0.6b`, `sglang`, `nemo-skills`) resolve through srtslurm.yaml; see
+# examples/README.md and docs/accuracy.md.
+
+schema: 2
+name: "qwen3-0.6b-hle"
+
+slurm:
+  time_limit: "01:00:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+frontend:
+  type: sglang-router
+  enable_multiple_frontends: false
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      # Must exceed MAX_TOKENS plus the prompt.
+      context-length: 16384
+      # The experimental piecewise CUDA graph faults on some nightly builds; off is the safe default.
+      disable-piecewise-cuda-graph: true
+
+benchmark:
+  type: custom
+  container_image: nemo-skills
+  env:
+    MODEL: "Qwen/Qwen3-0.6B"
+    NUM_EXAMPLES: "50"
+    MAX_TOKENS: "8192"
+    NUM_THREADS: "64"
+    # Optional: grade with a judge other than the default o3-mini, e.g. one served elsewhere.
+    # JUDGE_MODEL: "Qwen/Qwen3-235B-A22B"
+    # JUDGE_SERVER_ADDRESS: "http://judge-host:8000/v1"
+    # JUDGE_SERVER_TYPE: "openai"
+  command: |
+    bash /configs/hle/run.sh
