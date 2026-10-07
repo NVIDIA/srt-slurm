@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .importer import Importer
+from .point_buffer import PointBuffers
 from .query import TraceDataset
 from .storage import FILENAME, dumps, write_store
 
@@ -102,7 +103,16 @@ def build_dashboard(logs: Path, output: Path, *, single_file: bool = False, **op
     output = _validate_output(output)
     if output == logs.resolve() or output in logs.resolve().parents:
         raise ValueError("Output must not replace the input directory or its ancestors")
-    return write_dashboard(Importer(logs, **options).run(), output, single_file=single_file)
+    if single_file:
+        return write_dashboard(Importer(logs, **options).run(), output, single_file=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".trace-metrics-", dir=output.parent) as scratch:
+        buffers = PointBuffers(Path(scratch) / "metrics.sqlite")
+        try:
+            data = Importer(logs, point_buffers=buffers, **options).run()
+            return write_dashboard(data, output)
+        finally:
+            buffers.close()
 
 
 def write_dashboard(data: dict[str, Any], output: Path, *, single_file: bool = False) -> dict[str, Any]:

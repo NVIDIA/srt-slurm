@@ -52,6 +52,15 @@ def test_optional_features_read_as_absent_by_default(backend_cls):
     assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
     assert backend.get_failover_environment(_process(), "12345") == {}
     assert backend.get_srun_config().sequential_node_start == 0
+    assert not any(backend.is_grpc_mode(mode) for mode in ("prefill", "decode", "agg"))
+
+
+def test_vllm_grpc_role_arg_selects_grpc_mode():
+    from srtctl.core.schema import RoleConfig
+
+    backend = VLLMBackend(roles={"prefill": RoleConfig(args={"grpc": True}), "decode": RoleConfig(args={})})
+    assert backend.is_grpc_mode("prefill")
+    assert not backend.is_grpc_mode("decode")
 
 
 def test_sglang_mooncake_env_reaches_workers_through_the_protocol():

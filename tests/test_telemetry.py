@@ -13,6 +13,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
+from srtctl.backends import TRTLLMBackend
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
@@ -36,6 +37,7 @@ from srtctl.core.schema import (
 )
 from srtctl.core.telemetry import ServiceMetricsTarget, generate_tachometer_config
 from srtctl.core.topology import Process
+from srtctl.frontends import get_frontend
 from srtctl.services import ServiceConfig, ServicePlacementConfig
 
 
@@ -821,6 +823,32 @@ class TestTachometerConfigGeneration:
         assert 'name = "frontend0"' in config_text
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_no_worker_metrics_path_adds_no_worker_targets(self, _mock_get_hostname_ip):
+        """A mode with no metrics path (gRPC workers, or a job with no workers) gets no worker target."""
+        runtime = MagicMock()
+        runtime.log_dir = Path("/runs/12345/logs")
+        process = Process(
+            node="node-a",
+            gpu_indices=frozenset({0}),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=[process],
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=TachometerConfig(enabled=True),
+            worker_metrics_paths={"agg": None},
+        )
+
+        assert "backend_" not in config_text
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_storage_leaf_is_never_pre_created(self, _mock_get_hostname_ip, tmp_path):
         """Regression guard for the pre-existing-storage-dir abort.
 
@@ -1012,6 +1040,10 @@ class TestTachometerConfigGeneration:
             runtime=runtime,
             tachometer=tachometer,
             frontend_type="trtllm_serve",
+            worker_metrics_paths={
+                mode: get_frontend("trtllm_serve").worker_metrics_path(TRTLLMBackend(), mode)
+                for mode in ("prefill", "decode", "agg")
+            },
         )
 
         # Worker leaders: OpenAI http_port at the Prometheus mount.

@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeAlias
 
 from marshmallow import ValidationError, fields
 
@@ -126,6 +126,14 @@ class Backend(ABC):
     2. Converting endpoints to physical processes
     3. Building commands to start those processes
     """
+
+    #: Path where the engine's own HTTP server serves Prometheus text. Frontends
+    #: whose workers are the engine's own server (``direct``) scrape it; see
+    #: ``Frontend.worker_metrics_path``.
+    prometheus_metrics_path: ClassVar[str] = "/metrics"
+    #: Path a gRPC-mode worker serves Prometheus text at on ``Process.grpc_http_port``;
+    #: ``None`` when the engine's gRPC server has no HTTP listener.
+    grpc_metrics_path: ClassVar[str | None] = None
 
     @property
     @abstractmethod
@@ -257,3 +265,11 @@ class Backend(ABC):
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from backend config, or return default."""
         return default
+
+    def is_grpc_mode(self, mode: WorkerMode) -> bool:
+        """Whether the mode's workers serve gRPC instead of HTTP.
+
+        A static router reads it to advertise ``grpc://`` worker URLs. Defaults
+        to ``False``; override for an engine with a gRPC server.
+        """
+        return False
