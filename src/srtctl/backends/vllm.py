@@ -1524,6 +1524,9 @@ class VLLMBackend(Backend):
             # frontend nodes. Headless followers take its native executor path.
             # The current `vllm-rs serve` launcher does not implement hybrid
             # startup; requests still use the Rust frontend in this path.
+            # Frontend nodes require vllm-project/vllm#59659 (--grpc-port),
+            # and hybrid DP also requires #57116 (local DP Control metadata),
+            # or equivalent backports. See docs/sidecars.md for compatibility.
             # VLLM_RUST_FRONTEND_PATH, when configured, is inherited unchanged.
             command.extend(["env", "VLLM_USE_RUST_FRONTEND=1", "python3", "-m", "vllm.entrypoints.cli.main"])
         else:

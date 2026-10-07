@@ -288,6 +288,24 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         tachometer = config.setdefault("observability", {}).setdefault("tachometer", {})
         tachometer.setdefault("default_gpu_exporter", copy.deepcopy(cluster_config["default_gpu_exporter"]))
 
+    # The same cluster exporter serves GPU power telemetry: a recipe that enables
+    # telemetry without naming any collector inherits it (image, port, command and
+    # power metrics), so one recipe measures power on NVIDIA and AMD clusters alike.
+    # Recipes that name a GPU exporter, or that enable a CPU leg, are untouched;
+    # without this the inherited case was the "nothing to collect" validation error.
+    telemetry = config.get("telemetry")
+    cluster_gpu_exporter = cluster_config.get("default_gpu_exporter")
+    if (
+        isinstance(telemetry, dict)
+        and telemetry.get("enabled")
+        and isinstance(cluster_gpu_exporter, dict)
+        and "dcgm_exporter" not in telemetry
+        and telemetry.get("cpu_power_exporter") is None
+        and not (telemetry.get("cpu_power") or {}).get("enabled")
+    ):
+        telemetry["dcgm_exporter"] = copy.deepcopy(cluster_gpu_exporter)
+        logger.debug("Applied cluster default_gpu_exporter to telemetry.dcgm_exporter")
+
     # Resolve every container alias in one pass (model.container,
     # frontend.container_image / nginx_container, benchmark.container_image,
     # exporter images, mooncake_kv_store.container, services, ...).
@@ -928,9 +946,7 @@ def expand_trtllm_engine_defaults(cfg: dict) -> dict:
     sets for trtllm-serve. What the default drops is the iteration-level
     ``trtllm_*`` gauges (``trtllm_kv_cache_*``, running / waiting requests,
     iteration latency) and, on Dynamo, the ``dynamo_component_kvstats_*`` gauges,
-    the router worker-load sample and the Planner's forward-pass metrics. No
-    benchmark client reads them; the component dashboard's KV-utilisation
-    panels do, and show no data (or the gauge's seeded 0 %) on a default run.
+    the router worker-load sample and the Planner's forward-pass metrics.
     Roles whose args select the legacy ``tensorrt`` backend are skipped: its
     ``LlmArgs`` rejects the key on containers before the backend's removal and
     always collected the statistics anyway.

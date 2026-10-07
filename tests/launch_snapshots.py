@@ -144,7 +144,13 @@ def render_launch_plan(recipe: Path) -> str:
         prior_cwd = Path.cwd()
         os.chdir(tmp_path)
         try:
-            with _isolated_cluster(model_dir, container_file):
+            # Capture exporter launches without polling metrics from nonexistent containers.
+            with (
+                _isolated_cluster(model_dir, container_file),
+                patch(
+                    "srtctl.core.power.session.PowerTelemetrySession.start_and_wait_for_readiness", return_value=True
+                ),
+            ):
                 nodes = load_config(recipe).total_nodes
                 options = MockOptions(
                     child_duration_s=0.0,

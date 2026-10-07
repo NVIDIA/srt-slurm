@@ -29,6 +29,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from srtctl.core.power.mapping import TACHOMETER_SCRAPE
 from srtctl.services.config import ServiceMetricsConfig
 from srtctl.services.registry import ServiceKind, ServiceLaunchContext, register_service
 
@@ -192,6 +193,12 @@ class DcgmExporterService(_ExporterKind):
     metrics_filter = "dcgm"
     metrics_endpoint_prefix = "dcgm"
     metrics_gpu_metadata = True
+    # ``kind`` (the GPU exporter config's) picks the tachometer scrape; see TACHOMETER_SCRAPE.
+    option_keys = ("port", "collect_interval_ms", "kind")
+
+    def metrics_scrape(self, service: ServiceConfig) -> tuple[str, str | None, bool]:
+        scrape = TACHOMETER_SCRAPE[str(service.options.get("kind", "dcgm"))]
+        return scrape.filter, scrape.endpoint, scrape.gpu_metadata
 
     def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
         if service.command is not None:

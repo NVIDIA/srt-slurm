@@ -13,8 +13,33 @@ and `default_sbatch_directives: {gres: "gpu:8"}`.
 Set `visible_devices_env: ROCR_VISIBLE_DEVICES` in the cluster profile for ROCm
 workers. GPU subsets then use only that mask, without applying a second mask to
 already-renumbered devices. Set `default_gpu_exporter: null` to disable the
-NVIDIA GPU exporter, or configure an exporter image, port, and command once for
-the cluster. Other telemetry is unchanged; an explicit recipe exporter wins.
+NVIDIA GPU exporter, or configure an exporter image, port, command and
+its `gpu_labels` and `gpu_metrics` once for the cluster. Other telemetry is unchanged; an explicit
+recipe exporter wins.
+
+```yaml
+visible_devices_env: ROCR_VISIBLE_DEVICES
+default_gpu_exporter:
+  container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
+  command: "/home/amd/tools/entrypoint.sh"
+  port: 5000
+  kind: custom
+  gpu_labels:
+    index: gpu_id
+    identity: serial_number
+  gpu_metrics:
+    power:
+      metric: gpu_power_usage
+      scope: amd_device_metrics_exporter_gpu_power_usage
+    gpu_util:
+      metric: gpu_gfx_activity
+    temperature:
+      metric: gpu_junction_temperature
+```
+
+With this block a recipe that sets `telemetry: {enabled: true}` and nothing else
+under `telemetry` collects GPU power from the AMD exporter; see
+[GPU power telemetry](power-telemetry.md#gpu-exporter-labels-and-metrics).
 
 For vLLM builds without `--device-ids`, set `engine.set_visible_devices: true`.
 This is one explicit boolean, not automatic vLLM version detection. The default
@@ -149,7 +174,7 @@ The flags are mutually exclusive. Explicit `engine.publish_events_and_metrics: t
 
 **Migration from the previous publication behavior:** `engine.publish_events_and_metrics: false` previously omitted both publication flags. It now uses `publish_metrics`, which defaults to true. Recipes that used false to disable publication, especially on older Dynamo builds that reject `--publish-metrics`, must also set `engine.publish_metrics: false`. To publish metrics on those older builds, select `engine.publish_events_and_metrics: true` instead. Null remains accepted for existing serialized recipes and behaves the same as false.
 
-**KV events and observability:** `observability.enabled: true` no longer automatically enables TRT-LLM KV events. Router KV-event dashboard panels (`ro_kv_events_applied`, `ro_kv_event_warnings`, and `ro_kv_events_dropped`) require an explicit event-publication opt-in. On Dynamo builds supporting the independent controls, keep the default metrics-only flag and set `DYN_TRTLLM_PUBLISH_KV_EVENTS: "true"` in every worker role that should publish events:
+**KV events and observability:** `observability.enabled: true` no longer automatically enables TRT-LLM KV events. On Dynamo builds supporting the independent controls, keep the default metrics-only flag and set `DYN_TRTLLM_PUBLISH_KV_EVENTS: "true"` in every worker role that should publish events:
 
 ```yaml
 engine:
@@ -162,7 +187,7 @@ roles:
 
 For disaggregated recipes, set the same environment variable under both `roles.prefill.env` and `roles.decode.env`. This uses Dynamo's [independent KV-event control](https://github.com/ai-dynamo/dynamo/blob/aacb1abae25204fa16a5c3cfeb1b748fc7252df0/components/src/dynamo/trtllm/backend_args.py#L179-L190); it does not require the legacy combined flag. Older builds without that control must use `engine.publish_events_and_metrics: true` to enable events and metrics together.
 
-**Iteration statistics default.** srtctl bakes `enable_iter_perf_stats: false` into every TRT-LLM engine section a recipe uses (prefill and decode, or aggregated), under both `frontend.type: dynamo` and `trtllm_serve`, creating the section when the recipe has none. This is a setdefault: an explicit `enable_iter_perf_stats: true` in the recipe wins, and `observability.enabled: true` keeps its own `true` because its expansion runs first. The default exists because `dynamo.trtllm` turns `--publish-metrics` into `enable_iter_perf_stats: true` in the engine arguments, and the engine YAML is merged over those arguments and wins on conflicts; without the explicit key every Dynamo worker collects TensorRT-LLM's per-iteration statistics (KV-cache stats and CUDA-event step timing on every executor loop). The request-level `trtllm_*` series (request latency, TTFT, TPOT, queue/prefill/decode time, token counters) do not need the key: they come from the per-request perf metrics, which `--publish-metrics` sets on the Dynamo path and `return_perf_metrics: true` sets for trtllm-serve. What the default drops is the iteration-level `trtllm_*` gauges (`trtllm_kv_cache_*`, running/waiting requests, iteration latency) and, on Dynamo, the `dynamo_component_kvstats_*` gauges, the router worker-load sample and the Planner's forward-pass metrics; set the key to `true` or enable `observability` to get them back. One visible effect to expect on a default run: the component dashboard's engine-tab KV-cache utilisation and hit-rate panels have no data, and the Dynamo bench dashboard's KV-utilisation series sits at the gauge's seeded 0 %, because both read gauges that only iteration statistics update. Engine sections whose `backend` is the legacy `tensorrt` engine are left alone: its `LlmArgs` rejects the key on containers older than TensorRT-LLM v1.3.0rc21, and that backend always collected the statistics anyway.
+**Iteration statistics default.** srtctl bakes `enable_iter_perf_stats: false` into every TRT-LLM engine section a recipe uses (prefill and decode, or aggregated), under both `frontend.type: dynamo` and `trtllm_serve`, creating the section when the recipe has none. This is a setdefault: an explicit `enable_iter_perf_stats: true` in the recipe wins, and `observability.enabled: true` keeps its own `true` because its expansion runs first. The default exists because `dynamo.trtllm` turns `--publish-metrics` into `enable_iter_perf_stats: true` in the engine arguments, and the engine YAML is merged over those arguments and wins on conflicts; without the explicit key every Dynamo worker collects TensorRT-LLM's per-iteration statistics (KV-cache stats and CUDA-event step timing on every executor loop). The request-level `trtllm_*` series (request latency, TTFT, TPOT, queue/prefill/decode time, token counters) do not need the key: they come from the per-request perf metrics, which `--publish-metrics` sets on the Dynamo path and `return_perf_metrics: true` sets for trtllm-serve. What the default drops is the iteration-level `trtllm_*` gauges (`trtllm_kv_cache_*`, running/waiting requests, iteration latency) and, on Dynamo, the `dynamo_component_kvstats_*` gauges, the router worker-load sample and the Planner's forward-pass metrics; set the key to `true` or enable `observability` to get them back. Engine sections whose `backend` is the legacy `tensorrt` engine are left alone: its `LlmArgs` rejects the key on containers older than TensorRT-LLM v1.3.0rc21, and that backend always collected the statistics anyway.
 
 ```yaml
 roles:

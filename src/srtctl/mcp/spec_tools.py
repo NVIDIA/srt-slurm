@@ -32,6 +32,7 @@ DOC_PATHS = tuple(
         "engines.md",
         "topology.md",
         "frontends.md",
+        "sidecars.md",
         "benchmarks.md",
         "observability.md",
         "runtime-env.md",

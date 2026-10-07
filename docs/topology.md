@@ -46,7 +46,7 @@ or vLLM Router. A frontend that permits mixed engines must define its own pairin
 rules; passing configuration validation does not prove KV-transfer compatibility
 between the installed engine versions.
 
-Fields: [RoleConfig](schema-reference.md#roleconfig). `args` takes any flag the engine accepts, kebab-case or snake_case (the `trtllm` engine YAML, the mocker overrides); srtctl adds the topology flags itself (`disaggregation-mode`, ports, hosts, rank arguments), and [frontend](frontends.md#frontend) lists the keys each frontend owns. `extra_args` is TRT-LLM only: `trtllm-serve` flags for the OpenAI server layer that have no engine YAML key, such as `--tool_parser`. `kv_events`, `sidecar`, `critical`, and `restart` are covered below.
+Fields: [RoleConfig](schema-reference.md#roleconfig). `args` takes any flag the engine accepts, kebab-case or snake_case (the `trtllm` engine YAML, the mocker overrides); srtctl adds the topology flags itself (`disaggregation-mode`, ports, hosts, rank arguments), and [frontend](frontends.md#frontend) lists the keys each frontend owns. `extra_args` is TRT-LLM only: `trtllm-serve` flags for the OpenAI server layer that have no engine YAML key, such as `--tool_parser`. `kv_events`, `critical`, and `restart` are covered below; see [Native Sidecars](sidecars.md) for `sidecar`.
 
 `env` and `args` are ordinary YAML mappings. Nothing needs JSON or inline `{}` syntax. Boolean flags are `flag-name: true`.
 

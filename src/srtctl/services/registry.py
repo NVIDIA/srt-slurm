@@ -204,6 +204,10 @@ class ServiceKind:
         """
         return list(service.metrics)
 
+    def metrics_scrape(self, service: ServiceConfig) -> tuple[str, str | None, bool]:
+        """How tachometer treats this service's metrics: ``(filter, endpoint prefix, gpu metadata)``."""
+        return self.metrics_filter, self.metrics_endpoint_prefix, self.metrics_gpu_metadata
+
 
 _SERVICE_KINDS: dict[str, ServiceKind] = {}
 

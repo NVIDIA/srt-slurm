@@ -221,7 +221,7 @@ class TestTachometerConfig:
         inherit the power template's 100ms — 10 Hz NVML sampling measured
         ~2% ITL p50 overhead on GB300 decode (isolation runs, 2026-09-06);
         the power path keeps 100ms because dense sampling is its purpose."""
-        from srtctl.cli.mixins.telemetry_stage import DCGM_EXPORTER_COMMAND_TEMPLATE
+        from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE
         from srtctl.services.implicit import find_service
         from srtctl.services.registry import ServiceLaunchContext, get_service_kind
 
@@ -420,11 +420,6 @@ class TestDcgmPowerConfig:
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=None), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[4, 4]), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[0]), "benchmark.concurrencies"),
-            (
-                {},
-                BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="last_decode")),
-                "benchmark.placement.node",
-            ),
         ],
     )
     def test_invalid_configurations_are_rejected(self, telemetry_overrides, benchmark, match):
@@ -433,6 +428,24 @@ class TestDcgmPowerConfig:
                 telemetry=_dcgm_power(**telemetry_overrides),
                 benchmark=benchmark or _sa_bench(),
             )
+
+    @pytest.mark.parametrize("node", ["head", "first_decode", "last_decode"])
+    def test_any_client_placement_is_accepted(self, node):
+        """Clocks are assumed NTP-synchronised across the allocation, so the client may run anywhere."""
+        config = _make_config(
+            telemetry=_dcgm_power(),
+            benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node=node)),
+        )
+
+        assert config.benchmark.placement.node == node
+
+    def test_a_dedicated_client_node_is_accepted(self):
+        config = _make_config(
+            telemetry=_dcgm_power(),
+            benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="dedicated")),
+        )
+
+        assert config.benchmark.placement.dedicated is True
 
     def test_dcgm_power_rejects_a_sample_interval_above_the_contract_limit(self):
         telemetry = TelemetryConfig(

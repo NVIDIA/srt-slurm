@@ -19,6 +19,7 @@ from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
 from srtctl.core.power.manifest import ExpectedWindow
+from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE, TACHOMETER_SCRAPE
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
@@ -34,9 +35,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Power telemetry's template: 100ms NVML sampling is its purpose (dense power
-# curves inside sa-bench measurement windows). Never used for tachometer.
-DCGM_EXPORTER_COMMAND_TEMPLATE = "dcgm-exporter --collect-interval=100 --address :{port}"
 # Time tachometer gets after SIGTERM to compact its in-memory arrow rows to parquet.
 TACHOMETER_STEP_NAME = "tachometer"
 
@@ -169,7 +167,11 @@ class TelemetryStageMixin:
         return managed
 
     def start_power_telemetry(self, registry: ProcessRegistry) -> PowerTelemetrySession | None:
-        """Start DCGM power telemetry when it is enabled.
+        """Start GPU power telemetry when it is enabled.
+
+        The exporter block's ``gpu_labels`` and ``gpu_metrics`` (DCGM when unset) tell the
+        collector which metric and labels to read; nothing here depends on the
+        GPU vendor.
 
         Every provider-originated startup failure becomes session state once the
         session exists, so the orchestrator can still finalize artifacts and
@@ -183,6 +185,7 @@ class TelemetryStageMixin:
         if exporter_config is None:
             return None
 
+        mapping = exporter_config.power_mapping
         worker_nodes = self._telemetry_nodes()
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
         command = resolve_exporter_command(exporter_config, DCGM_EXPORTER_COMMAND_TEMPLATE)
@@ -203,6 +206,7 @@ class TelemetryStageMixin:
                 exporter_command=command,
                 network_interface=self.runtime.network_interface,
                 producer_git_commit=read_producer_commit(),
+                mapping=mapping,
             ),
             expected_devices=build_expected_devices(self.backend_processes),
             expected_windows=[
@@ -214,8 +218,9 @@ class TelemetryStageMixin:
         # NOTE: stored before initialize() so a raise mid-startup still leaves a finalizable session.
         self._power_session = session
         self._power_telemetry_ready = False
+        session.record_clock_sync_failures(getattr(self, "_clock_sync_failures", ()))
         session.initialize()
-        logger.info("Starting DCGM power telemetry (artifacts under %s)", power_dir)
+        logger.info("Starting GPU power telemetry (%s, artifacts under %s)", mapping.power_metric, power_dir)
 
         def own(process: ManagedProcess) -> None:
             registry.add_process(process)
@@ -233,7 +238,7 @@ class TelemetryStageMixin:
                 on_started=own,
             )
         except Exception:
-            logger.exception("DCGM exporter launch failed")
+            logger.exception("GPU power exporter launch failed")
             session.record_reason(Reason.EXPORTER_LAUNCH_FAILED)
             return session
 
@@ -583,6 +588,7 @@ class TelemetryStageMixin:
             if not endpoints:
                 continue
             all_nodes = service_nodes(service)
+            metrics_filter, endpoint_prefix, gpu_metadata = kind.metrics_scrape(service)
             for endpoint in endpoints:
                 nodes = all_nodes[:1] if endpoint.nodes == "first" else all_nodes
                 for node in nodes:
@@ -591,27 +597,32 @@ class TelemetryStageMixin:
                             service=service.name,
                             node=node,
                             url=f"http://{node}:{endpoint.port}{endpoint.path}",
-                            filter=kind.metrics_filter,
-                            endpoint=endpoint.name or kind.metrics_endpoint_prefix,
-                            gpu_metadata=kind.metrics_gpu_metadata,
+                            filter=metrics_filter,
+                            endpoint=endpoint.name or endpoint_prefix,
+                            gpu_metadata=gpu_metadata,
                         )
                     )
         return targets
 
-    def _power_dcgm_targets(self) -> list[ServiceMetricsTarget]:
-        """DCGM targets when power telemetry runs its own exporter (no implied dcgm-exporter service)."""
+    def _power_exporter_targets(self) -> list[ServiceMetricsTarget]:
+        """Tachometer targets for the exporter power telemetry runs itself (no implied dcgm-exporter service).
+
+        The exporter's power mapping says how tachometer should filter the body;
+        DCGM keeps the ``dcgm`` filter and per-GPU worker labels, other exporters pass through.
+        """
         power = self.config.telemetry
         if not (power.enabled and power.dcgm_exporter is not None):
             return []
+        scrape = TACHOMETER_SCRAPE[power.dcgm_exporter.kind]
         nodes = sorted({process.node for process in self.backend_processes})
         return [
             ServiceMetricsTarget(
                 service="dcgm-exporter",
                 node=node,
                 url=f"http://{node}:{power.dcgm_exporter.port}/metrics",
-                filter="dcgm",
-                endpoint="dcgm",
-                gpu_metadata=True,
+                filter=scrape.filter,
+                endpoint=scrape.endpoint,
+                gpu_metadata=scrape.gpu_metadata,
             )
             for node in nodes
         ]
@@ -638,7 +649,7 @@ class TelemetryStageMixin:
                 frontend_type=self.config.frontend.type,
                 frontend_metrics_port=self._frontend_metrics_port(),
                 worker_metrics_paths=self._worker_metrics_paths(),
-                service_targets=[*self._service_metrics_targets(), *self._power_dcgm_targets()],
+                service_targets=[*self._service_metrics_targets(), *self._power_exporter_targets()],
             )
         )
 

@@ -283,11 +283,12 @@ DCGM power telemetry for benchmark measurement windows.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `False` | Collect DCGM GPU power over each benchmark concurrency window. |
-| `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` | DCGM exporter image, port, and optional command; required when `enabled`. |
+| `enabled` | bool | `False` | Collect GPU power over each benchmark concurrency window. |
+| `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` | GPU power exporter image, port, command, labels and metrics. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used. |
 | `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles. Replaces the retired ``default_frequency``, which despite its name was a period in seconds (1000ms == the old 1.0 default). |
 | `storage_subdir` | str | `'power'` | Output directory below the run's log directory. |
 | `required` | bool | `False` | Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort. |
+| `clock_sync_check` | bool | `True` | Before any server starts, verify every allocation node reports an NTP-synchronised system clock. Sample timestamps (orchestrator host) and window boundaries (benchmark client host) are compared directly, so an unsynchronised node silently misaligns the measurement. Fails the job when ``required`` is true; otherwise the run continues and the manifest records ``clock_sync_unverified`` with ``publication_valid: false``. Set false on clusters where timedatectl/chronyc/ntpq are unavailable to unprivileged users. |
 | `startup_timeout_seconds` | float | `30.0` | Seconds to wait for the exporters to answer before giving up (DCGM and CPU legs). |
 | `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout in seconds (DCGM and CPU legs). |
 | `collector_join_timeout_seconds` | float \| None | `None` | None derives a safe shutdown budget from request_timeout_seconds. |
@@ -469,6 +470,9 @@ Configuration for a metrics exporter deployed on worker nodes.
 | `port` | int | required | Port the exporter serves `/metrics` on, on every worker node. |
 | `command` | str \| None | `None` | Command line replacing the image's default entrypoint arguments. |
 | `binary` | str \| None | `None` | Host executable to run without a container; relative paths resolve against the srtctl checkout. |
+| `kind` | one of `'dcgm'`, `'custom'` | `'dcgm'` | GPU exporter kind: `dcgm` (built-in DCGM command, labels, metrics and tachometer scrape) or `custom` (any other exporter; set `command`, `gpu_labels` and `gpu_metrics`, and tachometer keeps its rows as served). |
+| `gpu_labels` | [GpuLabelsConfig](#gpulabelsconfig) \| None | `None` | GPU power telemetry: labels identifying a GPU in the scrape; unset means DCGM (`gpu`, `UUID`). |
+| `gpu_metrics` | [GpuMetricsConfig](#gpumetricsconfig) \| None | `None` | GPU power telemetry: per-GPU metrics to record; unset means DCGM. |
 
 ### CpuPowerExporterConfig
 
@@ -590,8 +594,29 @@ S3 upload configuration for log artifacts.
 | `endpoint_url` | str \| None | `None` | Custom S3-compatible endpoint URL (optional) |
 | `access_key_id` | str \| None | `None` | AWS access key ID (falls back to AWS_ACCESS_KEY_ID env var) |
 | `secret_access_key` | str \| None | `None` | AWS secret access key (falls back to AWS_SECRET_ACCESS_KEY env var) |
-| `exclude` | list[str] \| None | `None` | Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`. Set to `[]` to ship the whole directory. |
+| `exclude` | list[str] \| None | `None` | Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet). Set to `[]` to ship the whole directory. |
 | `archive` | list[str] \| None | `None` | Patterns (Python glob, `**` allowed) packed into one `bundle.tar.zst` uploaded next to the loose files and left out of the plain sync. Omit for the default, aiperf's per-request `profile_export.jsonl`; set to `[]` for no archive. |
+
+### GpuLabelsConfig
+
+The labels that identify a GPU in every sample of a GPU exporter's scrape.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `index` | str | required | Label carrying the node-local GPU index srt-slurm allocates by. |
+| `identity` | str | required | Label that is stable for one physical GPU across the run; recorded as `gpu_uuid`. |
+| `instance` | list[str] | `[]` | Labels marking logical sub-device samples (MIG instances, partitions); such samples are dropped. |
+
+### GpuMetricsConfig
+
+The per-GPU metrics GPU power telemetry records from a GPU exporter.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `power` | [GpuPowerMetricConfig](#gpupowermetricconfig) | required | Power draw in watts. |
+| `gpu_util` | [GpuMetricConfig](#gpumetricconfig) \| None | `None` | GPU utilization, percent. |
+| `sm_active` | [GpuMetricConfig](#gpumetricconfig) \| None | `None` | DCGM's SM-active fraction, 0-1; map only a metric with that meaning and range. |
+| `temperature` | [GpuMetricConfig](#gpumetricconfig) \| None | `None` | GPU temperature, Celsius. |
 
 ### TcpProbe
 
@@ -618,6 +643,23 @@ Ready when the service's log file contains a line matching the regular expressio
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `pattern` | str | required | Regular expression searched for in the service log. |
+
+### GpuPowerMetricConfig
+
+The per-GPU power metric in a GPU exporter's scrape, in watts.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `metric` | str | required | Prometheus metric name. |
+| `scope` | str | required | What the watts measure, recorded in the power manifest as `power_scope`. |
+
+### GpuMetricConfig
+
+One per-GPU metric in a GPU exporter's scrape.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `metric` | str | required | Prometheus metric name. |
 
 ## Engine types
 
