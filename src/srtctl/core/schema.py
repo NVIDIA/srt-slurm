@@ -48,7 +48,7 @@ from srtctl.backends import (
     VLLMBackend,
     VLLMMooncakeKVStoreConfig,
 )
-from srtctl.backends.base import RoleSettings
+from srtctl.backends.base import RoleSettings, WorkerMode
 from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
@@ -70,7 +70,7 @@ from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
 from srtctl.services.config import ServiceConfig
 
 if TYPE_CHECKING:
-    from srtctl.core.topology import Endpoint, NodePortAllocator, Process, WorkerMode
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 logger = logging.getLogger(__name__)
 
@@ -234,9 +234,7 @@ class AIAnalysisConfig:
 # What ``aws s3 sync`` skips by default. Patterns follow the AWS CLI rules (relative to the
 # log directory, ``*`` matches across directories). The aiperf per-interval scrapes of the
 # worker and DCGM ``/metrics`` endpoints are the same time series tachometer stores as
-# parquet, at 50 to 100 times the bytes; ``perf_dashboard_bundle/`` is the re-renderable
-# intermediate and holds a reshaped copy of that scrape; ``perf_dashboard.json`` duplicates
-# the self-contained ``perf_dashboard.html``. A 2.2 GB run becomes about 60 MB.
+# parquet, at 50 to 100 times the bytes.
 #
 # The aiperf patterns are scoped to the two directories the aiperf-driven runners write
 # to (trace-replay, agentperf and mooncake-router under ``artifacts/<run>/``, sa-bench under
@@ -251,8 +249,6 @@ _AIPERF_METRIC_SCRAPES = (
 )
 DEFAULT_S3_EXCLUDE: tuple[str, ...] = (
     *(f"{root}/{name}" for root in _AIPERF_ARTIFACT_ROOTS for name in _AIPERF_METRIC_SCRAPES),
-    "perf_dashboard_bundle/*",
-    "perf_dashboard.json",
 )
 # What goes into the compressed archive uploaded next to the loose files: aiperf's
 # per-request records, the raw truth behind every latency number (13 to 40 MB raw, under
@@ -286,8 +282,7 @@ class S3Config:
     # Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across
     # directories). Omit for the defaults: aiperf's per-interval metrics scrapes and
     # `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that
-    # series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`. Set to `[]` to ship
-    # the whole directory.
+    # series as parquet). Set to `[]` to ship the whole directory.
     exclude: list[str] | None = None
     # Patterns (Python glob, `**` allowed) packed into one `bundle.tar.zst` uploaded next to the
     # loose files and left out of the plain sync. Omit for the default, aiperf's per-request
@@ -1863,11 +1858,6 @@ class ObservabilityConfig:
     the effective publication flags give those endpoints engine metrics — see
     ``BenchmarkStageMixin``.)
 
-    The component perf dashboard is built explicitly after a run (see
-    :mod:`srtctl.analysis.perf_dashboard`). ``enabled`` decides which capture
-    legs exist and therefore which tabs a later build carries. A run without
-    server-side capture can still render from the client export and worker logs.
-
     Attributes:
         enabled: Master analytics knob. Default: False.
         enable_otel: If True, inject OTEL environment variables into all workers
@@ -1881,8 +1871,7 @@ class ObservabilityConfig:
 
     The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
     ``scrape_output`` knobs (the in-job RAW Prometheus scraper) are rejected
-    at load like any unknown key; the ingest still reads historical
-    ``raw_prometheus.jsonl`` artifacts (the ingest no longer reads them either).
+    at load like any unknown key.
     """
 
     enabled: bool = False
@@ -1984,6 +1973,15 @@ class TelemetryConfig:
     storage_subdir: str = "power"
     # Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort.
     required: bool = False
+    # Before any server starts, verify every allocation node reports an
+    # NTP-synchronised system clock. Sample timestamps (orchestrator host) and
+    # window boundaries (benchmark client host) are compared directly, so an
+    # unsynchronised node silently misaligns the measurement. Fails the job
+    # when ``required`` is true; otherwise the run continues and the manifest
+    # records ``clock_sync_unverified`` with ``publication_valid: false``.
+    # Set false on clusters where timedatectl/chronyc/ntpq are unavailable to
+    # unprivileged users.
+    clock_sync_check: bool = True
     # Seconds to wait for the exporters to answer before giving up (DCGM and CPU legs).
     startup_timeout_seconds: float = 30.0
     # Per-request exporter timeout in seconds (DCGM and CPU legs).
@@ -2023,8 +2021,7 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
 
 
 # Env that makes Dynamo emit one JSONL ``SPAN_CLOSED`` line per closed span on
-# the component's stdout. This is the *only* source for the per-request trace
-# leg of the offline perf tooling; without it those panels have no input.
+# the component's stdout.
 # DYN_LOG=debug is required because the span events are emitted at DEBUG level.
 ANALYTICS_SPAN_ENV: dict[str, str] = {
     "DYN_LOGGING_SPAN_EVENTS": "true",
@@ -3326,7 +3323,7 @@ class SrtConfig:
                     "for you."
                 )
 
-    def _profiling_worker_ranks(self, mode: Literal["prefill", "decode", "agg"]) -> set[int]:
+    def _profiling_worker_ranks(self, mode: WorkerMode) -> set[int]:
         """Derive selectable physical ranks from the configured worker layout."""
         from srtctl.core.topology import Endpoint
 
@@ -3497,9 +3494,11 @@ class SrtConfig:
         """Validate DCGM power telemetry.
 
         It runs its collector in the orchestrator process, so it needs neither
-        the scraper image nor node_exporter. Sample and window timestamps must
-        share one host clock, which is why the benchmark client stays on the
-        head node.
+        the scraper image nor node_exporter. Sample timestamps come from the
+        orchestrator host and window boundaries from the benchmark client host;
+        both are ``time.time()`` and are assumed NTP-synchronised within the
+        allocation, so the client may run on any node (``benchmark.placement.node``,
+        including ``dedicated``).
         """
         telemetry = self.telemetry
         exporter = telemetry.dcgm_exporter
@@ -3532,8 +3531,6 @@ class SrtConfig:
         if self.benchmark.type not in supported_benchmarks:
             supported = ", ".join(sorted(supported_benchmarks))
             raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
-        if self.benchmark.placement.location != "head":
-            raise ValidationError("telemetry requires benchmark.placement.node: head")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra_dedicated_node:

@@ -27,7 +27,7 @@ from typing import (
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args, role_kv_events
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
@@ -56,8 +56,6 @@ if TYPE_CHECKING:
     from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
-# Type alias for worker modes
-WorkerMode = Literal["prefill", "decode", "agg"]
 DPLaunchMode = Literal["per_gpu", "per_node"]
 
 logger = logging.getLogger(__name__)
@@ -1524,6 +1522,9 @@ class VLLMBackend(Backend):
             # frontend nodes. Headless followers take its native executor path.
             # The current `vllm-rs serve` launcher does not implement hybrid
             # startup; requests still use the Rust frontend in this path.
+            # Frontend nodes require vllm-project/vllm#59659 (--grpc-port),
+            # and hybrid DP also requires #57116 (local DP Control metadata),
+            # or equivalent backports. See docs/sidecars.md for compatibility.
             # VLLM_RUST_FRONTEND_PATH, when configured, is inherited unchanged.
             command.extend(["env", "VLLM_USE_RUST_FRONTEND=1", "python3", "-m", "vllm.entrypoints.cli.main"])
         else:

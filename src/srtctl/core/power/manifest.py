@@ -129,6 +129,9 @@ class PowerManifest:
     window_validations: list[WindowValidation] = field(default_factory=list)
     artifact_errors: list[ArtifactError] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
+    # Nodes that failed the pre-server clock-sync probe; non-empty only on a
+    # best-effort run that chose to continue (required runs abort instead).
+    clock_sync_failures: list[str] = field(default_factory=list)
     _terminal_committed: bool = field(default=False, init=False, repr=False)
 
     def mark_terminal(self, *, status: str, stopped_at_unix: float, publication_valid: bool) -> None:
@@ -177,5 +180,6 @@ class PowerManifest:
             "samples_sha256": self.samples_sha256,
             "window_validations": [validation.to_dict() for validation in self.window_validations],
             "artifact_errors": [error.to_dict() for error in self.artifact_errors],
+            "clock_sync_failures": list(self.clock_sync_failures),
             "reason_codes": list(dedupe(self.reason_codes)),
         }

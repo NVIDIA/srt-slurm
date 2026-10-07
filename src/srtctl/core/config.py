@@ -938,9 +938,7 @@ def expand_trtllm_engine_defaults(cfg: dict) -> dict:
     sets for trtllm-serve. What the default drops is the iteration-level
     ``trtllm_*`` gauges (``trtllm_kv_cache_*``, running / waiting requests,
     iteration latency) and, on Dynamo, the ``dynamo_component_kvstats_*`` gauges,
-    the router worker-load sample and the Planner's forward-pass metrics. No
-    benchmark client reads them; the component dashboard's KV-utilisation
-    panels do, and show no data (or the gauge's seeded 0 %) on a default run.
+    the router worker-load sample and the Planner's forward-pass metrics.
     Roles whose args select the legacy ``tensorrt`` backend are skipped: its
     ``LlmArgs`` rejects the key on containers before the backend's removal and
     always collected the statistics anyway.

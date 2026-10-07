@@ -1,6 +1,24 @@
 # examples/features/amd-power-telemetry.yaml
 # exit_code: 0
-# srun calls: 7
+# srun calls: 10
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/clock_sync_node-01.out
+command: |
+    bash -c 'if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes; then echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; if t=$(chronyc -n tracking 2>/dev/null) && grep -Eq '"'"'^Leap status *: *Normal'"'"' <<<"$t"; then echo "$(hostname): chronyc Leap status Normal"; grep -E '"'"'^(Reference ID|System time|Last offset)'"'"' <<<"$t"; exit 0; fi; if n=$(ntpq -pn 2>/dev/null) && grep -q '"'"'^[*]'"'"' <<<"$n"; then echo "$(hostname): ntpq has a selected peer"; grep '"'"'^[*]'"'"' <<<"$n"; exit 0; fi; echo "$(hostname): system clock is not NTP-synchronised" >&2; exit 1'
+
+## <unnamed>
+nodelist: node-02
+output: <output>/logs/clock_sync_node-02.out
+command: |
+    bash -c 'if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes; then echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; if t=$(chronyc -n tracking 2>/dev/null) && grep -Eq '"'"'^Leap status *: *Normal'"'"' <<<"$t"; then echo "$(hostname): chronyc Leap status Normal"; grep -E '"'"'^(Reference ID|System time|Last offset)'"'"' <<<"$t"; exit 0; fi; if n=$(ntpq -pn 2>/dev/null) && grep -q '"'"'^[*]'"'"' <<<"$n"; then echo "$(hostname): ntpq has a selected peer"; grep '"'"'^[*]'"'"' <<<"$n"; exit 0; fi; echo "$(hostname): system clock is not NTP-synchronised" >&2; exit 1'
+
+## <unnamed>
+nodelist: node-03
+output: <output>/logs/clock_sync_node-03.out
+command: |
+    bash -c 'if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes; then echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; if t=$(chronyc -n tracking 2>/dev/null) && grep -Eq '"'"'^Leap status *: *Normal'"'"' <<<"$t"; then echo "$(hostname): chronyc Leap status Normal"; grep -E '"'"'^(Reference ID|System time|Last offset)'"'"' <<<"$t"; exit 0; fi; if n=$(ntpq -pn 2>/dev/null) && grep -q '"'"'^[*]'"'"' <<<"$n"; then echo "$(hostname): ntpq has a selected peer"; grep '"'"'^[*]'"'"' <<<"$n"; exit 0; fi; echo "$(hostname): system clock is not NTP-synchronised" >&2; exit 1'
 
 ## agg_0_node-01
 nodelist: node-01

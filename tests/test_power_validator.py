@@ -207,6 +207,60 @@ class TestRetainedPackage:
 
 
 class TestIndependenceFromTheManifestBooleans:
+    @staticmethod
+    def _edit_manifest(power_dir, **fields):
+        path = power_dir / MANIFEST_FILENAME
+        manifest = json.loads(path.read_text())
+        manifest.update(fields)
+        path.write_text(json.dumps(manifest))
+
+    def test_recorded_clock_sync_failures_make_the_package_unpublishable(self, package):
+        """The reason itself is runtime-only, but the flagged hosts are persisted and must be honoured.
+
+        Reported by edwingao28: with the field present and the stored verdict flipped to
+        true, the recomputation used to agree and the package passed.
+        """
+        log_dir, power_dir = package(publication_valid=True)
+        self._edit_manifest(power_dir, clock_sync_failures=["node-b"], reason_codes=["clock_sync_unverified"])
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any("publication_valid is True, recomputed False" in failure for failure in report.failures), (
+            report.failures
+        )
+
+    def test_honest_clock_sync_failure_is_reported_as_stored_false(self, package):
+        """Producer and validator agree: the only failure is that the package is unpublishable."""
+        log_dir, power_dir = package(publication_valid=False)
+        self._edit_manifest(power_dir, clock_sync_failures=["node-b"], reason_codes=["clock_sync_unverified"])
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert report.failures == ("stored publication_valid is false",)
+
+    def test_legacy_manifest_without_the_field_still_validates(self, package):
+        """Packages predating the clock gate never ran the probe; absence is not a failure."""
+        log_dir, power_dir = package()
+        path = power_dir / MANIFEST_FILENAME
+        manifest = json.loads(path.read_text())
+        del manifest["clock_sync_failures"]
+        path.write_text(json.dumps(manifest))
+
+        assert _validate(power_dir, log_dir).ok is True
+
+    @pytest.mark.parametrize("bad", ["node-b", [1], {"node": "b"}], ids=["string", "non-string-item", "object"])
+    def test_malformed_clock_sync_failures_cannot_rescue_publication(self, package, bad):
+        log_dir, power_dir = package(publication_valid=True)
+        self._edit_manifest(power_dir, clock_sync_failures=bad)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert "clock_sync_failures is not a list of strings" in report.failures
+        assert any("recomputed False" in failure for failure in report.failures), report.failures
+
     def test_a_manifest_claiming_validity_cannot_rescue_missing_samples(self, package, capsys):
         expected = build_expected_devices(_processes())
         log_dir, power_dir = package(rows=_rows(expected, skip={("node-b", 0)}), publication_valid=True)

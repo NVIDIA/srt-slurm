@@ -218,6 +218,7 @@ class TelemetryStageMixin:
         # NOTE: stored before initialize() so a raise mid-startup still leaves a finalizable session.
         self._power_session = session
         self._power_telemetry_ready = False
+        session.record_clock_sync_failures(getattr(self, "_clock_sync_failures", ()))
         session.initialize()
         logger.info("Starting GPU power telemetry (%s, artifacts under %s)", mapping.power_metric, power_dir)
 

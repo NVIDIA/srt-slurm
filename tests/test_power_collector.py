@@ -875,6 +875,76 @@ class TestPublication:
         )
         assert report.ok is True, report.failures
 
+    def test_unverified_clock_sync_blocks_publication_without_failing_best_effort(self, tmp_path, exporters):
+        """Identical to the covered case except the orchestrator reported an unsynced node.
+
+        ``required`` governs the exit code only; the manifest must still say
+        the coverage math rests on clocks nobody proved comparable.
+        """
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), sample_interval_seconds=0.2, required=False
+        )
+        session.record_clock_sync_failures(["node-b", "node-b"])
+        session.initialize()
+        assert session.start_and_wait_for_readiness() is True
+
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+
+        outcome = session.stop_and_finalize(allow_window_mutation=True)
+        manifest = _manifest(session)
+
+        assert outcome.status == "complete"
+        assert outcome.publication_valid is False
+        assert outcome.exit_nonzero is False
+        assert outcome.reason_codes == ("clock_sync_unverified",)
+        assert manifest["clock_sync_failures"] == ["node-b"]
+        # Coverage itself was fine; the gate is the clock, not the samples.
+        assert manifest["window_validations"][0]["power_coverage_valid"] is True
+
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+        assert report.ok is False
+        # The validator must *agree* with the producer that this package is unpublishable
+        # (stored false, recomputed false) -- not fail only because the two disagree.
+        assert "stored publication_valid is false" in report.failures, report.failures
+        assert not any("recomputed True" in failure for failure in report.failures), report.failures
+
+    def test_offline_validator_rejects_a_tampered_verdict_on_an_unverified_clock(self, tmp_path, exporters):
+        """Flipping stored publication_valid to true must not make a clock-unverified package pass."""
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), sample_interval_seconds=0.2, required=False
+        )
+        session.record_clock_sync_failures(["node-b"])
+        session.initialize()
+        assert session.start_and_wait_for_readiness() is True
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+        session.stop_and_finalize(allow_window_mutation=True)
+
+        tampered = json.loads(session.manifest_path.read_text())
+        tampered["publication_valid"] = True
+        session.manifest_path.write_text(json.dumps(tampered))
+
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+        assert report.ok is False
+        assert any("publication_valid is True, recomputed False" in failure for failure in report.failures), (
+            report.failures
+        )
+
+    def test_no_clock_sync_failures_is_a_noop(self, tmp_path, exporters):
+        session = _session(tmp_path, _endpoints(("node-a", exporters(_body("a")).url)))
+        session.record_clock_sync_failures([])
+        assert session._manifest.clock_sync_failures == []
+        assert session._reasons == []
+
     def test_digest_io_failure_is_not_reclassified_as_malformed(self, tmp_path, exporters):
         a = exporters(_body("a"))
         b = exporters(_body("b"))

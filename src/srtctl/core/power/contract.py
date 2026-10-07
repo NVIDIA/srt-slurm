@@ -165,6 +165,9 @@ class Reason:
     MEASUREMENT_WINDOW_NOT_BRACKETED = "measurement_window_not_bracketed"
     SAMPLE_GAP_EXCEEDED = "sample_gap_exceeded"
     SAMPLE_LOSS_EXCEEDED = "sample_loss_exceeded"
+    # A node whose clock feeds an artifact could not prove NTP synchronisation
+    # before servers started; sample and window timestamps are not comparable.
+    CLOCK_SYNC_UNVERIFIED = "clock_sync_unverified"
 
 
 ALL_REASON_CODES: frozenset[str] = frozenset(

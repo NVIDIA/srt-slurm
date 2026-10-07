@@ -96,6 +96,7 @@ _RUNTIME_ONLY_REASON_CODES = frozenset(
         Reason.COLLECTOR_INTERRUPTED,
         Reason.COLLECTOR_JOIN_TIMEOUT,
         Reason.BENCHMARK_CHILD_REAP_TIMEOUT,
+        Reason.CLOCK_SYNC_UNVERIFIED,
     }
 )
 
@@ -322,6 +323,8 @@ def _check_wire_contract(manifest: dict[str, Any]) -> list[str]:
     publication_valid = manifest.get("publication_valid")
     if not isinstance(publication_valid, bool):
         failures.append(f"publication_valid is {publication_valid!r}, expected a boolean")
+    if _clock_sync_failures(manifest) is None:
+        failures.append("clock_sync_failures is not a list of strings")
 
     # NOTE: item types are checked before the set op, or a non-hashable entry raises.
     reasons = manifest.get("reason_codes")
@@ -440,6 +443,12 @@ def _check_stored_evidence(
     windows_valid = bool(expected_windows) and all(validation.power_coverage_valid for validation in validations)
     samples_digest = manifest.get("samples_sha256")
     digest_valid = isinstance(samples_digest, str) and re.fullmatch(r"[0-9a-f]{64}", samples_digest) is not None
+    # Mirrors the producer: the probe itself is runtime-only, but the hosts it
+    # flagged are persisted, so an unverified clock stays unpublishable offline.
+    # A malformed field (None) was already reported by the wire check; it must
+    # not let the package recompute to publishable either.
+    clock_sync_failures = _clock_sync_failures(manifest)
+    clock_sync_clean = clock_sync_failures is not None and not clock_sync_failures
     recomputed_publication_valid = (
         lifecycle_complete
         and startup_recovered
@@ -448,6 +457,7 @@ def _check_stored_evidence(
         and not sample_reason_codes
         and digest_valid
         and not artifact_errors
+        and clock_sync_clean
     )
     stored_publication_valid = manifest.get("publication_valid")
     if isinstance(stored_publication_valid, bool):
@@ -466,6 +476,18 @@ def _check_stored_evidence(
             failures.append(f"{label} contains duplicate keys")
 
     return failures
+
+
+def _clock_sync_failures(manifest: dict[str, Any]) -> list[str] | None:
+    """Hosts the pre-server clock probe flagged, or None when the field is malformed.
+
+    Absent on packages produced before the clock gate existed; those never ran
+    the probe, so "no recorded failures" is the honest reading for them.
+    """
+    value = manifest.get("clock_sync_failures", [])
+    if not isinstance(value, list) or not all(isinstance(node, str) for node in value):
+        return None
+    return list(value)
 
 
 def _same_json_evidence(stored: Any, recomputed: Any) -> bool:

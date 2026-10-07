@@ -23,8 +23,6 @@ if TYPE_CHECKING:
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
-WorkerMode = Literal["prefill", "decode", "agg"]
-
 
 @dataclass(frozen=True)
 class AtomBackend(Backend):

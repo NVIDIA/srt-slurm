@@ -2624,7 +2624,7 @@
               "type": "null"
             }
           ],
-          "description": "Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet), `perf_dashboard_bundle/`, `perf_dashboard.json`. Set to `[]` to ship the whole directory.",
+          "description": "Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet). Set to `[]` to ship the whole directory.",
           "default": null
         },
         "archive": {
@@ -3386,6 +3386,11 @@
           "type": "boolean",
           "description": "Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort.",
           "default": false
+        },
+        "clock_sync_check": {
+          "type": "boolean",
+          "description": "Before any server starts, verify every allocation node reports an NTP-synchronised system clock. Sample timestamps (orchestrator host) and window boundaries (benchmark client host) are compared directly, so an unsynchronised node silently misaligns the measurement. Fails the job when ``required`` is true; otherwise the run continues and the manifest records ``clock_sync_unverified`` with ``publication_valid: false``. Set false on clusters where timedatectl/chronyc/ntpq are unavailable to unprivileged users.",
+          "default": true
         },
         "startup_timeout_seconds": {
           "type": "number",
