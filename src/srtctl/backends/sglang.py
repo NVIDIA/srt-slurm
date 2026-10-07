@@ -292,6 +292,17 @@ class SGLangProtocol:
 
         return None
 
+    def kv_events_publishers(self, mode: WorkerMode) -> int:
+        """KV-event publishers one worker process of ``mode`` opens: one per DP rank.
+
+        SGLang binds the configured endpoint plus the publisher's DP rank
+        (``select_kv_publisher_dp_rank``: the attention-DP rank under DP attention, the
+        replica rank under pure DP), so a worker with ``dp-size N`` uses N consecutive ports.
+        """
+        config = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
+        dp_size = config.get("dp-size", config.get("data-parallel-size"))
+        return max(int(dp_size), 1) if dp_size is not None else 1
+
     def allocate_endpoints(
         self,
         num_prefill: int,
@@ -331,7 +342,12 @@ class SGLangProtocol:
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
 
         allocator = port_allocator_for(port_allocator, base_sys_port)
-        processes = endpoints_to_processes(endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar)
+        processes = endpoints_to_processes(
+            endpoints,
+            port_allocator=allocator,
+            sidecar_grpc=dynamo_sidecar,
+            kv_events_publishers={endpoint.mode: self.kv_events_publishers(endpoint.mode) for endpoint in endpoints},
+        )
         # dist-init is bound by the endpoint's leader; every process of the
         # endpoint names the same port, allocated per leader node so two
         # endpoints led from one node do not collide.

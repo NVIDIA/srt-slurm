@@ -403,6 +403,30 @@ class TestEndpointsToProcesses:
         assert processes[0].kv_events_port == KV_EVENTS_PORT_BASE
         assert processes[1].kv_events_port == KV_EVENTS_PORT_BASE + 1
 
+    def test_kv_events_block_per_publisher(self):
+        """A process with N KV-event publishers reserves N ports, so DP workers on one node do not overlap."""
+        endpoints = allocate_endpoints(
+            num_prefill=2,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=2,
+            gpus_per_decode=2,
+            gpus_per_agg=8,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+        )
+
+        processes = endpoints_to_processes(
+            endpoints, base_sys_port=8081, kv_events_publishers={"prefill": 2, "decode": 2}
+        )
+
+        ports = {(p.endpoint_mode, p.endpoint_index): (p.node, p.kv_events_port) for p in processes}
+        assert ports == {
+            ("prefill", 0): ("node0", KV_EVENTS_PORT_BASE),
+            ("prefill", 1): ("node0", KV_EVENTS_PORT_BASE + 2),
+            ("decode", 0): ("node1", KV_EVENTS_PORT_BASE + 4),
+        }
+
     def test_nixl_port_allocation(self):
         """Test NIXL ports are allocated globally unique from the default."""
         from srtctl.core.topology import Endpoint

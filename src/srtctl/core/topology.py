@@ -18,7 +18,7 @@ After (Python):
         print(f"{endpoint.mode} worker {endpoint.index} on {endpoint.nodes}")
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -154,7 +154,8 @@ class Process:
         sys_port: DYN_SYSTEM_PORT for this process
         http_port: HTTP serving port for this process (avoids conflicts on same node)
         bootstrap_port: P/D coordination port (only for prefill leaders)
-        kv_events_port: ZMQ port for kv-events publishing (all worker leaders)
+        kv_events_port: First port of the process's KV-events block; an engine with several
+            publishers binds this port plus the publisher index (all worker processes)
         nixl_port: NIXL side channel port for KV transfers (vLLM only)
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
@@ -572,6 +573,7 @@ def endpoints_to_processes(
     port_allocator: NodePortAllocator | None = None,
     engines_per_process: int = 1,
     sidecar_grpc: bool = False,
+    kv_events_publishers: Mapping[str, int] | None = None,
 ) -> list[Process]:
     """Convert endpoints to physical processes, one per node of each endpoint.
 
@@ -590,6 +592,11 @@ def endpoints_to_processes(
             engine of a node then gets its own Process (same GPUs and node_rank,
             distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
         sidecar_grpc: Allocate a Dynamo sidecar gRPC port for every process.
+        kv_events_publishers: KV-event publishers per process, by worker mode (default 1).
+            An engine that opens one publisher per DP rank binds ``kv_events_port + rank``,
+            so each process reserves that many consecutive ports; otherwise two workers on
+            one node collide (SGLang with ``dp-size 2``: worker 0's rank 1 lands on worker
+            1's port).
 
     Returns:
         List of Process objects
@@ -624,7 +631,9 @@ def endpoints_to_processes(
                         node_rank=node_rank,
                         bootstrap_port=endpoint_bootstrap_ports[engine_id],
                         # Every process publishes KV events and opens a NIXL side channel of its own.
-                        kv_events_port=allocator.next(KV_EVENTS_PORTS),
+                        kv_events_port=allocator.next(
+                            KV_EVENTS_PORTS, size=(kv_events_publishers or {}).get(endpoint.mode, 1)
+                        ),
                         nixl_port=allocator.next(NIXL_PORTS),
                         het_group=endpoint.het_group,
                         engine_id=engine_id,
