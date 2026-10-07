@@ -474,7 +474,11 @@ class TestTelemetryStage:
         mock_srun.return_value = popen
         harness = _harness(tmp_path, AMD_EXPORTER, [_worker(gpus=range(2))])
 
-        with patch("srtctl.core.power.session.requests.get", return_value=_FakeResponse(_amd_body(count=2))):
+        # A real lookup of "node-a" can outlast the 0.2 s startup budget.
+        with (
+            patch("srtctl.core.power.session.get_hostname_ip", return_value="10.0.0.1"),
+            patch("srtctl.core.power.session.requests.get", return_value=_FakeResponse(_amd_body(count=2))),
+        ):
             session = harness.start_power_telemetry(ProcessRegistry(job_id="12345"))
             assert session is not None
             ready = harness._power_telemetry_ready
