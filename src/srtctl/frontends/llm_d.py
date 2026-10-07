@@ -20,6 +20,11 @@ into the log directory, then starts the EPP and Envoy. The job is ready when
 Envoy's admin ``/ready`` answers and the EPP reports every endpoint ready
 (``llm_d_epp_ready_endpoints``: endpoints whose metrics it scrapes).
 
+An external-LB DP rank (``data-parallel-external-lb``) is an endpoint of its own.
+With ``roles.<role>.kv_events`` the workers publish their KV-cache events to the
+EPP's precise prefix-cache producer on one socket srtctl owns
+(``kv_events_subscriber``, ``with_kv_events``).
+
 Upstream, pinned: llm-d-router v0.11.0
 (https://github.com/llm-d/llm-d-router/tree/a5cbe600ebade00cf3e9885beaf2bfacddeabce1):
 ``cmd/epp/runner/runner.go`` (``runWithFileDiscovery``),

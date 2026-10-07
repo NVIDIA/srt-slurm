@@ -226,6 +226,11 @@ srtctl wires the rest:
 - The token producer's `vllm.url` is the first prefill worker's (else the first worker's)
   own vLLM API, and `modelName` defaults to the served model name.
 
+With vLLM's `OffloadingConnector` and its `self_describing_kv_events: true`, a worker also
+reports the blocks it offloads to host memory; the producer indexes them as the `cpu` tier
+and weights tiers by `indexerConfig.kvCacheBackendConfigs` (`gpu` 1.0, `cpu` 0.8 by
+default).
+
 The roles that publish and the producer go together: either without the other is
 rejected, as are a producer `kvEventsConfig` that sets the socket or discovery, a
 `token-producer` `vllm.url`, and a router not on the head node. A role with
