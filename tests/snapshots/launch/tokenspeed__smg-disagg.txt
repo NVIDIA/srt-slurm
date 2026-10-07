@@ -15,6 +15,7 @@ env_to_set:
     CUDA_VISIBLE_DEVICES: 0
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
+    TOKENSPEED_SKIP_GRPC_WARMUP: 1
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
@@ -36,6 +37,7 @@ env_to_set:
     CUDA_VISIBLE_DEVICES: 0
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
+    TOKENSPEED_SKIP_GRPC_WARMUP: 1
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
