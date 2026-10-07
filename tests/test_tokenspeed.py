@@ -159,6 +159,12 @@ def test_smg_runs_grpc_engines_on_their_tokenspeed_port(tmp_path: Path) -> None:
     ]
     # The prefill follower node joins the leader's engine and is not routed.
     assert router.count("--prefill") == 1
+    # A prefill/decode engine cannot serve the bootstrap-less startup warmup.
+    assert all(
+        launch["env_to_set"]["TOKENSPEED_SKIP_GRPC_WARMUP"] == "1"
+        for launch in launches
+        if "smg_grpc_servicer.tokenspeed" in launch["command"]
+    )
 
 
 def test_mooncake_master_service_points_the_l3_store_at_it(tmp_path: Path) -> None:
@@ -184,6 +190,7 @@ def test_mooncake_master_service_points_the_l3_store_at_it(tmp_path: Path) -> No
     assert len(workers) == 2
     for worker in workers:
         env = worker["env_to_set"]
+        assert "TOKENSPEED_SKIP_GRPC_WARMUP" not in env
         assert env["MOONCAKE_MASTER"].endswith(":8700")
         assert env["MOONCAKE_TE_META_DATA_SERVER"].endswith(":8701/metadata")
         assert _flag(shlex.split(" ".join(worker["command"])), "--kvstore-storage-backend") == "mooncake"

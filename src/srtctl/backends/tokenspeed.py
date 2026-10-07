@@ -68,6 +68,16 @@ class TokenSpeedBackend(Backend):
     # The same MOONCAKE_* variables SGLang's Mooncake store client reads.
     get_mooncake_worker_env = SGLangBackend.get_mooncake_worker_env
 
+    def get_process_environment(self, process: Process) -> dict[str, str]:
+        """Skip the gRPC engine's startup warmup on prefill and decode workers.
+
+        The warmup is a generate without a KV bootstrap room, which a prefill/decode
+        engine cannot serve: prefill waits for a decode peer that never comes, and an
+        attention-DP decode engine fails dispatching it by room. ``dynamo.tokenspeed``
+        does not read the variable.
+        """
+        return {} if process.endpoint_mode == "agg" else {"TOKENSPEED_SKIP_GRPC_WARMUP": "1"}
+
     def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """A direct TokenSpeed worker is always the gRPC engine (``smg_grpc_servicer.tokenspeed``)."""
         return True
