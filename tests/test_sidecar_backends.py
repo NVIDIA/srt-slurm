@@ -181,6 +181,8 @@ def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
         {"tensor_parallel_size": 8, "data_parallel_size": 2, "enable_dp_attention": True},
         {"tp-size": 8, "dp-size": 2, "enable-dp-attention": True},
         {"tp_size": 8, "dp_size": 2, "enable_dp_attention": True},
+        {"tp-size": 8, "attn-dp-size": 2},
+        {"tensor_parallel_size": 8, "attention_data_parallel_size": 2},
     ],
 )
 def test_sglang_multinode_dp_sidecar_relays_follower_kv_events(mode: str, args: dict) -> None:
@@ -303,6 +305,9 @@ def test_sglang_disagg_dp_example_launches_two_disjoint_worker_groups(tmp_path: 
         ({"tp-size": 8, "dp-size": 4, "enable-dp-attention": True}, 2, 4, {0, 1}),
         # Each attention-DP group spans two nodes; only its first node publishes.
         ({"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}, 4, 2, {0, 2}),
+        ({"tp-size": 8, "attn-dp-size": 2}, 4, 2, {0, 2}),
+        # The deprecated spelling with one DP rank leaves attention DP off.
+        ({"tp-size": 8, "dp-size": 1, "enable-dp-attention": True}, 2, 4, {0}),
         # CP rank zero is the publisher even when all attention TP ranks are zero.
         ({"tp-size": 8, "dp-size": 2, "attn-cp-size": 4, "enable-dp-attention": True}, 4, 2, {0, 2}),
         # Later pipeline stages cannot publish the rank's KV events.

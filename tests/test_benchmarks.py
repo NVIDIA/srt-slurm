@@ -379,9 +379,19 @@ class TestCustomBenchmarkRunner:
         ):
             return stage._get_benchmark_env(CustomBenchmarkRunner())
 
-    @pytest.mark.parametrize("dp_key", ["dp-size", "dp_size", "data-parallel-size"])
-    def test_sglang_attention_dp_custom_metrics_scrape_followers_in_topology_order(self, dp_key):
-        env = self._custom_env({"prefill": {dp_key: 8}, "decode": {dp_key: 8}})
+    @pytest.mark.parametrize(
+        "dp_args",
+        [
+            {"dp-size": 8},
+            {"dp_size": 8},
+            {"data-parallel-size": 8},
+            {"dp-size": 8, "enable-dp-attention": True},
+            {"attn-dp-size": 8},
+            {"attention_data_parallel_size": 8},
+        ],
+    )
+    def test_sglang_attention_dp_custom_metrics_scrape_followers_in_topology_order(self, dp_args):
+        env = self._custom_env({"prefill": dp_args, "decode": dp_args})
 
         # Routing still targets logical leaders; only metrics include follower ranks.
         assert env["SRT_PREFILL_ENDPOINTS"] == "ip-node-p0:7500"

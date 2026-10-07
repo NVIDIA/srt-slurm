@@ -151,7 +151,8 @@ class Process:
         sys_port: DYN_SYSTEM_PORT for this process
         http_port: HTTP serving port for this process (avoids conflicts on same node)
         bootstrap_port: P/D coordination port (only for prefill leaders)
-        kv_events_port: ZMQ port for kv-events publishing (all worker leaders)
+        kv_events_port: First port of the process's KV-events block; an engine with several
+            publishers binds this port plus the publisher's DP rank (all worker processes)
         nixl_port: NIXL side channel port for KV transfers (vLLM only)
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
@@ -599,7 +600,10 @@ def endpoints_to_processes(
             engine of a node then gets its own Process (same GPUs and node_rank,
             distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
         sidecar_grpc: Allocate a Dynamo sidecar gRPC port for every process.
-        kv_events_port_sizes: KV publisher port range per process, keyed by worker mode.
+        kv_events_port_sizes: KV publisher port range per process, keyed by worker mode
+            (default 1). An engine that opens one publisher per DP rank binds
+            ``kv_events_port + rank``, so each process reserves that many consecutive
+            ports; otherwise two DP workers on one node collide.
         bootstrap_ports: Allocate the prefill bootstrap port; ``False`` for an engine
             that has no bootstrap rendezvous (vLLM hands KV over its NIXL side channel).
 

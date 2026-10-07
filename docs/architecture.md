@@ -560,7 +560,7 @@ consumer derives one port from another.
 | `sys` | 7500 | 1 | global | every process (`DYN_SYSTEM_PORT`) |
 | `http` | 6100 | 32 | per node | endpoint leaders (a router connects) |
 | `bootstrap` | 7200 | 1 | per node | prefill endpoints |
-| `kv_events` | 5200 | 1 | global | every process (block per local DP size) |
+| `kv_events` | 5200 | 1 | global | every process (block per DP rank: vLLM local, SGLang the worker's) |
 | `nixl` | 5400 | 1 | global | every process (block per DP size) |
 | `dp_rpc` | 8400 | 1 | per node | vLLM DP endpoints |
 | `kvbm_zmq` | 5600 | 2 | global | KVBM leaders (pub, ack = pub + 1) |

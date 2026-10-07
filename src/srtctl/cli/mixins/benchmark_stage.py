@@ -836,12 +836,13 @@ class BenchmarkStageMixin:
     def _process_owns_dp_ranks(self, process: "Process") -> bool:
         """Whether a worker rank exports metrics for SGLang attention-DP ranks of its own.
 
-        A pure-TP follower serves no engine of its own. With ``dp-size`` > 1,
-        every physical process schedules distinct DP ranks and exports their
-        cache and load metrics, so scraping only the leader drops them.
+        A pure-TP follower serves no engine of its own. With more than one DP
+        rank (``attn-dp-size`` or ``dp-size`` > 1), every physical process
+        schedules distinct DP ranks and exports their cache and load metrics,
+        so scraping only the leader drops them.
         """
         backend = self.config.backend
-        return isinstance(backend, SGLangBackend) and backend.data_parallel_size(process.endpoint_mode) > 1
+        return isinstance(backend, SGLangBackend) and backend.num_dp_ranks(process.endpoint_mode) > 1
 
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""
