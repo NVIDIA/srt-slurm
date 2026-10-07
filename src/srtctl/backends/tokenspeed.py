@@ -34,10 +34,6 @@ if TYPE_CHECKING:
 # Attention DP never exceeds the endpoint's GPU count.
 _RENDEZVOUS_PORTS = 6
 
-# The worker module per frontend launch mode. TokenSpeed's engine-only server is its
-# gRPC servicer, what `ts serve` runs behind its bundled SMG; it has no HTTP-only server.
-_WORKER_MODULE = {"dynamo": "dynamo.tokenspeed", "direct": "smg_grpc_servicer.tokenspeed"}
-
 
 @dataclass(frozen=True)
 class TokenSpeedBackend(Backend):
@@ -177,11 +173,14 @@ class TokenSpeedBackend(Backend):
 
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
         leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
+        frontend = get_frontend(frontend_type)
+        direct_workers = frontend.worker_launch == "direct"
+        python_module = "smg_grpc_servicer.tokenspeed" if direct_workers else "dynamo.tokenspeed"
         cmd = [
             *(nsys_prefix or []),
             "python3",
             "-m",
-            _WORKER_MODULE[get_frontend(frontend_type).worker_launch],
+            python_module,
             "--model",
             runtime.worker_model_arg,
             "--served-model-name",
