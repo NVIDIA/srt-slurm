@@ -128,3 +128,15 @@ def test_point_buffer_does_not_retain_a_python_object_per_sample(tmp_path):
             tracemalloc.stop()
     finally:
         buffers.close()
+
+
+def test_final_timestamp_conflicts_keep_all_values_and_count_duplicates(tmp_path):
+    buffers = PointBuffers(tmp_path / "scratch.sqlite")
+    try:
+        points = buffers.buffer(0)
+        points.extend([[2.0, 8.0, 1, 2], [1.0, 3.0, 0, 0], [2.0, 7.0, 0, 1], [2.0, 8.0, 2, 3]])
+        buffers.prepare()
+        assert points.finalize() == (1, [2.0], 2)
+        assert list(points) == [[1.0, 3.0, 0, 0], [2.0, 7.0, 0, 1], [2.0, 8.0, 1, 2]]
+    finally:
+        buffers.close()
