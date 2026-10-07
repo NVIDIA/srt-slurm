@@ -322,6 +322,109 @@ class SweepOrchestrator(
             return
         raise RuntimeError(f"host_setup failed on: {', '.join(failures)}")
 
+    # One probe per branch; the first that proves synchronisation prints its
+    # evidence and wins, so clock_sync_<node>.out records *which* daemon
+    # vouched (and, for chrony/ntp, the offset it reported). Every probe is
+    # read-only and unprivileged on stock images: timedatectl reads the kernel
+    # STA_UNSYNC flag over D-Bus, chronyc/ntpq ask their daemon. Locked-down
+    # cmdports print nothing and fall through to the failure line.
+    CLOCK_SYNC_SCRIPT = (
+        "if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes; then "
+        'echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; '
+        "if t=$(chronyc -n tracking 2>/dev/null) && grep -Eq '^Leap status *: *Normal' <<<\"$t\"; then "
+        'echo "$(hostname): chronyc Leap status Normal"; '
+        "grep -E '^(Reference ID|System time|Last offset)' <<<\"$t\"; exit 0; fi; "
+        "if n=$(ntpq -pn 2>/dev/null) && grep -q '^[*]' <<<\"$n\"; then "
+        'echo "$(hostname): ntpq has a selected peer"; grep \'^[*]\' <<<"$n"; exit 0; fi; '
+        'echo "$(hostname): system clock is not NTP-synchronised" >&2; exit 1'
+    )
+    CLOCK_SYNC_TIMEOUT_SECONDS = 30
+
+    @staticmethod
+    def _clock_sync_evidence(log: Path) -> str:
+        """First line the probe printed (which daemon vouched), formatted for the OK log line."""
+        try:
+            first = log.read_text().splitlines()[0].strip()
+        except (OSError, IndexError):
+            return ""
+        # The probe prefixes with "<hostname>: "; the log line already names the node.
+        return f" ({first.split(': ', 1)[-1]})" if first else ""
+
+    def _clock_sync_nodes(self) -> list[str]:
+        """Every node whose clock feeds a power artifact: collector host, benchmark client, workers."""
+        nodes = [
+            self.runtime.nodes.head,
+            self.runtime.nodes.bench,
+            self.runtime.nodes.infra,
+            *self.runtime.nodes.compute,
+        ]
+        return list(dict.fromkeys(nodes))
+
+    def _check_clock_sync(self) -> None:
+        """Refuse to start servers for a power run on nodes whose clocks are not NTP-synchronised.
+
+        DCGM power publication compares collector sample timestamps with the
+        benchmark child's window boundaries by raw float, so it holds only
+        when the hosts involved share a synchronised wall clock. This does not
+        measure skew -- it asks each node's own time daemon whether it is
+        locked -- but it catches the gross case (chrony down, misconfigured
+        image) before GPU time is spent.
+
+        Under ``telemetry.required`` a failure aborts the job here. Otherwise
+        the failing nodes are kept in ``_clock_sync_failures`` and handed to
+        the power session when it starts, so the manifest records
+        ``clock_sync_unverified`` and ``publication_valid: false`` instead of
+        silently claiming an alignment nobody checked.
+        """
+        self._clock_sync_failures: list[str] = []
+        telemetry = self.config.telemetry
+        if not (telemetry.enabled and telemetry.dcgm_exporter is not None and telemetry.clock_sync_check):
+            return
+        if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+            return
+
+        nodes = self._clock_sync_nodes()
+        logger.info("clock_sync_check: probing NTP synchronisation on %d node(s)", len(nodes))
+        procs = []
+        for node in nodes:
+            log = self.runtime.log_dir / f"clock_sync_{node}.out"
+            proc = start_srun_process(
+                command=["bash", "-c", self.CLOCK_SYNC_SCRIPT],
+                nodelist=[node],
+                output=str(log),
+                container_image=None,  # bare host: the time daemon lives outside the container
+                het_group=self.runtime.nodes.het_group_for(node),
+            )
+            procs.append((node, proc, log))
+
+        failures = []
+        for node, proc, log in procs:
+            try:
+                returncode = proc.wait(timeout=self.CLOCK_SYNC_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                logger.error("clock_sync_check timed out on %s (see %s)", node, log)
+                failures.append(node)
+                continue
+            if returncode != 0:
+                logger.error("clock_sync_check failed on %s (see %s)", node, log)
+                failures.append(node)
+                continue
+            logger.info("clock_sync_check: %s OK%s", node, self._clock_sync_evidence(log))
+
+        if not failures:
+            logger.info("clock_sync_check: all %d node(s) report NTP-synchronised clocks", len(nodes))
+            return
+        message = (
+            f"clock_sync_check: {', '.join(failures)} did not report an NTP-synchronised clock; "
+            "power sample and measurement-window timestamps would not be comparable"
+        )
+        if telemetry.required:
+            raise RuntimeError(message)
+        self._clock_sync_failures = failures
+        logger.warning("%s (telemetry.required is false; continuing, artifacts will be marked unpublishable)", message)
+
     def _run_host_teardown(self) -> None:
         """Undo host_setup after workers stop.
 
@@ -646,6 +749,10 @@ class SweepOrchestrator(
             # Stage 0: Bare-host node setup (GPU clocks, kernel modules). Runs
             # before anything containerized so workers see the prepared node.
             self._run_host_setup()
+
+            # Stage 0b: power runs compare clocks across nodes; refuse to spend
+            # GPU time if any node is not NTP-synchronised.
+            self._check_clock_sync()
 
             # Stage 1: the discovery plane (etcd, NATS) as services. Implied by the
             # dynamo frontend; static/direct frontends imply nothing here.

@@ -741,6 +741,7 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
             if exporter is not None:
                 details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
+                details.add_row("telemetry", "power_metric", exporter.power_mapping.power_metric)
 
             cpu_exporter = config.telemetry.cpu_power_exporter
             if cpu_exporter is not None:

@@ -31,9 +31,16 @@ SGLANG_DIST_INIT_PORT_BASE = 8300
 # One per physical SGLang server process. This is used for SGLang's local TP
 # rendezvous; a deterministic assignment avoids concurrent free-port races.
 SGLANG_NCCL_PORT_BASE = 17500
+# HTTP sidecar of an SGLang gRPC-mode server (--grpc-http-sidecar-port): /metrics and
+# the profiler routes, which the gRPC listener does not serve.
+SGLANG_GRPC_HTTP_PORT_BASE = 6700
 # SGLang Model Gateway (sglang_router) Prometheus listener; the router's own default.
 # Only started when --prometheus-port is passed, which srtctl does so tachometer can scrape it.
 SGLANG_ROUTER_METRICS_PORT = 29000
+
+# Shepherd Model Gateway (frontend.type: smg) Prometheus listener on each router node,
+# passed as --prometheus-port so srtctl, not upstream's default, owns it.
+SMG_METRICS_PORT = 29000
 
 # TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
 TRTLLM_DIST_INIT_PORT_BASE = 29500
@@ -116,6 +123,7 @@ SIDECAR_GRPC_PORTS = PortKind("sidecar_grpc", DYNAMO_SIDECAR_GRPC_PORT)
 # Engine-specific: the backend allocates these for its own processes.
 NCCL_PORTS = PortKind("nccl", SGLANG_NCCL_PORT_BASE)
 DIST_INIT_PORTS = PortKind("dist_init", SGLANG_DIST_INIT_PORT_BASE, per_node=True)
+GRPC_HTTP_PORTS = PortKind("grpc_http", SGLANG_GRPC_HTTP_PORT_BASE, per_node=True)
 VLLM_SCAN_PORTS = PortKind("vllm_scan", VLLM_PORT_BASE, VLLM_PORT_STRIDE)
 # vLLM discovery-connector (MoRI-IO) workers: one port per local rank in each block.
 MORIIO_HANDSHAKE_PORTS = PortKind("moriio_handshake", VLLM_MORIIO_HANDSHAKE_PORT_BASE)

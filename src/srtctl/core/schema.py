@@ -54,8 +54,16 @@ from srtctl.core.formatting import (
     FormattablePathField,
 )
 
-# Leaf module (stdlib-only imports), so this cannot cycle back into schema.
-from srtctl.core.power.contract import CONTAINER_LOG_DIR
+# Leaf modules (stdlib and prometheus-free imports), so these cannot cycle back into schema.
+from srtctl.core.power.contract import (
+    CONTAINER_LOG_DIR,
+    GPU_UTIL_METRIC,
+    SM_ACTIVE_METRIC,
+    TEMPERATURE_METRIC,
+    UTILIZATION_METRICS,
+    UtilizationMetric,
+)
+from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
@@ -1513,6 +1521,77 @@ class ProfilingConfig:
 
 
 @dataclass(frozen=True)
+class GpuLabelsConfig:
+    """The labels that identify a GPU in every sample of a GPU exporter's scrape."""
+
+    # Label carrying the node-local GPU index srt-slurm allocates by.
+    index: str
+    # Label that is stable for one physical GPU across the run; recorded as `gpu_uuid`.
+    identity: str
+    # Labels marking logical sub-device samples (MIG instances, partitions); such samples are dropped.
+    instance: list[str] = field(default_factory=list)
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class GpuMetricConfig:
+    """One per-GPU metric in a GPU exporter's scrape."""
+
+    # Prometheus metric name.
+    metric: str
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class GpuPowerMetricConfig:
+    """The per-GPU power metric in a GPU exporter's scrape, in watts."""
+
+    # Prometheus metric name.
+    metric: str
+    # What the watts measure, recorded in the power manifest as `power_scope`.
+    scope: str
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class GpuMetricsConfig:
+    """The per-GPU metrics GPU power telemetry records from a GPU exporter.
+
+    `power` is required; the others are optional and their columns stay empty
+    when unset. Units are fixed by the artifact: `gpu_util` is a percent,
+    `sm_active` a 0-1 fraction, and `temperature` Celsius.
+    """
+
+    # Power draw in watts.
+    power: GpuPowerMetricConfig
+    # GPU utilization, percent.
+    gpu_util: GpuMetricConfig | None = None
+    # DCGM's SM-active fraction, 0-1; map only a metric with that meaning and range.
+    sm_active: GpuMetricConfig | None = None
+    # GPU temperature, Celsius.
+    temperature: GpuMetricConfig | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+# DCGM, the default for exporter blocks that set neither `gpu_labels` nor `gpu_metrics`.
+DCGM_GPU_LABELS = GpuLabelsConfig(
+    index=DCGM_POWER_MAPPING.gpu_index_label,
+    identity=DCGM_POWER_MAPPING.gpu_identity_label,
+    instance=list(DCGM_POWER_MAPPING.instance_labels),
+)
+DCGM_GPU_METRICS = GpuMetricsConfig(
+    power=GpuPowerMetricConfig(metric=DCGM_POWER_MAPPING.power_metric, scope=DCGM_POWER_MAPPING.power_scope),
+    gpu_util=GpuMetricConfig(metric=GPU_UTIL_METRIC),
+    sm_active=GpuMetricConfig(metric=SM_ACTIVE_METRIC),
+    temperature=GpuMetricConfig(metric=TEMPERATURE_METRIC),
+)
+
+
+@dataclass(frozen=True)
 class TelemetryExporterConfig:
     """Configuration for a metrics exporter deployed on worker nodes.
 
@@ -1537,8 +1616,45 @@ class TelemetryExporterConfig:
     command: str | None = None
     # Host executable to run without a container; relative paths resolve against the srtctl checkout.
     binary: str | None = None
+    # GPU exporter kind: `dcgm` (built-in DCGM command, labels, metrics and tachometer
+    # scrape) or `custom` (any other exporter; set `command`, `gpu_labels` and
+    # `gpu_metrics`, and tachometer keeps its rows as served).
+    kind: Literal["dcgm", "custom"] = "dcgm"
+    # GPU power telemetry: labels identifying a GPU in the scrape; unset means DCGM (`gpu`, `UUID`).
+    gpu_labels: GpuLabelsConfig | None = None
+    # GPU power telemetry: per-GPU metrics to record; unset means DCGM.
+    gpu_metrics: GpuMetricsConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.kind == "dcgm" and self.gpu_labels is not None:
+            raise ValidationError("`gpu_labels` needs `kind: custom`; a `kind: dcgm` exporter uses DCGM's labels")
+        if self.kind == "custom" and (
+            (self.command is None and self.binary is None) or self.gpu_labels is None or self.gpu_metrics is None
+        ):
+            raise ValidationError("a `kind: custom` GPU exporter needs `command`, `gpu_labels` and `gpu_metrics`")
+
+    @property
+    def power_mapping(self) -> PowerMetricMapping:
+        """How the power collector reads this exporter's scrape."""
+        labels = self.gpu_labels or DCGM_GPU_LABELS
+        metrics = self.gpu_metrics or DCGM_GPU_METRICS
+        contract = {metric.column: metric for metric in UTILIZATION_METRICS}
+        riders = (("gpu_util_pct", metrics.gpu_util), ("sm_active", metrics.sm_active))
+        return PowerMetricMapping(
+            power_metric=metrics.power.metric,
+            power_scope=metrics.power.scope,
+            gpu_index_label=labels.index,
+            gpu_identity_label=labels.identity,
+            utilization_metrics=tuple(
+                UtilizationMetric(column, rider.metric, contract[column].unit, contract[column].max_value)
+                for column, rider in riders
+                if rider is not None
+            ),
+            instance_labels=tuple(labels.instance),
+            temperature_metric=metrics.temperature.metric if metrics.temperature is not None else None,
+        )
 
 
 # Built-in exporter defaults (sweep path only; the --bash lifecycle keys on the
@@ -1844,9 +1960,10 @@ class CpuPowerExporterConfig:
 class TelemetryConfig:
     """DCGM power telemetry for benchmark measurement windows."""
 
-    # Collect DCGM GPU power over each benchmark concurrency window.
+    # Collect GPU power over each benchmark concurrency window.
     enabled: bool = False
-    # DCGM exporter image, port, and optional command; required when `enabled`.
+    # GPU power exporter image, port, command, labels and metrics. When `enabled` with
+    # no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.
     dcgm_exporter: TelemetryExporterConfig | None = None
     # Milliseconds between collector cycles. Replaces the retired
     # ``default_frequency``, which despite its name was a period in seconds
@@ -1856,6 +1973,15 @@ class TelemetryConfig:
     storage_subdir: str = "power"
     # Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort.
     required: bool = False
+    # Before any server starts, verify every allocation node reports an
+    # NTP-synchronised system clock. Sample timestamps (orchestrator host) and
+    # window boundaries (benchmark client host) are compared directly, so an
+    # unsynchronised node silently misaligns the measurement. Fails the job
+    # when ``required`` is true; otherwise the run continues and the manifest
+    # records ``clock_sync_unverified`` with ``publication_valid: false``.
+    # Set false on clusters where timedatectl/chronyc/ntpq are unavailable to
+    # unprivileged users.
+    clock_sync_check: bool = True
     # Seconds to wait for the exporters to answer before giving up (DCGM and CPU legs).
     startup_timeout_seconds: float = 30.0
     # Per-request exporter timeout in seconds (DCGM and CPU legs).
@@ -2387,7 +2513,8 @@ class FrontendConfig:
 
     Attributes:
         type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
-            Gateway), "vllm-router", "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and
+            Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "atomesh", and
+            "tilert-router" (static routers); "sglang", "vllm", and
             "trtllm_serve" (direct: the single aggregate worker binds the public
             port, no router process); "none" (services-only job: no router, no
             OpenAI endpoint, no worker-count health gate; requires no engine
@@ -3368,9 +3495,11 @@ class SrtConfig:
         """Validate DCGM power telemetry.
 
         It runs its collector in the orchestrator process, so it needs neither
-        the scraper image nor node_exporter. Sample and window timestamps must
-        share one host clock, which is why the benchmark client stays on the
-        head node.
+        the scraper image nor node_exporter. Sample timestamps come from the
+        orchestrator host and window boundaries from the benchmark client host;
+        both are ``time.time()`` and are assumed NTP-synchronised within the
+        allocation, so the client may run on any node (``benchmark.placement.node``,
+        including ``dedicated``).
         """
         telemetry = self.telemetry
         exporter = telemetry.dcgm_exporter
@@ -3403,8 +3532,6 @@ class SrtConfig:
         if self.benchmark.type not in supported_benchmarks:
             supported = ", ".join(sorted(supported_benchmarks))
             raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
-        if self.benchmark.placement.location != "head":
-            raise ValidationError("telemetry requires benchmark.placement.node: head")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra_dedicated_node:

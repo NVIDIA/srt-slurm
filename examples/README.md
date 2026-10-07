@@ -6,13 +6,13 @@ Small starting points, one per frontend and topology. The matrix examples serve 
 
 | Backend | Dynamo frontend | Native router | Router-free direct |
 | --- | --- | --- | --- |
-| SGLang | `sglang/dynamo-agg.yaml`, `sglang/dynamo-disagg.yaml` | `sglang/sglang-router-agg.yaml`, `sglang/sglang-router-disagg.yaml` | `sglang/sglang-direct-agg.yaml` |
-| vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml`, `vllm/vllm-router-moriio-disagg.yaml` (ROCm, MoRI-IO discovery) | `vllm/vllm-direct-agg.yaml` |
-| TRT-LLM | `trtllm/dynamo-agg.yaml`, `trtllm/dynamo-disagg.yaml` | `trtllm/trtllm-serve-disagg.yaml` | `trtllm/trtllm-serve-agg.yaml` |
+| SGLang | `sglang/dynamo-agg.yaml`, `sglang/dynamo-disagg.yaml` | `sglang/sglang-router-agg.yaml`, `sglang/sglang-router-disagg.yaml`, `sglang/smg-disagg.yaml` (SMG) | `sglang/sglang-direct-agg.yaml` |
+| vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml`, `vllm/vllm-router-moriio-disagg.yaml` (ROCm, MoRI-IO discovery), `vllm/smg-agg.yaml`, `vllm/smg-dep16.yaml`, `vllm/smg-disagg-grpc.yaml` (SMG; P/D over gRPC with NIXL) | `vllm/vllm-direct-agg.yaml` |
+| TRT-LLM | `trtllm/dynamo-agg.yaml`, `trtllm/dynamo-disagg.yaml` | `trtllm/trtllm-serve-disagg.yaml`, `trtllm/smg-agg.yaml` (SMG) | `trtllm/trtllm-serve-agg.yaml` |
 | Mocker | `mocker/dynamo-agg.yaml` | | |
 
 - **Dynamo frontend**: workers register with etcd and the Dynamo frontend routes (KV-aware here); the request plane is tcp and NATS is not started unless a plane asks for it. Dynamo is installed at job start via `dynamo.source` (`pypi:` here) unless the container ships it (`dynamo.install: false`, as the TRT-LLM examples do).
-- **Native router**: the engine's own router in front of plain engine workers. No Dynamo, NATS, or etcd. SGLang uses the Model Gateway (`frontend.type: sglang-router`), vLLM the official vLLM Router (`vllm-router`), TRT-LLM `trtllm-serve disaggregated` with a generated `ser.yaml`.
+- **Native router**: the engine's own router in front of plain engine workers. No Dynamo, NATS, or etcd. SGLang uses the Model Gateway (`frontend.type: sglang-router`), vLLM the official vLLM Router (`vllm-router`), TRT-LLM `trtllm-serve disaggregated` with a generated `ser.yaml`. The `smg` examples put the engine-agnostic [Shepherd Model Gateway](../docs/smg.md) (`frontend.type: smg`) in front of the same workers, run from its own image.
 - **Router-free direct**: one worker owns the public port. `frontend.type: sglang`, `frontend.type: vllm`, and `frontend.type: trtllm_serve` in aggregate mode launch no router process.
 - **Mocker**: `dynamo.mocker` stands in for an engine, so the whole orchestration path runs without loading weights. The fastest way to validate a cluster config.
 
@@ -29,6 +29,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/sweep.yaml` | `sweep:` plus `{placeholder}` substitution; one job per combination |
 | `features/override.yaml` | `base` plus `override_*` and `zip_override_*` variants in one file |
 | `features/profiling.yaml` | `profiling:` torch capture on an aggregated worker |
+| [`features/amd-power-telemetry.yaml`](features/amd-power-telemetry.yaml) | SGLang on MI300X with AMD device-metrics-exporter power collection. Set the `sglang-rocm` container alias and `visible_devices_env: ROCR_VISIBLE_DEVICES` in `srtslurm.yaml`. See [power telemetry](../docs/power-telemetry.md#amd-amd-device-metrics) |
 | `features/services.yaml` | `services:` sidecar (an HTTP log browser on the head node) with a `readiness:` port gate |
 | `features/mlperf-client.yaml` | `benchmark.type: custom` driving the MLPerf inference-endpoint client in its own image; placeholder paths, a reference rather than a runnable example |
 | `features/infra-services.yaml` | etcd and NATS as declared services on a dedicated node with a NATS payload limit; the implied exporters overridden or switched off |
@@ -53,14 +54,38 @@ model_paths:
 
 containers:
   sglang: /path/to/sglang.sqsh              # SGLang image; Dynamo examples pip-install ai-dynamo into it
+  sglang-rocm: /path/to/sglang-rocm.sqsh    # SGLang ROCm image, for features/amd-power-telemetry.yaml
   vllm: /path/to/vllm.sqsh                  # vLLM image with the vllm-router executable
   trtllm: /path/to/tensorrtllm-runtime.sqsh # Dynamo TRT-LLM runtime image (ships ai-dynamo and trtllm-serve)
   dynamo-vllm: /path/to/vllm-runtime.sqsh   # Dynamo vLLM runtime image (ships ai-dynamo and gpu_memory_service), for features/vllm-failover.yaml
   vllm-lmcache: /path/to/vllm-lmcache.sqsh  # vLLM image with LMCache installed, for features/lmcache-server.yaml and -disagg.yaml
   sglang-lmcache: /path/to/sglang-lmcache.sqsh  # SGLang image with LMCache installed, for features/lmcache-server-sglang.yaml
+  smg: /path/to/smg.sqsh                    # Shepherd Model Gateway image (lightseekorg/smg), the router for the smg examples
 ```
 
 The matrix recipes set `resources.gpu_type` and `gpus_per_node` to `h100` and `8`; change them to match the partition you submit to. The multinode SGLang sidecar examples allocate one GPU per node: two nodes for aggregate mode, four for disaggregated mode.
+
+## Optional GPU temperature
+
+To retain temperature with the existing power collector, add this telemetry block
+to a NVIDIA example and resolve `dcgm-exporter` to the exporter image in your
+cluster configuration:
+
+```yaml
+telemetry:
+  enabled: true
+  provider: dcgm-power
+  required: false
+  dcgm_exporter:
+    container_image: dcgm-exporter
+```
+
+The same exporter response supplies `DCGM_FI_DEV_POWER_USAGE` and optional
+`DCGM_FI_DEV_GPU_TEMP` (other exporters name theirs in `gpu_metrics.temperature`). Samples v3 retain Celsius in `temperature_c`; an exporter
+without that metric leaves the cell empty. No extra sampler is launched.
+Temperature does not establish a valid energy measurement: that still requires
+benchmark measurement windows and power validation. Deploy v3-compatible readers
+before upgrading the collector. See [power telemetry](../docs/power-telemetry.md).
 
 ## Validation
 
