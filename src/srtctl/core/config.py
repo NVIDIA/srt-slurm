@@ -889,27 +889,35 @@ def expand_trtllm_serve_defaults(cfg: dict) -> dict:
     default every trtllm-serve worker endpoint answers HTTP 404 and the capture
     silently has no worker-level data.
 
-    Applies to every ``frontend.type: trtllm_serve`` recipe, to each role that
-    runs TRT-LLM, independent of ``observability.enabled``. ``roles.<role>.args``
+    Applies to every recipe whose frontend launches ``direct`` workers (the
+    engine's own server: ``trtllm_serve``, or a router such as ``smg`` in front
+    of trtllm-serve), to each role that runs TRT-LLM, independent of
+    ``observability.enabled``. ``roles.<role>.args``
     is created when absent, so a role with no engine arguments gets the default
     too. Every write is a ``setdefault``: an explicit ``return_perf_metrics:
     false`` in the recipe wins, but is reported loudly. Mutates ``cfg`` in place
     and returns it.
     """
     from srtctl.core.schema import TRTLLM_SERVE_ENGINE_DEFAULTS
+    from srtctl.frontends import FRONTEND_NONE, get_frontend, list_frontend_types
 
     frontend = cfg.get("frontend")
-    if not isinstance(frontend, dict) or frontend.get("type") != "trtllm_serve":
+    frontend_type = frontend.get("type") if isinstance(frontend, dict) else None
+    # An unset type is Dynamo; an unknown one is reported by schema validation.
+    if frontend_type in (None, FRONTEND_NONE) or frontend_type not in list_frontend_types():
+        return cfg
+    if get_frontend(frontend_type).worker_launch != "direct":
         return cfg
 
     sections = _setdefault_trtllm_role_args(cfg, TRTLLM_SERVE_ENGINE_DEFAULTS)
     opted_out = [f"roles.{role}" for role, args in sections.items() if args.get("return_perf_metrics") is False]
     if opted_out:
         logger.warning(
-            "frontend.type: trtllm_serve with return_perf_metrics: false on %s — those "
+            "frontend.type: %s with return_perf_metrics: false on %s — those "
             "trtllm-serve workers will NOT mount /prometheus/metrics (HTTP 404), so the "
             "Tachometer backend_* endpoints and the per-request Prometheus histograms "
             "will be empty for them. Remove the line to keep the default.",
+            frontend_type,
             ", ".join(opted_out),
         )
     return cfg

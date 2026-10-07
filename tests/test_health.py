@@ -3,12 +3,16 @@
 
 """Tests for health check parsing (Dynamo and SGLang router)."""
 
+import threading
+import time
+
 import pytest
 
 from srtctl.core.health import (
     WorkerHealthResult,
     check_dynamo_health,
     check_static_router_health,
+    wait_for_port,
 )
 
 # ============================================================================
@@ -632,3 +636,12 @@ class TestWaitForModel:
             )
             is False
         )
+
+
+def test_wait_for_port_stops_when_the_stop_event_is_set() -> None:
+    """A port that never opens does not hold the caller past a failed job."""
+    stop_event = threading.Event()
+    stop_event.set()
+    start = time.monotonic()
+    assert wait_for_port("127.0.0.1", 9, timeout=60.0, stop_event=stop_event) is False
+    assert time.monotonic() - start < 5.0

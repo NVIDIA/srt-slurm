@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
 if TYPE_CHECKING:
+    from srtctl.backends.base import WorkerMode
     from srtctl.core.health import WorkerHealthResult
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
@@ -89,12 +90,20 @@ class Frontend(ABC):
         """
         raise NotImplementedError
 
-    #: Path where this frontend's workers and router serve Prometheus metrics.
+    #: Path where this frontend's router (or its direct endpoint) serves Prometheus metrics.
     metrics_path: ClassVar[str] = "/metrics"
+
+    def worker_metrics_path(self, backend: Any, mode: "WorkerMode") -> str | None:
+        """Path a worker of ``mode`` serves Prometheus metrics at on ``worker_metrics_port``.
+
+        A direct worker is the engine's own server, so ``backend.prometheus_metrics_path``,
+        or ``backend.grpc_metrics_path`` when the mode's workers serve gRPC.
+        """
+        return backend.grpc_metrics_path if backend.is_grpc_mode(mode) else backend.prometheus_metrics_path
 
     @abstractmethod
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
-        """Port on ``process.node`` serving Prometheus metrics at ``metrics_path`` for this rank.
+        """Port on ``process.node`` serving Prometheus metrics at ``worker_metrics_path`` for this rank.
 
         ``None`` when the rank serves none: a follower of a native multi-node
         server, or a layout the frontend does not scrape. Every rank of a Dynamo

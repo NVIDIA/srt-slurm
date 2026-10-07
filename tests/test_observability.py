@@ -460,6 +460,14 @@ class TestTrtllmServeDefaults:
         for mode in ("prefill", "decode"):
             assert "return_perf_metrics" not in out["roles"][mode]["args"]
 
+    def test_router_in_front_of_trtllm_serve_gets_the_default(self):
+        """A static router such as smg fronts direct trtllm-serve workers, which need the route too."""
+        cfg = _trtllm_config()
+        cfg["frontend"] = {"type": "smg", "enable_multiple_frontends": False}
+        out = expand_trtllm_serve_defaults(cfg)
+        for mode in ("prefill", "decode"):
+            assert out["roles"][mode]["args"]["return_perf_metrics"] is True
+
     def test_non_trtllm_backend_is_untouched(self):
         cfg = _base_config()
         cfg["frontend"] = {"type": "trtllm_serve"}

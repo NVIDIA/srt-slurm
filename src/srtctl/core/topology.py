@@ -164,6 +164,7 @@ class Process:
         sidecar_grpc_port: Dynamo sidecar gRPC listener, allocated when the job runs sidecars
         nccl_port: SGLang local TP rendezvous port, one per server process
         dist_init_port: SGLang multi-node dist-init port; the same value on every process of an endpoint
+        grpc_http_port: HTTP sidecar (/metrics, profiler routes) of an SGLang gRPC-mode leader
         vllm_scan_port: first port of this vLLM process's private ``get_open_port()`` scan range
         moriio_handshake_port: MoRI-IO handshake listener of a vLLM discovery-connector worker
         moriio_notify_port: first port of that worker's MoRI-IO notify block (one port per local rank)
@@ -191,6 +192,7 @@ class Process:
     sidecar_grpc_port: int | None = None
     nccl_port: int | None = None
     dist_init_port: int | None = None
+    grpc_http_port: int | None = None
     vllm_scan_port: int | None = None
     trtllm_dist_init_port: int | None = None
     moriio_handshake_port: int | None = None
@@ -569,6 +571,7 @@ def endpoints_to_processes(
     port_allocator: NodePortAllocator | None = None,
     engines_per_process: int = 1,
     sidecar_grpc: bool = False,
+    bootstrap_ports: bool = True,
 ) -> list[Process]:
     """Convert endpoints to physical processes, one per node of each endpoint.
 
@@ -587,6 +590,8 @@ def endpoints_to_processes(
             engine of a node then gets its own Process (same GPUs and node_rank,
             distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
         sidecar_grpc: Allocate a Dynamo sidecar gRPC port for every process.
+        bootstrap_ports: Allocate the prefill bootstrap port; ``False`` for an engine
+            that has no bootstrap rendezvous (vLLM hands KV over its NIXL side channel).
 
     Returns:
         List of Process objects
@@ -601,7 +606,7 @@ def endpoints_to_processes(
         # engine's processes); each engine of a worker binds its own.
         leader_node = endpoint.nodes[0]
         endpoint_bootstrap_ports = [
-            allocator.next(BOOTSTRAP_PORTS, leader_node) if endpoint.mode == "prefill" else None
+            allocator.next(BOOTSTRAP_PORTS, leader_node) if bootstrap_ports and endpoint.mode == "prefill" else None
             for _ in range(engines_per_process)
         ]
 
