@@ -454,7 +454,10 @@ def test_relaunch_endpoint_follows_the_backend_launch_strategy(tmp_path: Path) -
     with patches[0], patches[1] as mock_srun:
         procs = list(mixin.relaunch_endpoint([leader, follower], attempt=3))
     assert [p.name for p in procs] == ["prefill_0_node-a_r3"]
-    assert mock_srun.call_args.kwargs["nodelist"] == ["node-a", "node-b"]
+    # Multi-node: one host per rank in srt-slurm's order, under --distribution=arbitrary.
+    expected_hosts = ["node-a"] * len(leader.gpu_indices) + ["node-b"] * len(follower.gpu_indices)
+    assert mock_srun.call_args.kwargs["nodelist"] == expected_hosts
+    assert mock_srun.call_args.kwargs["srun_options"]["distribution"] == "arbitrary"
     assert mock_srun.call_args.kwargs["step_name"] == "prefill_0_node-a_r3"
 
 
@@ -1018,7 +1021,51 @@ def test_endpoint_launch_uniform_nodes(tmp_path: Path, gpu_count: int, nodes: in
     assert kwargs["ntasks"] == gpu_count
     assert kwargs["nodes"] == nodes
     # TRT-LLM endpoint steps end when any task exits non-zero (see SrunConfig.kill_on_bad_exit).
-    assert kwargs["srun_options"] == {"ntasks-per-node": str(per_node), "kill-on-bad-exit": "1"}
+    expected_options = {"ntasks-per-node": str(per_node), "kill-on-bad-exit": "1"}
+    if nodes > 1:
+        # Ranks follow srt-slurm's node order, not Slurm's: one host per task, rank 0 on the leader.
+        expected_options["distribution"] = "arbitrary"
+        assert kwargs["nodelist"] == [f"node{i}" for i in range(nodes) for _ in range(per_node)]
+    else:
+        assert kwargs["nodelist"] == ["node0"]
+    assert kwargs["srun_options"] == expected_options
+
+
+def test_uniform_multinode_endpoint_pins_rank_order(tmp_path: Path) -> None:
+    """The rendered srun for a 2x4 endpoint: ranks 0-3 on the leader, 4-7 on the second node, no --nodes."""
+    from srtctl.backends.trtllm import TRTLLMBackend
+
+    mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
+    mixin.runtime.gpus_per_node = 4
+    mixin.backend.type = "trtllm"
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
+    endpoints = TRTLLMBackend().allocate_endpoints(
+        num_prefill=1,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=8,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=("nodeA", "nodeB"),
+    )
+    processes = TRTLLMBackend().endpoints_to_processes(endpoints)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
+        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.1") as mock_ip,
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mixin.start_endpoint_worker(processes)
+    command = mock_popen.call_args.args[0]
+    assert command[command.index("--ntasks") + 1] == "8"
+    assert "--ntasks-per-node=4" in command
+    assert "--distribution=arbitrary" in command
+    assert "--nodes" not in command
+    assert command[command.index("--nodelist") + 1] == ",".join(["nodeA"] * 4 + ["nodeB"] * 4)
+    # MASTER_ADDR is the leader's IP, and the leader is where rank 0 now provably lands.
+    mock_ip.assert_any_call("nodeA", mixin.runtime.network_interface)
 
 
 def test_endpoint_rejects_incompatible_local_rank_mapping(tmp_path: Path) -> None:
