@@ -228,6 +228,16 @@ TRT-LLM endpoints also set `MASTER_ADDR` to the rank-zero node and use a distinc
 `MASTER_PORT` per endpoint. This overrides container hooks that infer rank zero
 from Slurm's sorted node list. Explicit recipe environment values take precedence.
 
+Every multi-node endpoint, uniform (two full nodes) or uneven, is launched with
+`--distribution=arbitrary` and one host per task in srt-slurm's node order, for
+example `--ntasks 8 --ntasks-per-node=4 --nodelist A,A,A,A,B,B,B,B` (the
+`--nodes` flag is omitted, as Slurm requires for this distribution). A plain
+`--nodelist` only names the nodes; Slurm may still order tasks by its own
+topology, which can put rank 0 on a node other than the `MASTER_ADDR` leader and
+stall the rendezvous. Single-node endpoints are unchanged. A `distribution` set in
+the cluster's or the role's `srun_options` is replaced for such an endpoint, with a
+warning in the job log.
+
 **Other TRT-LLM launch facts**: TRT-LLM supports prefill, decode, and aggregated roles, uses MPI-style launching (one srun per endpoint with all of its nodes) through `trtllm-llmapi-launch`, and sets `TRTLLM_EPLB_SHM_NAME` to a unique UUID per endpoint.
 
 ## ATOM with AToMesh
