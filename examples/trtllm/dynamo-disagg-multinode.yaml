@@ -1,12 +1,12 @@
 # TRT-LLM disaggregated serving with a decode worker that spans two nodes.
 #
-# One TP4 prefill worker on a 4-GPU node and one TP8 decode worker across two
-# 4-GPU nodes, behind the Dynamo frontend. The decode worker is a single srun of
-# eight MPI ranks: srtctl lists one host per rank in its own node order under
-# `--distribution=arbitrary` (`--nodelist A,A,A,A,B,B,B,B`), so rank 0 is on the
-# node whose IP it exported as MASTER_ADDR. Model and parallelism are placeholders
-# for the layout; see tests/snapshots/launch/trtllm__dynamo-disagg-multinode.txt
-# for the exact launch plan.
+# One TP8 prefill worker on an 8-GPU node and one TP16 decode worker across two
+# 8-GPU nodes, behind the Dynamo frontend. The decode worker is a single srun of
+# sixteen MPI ranks: srtctl lists one host per rank in its own node order under
+# `--distribution=arbitrary` (`--nodelist A,A,...,B,B,...`, eight each), so rank 0
+# is on the node whose IP it exported as MASTER_ADDR. Model and parallelism are
+# placeholders for the layout; see
+# tests/snapshots/launch/trtllm__dynamo-disagg-multinode.txt for the launch plan.
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -23,7 +23,7 @@ model:
 
 resources:
   gpu_type: "h100"
-  gpus_per_node: 4
+  gpus_per_node: 8
 dynamo:
   install: false
 
@@ -40,13 +40,13 @@ roles:
   prefill:
     nodes: 1
     workers: 1
-    gpus: 4
+    gpus: 8
     env:
       PYTHONUNBUFFERED: "1"
       TLLM_LOG_LEVEL: "INFO"
     args:
       backend: "pytorch"
-      tensor_parallel_size: 4
+      tensor_parallel_size: 8
       max_batch_size: 8
       max_num_tokens: 8192
       max_seq_len: 4096
@@ -59,13 +59,13 @@ roles:
   decode:
     nodes: 2
     workers: 1
-    gpus: 8
+    gpus: 16
     env:
       PYTHONUNBUFFERED: "1"
       TLLM_LOG_LEVEL: "INFO"
     args:
       backend: "pytorch"
-      tensor_parallel_size: 8
+      tensor_parallel_size: 16
       max_batch_size: 64
       max_num_tokens: 4096
       max_seq_len: 4096

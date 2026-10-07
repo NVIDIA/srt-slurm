@@ -19,7 +19,7 @@ command: |
 
 ## prefill_0_node-01
 nodes: 1
-ntasks: 4
+ntasks: 8
 nodelist: node-01
 output: <output>/logs/node-01_prefill_w0.out
 container_image: trtllm
@@ -42,7 +42,7 @@ env_to_set:
     TRTLLM_EPLB_SHM_NAME: <random>
 srun_options:
     kill-on-bad-exit: 1
-    ntasks-per-node: 4
+    ntasks-per-node: 8
 mpi: pmix
 oversubscribe: True
 cpu_bind: verbose,none
@@ -56,8 +56,8 @@ command: |
 
 ## decode_0_node-02
 nodes: 2
-ntasks: 8
-nodelist: node-02 node-02 node-02 node-02 node-03 node-03 node-03 node-03
+ntasks: 16
+nodelist: node-02 node-02 node-02 node-02 node-02 node-02 node-02 node-02 node-03 node-03 node-03 node-03 node-03 node-03 node-03 node-03
 output: <output>/logs/node-02_decode_w0.out
 container_image: trtllm
 container_mounts:
@@ -80,7 +80,7 @@ env_to_set:
 srun_options:
     distribution: arbitrary
     kill-on-bad-exit: 1
-    ntasks-per-node: 4
+    ntasks-per-node: 8
 mpi: pmix
 oversubscribe: True
 cpu_bind: verbose,none
@@ -282,4 +282,4 @@ env_to_set:
     SRT_FRONTEND_HOST: 127.0.0.1
     SRT_FRONTEND_PORT: 8000
 command: |
-    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4x8 inf /model Qwen/Qwen3-0.6B true 12 4 8 0.8 10 2 '' true random '' false
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4x8 inf /model Qwen/Qwen3-0.6B true 24 8 16 0.8 10 2 '' true random '' false
