@@ -1066,6 +1066,36 @@ def test_uniform_multinode_endpoint_pins_rank_order(tmp_path: Path) -> None:
     assert command[command.index("--nodelist") + 1] == ",".join(["nodeA"] * 4 + ["nodeB"] * 4)
     # MASTER_ADDR is the leader's IP, and the leader is where rank 0 now provably lands.
     mock_ip.assert_any_call("nodeA", mixin.runtime.network_interface)
+    assert "export MASTER_ADDR=10.0.0.1" in command[-1]
+
+
+def test_multinode_endpoint_warns_when_it_replaces_a_configured_distribution(tmp_path: Path, caplog) -> None:
+    from srtctl.backends.trtllm import TRTLLMBackend
+    from srtctl.core.topology import endpoints_to_processes
+
+    mixin, _ = _remap_worker_mixin(tmp_path, frontend_type="trtllm_serve", dynamo_install=False)
+    mixin.runtime.gpus_per_node = 4
+    mixin.runtime.srun_options = {"distribution": "block:block"}
+    mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
+    endpoints = TRTLLMBackend().allocate_endpoints(
+        num_prefill=1,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=8,
+        gpus_per_decode=0,
+        gpus_per_agg=0,
+        gpus_per_node=4,
+        available_nodes=("nodeA", "nodeB"),
+    )
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="true"),
+        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.1"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+        caplog.at_level("WARNING", logger="srtctl.cli.mixins.worker_stage"),
+    ):
+        mixin.start_endpoint_worker(endpoints_to_processes(endpoints))
+    assert mock_srun.call_args.kwargs["srun_options"]["distribution"] == "arbitrary"
+    assert "distribution='block:block' is replaced by 'arbitrary'" in caplog.text
 
 
 def test_endpoint_rejects_incompatible_local_rank_mapping(tmp_path: Path) -> None:
