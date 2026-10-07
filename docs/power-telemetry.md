@@ -5,17 +5,34 @@ allocated worker node, the topology needed to map each GPU to a `prefill`,
 `decode`, or `agg` role, and the exact formal benchmark window for every
 measured concurrency. It never integrates power into energy and never branches
 on model, precision, or recipe; consumers integrate watts over the recorded
-window themselves.
+window themselves. The provider name is historical: the exporter that supplies
+the watts is selected per cluster or recipe (see [GPU exporter labels and metrics](#gpu-exporter-labels-and-metrics)).
 
 ## How it works
 
-- One DCGM exporter task runs on each allocated worker node, launched through
-  the normal SLURM/process-registry path (one `srun` per heterogeneous group).
+- One GPU power exporter task runs on each allocated worker node, launched
+  through the normal SLURM/process-registry path (one `srun` per heterogeneous
+  group).
 - A collector thread inside the orchestrator polls every exporter concurrently
-  from the physical head node, so all sample timestamps and benchmark
-  boundaries come from one clock.
-- Only `DCGM_FI_DEV_POWER_USAGE` is parsed. Device identity comes from the
-  `gpu` and `UUID` labels.
+  from the head node. Sample timestamps come from the orchestrator host and
+  window boundaries from the benchmark client host; both are Unix wall-clock
+  readings and the cluster's NTP synchronisation is assumed to keep them
+  aligned, so the client may run on any node (`benchmark.placement.node`,
+  including `dedicated`). Before any server starts, the
+  orchestrator probes every allocation node's bare host for a synchronised
+  clock (`timedatectl`, then `chronyc`, then `ntpq`). Each node's verdict is
+  logged (`clock_sync_check: <node> OK (<which daemon vouched>)`) and the
+  probe's output — including the chrony/ntp offset when that path proved it —
+  is kept in `<log_dir>/clock_sync_<node>.out`. A node that cannot prove
+  synchronisation aborts the job under `required: true`; under
+  `required: false` the run continues but the manifest records the failing
+  hosts in `clock_sync_failures`, carries the `clock_sync_unverified` reason,
+  and sets `publication_valid: false` — the exit code stays that of the
+  benchmark. Set `clock_sync_check: false` where those tools are unavailable.
+- The exporter's power metric (`DCGM_FI_DEV_POWER_USAGE` for DCGM) determines
+  which GPUs have power readings; optional utilization and temperature
+  readings accompany them. Device identity comes from the exporter's index and identity labels
+  (`gpu` and `UUID` for DCGM).
 - **No in-tree benchmark stamps measurement windows yet**, so every run is
   currently unpublishable: it records `MEASUREMENT_WINDOW` reason codes, and
   `required: true` exits non-zero. The adapter belongs with the benchmark
@@ -32,7 +49,7 @@ window themselves.
 benchmark:
   type: sa-bench          # future benchmark-side adapter must stamp the windows
   placement:
-    node: head            # keeps sample and window clocks on one host
+    node: head            # any placement is allowed; clocks are assumed NTP-synchronised
   isl: 8192
   osl: 1024
   concurrencies: [4]
@@ -50,7 +67,11 @@ telemetry:
     port: 9401
 ```
 
-`dcgm-power` needs **only** `dcgm_exporter`: there is no `provider` key, and it does
+`dcgm-power` needs **only** `dcgm_exporter`. A recipe that sets
+`telemetry.enabled: true` with no `dcgm_exporter` and no CPU leg inherits the
+cluster's `default_gpu_exporter` block from `srtslurm.yaml`, so one recipe can
+measure power on clusters with different GPUs. An inherited `command` replaces the
+built-in 100 ms DCGM command, so the exporter samples at whatever rate it sets. There is no `provider` key, and it does
 not require the top-level `container_image` or a `node_exporter`, because the
 collector runs inside srtctl. Config loading validates the block and rejects
 inconsistent values with actionable messages; in particular
@@ -60,6 +81,114 @@ disabled by default.
 The collector join timeout must exceed two complete request-cycle budgets
 (`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
 flight when shutdown starts plus the final bracketing scrape.
+
+## GPU exporter labels and metrics
+
+The collector, parser, manifest and validator do not know which GPU vendor they
+are measuring. The exporter config (`telemetry.dcgm_exporter`, or the cluster
+`default_gpu_exporter` it inherits) states it explicitly:
+
+- `kind: dcgm` (the default) is NVIDIA dcgm-exporter: the built-in 100 ms
+  `dcgm-exporter` command, the DCGM labels and metrics below, and tachometer's
+  `dcgm` filter with per-GPU worker labels (endpoint `dcgm_<node>`). Its labels
+  are fixed (`gpu_labels` needs `kind: custom`); `gpu_metrics` may still override
+  the DCGM metrics (another DCGM power field, say). Nothing is inferred from
+  metric names.
+- `kind: custom` is any other exporter. It must set `command`, `gpu_labels` and
+  `gpu_metrics`, and tachometer keeps its rows as served (`passthrough` filter,
+  endpoint `gpu-power_<node>`, no per-GPU worker labels).
+
+Written out, the DCGM defaults and the AMD exporter have the same shape:
+
+```yaml
+# NVIDIA dcgm-exporter: the built-in defaults, for reference
+gpu_labels:
+  index: gpu
+  identity: UUID
+  instance: [GPU_I_ID, GPU_I_PROFILE]
+gpu_metrics:
+  power:
+    metric: DCGM_FI_DEV_POWER_USAGE
+    scope: gpu_device_board_as_reported_by_dcgm
+  gpu_util:
+    metric: DCGM_FI_DEV_GPU_UTIL
+  sm_active:
+    metric: DCGM_FI_PROF_SM_ACTIVE
+  temperature:
+    metric: DCGM_FI_DEV_GPU_TEMP
+```
+
+```yaml
+# AMD rocm/device-metrics-exporter
+kind: custom
+gpu_labels:
+  index: gpu_id
+  identity: serial_number
+gpu_metrics:
+  power:
+    metric: gpu_power_usage
+    scope: amd_device_metrics_exporter_gpu_power_usage
+  gpu_util:
+    metric: gpu_gfx_activity
+  temperature:
+    metric: gpu_junction_temperature
+```
+
+- `gpu_labels.index` must carry the node-local GPU index srt-slurm allocates by;
+  `identity` must be stable per physical GPU (it fills `gpu_uuid`); samples
+  carrying an `instance` label (MIG instances, partitions) are dropped.
+- `gpu_metrics.power` is required and `scope` is recorded as `power_scope`.
+  `gpu_util` (percent), `sm_active` (DCGM's SM-active fraction, 0-1; map only a
+  metric with that meaning and range) and `temperature` (Celsius) are optional; their
+  columns stay empty when unset. Units are fixed by the artifact, not the config.
+
+The artifact layout is identical for every exporter. `manifest.json` records
+`source_metric`, `power_scope`, `utilization_metrics` and `temperature_metric`, so a consumer can tell
+the measurement boundaries apart without the config.
+
+### Example: a `kind: custom` exporter
+
+Any Prometheus exporter that reports per-GPU power can be used. This example
+configures AMD's [rocm/device-metrics-exporter](https://github.com/ROCm/device-metrics-exporter)
+`v1.5.2` at the cluster level, so recipes need not change:
+
+```yaml
+# srtslurm.yaml
+visible_devices_env: ROCR_VISIBLE_DEVICES
+default_gpu_exporter:
+  container_image: "docker://rocm/device-metrics-exporter:v1.5.2"
+  command: "/home/amd/tools/entrypoint.sh"
+  port: 5000
+  kind: custom
+  gpu_labels:
+    index: gpu_id
+    identity: serial_number
+  gpu_metrics:
+    power:
+      metric: gpu_power_usage
+      scope: amd_device_metrics_exporter_gpu_power_usage
+    gpu_util:
+      metric: gpu_gfx_activity
+    temperature:
+      metric: gpu_junction_temperature
+```
+
+The command, port, label and metric names, and scope are that exporter's, at
+that version, not srt-slurm's; check them against the exporter's documentation
+for the image you pin. The same block works under `telemetry.dcgm_exporter` in a
+recipe, as in the
+[single-node example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/amd-power-telemetry.yaml).
+For any `kind: custom` exporter:
+
+- Pyxis runs `command`, not the image's `ENTRYPOINT`, so `command` must start
+  everything the entrypoint would.
+- `port` must be the port the exporter serves on; srt-slurm passes it to the
+  command only through a `{port}` placeholder.
+- The exporter runs with the run's container mounts; mount any device nodes it
+  needs.
+- `gpu_labels.identity` must be unique per physical GPU. GPUs that share one
+  (compute partitions, for example) fail device validation (`gpu_uuid_changed`),
+  as MIG instances do on NVIDIA.
 
 ## Artifacts
 
@@ -72,13 +201,23 @@ flight when shutdown starts plus the final bracketing scrape.
 ```
 
 `samples.csv` has the exact header
-`schema_version,timestamp_unix,scrape_seq,hostname,gpu_index,gpu_uuid,power_w`,
+`schema_version,timestamp_unix,scrape_seq,hostname,gpu_index,gpu_uuid,power_w,gpu_util_pct,sm_active,temperature_c` (version 3),
 one row per observation, `(scrape_seq, hostname, gpu_index)` unique. Rows are
 never interpolated, averaged, or role-attributed — role and heterogeneous
 group live once in the manifest topology.
 
+GPU temperature is optional Celsius from `gpu_metrics.temperature` (`DCGM_FI_DEV_GPU_TEMP`
+for DCGM, `gpu_junction_temperature` on AMD MI3xx) in the same
+exporter response as power; collection adds no request, process, or wait.
+Temperature must match the power reading's GPU index and UUID. Missing,
+duplicate, non-finite, instance-labelled, or DCGM blank/error values leave the temperature
+cell empty without invalidating power. Older v1/v2 files remain readable;
+v3 readers must be deployed before upgrading producers. Consumers must show
+missing temperatures as unavailable, never zero. The exporter must expose the
+temperature field; collection does not enable additional profiling counters.
+
 `manifest.json` records producer identity (version, git commit, exporter image
-and its SHA-256), the sample interval, expected and observed device sets, the
+and its SHA-256), the power metric and scope, the sample interval, expected and observed device sets, the
 topology mapping, the expected window list, the SHA-256 of the finalized
 `samples.csv` bytes, terminal status, per-window coverage validation, and
 reason codes. `status` is the lifecycle outcome;
@@ -87,8 +226,8 @@ machine-readable strings enumerated in `srtctl/core/power/contract.py`.
 The digest is required for offline publication validation, so packages created
 before `samples_sha256` was recorded cannot be certified by this validator.
 
-A window file records the formal benchmark boundaries on the head-node Unix
-clock plus a monotonic `duration`, and points at the SA-Bench result it
+A window file records the formal benchmark boundaries on the benchmark client's
+Unix clock plus a monotonic `duration`, and points at the SA-Bench result it
 brackets; result and window are boundary-identical.
 
 With `required: true`, all artifacts are written first and the job then exits

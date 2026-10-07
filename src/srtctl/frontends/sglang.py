@@ -66,9 +66,6 @@ class SGLangRouterFrontend(StaticRouterFrontend):
             managed.extend(["--prometheus-host", "0.0.0.0"])
         return managed
 
-    def worker_scheme(self, backend: Any, mode: str) -> str:
-        return "grpc" if backend.is_grpc_mode(mode) else "http"
-
     def resolve_worker_host(self, node: str, network_interface: str | None) -> str:
         return get_hostname_ip(node, network_interface)
 

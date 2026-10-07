@@ -5,12 +5,11 @@
 
 from __future__ import annotations
 
-import shlex
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.core.health import WorkerHealthResult, probe_http_ok
 from srtctl.frontends.base import logical_health_expectations, register_frontend
-from srtctl.frontends.static_router import RouterWorker, StaticRouterFrontend
+from srtctl.frontends.static_router import RouterWorker, StaticRouterFrontend, setup_script_preamble
 from srtctl.ports import VLLM_DISCOVERY_PORT
 
 if TYPE_CHECKING:
@@ -233,19 +232,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
 
     def build_bash_preamble(self, config: Any) -> str | None:
         """Run the recipe setup script in the vLLM Router container."""
-        setup_script = getattr(config, "setup_script", None)
-        if not setup_script:
-            return None
-        script_name = shlex.quote(setup_script)
-        return (
-            f"setup_script={script_name} && "
-            'script_path="/configs/${setup_script}" && '
-            'patch_script_path="/configs/patches/${setup_script}" && '
-            'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
-            'if [ -f "${script_path}" ]; then bash "${script_path}"; '
-            'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
-            'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
-        )
+        return setup_script_preamble(config)
 
     def get_backend_health_urls(
         self,

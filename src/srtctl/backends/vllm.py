@@ -27,10 +27,9 @@ from typing import (
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args, role_kv_events
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args, role_kv_events
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
-    BOOTSTRAP_PORTS,
     DP_RPC_PORTS,
     DYN_SYSTEM_PORT_BASE,
     HTTP_PORTS,
@@ -56,8 +55,6 @@ if TYPE_CHECKING:
     from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
-# Type alias for worker modes
-WorkerMode = Literal["prefill", "decode", "agg"]
 DPLaunchMode = Literal["per_gpu", "per_node"]
 
 logger = logging.getLogger(__name__)
@@ -601,6 +598,11 @@ class VLLMBackend(Backend):
         filename = "mooncake_store_config_gpu" + "-".join(map(str, gpu_ids)) + ".json"
         return filename, payload
 
+    def is_grpc_mode(self, mode: WorkerMode) -> bool:
+        """``roles.<role>.args.grpc: true`` renders ``vllm serve --grpc`` (served by smg-grpc-servicer)."""
+        config = self.get_config_for_mode(mode)
+        return any(normalize_vllm_config_key(key) == "grpc" and value is True for key, value in config.items())
+
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from the roles' engine args, or return default."""
         for mode in ("prefill", "agg", "decode"):
@@ -878,9 +880,10 @@ class VLLMBackend(Backend):
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        Dynamo DP+EP mode uses the configured per-GPU or per-node process layout.
-        For direct vLLM aggregate jobs, `vllm serve` manages local DP ranks from
-        one process, so keep the standard one-process-per-node topology.
+        Dynamo DP+EP mode and routers that expand node-local DP pools use the
+        configured per-GPU or per-node process layout. Any other direct worker is
+        one `vllm serve` that manages its DP ranks itself (headless on the other
+        nodes), so it keeps the standard topology: one API on the leader node.
         For standard TP mode, creates one process per node. Every process then
         gets the listeners its KV connector needs from the allocator (see
         ``_with_connector_ports``).
@@ -889,10 +892,13 @@ class VLLMBackend(Backend):
         from srtctl.frontends import get_frontend
 
         allocator = port_allocator_for(port_allocator, base_sys_port)
-        if get_frontend(frontend_type).worker_api_port("agg") == "public":
-            # The worker is the public endpoint: one `vllm serve` per node owns
-            # its local DP ranks, so the standard topology applies.
-            processes = endpoints_to_processes(endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar)
+        frontend = get_frontend(frontend_type)
+        if frontend.worker_launch == "direct" and not frontend.expands_node_local_dp:
+            # One `vllm serve` owns every DP rank of the endpoint, and only the
+            # leader serves the API, so the standard topology applies.
+            processes = endpoints_to_processes(
+                endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar, bootstrap_ports=False
+            )
         elif not any(self._is_dp_mode(ep.mode) for ep in endpoints):
             # Standard TP mode: one process per node, or one per engine of the
             # worker under backend.failover (engine 0 plus its shadows).
@@ -901,6 +907,7 @@ class VLLMBackend(Backend):
                 port_allocator=allocator,
                 engines_per_process=self.engines_per_process,
                 sidecar_grpc=dynamo_sidecar,
+                bootstrap_ports=False,
             )
         elif self.dp_launch_mode == "per_node":
             processes = self._dp_per_node_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
@@ -953,11 +960,6 @@ class VLLMBackend(Backend):
                             endpoint_mode=endpoint.mode,
                             endpoint_index=endpoint.index,
                             node_rank=node_rank,
-                            bootstrap_port=(
-                                allocator.next(BOOTSTRAP_PORTS, node)
-                                if endpoint.mode == "prefill" and is_leader
-                                else None
-                            ),
                             kv_events_port=allocator.next(KV_EVENTS_PORTS),
                             nixl_port=allocator.next(NIXL_PORTS),
                             kvbm_zmq_port=allocator.next(KVBM_ZMQ_PORTS),
@@ -988,11 +990,6 @@ class VLLMBackend(Backend):
                             endpoint_mode=endpoint.mode,
                             endpoint_index=endpoint.index,
                             node_rank=dp_rank,  # dp_rank stored in node_rank for now
-                            bootstrap_port=(
-                                allocator.next(BOOTSTRAP_PORTS, node)
-                                if endpoint.mode == "prefill" and is_leader
-                                else None
-                            ),
                             kv_events_port=allocator.next(KV_EVENTS_PORTS),
                             nixl_port=nixl_base_port,
                             dp_rpc_port=dp_rpc_port,
@@ -1022,7 +1019,9 @@ class VLLMBackend(Backend):
         for endpoint in endpoints:
             if not self._is_dp_mode(endpoint.mode):
                 processes.extend(
-                    endpoints_to_processes([endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc)
+                    endpoints_to_processes(
+                        [endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc, bootstrap_ports=False
+                    )
                 )
                 continue
 
@@ -1045,7 +1044,9 @@ class VLLMBackend(Backend):
                         f"{dp_size * nodes_per_dp_rank} nodes total, but the endpoint has {len(endpoint.nodes)}"
                     )
                 processes.extend(
-                    endpoints_to_processes([endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc)
+                    endpoints_to_processes(
+                        [endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc, bootstrap_ports=False
+                    )
                 )
                 continue
 
@@ -1070,7 +1071,6 @@ class VLLMBackend(Backend):
                         endpoint_mode=endpoint.mode,
                         endpoint_index=endpoint.index,
                         node_rank=dp_start_rank,
-                        bootstrap_port=(allocator.next(BOOTSTRAP_PORTS, node) if endpoint.mode == "prefill" else None),
                         # One KV-event publisher per local DP rank: reserve the block.
                         kv_events_port=allocator.next(KV_EVENTS_PORTS, size=local_dp_size),
                         nixl_port=nixl_base_port,
@@ -1524,6 +1524,9 @@ class VLLMBackend(Backend):
             # frontend nodes. Headless followers take its native executor path.
             # The current `vllm-rs serve` launcher does not implement hybrid
             # startup; requests still use the Rust frontend in this path.
+            # Frontend nodes require vllm-project/vllm#59659 (--grpc-port),
+            # and hybrid DP also requires #57116 (local DP Control metadata),
+            # or equivalent backports. See docs/sidecars.md for compatibility.
             # VLLM_RUST_FRONTEND_PATH, when configured, is inherited unchanged.
             command.extend(["env", "VLLM_USE_RUST_FRONTEND=1", "python3", "-m", "vllm.entrypoints.cli.main"])
         else:

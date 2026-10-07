@@ -300,10 +300,7 @@ def show_config_details(config: SrtConfig) -> None:
                 f"{mode}: enable_iter_perf_stats={_engine_bool(section.get('enable_iter_perf_stats'))}, "
                 f"return_perf_metrics={_engine_bool(section.get('return_perf_metrics'))}"
             )
-        rows.append(
-            "(engine yaml; the iteration-level trtllm_* gauges and the dashboard's KV-utilisation panels "
-            "need enable_iter_perf_stats: true)"
-        )
+        rows.append("(engine yaml; the iteration-level trtllm_* gauges need enable_iter_perf_stats: true)")
         console.print(Panel("\n".join(rows), title="TRT-LLM Engine Statistics", border_style="cyan"))
 
     if config.frontend.type == "vllm":
@@ -744,6 +741,7 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
             if exporter is not None:
                 details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
+                details.add_row("telemetry", "power_metric", exporter.power_mapping.power_metric)
 
             cpu_exporter = config.telemetry.cpu_power_exporter
             if cpu_exporter is not None:

@@ -89,3 +89,55 @@ def test_install_requires_runtime_wheel_for_compute_arch(monkeypatch, tmp_path: 
                 "DYNAMO_WHEEL_DIRS": str(wheel_dir),
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("index_env", "index_url", "extra_index_url"),
+    [
+        ({}, "https://pypi.org/simple", "https://pypi.nvidia.com"),
+        (
+            {"DYNAMO_INDEX_URL": "https://packages.example/simple", "DYNAMO_EXTRA_INDEX_URL": "https://gpu.example"},
+            "https://packages.example/simple",
+            "https://gpu.example",
+        ),
+    ],
+)
+def test_install_resolves_dependencies_with_exact_staged_files(
+    monkeypatch, tmp_path: Path, index_env: dict[str, str], index_url: str, extra_index_url: str
+):
+    """Staged installs allow pip to fetch dependencies and honor index overrides."""
+    version = "1.2.0.dev20260426"
+    dynamo_wheel = tmp_path / f"ai_dynamo-{version}-py3-none-any.whl"
+    runtime_wheel = tmp_path / f"ai_dynamo_runtime-{version}-cp312-abi3-manylinux_2_28_aarch64.whl"
+    dynamo_wheel.touch()
+    runtime_wheel.touch()
+    calls = []
+    imports = []
+
+    def fake_run(command, check):
+        assert check is True
+        calls.append(command)
+
+    monkeypatch.setattr(dynamo_wheels, "_already_installed", lambda _version: False)
+    monkeypatch.setattr(dynamo_wheels.subprocess, "run", fake_run)
+    monkeypatch.setattr(dynamo_wheels.importlib, "import_module", imports.append)
+
+    dynamo_wheels.install(
+        env={
+            "DYNAMO_VERSION": version,
+            "DYNAMO_WHEEL_ARCH": "aarch64",
+            "DYNAMO_WHEEL_DIRS": str(tmp_path),
+            **index_env,
+        }
+    )
+
+    assert len(calls) == 1
+    command = calls[0]
+    assert "--no-deps" not in command
+    assert "--no-index" not in command
+    assert command[command.index("--index-url") + 1] == index_url
+    assert command[command.index("--extra-index-url") + 1] == extra_index_url
+    assert command[command.index("--find-links") + 1] == str(tmp_path)
+    assert "--pre" in command
+    assert command[-2:] == [str(runtime_wheel), str(dynamo_wheel)]
+    assert imports == ["dynamo.llm"]

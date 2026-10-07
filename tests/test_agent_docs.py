@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC = REPO_ROOT / "src" / "srtctl"
 
 # Paths that name user or job files, not files in this repository.
-RUNTIME_PATHS = {"logs/", "perf_dashboard_bundle/", "srtslurm.yaml", "sbatch_script.sh"}
+RUNTIME_PATHS = {"logs/", "srtslurm.yaml", "sbatch_script.sh"}
 # Names from Python, third-party packages, or upstream engines.
 EXTERNAL_NAMES = {"TypedDict", "RequestException", "MPI_Abort", "get_open_port", "isinstance"}
 

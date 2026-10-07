@@ -8,7 +8,7 @@ from __future__ import annotations
 import codecs
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -133,7 +133,7 @@ class StatusStore:
             conn.executescript(_SCHEMA)
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
         conn = sqlite3.connect(self.db_path, timeout=5.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         try:
@@ -142,7 +142,7 @@ class StatusStore:
             conn.close()
 
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Connection]:
+    def _transaction(self) -> Generator[sqlite3.Connection, None, None]:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:

@@ -54,8 +54,8 @@ class TRTLLMServeFrontend(Frontend):
         """The aggregate worker is the endpoint; P/D workers sit behind the disaggregated orchestrator."""
         return "public" if mode == "agg" else "allocated"
 
-    # trtllm-serve (worker and disaggregated orchestrator alike) serves Prometheus
-    # text at /prometheus/metrics; GET /metrics on a worker is JSON iteration stats.
+    # The disaggregated orchestrator serves Prometheus text at /prometheus/metrics, as
+    # its trtllm-serve workers do (TRTLLMBackend.prometheus_metrics_path).
     metrics_path: ClassVar[str] = "/prometheus/metrics"
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
@@ -209,8 +209,7 @@ class TRTLLMServeFrontend(Frontend):
             env_to_set.update(config.frontend.env)
 
         # Keep the Dynamo frontend's log naming pattern ({node}_frontend_{i}.out)
-        # so downstream tooling that globs *_frontend_*.out (perf dashboard,
-        # log collection) treats both frontends identically.
+        # so log collection that globs *_frontend_*.out treats both frontends identically.
         orch_log = runtime.log_dir / f"{frontend_node}_frontend_0.out"
         step_name = "trtllm_serve_orchestrator"
         proc = start_srun_process(

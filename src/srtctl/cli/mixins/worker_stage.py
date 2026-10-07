@@ -12,8 +12,9 @@ import shlex
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
+from srtctl.backends.base import WorkerMode
 from srtctl.backends.vllm import VLLMBackend, VLLMFailoverConfig
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
@@ -159,7 +160,7 @@ class WorkerStageMixin:
 
         return " && ".join(parts)
 
-    def _fatal_log_patterns(self, mode: Literal["prefill", "decode", "agg"]) -> tuple[str, ...]:
+    def _fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
         """Log lines that fail a worker whose srun step outlives its engine.
 
         The backend names the lines its launcher prints once the engine has died
@@ -228,7 +229,7 @@ class WorkerStageMixin:
         env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(leader.kvbm_zmq_port))
         env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(leader.kvbm_zmq_port + 1))
 
-    def _get_worker_environment_for_mode(self, mode: Literal["prefill", "decode", "agg"]) -> dict[str, str]:
+    def _get_worker_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         """Return mode environment with engine-specific defaults the recipe can override."""
         backend = self.config.backend_for_role(mode)
         environment = backend.get_environment_for_mode(mode)

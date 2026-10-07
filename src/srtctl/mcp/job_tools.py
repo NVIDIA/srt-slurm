@@ -203,9 +203,6 @@ def job_status(job_id: str, *, output_dir: str | None = None, tail: int = 20) ->
             status["benchmark_rollup"] = json.loads(rollup.read_text())
         except (OSError, json.JSONDecodeError) as exc:
             status["benchmark_rollup_error"] = str(exc)
-    dashboard = job_dir / "logs" / "perf_dashboard.html"
-    if dashboard.exists():
-        status["perf_dashboard"] = str(dashboard)
     return status
 
 

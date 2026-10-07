@@ -22,9 +22,9 @@ from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
 
 if TYPE_CHECKING:
+    from srtctl.backends.base import WorkerMode
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
-    from srtctl.core.topology import WorkerMode
 
 ETCD_SERVICE_NAME = "etcd"
 NATS_SERVICE_NAME = "nats"
@@ -175,7 +175,11 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                         placement=ServicePlacementConfig(node="compute"),
                         container=dcgm.container_image,
                         command=dcgm.command.format(port=dcgm.port).split() if dcgm.command else None,
-                        options={"port": dcgm.port, "collect_interval_ms": tachometer.collect_interval_ms},
+                        options={
+                            "port": dcgm.port,
+                            "collect_interval_ms": tachometer.collect_interval_ms,
+                            "kind": dcgm.kind,
+                        },
                     ),
                     implicit=True,
                     reason="observability.tachometer default exporters",
