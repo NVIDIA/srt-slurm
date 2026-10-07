@@ -11,6 +11,7 @@ static router (SMG) it is TokenSpeed's gRPC engine, ``python3 -m smg_grpc_servic
 from __future__ import annotations
 
 import builtins
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import field, replace
 from pathlib import Path
@@ -202,5 +203,7 @@ class TokenSpeedBackend(Backend):
             cmd.extend(["--disaggregation-mode", mode])
         if mode == "prefill" and process.bootstrap_port is not None:
             cmd.extend(["--disaggregation-bootstrap-port", str(process.bootstrap_port)])
+        # TokenSpeed parses mapping-valued flags (kv-events-config, Mooncake extra config) as JSON.
+        config = {key: json.dumps(value) if isinstance(value, dict) else value for key, value in config.items()}
         cmd.extend(_config_to_cli_args(config))
         return cmd
