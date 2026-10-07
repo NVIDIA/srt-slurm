@@ -30,8 +30,6 @@ from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
     GRPC_HTTP_PORTS,
     LMCACHE_SERVER_PORT,
-    MOONCAKE_HTTP_METADATA_PORT,
-    MOONCAKE_MASTER_PORT,
     NCCL_PORTS,
 )
 
@@ -154,31 +152,6 @@ class SGLangBackend(Backend):
         if "LMCACHE_MP_HOST" in self.get_environment_for_mode(mode):
             return {}
         return {"LMCACHE_MP_HOST": "127.0.0.1", "LMCACHE_MP_PORT": str(LMCACHE_SERVER_PORT)}
-
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        """Get mooncake env vars to inject on a specific worker.
-
-        Returns empty dict if mooncake_kv_store is not configured. Otherwise:
-        - MOONCAKE_LOCAL_HOSTNAME defaults to the worker's resolved IP, but the
-          user can override it in mooncake_kv_store.env if they need something
-          custom (e.g. a specific RDMA NIC IP).
-        - MOONCAKE_MASTER and MOONCAKE_TE_META_DATA_SERVER are always set by
-          srtslurm to point at the infra-node mooncake_master, and override any
-          user-supplied value (the user can't know the infra IP at config time).
-
-        Args:
-            infra_node_ip: Resolved IP of the infra node where mooncake_master runs.
-            local_hostname: Resolved IP of the worker's own node, for peer-to-peer
-                transfers. Defaults to the worker's primary network interface IP.
-        """
-        if self.mooncake_kv_store is None:
-            return {}
-        return {
-            "MOONCAKE_LOCAL_HOSTNAME": local_hostname,
-            **self.mooncake_kv_store.env,
-            "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
-            "MOONCAKE_TE_META_DATA_SERVER": (f"http://{infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata"),
-        }
 
     def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """Check if gRPC mode is enabled for a worker mode."""

@@ -36,7 +36,6 @@ from srtctl.ports import (
     KV_EVENTS_PORTS,
     KVBM_ZMQ_PORTS,
     LMCACHE_SERVER_PORT,
-    MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     MORIIO_HANDSHAKE_PORTS,
     MORIIO_NOTIFY_PORTS,
@@ -532,29 +531,17 @@ class VLLMBackend(Backend):
         return env
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        """Get mooncake env vars to inject on a specific vLLM worker.
+        """The shared MOONCAKE_* environment plus ``MOONCAKE_CONFIG_PATH``.
 
-        Returns ``{}`` when ``mooncake_kv_store`` is unset. Otherwise:
-
-        - ``MOONCAKE_MASTER`` and ``MOONCAKE_TE_META_DATA_SERVER`` are always
-          stamped by srtslurm (the user can't know the infra IP at config time).
-        - ``MOONCAKE_LOCAL_HOSTNAME`` defaults to the worker's resolved IP for
-          multi-node peer transfers, but a value in ``mooncake_kv_store.env``
-          wins (use this to pin to a specific RDMA NIC IP).
-        - ``MOONCAKE_CONFIG_PATH`` points to the JSON file srtslurm writes at
-          job start (mounted into the container at ``/logs``). vLLM's
-          ``MooncakeStoreConnector`` requires this — it does not read the
-          ``MOONCAKE_*`` env vars directly.
+        ``MOONCAKE_CONFIG_PATH`` points to the JSON file srtslurm writes at job
+        start (mounted into the container at ``/logs``). vLLM's
+        ``MooncakeStoreConnector`` requires this — it does not read the
+        ``MOONCAKE_*`` env vars directly.
         """
-        if self.mooncake_kv_store is None:
-            return {}
-        return {
-            "MOONCAKE_LOCAL_HOSTNAME": local_hostname,
-            **self.mooncake_kv_store.env,
-            "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
-            "MOONCAKE_TE_META_DATA_SERVER": (f"http://{infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata"),
-            "MOONCAKE_CONFIG_PATH": MOONCAKE_STORE_CONFIG_CONTAINER_PATH,
-        }
+        env = super().get_mooncake_worker_env(infra_node_ip, local_hostname)
+        if env:
+            env["MOONCAKE_CONFIG_PATH"] = MOONCAKE_STORE_CONFIG_CONTAINER_PATH
+        return env
 
     def build_mooncake_store_config(self, infra_node_ip: str) -> dict[str, Any]:
         """Build the JSON payload for vLLM's ``MooncakeStoreConfig.load_from_env()``.

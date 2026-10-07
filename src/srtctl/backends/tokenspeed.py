@@ -20,7 +20,7 @@ from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args
-from srtctl.backends.sglang import MooncakeKVStoreConfig, SGLangBackend, _config_to_cli_args
+from srtctl.backends.sglang import MooncakeKVStoreConfig, _config_to_cli_args
 from srtctl.ports import DIST_INIT_PORTS, DYN_SYSTEM_PORT_BASE, TOKENSPEED_PORTS
 
 if TYPE_CHECKING:
@@ -64,9 +64,6 @@ class TokenSpeedBackend(Backend):
     mooncake_kv_store: MooncakeKVStoreConfig | None = None
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
-
-    # The same MOONCAKE_* variables SGLang's Mooncake store client reads.
-    get_mooncake_worker_env = SGLangBackend.get_mooncake_worker_env
 
     def get_process_environment(self, process: Process) -> dict[str, str]:
         """Skip the gRPC engine's startup warmup on prefill and decode workers.

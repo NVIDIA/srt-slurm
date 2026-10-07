@@ -493,12 +493,8 @@ class TestMooncakeKVStore:
 
     def test_mooncake_worker_env_minimal(self):
         """mooncake_kv_store with no env → MOONCAKE_MASTER + metadata URL + auto-resolved hostname."""
-        from srtctl.backends.sglang import (
-            MOONCAKE_HTTP_METADATA_PORT,
-            MOONCAKE_MASTER_PORT,
-            MooncakeKVStoreConfig,
-            SGLangBackend,
-        )
+        from srtctl.backends.sglang import MooncakeKVStoreConfig, SGLangBackend
+        from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 
         backend = SGLangBackend(mooncake_kv_store=MooncakeKVStoreConfig())
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
@@ -510,12 +506,8 @@ class TestMooncakeKVStore:
 
     def test_mooncake_worker_env_master_always_overrides_user(self):
         """User-supplied MOONCAKE_MASTER and metadata URL are always overridden by srtslurm."""
-        from srtctl.backends.sglang import (
-            MOONCAKE_HTTP_METADATA_PORT,
-            MOONCAKE_MASTER_PORT,
-            MooncakeKVStoreConfig,
-            SGLangBackend,
-        )
+        from srtctl.backends.sglang import MooncakeKVStoreConfig, SGLangBackend
+        from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 
         backend = SGLangBackend(
             mooncake_kv_store=MooncakeKVStoreConfig(
@@ -541,7 +533,8 @@ class TestMooncakeKVStore:
 
     def test_mooncake_worker_env_passthrough(self):
         """mooncake_kv_store.env values are merged with MOONCAKE_MASTER."""
-        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangBackend
+        from srtctl.backends.sglang import MooncakeKVStoreConfig, SGLangBackend
+        from srtctl.ports import MOONCAKE_MASTER_PORT
 
         backend = SGLangBackend(
             mooncake_kv_store=MooncakeKVStoreConfig(
