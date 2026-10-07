@@ -63,8 +63,6 @@ containers:
   smg: /path/to/smg.sqsh                    # Shepherd Model Gateway image (lightseekorg/smg), the router for the smg examples
 ```
 
-The matrix recipes set `resources.gpu_type` and `gpus_per_node` to `h100` and `8`; change them to match the partition you submit to. The multinode SGLang sidecar examples allocate one GPU per node: two nodes for aggregate mode, four for disaggregated mode.
-
 ## Optional GPU temperature
 
 To retain temperature with the existing power collector, add this telemetry block
