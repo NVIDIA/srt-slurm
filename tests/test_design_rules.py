@@ -88,83 +88,11 @@ def frontend_name_branches(rel: str, tree: ast.Module) -> Iterator[Site]:
 _PORT_NAME = re.compile(r"(^|_)(port|PORT)(_BASE)?$")
 
 
-def _subscriber_destination_arithmetic(tree: ast.Module) -> set[ast.BinOp]:
-    """Recognize outbound KV-event URLs through the Frontend subscriber contract.
-
-    ``kv_events_subscriber`` returns a remote (host, port, topic), not a listener
-    allocation. A publisher may undo its engine's rank offset in that destination.
-    Follow single-assignment locals within one function, and exempt only the port
-    expression in an ``endpoint`` URL using that same remote host. Reusing the
-    port for a listener, or changing either local, must still trip the rule.
-    """
-    destinations: set[ast.BinOp] = set()
-    for scope in ast.walk(tree):
-        if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        # Nested scopes have independent bindings and are considered separately.
-        nodes: list[ast.AST] = []
-        pending: list[ast.AST] = list(scope.body)
-        while pending:
-            node = pending.pop()
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
-                continue
-            nodes.append(node)
-            pending.extend(ast.iter_child_nodes(node))
-        stores: dict[str, int] = {}
-        assignments: dict[str, ast.expr] = {}
-        for node in nodes:
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-                stores[node.id] = stores.get(node.id, 0) + 1
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                assignments[node.targets[0].id] = node.value
-        addresses: set[tuple[str, str]] = set()
-        for node in nodes:
-            if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
-                continue
-            target = node.targets[0]
-            if not (isinstance(target, ast.Tuple) and len(target.elts) == 3):
-                continue
-            host, port, _ = target.elts
-            if not (isinstance(host, ast.Name) and isinstance(port, ast.Name)):
-                continue
-            if stores.get(host.id) != 1 or stores.get(port.id) != 1:
-                continue
-            value = node.value
-            if isinstance(value, ast.Name) and stores.get(value.id) == 1:
-                value = assignments.get(value.id, value)
-            if isinstance(value, ast.IfExp) and isinstance(value.orelse, ast.Constant) and value.orelse.value is None:
-                value = value.body
-            if (
-                isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Attribute)
-                and value.func.attr == "kv_events_subscriber"
-            ):
-                addresses.add((host.id, port.id))
-        for node in nodes:
-            if not isinstance(node, ast.Dict):
-                continue
-            for key, value in zip(node.keys, node.values, strict=True):
-                if not (isinstance(key, ast.Constant) and key.value == "endpoint" and isinstance(value, ast.JoinedStr)):
-                    continue
-                match value.values:
-                    case [
-                        ast.Constant(value="tcp://"),
-                        ast.FormattedValue(value=ast.Name(id=host)),
-                        ast.Constant(value=":"),
-                        ast.FormattedValue(value=ast.BinOp(left=ast.Name(id=port)) as arithmetic),
-                    ] if (host, port) in addresses:
-                        destinations.add(arithmetic)
-    return destinations
-
-
 def port_arithmetic(rel: str, tree: ast.Module) -> Iterator[Site]:
     if rel in ("ports.py", "core/topology.py"):
         return
-    destinations = _subscriber_destination_arithmetic(tree)
     for node in ast.walk(tree):
         if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add | ast.Sub)):
-            continue
-        if node in destinations:
             continue
         for operand in (node.left, node.right):
             dotted = _dotted(operand)

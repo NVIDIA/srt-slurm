@@ -226,10 +226,20 @@ srtctl wires the rest:
   endpoint the EPP routes to (a decode worker's sidecar port) and the model requests
   name; the producer files the events under that endpoint
   ([`vllm_adapter.go`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/kvevents/engineadapter/vllm_adapter.go#L52-L58)).
-  vLLM adds a publisher's DP rank to its port, so an external-LB rank `r` is given
-  `5557 - r`.
+  vLLM [adds the publisher's DP rank to its port](https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/distributed/kv_events.py#L336-L340),
+  so an external-LB rank `r` is given `5557 - r`. The engine sets
+  [`data_parallel_index` to the global rank](https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/v1/engine/core.py#L1303-L1313),
+  which the [scheduler passes to the publisher](https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/v1/core/sched/scheduler.py#L161-L164).
+  An explicit TCP address [connects rather than binds](https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/distributed/kv_events.py#L410-L427),
+  so all ranks reach the EPP's one subscriber socket.
 - The token producer's `vllm.url` is the first prefill worker's (else the first worker's)
   own vLLM API, and `modelName` defaults to the served model name.
+
+These vLLM references are pinned to `ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9`,
+shipped in the tested `quay.io/rh-ee-imarkov/llm-d-nokube-vllm:dspark-0814-nightly` image.
+The [run artifact](https://github.com/SemiAnalysisAI/InferenceX/actions/runs/37396765122/artifacts/11388917384)
+records `VLLM_IMAGE_TAG=vllm/vllm-openai:nightly-ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9`
+and installed version `0.27.2rc1.dev77+gac7509e2b` in `fingerprint_decode_w0.json`.
 
 With vLLM's `OffloadingConnector` and its `self_describing_kv_events: true`, a worker also
 reports the blocks it offloads to host memory; the producer indexes them as the `cpu` tier

@@ -106,6 +106,15 @@ RAY_DASHBOARD_PORT = 8265
 DYNAMO_SIDECAR_GRPC_PORT = 50051
 
 
+def rank_offset_subscriber_port(port: int, rank: int) -> int:
+    """Undo vLLM's global DP-rank offset to reach a shared KV-event subscriber.
+
+    Tested image's offset_endpoint_port:
+    https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/distributed/kv_events.py#L495-L523
+    """
+    return port - rank
+
+
 @dataclass(frozen=True)
 class PortKind:
     """One kind of listener a worker process binds, allocated by ``NodePortAllocator``.

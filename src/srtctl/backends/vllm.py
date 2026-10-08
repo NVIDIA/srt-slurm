@@ -47,6 +47,7 @@ from srtctl.ports import (
     VLLM_MASTER_PORT_BASE,
     VLLM_MASTER_PORT_STRIDE,
     VLLM_SCAN_PORTS,
+    rank_offset_subscriber_port,
 )
 
 if TYPE_CHECKING:
@@ -1297,9 +1298,14 @@ class VLLMBackend(Backend):
             subscriber = frontend.kv_events_subscriber(process, runtime, served_model_name) if kv_events else None
             if kv_events and subscriber is not None:
                 host, port, topic = subscriber
-                # Offset vLLM's rank addition so every publisher reaches the same subscriber port.
+                # Tested vLLM uses the global DP rank for the publisher offset:
+                # https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/v1/engine/core.py#L1303-L1313
+                # https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/v1/core/sched/scheduler.py#L161-L164
+                # Explicit TCP addresses connect rather than bind:
+                # https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/distributed/kv_events.py#L410-L427
                 rank = process.dp_rank or 0
-                kv_events = {**kv_events, "endpoint": f"tcp://{host}:{port - rank}", "topic": topic}
+                publisher_port = rank_offset_subscriber_port(port, rank)
+                kv_events = {**kv_events, "endpoint": f"tcp://{host}:{publisher_port}", "topic": topic}
                 cmd.extend(["--kv-events-config", json.dumps(kv_events)])
             cmd.extend(_config_to_cli_args(config))
             return cmd
