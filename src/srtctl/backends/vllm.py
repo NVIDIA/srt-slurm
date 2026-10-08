@@ -775,66 +775,10 @@ class VLLMBackend(Backend):
             )
         return dp_size, model_parallel_size
 
-    def _get_int_flag(self, mode: WorkerMode, name: str, default: int = 1) -> int:
-        """Read a positive integer CLI flag from the mode config."""
-        config = self.get_config_for_mode(mode)
-        raw = config.get(name)
-        if raw is None:
-            raw = config.get(name.replace("-", "_"))
-        if raw is None:
-            return default
-        try:
-            value = int(raw)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{mode} {name}={raw!r} is not an integer") from exc
-        if value < 1:
-            raise ValueError(f"{mode} {name}={value} must be >= 1")
-        return value
-
-    def _tp_size(self, mode: WorkerMode) -> int:
-        return self._get_int_flag(mode, "tensor-parallel-size", 1)
-
-    def _pp_size(self, mode: WorkerMode) -> int:
-        return self._get_int_flag(mode, "pipeline-parallel-size", 1)
-
-    def _gpus_per_dp_rank(self, mode: WorkerMode) -> int:
-        """GPUs consumed by one DP rank: TP × PP."""
-        return self._tp_size(mode) * self._pp_size(mode)
-
-    def _local_dp_size(self, mode: WorkerMode, gpu_count: int) -> int:
-        """DP ranks owned by one process that sees ``gpu_count`` GPUs.
-
-        vLLM world size is TP × DP × PP, so a DP rank occupies TP × PP GPUs.
-        Those GPUs must fit on the node: a DP rank that spans nodes needs the
-        non-DP TP launch path (``--nnodes`` / ``--node-rank``), not DP local ranks.
-        """
-        tp = self._tp_size(mode)
-        pp = self._pp_size(mode)
-        gpus_per_rank = tp * pp
-        if gpu_count % gpus_per_rank != 0:
-            raise ValueError(
-                f"{mode} tensor-parallel-size={tp} * pipeline-parallel-size={pp} "
-                f"= {gpus_per_rank} GPUs per DP rank does not divide the "
-                f"{gpu_count} GPUs allocated on each node"
-            )
-        return gpu_count // gpus_per_rank
-
-    def _validate_dp_world_size(self, mode: WorkerMode, dp_size: int, total_gpus: int) -> None:
-        """Require TP × DP × PP to match the GPUs allocated to the endpoint."""
-        tp = self._tp_size(mode)
-        pp = self._pp_size(mode)
-        world = dp_size * tp * pp
-        if world != total_gpus:
-            raise ValueError(
-                f"{mode} data-parallel-size={dp_size} * tensor-parallel-size={tp} "
-                f"* pipeline-parallel-size={pp} = {world} does not match "
-                f"the endpoint's {total_gpus} allocated GPUs"
-            )
-
     def _dp_rank_gpu_groups(self, mode: WorkerMode, gpu_indices: frozenset[int]) -> list[frozenset[int]]:
         """Split a node's GPUs into one group per local DP rank."""
-        gpus_per_rank = self._gpus_per_dp_rank(mode)
-        self._local_dp_size(mode, len(gpu_indices))
+        gpus_per_rank = self._get_model_parallel_size(mode)
+        self._get_local_dp_size(mode, len(gpu_indices))
         sorted_gpus = sorted(gpu_indices)
         return [
             frozenset(sorted_gpus[offset : offset + gpus_per_rank])
@@ -985,7 +929,7 @@ class VLLMBackend(Backend):
         sidecar_grpc: bool,
         every_rank_serves: bool = False,
     ) -> list[Process]:
-        """DP+EP mode with one process per DP rank (TP x PP GPUs each).
+        """DP+EP mode with one process per DP rank (TP x PP x PCP GPUs each).
 
         Only rank 0 serves the API unless ``every_rank_serves`` (external load
         balancing), when every rank gets its own HTTP port.
@@ -1015,12 +959,10 @@ class VLLMBackend(Backend):
                     )
                 continue
 
-            # One process per DP rank. With TP=1 this is one GPU; with TP>1 the
-            # process owns the TP x PP GPUs for that rank.
+            # One process per DP rank, owning its TP x PP x PCP GPUs.
             dp_rank = 0
             dp_rpc_port = allocator.next(DP_RPC_PORTS, endpoint.leader_node)
-            dp_size = self._get_dp_size(endpoint.mode) or (endpoint.total_gpus // self._gpus_per_dp_rank(endpoint.mode))
-            self._validate_dp_world_size(endpoint.mode, dp_size, endpoint.total_gpus)
+            dp_size, _ = self._validate_endpoint_parallelism(endpoint)
             rank_gpu_groups = self._dp_rank_gpu_groups(endpoint.mode, endpoint.gpu_indices)
             # vLLM computes actual_port = base + data_parallel_rank, so every DP
             # rank of the endpoint shares one reserved block.
