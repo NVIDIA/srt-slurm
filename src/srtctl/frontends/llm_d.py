@@ -212,7 +212,7 @@ def envoy_config(listen_port: int, access_log: str) -> str:
     from jinja2 import Environment, FileSystemLoader
 
     templates = Environment(loader=FileSystemLoader(str(Path(__file__).parent.parent / "templates")))
-    return templates.get_template("llm-d-envoy.yaml.j2").render(
+    return templates.get_template("llm_d_envoy.yaml.j2").render(
         admin_port=LLM_D_ENVOY_ADMIN_PORT,
         listen_port=listen_port,
         access_log=access_log,
