@@ -249,12 +249,11 @@ Profiling configuration.
 
 ### OutputConfig
 
-Output paths and optional reproducibility artifacts.
+Output configuration with formattable paths.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `log_dir` | [FormattablePath](#formattablepath) | `<lambda>()` | Directory for job logs and results; a FormattablePath, so `{job_id}` and `$VARS` expand. |
-| `record_launch_plan` | bool | `False` | Save the realized `srun` scripts and a manifest under `logs/launch-plan/`. |
 
 ### HealthCheckConfig
 
@@ -801,7 +800,6 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `default_health_check` | dict[str, int] \| None | `None` | `health_check` block (`max_attempts`, `interval_seconds`) used when a recipe has none. |
 | `srtctl_root` | str \| None | `None` | srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout. |
 | `output_dir` | str \| None | `None` | Custom output directory for job logs |
-| `record_launch_plan` | bool | `False` | Cluster-wide default for recording exact realized srun commands. Recipes can opt in independently with output.record_launch_plan. |
 | `model_paths` | dict[str, str] \| None | `None` | Alias -> path map; a recipe's `model.path` may name an alias instead of a path. |
 | `containers` | dict[str, str] \| None | `None` | Alias -> image map, resolved for every container key in a recipe (`model.container`, `roles.<role>.container`, ...). |
 | `cloud` | dict[str, str] \| None | `None` | Free-form cloud settings. Accepted for compatibility; srtctl does not read it. |

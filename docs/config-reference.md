@@ -55,22 +55,14 @@ Fields: [ModelConfig](schema-reference.md#modelconfig).
 
 ## output
 
-Output paths and optional reproducibility artifacts.
+Output configuration with formattable paths.
 
 ```yaml
 output:
   log_dir: "./outputs/{job_id}/logs"
-  record_launch_plan: false    # Save exact realized srun scripts and a manifest
 ```
 
 The `log_dir` supports FormattablePath templating. See [FormattablePath Template System](runtime-env.md#formattablepath-template-system).
-
-When `record_launch_plan` is enabled, srtctl creates `logs/launch-plan/manifest.json` and one executable shell
-script for every realized `srun` invocation. Recording happens after Slurm assigns nodes, ports, heterogeneous
-groups, mounts, and container paths, so the scripts describe what was actually launched rather than a pre-submit
-estimate. Secret-like environment values are never persisted; the scripts name the environment variables that
-must be supplied for replay. The resolved recipe, outer `sbatch_script.sh`, lockfile, and resource snapshot remain
-alongside this directory and are referenced by the manifest.
 
 ## health_check
 

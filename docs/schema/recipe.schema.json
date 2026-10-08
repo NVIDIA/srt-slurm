@@ -1559,14 +1559,9 @@
         "log_dir": {
           "type": "string",
           "description": "Directory for job logs and results; a FormattablePath, so `{job_id}` and `$VARS` expand."
-        },
-        "record_launch_plan": {
-          "type": "boolean",
-          "description": "Save the realized `srun` scripts and a manifest under `logs/launch-plan/`.",
-          "default": false
         }
       },
-      "description": "Output paths and optional reproducibility artifacts."
+      "description": "Output configuration with formattable paths."
     },
     "PlacementConfig": {
       "type": "object",

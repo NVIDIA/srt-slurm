@@ -411,9 +411,6 @@ class ClusterConfig:
     # srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout.
     srtctl_root: str | None = None
     output_dir: str | None = None  # Custom output directory for job logs
-    # Cluster-wide default for recording exact realized srun commands. Recipes
-    # can opt in independently with output.record_launch_plan.
-    record_launch_plan: bool = False
     # Alias -> path map; a recipe's `model.path` may name an alias instead of a path.
     model_paths: dict[str, str] | None = None
     # Alias -> image map, resolved for every container key in a recipe (`model.container`, `roles.<role>.container`, ...).
@@ -2611,14 +2608,12 @@ class FrontendConfig:
 
 @dataclass(frozen=True)
 class OutputConfig:
-    """Output paths and optional reproducibility artifacts."""
+    """Output configuration with formattable paths."""
 
     # Directory for job logs and results; a FormattablePath, so `{job_id}` and `$VARS` expand.
     log_dir: Annotated[FormattablePath, FormattablePathField()] = field(
         default_factory=lambda: FormattablePath(template="./outputs/{job_id}/logs")
     )
-    # Save the realized `srun` scripts and a manifest under `logs/launch-plan/`.
-    record_launch_plan: bool = False
 
     Schema: ClassVar[type[Schema]] = Schema
 
