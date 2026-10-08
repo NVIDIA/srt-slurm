@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeAlias
 
 from marshmallow import ValidationError, fields
 
-from srtctl.ports import DYN_SYSTEM_PORT_BASE
+from srtctl.ports import DYN_SYSTEM_PORT_BASE, MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -37,6 +37,7 @@ class BackendType(str, Enum):
     MOCKER = "mocker"
     ATOM = "atom"
     TILERT = "tilert"
+    TOKENSPEED = "tokenspeed"
 
 
 @dataclass
@@ -246,8 +247,29 @@ class Backend(ABC):
         return {}
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        """MOONCAKE_* environment for a worker; empty when mooncake_kv_store is None."""
-        return {}
+        """MOONCAKE_* environment for a worker; empty when mooncake_kv_store is None.
+
+        - MOONCAKE_LOCAL_HOSTNAME defaults to the worker's resolved IP, but the
+          user can override it in mooncake_kv_store.env if they need something
+          custom (e.g. a specific RDMA NIC IP).
+        - MOONCAKE_MASTER and MOONCAKE_TE_META_DATA_SERVER are always set by
+          srtslurm to point at the infra-node mooncake_master, and override any
+          user-supplied value (the user can't know the infra IP at config time).
+
+        Args:
+            infra_node_ip: Resolved IP of the infra node where mooncake_master runs.
+            local_hostname: Resolved IP of the worker's own node, for peer-to-peer
+                transfers. Defaults to the worker's primary network interface IP.
+        """
+        store = self.mooncake_kv_store
+        if store is None:
+            return {}
+        return {
+            "MOONCAKE_LOCAL_HOSTNAME": local_hostname,
+            **store.env,
+            "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
+            "MOONCAKE_TE_META_DATA_SERVER": f"http://{infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata",
+        }
 
     def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
         """Shadow engine recovery environment for a worker; empty when failover is None."""
