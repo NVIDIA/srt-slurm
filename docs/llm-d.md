@@ -58,7 +58,9 @@ services:
 ```
 
 srtctl sets `--port` (the worker's `Process.proxy_port`), `--model-server-port` (its
-`Process.http_port`), `--kv-connector`, and `--secure-proxy=false`; `args` come last.
+`Process.http_port`), `--kv-connector`, and `--secure-proxy=false`; overriding these
+flags in `command` or `args` is rejected at config load. P/D jobs require exactly one
+enabled sidecar service definition; customize the implied entry by name.
 The allocator hands out the proxy port (`PROXY_PORTS`) for every routable worker of a
 mode the frontend proxies (`Frontend.proxied_worker_modes`), so two decode workers on
 one node never collide. The `--kv-connector` protocol comes from the decode workers' vLLM
@@ -142,9 +144,11 @@ engine:
   connector: nixl
 ```
 
-`frontend.args` are passed to the EPP; the pool, configuration, and port flags are
-srtctl's. A prefill/decode `epp_config` needs `prefill` and `decode` scheduling profiles
-and the `disagg-profile-handler`. Without `epp_config`, srtctl runs the scorers of llm-d's
+`frontend.epp_config` is accepted only with `frontend.type: llm-d`.
+`frontend.args` are passed to the EPP; overriding the pool, configuration, port, or
+`secure-serving` flags is rejected at config load. A prefill/decode `epp_config` needs
+`prefill` and `decode` scheduling profiles and the `disagg-profile-handler`.
+Without `epp_config`, srtctl runs the scorers of llm-d's
 no-Kubernetes guide
 ([`config.yaml`](https://github.com/llm-d/llm-d/blob/7fb84b0adf8e1d41eb2cef105fc1aafaf5a9b64f/guides/no-kubernetes-deployment/router/epp/config.yaml)):
 queue depth (2), KV-cache utilization (2), approximate prefix cache (3), and
@@ -234,8 +238,9 @@ default).
 
 The roles that publish and the producer go together: either without the other is
 rejected, as are a producer `kvEventsConfig` that sets the socket or discovery, a
-`token-producer` `vllm.url`, and a router not on the head node. A role with
-`data-parallel-size` publishes only with `data-parallel-external-lb: true`: each DP rank
+`token-producer` `vllm.url`, worker `kv_events.endpoint` or `kv_events.topic`, and a
+router not on the head node. The tokenizer URL is managed even without precise routing.
+A role with `data-parallel-size` publishes only with `data-parallel-external-lb: true`: each DP rank
 publishes its own events, and the EPP can place a prefix only on an endpoint that is
 that rank.
 

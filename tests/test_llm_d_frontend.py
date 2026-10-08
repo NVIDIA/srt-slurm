@@ -19,7 +19,7 @@ from srtctl.backends import VLLMBackend
 from srtctl.core.config import load_config
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Endpoint, Process
-from srtctl.frontends import LLMDFrontend, get_frontend
+from srtctl.frontends import LLMDFrontend, get_frontend, list_frontend_types
 from srtctl.frontends.llm_d import (
     DISCOVERY_PLUGIN,
     ENDPOINTS_FILE,
@@ -150,6 +150,44 @@ def test_declared_sidecar_must_sit_on_proxied_workers() -> None:
         _load(recipe)
 
 
+@pytest.mark.parametrize(
+    "service",
+    [
+        {"name": "llm-d-sidecar", "type": "llm-d-sidecar", "enabled": False},
+        {"name": "llm-d-sidecar", "type": "generic", "command": ["sleep", "infinity"]},
+        {"name": "extra-sidecar", "type": "llm-d-sidecar"},
+    ],
+)
+def test_pd_requires_exactly_one_enabled_sidecar_service(service: dict) -> None:
+    recipe = _recipe()
+    recipe["services"] = [service]
+    with pytest.raises(ValidationError, match="requires exactly one enabled llm-d-sidecar"):
+        _load(recipe)
+
+
+def test_sidecar_can_be_renamed_when_the_implied_one_is_disabled() -> None:
+    recipe = _recipe()
+    recipe["services"] = [
+        {"name": "llm-d-sidecar", "type": "llm-d-sidecar", "enabled": False},
+        {"name": "custom-sidecar", "type": "llm-d-sidecar"},
+    ]
+    sidecars = [entry.service for entry in effective_services(_load(recipe)) if entry.service.type == "llm-d-sidecar"]
+    assert [service.name for service in sidecars] == ["custom-sidecar"]
+
+
+@pytest.mark.parametrize("field", ["command", "args"])
+@pytest.mark.parametrize("flag", ["port", "model-server-port", "kv-connector", "secure-proxy"])
+@pytest.mark.parametrize("equals", [False, True])
+def test_sidecar_rejects_managed_flags_at_config_load(field: str, flag: str, equals: bool) -> None:
+    recipe = _recipe()
+    argv = [f"--{flag}=override"] if equals else [f"--{flag}", "override"]
+    recipe["services"] = [
+        {"name": "llm-d-sidecar", "type": "llm-d-sidecar", field: ["pd-sidecar", *argv] if field == "command" else argv}
+    ]
+    with pytest.raises(ValidationError, match="which srtctl manages"):
+        _load(recipe)
+
+
 def test_pd_epp_config_needs_scheduling_profiles() -> None:
     recipe = _recipe()
     del recipe["frontend"]["epp_config"]["schedulingProfiles"]
@@ -157,10 +195,18 @@ def test_pd_epp_config_needs_scheduling_profiles() -> None:
         _load(recipe)
 
 
-def test_epp_config_needs_the_llm_d_frontend() -> None:
-    recipe = _recipe()
-    recipe["frontend"]["type"] = "vllm-router"
-    with pytest.raises(ValidationError, match="frontend.epp_config is not supported with frontend.type: vllm-router"):
+@pytest.mark.parametrize("frontend_type", [name for name in list_frontend_types() if name != "llm-d"] + ["none"])
+@pytest.mark.parametrize("epp_config", [{}, {"plugins": [{"type": "queue-scorer"}]}])
+def test_epp_config_needs_the_llm_d_frontend(frontend_type: str, epp_config: dict) -> None:
+    recipe = _recipe(AGG)
+    recipe["frontend"].update(type=frontend_type, epp_config=epp_config)
+    if frontend_type == "none":
+        recipe.pop("roles")
+        recipe.pop("engine")
+        recipe["services"] = [{"name": "sleeper", "command": ["sleep", "infinity"], "nodes": 1}]
+    with pytest.raises(
+        ValidationError, match=f"frontend.epp_config is not supported with frontend.type: {frontend_type}"
+    ):
         _load(recipe)
 
 
@@ -211,6 +257,22 @@ def test_recipe_cannot_configure_discovery() -> None:
     recipe = _recipe()
     recipe["frontend"]["epp_config"]["dataLayer"] = {"discovery": {"pluginRef": "mine"}}
     with pytest.raises(ValidationError, match="must not configure endpoint discovery"):
+        _load(recipe)
+
+
+def test_recipe_cannot_reuse_the_managed_discovery_plugin_name() -> None:
+    recipe = _recipe(AGG)
+    recipe["frontend"]["epp_config"]["plugins"].append({"type": "queue-scorer", "name": DISCOVERY_PLUGIN})
+    with pytest.raises(ValidationError, match="must not configure endpoint discovery"):
+        _load(recipe)
+
+
+def test_tokenizer_url_is_managed_even_without_precise_routing() -> None:
+    recipe = _recipe(AGG)
+    recipe["frontend"]["epp_config"]["plugins"].append(
+        {"type": "token-producer", "parameters": {"vllm": {"url": "http://custom-tokenizer:8000"}}}
+    )
+    with pytest.raises(ValidationError, match="sets token-producer vllm.url"):
         _load(recipe)
 
 
@@ -339,6 +401,27 @@ def test_frontend_args_cannot_move_managed_epp_flags() -> None:
     config = SimpleNamespace(frontend=SimpleNamespace(args={"metrics_port": 1234}))
     with pytest.raises(ValueError, match="metrics-port, which srtctl manages"):
         LLMDFrontend().epp_command(config, "/logs/c.yaml")
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "pool-name",
+        "pool-namespace",
+        "config-file",
+        "config-text",
+        "grpc-port",
+        "grpc-health-port",
+        "metrics-port",
+        "secure-serving",
+    ],
+)
+@pytest.mark.parametrize("underscores", [False, True])
+def test_managed_epp_flags_are_rejected_at_config_load(flag: str, underscores: bool) -> None:
+    recipe = _recipe(AGG)
+    recipe["frontend"]["args"] = {flag.replace("-", "_") if underscores else flag: "override"}
+    with pytest.raises(ValidationError, match=f"{flag}, which srtctl manages"):
+        _load(recipe)
 
 
 def test_ready_endpoints_gauge_is_parsed() -> None:
@@ -487,6 +570,14 @@ def test_kv_events_need_the_precise_producer_and_vice_versa() -> None:
     recipe = _precise(_recipe())
     del recipe["roles"]["prefill"]["kv_events"]
     with pytest.raises(ValidationError, match="set roles.<role>.kv_events"):
+        _load(recipe)
+
+
+@pytest.mark.parametrize("field", ["endpoint", "topic"])
+def test_worker_kv_event_routing_cannot_be_overridden(field: str) -> None:
+    recipe = _precise(_recipe())
+    recipe["roles"]["prefill"]["kv_events"] = {field: "override"}
+    with pytest.raises(ValidationError, match=f"roles.prefill.kv_events sets {field}, which srtctl manages"):
         _load(recipe)
 
 

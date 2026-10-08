@@ -3195,16 +3195,18 @@ class SrtConfig:
         schema does not know individual frontends. ``none`` is the services-only
         job and is covered by ``_validate_services_only``.
         """
-        if self.frontend.type == "none":
-            return
         from srtctl.frontends import get_frontend, list_frontend_types
 
         try:
-            frontend = get_frontend(self.frontend.type)
+            frontend = None if self.frontend.type == "none" else get_frontend(self.frontend.type)
         except ValueError:
             raise ValidationError(
                 f"Unknown frontend.type {self.frontend.type!r}. Available: {', '.join(list_frontend_types())}"
             ) from None
+        if self.frontend.epp_config is not None and (frontend is None or not frontend.accepts_epp_config):
+            raise ValidationError(f"frontend.epp_config is not supported with frontend.type: {self.frontend.type}")
+        if frontend is None:
+            return
         required = frontend.required_backend
         incompatible = [
             f"{role}={backend.type}" for role, backend in self.active_role_backends() if backend.type != required
@@ -3213,8 +3215,6 @@ class SrtConfig:
             raise ValidationError(
                 f"frontend.type: {self.frontend.type} requires backend.type: {required}; got {', '.join(incompatible)}"
             )
-        if self.frontend.epp_config is not None and not frontend.accepts_epp_config:
-            raise ValidationError(f"frontend.epp_config is not supported with frontend.type: {self.frontend.type}")
         try:
             frontend.validate(self)
         except ValueError as exc:

@@ -46,7 +46,7 @@ from srtctl.ports import (
     LLM_D_EPP_METRICS_PORT,
 )
 from srtctl.services.config import ServiceConfig, ServicePlacementConfig
-from srtctl.services.implicit import EffectiveService
+from srtctl.services.implicit import EffectiveService, effective_services
 from srtctl.services.llm_d_sidecar import LLM_D_SIDECAR_TYPE, sidecar_kv_connector
 
 if TYPE_CHECKING:
@@ -80,7 +80,16 @@ _MANAGED_KV_EVENTS_KEYS = frozenset({"zmqEndpoint", "discoverPods", "podDiscover
 _OTHER_TOKENIZERS = frozenset({"estimate", "udsTokenizerConfig"})
 # EPP flags srtctl sets; frontend.args may not repeat them.
 _MANAGED_EPP_FLAGS = frozenset(
-    {"pool-name", "pool-namespace", "config-file", "config-text", "grpc-port", "grpc-health-port", "metrics-port"}
+    {
+        "pool-name",
+        "pool-namespace",
+        "config-file",
+        "config-text",
+        "grpc-port",
+        "grpc-health-port",
+        "metrics-port",
+        "secure-serving",
+    }
 )
 
 
@@ -231,6 +240,7 @@ class LLMDFrontend(StaticRouterFrontend):
 
     def validate(self, config: Any) -> None:
         frontend = config.frontend
+        self._validate_epp_args(frontend.args)
         if frontend.enable_multiple_frontends and config.engine_node_count > 1:
             raise ValueError(
                 "frontend.type: llm-d requires Envoy and the Endpoint Picker on the public endpoint's node "
@@ -248,7 +258,8 @@ class LLMDFrontend(StaticRouterFrontend):
         epp_config = frontend.epp_config or {}
         data_layer = epp_config.get("dataLayer") or {}
         if "discovery" in data_layer or any(
-            plugin.get("type") == "file-discovery" for plugin in epp_config.get("plugins") or []
+            plugin.get("type") == "file-discovery" or plugin.get("name") == DISCOVERY_PLUGIN
+            for plugin in epp_config.get("plugins") or []
         ):
             raise ValueError(
                 "frontend.epp_config must not configure endpoint discovery: srtctl adds the file-discovery "
@@ -262,10 +273,19 @@ class LLMDFrontend(StaticRouterFrontend):
                     "prefill and decode schedulingProfiles and a disaggregation profile handler"
                 )
             sidecar_kv_connector(config.backend_for_role("decode"))
+            sidecars = [entry for entry in effective_services(config) if entry.service.type == LLM_D_SIDECAR_TYPE]
+            if len(sidecars) != 1:
+                raise ValueError(
+                    "frontend.type: llm-d with prefill and decode workers requires exactly one enabled "
+                    f"{LLM_D_SIDECAR_TYPE} service definition; override the implied service by name"
+                )
 
     def _validate_kv_events(self, config: Any) -> None:
         """Workers publish KV-cache events exactly when the EPP has a precise prefix-cache producer to index them."""
         epp_config = config.frontend.epp_config
+        token_producers = [plugin for plugin in _plugins(epp_config, TOKEN_PRODUCER) if _vllm_token_producer(plugin)]
+        if any("url" in (_parameters(plugin).get("vllm") or {}) for plugin in token_producers):
+            raise ValueError(f"frontend.epp_config sets {TOKEN_PRODUCER} vllm.url, which srtctl points at a worker")
         topology = config.topology
         publishing = [
             mode
@@ -296,14 +316,11 @@ class LLMDFrontend(StaticRouterFrontend):
                     f"frontend.epp_config sets {PRECISE_PREFIX_PRODUCER} kvEventsConfig.{', '.join(sorted(managed))}, "
                     "which srtctl manages: the EPP binds one KV-event socket the workers connect to"
                 )
-        token_producers = [plugin for plugin in _plugins(epp_config, TOKEN_PRODUCER) if _vllm_token_producer(plugin)]
         if not token_producers:
             raise ValueError(
                 f"{PRECISE_PREFIX_PRODUCER} needs the engine's token IDs: add a {TOKEN_PRODUCER} plugin "
                 "to frontend.epp_config (srtctl points it at a worker's render endpoint)"
             )
-        if any("url" in (_parameters(plugin).get("vllm") or {}) for plugin in token_producers):
-            raise ValueError(f"frontend.epp_config sets {TOKEN_PRODUCER} vllm.url, which srtctl points at a worker")
         frontend = config.frontend
         if (
             frontend.enable_multiple_frontends and config.engine_node_count > 1
@@ -314,6 +331,12 @@ class LLMDFrontend(StaticRouterFrontend):
             )
         for mode in publishing:
             backend = config.backend_for_role(mode)
+            kv_events = config.roles[mode].kv_events
+            managed = {"endpoint", "topic"} & kv_events.keys() if isinstance(kv_events, dict) else set()
+            if managed:
+                raise ValueError(
+                    f"roles.{mode}.kv_events sets {', '.join(sorted(managed))}, which srtctl manages for llm-d"
+                )
             if backend._is_dp_mode(mode) and not backend.is_external_lb(mode):
                 raise ValueError(
                     f"roles.{mode}.kv_events with data-parallel-size: vLLM publishes every DP rank's events on its "
@@ -415,11 +438,14 @@ class LLMDFrontend(StaticRouterFrontend):
         process = next((p for p in routable if p.endpoint_mode == "prefill"), routable[0])
         return f"http://{self.resolve_worker_host(process.node, network_interface)}:{process.http_port}"
 
-    def epp_command(self, config: Any, epp_config_path: str) -> list[str]:
-        user_args = self.get_frontend_args_list(config.frontend.args)
-        managed = {str(key).replace("_", "-") for key in (config.frontend.args or {})} & _MANAGED_EPP_FLAGS
+    def _validate_epp_args(self, args: dict[str, Any] | None) -> None:
+        managed = {str(key).replace("_", "-") for key in (args or {})} & _MANAGED_EPP_FLAGS
         if managed:
             raise ValueError(f"frontend.args sets {', '.join(sorted(managed))}, which srtctl manages for llm-d")
+
+    def epp_command(self, config: Any, epp_config_path: str) -> list[str]:
+        self._validate_epp_args(config.frontend.args)
+        user_args = self.get_frontend_args_list(config.frontend.args)
         return [
             *self.executable,
             f"--pool-name={POOL}",

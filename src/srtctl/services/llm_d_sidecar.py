@@ -39,6 +39,7 @@ SIDECAR_KV_CONNECTORS: dict[str, str] = {
 
 # Argv shown by dry-run, where there is no worker to read the ports from.
 _PREVIEW_PORTS = ["--port=<worker_proxy_port>", "--model-server-port=<worker_http_port>"]
+_MANAGED_FLAGS = frozenset({"--port", "--model-server-port", "--kv-connector", "--secure-proxy"})
 
 
 def sidecar_kv_connector(backend: Any) -> str:
@@ -74,6 +75,16 @@ class LLMDSidecarService(ServiceKind):
     def validate(self, service: ServiceConfig, config: SrtConfig) -> None:
         from srtctl.frontends import FRONTEND_NONE, get_frontend
 
+        conflicts = {
+            arg.split("=", 1)[0]
+            for arg in [*(service.command or []), *service.args]
+            if arg.startswith("--") and arg.split("=", 1)[0] in _MANAGED_FLAGS
+        }
+        if conflicts:
+            raise ValidationError(
+                f"services[{service.name}].command/args sets {', '.join(sorted(conflicts))}, "
+                "which srtctl manages for the worker's ports and KV-transfer protocol"
+            )
         proxied = (
             frozenset()
             if config.frontend.type == FRONTEND_NONE
