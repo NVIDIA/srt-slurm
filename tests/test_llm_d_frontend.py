@@ -157,6 +157,13 @@ def test_pd_epp_config_needs_scheduling_profiles() -> None:
         _load(recipe)
 
 
+def test_epp_config_needs_the_llm_d_frontend() -> None:
+    recipe = _recipe()
+    recipe["frontend"]["type"] = "vllm-router"
+    with pytest.raises(ValidationError, match="frontend.epp_config is not supported with frontend.type: vllm-router"):
+        _load(recipe)
+
+
 @pytest.mark.parametrize("path", [AGG, DISAGG])
 def test_without_epp_config_srtctl_runs_the_guide_scorers(path: Path, tmp_path: Path) -> None:
     """The EPP's own default only applies to a plugin-less file; srtctl's always carries discovery."""

@@ -3213,6 +3213,8 @@ class SrtConfig:
             raise ValidationError(
                 f"frontend.type: {self.frontend.type} requires backend.type: {required}; got {', '.join(incompatible)}"
             )
+        if self.frontend.epp_config is not None and not frontend.accepts_epp_config:
+            raise ValidationError(f"frontend.epp_config is not supported with frontend.type: {self.frontend.type}")
         try:
             frontend.validate(self)
         except ValueError as exc:

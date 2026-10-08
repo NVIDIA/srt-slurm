@@ -58,6 +58,9 @@ class Frontend(ABC):
     #: ``SrtConfig._validate_frontend`` enforces it at config load.
     required_backend: ClassVar[str | None] = None
 
+    #: Whether ``frontend.epp_config`` configures this frontend; ``_validate_frontend`` rejects it otherwise.
+    accepts_epp_config: ClassVar[bool] = False
+
     #: Role that accepts the public request's model name; None uses decode/agg/prefill order.
     model_name_role: ClassVar[str | None] = None
 

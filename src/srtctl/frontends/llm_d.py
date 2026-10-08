@@ -221,6 +221,7 @@ class LLMDFrontend(StaticRouterFrontend):
 
     type: ClassVar[str] = "llm-d"
     required_backend: ClassVar[str | None] = "vllm"
+    accepts_epp_config: ClassVar[bool] = True
     executable: ClassVar[tuple[str, ...]] = ("epp",)
     # The EPP takes prefill/decode from its scheduler configuration, not a flag.
     pd_flag: ClassVar[str] = ""
