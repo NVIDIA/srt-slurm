@@ -1639,6 +1639,11 @@
           "description": "Non-TRT-LLM behavior when cudaProfilerStop closes a capture range.",
           "default": "stop"
         },
+        "detailed_trace_annotation": {
+          "type": "boolean",
+          "description": "Adds detailed nvtx marker flag for vLLM",
+          "default": false
+        },
         "nsys_library_paths": {
           "anyOf": [
             {

@@ -1129,13 +1129,14 @@ class VLLMBackend(Backend):
         if profiling is not None and profiling.is_nsys and not profiling.is_nsys_time:
             phase = profiling._get_phase_config(mode)
             if phase is not None and phase.start_step is not None and phase.stop_step is not None:
-                config["profiler-config"] = json.dumps(
-                    {
-                        "profiler": "cuda",
-                        "delay_iterations": phase.vllm_nsys_delay_iterations,
-                        "max_iterations": phase.vllm_nsys_max_iterations,
-                    }
-                )
+                profiler_config: dict[str, Any] = {
+                    "profiler": "cuda",
+                    "delay_iterations": phase.vllm_nsys_delay_iterations,
+                    "max_iterations": phase.vllm_nsys_max_iterations,
+                }
+                if profiling.detailed_trace_annotation:
+                    profiler_config["detailed_trace_annotation"] = True
+                config["profiler-config"] = json.dumps(profiler_config)
 
         sidecar_config = get_dynamo_sidecar_config(runtime)
         if sidecar_config is not None:

@@ -1294,6 +1294,9 @@ class ProfilingConfig:
     # Non-TRT-LLM behavior when cudaProfilerStop closes a capture range.
     capture_range_end: str = "stop"
 
+    # Adds detailed nvtx marker flag for vLLM
+    detailed_trace_annotation: bool = False
+
     # Optional paths prepended to LD_LIBRARY_PATH for the Nsight wrapper and
     # profiled worker, for containers that do not discover the host libcuda.
     nsys_library_paths: list[str] | None = None

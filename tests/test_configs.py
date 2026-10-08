@@ -3209,7 +3209,7 @@ class TestVLLMDataParallelMode:
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
         runtime.frontend_port = 8000
-        profiling = MagicMock(is_nsys=True, is_nsys_time=False)
+        profiling = MagicMock(is_nsys=True, is_nsys_time=False, detailed_trace_annotation=False)
         profiling._get_phase_config.return_value = SimpleNamespace(
             start_step=10,
             stop_step=25,
