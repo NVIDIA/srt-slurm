@@ -191,9 +191,7 @@ class WorkerSupervisor:
                 if not policy.enabled:
                     continue
                 expected = {
-                    worker_step_name(
-                        mode, index, process.node, engine_id=engine, dp_rank=getattr(process, "dp_rank", None)
-                    )
+                    worker_step_name(mode, index, process.node, engine_id=engine, dp_rank=process.dp_rank)
                     for process in processes
                 }
                 mine = sorted(names & expected)

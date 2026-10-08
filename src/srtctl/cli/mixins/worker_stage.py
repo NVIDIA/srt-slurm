@@ -436,7 +436,7 @@ class WorkerStageMixin:
         env_to_unset = ["VLLM_PORT"] if backend.type == "vllm" and len(endpoint_nodes) > 1 else None
 
         step_name = worker_step_name(
-            mode, index, process.node, attempt, getattr(process, "engine_id", 0), getattr(process, "dp_rank", None)
+            mode, index, process.node, attempt, getattr(process, "engine_id", 0), process.dp_rank
         )
         proc = start_srun_process(
             command=cmd,
