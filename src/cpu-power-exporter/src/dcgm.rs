@@ -353,6 +353,18 @@ pub struct PowerReading {
     pub watts: Option<f64>,
 }
 
+/// Liveness for source selection: at least one entity returned a positive
+/// CPU power (field 1130) reading. 1130 is what srtctl files as a socket's
+/// `power_w`; SysIO (1132) is a reference rail and cannot vouch for it -- a
+/// node where only 1132 reads would publish `soc_w` for the whole run with
+/// no `power_w` and no socket rows at all. `watts` is already `None` for
+/// non-OK status and non-positive values, so presence is the whole test.
+pub fn has_live_cpu_power(readings: &[PowerReading]) -> bool {
+    readings
+        .iter()
+        .any(|r| r.field_id == CPU_POWER_FIELD_ID && r.watts.is_some())
+}
+
 /// Per-socket CPU power readings via the DCGM CPU-entity power fields ([`POWER_FIELDS`]),
 /// or field 1130 alone when this libdcgm will not watch 1132 (see [`DcgmReader::fields`]).
 ///
@@ -669,6 +681,41 @@ mod tests {
     #[test]
     fn group_entity_pair_size() {
         assert_eq!(std::mem::size_of::<GroupEntityPair>(), 8);
+    }
+
+    fn reading(cpu_id: u32, field_id: u16, watts: Option<f64>) -> PowerReading {
+        PowerReading {
+            cpu_id,
+            field_id,
+            watts,
+        }
+    }
+
+    #[test]
+    fn dcgm_is_not_live_on_sysio_alone() {
+        // A live SysIO rail must not vouch for DCGM: nothing would ever
+        // become power_w.
+        assert!(!has_live_cpu_power(&[
+            reading(0, SYSIO_POWER_FIELD_ID, Some(6.2)),
+            reading(1, SYSIO_POWER_FIELD_ID, Some(6.1)),
+        ]));
+    }
+
+    #[test]
+    fn dcgm_is_not_live_when_cpu_power_is_present_but_unread() {
+        assert!(!has_live_cpu_power(&[
+            reading(0, CPU_POWER_FIELD_ID, None),
+            reading(0, SYSIO_POWER_FIELD_ID, Some(6.2)),
+        ]));
+        assert!(!has_live_cpu_power(&[]));
+    }
+
+    #[test]
+    fn dcgm_is_live_when_any_socket_reads_cpu_power() {
+        assert!(has_live_cpu_power(&[
+            reading(0, CPU_POWER_FIELD_ID, None),
+            reading(1, CPU_POWER_FIELD_ID, Some(52.3)),
+        ]));
     }
 
     #[test]

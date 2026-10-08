@@ -1935,7 +1935,9 @@ class CpuPowerConfig:
     Attributes:
         enabled: Master switch for this leg. Default: False.
         source: ``auto`` uses ACPI when some socket-total sensor reads a
-            positive value, else DCGM fields 1130+1132, else 1130 alone,
+            positive value, else DCGM fields 1130+1132, else 1130 alone
+            (either DCGM rung accepted only if some socket reads a positive
+            1130; SysIO alone cannot vouch),
             logging each step down; naming ``acpi`` or ``dcgm`` explicitly
             makes that provider mandatory (it still proves itself, but exits
             instead of stepping).
@@ -1975,13 +1977,13 @@ class CpuPowerExporterConfig:
             ``auto`` tries ACPI first (the only source with the socket
             envelope) and falls back to DCGM when no ACPI power_meter hwmon
             sensors exist or no socket-total sensor reads positive on two
-            probes; DCGM
-            watches fields 1130+1132 and falls back to 1130 alone if this
-            libdcgm refuses the pair. DCGM mode reports field 1130 = the CPU
-            rail (plus 1132 = SysIO), about half the ACPI envelope, and the
-            energy report flags such runs as "CPU rail only". Has no effect
-            when the Python stdlib fallback exporter is used instead of the
-            binary -- that fallback is ACPI-only.
+            probes; DCGM watches fields 1130+1132 and falls back to 1130 alone
+            if this libdcgm refuses the pair, and is accepted only if some
+            socket reads a positive 1130. DCGM mode reports field 1130 = the
+            CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and
+            the energy report flags such runs as "CPU rail only". Has no
+            effect when the Python stdlib fallback exporter is used instead of
+            the binary -- that fallback is ACPI-only.
     """
 
     # Port the exporter listens on and the head-node collector scrapes.

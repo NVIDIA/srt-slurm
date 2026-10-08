@@ -306,15 +306,24 @@ def _install_fake_dcgm(
     monkeypatch: pytest.MonkeyPatch,
     *,
     reject_watch_containing: int | None = None,
+    power_values: list[tuple[int, int, float]] | None = None,
 ) -> list[object]:
     """Install a fake pydcgm/dcgm_agent; returns the event log.
 
     ``reject_watch_containing`` makes ``WatchFields`` raise for any field group
     whose ids include that field -- the shape of a libdcgm that does not
-    support 1132 for CPU entities.
+    support 1132 for CPU entities. ``power_values`` replaces the default
+    ``(entity, field, watts)`` power rows the fake returns (default: live 1130
+    on both sockets, 1132 on socket 0).
     """
     events: list[object] = []
     field_ids_by_group: dict[int, list[int]] = {}
+    if power_values is None:
+        power_values = [
+            (0, cpu_power.CPU_POWER_FIELD_ID, 120.5),
+            (1, cpu_power.CPU_POWER_FIELD_ID, 130.0),
+            (0, 1132, 6.25),  # SysIO rail for socket 0 only
+        ]
 
     class FakeHandle:
         handle = object()
@@ -367,9 +376,7 @@ def _install_fake_dcgm(
     def fake_latest_values(_handle: object, _entities: object, fields: object, flags: int) -> list[object]:
         events.append(("latest", flags, list(fields)))
         return [
-            _fake_value(0, cpu_power.CPU_POWER_FIELD_ID, 120.5),
-            _fake_value(1, cpu_power.CPU_POWER_FIELD_ID, 130.0),
-            _fake_value(0, 1132, 6.25),  # SysIO rail for socket 0 only
+            *(_fake_value(entity, field, watts) for entity, field, watts in power_values),
             _fake_value(9, cpu_power.CPU_POWER_FIELD_ID, 999.0),  # entity we never enumerated: dropped
             _fake_value(0, 1100, 0.42),
             _fake_value(0, 1101, 0.30),
@@ -597,6 +604,50 @@ def test_explicit_acpi_source_fails_on_dead_sensors_instead_of_falling_back(
     monkeypatch.setattr(cpu_power, "ACPI_PROBE_RETRY_DELAY_SECONDS", 0.0)
     with pytest.raises(CpuPowerSourceUnavailable, match="no ACPI socket-total power_meter sensor read positive"):
         cpu_power.create_reader("acpi")
+
+
+def test_dcgm_source_is_unavailable_when_only_sysio_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A live SysIO rail (1132) cannot vouch for DCGM: nothing would ever become power_w."""
+    events = _install_fake_dcgm(monkeypatch, power_values=[(0, 1132, 6.2), (1, 1132, 6.1)])
+    with pytest.raises(CpuPowerSourceUnavailable, match="no CPU entity returned a positive field 1130"):
+        cpu_power.create_reader("dcgm")
+    assert "shutdown" in events  # the failed reader released its handle
+
+
+def test_dcgm_source_is_unavailable_when_cpu_power_reads_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 0 W is "not reporting" for DCGM too (it reads the same hwmon files).
+    _install_fake_dcgm(monkeypatch, power_values=[(0, cpu_power.CPU_POWER_FIELD_ID, 0.0), (0, 1132, 6.2)])
+    with pytest.raises(CpuPowerSourceUnavailable, match="field 1130"):
+        cpu_power.create_reader("dcgm")
+
+
+def test_dcgm_source_is_accepted_when_one_socket_reads_cpu_power(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_dcgm(monkeypatch, power_values=[(1, cpu_power.CPU_POWER_FIELD_ID, 52.3), (0, 1132, 6.2)])
+    reader = cpu_power.create_reader("dcgm")
+    reader.close()
+    assert isinstance(reader, cpu_power.DcgmCpuPowerReader)
+
+
+def test_auto_fails_when_acpi_is_dead_and_dcgm_has_no_live_cpu_power(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Both rungs refuse; the error names both reasons and each step down was logged."""
+    root = _acpi_root_reading(tmp_path, 0.0)
+    monkeypatch.setattr(cpu_power, "AcpiPowerMeterReader", lambda *_a, **_k: AcpiPowerMeterReader(root))
+    monkeypatch.setattr(cpu_power, "ACPI_PROBE_RETRY_DELAY_SECONDS", 0.0)
+    _install_fake_dcgm(monkeypatch, power_values=[(0, 1132, 6.2)])
+    with (
+        caplog.at_level("WARNING", logger="srtctl.core.cpu_power"),
+        pytest.raises(CpuPowerSourceUnavailable) as excinfo,
+    ):
+        cpu_power.create_reader("auto")
+    message = str(excinfo.value)
+    assert "acpi: no ACPI socket-total power_meter sensor read positive" in message
+    assert "dcgm: DCGM yielded no live data: no CPU entity returned a positive field 1130" in message
+    assert [rec.message.split(";")[0] for rec in caplog.records] == [
+        "CPU power source acpi unavailable",
+        "CPU power source dcgm unavailable",
+    ]
 
 
 def _fake_value(entity_id: int, field_id: int, dbl: float) -> object:

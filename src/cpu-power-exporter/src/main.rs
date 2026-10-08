@@ -615,19 +615,22 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
                 "DCGM reader initialised (CPU rail{}; no socket envelope)",
                 if reader.fields().contains(&dcgm::SYSIO_POWER_FIELD_ID) { " + SysIO" } else { " only" }
             );
-            // Probe: if every entity returns zero/None the embedded daemon
-            // lacks hardware access (common when running without root while a
-            // system dcgm-exporter holds the DCGM session as root). DCGM is
-            // the last resort in Auto mode, so either way this is fatal.
+            // Probe: DCGM is live only if some entity returns a positive field
+            // 1130 (the value filed as power_w). An all-None read means the
+            // embedded daemon lacks hardware access (common when running
+            // without root while a system dcgm-exporter holds the DCGM session
+            // as root); a SysIO-only read would publish soc_w with no power_w
+            // for the whole run. DCGM is the last resort in Auto mode, so
+            // either way this is fatal.
             let probe = reader.read_watts();
             let any_live = probe
                 .as_ref()
-                .map(|v| v.iter().any(|r| r.watts.is_some()))
+                .map(|v| dcgm::has_live_cpu_power(v))
                 .unwrap_or(false);
             if !any_live {
                 let reason = match probe {
                     Err(ref e) => format!("read error: {e}"),
-                    Ok(_) => "all entities returned zero watts".into(),
+                    Ok(_) => "no entity returned a positive CPU power (field 1130) reading".into(),
                 };
                 anyhow::bail!("DCGM yielded no live data: {reason}");
             }

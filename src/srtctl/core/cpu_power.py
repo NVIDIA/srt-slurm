@@ -11,7 +11,9 @@ Linux ACPI ``power_meter`` socket totals first, then DCGM CPU entity field 1130.
 socket-total sensor reads a positive value (one retry after a short delay,
 since hwmon averages can read 0 on the first poll after boot); otherwise DCGM
 is tried with fields 1130+1132, and if this libdcgm refuses that set for CPU
-entities, with 1130 alone -- the floor every earlier collector had. Each step
+entities, with 1130 alone -- the floor every earlier collector had -- and is
+accepted only if some socket then reads a positive 1130 (SysIO alone cannot
+vouch for a source whose ``power_w`` it never supplies). Each step
 down is logged. A reading of 0 W from any channel is filed as missing, never
 as a sample: ``power1_average`` reports 0 only when the sensor has produced
 no reading.
@@ -610,15 +612,42 @@ def _create_acpi_reader() -> CpuPowerReader:
     return reader
 
 
+def _create_dcgm_reader() -> CpuPowerReader:
+    """DCGM reader that has proven at least one socket reads a positive field 1130.
+
+    A watch being accepted is not enough: an embedded daemon without hardware
+    access returns nothing, and a node where only SysIO (1132) reads would
+    publish ``soc_w`` for the whole run with no ``power_w`` and no socket
+    rows. The check reuses the shared classifier, which emits the ``dcgm``
+    primary only for a positive 1130 -- the same test the row path applies.
+    """
+    reader = DcgmCpuPowerReader()
+    try:
+        live = sum(1 for r in reader.classify_readings(reader.read_watts()) if r.kind == DCGM_KIND)
+    except CpuPowerSourceUnavailable:
+        reader.close()
+        raise
+    if live == 0:
+        entity_count = len(reader._cpu_ids)
+        reader.close()
+        raise CpuPowerSourceUnavailable(
+            "DCGM yielded no live data: no CPU entity returned a positive field 1130 reading "
+            f"({entity_count} entities enumerated)"
+        )
+    logger.info("DCGM reports CPU power (field 1130) on %d socket(s); using DCGM", live)
+    return reader
+
+
 def create_reader(source: str) -> CpuPowerReader:
     """Create the requested reader.
 
     ``auto`` is ACPI first (the only source with the socket envelope), then
     DCGM. Each source must prove itself before it is used -- ACPI by reading
-    a positive value on some sensor, DCGM by accepting a watch on 1130 (with
-    1132 if it can) -- and every step down the ladder is logged.
+    a positive value on some socket-total sensor, DCGM by accepting a watch
+    on 1130 (with 1132 if it can) *and* reading a positive 1130 on some
+    socket -- and every step down the ladder is logged.
     """
-    factories = {"acpi": _create_acpi_reader, "dcgm": DcgmCpuPowerReader}
+    factories = {"acpi": _create_acpi_reader, "dcgm": _create_dcgm_reader}
     if source != "auto":
         try:
             return factories[source]()

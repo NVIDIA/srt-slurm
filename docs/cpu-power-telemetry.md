@@ -150,6 +150,14 @@ The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
      entities (older release, or a sysmon without SysIO). 1130 alone is the
      floor every earlier exporter had; in `auto` DCGM is the last resort, so
      failing here would mean no CPU power at all.
+
+     Either DCGM rung is accepted only if at least one CPU entity then
+     returns a positive field 1130 on a first read — that is the value filed
+     as `power_w`. SysIO alone does not make DCGM usable: a node where only
+     1132 reads would publish `soc_w` for the whole run with no `power_w`
+     and no socket rows. An all-`None` read usually means the embedded
+     daemon lacks hardware access (running without root while a system
+     dcgm-exporter holds the session).
   4. **Exit non-zero** — no source could be established.
 
   `--source acpi` and `--source dcgm` run only their own rungs (ACPI still
