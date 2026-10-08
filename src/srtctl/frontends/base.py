@@ -181,22 +181,19 @@ class Frontend(ABC):
         return []
 
     def proxied_worker_modes(self, config: Any) -> frozenset[str]:
-        """Worker modes the router reaches through a per-worker proxy instead of the worker's own port.
+        """Worker modes reached through a per-worker proxy.
 
-        Every routable worker of these modes gets ``Process.proxy_port`` from the
-        allocator (``core.worker_backends.worker_processes``); the frontend implies
-        the service that binds it (llm-d: its P/D sidecar on decode workers).
+        ``worker_processes`` allocates ``Process.proxy_port`` for each routable
+        worker of these modes; the frontend must imply the service that binds it.
         """
         return frozenset()
 
     def kv_events_subscriber(
         self, process: "Process", runtime: "RuntimeContext", model_name: str
     ) -> tuple[str, int, str] | None:
-        """Where a worker publishes its KV-cache events for this router: ``(host, port, topic)``.
+        """KV-event destination ``(host, port, topic)``, or ``None`` to leave direct workers unconfigured.
 
-        ``None`` when the router subscribes to none; a role's ``kv_events`` then
-        configures nothing on a direct worker. The engine connects its publisher
-        to ``host:port`` (adjusting for any per-rank port offset of its own).
+        Backends must compensate for any engine-added rank offset to reach this port.
         """
         return None
 

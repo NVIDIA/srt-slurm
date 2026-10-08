@@ -4,26 +4,16 @@
 
 """llm-d router frontend (`frontend.type: llm-d`): the Endpoint Picker behind Envoy.
 
-llm-d routes with two processes on the router node. Envoy owns the public port
-and asks the Endpoint Picker (EPP) over ext_proc which worker each request goes
-to; the EPP answers with the ``x-gateway-destination-endpoint`` header and
-Envoy's ORIGINAL_DST cluster forwards there. For prefill/decode the EPP picks a
-decode endpoint and names the prefill worker in ``x-prefiller-host-port``; that
-decode endpoint is llm-d's P/D sidecar, a service this frontend implies on every
-routable decode worker (``services/llm_d_sidecar.py``).
+Envoy accepts HTTP requests and asks the Endpoint Picker (EPP) to select workers
+via gRPC ext_proc. It forwards to ``x-gateway-destination-endpoint`` using
+ORIGINAL_DST. For P/D, EPP selects a decode sidecar and passes the prefill worker
+in ``x-prefiller-host-port``; see ``services/llm_d_sidecar.py``.
 
-Without Kubernetes the EPP reads its workers from a file (the ``file-discovery``
-plugin), so srtctl is the registrar: once every worker answers ``/health`` it
-writes the endpoints file, the EPP configuration (the recipe's
-``frontend.epp_config`` plus the discovery plugin), and the Envoy configuration
-into the log directory, then starts the EPP and Envoy. The job is ready when
-Envoy's admin ``/ready`` answers and the EPP reports every endpoint ready
-(``llm_d_epp_ready_endpoints``: endpoints whose metrics it scrapes).
-
-An external-LB DP rank (``data-parallel-external-lb``) is an endpoint of its own.
-With ``roles.<role>.kv_events`` the workers publish their KV-cache events to the
-EPP's precise prefix-cache producer on one socket srtctl owns
-(``kv_events_subscriber``, ``with_kv_events``).
+srtctl supplies a fixed endpoint list through EPP's file-discovery plugin,
+including one endpoint per external-LB DP rank. Startup waits for worker health
+when enabled, writes the configurations, then launches EPP and Envoy. Readiness
+requires Envoy's ``/ready`` and EPP's ready-endpoint count, based on worker metrics.
+Optional ``roles.<role>.kv_events`` feed EPP's precise prefix-cache index.
 
 Upstream, pinned: llm-d-router v0.11.0
 (https://github.com/llm-d/llm-d-router/tree/a5cbe600ebade00cf3e9885beaf2bfacddeabce1):
@@ -80,9 +70,8 @@ ROLE_BY_MODE = {"prefill": "prefill", "decode": "decode", "agg": "both"}
 # Gauge of endpoints whose metrics the EPP scraped within its staleness window
 # (pkg/epp/metrics/llm_d_router_metrics.go).
 READY_ENDPOINTS_METRIC = "llm_d_epp_ready_endpoints"
-# Precise prefix-cache routing: the producer indexes the workers' KV-cache events, which
-# it receives on one ZMQ socket srtctl owns; the token producer tokenizes each prompt the
-# way the engine does, through a worker's /v1/*/render endpoints
+# Precise routing indexes KV-cache events and uses a worker's /v1/*/render endpoints
+# to obtain matching token IDs
 # (pkg/epp/framework/plugins/requestcontrol/dataproducer/{preciseprefixcache,tokenizer}).
 PRECISE_PREFIX_PRODUCER = "precise-prefix-cache-producer"
 TOKEN_PRODUCER = "token-producer"
@@ -101,19 +90,17 @@ def _is_pd(config: Any) -> bool:
 
 
 def _routed_port(process: Process) -> int:
-    """The port the EPP routes a worker's traffic to: its proxy's when it has one, else its own."""
+    """Route through the worker's proxy when present, otherwise its HTTP API."""
     return process.proxy_port if process.proxy_port is not None else process.http_port
 
 
 def _container_path(name: str) -> str:
-    """``log_dir/<name>`` as every container sees it (``log_dir`` is mounted at ``/logs``)."""
+    """Container path for a file in ``log_dir``, mounted at ``/logs``."""
     return str(Path("/logs") / name)
 
 
-# Scorers and weights of llm-d's no-Kubernetes guide
-# (guides/no-kubernetes-deployment/router/epp/config.yaml), the scheduler srtctl runs when a
-# recipe gives no frontend.epp_config. A prefill/decode job scores prefill workers with all
-# of them and decode workers by load alone.
+# Defaults from guides/no-kubernetes-deployment/router/epp/config.yaml.
+# In P/D mode, prefill uses all scorers; decode uses only load scorers.
 _DEFAULT_SCORERS = {
     "queue-scorer": 2,
     "kv-cache-utilization-scorer": 2,
@@ -124,7 +111,7 @@ _DEFAULT_DECODE_SCORERS = ("queue-scorer", "kv-cache-utilization-scorer")
 
 
 def default_epp_config(pd: bool) -> dict[str, Any]:
-    """The scheduler for a recipe without ``frontend.epp_config``: the guide's scorers, split into P/D profiles for ``pd``."""
+    """Default scheduler when ``frontend.epp_config`` is unset, with separate profiles for P/D."""
 
     def profile(name: str, scorers: Any, role_filter: str | None = None) -> dict[str, Any]:
         refs = [{"pluginRef": scorer, "weight": _DEFAULT_SCORERS[scorer]} for scorer in scorers]
@@ -182,12 +169,11 @@ def _vllm_token_producer(plugin: dict[str, Any]) -> bool:
 
 
 def with_kv_events(document: dict[str, Any], render_url: str, model_name: str) -> dict[str, Any]:
-    """Point the precise prefix-cache producer at srtctl's KV-event socket and the token producer at a worker.
+    """Configure the KV-event subscriber and the worker URL used for tokenization.
 
-    The EPP binds the socket and every publishing worker connects to it (the
-    producer's global-socket mode, ``kvEventsConfig.zmqEndpoint``): its per-pod
-    mode dials one fixed port per endpoint address, which workers sharing a node
-    cannot all bind. vLLM token producers render through ``render_url``.
+    Workers connect to one EPP socket (``kvEventsConfig.zmqEndpoint``). The
+    alternative per-pod mode requires a fixed worker port, which collides when
+    workers share a node.
     """
     for plugin in document.get("plugins") or []:
         parameters = _parameters(plugin)
@@ -239,7 +225,7 @@ class LLMDFrontend(StaticRouterFrontend):
     # The EPP takes prefill/decode from its scheduler configuration, not a flag.
     pd_flag: ClassVar[str] = ""
     process_name: ClassVar[str] = "llm-d"
-    # The endpoints file is written once, from workers that already answer /health.
+    # Gate startup on worker health unless health checks are disabled.
     wait_for_workers_before_start: ClassVar[bool] = True
 
     def validate(self, config: Any) -> None:
@@ -335,17 +321,16 @@ class LLMDFrontend(StaticRouterFrontend):
                 )
 
     def kv_events_subscriber(self, process: Process, runtime: RuntimeContext, model_name: str) -> tuple[str, int, str]:
-        """The EPP's KV-event socket on the head node; the topic names the endpoint the events belong to.
+        """Return the EPP socket and ``kv@<endpoint>@<model>`` topic.
 
-        vLLM's topic is ``kv@<endpoint>@<model>``: the producer files the events under
-        that endpoint's ``address:port`` (the sidecar's port for a proxied decode
-        worker) and the model the requests name (pkg/kvevents/engineadapter/vllm_adapter.go).
+        Use the routed endpoint, including the sidecar port, to match EPP's cache
+        index keys (pkg/kvevents/engineadapter/vllm_adapter.go).
         """
         address = self.resolve_worker_host(process.node, runtime.network_interface)
         return runtime.head_node_ip, LLM_D_EPP_KV_EVENTS_PORT, f"kv@{address}:{_routed_port(process)}@{model_name}"
 
     def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
-        """Every routable worker process serves its own API and metrics, an external-LB DP rank included."""
+        """Scrape each routable worker directly, including external-LB DP ranks."""
         return process.http_port if process.http_port > 0 else None
 
     def worker_endpoint_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
@@ -377,7 +362,7 @@ class LLMDFrontend(StaticRouterFrontend):
         return LLM_D_EPP_METRICS_PORT
 
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
-        """One endpoint per routable worker process: its prefill vLLM, its decode sidecar, or its aggregate vLLM."""
+        """Count routable processes, including individual external-LB DP ranks."""
         if processes is None:
             return super().health_expectations(config, processes)
         routable = [process for process in processes if process.http_port > 0]
@@ -424,7 +409,7 @@ class LLMDFrontend(StaticRouterFrontend):
         return {"endpoints": endpoints}
 
     def render_url(self, backend_processes: list[Process], network_interface: str | None) -> str:
-        """A worker's own API (not its proxy), for the token producer: the first prefill worker, else the first."""
+        """Direct worker API for tokenization; prefer the first prefill worker."""
         routable = [process for process in backend_processes if process.http_port > 0]
         process = next((p for p in routable if p.endpoint_mode == "prefill"), routable[0])
         return f"http://{self.resolve_worker_host(process.node, network_interface)}:{process.http_port}"
@@ -482,7 +467,7 @@ class LLMDFrontend(StaticRouterFrontend):
 
         commands = {
             "epp": self.epp_command(config, _container_path(EPP_CONFIG_FILE)),
-            # One Envoy per step: no hot-restart sockets shared with another Envoy on the host network.
+            # Avoid hot-restart socket collisions between Envoy instances on the host.
             "envoy": ["envoy", "-c", _container_path(ENVOY_CONFIG_FILE), "--disable-hot-restart"],
         }
         container_image = config.frontend.container_image or str(runtime.container_image)

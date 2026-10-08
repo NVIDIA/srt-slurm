@@ -105,8 +105,6 @@ class ServiceLaunchContext:
                     "worker_gpu_count": str(len(self.process.gpu_indices)),
                 }
             )
-            # The worker's own HTTP API, and the listener of the proxy in front of it
-            # when the frontend routes through one (Process.proxy_port).
             if self.process.http_port > 0:
                 values["worker_http_port"] = str(self.process.http_port)
             if self.process.proxy_port is not None:
@@ -203,11 +201,10 @@ class ServiceKind:
         """
 
     def attaches_to(self, process: Process) -> bool:
-        """Whether a ``placement.per: worker`` instance of this kind attaches to ``process``.
+        """Filter eligible processes for ``placement.per: worker`` services.
 
-        Every engine-0 process of the placed roles by default, followers of a
-        multi-node worker included; a proxy that fronts a worker's API attaches
-        only where that API is (``Process.proxy_port``).
+        By default, attach to all engine-0 processes, including followers.
+        API proxies override this to exclude processes without a listener.
         """
         return True
 

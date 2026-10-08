@@ -227,11 +227,9 @@ class StaticRouterFrontend(Frontend):
     def wait_for_workers(
         self, workers: list[RouterWorker], config: Any, stop_event: threading.Event | None = None
     ) -> None:
-        """Block until every advertised worker is healthy, within the recipe's health-check budget.
+        """Wait for HTTP ``/health`` or gRPC TCP connections; skip when health checks are disabled.
 
-        HTTP workers must answer ``/health`` with 200; a gRPC worker serves no HTTP
-        ``/health``, so its port accepting connections is the signal. Raises when
-        the budget runs out or ``stop_event`` is set.
+        Raise on cancellation or exhaustion of the recipe's health-check budget.
         """
         if config.health_check is None:
             return

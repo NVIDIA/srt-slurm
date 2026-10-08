@@ -164,8 +164,7 @@ class Process:
             their own ports and their own srun step.
         kvbm_zmq_port: KVBM leader ZMQ pub port (ack is the next port); the leader's is used
         sidecar_grpc_port: Dynamo sidecar gRPC listener, allocated when the job runs sidecars
-        proxy_port: listener of the proxy the router sends this routable worker's traffic
-            through (llm-d's P/D sidecar), allocated when the frontend proxies its mode
+        proxy_port: Per-worker proxy listener (e.g. llm-d's decode sidecar), when required by the frontend
         nccl_port: SGLang local TP rendezvous port, one per server process
         dist_init_port: SGLang multi-node dist-init port; the same value on every process of an endpoint
         grpc_http_port: HTTP sidecar (/metrics, profiler routes) of an SGLang gRPC-mode leader
@@ -213,11 +212,7 @@ class Process:
 
     @property
     def engine_suffix(self) -> str:
-        """Step-name and log-name suffix that tells a worker's processes on one node apart.
-
-        ``_dp<r>`` for one DP rank of a per-rank endpoint, ``_e<k>`` for a shadow
-        engine; ``""`` for the only process.
-        """
+        """Disambiguate colocated processes with optional ``_dp<rank>`` and ``_e<engine>`` suffixes."""
         rank = f"_dp{self.dp_rank}" if self.dp_rank is not None else ""
         return f"{rank}_e{self.engine_id}" if self.engine_id else rank
 

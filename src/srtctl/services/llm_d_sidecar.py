@@ -4,18 +4,15 @@
 
 """``type: llm-d-sidecar``: llm-d's P/D sidecar in front of every routable decode worker.
 
-Implied by ``frontend.type: llm-d`` when the job has prefill and decode workers.
-The Endpoint Picker routes a request to a decode endpoint and names the prefill
-worker in the ``x-prefiller-host-port`` header; the sidecar on that decode
-endpoint sends the prefill request first, then hands the returned
-``kv_transfer_params`` to its own vLLM, whose KV connector pulls the cache from
-the prefill worker. The sidecar is what the router addresses for a decode
-worker, so it binds the worker's ``Process.proxy_port`` and proxies everything
-else (``/metrics`` included) to the worker's HTTP port.
+The llm-d frontend implies this service for P/D jobs. The sidecar calls the
+prefill worker named in ``x-prefiller-host-port``, then passes the returned
+``kv_transfer_params`` to its local vLLM, which pulls the prefill KV cache.
+It listens on ``Process.proxy_port`` and forwards other routes, including
+``/metrics``, to the worker's HTTP port.
 
 Upstream: llm-d-router ``cmd/pd-sidecar`` and ``pkg/sidecar/proxy`` at v0.11.0
 (https://github.com/llm-d/llm-d-router/tree/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/sidecar/proxy).
-Its ``GET /health`` answers 200 on its own, so it starts before the workers.
+Its ``GET /health`` is independent of vLLM, allowing it to start before workers.
 """
 
 from __future__ import annotations
@@ -45,14 +42,13 @@ _PREVIEW_PORTS = ["--port=<worker_proxy_port>", "--model-server-port=<worker_htt
 
 
 def sidecar_kv_connector(backend: Any) -> str:
-    """The ``--kv-connector`` protocol for the decode workers' KV connector; raises ``ValueError`` when unmapped.
+    """Select the decode connector's sidecar protocol, or raise ``ValueError``.
 
-    A ``MultiConnector`` (P/D transfer next to KV offloading) maps through the first
-    connector it wraps that has a protocol.
+    For ``MultiConnector``, use the first supported wrapped connector.
     """
     from srtctl.backends.vllm import VLLMBackend
 
-    # The sidecar drives vLLM's KV transfer protocol; another engine's decode has no row.
+    # Only vLLM's KV-transfer protocol is supported.
     connectors = backend.kv_connector_classes("decode") if isinstance(backend, VLLMBackend) else ()
     protocol = next((SIDECAR_KV_CONNECTORS[name] for name in connectors if name in SIDECAR_KV_CONNECTORS), None)
     if protocol is None:
@@ -91,7 +87,7 @@ class LLMDSidecarService(ServiceKind):
             )
 
     def container_fallback(self, config: SrtConfig) -> str | None:
-        """The router image (``frontend.container_image``), which ships the sidecar next to the EPP."""
+        """Use the frontend image, which also contains ``pd-sidecar``."""
         return config.frontend.container_image
 
     def attaches_to(self, process: Process) -> bool:

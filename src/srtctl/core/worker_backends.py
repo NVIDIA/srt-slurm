@@ -77,7 +77,7 @@ def worker_processes(
 
 
 def with_proxy_ports(config: SrtConfig, processes: list[Process], allocator: NodePortAllocator) -> list[Process]:
-    """Give every routable worker of a mode the frontend proxies the listener its proxy binds."""
+    """Allocate proxy ports for routable workers in the frontend's proxied modes."""
     from srtctl.frontends import FRONTEND_NONE, get_frontend
 
     if config.frontend.type == FRONTEND_NONE:

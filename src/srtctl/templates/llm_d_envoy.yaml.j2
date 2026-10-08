@@ -1,12 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-FileCopyrightText: Copyright (c) 2026 SemiAnalysis LLC. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Envoy in front of the llm-d Endpoint Picker (frontend.type: llm-d), rendered by srtctl.
-# Follows llm-d's no-Kubernetes guide:
+# Envoy configuration based on llm-d's no-Kubernetes guide:
 # https://github.com/llm-d/llm-d/blob/7fb84b0adf8e1d41eb2cef105fc1aafaf5a9b64f/guides/no-kubernetes-deployment/router/envoy/envoy.yaml
-# Differences: the admin listener binds every interface so srtctl can probe /ready from the
-# orchestrator, requests carry no timeout (agentic requests stream for minutes), /metrics is not
-# routed, and an access log records the endpoint the EPP picked for every request.
+# Allow remote /ready probes and long-running streams; log selected endpoints.
 
 admin:
   address:
@@ -39,8 +36,7 @@ static_resources:
                     - name: llm-d
                       domains: ["*"]
                       routes:
-                        # A load-balanced /metrics would be a different worker's counters on every scrape;
-                        # the workers and the EPP serve their own. Answered here, without asking the EPP.
+                        # Scrape workers and EPP directly; load balancing would mix workers' counters.
                         - match: {path: "/metrics"}
                           direct_response: {status: 404}
                           typed_per_filter_config:
@@ -75,8 +71,7 @@ static_resources:
       type: ORIGINAL_DST
       connect_timeout: 1000s
       lb_policy: CLUSTER_PROVIDED
-      # Every request holds a connection here and an ext_proc stream to the EPP for its whole
-      # lifetime; Envoy's default of 1024 would cap the client's concurrency.
+      # Each request holds a worker connection and EPP stream; raise the default 1024 concurrency cap.
       circuit_breakers:
         thresholds:
           - {max_connections: 40000, max_pending_requests: 40000, max_requests: 40000}

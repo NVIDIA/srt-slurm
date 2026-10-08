@@ -451,12 +451,10 @@ class VLLMBackend(Backend):
         return kv_connector_row(self.connector_for_mode(mode))
 
     def kv_connector_classes(self, mode: WorkerMode) -> tuple[str, ...]:
-        """The vLLM connector classes a mode's workers run: ``kv_connector`` of their ``--kv-transfer-config``.
+        """Connector classes from the effective transfer config; empty without a connector.
 
-        A ``MultiConnector`` is followed by the classes of the connectors it wraps
-        (``kv_connector_extra_config.connectors``). A ``kv-transfer-config`` written
-        in the role's args wins, as it does on the command line; otherwise the mode's
-        connector (a table row or raw JSON). Empty when the mode runs no connector.
+        Include wrapped classes after ``MultiConnector``. Resolution follows
+        ``_effective_connector_for_mode``, matching worker command generation.
         """
         connector = self._effective_connector_for_mode(mode)
         if not connector or connector.lower() in ("null", "none"):
@@ -700,12 +698,7 @@ class VLLMBackend(Backend):
         return dp_size is not None and int(dp_size) > 1
 
     def is_external_lb(self, mode: WorkerMode) -> bool:
-        """Whether a DP mode's ranks are each an API server of their own (``data-parallel-external-lb``).
-
-        A router then addresses every rank: each is its own ``vllm serve
-        --data-parallel-rank`` process on its own HTTP port (vLLM's external load
-        balancing) instead of one server that balances its ranks itself.
-        """
+        """Whether ``data-parallel-external-lb`` exposes each DP rank as a separate HTTP server."""
         return self._is_dp_mode(mode) and any(
             normalize_vllm_config_key(key) == "data-parallel-external-lb" and value
             for key, value in self.get_config_for_mode(mode).items()
@@ -872,9 +865,8 @@ class VLLMBackend(Backend):
         allocator = port_allocator_for(port_allocator, base_sys_port)
         frontend = get_frontend(frontend_type)
         if frontend.worker_launch == "direct" and not frontend.expands_node_local_dp:
-            # One `vllm serve` owns every DP rank of the endpoint, and only the
-            # leader serves the API, so the standard topology applies; behind a
-            # router, an external-LB endpoint is one `vllm serve` per rank instead.
+            # Direct serving normally exposes one API per endpoint. External load
+            # balancing behind a router requires a separate server per DP rank.
             processes = []
             for endpoint in endpoints:
                 if self.is_external_lb(endpoint.mode) and frontend.worker_api_port(endpoint.mode) == "allocated":
@@ -1305,8 +1297,7 @@ class VLLMBackend(Backend):
             subscriber = frontend.kv_events_subscriber(process, runtime, served_model_name) if kv_events else None
             if kv_events and subscriber is not None:
                 host, port, topic = subscriber
-                # vLLM adds the publisher's DP rank to the port it is given; start that far
-                # below so every rank connects to the one subscriber.
+                # Offset vLLM's rank addition so every publisher reaches the same subscriber port.
                 rank = process.dp_rank or 0
                 kv_events = {**kv_events, "endpoint": f"tcp://{host}:{port - rank}", "topic": topic}
                 cmd.extend(["--kv-events-config", json.dumps(kv_events)])

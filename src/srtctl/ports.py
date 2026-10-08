@@ -42,18 +42,14 @@ SGLANG_ROUTER_METRICS_PORT = 29000
 # passed as --prometheus-port so srtctl, not upstream's default, owns it.
 SMG_METRICS_PORT = 29000
 
-# llm-d router (frontend.type: llm-d) on each router node: the Endpoint Picker's ext_proc gRPC,
-# gRPC health, and Prometheus listeners (upstream's defaults, passed explicitly so srtctl owns
-# them) and Envoy's admin listener, which serves /ready.
+# llm-d router-node listeners, passed explicitly; Envoy admin serves /ready.
 LLM_D_EPP_GRPC_PORT = 9002
 LLM_D_EPP_HEALTH_PORT = 9003
 LLM_D_EPP_METRICS_PORT = 9090
 LLM_D_ENVOY_ADMIN_PORT = 9901
-# The EPP's ZMQ subscriber for vLLM KV-cache events (precise prefix-cache routing): it binds
-# this port on the router node and every publishing worker connects to it (upstream's 5557).
+# EPP binds this ZMQ subscriber; all KV-event publishers connect to it.
 LLM_D_EPP_KV_EVENTS_PORT = 5557
-# First listener of a per-worker proxy a router sends a worker's traffic through
-# (llm-d's P/D sidecar in front of a decode worker); see PROXY_PORTS.
+# Per-worker proxy listeners, including llm-d decode sidecars; see PROXY_PORTS.
 WORKER_PROXY_PORT_BASE = 9600
 
 # TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
@@ -139,8 +135,7 @@ DP_RPC_PORTS = PortKind("dp_rpc", VLLM_DATA_PARALLEL_RPC_PORT, per_node=True)
 # KVBM leader ZMQ pair: pub at the port, ack at the port + 1.
 KVBM_ZMQ_PORTS = PortKind("kvbm_zmq", KVBM_ZMQ_PORT_BASE, 2)
 SIDECAR_GRPC_PORTS = PortKind("sidecar_grpc", DYNAMO_SIDECAR_GRPC_PORT)
-# Bound by the proxy in front of a routable worker whose mode the frontend proxies
-# (``Frontend.proxied_worker_modes``), on the worker's node.
+# Allocated on each worker's node for Frontend.proxied_worker_modes.
 PROXY_PORTS = PortKind("proxy", WORKER_PROXY_PORT_BASE, per_node=True)
 # Engine-specific: the backend allocates these for its own processes.
 NCCL_PORTS = PortKind("nccl", SGLANG_NCCL_PORT_BASE)
