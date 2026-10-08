@@ -21,13 +21,14 @@ from srtctl.backends import (
     SGLangBackend,
     TRTLLMBackend,
     TileRTBackend,
+    TokenSpeedBackend,
     VLLMFailoverConfig,
     VLLMBackend,
 )
 from srtctl.core.topology import Process
 from srtctl.ports import MOONCAKE_MASTER_PORT
 
-BACKENDS = [SGLangBackend, TRTLLMBackend, VLLMBackend, MockerBackend, TileRTBackend]
+BACKENDS = [SGLangBackend, TRTLLMBackend, VLLMBackend, MockerBackend, TileRTBackend, TokenSpeedBackend]
 SRC = Path(__file__).resolve().parents[1] / "src" / "srtctl"
 DUCK_TYPED_BACKEND = re.compile(r"\b(getattr|hasattr)\((self\.|config\.|self\.config\.)?backend\b")
 
@@ -52,7 +53,9 @@ def test_optional_features_read_as_absent_by_default(backend_cls):
     assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
     assert backend.get_failover_environment(_process(), "12345") == {}
     assert backend.get_srun_config().sequential_node_start == 0
-    assert not any(backend.is_grpc_mode(mode) for mode in ("prefill", "decode", "agg"))
+    # A direct TokenSpeed worker is always its gRPC engine.
+    grpc_only = backend_cls is TokenSpeedBackend
+    assert all(backend.is_grpc_mode(mode) == grpc_only for mode in ("prefill", "decode", "agg"))
 
 
 def test_vllm_grpc_role_arg_selects_grpc_mode():
@@ -123,7 +126,9 @@ def test_every_backend_names_its_fatal_log_patterns(backend_cls, mode):
 
 
 @pytest.mark.parametrize(
-    "backend_cls", [SGLangBackend, VLLMBackend, MockerBackend, AtomBackend, TileRTBackend], ids=lambda c: c.__name__
+    "backend_cls",
+    [SGLangBackend, VLLMBackend, MockerBackend, AtomBackend, TileRTBackend, TokenSpeedBackend],
+    ids=lambda c: c.__name__,
 )
 def test_engines_whose_step_exits_with_the_engine_watch_nothing(backend_cls):
     assert backend_cls().fatal_log_patterns("decode") == ()

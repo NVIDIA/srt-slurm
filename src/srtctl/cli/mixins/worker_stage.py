@@ -641,7 +641,21 @@ class WorkerStageMixin:
         task_counts = [len(p.gpu_indices) for p in endpoint_processes]
         srun_options = {**self.runtime.srun_options, **self.config.roles[mode].srun_options}
         srun_options["ntasks-per-node"] = str(max(task_counts))
-        if len(set(task_counts)) > 1:
+        if num_nodes > 1:
+            # Every multi-node endpoint, uniform or not, lays its ranks out explicitly:
+            # one host per task, in srt-slurm's node order, under --distribution=arbitrary.
+            # A plain --nodelist only names the nodes; Slurm may still order the tasks
+            # by its own topology, putting rank 0 on a node other than the leader whose
+            # IP is MASTER_ADDR, and the rendezvous then waits forever.
+            configured = srun_options.get("distribution")
+            if configured not in (None, "arbitrary"):
+                logger.warning(
+                    "%s worker %d: srun_options.distribution=%r is replaced by 'arbitrary'; "
+                    "a multi-node endpoint needs the explicit per-rank host list",
+                    mode,
+                    index,
+                    configured,
+                )
             srun_options["distribution"] = "arbitrary"
             endpoint_nodes = task_nodes
 

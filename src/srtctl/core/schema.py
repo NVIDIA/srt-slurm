@@ -44,6 +44,7 @@ from srtctl.backends import (
     MockerBackend,
     SGLangBackend,
     TileRTBackend,
+    TokenSpeedBackend,
     TRTLLMBackend,
     VLLMBackend,
     VLLMMooncakeKVStoreConfig,
@@ -507,7 +508,16 @@ class BackendConfigField(fields.Field):
         if value is None:
             return SGLangBackend()
 
-        if isinstance(value, AtomBackend | SGLangBackend | TileRTBackend | TRTLLMBackend | VLLMBackend | MockerBackend):
+        if isinstance(
+            value,
+            AtomBackend
+            | SGLangBackend
+            | TileRTBackend
+            | TokenSpeedBackend
+            | TRTLLMBackend
+            | VLLMBackend
+            | MockerBackend,
+        ):
             return value
 
         if isinstance(value, str):
@@ -530,6 +540,8 @@ class BackendConfigField(fields.Field):
             return AtomBackend.Schema().load(value)
         elif backend_type == "tilert":
             return TileRTBackend.Schema().load(value)
+        elif backend_type == "tokenspeed":
+            return TokenSpeedBackend.Schema().load(value)
         elif backend_type == "sglang":
             schema = SGLangBackend.Schema()
             return schema.load(value)
@@ -544,7 +556,7 @@ class BackendConfigField(fields.Field):
             return schema.load(value)
         else:
             raise ValidationError(
-                f"Unknown engine type: {backend_type!r}. Supported types: atom, sglang, tilert, trtllm, vllm, mocker"
+                f"Unknown engine type: {backend_type!r}. Supported types: atom, sglang, tilert, tokenspeed, trtllm, vllm, mocker"
             )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
@@ -561,6 +573,8 @@ class BackendConfigField(fields.Field):
             return AtomBackend.Schema().dump(value)
         if isinstance(value, TileRTBackend):
             return TileRTBackend.Schema().dump(value)
+        if isinstance(value, TokenSpeedBackend):
+            return TokenSpeedBackend.Schema().dump(value)
         if isinstance(value, SGLangBackend):
             return SGLangBackend.Schema().dump(value)
         if isinstance(value, TRTLLMBackend):

@@ -87,6 +87,7 @@ nav:
       - Workloads:
           - Native Sidecars: sidecars.md
           - TileRT: tilert.md
+          - TokenSpeed: tokenspeed.md
           - Shadow Engine Recovery: shadow-engine-recovery.md
           - SGLang Fast Engine Recovery: sglang-weight-cache.md
           - Miles RL Post-Training: miles.md
