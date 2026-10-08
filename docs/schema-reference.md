@@ -15,7 +15,7 @@ Top-level keys of a recipe YAML.
 | `resources` | [ResourceConfig](#resourceconfig) | required | GPU type, GPUs per node, and allocation knobs. The worker topology is `roles`. |
 | `schema` | one of `2` | required | Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`). |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` | Slurm account, partition, and time limit; unset values come from srtslurm.yaml. |
-| `engine` | str \| mapping | optional when every role sets `engine` | The engine type (`atom`, `sglang`, `tilert`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
+| `engine` | str \| mapping | optional when every role sets `engine` | The engine type (`atom`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
 | `roles` | dict[str, [RoleConfig](#roleconfig)] | `{}` | One block per worker role (`prefill`, `decode`, `agg`): nodes, workers, GPUs, env, engine args. |
 | `frontend` | [FrontendConfig](#frontendconfig) | `FrontendConfig()` | The HTTP entry point in front of the workers (Dynamo frontend, router, nginx) and where it runs. |
 | `dynamo` | [DynamoConfig](#dynamoconfig) | `DynamoConfig()` | Which Dynamo to install, its request/event planes, and native sidecar mode. |
@@ -44,7 +44,7 @@ Three vocabularies carry the engine, the topology, and the placement. `engine` a
 
 ### engine
 
-`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `tilert`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
 Use either one top-level engine or an explicit engine on every role, never both. Role engines do not inherit options from each other.
 
 ### roles
@@ -699,6 +699,16 @@ Launch TileRT's decode server with recipe-owned model and transport settings.
 |---|---|---|---|
 | `type` | one of `'tilert'` | `'tilert'` | Engine type discriminator. |
 | `served_model_name` | str \| None | `None` | Model name the server reports to clients; unset uses the default served name. |
+
+### TokenSpeedBackend
+
+`engine.type: tokenspeed`
+
+Launch TokenSpeed workers behind the Dynamo frontend or a static router such as SMG.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `type` | one of `'tokenspeed'` | `'tokenspeed'` | Engine type discriminator. |
 
 ### TRTLLMBackend
 

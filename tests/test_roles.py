@@ -124,7 +124,7 @@ def test_agg_role_binds_to_the_aggregated_mode() -> None:
 
 
 def test_role_args_reach_every_engine() -> None:
-    for engine_type in ("sglang", "vllm", "trtllm", "mocker", "atom", "tilert"):
+    for engine_type in ("sglang", "vllm", "trtllm", "mocker", "atom", "tilert", "tokenspeed"):
         cfg = SrtConfig.Schema().load(
             _minimal(engine=engine_type, roles={"agg": {"nodes": 1, "workers": 1, "args": {"a": 1}, "env": {"E": "1"}}})
         )

@@ -8,7 +8,8 @@ Small starting points, one per frontend and topology. The matrix examples serve 
 | --- | --- | --- | --- |
 | SGLang | `sglang/dynamo-agg.yaml`, `sglang/dynamo-disagg.yaml` | `sglang/sglang-router-agg.yaml`, `sglang/sglang-router-disagg.yaml`, `sglang/smg-disagg.yaml` (SMG) | `sglang/sglang-direct-agg.yaml` |
 | vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml`, `vllm/vllm-router-moriio-disagg.yaml` (ROCm, MoRI-IO discovery), `vllm/smg-agg.yaml`, `vllm/smg-dep16.yaml`, `vllm/smg-disagg-grpc.yaml` (SMG; P/D over gRPC with NIXL) | `vllm/vllm-direct-agg.yaml` |
-| TRT-LLM | `trtllm/dynamo-agg.yaml`, `trtllm/dynamo-disagg.yaml` | `trtllm/trtllm-serve-disagg.yaml`, `trtllm/smg-agg.yaml` (SMG) | `trtllm/trtllm-serve-agg.yaml` |
+| TRT-LLM | `trtllm/dynamo-agg.yaml`, `trtllm/dynamo-disagg.yaml`, `trtllm/dynamo-disagg-multinode.yaml` (TP16 decode across two 8-GPU nodes: one srun, one host per rank under `--distribution=arbitrary`) | `trtllm/trtllm-serve-disagg.yaml`, `trtllm/smg-agg.yaml` (SMG) | `trtllm/trtllm-serve-agg.yaml` |
+| TokenSpeed | `tokenspeed/dynamo-agg.yaml`, `tokenspeed/dynamo-disagg.yaml` | `tokenspeed/smg-agg.yaml`, `tokenspeed/smg-disagg.yaml` (SMG, gRPC engines) | |
 | Mocker | `mocker/dynamo-agg.yaml` | | |
 
 - **Dynamo frontend**: workers register with etcd and the Dynamo frontend routes (KV-aware here); the request plane is tcp and NATS is not started unless a plane asks for it. Dynamo is installed at job start via `dynamo.source` (`pypi:` here) unless the container ships it (`dynamo.install: false`, as the TRT-LLM examples do).
@@ -57,6 +58,7 @@ containers:
   sglang-rocm: /path/to/sglang-rocm.sqsh    # SGLang ROCm image, for features/amd-power-telemetry.yaml
   vllm: /path/to/vllm.sqsh                  # vLLM image with the vllm-router executable
   trtllm: /path/to/tensorrtllm-runtime.sqsh # Dynamo TRT-LLM runtime image (ships ai-dynamo and trtllm-serve)
+  tokenspeed: /path/to/dynamo-tokenspeed.sqsh # TokenSpeed image with ai-dynamo's dynamo.tokenspeed (see ../docs/tokenspeed.md)
   dynamo-vllm: /path/to/vllm-runtime.sqsh   # Dynamo vLLM runtime image (ships ai-dynamo and gpu_memory_service), for features/vllm-failover.yaml
   vllm-lmcache: /path/to/vllm-lmcache.sqsh  # vLLM image with LMCache installed, for features/lmcache-server.yaml and -disagg.yaml
   sglang-lmcache: /path/to/sglang-lmcache.sqsh  # SGLang image with LMCache installed, for features/lmcache-server-sglang.yaml

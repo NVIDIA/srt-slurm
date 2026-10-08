@@ -169,6 +169,7 @@ class Process:
         moriio_handshake_port: MoRI-IO handshake listener of a vLLM discovery-connector worker
         moriio_notify_port: first port of that worker's MoRI-IO notify block (one port per local rank)
         trtllm_dist_init_port: TRT-LLM torch.distributed bootstrap port; the leader's is used
+        tokenspeed_port: TokenSpeed ``--port``, the base of the engine's own free-port scan
 
     Every port is allocated by ``NodePortAllocator`` in ``endpoints_to_processes``;
     consumers read these fields and never derive one port from another.
@@ -195,6 +196,7 @@ class Process:
     grpc_http_port: int | None = None
     vllm_scan_port: int | None = None
     trtllm_dist_init_port: int | None = None
+    tokenspeed_port: int | None = None
     moriio_handshake_port: int | None = None
     moriio_notify_port: int | None = None
 
