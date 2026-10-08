@@ -62,8 +62,9 @@ srtctl sets `--port` (the worker's `Process.proxy_port`), `--model-server-port` 
 The allocator hands out the proxy port (`PROXY_PORTS`) for every routable worker of a
 mode the frontend proxies (`Frontend.proxied_worker_modes`), so two decode workers on
 one node never collide. The `--kv-connector` protocol comes from the decode workers' vLLM
-connector class (`VLLMBackend.kv_connector_classes`, which reads a role's own
-`kv-transfer-config` before `connector`):
+connector class. Engine commands and sidecar selection use the same payload:
+a role's explicit `kv-transfer-config` takes precedence over its `connector`,
+which takes precedence over `engine.connector`:
 
 | Decode connector | Sidecar protocol |
 | --- | --- |

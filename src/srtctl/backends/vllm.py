@@ -433,6 +433,19 @@ class VLLMBackend(Backend):
         mode_connector = self.get_config_for_mode(mode).get("connector")
         return mode_connector if mode_connector is not None else self.connector
 
+    def _effective_connector_for_mode(self, mode: WorkerMode, *, use_default: bool = True) -> str | None:
+        """Resolve explicit KV-transfer JSON before the named connector configuration.
+
+        Direct aggregate workers skip the engine's P/D default, but still honor
+        an explicit role configuration. Connector aliases retain their service
+        and discovery metadata independently of raw payload overrides.
+        """
+        config = self.get_config_for_mode(mode)
+        for key, value in config.items():
+            if normalize_vllm_config_key(key) == "kv-transfer-config" and value is not None:
+                return json.dumps(dict(value)) if isinstance(value, Mapping) else str(value)
+        return self.connector_for_mode(mode) if use_default else config.get("connector")
+
     def kv_connector_for_mode(self, mode: WorkerMode) -> KVConnector | None:
         """The connector table row for a mode; None for no connector or a raw JSON ``--kv-transfer-config``."""
         return kv_connector_row(self.connector_for_mode(mode))
@@ -445,24 +458,10 @@ class VLLMBackend(Backend):
         in the role's args wins, as it does on the command line; otherwise the mode's
         connector (a table row or raw JSON). Empty when the mode runs no connector.
         """
-        explicit = next(
-            (
-                value
-                for key, value in self.get_config_for_mode(mode).items()
-                if normalize_vllm_config_key(key) == "kv-transfer-config"
-            ),
-            None,
-        )
-        row = self.kv_connector_for_mode(mode)
-        connector = self.connector_for_mode(mode)
-        if explicit is not None:
-            payload = explicit if isinstance(explicit, Mapping) else json.loads(str(explicit))
-        elif row is not None:
-            return (row.kv_connector,)
-        elif not connector or connector.lower() in ("null", "none"):
+        connector = self._effective_connector_for_mode(mode)
+        if not connector or connector.lower() in ("null", "none"):
             return ()
-        else:
-            payload = json.loads(connector)
+        payload = json.loads(_connector_to_kv_transfer_config(connector, mode))
         wrapped = (payload.get("kv_connector_extra_config") or {}).get("connectors") or []
         return tuple(
             name for name in (payload.get("kv_connector"), *(inner.get("kv_connector") for inner in wrapped)) if name
@@ -478,7 +477,12 @@ class VLLMBackend(Backend):
         return any(row is not None and row.discovery for row in map(self.kv_connector_for_mode, ("prefill", "decode")))
 
     def kv_transfer_config(
-        self, mode: WorkerMode, process: Process | None = None, runtime: RuntimeContext | None = None
+        self,
+        mode: WorkerMode,
+        process: Process | None = None,
+        runtime: RuntimeContext | None = None,
+        *,
+        use_default: bool = True,
     ) -> str | None:
         """``--kv-transfer-config`` JSON for a worker mode, or None when the mode has no connector.
 
@@ -489,7 +493,7 @@ class VLLMBackend(Backend):
         this worker's HTTP port and routable IP, and the handshake and notify
         listeners the allocator reserved for it.
         """
-        connector = self.connector_for_mode(mode)
+        connector = self._effective_connector_for_mode(mode, use_default=use_default)
         if not connector or connector.lower() in ("null", "none"):
             return None
         row = kv_connector_row(connector)
@@ -1166,11 +1170,11 @@ class VLLMBackend(Backend):
 
             # A prefill/decode worker gets its KV connector. An aggregate worker gets
             # only the one its role names (e.g. lmcache-mp offload), not the P/D default.
-            role_connector = config.pop("connector", None)
-            if mode in {"prefill", "decode"} or role_connector is not None:
-                kv_transfer_config = self.kv_transfer_config(mode, process, runtime)
-                if kv_transfer_config is not None:
-                    config.setdefault("kv-transfer-config", kv_transfer_config)
+            kv_transfer_config = self.kv_transfer_config(mode, process, runtime, use_default=mode != "agg")
+            for key in ("connector", "kv-transfer-config", "kv_transfer_config"):
+                config.pop(key, None)
+            if kv_transfer_config is not None:
+                config["kv-transfer-config"] = kv_transfer_config
 
             node_rank = endpoint_nodes.index(process.node)
             # The worker that is itself the public endpoint may run the alternate
@@ -1328,7 +1332,8 @@ class VLLMBackend(Backend):
 
         # KV connector → --kv-transfer-config (dynamo 1.0.0+: --connector was removed).
         # Pop from config so it doesn't get added again by _config_to_cli_args.
-        config.pop("connector", None)
+        for key in ("connector", "kv-transfer-config", "kv_transfer_config"):
+            config.pop(key, None)
         kv_transfer_cfg = self.kv_transfer_config(mode, process, runtime)
         if kv_transfer_cfg is not None:
             cmd.extend(["--kv-transfer-config", kv_transfer_cfg])
@@ -1621,9 +1626,9 @@ class VLLMBackend(Backend):
             if hybrid_lb:
                 command.extend(["--data-parallel-start-rank", str(process.node_rank), "--data-parallel-hybrid-lb"])
 
-        config.pop("connector", None)
-        has_explicit_kv = "kv-transfer-config" in config or "kv_transfer_config" in config
-        kv_transfer_cfg = None if has_explicit_kv else self.kv_transfer_config(mode)
+        for key in ("connector", "kv-transfer-config", "kv_transfer_config"):
+            config.pop(key, None)
+        kv_transfer_cfg = self.kv_transfer_config(mode)
         if kv_transfer_cfg is not None:
             command.extend(["--kv-transfer-config", kv_transfer_cfg])
 
