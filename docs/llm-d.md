@@ -242,8 +242,11 @@ that rank.
 
 - vLLM workers over HTTP only; gRPC roles are rejected.
 - One router replica: the EPP keeps its scheduling state (the approximate prefix index,
-  in-flight load) in memory, so `enable_multiple_frontends` with more than one router is
-  rejected.
+  in-flight load) in memory. Multi-node jobs require `enable_multiple_frontends: false`:
+  nginx would put the router on a different node from the public endpoint, where readiness
+  checks expect Envoy's admin and the EPP's metrics listeners. Setting
+  `num_additional_frontends: 0` still enables nginx and is rejected too. Single-node jobs
+  never launch nginx, regardless of `enable_multiple_frontends`.
 - The endpoints file is written once (`watchFile: false`) and the EPP does not eject a
   worker that fails; a crashed worker or sidecar fails the job instead.
 - vLLM's `data-parallel-multi-port-external-lb` (one supervisor per node serving a port

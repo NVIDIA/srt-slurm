@@ -244,14 +244,11 @@ class LLMDFrontend(StaticRouterFrontend):
 
     def validate(self, config: Any) -> None:
         frontend = config.frontend
-        if (
-            frontend.enable_multiple_frontends
-            and frontend.num_additional_frontends > 0
-            and config.engine_node_count > 1
-        ):
+        if frontend.enable_multiple_frontends and config.engine_node_count > 1:
             raise ValueError(
-                "frontend.type: llm-d runs one Endpoint Picker, which keeps its routing state in memory; "
-                "set frontend.enable_multiple_frontends: false (or num_additional_frontends: 0)"
+                "frontend.type: llm-d requires Envoy and the Endpoint Picker on the public endpoint's node "
+                "for readiness checks; multi-node nginx routing is unsupported, even with "
+                "num_additional_frontends: 0. Set frontend.enable_multiple_frontends: false"
             )
         topology = config.topology
         for mode, count in (

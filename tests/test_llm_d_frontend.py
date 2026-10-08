@@ -244,12 +244,21 @@ def test_multi_connector_maps_through_its_transfer_connector() -> None:
     assert sidecar_kv_connector(config.backend) == "nixlv2"
 
 
-def test_one_router_replica() -> None:
+@pytest.mark.parametrize("additional_frontends", [0, 1, 9])
+def test_multinode_nginx_is_rejected_even_with_one_router(additional_frontends: int) -> None:
     recipe = _recipe()
     recipe["frontend"]["enable_multiple_frontends"] = True
+    recipe["frontend"]["num_additional_frontends"] = additional_frontends
     recipe["roles"]["decode"]["nodes"] = 1
-    with pytest.raises(ValidationError, match="runs one Endpoint Picker"):
+    with pytest.raises(ValidationError, match="Set frontend.enable_multiple_frontends: false"):
         _load(recipe)
+
+
+def test_single_node_allows_multiple_frontends_setting_without_nginx() -> None:
+    recipe = _recipe(AGG)
+    recipe["frontend"]["enable_multiple_frontends"] = True
+    config = _load(recipe)
+    assert config.engine_node_count == 1
 
 
 def test_epp_config_gets_srtctl_discovery() -> None:
