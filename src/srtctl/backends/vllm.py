@@ -688,7 +688,7 @@ class VLLMBackend(Backend):
             ),
         )
 
-    def _is_dp_mode(self, mode: WorkerMode) -> bool:
+    def is_dp_mode(self, mode: WorkerMode) -> bool:
         """Check if this mode uses Data Parallel + Expert Parallel pattern.
 
         DP+EP mode is detected when data-parallel-size is set in the mode's config.
@@ -699,7 +699,7 @@ class VLLMBackend(Backend):
 
     def is_external_lb(self, mode: WorkerMode) -> bool:
         """Whether ``data-parallel-external-lb`` exposes each DP rank as a separate HTTP server."""
-        return self._is_dp_mode(mode) and any(
+        return self.is_dp_mode(mode) and any(
             normalize_vllm_config_key(key) == "data-parallel-external-lb" and value
             for key, value in self.get_config_for_mode(mode).items()
         )
@@ -881,7 +881,7 @@ class VLLMBackend(Backend):
                             [endpoint], port_allocator=allocator, sidecar_grpc=dynamo_sidecar, bootstrap_ports=False
                         )
                     )
-        elif not any(self._is_dp_mode(ep.mode) for ep in endpoints):
+        elif not any(self.is_dp_mode(ep.mode) for ep in endpoints):
             # Standard TP mode: one process per node, or one per engine of the
             # worker under backend.failover (engine 0 plus its shadows).
             processes = endpoints_to_processes(
@@ -934,7 +934,7 @@ class VLLMBackend(Backend):
 
         processes: list[Process] = []
         for endpoint in endpoints:
-            if not self._is_dp_mode(endpoint.mode):
+            if not self.is_dp_mode(endpoint.mode):
                 # Non-DP endpoints get standard processing (all modes are normally consistent).
                 for node_rank, node in enumerate(endpoint.nodes):
                     is_leader = node_rank == 0
@@ -1003,7 +1003,7 @@ class VLLMBackend(Backend):
 
         processes: list[Process] = []
         for endpoint in endpoints:
-            if not self._is_dp_mode(endpoint.mode):
+            if not self.is_dp_mode(endpoint.mode):
                 processes.extend(
                     endpoints_to_processes(
                         [endpoint], port_allocator=allocator, sidecar_grpc=sidecar_grpc, bootstrap_ports=False
@@ -1176,7 +1176,7 @@ class VLLMBackend(Backend):
             # Collected as the command is built so the override report below can
             # name the value srtslurm actually passed for each flag it took over.
             srtslurm_owned: dict[str, str] = {}
-            is_dp_mode = self._is_dp_mode(mode)
+            is_dp_mode = self.is_dp_mode(mode)
             replica_size = self._get_model_parallel_size(mode)
             local_gpu_count = len(process.gpu_indices)
             spans_nodes = replica_size > local_gpu_count
@@ -1338,7 +1338,7 @@ class VLLMBackend(Backend):
                 cmd.extend(["--device-ids", device_ids])
 
         # Check if this is DP+EP mode (data-parallel-size set)
-        is_dp_mode = self._is_dp_mode(mode)
+        is_dp_mode = self.is_dp_mode(mode)
         if is_dp_mode and self.dp_launch_mode == "per_node":
             rpc_port_kebab = config.pop("data-parallel-rpc-port", None)
             rpc_port_snake = config.pop("data_parallel_rpc_port", None)
@@ -1474,7 +1474,7 @@ class VLLMBackend(Backend):
     ) -> list[str]:
         """Expose local DP frontends or one frontend for a cross-node replica."""
         mode = process.endpoint_mode
-        is_dp_mode = self._is_dp_mode(mode)
+        is_dp_mode = self.is_dp_mode(mode)
         endpoint_nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
         is_multi_node = len(endpoint_nodes) > 1
         multi_node_replica = is_multi_node and (

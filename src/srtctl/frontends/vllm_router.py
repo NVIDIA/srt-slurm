@@ -92,7 +92,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
             if gpu_count <= 0:
                 continue
             backend = config.backend_for_role(mode)
-            if not backend._is_dp_mode(mode):
+            if not backend.is_dp_mode(mode):
                 expansion_by_mode[mode] = 1
                 continue
             if backend.dp_launch_mode != "per_node":

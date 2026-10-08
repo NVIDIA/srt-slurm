@@ -337,7 +337,7 @@ class LLMDFrontend(StaticRouterFrontend):
                 raise ValueError(
                     f"roles.{mode}.kv_events sets {', '.join(sorted(managed))}, which srtctl manages for llm-d"
                 )
-            if backend._is_dp_mode(mode) and not backend.is_external_lb(mode):
+            if backend.is_dp_mode(mode) and not backend.is_external_lb(mode):
                 raise ValueError(
                     f"roles.{mode}.kv_events with data-parallel-size: vLLM publishes every DP rank's events on its "
                     "own port, so the EPP must route to the ranks themselves; set "
