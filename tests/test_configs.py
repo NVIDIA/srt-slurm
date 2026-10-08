@@ -4334,12 +4334,15 @@ class TestHuggingFaceModelSupport:
             (None, "gb200", "agg", None, "dynamo"),
             (True, "h100", "agg", "0,1", "trtllm_serve"),
             (False, "gb200", "decode", None, "dynamo"),
-            ("local", "gb200", "decode", "local", "dynamo"),
+            ("local", "gb200", "decode", "0,1", "dynamo"),
             ("local", "h100", "agg", "local", "trtllm_serve"),
+            ("local", "h100", "prefill", "local", "dynamo"),
+            ("local", "h100", "decode", "0,1", "trtllm_serve"),
         ],
     )
+    @pytest.mark.parametrize("bind_cpu", [False, True])
     def test_trtllm_numa_cpu_bind_selects_memory_policy(
-        self, memory_bind, gpu_type, mode, expected_policy, frontend_type
+        self, memory_bind, gpu_type, mode, expected_policy, frontend_type, bind_cpu
     ):
         """CPU binding preserves old policies; only local mode binds in the wrapper."""
         from pathlib import Path
@@ -4347,7 +4350,7 @@ class TestHuggingFaceModelSupport:
 
         from srtctl.backends import TRTLLMBackend
 
-        backend = TRTLLMBackend(numa_cpu_bind=True, numa_memory_bind=memory_bind)
+        backend = TRTLLMBackend(numa_cpu_bind=bind_cpu, numa_memory_bind=memory_bind)
         process = self._make_process(mode=mode)
         runtime = self._make_runtime(is_hf=False)
         runtime.log_dir = Path("/tmp/test-logs")
@@ -4365,9 +4368,11 @@ class TestHuggingFaceModelSupport:
                 nsys_prefix=["nsys", "profile"],
             )
 
-        prefix = ["bash", "/configs/numa_cpu_bind.sh"]
+        prefix = ["bash", "/configs/numa_cpu_bind.sh"] if bind_cpu or expected_policy == "local" else []
         if expected_policy == "local":
             prefix.append("--bind-memory")
+            if not bind_cpu:
+                prefix.append("--no-bind-cpu")
         prefix.extend(["nsys", "profile"])
         if expected_policy == "0,1":
             prefix.extend(["numactl", "-m", "0,1"])
@@ -4376,7 +4381,10 @@ class TestHuggingFaceModelSupport:
         assert ("numactl" in cmd) is (expected_policy == "0,1")
 
         env = backend.get_environment_for_mode("decode")
-        assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+        if bind_cpu:
+            assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+        else:
+            assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in env
 
     def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_taskset(self):
         """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""

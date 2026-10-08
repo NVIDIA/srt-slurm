@@ -102,8 +102,12 @@ The launcher resolves the GPU through `CUDA_VISIBLE_DEVICES` and
 before starting the worker. Allocations governed by this policy cannot fall
 back to another node. Insufficient local memory can cause allocation failure
 or OOM, even when another node has free memory. Existing or shared pages are
-not migrated. The container must provide `numactl`. Local mode requires
-`numa_cpu_bind: true`. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
+not migrated. The container must provide `numactl`. CPU and memory binding
+are independent: set `numa_cpu_bind: false` with `numa_memory_bind: local`
+to bind memory without changing CPU affinity. TRT-LLM's internal CPU affinity
+setting is also left unchanged in that mode. With local mode, prefill and
+aggregated workers use GPU-local memory; decode uses `numactl -m 0,1`.
+The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
 cluster GPU visibility variables are not supported by this wrapper.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
@@ -113,7 +117,8 @@ and `vrnvl72` prefill and decode workers. Enabling CPU binding does not change
 these memory policies.
 
 In local mode, the launcher fails if the GPU's NUMA affinity cannot be resolved,
-its CPU list is missing or empty, or the memory policy cannot be applied.
+the memory policy cannot be applied, or CPU binding is enabled and its CPU list
+is missing or empty.
 Without local mode, unknown GPU NUMA affinity skips CPU binding and retains
 the selected memory policy. When profiling in local mode, the outer `nsys`
 process also inherits the strict memory policy.

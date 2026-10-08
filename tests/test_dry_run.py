@@ -104,15 +104,34 @@ def test_role_engines_images_and_environments_are_visible(capsys):
     assert "DECODE_ONLY" in output
 
 
-def test_trtllm_local_numa_example_is_visible(capsys):
+@pytest.mark.parametrize("bind_cpu", [False, True])
+def test_trtllm_local_numa_example_is_visible(tmp_path, capsys, bind_cpu):
     recipe = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-agg-numa-local.yaml"
-    config = SrtConfig.from_yaml(recipe)
-    assert config.backend.numa_cpu_bind is True
+    settings = yaml.safe_load(recipe.read_text())
+    settings["engine"]["numa_cpu_bind"] = bind_cpu
+    temporary_recipe = tmp_path / "numa.yaml"
+    temporary_recipe.write_text(yaml.safe_dump(settings))
+    config = SrtConfig.from_yaml(temporary_recipe)
+    assert config.backend.numa_cpu_bind is bind_cpu
     assert config.backend.numa_memory_bind == "local"
     show_config_details(config)
     output = capsys.readouterr().out
     assert "strict GPU-local memory binding" in output
     assert "--bind-memory" in output
+    assert ("CPU affinity unchanged" in output) is (not bind_cpu)
+
+
+def test_trtllm_local_numa_decode_policy_is_visible(tmp_path, capsys):
+    from test_trtllm_mooncake import pool_recipe
+
+    settings = pool_recipe()
+    settings["engine"].update(numa_memory_bind="local", numa_cpu_bind=False)
+    recipe = tmp_path / "numa.yaml"
+    recipe.write_text(yaml.safe_dump(settings))
+    show_config_details(SrtConfig.from_yaml(recipe))
+    output = capsys.readouterr().out
+    assert "CPU affinity unchanged" in output
+    assert "TRT-LLM decode memory binding: numactl -m 0,1" in output
 
 
 class TestDryRunDynamoMetrics:

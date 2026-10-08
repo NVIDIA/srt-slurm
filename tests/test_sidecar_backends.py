@@ -656,11 +656,12 @@ def test_headless_follower_termination_reaps_engine(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("memory_bind", [False, True, "local"])
-def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, memory_bind) -> None:
+@pytest.mark.parametrize("bind_cpu", [False, True])
+def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, memory_bind, bind_cpu) -> None:
     process = _process()
     backend = TRTLLMBackend(
         roles={"agg": RoleConfig(args={"tensor_parallel_size": 4, "max_seq_len": 4096})},
-        numa_cpu_bind=memory_bind is not False,
+        numa_cpu_bind=bind_cpu,
         numa_memory_bind=memory_bind,
     )
 
@@ -669,6 +670,7 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, memory_bin
     script = command[2]
     assert "trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /model" in script
     assert ("bash /configs/numa_cpu_bind.sh --bind-memory" in script) is (memory_bind == "local")
+    assert ("--no-bind-cpu" in script) is (memory_bind == "local" and not bind_cpu)
     assert ("numactl -m 0,1" in script) is (memory_bind is True)
     assert "--grpc --host 127.0.0.1 --port 50051" in script
     assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path /model" in script
