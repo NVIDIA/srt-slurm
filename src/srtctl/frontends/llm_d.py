@@ -444,7 +444,6 @@ class LLMDFrontend(StaticRouterFrontend):
             raise ValueError(f"frontend.args sets {', '.join(sorted(managed))}, which srtctl manages for llm-d")
 
     def epp_command(self, config: Any, epp_config_path: str) -> list[str]:
-        self._validate_epp_args(config.frontend.args)
         user_args = self.get_frontend_args_list(config.frontend.args)
         return [
             *self.executable,

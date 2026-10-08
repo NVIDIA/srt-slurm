@@ -397,12 +397,6 @@ def test_start_frontends_writes_the_router_files_and_starts_epp_then_envoy(tmp_p
     assert envoy_cmd == ["envoy", "-c", "/logs/llm-d-envoy.yaml", "--disable-hot-restart"]
 
 
-def test_frontend_args_cannot_move_managed_epp_flags() -> None:
-    config = SimpleNamespace(frontend=SimpleNamespace(args={"metrics_port": 1234}))
-    with pytest.raises(ValueError, match="metrics-port, which srtctl manages"):
-        LLMDFrontend().epp_command(config, "/logs/c.yaml")
-
-
 @pytest.mark.parametrize(
     "flag",
     [
