@@ -54,10 +54,23 @@ def restrict(value: str, candidates: list[str], *, nccl: bool = False) -> str:
 
 def resolve(sysfs: Path, node: str, env: dict[str, str]) -> dict[str, str]:
     rdma, ethernet = local_devices(sysfs, node)
+    ucx_ethernet = ethernet.copy()
+    ucx_filter = env.get("UCX_NET_DEVICES", "")
+    if ucx_filter and not ucx_filter.startswith("^"):
+        # Explicit TCP interfaces can serve every rank, even when the interface
+        # is remote to its GPU or has no NUMA affinity (e.g. a container veth).
+        for name in ucx_filter.removeprefix("=").split(","):
+            if ":" in name or name in ucx_ethernet:
+                continue
+            try:
+                if (sysfs / "class" / "net" / name / "type").read_text().strip() == "1":
+                    ucx_ethernet.append(name)
+            except OSError:
+                continue
     result: dict[str, str] = {}
     for key, candidates in (
         ("MPI_UCX_NET_DEVICES", rdma + ethernet),
-        ("UCX_NET_DEVICES", rdma + ethernet),
+        ("UCX_NET_DEVICES", rdma + ucx_ethernet),
         ("NCCL_IB_HCA", rdma),
     ):
         # Ethernet-only hosts can run UCX TCP; do not invent RDMA settings there.

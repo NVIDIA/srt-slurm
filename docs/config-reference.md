@@ -364,7 +364,10 @@ using sysfs device affinity. UCX candidates include RDMA ports and physical
 Ethernet interfaces; NCCL candidates include RDMA ports. Existing include/exclude
 filters and port selections are retained, as are explicit NCCL rail/plane fields.
 NCCL exports use exact device names. Unset filters select all discovered local
-devices. Devices with unknown NUMA affinity are excluded. A configured filter
+devices. Devices with unknown NUMA affinity are excluded by default. You
+can explicitly include Ethernet interfaces in `UCX_NET_DEVICES` (for example,
+`mlx5_0:1,mlx5_6:1,eth0`); those interfaces remain available regardless of NUMA
+affinity, while RDMA ports still require a local match. A configured filter
 with no local match fails startup; hosts without RDMA devices leave an unset
 `NCCL_IB_HCA` unset. The wrapper logs each resolved network variable before
 launch. This selection requires `python3` in the container and applies in

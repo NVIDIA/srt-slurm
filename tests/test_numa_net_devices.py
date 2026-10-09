@@ -12,7 +12,7 @@ import pytest
 
 
 @pytest.mark.parametrize("node", ["0", "1"])
-@pytest.mark.parametrize("mode", ["filters", "defaults", "excluded", "no-match", "unknown-nic"])
+@pytest.mark.parametrize("mode", ["filters", "defaults", "excluded", "no-match", "unknown-nic", "explicit-ethernet"])
 def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
     sysfs = tmp_path / "sys"
 
@@ -29,6 +29,11 @@ def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
     for name, affinity in (("eth0", "0"), ("eth1", "1"), ("eth9", "-1")):
         write(f"class/net/{name}/device/numa_node", affinity)
         write(f"class/net/{name}/type", "1")
+    if mode == "explicit-ethernet":
+        # An unlisted local HCA sharing the mlx5_1 prefix must stay excluded.
+        write("class/infiniband/mlx5_10/device/numa_node", node)
+        (sysfs / "class/infiniband/mlx5_10/ports/1").mkdir(parents=True)
+        write("class/net/eth0/device/numa_node", "-1")
     if mode == "unknown-nic":
         for path in (sysfs / "class").glob("*/*/device/numa_node"):
             path.write_text("-1")
@@ -56,6 +61,9 @@ def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
         env["NCCL_IB_HCA"] = "^=mlx5_9"
     if mode == "no-match":
         env["NCCL_IB_HCA"] = "=mlx5_9"
+    if mode == "explicit-ethernet":
+        env["UCX_NET_DEVICES"] = "mlx5_0:1,mlx5_1:1,mlx5_11:1,eth0"
+        env["NCCL_IB_HCA"] = "=" + env["NCCL_IB_HCA"]
     worker = "import json, os; print(json.dumps({key: os.getenv(key) for key in " + repr(keys) + "}))"
     result = subprocess.run(
         ["bash", str(script), "--no-bind-cpu", sys.executable, "-c", worker],
@@ -76,7 +84,7 @@ def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
     nccl = "=mlx5_0:1:0:0" if node == "0" else "=mlx5_1:1:1:0,mlx5_11:1:3:1"
     assert json.loads(result.stdout) == {
         "MPI_UCX_NET_DEVICES": ucx if mode in ("defaults", "excluded") else rdma,
-        "UCX_NET_DEVICES": ucx,
+        "UCX_NET_DEVICES": f"{rdma},eth0" if mode == "explicit-ethernet" else ucx,
         "NCCL_IB_HCA": f"={rdma}" if mode in ("defaults", "excluded") else nccl,
     }
     assert all(f"{key}=" in result.stderr for key in keys)
