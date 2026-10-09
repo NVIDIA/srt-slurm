@@ -1993,8 +1993,9 @@ class TelemetryConfig:
     # unsynchronised node silently misaligns the measurement. Fails the job
     # when ``required`` is true; otherwise the run continues and the manifest
     # records ``clock_sync_unverified`` with ``publication_valid: false``.
-    # Set false on clusters where timedatectl/chronyc/ntpq are unavailable to
-    # unprivileged users.
+    # Probes timedatectl, chronyc, ntpq, then the kernel's STA_UNSYNC flag via
+    # adjtimex(2) (python3) for hosts with no queryable time daemon. Set false
+    # only where none of those is available to unprivileged users.
     clock_sync_check: bool = True
     # Seconds to wait for the exporters to answer before giving up (DCGM and CPU legs).
     startup_timeout_seconds: float = 30.0
