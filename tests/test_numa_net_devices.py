@@ -83,8 +83,9 @@ def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
     ucx = f"{rdma},eth{node}"
     nccl = "=mlx5_0:1:0:0" if node == "0" else "=mlx5_1:1:1:0,mlx5_11:1:3:1"
     assert json.loads(result.stdout) == {
-        "MPI_UCX_NET_DEVICES": ucx if mode in ("defaults", "excluded") else rdma,
+        "MPI_UCX_NET_DEVICES": env.get("MPI_UCX_NET_DEVICES"),
         "UCX_NET_DEVICES": f"{rdma},eth0" if mode == "explicit-ethernet" else ucx,
         "NCCL_IB_HCA": f"={rdma}" if mode in ("defaults", "excluded") else nccl,
     }
-    assert all(f"{key}=" in result.stderr for key in keys)
+    assert all(f"{key}=" in result.stderr for key in keys[1:])
+    assert "MPI_UCX_NET_DEVICES=" not in result.stderr

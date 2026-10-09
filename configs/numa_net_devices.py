@@ -69,7 +69,6 @@ def resolve(sysfs: Path, node: str, env: dict[str, str]) -> dict[str, str]:
                 continue
     result: dict[str, str] = {}
     for key, candidates in (
-        ("MPI_UCX_NET_DEVICES", rdma + ethernet),
         ("UCX_NET_DEVICES", rdma + ucx_ethernet),
         ("NCCL_IB_HCA", rdma),
     ):
