@@ -10,6 +10,7 @@ set -euo pipefail
 # the rest to land cross-socket.
 # With --bind-memory, also restrict allocations to the GPU's NUMA node.
 # With --no-bind-cpu, apply memory binding without changing CPU affinity.
+# Network device filters are restricted to the same NUMA node before launch.
 # Local memory exhaustion can fail allocations; existing/shared pages are not migrated.
 #
 # CPU range is discovered at runtime from the physical GPU this task owns,
@@ -62,6 +63,13 @@ if [[ ! "${numa_node}" =~ ^[0-9]+$ ]]; then
     echo "numa_cpu_bind.sh: GPU ${physical_gpu} (${sysfs_addr}) reports no NUMA affinity (numa_node=${numa_node}); running without CPU binding" >&2
     exec "$@"
 fi
+
+network_env="$(python3 "$(dirname "${BASH_SOURCE[0]}")/numa_net_devices.py" "${numa_node}")"
+while IFS=$'\t' read -r key value; do
+    [[ -n "${key}" ]] || continue
+    export "${key}=${value}"
+    echo "numa_cpu_bind.sh: numa_node=${numa_node} ${key}=${value}" >&2
+done <<< "${network_env}"
 
 if [[ "${bind_cpu}" == true ]]; then
     cpu_list="$(cat "/sys/devices/system/node/node${numa_node}/cpulist" 2>/dev/null || true)"

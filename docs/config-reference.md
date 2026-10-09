@@ -358,6 +358,18 @@ CPU affinity setting is also left unchanged. The wrapper uses `CUDA_VISIBLE_DEVI
 cluster GPU visibility variables are not supported by this wrapper.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
+Whenever the NUMA wrapper runs, it also restricts `MPI_UCX_NET_DEVICES`,
+`UCX_NET_DEVICES`, and `NCCL_IB_HCA` to devices on the task GPU's NUMA node,
+using sysfs device affinity. UCX candidates include RDMA ports and physical
+Ethernet interfaces; NCCL candidates include RDMA ports. Existing include/exclude
+filters and port selections are retained, as are explicit NCCL rail/plane fields.
+NCCL exports use exact device names. Unset filters select all discovered local
+devices. Devices with unknown NUMA affinity are excluded. A configured filter
+with no local match fails startup; hosts without RDMA devices leave an unset
+`NCCL_IB_HCA` unset. The wrapper logs each resolved network variable before
+launch. This selection requires `python3` in the container and applies in
+memory-only binding mode too.
+
 `numa_memory_bind: true` uses `numactl -m 0,1` for any GPU type or worker mode.
 When omitted or null, this two-node policy applies only to `gb200`, `gb300`,
 and `vrnvl72` prefill and decode workers. Enabling CPU binding does not change
