@@ -305,7 +305,9 @@ services:
   - --ready_file
   - /logs/mooncake/donor-{node}.ready
 benchmark:
-  client_placement: last_decode
+  placement:
+    node: dedicated
+  colocate_with_frontend: true
   type: custom
   env:
     AIPERF_DATASET_MMAP_CACHE_DIR: /home/rihuo/hf_cache/aiperf_mmap_cache
