@@ -15,8 +15,8 @@ when enabled, writes the configurations, then launches EPP and Envoy. Readiness
 requires Envoy's ``/ready`` and EPP's ready-endpoint count, based on worker metrics.
 Optional ``roles.<role>.kv_events`` feed EPP's precise prefix-cache index.
 
-Upstream, pinned: llm-d-router v0.11.0
-(https://github.com/llm-d/llm-d-router/tree/a5cbe600ebade00cf3e9885beaf2bfacddeabce1):
+Upstream, pinned: llm-d-router v0.10.0
+(https://github.com/llm-d/llm-d-router/tree/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26):
 ``cmd/epp/runner/runner.go`` (``runWithFileDiscovery``),
 ``pkg/epp/framework/plugins/datalayer/discovery/file``; the Envoy configuration
 follows llm-d's no-Kubernetes guide

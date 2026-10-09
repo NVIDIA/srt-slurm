@@ -7,7 +7,7 @@ queue depth, load, ...) and, for prefill/decode, picks a prefill and a decode wo
 every request. No Dynamo, NATS, or etcd is involved.
 
 Upstream references are pinned to llm-d-router
-[v0.11.0](https://github.com/llm-d/llm-d-router/tree/a5cbe600ebade00cf3e9885beaf2bfacddeabce1)
+[v0.10.0](https://github.com/llm-d/llm-d-router/tree/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26)
 and the llm-d [no-Kubernetes guide](https://github.com/llm-d/llm-d/tree/7fb84b0adf8e1d41eb2cef105fc1aafaf5a9b64f/guides/no-kubernetes-deployment).
 
 ## What runs where
@@ -24,11 +24,11 @@ Envoy owns the public port. For every request it asks the EPP over ext_proc
 `x-gateway-destination-endpoint` header and Envoy's `ORIGINAL_DST` cluster forwards the
 request there. For prefill/decode the EPP picks a decode endpoint and names the chosen
 prefill worker in `x-prefiller-host-port`
-([`disagg_profile_handler.go`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/epp/framework/plugins/scheduling/profilehandler/disagg/disagg_profile_handler.go#L533-L536)).
+([`disagg_profile_handler.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/framework/plugins/scheduling/profilehandler/disagg/disagg_profile_handler.go#L570-L573)).
 The decode endpoint is llm-d's P/D sidecar: it sends the request to that prefill worker
 first, then hands the returned `kv_transfer_params` to its own vLLM, whose KV connector
 pulls the cache from the prefill worker
-([`connector_nixlv2.go`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/sidecar/proxy/connector_nixlv2.go#L42)).
+([`connector_nixlv2.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/sidecar/proxy/connector_nixlv2.go#L54)).
 Everything else, `/metrics` included, the sidecar proxies to its vLLM.
 
 ### Why the EPP and Envoy are the frontend and the sidecar is a service
@@ -43,7 +43,7 @@ the EPP and Envoy; no service phase sits between the workers and the frontend.
 The sidecar is a different process with its own image, placement, and health check, one
 per decode worker, on the worker's node; that is what `services` with
 `placement.per: worker` is for. Its `GET /health` answers 200 on its own
-([`proxy.go`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/sidecar/proxy/proxy.go#L586-L588)),
+([`proxy.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/sidecar/proxy/proxy.go#L624-L626)),
 so it starts in the `before_workers` phase and gates on that probe. It is critical: a
 dead sidecar takes its decode worker out of the routing pool. The frontend implies it,
 as Dynamo implies etcd; declare a service named `llm-d-sidecar` to change it:
@@ -79,8 +79,8 @@ wide-EP guide) runs `nixlv2`. Any other decode connector is rejected at load tim
 ## Endpoint discovery
 
 The EPP runs without Kubernetes when its configuration names a discovery plugin
-([`runner.go`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/cmd/epp/runner/runner.go#L264-L273),
-[`runWithFileDiscovery`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/cmd/epp/runner/runner.go#L1044-L1196)).
+([`runner.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/cmd/epp/runner/runner.go#L253-L261),
+[`runWithFileDiscovery`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/cmd/epp/runner/runner.go#L1042-L1208)).
 srtctl writes three files into the log directory (every container sees it at `/logs`):
 
 - `llm-d-endpoints.yaml`: one endpoint per routable worker process (the one with an HTTP
@@ -88,7 +88,7 @@ srtctl writes three files into the log directory (every container sees it at `/l
   interface, labelled `llm-d.ai/role: prefill`, `decode`, or `both` (aggregate). A decode
   endpoint is its sidecar's port.
 - `llm-d-epp-config.yaml`: `frontend.epp_config` with the
-  [`file-discovery`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/epp/framework/plugins/datalayer/discovery/file/plugin.go)
+  [`file-discovery`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/framework/plugins/datalayer/discovery/file/plugin.go)
   plugin (`watchFile: false`) and `dataLayer.discovery` added. `discovery.pluginRef` is
   the spelling v0.10 and v0.11 both accept. A recipe that configures discovery itself is
   rejected.
@@ -103,8 +103,8 @@ srtctl writes three files into the log directory (every container sees it at `/l
 The job is ready when Envoy's admin `/ready` answers 200 and the EPP's
 `llm_d_epp_ready_endpoints` gauge, the endpoints whose metrics it scraped within its
 staleness window
-([`llm_d_router_metrics.go`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/epp/metrics/llm_d_router_metrics.go#L234-L241),
-[`logger.go`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/epp/datalayer/logger/logger.go#L106-L117)),
+([`llm_d_router_metrics.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/metrics/llm_d_router_metrics.go#L238-L245),
+[`logger.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/datalayer/logger/logger.go#L105-L116)),
 counts every endpoint in the file. The EPP scrapes a worker on the address it routes
 to, so a decode worker is scraped through its sidecar. Tachometer scrapes the EPP's
 Prometheus listener as the frontend; worker metrics stay on vLLM's own port.
@@ -122,8 +122,8 @@ for example on top of the vLLM image the workers run:
 <!-- docs-yaml: skip -->
 ```dockerfile
 FROM vllm/vllm-openai:<tag>
-COPY --from=ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.11.0 /app/epp /usr/local/bin/epp
-COPY --from=ghcr.io/llm-d/llm-d-router-disagg-sidecar:v0.11.0 /app/pd-sidecar /usr/local/bin/pd-sidecar
+COPY --from=ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.10.0 /app/epp /usr/local/bin/epp
+COPY --from=ghcr.io/llm-d/llm-d-router-disagg-sidecar:v0.10.0 /app/pd-sidecar /usr/local/bin/pd-sidecar
 COPY --from=envoyproxy/envoy:distroless-v1.33.2 /usr/local/bin/envoy /usr/local/bin/envoy
 ```
 
@@ -188,7 +188,7 @@ roles:
 The approximate prefix scorers guess where a prefix is cached from the requests the EPP
 routed. With `roles.<role>.kv_events` the workers report it instead: every vLLM worker of
 the role publishes its KV-cache events (blocks stored and evicted) to the EPP's
-[`precise-prefix-cache-producer`](https://github.com/llm-d/llm-d-router/tree/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/epp/framework/plugins/requestcontrol/dataproducer/preciseprefixcache),
+[`precise-prefix-cache-producer`](https://github.com/llm-d/llm-d-router/tree/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/framework/plugins/requestcontrol/dataproducer/preciseprefixcache),
 which indexes them per endpoint; `prefix-cache-scorer` with
 `prefixMatchInfoProducerName: precise-prefix-cache-producer` scores the endpoints from
 that index. The producer hashes the prompt's real token IDs, so the configuration also
@@ -219,13 +219,13 @@ srtctl wires the rest:
 - The producer's `kvEventsConfig.zmqEndpoint` is `tcp://*:5557` (`discoverPods: false`):
   the EPP binds one ZMQ socket on the router node and every worker connects to it. The
   producer's per-pod mode dials the same port on every endpoint address, which workers
-  sharing a node cannot all bind (llm-d-router v0.11's file discovery gives every
+  sharing a node cannot all bind (llm-d-router v0.10's file discovery gives every
   endpoint rank 0).
 - Every publishing worker gets `--kv-events-config` with `endpoint:
   tcp://<router>:5557` and `topic: kv@<address>:<port>@<served model>`, naming the
   endpoint the EPP routes to (a decode worker's sidecar port) and the model requests
   name; the producer files the events under that endpoint
-  ([`vllm_adapter.go`](https://github.com/llm-d/llm-d-router/blob/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/kvevents/engineadapter/vllm_adapter.go#L52-L58)).
+  ([`vllm_adapter.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/kvevents/engineadapter/vllm_adapter.go#L52-L58)).
   vLLM [adds the publisher's DP rank to its port](https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/distributed/kv_events.py#L336-L340),
   so an external-LB rank `r` is given `5557 - r`. The engine sets
   [`data_parallel_index` to the global rank](https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/v1/engine/core.py#L1303-L1313),

@@ -10,8 +10,8 @@ prefill worker named in ``x-prefiller-host-port``, then passes the returned
 It listens on ``Process.proxy_port`` and forwards other routes, including
 ``/metrics``, to the worker's HTTP port.
 
-Upstream: llm-d-router ``cmd/pd-sidecar`` and ``pkg/sidecar/proxy`` at v0.11.0
-(https://github.com/llm-d/llm-d-router/tree/a5cbe600ebade00cf3e9885beaf2bfacddeabce1/pkg/sidecar/proxy).
+Upstream: llm-d-router ``cmd/pd-sidecar`` and ``pkg/sidecar/proxy`` at v0.10.0
+(https://github.com/llm-d/llm-d-router/tree/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/sidecar/proxy).
 Its ``GET /health`` is independent of vLLM, allowing it to start before workers.
 """
 
