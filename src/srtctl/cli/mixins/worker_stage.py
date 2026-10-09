@@ -234,6 +234,36 @@ class WorkerStageMixin:
         env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(leader.kvbm_zmq_port))
         env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(leader.kvbm_zmq_port + 1))
 
+    def _apply_dwdp_endpoint_env(self, env_to_set: dict[str, str], mode: WorkerMode) -> None:
+        """Point a DWDP worker at its group's rendezvous master.
+
+        ``TRTLLMBackend.get_process_environment`` gives each DWDP worker its rank
+        but cannot see the other endpoints; the master is the rank-0 worker of the
+        same role, whose node is in ``backend_processes``. A recipe-provided
+        ``TRTLLM_DWDP_MASTER_ADDR`` is kept.
+        """
+        from srtctl.backends.trtllm import DWDP_MASTER_ADDR_ENV, DWDP_RANK_ENV
+
+        if DWDP_RANK_ENV not in env_to_set or DWDP_MASTER_ADDR_ENV in env_to_set:
+            return
+        master = next(
+            (p for p in self.backend_processes if p.endpoint_mode == mode and p.endpoint_index == 0 and p.is_leader),
+            None,
+        )
+        if master is None:
+            raise RuntimeError(f"DWDP {mode} worker found no rank-0 {mode} endpoint to rendezvous with")
+        env_to_set[DWDP_MASTER_ADDR_ENV] = get_hostname_ip(master.node, self.runtime.network_interface)
+
+    def _dwdp_preamble(self, backend: Any, process: "Process", env_to_set: dict[str, str]) -> str | None:
+        """``mkdir -p`` for a DWDP worker's private cache dir (transformers and the autotuner create files, not dirs)."""
+        from srtctl.backends.trtllm import DWDP_RANK_ENV, TRTLLMBackend
+
+        if DWDP_RANK_ENV not in env_to_set or not isinstance(backend, TRTLLMBackend):
+            return None
+        home = env_to_set.get("HOME", backend.dwdp_private_dir(process))
+        modules = env_to_set.get("HF_MODULES_CACHE", f"{home}/hf_modules")
+        return f"mkdir -p {shlex.quote(home)} {shlex.quote(modules)}"
+
     def _get_worker_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         """Return mode environment with engine-specific defaults the recipe can override."""
         backend = self.config.backend_for_role(mode)
@@ -377,6 +407,7 @@ class WorkerStageMixin:
 
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(backend.get_process_environment(process))
+        self._apply_dwdp_endpoint_env(env_to_set, mode)
         if failover is not None:
             env_to_set.update(backend.get_failover_environment(process, self.runtime.job_id))
 
@@ -570,6 +601,12 @@ class WorkerStageMixin:
         # Add config environment variables
         env_to_set.update(self.runtime.environment)
 
+        # Add backend-specific process environment variables. One srun covers the
+        # endpoint, so the leader stands for it (a DWDP group member is a
+        # single-GPU endpoint and needs its own rank here).
+        env_to_set.update(backend.get_process_environment(leader))
+        self._apply_dwdp_endpoint_env(env_to_set, mode)
+
         if backend.type == "trtllm" and leader.trtllm_dist_init_port is not None:
             # Enroot may infer rank 0 from the sorted step nodelist, which
             # differs from our rank order for workers sharing a partial node.
@@ -639,6 +676,10 @@ class WorkerStageMixin:
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
         bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
+
+        dwdp_setup = self._dwdp_preamble(backend, leader, env_to_set)
+        if dwdp_setup:
+            bash_preamble = _append_preamble(bash_preamble, dwdp_setup)
 
         if node_gpu_setup:
             bash_preamble = f"{node_gpu_setup} && {bash_preamble}" if bash_preamble else node_gpu_setup

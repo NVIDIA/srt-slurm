@@ -36,6 +36,31 @@ TRTLLM_FATAL_LOG_PATTERNS: tuple[str, ...] = (
     r"Failed to initialize executor",
 )
 
+# DWDP (TRT-LLM's distributed-weight data-parallel prefill, Kimi-K3 on GB300/R200):
+# ``dwdp_config: {dwdp_size: N, ...}`` in a role's engine args makes N single-GPU
+# ``trtllm-serve`` workers of that role one expert-sharded group. Each worker is
+# its own endpoint here (``gpus: 1``), and before loading weights it joins a
+# TCPStore rendezvous that TRT-LLM reads from the environment: its own
+# ``TRTLLM_DWDP_RANK`` and the group's shared ``TRTLLM_DWDP_MASTER_ADDR`` /
+# ``TRTLLM_DWDP_MASTER_PORT``. The rank is the worker's endpoint index (worker 0
+# is the master), and the worker stage fills in the master's address from the
+# rank-0 endpoint of the same role, since a backend only sees its own process.
+#
+# The N processes also share the model's ``trust_remote_code`` module cache and
+# the CuTe DSL autotuner cache by default, and race on them (a half-written
+# ``transformers_modules`` file or a cache owned by another rank fails the
+# executor init). Each rank therefore gets a private ``HOME`` /
+# ``HF_MODULES_CACHE`` / ``TLLM_AUTOTUNER_CACHE_PATH`` under the job's log dir; a
+# recipe that sets any of those three in the role env keeps its own value.
+DWDP_RANK_ENV = "TRTLLM_DWDP_RANK"
+DWDP_MASTER_ADDR_ENV = "TRTLLM_DWDP_MASTER_ADDR"
+DWDP_MASTER_PORT_ENV = "TRTLLM_DWDP_MASTER_PORT"
+DWDP_RENDEZVOUS_TIMEOUT_ENV = "TRTLLM_DWDP_RENDEZVOUS_TIMEOUT_S"
+DWDP_MASTER_PORT = 29600
+DWDP_RENDEZVOUS_TIMEOUT_S = 3600
+# Container path of the job's log dir (what build_worker_command writes the engine YAML under).
+_CONTAINER_LOG_DIR = "/logs"
+
 
 @dataclass(frozen=True)
 class TRTLLMBackend(Backend):
@@ -201,6 +226,50 @@ class TRTLLMBackend(Backend):
     def get_served_model_name(self, default: str) -> str:
         """Get the configured served model name, or return default."""
         return self.served_model_name or default
+
+    def dwdp_size(self, mode: WorkerMode) -> int:
+        """``dwdp_config.dwdp_size`` of a role's engine args; 0 when the role is not a DWDP group."""
+        dwdp = self.get_config_for_mode(mode).get("dwdp_config")
+        if not isinstance(dwdp, Mapping):
+            return 0
+        try:
+            return int(dwdp.get("dwdp_size") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def dwdp_private_dir(self, process: "Process") -> str:
+        """Container path of a DWDP worker's private HOME (module and autotuner caches live under it)."""
+        return f"{_CONTAINER_LOG_DIR}/worker_priv/{process.endpoint_mode}_w{process.endpoint_index}"
+
+    def get_process_environment(self, process: "Process") -> dict[str, str]:
+        """Per-worker DWDP environment (see the DWDP note at the top of this module); empty otherwise.
+
+        The master address is not known here (another endpoint's node) -- the
+        worker stage sets ``TRTLLM_DWDP_MASTER_ADDR`` from the role's rank-0
+        endpoint when it sees ``TRTLLM_DWDP_RANK``.
+        """
+        mode = process.endpoint_mode
+        if not self.dwdp_size(mode):
+            return {}
+        role_env = self.get_environment_for_mode(mode)
+        private = self.dwdp_private_dir(process)
+        env = {
+            DWDP_RANK_ENV: str(process.endpoint_index),
+            DWDP_MASTER_PORT_ENV: str(DWDP_MASTER_PORT),
+            DWDP_RENDEZVOUS_TIMEOUT_ENV: str(DWDP_RENDEZVOUS_TIMEOUT_S),
+        }
+        for key, value in (
+            ("HOME", private),
+            ("HF_MODULES_CACHE", f"{private}/hf_modules"),
+            ("TLLM_AUTOTUNER_CACHE_PATH", f"{private}/autotune_cache.json"),
+        ):
+            if key not in role_env:
+                env[key] = value
+        # The recipe may pin the port / timeout for the whole role.
+        for key in (DWDP_MASTER_PORT_ENV, DWDP_RENDEZVOUS_TIMEOUT_ENV):
+            if key in role_env:
+                env.pop(key)
+        return env
 
     def allocate_endpoints(
         self,
