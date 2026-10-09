@@ -284,9 +284,9 @@ class TestProbeScript:
             },
         )
         assert r.returncode == 0
-        assert r.stdout.splitlines() == [
-            f"{r.stdout.split(':', 1)[0]}: kernel adjtimex STA_UNSYNC clear (maxerror 4508us status 0x2001)"
-        ]
+        lines = r.stdout.splitlines()
+        assert len(lines) == 1  # the evidence line only; the daemon probes\' stderr stays out of the OK path
+        assert lines[0].endswith(": kernel adjtimex STA_UNSYNC clear (maxerror 4508us status 0x2001)")
 
     def test_failure_report_keeps_every_probe_stderr(self, tmp_path):
         """clock_sync_<node>.out must say why nothing vouched, not just that nothing did."""
