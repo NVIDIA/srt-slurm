@@ -240,6 +240,47 @@ warning in the job log.
 
 **Other TRT-LLM launch facts**: TRT-LLM supports prefill, decode, and aggregated roles, uses MPI-style launching (one srun per endpoint with all of its nodes) through `trtllm-llmapi-launch`, and sets `TRTLLM_EPLB_SHM_NAME` to a unique UUID per endpoint.
 
+### TRT-LLM DWDP prefill groups
+
+TRT-LLM's distributed-weight data-parallel prefill (DWDP, Kimi-K3 on GB300 / R200) runs
+N single-GPU `trtllm-serve` workers of one role as a single expert-sharded group:
+each worker keeps `num_experts_per_worker` experts resident and gathers the rest from
+its peers. The recipe spells it as N one-GPU workers whose engine args carry
+`dwdp_config`:
+
+```yaml
+roles:
+  prefill:
+    nodes: 4
+    workers: 16
+    gpus: 1
+    args:
+      tensor_parallel_size: 1
+      enable_attention_dp: true
+      dwdp_config:
+        dwdp_size: 16
+        num_groups: 1
+        num_experts_per_worker: 56
+        num_prefetch_experts: 56
+    extra_args: ["--server_role", "CONTEXT"]
+```
+
+Before loading weights the workers join a TCPStore rendezvous that TRT-LLM reads from
+the environment, so when a role's args have `dwdp_config` srtctl gives every worker of
+that role `TRTLLM_DWDP_RANK=<worker index>`, `TRTLLM_DWDP_MASTER_ADDR=<node of worker
+0>`, `TRTLLM_DWDP_MASTER_PORT=29600` and `TRTLLM_DWDP_RENDEZVOUS_TIMEOUT_S=3600`
+(the port and timeout, and the master address, can be pinned in the role env). The N
+processes would otherwise also share the model's `trust_remote_code` module cache and
+the CuTe DSL autotuner cache and race on them, so each worker gets a private `HOME`,
+`HF_MODULES_CACHE` and `TLLM_AUTOTUNER_CACHE_PATH` under
+`/logs/worker_priv/<role>_w<index>/` (created before the worker starts); a role env
+that sets any of the three keeps its value. `--server_role CONTEXT` is a plain
+`roles.prefill.extra_args` entry: TRT-LLM selects the single-copy FP4 MLA context
+cache from that flag and nothing else, so a DWDP prefill without it runs the two-copy
+cache (about 15% slower on Kimi-K3 R200). The group's N workers must fit the role's
+node count exactly as N x 1 GPU; a `dwdp_config` on a multi-GPU worker is left to
+TRT-LLM to reject.
+
 ## TokenSpeed with Dynamo
 
 Use `engine: tokenspeed` with `frontend.type: dynamo` to launch
