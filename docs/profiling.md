@@ -33,6 +33,8 @@ rank, and every Dynamo frontend**. Every profiler session records both NVTX
 ranges and CPU samples by default.
 The preset does not collect CUDA API or GPU kernel events. Use the explicit
 `profiling` modes below for those domains.
+`examples/features/observability-vllm.yaml` enables the preset on a vLLM worker
+behind the Dynamo frontend.
 
 By default, capture starts **after warmup** and stops **when the measured
 workload finishes**. There is no delay or fixed end time to estimate. The
@@ -125,7 +127,20 @@ image. On TRT-LLM workers the preset also sets `TLLM_LLMAPI_ENABLE_NVTX=1` and
 `SGLANG_ENABLE_NVTX_SCHEDULER=1` (SGLang 0.5.x from June 2026 onward), which
 emits the scheduler-loop stages from the spawned scheduler process and needs the
 `nvtx` package importable there. Add `SGLANG_ENABLE_NVTX_OPERATIONS=1` to the
-worker environment for the batch-overlap operation ranges. Set
+worker environment for the batch-overlap operation ranges. On vLLM workers it
+sets `VLLM_NVTX_SCOPES_FOR_PROFILING=1`, which emits the scheduler's
+`schedule: *` ranges from the `EngineCore` process and the model runner's
+`gpu_model_runner: *` stages (`preprocess`, `forward`, `postprocess`, `sample`,
+`draft`, `bookkeep`) from whichever process runs the model: `EngineCore` itself
+under the single-process executor, or each `Worker` of the multiprocess executor.
+It also sets `VLLM_WORKER_MULTIPROC_METHOD=spawn`: `vllm serve` forks those
+processes by default, and Nsight does not trace a forked child that never calls
+`exec` (`dynamo.vllm` already spawns). vLLM's CUDA requirements include the
+`nvtx` package. `schedule: allocate_slots` is entered once per running request
+per step, so the range count and its host cost grow with batch size; DSight
+imports only the per-step `schedule: *` stages. A role that sets
+`VLLM_CUSTOM_SCOPES_FOR_PROFILING=1` turns the same scopes into PyTorch
+`record_function` ranges, which this preset does not trace. Set
 `nvtx_injection_path` only when the image needs an explicit NVTX injection
 library; it must be an absolute **container** path compatible with that nsys
 installation. CPU sampling uses a 26,000,000 sampling period and 32 samples

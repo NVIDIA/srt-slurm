@@ -36,7 +36,12 @@ JOB_ID = "4242"
 NOT_A_JOB = {"examples/features/override.yaml", "examples/features/sweep.yaml"}
 
 # Values generated fresh on every run, replaced by a stable placeholder.
-_RANDOM_VALUES = (re.compile(r"moe_shared_[0-9a-f]{32}"),)
+_RANDOM_VALUES = (
+    re.compile(r"moe_shared_[0-9a-f]{32}"),
+    # Observability nsys: a fresh control-step id and report barrier per wrapped launch.
+    re.compile(r'(?<="step": ")[0-9a-f]{32}'),
+    re.compile(r"(?<=/profiles/\.stopped/)[0-9a-f]{32}"),
+)
 # The worker fingerprint script (core/fingerprint.py) is inlined into every worker preamble; keep one line.
 _FINGERPRINT_SCRIPT = re.compile(r"(<<'__FINGERPRINT_EOF__'\n).*?(__FINGERPRINT_EOF__\n)", re.DOTALL)
 

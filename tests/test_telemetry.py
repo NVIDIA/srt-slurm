@@ -13,7 +13,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.backends import TRTLLMBackend
+from srtctl.backends import SGLangBackend, TRTLLMBackend, VLLMBackend
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
@@ -135,7 +135,7 @@ class TestTachometerConfig:
         from srtctl.services.exporters import ProcessExporterService, process_exporter_config_yaml
         from srtctl.services.registry import ServiceLaunchContext
 
-        text = process_exporter_config_yaml()
+        text = process_exporter_config_yaml((TRTLLMBackend(), SGLangBackend(), VLLMBackend()))
         names = [line.split("name:", 1)[1].strip() for line in text.splitlines() if "name:" in line]
         assert names[0] == "frontend"
         assert names.index("trtllm_llmapi_launch") < names.index("dynamo_trtllm")
@@ -146,12 +146,20 @@ class TestTachometerConfig:
             "sglang_dp_controller",
             "sglang_detokenizer",
             "dynamo_vllm",
+            "vllm_engine_core",
+            "vllm_worker",
+            "vllm_api_server",
+            "vllm_dp_coordinator",
+            "vllm_serve",
+            "vllm_router",
             "aiperf",
             "etcd",
             "nats",
         ):
             assert expected in names
         assert names.index("sglang_scheduler") < names.index("dynamo_sglang")
+        assert names.index("vllm_engine_core") < names.index("dynamo_vllm")
+        assert names.index("vllm_worker") < names.index("dynamo_vllm")
         assert "dynamo\\.frontend" in text
 
         # The container launch (a declared container) reaches the group file through /logs.
@@ -175,6 +183,19 @@ class TestTachometerConfig:
             ("sglang::scheduler_DP1_TP1_EP1", "sglang_scheduler"),
             ("sglang::data_parallel_controller", "sglang_dp_controller"),
             ("sglang::detokenizer", "sglang_detokenizer"),
+            ("python3 -m dynamo.vllm --disaggregation-mode decode", "dynamo_vllm"),
+            ("VLLM::EngineCore", "vllm_engine_core"),
+            ("VLLM::EngineCore_DP3", "vllm_engine_core"),
+            ("VLLM::Worker_DP0_TP1_EP1", "vllm_worker"),
+            ("VLLM::APIServer_DP2", "vllm_api_server"),
+            ("VLLM::DPCoordinator", "vllm_dp_coordinator"),
+            ("/usr/bin/python3 /usr/local/bin/vllm serve /model --port 8000", "vllm_serve"),
+            ("vllm-rs serve /model --grpc-port 50051", "vllm_serve"),
+            ("python3 -m vllm.entrypoints.cli.main serve /model --headless", "vllm_serve"),
+            ("python3 -m vllm.entrypoints.openai.api_server", None),
+            ('srun --overlap bash -c "export A=1 && exec vllm serve /model --port 8000"', None),
+            ("python3 /srtctl-runtime/nsys_window.py worker --spec {} -- vllm serve /model", None),
+            ("/opt/nvidia/nsys/bin/nsys launch --trace=nvtx vllm serve /model", None),
             ("trtllm-llmapi-launch-other", None),
             ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node_extra", None),
         ],
@@ -183,7 +204,8 @@ class TestTachometerConfig:
         """Match full argv, including interpreter prefixes and separate engine children."""
         from srtctl.services.exporters import process_exporter_config_yaml
 
-        groups = yaml.safe_load(process_exporter_config_yaml())["process_names"]
+        engines = (TRTLLMBackend(), SGLangBackend(), VLLMBackend())
+        groups = yaml.safe_load(process_exporter_config_yaml(engines))["process_names"]
         matched = next(
             (
                 group["name"]
@@ -193,6 +215,24 @@ class TestTachometerConfig:
             None,
         )
         assert matched == expected
+
+    @pytest.mark.parametrize("engine", [TRTLLMBackend(), SGLangBackend(), VLLMBackend()], ids=lambda b: b.type)
+    def test_process_exporter_groups_come_from_the_recipe_engine(self, engine):
+        """An engine contributes its own groups between the frontend and the shared
+        client/infra groups; other engines' groups are not written."""
+        from srtctl.services.exporters import process_exporter_config_yaml
+
+        names = [group["name"] for group in yaml.safe_load(process_exporter_config_yaml((engine,)))["process_names"]]
+        own = [group.name for group in engine.process_exporter_groups]
+        assert own and names[1 : 1 + len(own)] == own
+        assert names[0] == "frontend" and names[-1] == "dcgm_exporter"
+        others = {
+            group.name
+            for other in (TRTLLMBackend(), SGLangBackend(), VLLMBackend())
+            if other.type != engine.type
+            for group in other.process_exporter_groups
+        }
+        assert not others & set(names)
 
     def test_process_exporter_host_command_uses_host_paths(self):
         """Host-native launch: no /logs mount exists, so the binary and the

@@ -431,7 +431,7 @@ class ServiceStageMixin:
                 if skip:
                     logger.warning("services[%s]: %s; skipping", service.name, skip)
                     continue
-                kind.prepare(service, self.runtime)
+                kind.prepare(service, self.runtime, self.config)
                 work_dir = self._clone_service_source(service, nodes[0], registry)
                 if work_dir is not None:
                     self._build_service_source(service, nodes[0], work_dir, registry)

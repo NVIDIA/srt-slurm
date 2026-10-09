@@ -187,13 +187,14 @@ timestamp remain in the query evidence and are marked as chart gaps.
 Nsight worker filenames follow
 `<host>_<role>_w<index>_profile_rank<rank>.sqlite` for MPI ranks and
 `<host>_<role>_w<index>_profile_gpu<devices>.sqlite` for per-process workers
-(including TokenSpeed and SGLang captures); the role is `prefill`, `decode`, or `agg` as in the worker logs,
+(including TokenSpeed, SGLang and vLLM captures); the role is `prefill`, `decode`, or `agg` as in the worker logs,
 and a failover shadow engine's `_e<k>` suffix is retained as the report's
 engine. Frontend names follow `<host>_frontend_<index>.sqlite`. A `_window<n>`
 suffix is accepted. Unknown
 names remain unmapped. Imported NVTX categories are the frontend
 `preprocess.*`/`route.*`/`transport.*` ranges, TRT-LLM executor and scheduling
-ranges, SGLang `scheduler.*` stages, and TokenSpeed forward/graph-replay,
+ranges, SGLang `scheduler.*` stages, vLLM per-step `schedule: *` and
+`gpu_model_runner: *` stages, and TokenSpeed forward/graph-replay,
 input preparation, sampling, cache and commit annotations. OS PID/TID, GPU device
 sets and distributed ranks stay separate; a GPU-set filename does not imply rank 0.
 The default
@@ -420,8 +421,8 @@ The implementation separates these responsibilities:
 - `sources.py` parses shared filenames and discovers OTel captures;
   `identities.py` decodes common Dynamo identities from text and JSON logs.
   Both are independent of the backend engine.
-- `engines.py` contains frozen `EngineDialect` descriptors for TRT-LLM, TokenSpeed
-  and SGLang. Each can provide any subset of NVTX names/prefixes, a single-line
+- `engines.py` contains frozen `EngineDialect` descriptors for TRT-LLM, TokenSpeed,
+  SGLang and vLLM. Each can provide any subset of NVTX names/prefixes, a single-line
   log decoder and exact metric definitions. Log decoders return typed identity, iteration and snapshot observations.
   Decoding has no clocks, joins, filesystem access or UI state.
 - `log_metrics/base.py` defines the `LogMetricGenerator` abstract base class and immutable
