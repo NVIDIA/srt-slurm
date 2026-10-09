@@ -174,7 +174,7 @@ struct Candidate {
     oem_info: Option<String>,
 }
 
-/// Live state shared across connection handlers.
+/// The CPU power family resolved once at startup by `init_metrics_state`.
 #[derive(Clone)]
 enum MetricsState {
     /// Pre-rendered Prometheus text, refreshed every `ACPI_POLL_INTERVAL` by a
@@ -183,6 +183,8 @@ enum MetricsState {
     Dcgm(Arc<Mutex<dcgm::DcgmReader>>),
 }
 
+/// Live state shared across connection handlers: the CPU family plus the
+/// optional NVML module series.
 #[derive(Clone)]
 struct Metrics {
     base: MetricsState,
@@ -190,6 +192,8 @@ struct Metrics {
 }
 
 impl Metrics {
+    /// The `/metrics` body: the CPU family first, then the module series
+    /// when NVML is available.
     fn render(&self) -> String {
         let mut body = match &self.base {
             MetricsState::Acpi(cache) => cache.read().unwrap().clone(),

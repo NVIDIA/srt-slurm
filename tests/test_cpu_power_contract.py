@@ -45,4 +45,5 @@ def test_cpu_power_contract_constants():
         "dram_w",
         "total_power_w",
     )
+    # v3 appends module_w before total_power_w and changes nothing else.
     assert (*CPU_SAMPLES_HEADER_V2[:-1], "module_w", "total_power_w") == CPU_SAMPLES_HEADER

@@ -77,9 +77,10 @@ LEGACY_TYPE_ALIASES: dict[str, str] = {"grace": TOTAL_KIND, "cpu": "cpu_rail", "
 
 # Firmware OEM label -> rail kind. Ordered: the first match wins, so the
 # specific Grace forms precede the generic ones and "CPU Power Socket N"
-# (a Grace *component* rail) is matched after every "total" form.
+# (a Grace *component* rail) is matched after every "total" form. The
+# ``module`` form overlaps none of the others and sits last, in the same
+# order as ``OEM_KINDS`` in the Rust exporter.
 ACPI_LABEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (MODULE_KIND, re.compile(r"\bModule\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     (TOTAL_KIND, re.compile(r"\bGrace\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     (TOTAL_KIND, re.compile(r"\bTotal(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     ("cpu_rail", re.compile(r"\bCPU\s+Rail(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
@@ -87,6 +88,7 @@ ACPI_LABEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("dram", re.compile(r"\bDRAM(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     ("cpu_rail", re.compile(r"\bCPU(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     ("soc", re.compile(r"\bSysIO\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
+    (MODULE_KIND, re.compile(r"\bModule\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
 )
 
 

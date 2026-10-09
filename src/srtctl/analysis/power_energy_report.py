@@ -460,6 +460,8 @@ def load_cpu_samples(path: Path) -> CpuSamples:
         return load_cpu_samples_from(handle)
 
 
+# The rail columns v2 introduced and every later per-socket layout keeps.
+# v2 files predate module_w, so the current header is too strict a marker.
 _WIDE_LAYOUT_COLUMNS = tuple(column for column in CPU_SAMPLES_HEADER_V2 if column not in CPU_SAMPLES_HEADER_V1)
 
 

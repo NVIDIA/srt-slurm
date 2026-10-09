@@ -535,8 +535,9 @@ mod tests {
         );
     }
 
+    /// Without libnvidia-ml this fails at load; with it, at the socket mapping.
     #[test]
-    fn new_fails_softly_without_a_socket_mapping() {
+    fn new_fails_softly_without_nvml_or_a_socket_mapping() {
         match NvmlModuleReader::new(Path::new("/nonexistent")) {
             Ok(_) => panic!("a reader without socket-mapped GPUs must not initialise"),
             Err(e) => assert!(!e.0.is_empty(), "callers log this reason"),
