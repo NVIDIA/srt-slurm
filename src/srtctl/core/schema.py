@@ -1791,6 +1791,13 @@ class InfraConfig:
     etcd_nats_dedicated_node: bool = False
     nats_max_payload_mb: int | None = None
 
+    # Includes Pyxis/Enroot import time before the service process starts.
+    startup_timeout_seconds: float = 300.0
+
+    def __post_init__(self) -> None:
+        if not _is_finite_positive(self.startup_timeout_seconds):
+            raise ValidationError("infra.startup_timeout_seconds must be finite and positive")
+
     Schema: ClassVar[type[Schema]] = Schema
 
 
