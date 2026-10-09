@@ -330,7 +330,7 @@ Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. Everything that is per
 | --- | --- |
 | `sglang-router` | none beyond `type` |
 | `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes` |
-| `trtllm` | `served_model_name`, `publish_metrics`, `publish_events_and_metrics`, `sequential_node_start`, `numa_memory_bind`, `numa_cpu_bind` |
+| `trtllm` | `served_model_name`, `publish_metrics`, `publish_events_and_metrics`, `sequential_node_start`, `numa_memory_bind`, `numa_cpu_bind`, `decode_numa_cpu_bind` |
 | `mocker` | the simulation parameters: `engine_type`, `speedup_ratio`, `decode_speedup_ratio`, `num_gpu_blocks_override`, `max_num_seqs`, `max_num_batched_tokens`, `block_size`, `data_parallel_size`, ... |
 
 The v1 spelling of this (`backend.type` plus the engine-wide keys under `backend:`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
@@ -362,6 +362,20 @@ cluster GPU visibility variables are not supported by this wrapper.
 When omitted or null, this two-node policy applies only to `gb200`, `gb300`,
 and `vrnvl72` prefill and decode workers. Enabling CPU binding does not change
 these memory policies.
+
+For disaggregated workers, `numa_memory_bind: local` binds prefill memory to
+the task GPU's NUMA node while decode uses `numactl -m 0,1`.
+Use `decode_numa_cpu_bind` to override CPU binding for decode only; omitted
+or null inherits `numa_cpu_bind`. For local prefill memory without CPU binding
+and decode memory on nodes 0,1 with GPU-local `taskset -c` binding:
+
+```yaml
+engine:
+  type: trtllm
+  numa_memory_bind: local
+  numa_cpu_bind: false
+  decode_numa_cpu_bind: true
+```
 
 In local mode, the launcher fails if the GPU's NUMA affinity cannot be resolved,
 the memory policy cannot be applied, or CPU binding is enabled and its CPU

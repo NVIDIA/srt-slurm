@@ -284,6 +284,13 @@ def show_config_details(config: SrtConfig) -> None:
             console.print(f"TRT-LLM NUMA: {cpu_policy} and strict GPU-local memory binding (--bind-memory)")
             if config.resources.is_disaggregated:
                 console.print("TRT-LLM decode memory override for testing: numactl -m 0,1")
+        if config.backend.decode_numa_cpu_bind is not None:
+            cpu_policy = (
+                "GPU-local CPU binding (taskset -c)"
+                if config.backend.numa_cpu_bind_for_mode("decode")
+                else "CPU affinity unchanged"
+            )
+            console.print(f"TRT-LLM decode CPU override: {cpu_policy}")
         # Engine-yaml statistics keys srtctl defaults at config load
         # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
         # expand_observability). Shown for both frontends so a run that expects

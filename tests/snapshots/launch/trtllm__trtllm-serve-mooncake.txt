@@ -141,7 +141,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    trtllm-llmapi-launch trtllm-serve /model --host 0.0.0.0 --port 6100 --tensor_parallel_size 1 --config /logs/trtllm_config_prefill.yaml --served_model_name Qwen/Qwen3-0.6B
+    bash /configs/numa_cpu_bind.sh --bind-memory --no-bind-cpu trtllm-llmapi-launch trtllm-serve /model --host 0.0.0.0 --port 6100 --tensor_parallel_size 1 --config /logs/trtllm_config_prefill.yaml --served_model_name Qwen/Qwen3-0.6B
 
 ## decode_0_node-02
 nodes: 1
@@ -164,6 +164,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     MASTER_ADDR: 127.0.0.1
     MASTER_PORT: 29501
+    TLLM_NUMA_AWARE_WORKER_AFFINITY: 0
     TRTLLM_EPLB_SHM_NAME: <random>
     TRTLLM_MOONCAKE_MASTER_TIMEOUT: 900
 srun_options:
@@ -178,7 +179,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    trtllm-llmapi-launch trtllm-serve /model --host 0.0.0.0 --port 6100 --tensor_parallel_size 1 --config /logs/trtllm_config_decode.yaml --served_model_name Qwen/Qwen3-0.6B
+    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch trtllm-serve /model --host 0.0.0.0 --port 6100 --tensor_parallel_size 1 --config /logs/trtllm_config_decode.yaml --served_model_name Qwen/Qwen3-0.6B
 
 ## trtllm_serve_orchestrator
 nodelist: node-01

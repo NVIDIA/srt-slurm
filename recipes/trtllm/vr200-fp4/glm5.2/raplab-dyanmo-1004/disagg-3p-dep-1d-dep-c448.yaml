@@ -38,6 +38,7 @@ engine:
   type: trtllm
   served_model_name: GLM-5.3
   numa_cpu_bind: false
+  decode_numa_cpu_bind: true
   numa_memory_bind: local
 roles:
   prefill:

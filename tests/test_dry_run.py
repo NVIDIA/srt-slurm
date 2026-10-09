@@ -71,6 +71,18 @@ def test_trtllm_local_numa_example_is_visible(capsys, bind_cpu):
     assert ("CPU affinity unchanged" in output) is (not bind_cpu)
 
 
+def test_trtllm_decode_cpu_override_is_visible(capsys):
+    recipe = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-mooncake.yaml"
+    config = SrtConfig.from_yaml(recipe)
+    assert config.backend.numa_cpu_bind is False
+    assert config.backend.decode_numa_cpu_bind is True
+    show_config_details(config)
+    output = capsys.readouterr().out
+    assert "CPU affinity unchanged and strict GPU-local memory binding" in output
+    assert "TRT-LLM decode memory override for testing: numactl -m 0,1" in output
+    assert "TRT-LLM decode CPU override: GPU-local CPU binding (taskset -c)" in output
+
+
 class TestDryRunDynamoMetrics:
     @pytest.mark.parametrize(
         ("settings", "expected", "excluded"),

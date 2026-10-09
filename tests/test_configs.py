@@ -4404,6 +4404,33 @@ class TestHuggingFaceModelSupport:
         else:
             assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in env
 
+    @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
+    @pytest.mark.parametrize("override", [None, False, True])
+    @pytest.mark.parametrize("default", [False, True])
+    def test_trtllm_decode_cpu_override(self, mode, override, default):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=default, decode_numa_cpu_bind=override, numa_memory_bind="local")
+        expected_cpu = override if mode == "decode" and override is not None else default
+        process = self._make_process(mode=mode)
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        with patch("pathlib.Path.write_text"):
+            cmd = backend.build_worker_command(process, [process], runtime)
+        env = backend.get_environment_for_mode(mode)
+        assert (env.get("TLLM_NUMA_AWARE_WORKER_AFFINITY") == "0") is expected_cpu
+        if mode == "decode":
+            prefix = ["bash", "/configs/numa_cpu_bind.sh"] if expected_cpu else []
+            prefix.extend(["numactl", "-m", "0,1"])
+        else:
+            prefix = ["bash", "/configs/numa_cpu_bind.sh", "--bind-memory"]
+            if not expected_cpu:
+                prefix.append("--no-bind-cpu")
+        assert cmd[: len(prefix)] == prefix
+
     def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_taskset(self):
         """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
         from pathlib import Path

@@ -190,7 +190,8 @@ class TRTLLMProtocol:
     # gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type).
     # True uses nodes 0,1 for any GPU type or mode; False leaves the policy
     # unchanged. CPU binding does not change these policies. "local" strictly
-    # binds memory to the task GPU's NUMA node independently of CPU binding.
+    # binds prefill/aggregated memory to the task GPU's NUMA node independently
+    # of CPU binding; decode keeps the two-node policy (nodes 0,1).
     # Local mode fails startup if GPU NUMA affinity is unknown. Local memory
     # exhaustion can fail allocations; existing/shared pages are not migrated.
     numa_memory_bind: bool | Literal["local"] | None = None
@@ -212,6 +213,10 @@ class TRTLLMProtocol:
     #      restarts at 0 for both).
     # Set numa_memory_bind="local" to also bind memory to that same NUMA node.
     numa_cpu_bind: bool = False
+
+    # Decode-only CPU binding override. None inherits numa_cpu_bind; prefill
+    # and aggregated workers continue to use numa_cpu_bind.
+    decode_numa_cpu_bind: bool | None = None
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -304,7 +309,7 @@ class TRTLLMProtocol:
         env = {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
         if mode == "prefill" and self.mooncake_kv_store is not None:
             env["TRTLLM_MOONCAKE_STORE_ROLE"] = self.mooncake_kv_store.store_role
-        if self.numa_cpu_bind:
+        if self.numa_cpu_bind_for_mode(mode):
             env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
         return env
 
@@ -364,7 +369,13 @@ class TRTLLMProtocol:
         # the allocation is uniform and any rank could lead.
         return [replace(p, trtllm_dist_init_port=allocator.next(TRTLLM_DIST_INIT_PORTS)) for p in processes]
 
-    def _wrap_with_numa_bind(self, cmd: list[str], *, bind_memory: bool) -> list[str]:
+    def numa_cpu_bind_for_mode(self, mode: WorkerMode) -> bool:
+        """Resolve the decode CPU override, falling back to the shared policy."""
+        if mode == "decode" and self.decode_numa_cpu_bind is not None:
+            return self.decode_numa_cpu_bind
+        return self.numa_cpu_bind
+
+    def _wrap_with_numa_bind(self, cmd: list[str], *, bind_memory: bool, mode: WorkerMode) -> list[str]:
         """Resolve the task GPU's NUMA node for independent CPU and memory policies.
 
         Applies to all worker modes (prefill/decode/agg) when CPU binding or
@@ -375,10 +386,11 @@ class TRTLLMProtocol:
         launch), the lookup must happen in a script at runtime rather than
         being baked into the static command list.
         """
-        if not self.numa_cpu_bind and not bind_memory:
+        bind_cpu = self.numa_cpu_bind_for_mode(mode)
+        if not bind_cpu and not bind_memory:
             return cmd
         memory_args = ["--bind-memory"] if bind_memory else []
-        if not self.numa_cpu_bind:
+        if not bind_cpu:
             memory_args.append("--no-bind-cpu")
         return ["bash", "/configs/numa_cpu_bind.sh", *memory_args, *cmd]
 
@@ -478,7 +490,7 @@ class TRTLLMProtocol:
             if self.served_model_name:
                 cmd.extend(["--served_model_name", self.served_model_name])
             cmd.extend(self.get_extra_args_for_mode(mode))
-            return self._wrap_with_numa_bind(cmd, bind_memory=bind_local_memory)
+            return self._wrap_with_numa_bind(cmd, bind_memory=bind_local_memory, mode=mode)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
@@ -512,7 +524,7 @@ class TRTLLMProtocol:
 
         cmd.extend(self.dynamo_metrics_flags)
 
-        return self._wrap_with_numa_bind(cmd, bind_memory=bind_local_memory)
+        return self._wrap_with_numa_bind(cmd, bind_memory=bind_local_memory, mode=mode)
 
     def _build_sidecar_command(
         self,
@@ -543,6 +555,7 @@ class TRTLLMProtocol:
                 str(container_config_path),
             ],
             bind_memory=bind_memory,
+            mode=process.endpoint_mode,
         )
 
         sidecar = (

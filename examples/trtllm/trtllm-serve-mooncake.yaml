@@ -26,6 +26,9 @@ frontend:
 engine:
   type: trtllm
   served_model_name: "Qwen/Qwen3-0.6B"
+  numa_memory_bind: local
+  numa_cpu_bind: false
+  decode_numa_cpu_bind: true
 
 roles:
   prefill:

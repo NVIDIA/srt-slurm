@@ -39,6 +39,7 @@ engine:
   served_model_name: GLM-5.3
   numa_memory_bind: local
   numa_cpu_bind: false
+  decode_numa_cpu_bind: true
 roles:
   prefill:
     nodes: 4

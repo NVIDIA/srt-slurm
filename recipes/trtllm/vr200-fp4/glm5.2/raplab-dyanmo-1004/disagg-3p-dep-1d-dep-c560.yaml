@@ -36,6 +36,7 @@ frontend:
     node: dedicated
 engine:
   numa_cpu_bind: false
+  decode_numa_cpu_bind: true
   type: trtllm
   served_model_name: GLM-5.3
   numa_memory_bind: local
