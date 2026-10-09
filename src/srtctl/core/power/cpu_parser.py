@@ -10,6 +10,12 @@ contain both. If it ever did, ACPI wins here: it reports per-channel detail
 already-aggregated value per socket, so ACPI is the more informative source
 when both exist.
 
+In either mode the exporter may also serve ``cpu_power_nvml_watts``, the
+superchip module power. It rides on the socket row of whichever base family
+won, and a firmware-bound ACPI module meter takes precedence for its socket.
+A body with only NVML readings has no socket power and yields an empty
+scrape.
+
 Rail vocabulary comes from :mod:`srtctl.core.power.cpu_rails`; nothing here
 knows a firmware label by name.
 """
@@ -21,11 +27,19 @@ from dataclasses import dataclass
 
 from prometheus_client.parser import text_string_to_metric_families
 
-from srtctl.core.power.cpu_rails import ACPI_RAIL_KINDS, DCGM_KIND, classify_acpi_label, normalize_kind, sensor_name
+from srtctl.core.power.cpu_rails import (
+    ACPI_RAIL_KINDS,
+    DCGM_KIND,
+    MODULE_KIND,
+    classify_acpi_label,
+    normalize_kind,
+    sensor_name,
+)
 from srtctl.core.power.cpu_sample import CpuSample, RailReading, node_total_watts, pivot_socket_samples
 
 DCGM_METRIC = "cpu_power_dcgm_watts"
 ACPI_METRIC = "cpu_power_acpi_watts"
+NVML_METRIC = "cpu_power_nvml_watts"
 
 
 @dataclass(frozen=True)
@@ -36,7 +50,7 @@ class CpuReading:
     sensor: str
     socket_id: int
     power_w: float
-    kind: str  # cpu_rails.DCGM_KIND for dcgm; an ACPI_RAIL_KINDS member for acpi
+    kind: str  # cpu_rails.DCGM_KIND for dcgm; an ACPI_RAIL_KINDS member for acpi; MODULE_KIND for nvml
 
 
 @dataclass(frozen=True)
@@ -69,13 +83,14 @@ def parse_cpu_scrape(text: str) -> ParsedCpuScrape:
     except Exception:  # noqa: BLE001 - malformed exposition from a third-party parser
         return ParsedCpuScrape()
 
+    module_readings = _parse_nvml(families)
     acpi_readings = _parse_acpi(families)
     if acpi_readings:
-        return _scrape("acpi", acpi_readings)
+        return _scrape("acpi", _with_module(acpi_readings, module_readings))
 
     dcgm_readings = _parse_dcgm(families)
     if dcgm_readings:
-        return _scrape("dcgm", dcgm_readings)
+        return _scrape("dcgm", _with_module(dcgm_readings, module_readings))
 
     return ParsedCpuScrape()
 
@@ -134,6 +149,36 @@ def _parse_acpi(families) -> list[CpuReading]:
                 )
             )
     return readings
+
+
+def _parse_nvml(families) -> list[CpuReading]:
+    readings: list[CpuReading] = []
+    for family in families:
+        for sample in family.samples:
+            if sample.name != NVML_METRIC or sample.labels.get("type") != MODULE_KIND:
+                continue
+            socket_id = _parse_socket(sample.labels.get("socket"))
+            if socket_id is None:
+                continue
+            value = sample.value
+            if not math.isfinite(value) or value < 0:
+                continue
+            readings.append(
+                CpuReading(
+                    source="nvml",
+                    sensor=sensor_name(MODULE_KIND, socket_id),
+                    socket_id=socket_id,
+                    power_w=value,
+                    kind=MODULE_KIND,
+                )
+            )
+    return readings
+
+
+def _with_module(base: list[CpuReading], nvml: list[CpuReading]) -> list[CpuReading]:
+    """A firmware-bound ACPI module meter wins; NVML fills only the sockets without one."""
+    metered = {reading.socket_id for reading in base if reading.kind == MODULE_KIND}
+    return base + [reading for reading in nvml if reading.socket_id not in metered]
 
 
 def _parse_socket(raw: str | None) -> int | None:
