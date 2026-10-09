@@ -39,15 +39,20 @@ logger = logging.getLogger(__name__)
 WORKER_TERMINATE_TIMEOUT_SECONDS = 30.0
 
 
-def worker_step_name(mode: str, index: int, node: str, attempt: int = 0, engine_id: int = 0) -> str:
+def worker_step_name(
+    mode: str, index: int, node: str, attempt: int = 0, engine_id: int = 0, dp_rank: int | None = None
+) -> str:
     """The Slurm step name (and registry name) of a worker step.
 
-    ``engine_id`` > 0 is a shadow engine of the worker (vLLM ``engine.failover``)
-    and adds ``_e<k>``. ``attempt`` is the supervisor's relaunch count; a
+    ``dp_rank`` names one rank of a per-rank endpoint (``_dp<r>``). ``engine_id``
+    > 0 is a shadow engine of the worker (vLLM ``engine.failover``) and adds
+    ``_e<k>``. ``attempt`` is the supervisor's relaunch count; a
     relaunched step carries an ``_r<n>`` suffix so ``squeue --steps`` can never
     confuse it with a lingering step of the life it replaces.
     """
     name = f"{mode}_{index}_{node}"
+    if dp_rank is not None:
+        name = f"{name}_dp{dp_rank}"
     if engine_id:
         name = f"{name}_e{engine_id}"
     return f"{name}_r{attempt}" if attempt else name
@@ -430,7 +435,9 @@ class WorkerStageMixin:
         endpoint_nodes = {endpoint_process.node for endpoint_process in endpoint_processes}
         env_to_unset = ["VLLM_PORT"] if backend.type == "vllm" and len(endpoint_nodes) > 1 else None
 
-        step_name = worker_step_name(mode, index, process.node, attempt, getattr(process, "engine_id", 0))
+        step_name = worker_step_name(
+            mode, index, process.node, attempt, getattr(process, "engine_id", 0), process.dp_rank
+        )
         proc = start_srun_process(
             command=cmd,
             nodelist=[process.node],

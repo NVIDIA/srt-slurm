@@ -231,6 +231,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        dp_rank=None,
         trtllm_dist_init_port=29500,
         sidecar_grpc_port=50051,
     )
@@ -303,6 +304,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        dp_rank=None,
         trtllm_dist_init_port=29500,
         sidecar_grpc_port=50051,
     )
@@ -883,6 +885,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        dp_rank=None,
         trtllm_dist_init_port=29500,
         sidecar_grpc_port=50051,
     )

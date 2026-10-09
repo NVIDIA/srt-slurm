@@ -2530,7 +2530,8 @@ class FrontendConfig:
 
     Attributes:
         type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
-            Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "atomesh", and
+            Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d"
+            (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and
             "tilert-router" (static routers); "sglang", "vllm", and
             "trtllm_serve" (direct: the single aggregate worker binds the public
             port, no router process); "none" (services-only job: no router, no
@@ -2564,6 +2565,13 @@ class FrontendConfig:
             writes this mapping under the top-level ``worker_selection`` key in a
             generated router policy YAML and passes it to the Dynamo frontend via
             ``--router-policy-config``.
+        epp_config: llm-d Endpoint Picker configuration (``EndpointPickerConfig``:
+            ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``.
+            srtctl writes it to a file with the ``file-discovery`` plugin and
+            ``dataLayer.discovery`` added, so the EPP reads the job's workers from
+            the endpoints file srtctl renders. Omitted, srtctl runs the scorers of
+            llm-d's no-Kubernetes guide (in prefill and decode profiles for a
+            prefill/decode job).
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
         container_image: Optional router-specific image. Static routers use the
@@ -2583,6 +2591,7 @@ class FrontendConfig:
     nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     nginx_keepalive_timeout: str = "600s"
     worker_selection: dict[str, Any] | None = None
+    epp_config: dict[str, Any] | None = None
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
     container_image: str | None = None
@@ -3184,16 +3193,18 @@ class SrtConfig:
         schema does not know individual frontends. ``none`` is the services-only
         job and is covered by ``_validate_services_only``.
         """
-        if self.frontend.type == "none":
-            return
         from srtctl.frontends import get_frontend, list_frontend_types
 
         try:
-            frontend = get_frontend(self.frontend.type)
+            frontend = None if self.frontend.type == "none" else get_frontend(self.frontend.type)
         except ValueError:
             raise ValidationError(
                 f"Unknown frontend.type {self.frontend.type!r}. Available: {', '.join(list_frontend_types())}"
             ) from None
+        if self.frontend.epp_config is not None and (frontend is None or not frontend.accepts_epp_config):
+            raise ValidationError(f"frontend.epp_config is not supported with frontend.type: {self.frontend.type}")
+        if frontend is None:
+            return
         required = frontend.required_backend
         incompatible = [
             f"{role}={backend.type}" for role, backend in self.active_role_backends() if backend.type != required

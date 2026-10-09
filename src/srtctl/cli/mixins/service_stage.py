@@ -83,10 +83,11 @@ def service_step_name(service: ServiceConfig, node: str, instances: int, process
     """Slurm step name (and log stem) for one instance of a service.
 
     ``service_<name>`` alone for a single instance, ``service_<name>_<node>`` per
-    node, ``service_<name>_<role>_<index>_<node>`` for an instance attached to a worker.
+    node, ``service_<name>_<role>_<index>_<node>`` for an instance attached to a worker
+    (plus ``_dp<r>`` when it attaches to one DP rank of a per-rank worker).
     """
     if process is not None:
-        return f"service_{service.name}_{process.endpoint_mode}_{process.endpoint_index}_{node}"
+        return f"service_{service.name}_{process.endpoint_mode}_{process.endpoint_index}_{node}{process.engine_suffix}"
     suffix = f"_{node}" if instances > 1 else ""
     return f"service_{service.name}{suffix}"
 
@@ -143,7 +144,8 @@ class ServiceStageMixin:
 
     def service_instances(self, service: ServiceConfig) -> list[tuple[str, Process | None]]:
         """The instances a service launches: ``(node, None)`` per placed node, or under
-        ``placement.per: worker`` ``(node, process)`` per engine worker on those nodes.
+        ``placement.per: worker`` ``(node, process)`` per engine worker on those nodes
+        that the kind attaches to (``ServiceKind.attaches_to``).
 
         A worker's instance is attached to its engine 0 process (a worker with shadow
         engines has several processes on a node; the sidecar serves them all).
@@ -155,12 +157,14 @@ class ServiceStageMixin:
             return [(node, None) for node in nodes]
         where = service.effective_placement
         order = {node: i for i, node in enumerate(nodes)}
+        kind = get_service_kind(service.type)
         attached = [
             process
             for process in self.backend_processes
             if process.node in order
             and getattr(process, "engine_id", 0) == 0
             and (where == "workers" or process.endpoint_mode == where)
+            and kind.attaches_to(process)
         ]
         attached.sort(key=lambda p: (order[p.node], p.endpoint_index, p.node_rank))
         return [(process.node, process) for process in attached]

@@ -42,6 +42,16 @@ SGLANG_ROUTER_METRICS_PORT = 29000
 # passed as --prometheus-port so srtctl, not upstream's default, owns it.
 SMG_METRICS_PORT = 29000
 
+# llm-d router-node listeners, passed explicitly; Envoy admin serves /ready.
+LLM_D_EPP_GRPC_PORT = 9002
+LLM_D_EPP_HEALTH_PORT = 9003
+LLM_D_EPP_METRICS_PORT = 9090
+LLM_D_ENVOY_ADMIN_PORT = 9901
+# EPP binds this ZMQ subscriber; all KV-event publishers connect to it.
+LLM_D_EPP_KV_EVENTS_PORT = 5557
+# Per-worker proxy listeners, including llm-d decode sidecars; see PROXY_PORTS.
+WORKER_PROXY_PORT_BASE = 9600
+
 # TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
 TRTLLM_DIST_INIT_PORT_BASE = 29500
 
@@ -96,6 +106,15 @@ RAY_DASHBOARD_PORT = 8265
 DYNAMO_SIDECAR_GRPC_PORT = 50051
 
 
+def rank_offset_subscriber_port(port: int, rank: int) -> int:
+    """Undo vLLM's global DP-rank offset to reach a shared KV-event subscriber.
+
+    Tested image's offset_endpoint_port:
+    https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/distributed/kv_events.py#L495-L523
+    """
+    return port - rank
+
+
 @dataclass(frozen=True)
 class PortKind:
     """One kind of listener a worker process binds, allocated by ``NodePortAllocator``.
@@ -125,6 +144,8 @@ DP_RPC_PORTS = PortKind("dp_rpc", VLLM_DATA_PARALLEL_RPC_PORT, per_node=True)
 # KVBM leader ZMQ pair: pub at the port, ack at the port + 1.
 KVBM_ZMQ_PORTS = PortKind("kvbm_zmq", KVBM_ZMQ_PORT_BASE, 2)
 SIDECAR_GRPC_PORTS = PortKind("sidecar_grpc", DYNAMO_SIDECAR_GRPC_PORT)
+# Allocated on each worker's node for Frontend.proxied_worker_modes.
+PROXY_PORTS = PortKind("proxy", WORKER_PROXY_PORT_BASE, per_node=True)
 # Engine-specific: the backend allocates these for its own processes.
 NCCL_PORTS = PortKind("nccl", SGLANG_NCCL_PORT_BASE)
 DIST_INIT_PORTS = PortKind("dist_init", SGLANG_DIST_INIT_PORT_BASE, per_node=True)

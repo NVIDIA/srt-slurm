@@ -144,7 +144,7 @@ Set `engine.dp_launch_mode: per_gpu` only when temporarily preserving the legacy
 
 When `TP x PP` fits on one node, srtslurm derives `--data-parallel-size-local` and `--data-parallel-start-rank`, then enables `--data-parallel-hybrid-lb` so every node-local process registers with the Dynamo frontend. When `TP x PP` is larger than the node-local GPU allocation, srtslurm instead derives the multi-node rendezvous arguments and makes every process except the global leader headless. For example, both DP4 x TP4 and DP2 x TP8 are selected automatically on four-GPU nodes.
 
-Do not set `data-parallel-size-local`, `data-parallel-start-rank`, `data-parallel-hybrid-lb`, or `headless` manually; srtslurm owns those values. The allocation must be regular: `DP x TP x PP` must match the endpoint GPU count, and a TP/PP replica must divide evenly within or across nodes.
+Do not set `data-parallel-size-local`, `data-parallel-start-rank`, `data-parallel-hybrid-lb`, or `headless` manually; srtslurm owns those values. Behind a router frontend, `data-parallel-external-lb: true` instead launches every DP rank as its own `vllm serve --data-parallel-rank <r>` on its own HTTP port, so the router addresses each rank ([llm-d](llm-d.md#routing-to-dp-ranks)). The allocation must be regular: `DP x TP x PP` must match the endpoint GPU count, and a TP/PP replica must divide evenly within or across nodes.
 
 ### TRT-LLM metrics publication
 

@@ -156,12 +156,15 @@ class Process:
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
         node_rank: Rank within the endpoint (0 for leader)
+        dp_rank: The DP rank this process runs when the endpoint is one process per rank
+            (vLLM ``dp_launch_mode: per_gpu`` or external load balancing); None otherwise
         engine_id: Which engine of the worker this is. 0 is the one every job has;
             under ``backend.failover`` (vLLM shadow engine recovery) engines 1.. are
             the standbys, sharing node, GPUs and node_rank with engine 0 but with
             their own ports and their own srun step.
         kvbm_zmq_port: KVBM leader ZMQ pub port (ack is the next port); the leader's is used
         sidecar_grpc_port: Dynamo sidecar gRPC listener, allocated when the job runs sidecars
+        proxy_port: Per-worker proxy listener (e.g. llm-d's decode sidecar), when required by the frontend
         nccl_port: SGLang local TP rendezvous port, one per server process
         dist_init_port: SGLang multi-node dist-init port; the same value on every process of an endpoint
         grpc_http_port: HTTP sidecar (/metrics, profiler routes) of an SGLang gRPC-mode leader
@@ -189,8 +192,10 @@ class Process:
     # Inherited from the parent Endpoint when the job is heterogeneous.
     het_group: int | None = None
     engine_id: int = 0
+    dp_rank: int | None = None
     kvbm_zmq_port: int | None = None
     sidecar_grpc_port: int | None = None
+    proxy_port: int | None = None
     nccl_port: int | None = None
     dist_init_port: int | None = None
     grpc_http_port: int | None = None
@@ -207,8 +212,9 @@ class Process:
 
     @property
     def engine_suffix(self) -> str:
-        """Step-name and log-name suffix that tells a shadow engine apart from engine 0 (``""`` for it)."""
-        return f"_e{self.engine_id}" if self.engine_id else ""
+        """Disambiguate colocated processes with optional ``_dp<rank>`` and ``_e<engine>`` suffixes."""
+        rank = f"_dp{self.dp_rank}" if self.dp_rank is not None else ""
+        return f"{rank}_e{self.engine_id}" if self.engine_id else rank
 
     @property
     def cuda_visible_devices(self) -> str:
