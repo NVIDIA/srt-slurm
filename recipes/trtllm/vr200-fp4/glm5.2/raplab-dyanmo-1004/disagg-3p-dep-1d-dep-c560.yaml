@@ -115,6 +115,7 @@ roles:
       HF_HUB_OFFLINE: '1'
       MIMALLOC_PURGE_DELAY: '0'
       NCCL_GRAPH_MIXING_SUPPORT: '0'
+      NCCL_IB_HCA: 'mlx5_0::0:0,mlx5_1::1:0,mlx5_2::2:0,mlx5_5::3:0,mlx5_6::0:1,mlx5_7::1:1,mlx5_8::2:1,mlx5_11::3:1'
       NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE: '0'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: '0.10'
@@ -213,6 +214,7 @@ roles:
       HF_HUB_OFFLINE: '1'
       MIMALLOC_PURGE_DELAY: '0'
       NCCL_GRAPH_MIXING_SUPPORT: '0'
+      NCCL_IB_HCA: 'mlx5_0::0:0,mlx5_1::1:0,mlx5_2::2:0,mlx5_5::3:0,mlx5_6::0:1,mlx5_7::1:1,mlx5_8::2:1,mlx5_11::3:1'
       NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE: '0'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: '0.10'
