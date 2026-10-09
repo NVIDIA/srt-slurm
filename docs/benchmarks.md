@@ -62,14 +62,14 @@ Every custom benchmark command receives frontend metadata plus mode-specific met
 | `SRT_DECODE_ENDPOINTS`          | comma-separated `IP:port`      | Decode worker endpoints |
 | `SRT_AGG_IPS`                   | comma-separated IPs            | Aggregated worker leader IPs |
 | `SRT_AGG_ENDPOINTS`             | comma-separated `IP:port`      | Aggregated worker endpoints |
-| `AIPERF_SERVER_METRICS_URLS`    | comma-separated HTTP URLs      | AIPerf-compatible `/metrics` URLs for all logical workers |
+| `AIPERF_SERVER_METRICS_URLS`    | comma-separated HTTP URLs      | AIPerf-compatible `/metrics` URLs for all logical workers (plus SGLang attention-DP followers) |
 | `SRT_SERVICE_<NAME>_NODES`      | comma-separated hostnames      | Nodes each launched service runs on, in placement order; `<NAME>` is the service name upper-cased with non-alphanumerics as `_` |
 | `SRT_SERVICE_<NAME>_IPS`        | comma-separated IPs            | The same nodes' fabric IPs (the first is the head of a `ray` service) |
 | `SRT_SERVICE_<NAME>_NODE_COUNT` | int                            | How many nodes the service spans |
 | `SRT_GPUS_PER_NODE`             | int                            | `resources.gpus_per_node` |
 | `SRT_WORKER_NODES`              | comma-separated hostnames      | Every engine worker node (empty when the job has no engine roles) |
 
-Only variables for roles present in the recipe are emitted. Entries follow logical topology order (prefill index, decode index, or aggregated index). Multi-node follower ranks are excluded because they do not own separate engines; co-located logical workers retain repeated IPs and distinct ports so list positions remain aligned. With a Dynamo frontend, endpoint and metrics URLs use each leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured, their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
+Only variables for roles present in the recipe are emitted. Entries follow logical topology order (prefill index, decode index, or aggregated index). Multi-node follower ranks are excluded because they do not own separate engines; co-located logical workers retain repeated IPs and distinct ports so list positions remain aligned. One exception applies to `AIPERF_SERVER_METRICS_URLS`: an SGLang role with `dp-size` (or `data-parallel-size`) greater than 1 also lists each follower's URL right after its leader, because every node of an attention-DP worker schedules its own DP ranks and exports their metrics. For such a role the metrics list no longer aligns position by position with `SRT_*_ENDPOINTS`. Dynamo sidecar workers keep logical leaders only. With a Dynamo frontend, endpoint and metrics URLs use each leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured, their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
 
 Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 

@@ -242,6 +242,7 @@ class TestCustomBenchmarkRunner:
         environment=None,
         dynamo_sidecar=False,
         trtllm_config=None,
+        engine_args=None,
     ):
         from types import SimpleNamespace
 
@@ -277,6 +278,11 @@ class TestCustomBenchmarkRunner:
                     if role in mode_environments or mode in engine_sections
                 },
             )
+        elif engine_args is not None:
+            from srtctl.backends import SGLangBackend
+            from srtctl.core.schema import RoleConfig
+
+            backend = SGLangBackend(roles={role: RoleConfig(args=args) for role, args in engine_args.items()})
         else:
             backend = SimpleNamespace(
                 type=backend_type,
@@ -348,6 +354,54 @@ class TestCustomBenchmarkRunner:
         assert runner.build_command(config, runtime) == ["bash", "-lc", "python /bench/run.py --foo bar"]
         assert runner.get_container_image(config, runtime) == "nvcr.io/nvidia/python:3.11"
         assert runner.get_environment(config, runtime) == {"FOO": "bar"}
+
+    @staticmethod
+    def _two_node_disagg_processes():
+        from srtctl.core.topology import Process
+
+        # Decode nodes sort before prefill nodes, so a sorted URL list would reorder roles.
+        return [
+            Process("node-p0", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+            Process("node-p1", frozenset(range(4)), 7501, 0, "prefill", 0, node_rank=1),
+            Process("node-d0", frozenset(range(4)), 7504, 6100, "decode", 0, node_rank=0),
+            Process("node-d1", frozenset(range(4)), 7505, 0, "decode", 0, node_rank=1),
+        ]
+
+    def _custom_env(self, engine_args, **kwargs):
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+
+        stage = self._benchmark_stage("dynamo", self._two_node_disagg_processes(), engine_args=engine_args, **kwargs)
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            return stage._get_benchmark_env(CustomBenchmarkRunner())
+
+    @pytest.mark.parametrize("dp_key", ["dp-size", "dp_size", "data-parallel-size"])
+    def test_sglang_attention_dp_custom_metrics_scrape_followers_in_topology_order(self, dp_key):
+        env = self._custom_env({"prefill": {dp_key: 8}, "decode": {dp_key: 8}})
+
+        # Routing still targets logical leaders; only metrics include follower ranks.
+        assert env["SRT_PREFILL_ENDPOINTS"] == "ip-node-p0:7500"
+        assert env["SRT_DECODE_ENDPOINTS"] == "ip-node-d0:7504"
+        assert env["AIPERF_SERVER_METRICS_URLS"] == (
+            "http://ip-node-p0:7500/metrics,http://ip-node-p1:7501/metrics,"
+            "http://ip-node-d0:7504/metrics,http://ip-node-d1:7505/metrics"
+        )
+
+    def test_sglang_attention_dp_followers_are_scraped_per_role(self):
+        env = self._custom_env({"prefill": {"tp-size": 8}, "decode": {"dp-size": 8}})
+
+        assert env["AIPERF_SERVER_METRICS_URLS"] == (
+            "http://ip-node-p0:7500/metrics,http://ip-node-d0:7504/metrics,http://ip-node-d1:7505/metrics"
+        )
+
+    def test_sglang_pure_tp_custom_metrics_keep_logical_leaders(self):
+        env = self._custom_env({"prefill": {"tp-size": 8}, "decode": {"tp-size": 8}})
+
+        assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-p0:7500/metrics,http://ip-node-d0:7504/metrics"
 
     def test_disaggregated_worker_endpoints_use_logical_leaders(self):
         from unittest.mock import patch
