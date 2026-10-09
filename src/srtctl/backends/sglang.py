@@ -158,6 +158,11 @@ class SGLangBackend(Backend):
         config = self.get_config_for_mode(mode)
         return config.get("grpc-mode", False)
 
+    def data_parallel_size(self, mode: WorkerMode) -> int:
+        """``dp-size`` (upstream alias ``data-parallel-size``) for a worker mode; 1 when unset."""
+        config = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
+        return int(config.get("dp-size") or config.get("data-parallel-size") or 1)
+
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from the roles' engine args, or return default."""
         for mode in ("prefill", "agg", "decode"):
