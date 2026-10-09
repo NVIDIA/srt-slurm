@@ -76,6 +76,32 @@ def test_pivot_groups_by_socket_and_drops_sockets_without_their_primary():
     assert node_total_watts(samples) == 210.0  # envelopes only, never cpu_rail
 
 
+def test_module_reading_never_becomes_the_socket_power():
+    module = RailReading(0, "module", "CPU0:modulePowerUsageW", 498.72)
+
+    for source in ("acpi", "dcgm"):
+        assert pivot_socket_samples(source, [module]) == ()
+        with pytest.raises(ValueError, match="exactly one"):
+            CpuSample(source, 0, (module,))
+
+
+def test_module_rides_on_the_socket_but_never_sums_into_node_total():
+    readings = [
+        *_acpi_readings(0, total=100.0, cpu_rail=40.0),
+        RailReading(0, "module", "CPU0:modulePowerUsageW", 500.0),
+        RailReading(1, "dcgm", "CPU1:cpuPowerUsageW", 50.0),
+        RailReading(1, "module", "CPU1:modulePowerUsageW", 450.0),
+    ]
+
+    (acpi_sample,) = pivot_socket_samples("acpi", readings[:3])
+    (dcgm_sample,) = pivot_socket_samples("dcgm", readings[3:])
+
+    assert acpi_sample.power_w == 100.0
+    assert acpi_sample.rails == {"cpu_rail": 40.0, "module": 500.0}
+    assert dcgm_sample.rails == {"module": 450.0}
+    assert node_total_watts((acpi_sample, dcgm_sample)) == 150.0
+
+
 def test_pivot_keeps_the_first_reading_for_a_duplicated_rail():
     readings = _acpi_readings(0, total=100.0, cpu_rail=40.0) + [RailReading(0, "total", "dup", 999.0)]
 

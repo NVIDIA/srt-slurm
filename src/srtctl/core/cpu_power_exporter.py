@@ -32,7 +32,7 @@ from srtctl.core.power.hwmon import is_power_meter
 
 # Channel classification is shared with the scraper and host collector via
 # cpu_rails so the published ``type`` label uses the canonical rail kinds
-# (total / cpu_rail / soc / dram). Unrecognised rails (NVSwitch etc.) are
+# (total / cpu_rail / soc / dram / module). Unrecognised rails (NVSwitch etc.) are
 # still published, as ``type="other"`` with no socket.
 
 
