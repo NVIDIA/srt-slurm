@@ -7,7 +7,7 @@ Small starting points, one per frontend and topology. The matrix examples serve 
 | Backend | Dynamo frontend | Native router | Router-free direct |
 | --- | --- | --- | --- |
 | SGLang | `sglang/dynamo-agg.yaml`, `sglang/dynamo-disagg.yaml` | `sglang/sglang-router-agg.yaml`, `sglang/sglang-router-disagg.yaml`, `sglang/smg-disagg.yaml` (SMG) | `sglang/sglang-direct-agg.yaml` |
-| vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml`, `vllm/vllm-router-moriio-disagg.yaml` (ROCm, MoRI-IO discovery), `vllm/smg-agg.yaml`, `vllm/smg-dep16.yaml`, `vllm/smg-disagg-grpc.yaml` (SMG; P/D over gRPC with NIXL) | `vllm/vllm-direct-agg.yaml` |
+| vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml`, `vllm/vllm-router-moriio-disagg.yaml` (ROCm, MoRI-IO discovery), `vllm/smg-agg.yaml`, `vllm/smg-dep16.yaml`, `vllm/smg-disagg-grpc.yaml` (SMG; P/D over gRPC with NIXL), `vllm/llm-d-agg.yaml`, `vllm/llm-d-disagg.yaml` (llm-d EPP behind Envoy; P/D through the llm-d sidecar), `vllm/llm-d-dp-ranks.yaml` (llm-d routing to every external-LB DP rank by its KV-cache events) | `vllm/vllm-direct-agg.yaml` |
 | TRT-LLM | `trtllm/dynamo-agg.yaml`, `trtllm/dynamo-disagg.yaml`, `trtllm/dynamo-disagg-multinode.yaml` (TP16 decode across two 8-GPU nodes: one srun, one host per rank under `--distribution=arbitrary`) | `trtllm/trtllm-serve-disagg.yaml`, `trtllm/smg-agg.yaml` (SMG) | `trtllm/trtllm-serve-agg.yaml` |
 | TokenSpeed | `tokenspeed/dynamo-agg.yaml`, `tokenspeed/dynamo-disagg.yaml` | `tokenspeed/smg-agg.yaml`, `tokenspeed/smg-disagg.yaml` (SMG, gRPC engines) | |
 | Mocker | `mocker/dynamo-agg.yaml` | | |
@@ -30,6 +30,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/sweep.yaml` | `sweep:` plus `{placeholder}` substitution; one job per combination |
 | `features/override.yaml` | `base` plus `override_*` and `zip_override_*` variants in one file |
 | `features/profiling.yaml` | `profiling:` torch capture on an aggregated worker |
+| `features/observability-vllm.yaml` | `observability.enabled: true` on a TP2 vLLM worker behind the Dynamo frontend: nsys with vLLM's NVTX scopes, tachometer, and the DCGM, node and process exporters. See [../docs/profiling.md](../docs/profiling.md#observability-capture) |
 | [`features/amd-power-telemetry.yaml`](features/amd-power-telemetry.yaml) | SGLang on MI300X with AMD device-metrics-exporter power collection. Set the `sglang-rocm` container alias and `visible_devices_env: ROCR_VISIBLE_DEVICES` in `srtslurm.yaml`. See [power telemetry](../docs/power-telemetry.md#amd-amd-device-metrics) |
 | `features/services.yaml` | `services:` sidecar (an HTTP log browser on the head node) with a `readiness:` port gate |
 | `features/mlperf-client.yaml` | `benchmark.type: custom` driving the MLPerf inference-endpoint client in its own image; placeholder paths, a reference rather than a runnable example |
@@ -63,6 +64,7 @@ containers:
   vllm-lmcache: /path/to/vllm-lmcache.sqsh  # vLLM image with LMCache installed, for features/lmcache-server.yaml and -disagg.yaml
   sglang-lmcache: /path/to/sglang-lmcache.sqsh  # SGLang image with LMCache installed, for features/lmcache-server-sglang.yaml
   smg: /path/to/smg.sqsh                    # Shepherd Model Gateway image (lightseekorg/smg), the router for the smg examples
+  llm-d-vllm: /path/to/llm-d-vllm.sqsh      # vLLM image with epp, pd-sidecar and envoy on PATH, for the llm-d examples (docs/llm-d.md#images)
 ```
 
 ## Optional GPU temperature

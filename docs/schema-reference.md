@@ -121,7 +121,7 @@ Frontend/router configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate`` rewrites that to "sglang-router". |
+| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d" (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate`` rewrites that to "sglang-router". |
 | `enable_multiple_frontends` | bool | `True` | Scale with nginx + multiple routers. When ``True`` (default), srtctl stands up nginx and fans out to ``num_additional_frontends + 1`` router replicas. When ``False``, there is NO nginx proxy — the benchmark must target the single master router (or a worker) directly at ``http://localhost:<port>``. ``benchmark.command`` has no placeholder substitution, so write the URL out literally. |
 | `num_additional_frontends` | int | `9` | Additional routers beyond master (default: 9) |
 | `nginx_container` | str | `'nginx:1.27.4'` | Custom nginx container image (default: nginx:1.27.4) |
@@ -130,6 +130,7 @@ Frontend/router configuration.
 | `nginx_session_affinity_header` | str | `'X-Dynamo-Session-ID'` | Header hashed when affinity is on (default ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that carry the session id in that header instead. |
 | `nginx_keepalive_timeout` | str | `'600s'` | Idle timeout for client and upstream keepalive connections in the generated nginx.conf (default "600s"). nginx's own default is 75s, which closes a session's connection during the long recorded think-time of an agentic replay; the client's next write on that pooled socket then fails with "broken pipe" / "server disconnected" and nothing is logged server-side. |
 | `worker_selection` | dict[str, Any] \| None | `None` | Inline Dynamo worker-selection policy configuration. srtctl writes this mapping under the top-level ``worker_selection`` key in a generated router policy YAML and passes it to the Dynamo frontend via ``--router-policy-config``. |
+| `epp_config` | dict[str, Any] \| None | `None` | llm-d Endpoint Picker configuration (``EndpointPickerConfig``: ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``. srtctl writes it to a file with the ``file-discovery`` plugin and ``dataLayer.discovery`` added, so the EPP reads the job's workers from the endpoints file srtctl renders. Omitted, srtctl runs the scorers of llm-d's no-Kubernetes guide (in prefill and decode profiles for a prefill/decode job). |
 | `args` | dict[str, Any] \| None | `None` | CLI arguments passed to the frontend/router process |
 | `env` | dict[str, str] \| None | `None` | Environment variables for frontend processes |
 | `container_image` | str \| None | `None` | Optional router-specific image. Static routers use the model/backend image when omitted. |
@@ -238,6 +239,7 @@ Profiling configuration.
 | `nsys_trace` | str | `'cuda,nvtx'` | Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected explicitly where software tracing is preferred over hardware tracing. |
 | `trace_fork_before_exec` | bool \| None | `None` | None preserves the existing Dynamo-specific default. Set explicitly for worker launchers that require or cannot tolerate child-process injection. |
 | `capture_range_end` | str | `'stop'` | Non-TRT-LLM behavior when cudaProfilerStop closes a capture range. |
+| `detailed_trace_annotation` | bool | `False` | Adds detailed nvtx marker flag for vLLM |
 | `nsys_library_paths` | list[str] \| None | `None` | Optional paths prepended to LD_LIBRARY_PATH for the Nsight wrapper and profiled worker, for containers that do not discover the host libcuda. |
 | `prefill` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` | Phase-specific profiling step configs (not used for nsys-time) |
 | `decode` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` | Step window for the decode role (disaggregated runs). |

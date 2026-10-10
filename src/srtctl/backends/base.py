@@ -66,7 +66,17 @@ class SrunConfig:
     kill_on_bad_exit: bool = False
 
 
-class RoleSettings(ABC):
+@dataclass(frozen=True)
+class ProcessGroup:
+    """One process-exporter group: every ``cmdline`` regexp must match the space-joined
+    argv, or ``comm`` lists 15-character kernel task names."""
+
+    name: str
+    cmdline: tuple[str, ...] = ()
+    comm: tuple[str, ...] = ()
+
+
+class RoleSettings(ABC):  # noqa: B024 - its members are declared for the type checker only
     """What an engine reads from one role of the recipe (``roles.<role>``).
 
     ``srtctl.core.schema.RoleConfig`` inherits this data contract. Keeping the
@@ -74,10 +84,20 @@ class RoleSettings(ABC):
     dataclasses supply the fields and defaults.
     """
 
-    env: Mapping[str, str]
-    args: Mapping[str, Any]
-    extra_args: Sequence[str]
-    kv_events: bool | Mapping[str, Any] | None
+    if TYPE_CHECKING:
+        # Read-only, as the frozen dataclass fields that implement them are; declared
+        # only for the type checker so nothing shadows those fields at runtime.
+        @property
+        def env(self) -> Mapping[str, str]: ...
+
+        @property
+        def args(self) -> Mapping[str, Any]: ...
+
+        @property
+        def extra_args(self) -> Sequence[str]: ...
+
+        @property
+        def kv_events(self) -> bool | Mapping[str, Any] | None: ...
 
 
 class BoundRolesField(fields.Field):
@@ -135,6 +155,9 @@ class Backend(ABC):
     #: Path a gRPC-mode worker serves Prometheus text at on ``Process.grpc_http_port``;
     #: ``None`` when the engine's gRPC server has no HTTP listener.
     grpc_metrics_path: ClassVar[str | None] = None
+    #: Environment that turns on the engine's own NVTX ranges; the automatic nsys
+    #: preset (``observability.nsys``) sets it on every worker it wraps.
+    nvtx_environment: ClassVar[Mapping[str, str]] = {}
 
     @property
     @abstractmethod
@@ -160,8 +183,16 @@ class Backend(ABC):
         """
         return None
 
-    # Bound recipe roles; concrete dataclasses own the field and its serialization.
-    roles: Mapping[str, RoleSettings]
+    #: process-exporter groups for this engine's processes, in match order (first match
+    #: wins): a child that retitles itself or a launcher that wraps a module precedes the
+    #: handler whose command line it would otherwise share.
+    process_exporter_groups: ClassVar[tuple[ProcessGroup, ...]] = ()
+
+    if TYPE_CHECKING:
+        # Bound recipe roles; concrete frozen dataclasses own the field and its serialization.
+        # Read-only like that field, and declared only for the type checker.
+        @property
+        def roles(self) -> Mapping[str, RoleSettings]: ...
 
     def get_srun_config(self) -> SrunConfig:
         """Get srun configuration for this backend.

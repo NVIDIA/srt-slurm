@@ -105,6 +105,10 @@ class ServiceLaunchContext:
                     "worker_gpu_count": str(len(self.process.gpu_indices)),
                 }
             )
+            if self.process.http_port > 0:
+                values["worker_http_port"] = str(self.process.http_port)
+            if self.process.proxy_port is not None:
+                values["worker_proxy_port"] = str(self.process.proxy_port)
         return values
 
 
@@ -172,7 +176,7 @@ class ServiceKind:
         """True to run the command straight on the node, with no container (a static host binary)."""
         return False
 
-    def prepare(self, service: ServiceConfig, runtime: RuntimeContext) -> None:
+    def prepare(self, service: ServiceConfig, runtime: RuntimeContext, config: SrtConfig) -> None:
         """Write anything the command needs into the run's log dir; called once per service, before launch."""
 
     def skip_reason(self, service: ServiceConfig, runtime: RuntimeContext) -> str | None:
@@ -195,6 +199,14 @@ class ServiceKind:
         probe. Per-instance probes see one node; a cluster-shaped kind (Ray)
         also needs the head to report every member before the client starts.
         """
+
+    def attaches_to(self, process: Process) -> bool:
+        """Filter eligible processes for ``placement.per: worker`` services.
+
+        By default, attach to all engine-0 processes, including followers.
+        API proxies override this to exclude processes without a listener.
+        """
+        return True
 
     def metrics(self, service: ServiceConfig) -> list[ServiceMetricsConfig]:
         """The Prometheus endpoints this service serves; empty when it publishes none.

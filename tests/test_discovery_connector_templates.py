@@ -220,3 +220,22 @@ def test_non_discovery_explicit_config_keeps_existing_precedence() -> None:
     command = _command(template, connector="nixl")
     assert command.count("--kv-transfer-config") == 1
     assert command[command.index("--kv-transfer-config") + 1] == template
+
+
+@pytest.mark.parametrize("explicit", [None, {"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both"}])
+def test_aggregate_does_not_inherit_pd_discovery(explicit: dict[str, Any] | None) -> None:
+    args = {} if explicit is None else {"kv-transfer-config": explicit}
+    backend = VLLMBackend(connector="moriio", roles={"agg": RoleConfig(args=args)})
+
+    result = backend.kv_transfer_config("agg", use_default=False)
+
+    assert (None if result is None else json.loads(result)) == explicit
+
+
+def test_role_connector_selects_discovery_over_engine_default() -> None:
+    command = _command(_template(), connector="nixl", extra_args={"connector": "moriio"})
+
+    result = json.loads(command[command.index("--kv-transfer-config") + 1])
+    mori, cpu = result["kv_connector_extra_config"]["connectors"]
+    assert mori["kv_connector_extra_config"]["host_ip"] == "10.0.0.2"
+    assert cpu["kv_connector"] == "SimpleCPUOffloadConnector"

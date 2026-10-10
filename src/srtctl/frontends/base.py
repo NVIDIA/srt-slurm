@@ -58,6 +58,9 @@ class Frontend(ABC):
     #: ``SrtConfig._validate_frontend`` enforces it at config load.
     required_backend: ClassVar[str | None] = None
 
+    #: Whether ``frontend.epp_config`` configures this frontend; ``_validate_frontend`` rejects it otherwise.
+    accepts_epp_config: ClassVar[bool] = False
+
     #: Role that accepts the public request's model name; None uses decode/agg/prefill order.
     model_name_role: ClassVar[str | None] = None
 
@@ -179,6 +182,23 @@ class Frontend(ABC):
     def implied_services(self, config: Any) -> list["EffectiveService"]:
         """Services this frontend needs that the recipe did not name (Dynamo: its discovery plane)."""
         return []
+
+    def proxied_worker_modes(self, config: Any) -> frozenset[str]:
+        """Worker modes reached through a per-worker proxy.
+
+        ``worker_processes`` allocates ``Process.proxy_port`` for each routable
+        worker of these modes; the frontend must imply the service that binds it.
+        """
+        return frozenset()
+
+    def kv_events_subscriber(
+        self, process: "Process", runtime: "RuntimeContext", model_name: str
+    ) -> tuple[str, int, str] | None:
+        """KV-event destination ``(host, port, topic)``, or ``None`` to leave direct workers unconfigured.
+
+        Backends must compensate for any engine-added rank offset to reach this port.
+        """
+        return None
 
     def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
         """Port of a Prometheus listener separate from the routing port, or ``None`` when metrics share it."""

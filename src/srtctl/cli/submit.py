@@ -35,6 +35,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
+from rich.text import Text
 
 from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
 from srtctl.core.config import (
@@ -706,12 +707,10 @@ def show_config_details(config: SrtConfig) -> None:
                 details.add_row("observability", "nsys report timeout", f"{settings.report_timeout_secs}s")
                 details.add_row("observability", "nsys reports", "<log_dir>/profiles/{prefill,decode,agg,frontend}/")
                 details.add_row("observability", "nsys env", "DYN_ENABLE_RUST_NVTX=1; DYN_NVTX=1")
-                if config.backend_type == "trtllm":
-                    details.add_row(
-                        "observability", "nsys TRT-LLM env", "TLLM_PROFILE_LOG_RANKS=all; TLLM_LLMAPI_ENABLE_NVTX=1"
-                    )
-                elif config.backend_type == "sglang":
-                    details.add_row("observability", "nsys SGLang env", "SGLANG_ENABLE_NVTX_SCHEDULER=1")
+                if nvtx_environment := config.backend.nvtx_environment:
+                    # Fold rather than ellipsize: a variable name is one unbreakable word.
+                    env_text = "; ".join(f"{name}={value}" for name, value in nvtx_environment.items())
+                    details.add_row("observability", "nsys worker env", Text(env_text, overflow="fold"))
                 if settings.nvtx_injection_path:
                     details.add_row("observability", "NVTX_INJECTION64_PATH", settings.nvtx_injection_path)
 

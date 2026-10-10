@@ -868,7 +868,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "description": "Frontend type - \"dynamo\" (default); \"sglang-router\" (SGLang Model Gateway), \"vllm-router\", \"smg\" (Shepherd Model Gateway, any backend), \"atomesh\", and \"tilert-router\" (static routers); \"sglang\", \"vllm\", and \"trtllm_serve\" (direct: the single aggregate worker binds the public port, no router process); \"none\" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router \"sglang\"; ``srtctl migrate`` rewrites that to \"sglang-router\".",
+          "description": "Frontend type - \"dynamo\" (default); \"sglang-router\" (SGLang Model Gateway), \"vllm-router\", \"smg\" (Shepherd Model Gateway, any backend), \"llm-d\" (llm-d Endpoint Picker behind Envoy, vLLM), \"atomesh\", and \"tilert-router\" (static routers); \"sglang\", \"vllm\", and \"trtllm_serve\" (direct: the single aggregate worker binds the public port, no router process); \"none\" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router \"sglang\"; ``srtctl migrate`` rewrites that to \"sglang-router\".",
           "default": "dynamo"
         },
         "enable_multiple_frontends": {
@@ -916,6 +916,18 @@
             }
           ],
           "description": "Inline Dynamo worker-selection policy configuration. srtctl writes this mapping under the top-level ``worker_selection`` key in a generated router policy YAML and passes it to the Dynamo frontend via ``--router-policy-config``.",
+          "default": null
+        },
+        "epp_config": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "llm-d Endpoint Picker configuration (``EndpointPickerConfig``: ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``. srtctl writes it to a file with the ``file-discovery`` plugin and ``dataLayer.discovery`` added, so the EPP reads the job's workers from the endpoints file srtctl renders. Omitted, srtctl runs the scorers of llm-d's no-Kubernetes guide (in prefill and decode profiles for a prefill/decode job).",
           "default": null
         },
         "args": {
@@ -1638,6 +1650,11 @@
           "type": "string",
           "description": "Non-TRT-LLM behavior when cudaProfilerStop closes a capture range.",
           "default": "stop"
+        },
+        "detailed_trace_annotation": {
+          "type": "boolean",
+          "description": "Adds detailed nvtx marker flag for vLLM",
+          "default": false
         },
         "nsys_library_paths": {
           "anyOf": [
