@@ -37,8 +37,14 @@ keeping the listener open. The endpoint appears in `communication.log` and the
 the container and the selected interface must allow TCP connections between nodes.
 Manual overrides remain available for sites that need a different route.
 
-The default allocation is two exclusive nodes. Add `--nodes=8` to measure the
-32-rank decode layout. Each node runs the existing host/container diagnostics and
+The default allocation is eight exclusive nodes with `--segment=8`, requesting
+one scheduler topology segment for the 32-rank decode layout. Segment boundaries
+come from the site's Slurm topology configuration; they represent a rack/NVL domain
+only where the site configures that mapping. See Slurm's
+[topology guide](https://slurm.schedmd.com/topology.html). The bundle records
+`slurm-topology.txt` and the allocated node list for inspection. For a smaller
+run, override both settings together, for example `--nodes=2 --segment=2`.
+Each node runs the existing host/container diagnostics and
 sequential copy tests, then a structured idle snapshot. The job subsequently runs
 MPI communication with four GPU-local CPU/memory-bound ranks per node. It stages
 helpers into shared `cluster-diagnostics-<jobid>/`, records phase exit statuses, and

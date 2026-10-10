@@ -13,6 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "configs/cluster-diagnostics.sbatch"
 
 
+def test_default_allocation_requests_one_eight_node_segment() -> None:
+    directives = [line for line in SCRIPT.read_text().splitlines() if line.startswith("#SBATCH")]
+    assert "#SBATCH --nodes=8" in directives
+    assert "#SBATCH --segment=8" in directives
+
+
 @pytest.mark.parametrize(
     ("cluster", "image"),
     [
@@ -90,6 +96,7 @@ def test_spooled_batch_stages_helpers_and_uses_all_allocated_cpus(
     assert (log_dir / "runner.sh").read_text() == (ROOT / "configs/raplab-cluster-diagnostics.sbatch").read_text()
     assert (log_dir / "communication.exit-status").read_text().strip() == env["COMM_RC"]
     assert Path(f"{log_dir}.tar.gz").exists()
+    assert (log_dir / "slurm-topology.txt").exists()
     recipe = yaml.safe_load(
         (ROOT / "recipes/trtllm/vr200-fp4/glm5.2/raplab-dyanmo-1004/disagg-3p-dep-1d-dep-c560.yaml").read_text()
     )

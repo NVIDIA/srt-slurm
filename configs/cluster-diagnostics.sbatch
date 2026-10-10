@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=cluster-diagnostics
-#SBATCH --nodes=2
+#SBATCH --nodes=8
+#SBATCH --segment=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --exclusive
@@ -13,7 +14,8 @@
 # Submit from shared storage; account/partition/node constraints are sbatch options.
 # sbatch --account=<account> --partition=<partition> configs/cluster-diagnostics.sbatch raplab
 # sbatch --account=<account> --partition=<partition> configs/cluster-diagnostics.sbatch hecate
-# --nodes=8 matches a 32-rank decode endpoint with RANKS_PER_NODE=4.
+# Eight nodes in one topology segment match a 32-rank decode endpoint.
+# When changing allocation size, override both --nodes and --segment together.
 # See docs/cluster-performance-diagnostics.md for environment overrides.
 set -euo pipefail
 export PATH="$PATH:/usr/sbin:/sbin"
@@ -95,6 +97,7 @@ cp "$source_dir/cluster-perf-diagnostics.py" "$source_dir/numa_cpu_bind.sh" \
     "$source_dir/numa_net_devices.py" "$LOG_DIR/"
 scontrol show job "$SLURM_JOB_ID" > "$LOG_DIR/allocation.txt"
 scontrol show node "$SLURM_JOB_NODELIST" > "$LOG_DIR/slurm-nodes.txt" 2>&1 || true
+scontrol show topology > "$LOG_DIR/slurm-topology.txt" 2>&1 || true
 {
     printf 'cluster=%s\nimage=%s\nnodes=%s\nallocated_cpus=%s\n' "$1" "$CONTAINER_IMAGE" "${nodes[*]}" "$SLURM_JOB_CPUS_PER_NODE"
     printf 'ranks_per_node=%s\ncpus_per_rank=%s\nmpi_plugin=%s\n' "$RANKS_PER_NODE" "$rank_cpus" "$MPI_PLUGIN"
