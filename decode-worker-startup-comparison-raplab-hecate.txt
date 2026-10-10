@@ -1,0 +1,63 @@
+Decode worker startup comparison
+Raplab: vr-r41-cn05_decode_w0.out
+Hecate: hecate0203_decode_w0.out
+
+These files aggregate messages from all 32 worker ranks and multiple physical
+nodes, not only the hostname in the filename. Inspection was local only.
+
+1. Checkpoint prefetch accounts for most of the startup difference.
+Raplab logs Prefetching 432.27GB checkpoint files at 03:31:06 (32 messages).
+Rank 0 first starts safetensor loading at 03:42:20 and finishes loading
+weights at 03:43:00. Hecate has no checkpoint-prefetch messages; rank 0
+starts safetensor loading at 23:38:21 and finishes at 23:39:14.
+From rank 0 MegaMoE/NCCL bootstrap to weights loaded: Raplab 741 seconds,
+Hecate 79 seconds. Once safetensor loading starts, rank 0 takes 40 seconds
+on Raplab and 53 seconds on Hecate. The long Raplab phase precedes that.
+This is startup evidence, not proof of slower steady-state decode.
+References: Raplab lines 10397, 11852, 13405; Hecate 31669, 33631.
+Local tekit weight_loader.py enables prefetch according to checkpoint size
+versus available host memory. Different free memory, cache state, or storage
+can affect the branch and cost. Exact container implementation and free
+memory at branch selection have not been verified.
+
+2. NIXL UCX transport configuration differs concretely.
+Both use NIXL UCX with num_threads=8, and each initializes two contexts.
+Raplab contexts 1 and 2: rma_am(tcp/eth0), amo_am(tcp/eth0), cuda_ipc/cuda.
+Hecate contexts 1 and 2: rma(rc_mlx5/mlx5_*:1), amo(rc_mlx5/mlx5_*:1),
+cuda_ipc/cuda. Each context has 288 worker configuration lines; all
+Raplab lines show TCP RMA, all Hecate lines show rc_mlx5 RMA.
+Raplab allows cuda_ipc,cuda_copy,sm,self,tcp; Hecate allows all.
+This does not establish that every actual GPU KV payload uses TCP: CUDA IPC
+is available on both, and actual request transfer lanes need tracing.
+References: Raplab 13879, 14130, 18884; Hecate 34906, 34912, 47241.
+
+3. Serving NCCL version cannot be inferred from earlier diagnostic version.
+Hecate logs NCCL 2.30.4+cuda13.2 on all 32 initializations, plus SPCX and
+32 collective/24 NVLS channels. Raplab has no NCCL version/INFO messages;
+its serving NCCL runtime cannot be confirmed from this file.
+Reference: Hecate 4018. Raplab does log NCCL WORLD bootstrap at 7539.
+
+4. Raplab has a real MPI initialization failure in an early process.
+UCX rc_verbs/mlx5_9:1 fails with Address not valid, followed by
+Failed to create UCP worker. Worker MPI contexts later show rc_mlx5 on the
+requested HCAs; the worker pool continues. Do not infer the entire pool
+failed or assume a specific fallback without process attribution.
+References: Raplab 2630-2631.
+Hecate has no UCX ERROR lines in startup but warns that os_p1s1 is
+unavailable (96 warnings). Both load UCX 1.21 and warn about API >=1.22.
+
+5. Effective engine and GPU initialization largely match.
+Printed engine args differ only in return_perf_metrics: false on Raplab,
+true on Hecate. Both: TRT-LLM 1.3.0rc25; TP/EP32; same local NUMA CPU masks
+and memory bind:0/bind:1; MegaMoE buckets 32/64/128; autotuner cache size 26;
+identical fallback tactic warnings; 48.73 GiB torch memory after weight load;
+50.33 GiB torch plus 48.86 GiB outside torch at later profiling;
+KV capacity 101824 blocks of 64 tokens = 6516736 tokens.
+Rank 0 first graph capture starts at 03:44:18/23:40:54; last advanced
+sampling capture ends at 03:45:38/23:42:14, approximately 80 seconds on both.
+No Mooncake donor/prefill transfer timings are present in these startup logs.
+
+Next priorities: benchmark NIXL with matched UCX transport selection and
+verify actual KV transfer lanes; capture Raplab serving NCCL initialization;
+measure checkpoint prefetch/storage and available memory separately.
+No recipe settings were changed by this analysis.

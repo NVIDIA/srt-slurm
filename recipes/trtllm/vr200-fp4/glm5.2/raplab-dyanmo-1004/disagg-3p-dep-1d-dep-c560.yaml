@@ -138,7 +138,7 @@ roles:
       UCX_CUDA_IPC_ENABLE_MNNVL: y
       UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1,eth0
       UCX_RNDV_SCHEME: put_zcopy
-      UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+      UCX_TLS: all
       HF_HOME: /home/rihuo/hf_cache
       DYN_ENGINE_CONV_AFFINITY: '1'
       UCX_LOG_LEVEL: info
@@ -240,7 +240,7 @@ roles:
       UCX_CUDA_IPC_ENABLE_MNNVL: y
       UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1,eth0
       UCX_RNDV_SCHEME: put_zcopy
-      UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+      UCX_TLS: all
       HF_HOME: /home/rihuo/hf_cache
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ROUTER_MODE: least-loaded
