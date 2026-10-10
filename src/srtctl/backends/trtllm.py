@@ -11,7 +11,15 @@ import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_env, role_for_mode
+from srtctl.backends.base import (
+    Backend,
+    BoundRolesField,
+    ProcessGroup,
+    RoleSettings,
+    WorkerMode,
+    role_env,
+    role_for_mode,
+)
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, TRTLLM_DIST_INIT_PORTS
 
@@ -87,6 +95,7 @@ class TRTLLMBackend(Backend):
     # trtllm-serve serves Prometheus text at /prometheus/metrics (mounted when
     # return_perf_metrics is true); its /metrics route is JSON iteration stats.
     prometheus_metrics_path: ClassVar[str] = "/prometheus/metrics"
+    nvtx_environment: ClassVar[Mapping[str, str]] = {"TLLM_LLMAPI_ENABLE_NVTX": "1", "TLLM_PROFILE_LOG_RANKS": "all"}
 
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
     # never written on `engine:`. Per-role env and args (the engine YAML) are read from
@@ -176,6 +185,12 @@ class TRTLLMBackend(Backend):
     numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+    process_exporter_groups: ClassVar[tuple[ProcessGroup, ...]] = (
+        ProcessGroup("trtllm_llmapi_launch", cmdline=(r"(^|[ /])trtllm-llmapi-launch( |$)",)),
+        ProcessGroup("trtllm_engine", cmdline=(r"(^| )tensorrt_llm\.llmapi\.mgmn_worker_node( |$)",)),
+        ProcessGroup("dynamo_trtllm", cmdline=(r"dynamo\.trtllm",)),
+        ProcessGroup("trtllm_serve", cmdline=("trtllm-serve",)),
+    )
 
     def __post_init__(self) -> None:
         if self.numa_memory_bind == "local" and not self.numa_cpu_bind:

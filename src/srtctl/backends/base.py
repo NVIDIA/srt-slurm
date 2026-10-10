@@ -66,6 +66,16 @@ class SrunConfig:
     kill_on_bad_exit: bool = False
 
 
+@dataclass(frozen=True)
+class ProcessGroup:
+    """One process-exporter group: every ``cmdline`` regexp must match the space-joined
+    argv, or ``comm`` lists 15-character kernel task names."""
+
+    name: str
+    cmdline: tuple[str, ...] = ()
+    comm: tuple[str, ...] = ()
+
+
 class RoleSettings(ABC):
     """What an engine reads from one role of the recipe (``roles.<role>``).
 
@@ -135,6 +145,9 @@ class Backend(ABC):
     #: Path a gRPC-mode worker serves Prometheus text at on ``Process.grpc_http_port``;
     #: ``None`` when the engine's gRPC server has no HTTP listener.
     grpc_metrics_path: ClassVar[str | None] = None
+    #: Environment that turns on the engine's own NVTX ranges; the automatic nsys
+    #: preset (``observability.nsys``) sets it on every worker it wraps.
+    nvtx_environment: ClassVar[Mapping[str, str]] = {}
 
     @property
     @abstractmethod
@@ -159,6 +172,11 @@ class Backend(ABC):
         get_failover_environment.
         """
         return None
+
+    #: process-exporter groups for this engine's processes, in match order (first match
+    #: wins): a child that retitles itself or a launcher that wraps a module precedes the
+    #: handler whose command line it would otherwise share.
+    process_exporter_groups: ClassVar[tuple[ProcessGroup, ...]] = ()
 
     # Bound recipe roles; concrete dataclasses own the field and its serialization.
     roles: Mapping[str, RoleSettings]

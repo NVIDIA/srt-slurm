@@ -205,16 +205,26 @@ def test_worker_launch_profiles_every_task_with_unique_report_names(tmp_path, mp
         assert f"_w0{engine_suffix}_profile_gpu0-1-2-3-4-5-6-7" in spec["output"]
 
 
+ENGINE_NVTX_GATES = {
+    "TLLM_LLMAPI_ENABLE_NVTX",
+    "SGLANG_ENABLE_NVTX_SCHEDULER",
+    "VLLM_NVTX_SCOPES_FOR_PROFILING",
+    "VLLM_WORKER_MULTIPROC_METHOD",
+}
+
+
 @pytest.mark.parametrize(
-    ("backend", "frontend", "present", "absent"),
+    ("backend", "frontend", "present"),
     [
-        ("trtllm", False, {"TLLM_LLMAPI_ENABLE_NVTX", "TLLM_PROFILE_LOG_RANKS"}, {"SGLANG_ENABLE_NVTX_SCHEDULER"}),
-        ("sglang", False, {"SGLANG_ENABLE_NVTX_SCHEDULER"}, {"TLLM_LLMAPI_ENABLE_NVTX"}),
-        ("vllm", False, set(), {"SGLANG_ENABLE_NVTX_SCHEDULER", "TLLM_LLMAPI_ENABLE_NVTX"}),
-        ("sglang", True, set(), {"SGLANG_ENABLE_NVTX_SCHEDULER", "TLLM_LLMAPI_ENABLE_NVTX"}),
+        ("trtllm", False, {"TLLM_LLMAPI_ENABLE_NVTX", "TLLM_PROFILE_LOG_RANKS"}),
+        ("sglang", False, {"SGLANG_ENABLE_NVTX_SCHEDULER"}),
+        ("vllm", False, {"VLLM_NVTX_SCOPES_FOR_PROFILING", "VLLM_WORKER_MULTIPROC_METHOD"}),
+        ("mocker", False, set()),
+        ("sglang", True, set()),
+        ("vllm", True, set()),
     ],
 )
-def test_wrapped_processes_enable_their_nvtx_emitters(tmp_path, backend, frontend, present, absent):
+def test_wrapped_processes_enable_their_nvtx_emitters(tmp_path, backend, frontend, present):
     _, env = wrap_observability_nsys(
         ["python3", "-m", "app"],
         config=config(engine={"type": backend}),
@@ -225,7 +235,7 @@ def test_wrapped_processes_enable_their_nvtx_emitters(tmp_path, backend, fronten
     assert env["DYN_ENABLE_RUST_NVTX"] == "1"
     assert env["DYN_NVTX"] == "1"
     assert present <= env.keys()
-    assert not (absent & env.keys())
+    assert not ((ENGINE_NVTX_GATES - present) & env.keys())
 
 
 @pytest.mark.parametrize(

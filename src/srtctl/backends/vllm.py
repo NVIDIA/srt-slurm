@@ -27,7 +27,15 @@ from typing import (
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args, role_kv_events
+from srtctl.backends.base import (
+    Backend,
+    BoundRolesField,
+    ProcessGroup,
+    RoleSettings,
+    WorkerMode,
+    role_args,
+    role_kv_events,
+)
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DP_RPC_PORTS,
@@ -349,6 +357,26 @@ class VLLMBackend(Backend):
     # node pools. Defaults off to preserve the original one-node-only policy.
     allow_prefill_decode_colocation_across_nodes: bool = False
 
+    # EngineCore, Worker, APIServer and DPCoordinator retitle themselves under vLLM's
+    # default "VLLM::" prefix. vllm_serve is anchored at argv[0] so the srun client and
+    # profiler wrappers that carry "vllm serve" as an argument stay out.
+    process_exporter_groups: ClassVar[tuple[ProcessGroup, ...]] = (
+        ProcessGroup("vllm_engine_core", cmdline=("VLLM::EngineCore",)),
+        ProcessGroup("vllm_worker", cmdline=("VLLM::Worker",)),
+        ProcessGroup("vllm_api_server", cmdline=("VLLM::APIServer",)),
+        ProcessGroup("vllm_dp_coordinator", cmdline=("VLLM::DPCoordinator",)),
+        ProcessGroup(
+            "vllm_serve",
+            cmdline=(
+                (
+                    r"^(\S*/)?(python[0-9.]* (\S*/)?)?vllm(-rs)? serve( |$)"
+                    r"|^(\S*/)?python[0-9.]* -m vllm\.entrypoints\.cli\.main serve( |$)"
+                ),
+            ),
+        ),
+        ProcessGroup("dynamo_vllm", cmdline=(r"dynamo\.vllm",)),
+    )
+
     # DP process layout. Per-node lets vLLM manage the node-local portion of a
     # DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP
     # rendezvous when a replica is larger than the node-local GPU allocation.
@@ -360,6 +388,13 @@ class VLLMBackend(Backend):
     vllm_serve_binary: str = "vllm"
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+    # record_function_or_nullcontext scopes ("schedule: *", "gpu_model_runner: *") live in
+    # the EngineCore and Worker processes. vllm serve forks them by default and nsys does not
+    # follow a fork without exec; dynamo.vllm already spawns.
+    nvtx_environment: ClassVar[Mapping[str, str]] = {
+        "VLLM_NVTX_SCOPES_FOR_PROFILING": "1",
+        "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+    }
 
     def find_dp_modes(self) -> list[tuple[str, dict[str, Any]]]:
         """Return the roles whose configured data-parallel size is greater than one, with their args."""

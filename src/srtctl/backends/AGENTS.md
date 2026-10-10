@@ -15,10 +15,12 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
    - `get_process_environment(process)` - Defaults to `{}`; override for per-process env derived from `Process` ports
    - `mooncake_kv_store` / `get_mooncake_worker_env(...)` - Default to `None` / `{}`
    - `failover` / `get_failover_environment(...)` - Default to `None` / `{}`
+   - `process_exporter_groups` - Defaults to `()`; the engine's process-exporter groups (handler, launcher, retitled engine children) in first-match order; the process exporter's group file carries them for every engine the recipe runs
    - `should_set_visible_devices()` - Defaults to `True`; override if the engine takes its devices on the command line
    - `get_served_model_name(default)` - Defaults to the supplied model name
    - `prometheus_metrics_path` - Defaults to `/metrics`; where the engine's own HTTP server serves Prometheus text (trtllm-serve overrides it with `/prometheus/metrics`)
    - `is_grpc_mode(mode)` - Defaults to `False`; override when the mode's workers serve gRPC (static routers advertise `grpc://` from it)
+   - `nvtx_environment` - Defaults to `{}`; the worker environment the automatic nsys preset (`observability.nsys`) sets so the engine emits its own NVTX ranges and nsys can follow the processes that emit them
    - `fatal_log_patterns(mode)` - Defaults to `()`; override for launchers that survive engine failure
 4. Export from `backends/__init__.py`
 5. Add polymorphic deserialization in `BackendConfigField` in `schema.py`

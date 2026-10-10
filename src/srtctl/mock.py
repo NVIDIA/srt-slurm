@@ -306,6 +306,9 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         # The ray kind resolves the head IP itself and gates on the dashboard's node summary.
         ("srtctl.services.ray.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.services.ray.RayService.wait_fleet_ready", lambda *_args, **_kwargs: None),
+        # The observability nsys window closes on acknowledgements from the profiled processes,
+        # which never run under the mock.
+        ("srtctl.cli.mixins.benchmark_stage.finish_nsys_windows", lambda *_args, **_kwargs: None),
         # Status POST/PUT — redirect to the on-disk sink so external watchers
         # have a concrete artifact to poll.
         ("srtctl.core.status.requests.put", _fake_put),

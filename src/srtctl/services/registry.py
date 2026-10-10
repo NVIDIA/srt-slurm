@@ -176,7 +176,7 @@ class ServiceKind:
         """True to run the command straight on the node, with no container (a static host binary)."""
         return False
 
-    def prepare(self, service: ServiceConfig, runtime: RuntimeContext) -> None:
+    def prepare(self, service: ServiceConfig, runtime: RuntimeContext, config: SrtConfig) -> None:
         """Write anything the command needs into the run's log dir; called once per service, before launch."""
 
     def skip_reason(self, service: ServiceConfig, runtime: RuntimeContext) -> str | None:
