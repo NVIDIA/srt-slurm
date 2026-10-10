@@ -1,0 +1,86 @@
+# vLLM disaggregated prefill/decode with a shared Mooncake Store pool, behind the
+# Dynamo frontend.
+#
+# Both roles run a MultiConnector: NIXL moves prompt KV from prefill to decode, and
+# MooncakeStoreConnector shares KV through the pool of the `mooncake-master` service,
+# which runs `mooncake_master` on the infra node. srtctl renders each role's
+# `mooncake_store_config` into /logs/mooncake_store_config_<role>.json and points that
+# role's workers at it with MOONCAKE_CONFIG_PATH. Keys the whole pool shares
+# (`protocol`, `metadata_server`) must match across roles: the YAML anchor writes them
+# once, and decode lends more host memory. See docs/mooncake-kv-store.md.
+#
+# Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-vllm-dynamo-disagg-mooncake"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine:
+  type: vllm
+  # Every role's --kv-transfer-config: NIXL for prefill -> decode plus the Mooncake Store pool.
+  connector: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}]}}'
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      DYN_HEALTH_CHECK_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+    # This role's Mooncake client config; the anchor lends its keys to decode.
+    mooncake_store_config: &mooncake
+      protocol: rdma
+      metadata_server: P2PHANDSHAKE
+      local_buffer_size: 4GB
+      global_segment_size: 8GB          # host memory each prefill rank lends
+  decode:
+    nodes: colocate
+    workers: 1
+    gpus: 1
+    env:
+      DYN_HEALTH_CHECK_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+    # The prefill keys, then decode's own.
+    mooncake_store_config:
+      <<: *mooncake
+      global_segment_size: 16GB         # decode ranks lend more
+
+services:
+  - name: mooncake-master
+    type: mooncake-master
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

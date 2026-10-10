@@ -8,8 +8,9 @@ either way srtctl injects ``MOONCAKE_MASTER``, ``MOONCAKE_TE_META_DATA_SERVER``,
 and ``MOONCAKE_LOCAL_HOSTNAME`` into every worker (``expand_services`` maps a
 declared entry onto the internal ``engine.mooncake_kv_store`` field so the
 engine-side validation and env injection read one field). vLLM and TRT-LLM
-workers also get ``MOONCAKE_CONFIG_PATH``, a client config srtctl renders from
-``options.store_config`` (TRT-LLM: one per role, with ``roles.<role>.mooncake_store_config``).
+workers of a role whose KV connector uses Mooncake also get ``MOONCAKE_CONFIG_PATH``,
+the client config srtctl renders for that role from ``roles.<role>.mooncake_store_config``
+(over the deprecated ``options.store_config``).
 Runs on the infra node, before workers, with the embedded HTTP metadata server
 and the metrics endpoint on, all three ports gated. TRT-LLM's
 ``trtllm-serve mooncake_master`` wraps this same binary, so it is not needed.
@@ -54,7 +55,8 @@ class MooncakeMasterService(ServiceKind):
     default_readiness_ports = (MOONCAKE_MASTER_PORT, MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_METRICS_PORT)
     supports_dedicated = True
     supports_external = True
-    # Worker-side Mooncake client JSON: store_config (vLLM and TRT-LLM), device_names_by_gpu (vLLM).
+    # Worker-side Mooncake client JSON: device_names_by_gpu (vLLM), and store_config (vLLM and
+    # TRT-LLM; deprecated: each role's roles.<role>.mooncake_store_config replaces it).
     option_keys = ("store_config", "device_names_by_gpu")
 
     def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:

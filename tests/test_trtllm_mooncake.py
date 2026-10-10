@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,17 @@ def _recipe(frontend: str = "trtllm_serve") -> dict[str, Any]:
 
 def _master(recipe: dict[str, Any]) -> dict[str, Any]:
     return next(service for service in recipe["services"] if service["type"] == "mooncake-master")
+
+
+def _role(recipe: dict[str, Any], mode: str = "prefill") -> dict[str, Any]:
+    """A role's Mooncake client config in the recipe."""
+    return recipe["roles"][mode]["mooncake_store_config"]
+
+
+def _both(recipe: dict[str, Any], **keys: Any) -> None:
+    """Set ``keys`` in every connector role's client config (pool-wide keys must match)."""
+    for mode in ("prefill", "decode"):
+        _role(recipe, mode).update(keys)
 
 
 def _load(recipe: dict[str, Any], tmp_path: Path) -> SrtConfig:
@@ -95,15 +107,30 @@ def test_workers_join_the_native_master_through_their_role_config(tmp_path: Path
 
 
 @pytest.mark.parametrize("frontend", ["trtllm_serve", "dynamo"])
-@pytest.mark.parametrize("override", [False, True], ids=["shared-size", "decode-override"])
-def test_role_mooncake_store_config_layers_over_the_shared_keys(tmp_path: Path, frontend: str, override: bool) -> None:
+def test_each_role_writes_its_own_client_config(tmp_path: Path, frontend: str) -> None:
     recipe = _recipe(frontend)
-    recipe["roles"]["decode"]["mooncake_store_config"] = {"global_segment_size": "16GiB"} if override else {}
+    recipe["roles"]["decode"]["mooncake_store_config"]["global_segment_size"] = "16GiB"
     _, outputs = _sweep(recipe, tmp_path)
     assert _written(outputs, "mooncake_store_config_prefill.json")["global_segment_size"] == "8GiB"
-    assert _written(outputs, "mooncake_store_config_decode.json")["global_segment_size"] == (
-        "16GiB" if override else "8GiB"
-    )
+    assert _written(outputs, "mooncake_store_config_decode.json")["global_segment_size"] == "16GiB"
+
+
+@pytest.mark.parametrize("frontend", ["trtllm_serve", "dynamo"])
+def test_deprecated_master_store_config_still_applies_under_each_role(
+    tmp_path: Path, frontend: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A recipe that still sets the service's options.store_config keeps working; a role's own keys win over it."""
+    recipe = _recipe(frontend)
+    _master(recipe)["options"] = {"store_config": {"global_segment_size": "4GiB", "local_buffer_size": "1GiB"}}
+    del recipe["roles"]["decode"]["mooncake_store_config"]["global_segment_size"]
+    with caplog.at_level(logging.WARNING):
+        _load(recipe, tmp_path)
+    assert "is deprecated and will be removed" in caplog.text
+    _, outputs = _sweep(recipe, tmp_path)
+    prefill = _written(outputs, "mooncake_store_config_prefill.json")
+    decode = _written(outputs, "mooncake_store_config_decode.json")
+    assert (prefill["global_segment_size"], decode["global_segment_size"]) == ("8GiB", "4GiB")
+    assert prefill["local_buffer_size"] == decode["local_buffer_size"] == "1GiB"
 
 
 @pytest.mark.parametrize("frontend", ["trtllm_serve", "dynamo"])
@@ -124,21 +151,22 @@ def test_model_key_falls_back_to_the_resolved_model_path(tmp_path: Path, fronten
 
 
 @pytest.mark.parametrize("frontend", ["trtllm_serve", "dynamo"])
-def test_shared_model_key_overrides_the_served_name_for_every_role(tmp_path: Path, frontend: str) -> None:
+def test_model_key_set_in_every_role_overrides_the_served_name(tmp_path: Path, frontend: str) -> None:
     recipe = _recipe(frontend)
-    _master(recipe)["options"]["store_config"]["model_key"] = "qwen3-pool"
+    _both(recipe, model_key="qwen3-pool")
     _, outputs = _sweep(recipe, tmp_path)
     for mode in ("prefill", "decode"):
         assert _written(outputs, f"mooncake_store_config_{mode}.json")["model_key"] == "qwen3-pool"
 
 
 @pytest.mark.parametrize("engine", ["sglang", "vllm"])
-def test_role_mooncake_store_config_is_read_by_trtllm_only(tmp_path: Path, engine: str) -> None:
+def test_role_mooncake_store_config_needs_a_role_that_reads_one(tmp_path: Path, engine: str) -> None:
+    """SGLang reads no client config file; a vLLM role without a Mooncake connector does not either."""
     recipe = yaml.safe_load((EXAMPLES.parent / engine / "dynamo-disagg.yaml").read_text())
     recipe["model"].update(path="hf:Qwen/Qwen3-0.6B", container=f"{engine}.sqsh")
     _load(recipe, tmp_path)
     recipe["roles"]["decode"]["mooncake_store_config"] = {"global_segment_size": "16GiB"}
-    with pytest.raises(ValidationError, match="roles.decode.mooncake_store_config is read by TRT-LLM only"):
+    with pytest.raises(ValidationError, match="workers of roles.decode read no Mooncake client config file"):
         _load(recipe, tmp_path)
 
 
@@ -148,7 +176,7 @@ def test_role_mooncake_store_config_needs_a_master(tmp_path: Path) -> None:
     recipe["services"] = []
     for mode in ("prefill", "decode"):
         recipe["roles"][mode]["env"]["MOONCAKE_CONFIG_PATH"] = "/data/mooncake.json"
-    with pytest.raises(ValidationError, match="roles.decode.mooncake_store_config needs a mooncake-master service"):
+    with pytest.raises(ValidationError, match="mooncake_store_config needs a mooncake-master service"):
         _load(recipe, tmp_path)
 
 
@@ -165,7 +193,7 @@ def test_role_without_the_connector_gets_no_client_config(tmp_path: Path) -> Non
 
 def test_render_defaults_role_by_mode_and_owns_the_master_address(tmp_path: Path) -> None:
     recipe = _recipe()
-    _master(recipe)["options"]["store_config"]["master_server_address"] = "10.0.0.9:1234"
+    _role(recipe)["master_server_address"] = "10.0.0.9:1234"
     recipe["roles"]["decode"]["mooncake_store_config"]["role"] = "both"
     backend = _load(recipe, tmp_path).backend
     assert isinstance(backend, TRTLLMBackend)
@@ -188,34 +216,40 @@ def test_engines_without_a_client_config_file_write_none() -> None:
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
-        (lambda r: [r["roles"][m]["args"].pop("kv_connector_config") for m in ("prefill", "decode")], "no roles"),
+        (
+            lambda r: [
+                (r["roles"][m]["args"].pop("kv_connector_config"), r["roles"][m].pop("mooncake_store_config"))
+                for m in ("prefill", "decode")
+            ],
+            "no roles",
+        ),
         (
             lambda r: r["roles"]["prefill"]["args"]["kv_connector_config"].update(
                 mooncake_store={"pool": "file:///logs/pool.json", "model_key": "m"}
             ),
             "mooncake_store is set",
         ),
-        (lambda r: _master(r)["options"]["store_config"].update(model_key=""), "model_key must be a non-empty"),
-        (lambda r: _master(r)["options"]["store_config"].update(global_segment_size="16GB"), "'GB' is refused"),
-        (lambda r: _master(r)["options"]["store_config"].update(local_buffer_size=0), "at least 1 bytes"),
-        (lambda r: _master(r)["options"]["store_config"].update(global_segment_size=-1), "at least 0 bytes"),
-        (lambda r: _master(r)["options"]["store_config"].update(transfer_batch_size=0), "positive integer"),
-        (lambda r: _master(r)["options"]["store_config"].update(stage_through_host="false"), "not the string"),
-        (lambda r: _master(r)["options"]["store_config"].update(segment_size="160GiB"), "set global_segment_size"),
-        (lambda r: _master(r)["options"]["store_config"].update(pool="file:///logs/pool.json"), "drop it"),
+        (lambda r: _both(r, model_key=""), "model_key must be a non-empty"),
+        (lambda r: _role(r).update(global_segment_size="16GB"), "'GB' is refused"),
+        (lambda r: _role(r).update(local_buffer_size=0), "at least 1 bytes"),
+        (lambda r: _role(r).update(global_segment_size=-1), "at least 0 bytes"),
+        (lambda r: _role(r).update(transfer_batch_size=0), "positive integer"),
+        (lambda r: _role(r).update(stage_through_host="false"), "not the string"),
+        (lambda r: _role(r).update(segment_size="160GiB"), "set global_segment_size"),
+        (lambda r: _role(r).update(pool="file:///logs/pool.json"), "drop it"),
         (lambda r: _master(r).update(external="10.0.0.5:8700"), "external mooncake-master"),
         (lambda r: r["roles"]["decode"]["mooncake_store_config"].update(role="donor"), "role must be"),
         (
             lambda r: r["roles"]["decode"]["args"].pop("kv_connector_config"),
-            r"roles.decode.mooncake_store_config is set, but only \['prefill'\]",
+            "roles.decode.mooncake_store_config is set, but the trtllm workers of roles.decode read no Mooncake client config file",
         ),
         (
             lambda r: r["roles"]["decode"]["mooncake_store_config"].update(protocol="tcp"),
-            "roles.decode.mooncake_store_config: protocol must be the same for every server of the pool",
+            "protocol must be the same for every role in the Mooncake pool",
         ),
         (
             lambda r: r["roles"]["decode"]["mooncake_store_config"].update(model_key="other"),
-            "model_key must be the same for every server of the pool",
+            "model_key must be the same for every role in the Mooncake pool",
         ),
     ],
 )
@@ -293,14 +327,17 @@ def test_connector_named_by_module_is_recognized(tmp_path: Path) -> None:
 
 def test_role_and_flags_are_read_as_trtllm_reads_them(tmp_path: Path) -> None:
     recipe = _recipe()
-    _master(recipe)["options"]["store_config"]["stage_through_host"] = 1
+    _role(recipe)["stage_through_host"] = 1
     recipe["roles"]["decode"]["mooncake_store_config"]["role"] = " Capacity "
     assert _load(recipe, tmp_path).backend.mooncake_kv_store is not None
 
 
 def test_block_only_keys_are_reported_where_they_were_written(tmp_path: Path) -> None:
     for where, mutate in (
-        ("options.store_config:", lambda r: _master(r)["options"]["store_config"].update(master_timeout=900)),
+        (
+            "options.store_config:",
+            lambda r: _master(r).setdefault("options", {}).setdefault("store_config", {}).update(master_timeout=900),
+        ),
         (
             "roles.decode.mooncake_store_config:",
             lambda r: r["roles"]["decode"]["mooncake_store_config"].update(run_dir="/logs/mc"),
@@ -315,7 +352,7 @@ def test_block_only_keys_are_reported_where_they_were_written(tmp_path: Path) ->
 @pytest.mark.parametrize(("value", "ok"), [("64", True), (64.0, True), ("lots", False), (True, False)])
 def test_transfer_batch_size_is_read_with_int(tmp_path: Path, value: Any, ok: bool) -> None:
     recipe = _recipe()
-    _master(recipe)["options"]["store_config"]["transfer_batch_size"] = value
+    _role(recipe)["transfer_batch_size"] = value
     if ok:
         _load(recipe, tmp_path)
     else:
@@ -325,7 +362,7 @@ def test_transfer_batch_size_is_read_with_int(tmp_path: Path, value: Any, ok: bo
 
 def test_non_finite_size_names_the_key(tmp_path: Path) -> None:
     recipe = _recipe()
-    _master(recipe)["options"]["store_config"]["global_segment_size"] = float("inf")
+    _role(recipe)["global_segment_size"] = float("inf")
     with pytest.raises(ValidationError, match="global_segment_size must be a finite size"):
         _load(recipe, tmp_path)
 
@@ -362,6 +399,7 @@ def test_dynamo_sidecar_engine_provisions_its_own_pool(tmp_path: Path) -> None:
     recipe = _recipe("dynamo")
     recipe["services"] = []
     agg = recipe["roles"].pop("prefill")
+    agg.pop("mooncake_store_config")  # the pool is the engine's own, not the master's
     del recipe["roles"]["decode"]
     agg["args"]["kv_connector_config"] = {**CONNECTOR, "mooncake_store": {**BLOCK, "run_dir": "/logs/mc"}}
     recipe["roles"] = {"agg": agg}

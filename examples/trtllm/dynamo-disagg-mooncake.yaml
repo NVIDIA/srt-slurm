@@ -58,6 +58,10 @@ roles:
         transceiver_runtime: "PYTHON"
       kv_connector_config:
         connector: mooncake-store
+    mooncake_store_config:
+      protocol: rdma
+      global_segment_size: 8GiB
+      stage_through_host: true
   decode:
     nodes: colocate
     workers: 1
@@ -80,15 +84,14 @@ roles:
         transceiver_runtime: "PYTHON"
       kv_connector_config:
         connector: mooncake-store
+    mooncake_store_config:
+      protocol: rdma
+      global_segment_size: 8GiB
+      stage_through_host: true
 
 services:
-  - name: mooncake-master
+  - name: mooncake-master            # model_key defaults to the served model name
     type: mooncake-master
-    options:
-      store_config:                  # model_key defaults to the served model name
-        protocol: rdma
-        global_segment_size: 8GiB
-        stage_through_host: true
 
 benchmark:
   type: "sa-bench"

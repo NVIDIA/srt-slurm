@@ -10,7 +10,9 @@ fixture here asserts both.
 
 from __future__ import annotations
 
+import logging
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -335,6 +337,143 @@ def test_mooncake_kv_store_becomes_a_master_service_and_role_env() -> None:
     assert config.backend.mooncake_kv_store is not None
     assert config.backend.mooncake_kv_store.container == "mooncake"
     assert config.backend.get_environment_for_mode("prefill")["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "4gb"
+
+
+MOONCAKE_STORE_CONFIG = """\
+schema: 2
+name: mc-store
+model:
+  path: /m
+  container: /c.sqsh
+  precision: bf16
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+engine: {engine}
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
+      {connector_key}: {connector}
+  decode:
+    nodes: 1
+    workers: 1
+    args:
+      {connector_key}: {decode_connector}
+    mooncake_store_config:
+      global_segment_size: {decode_size}    # decode lends more
+services:
+  - name: mooncake-master
+    type: mooncake-master
+    options:
+      store_config:
+        protocol: rdma                # the pool's transport
+        global_segment_size: {shared_size}
+benchmark:
+  type: manual
+"""
+VLLM_MOONCAKE = """'{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'"""
+VLLM_STORE = {"engine": "vllm", "connector_key": "kv-transfer-config", "connector": VLLM_MOONCAKE}
+VLLM_STORE |= {"decode_connector": VLLM_MOONCAKE, "decode_size": "200GB", "shared_size": "100GB"}
+TRTLLM_STORE = {"engine": "trtllm", "connector_key": "kv_connector_config", "connector": "{connector: mooncake-store}"}
+TRTLLM_STORE |= {"decode_connector": "{connector: mooncake-store}", "decode_size": "16GiB", "shared_size": "8GiB"}
+
+
+@pytest.mark.parametrize("fields", [VLLM_STORE, TRTLLM_STORE], ids=["vllm", "trtllm"])
+def test_mooncake_store_config_moves_to_the_roles_that_read_it(fields: dict[str, str], caplog) -> None:
+    """The shared client config lands under each Mooncake role's own keys; every role renders the same file."""
+    text = MOONCAKE_STORE_CONFIG.format(**fields)
+    result = migrate_recipe_text(text)
+    assert result.changed
+    assert "services mooncake-master options.store_config -> roles.prefill/decode.mooncake_store_config" in result.notes
+    doc = yaml.safe_load(result.text)
+    assert doc["services"] == [{"name": "mooncake-master", "type": "mooncake-master"}]
+    shared, decode_size = fields["shared_size"], fields["decode_size"]
+    assert doc["roles"]["prefill"]["mooncake_store_config"] == {"protocol": "rdma", "global_segment_size": shared}
+    assert list(doc["roles"]["decode"]["mooncake_store_config"].items()) == [
+        ("protocol", "rdma"),
+        ("global_segment_size", decode_size),
+    ]
+    assert "# the pool's transport" in result.text
+    assert "# decode lends more" in result.text
+    with caplog.at_level(logging.WARNING):
+        (before,) = _loads(text)
+    assert "is deprecated" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        (after,) = _loads(result.text)
+    assert "is deprecated" not in caplog.text
+    assert after.backend.mooncake_master_store_config() == {}
+    for mode in ("prefill", "decode"):
+        assert after.backend.mooncake_store_config_for_mode(mode) == before.backend.mooncake_store_config_for_mode(mode)
+    assert not migrate_recipe_text(result.text).changed
+
+
+def test_mooncake_store_config_skips_a_role_without_a_mooncake_connector() -> None:
+    nixl = """'{"kv_connector":"NixlConnector","kv_role":"kv_both"}'"""
+    text = MOONCAKE_STORE_CONFIG.format(**{**VLLM_STORE, "decode_connector": nixl})
+    text = text.replace("    mooncake_store_config:\n      global_segment_size: 200GB    # decode lends more\n", "")
+    doc = yaml.safe_load(migrate_recipe_text(text).text)
+    assert doc["roles"]["prefill"]["mooncake_store_config"] == {"protocol": "rdma", "global_segment_size": "100GB"}
+    assert "mooncake_store_config" not in doc["roles"]["decode"]
+    (config,) = _loads(migrate_recipe_text(text).text)
+    assert config.backend.mooncake_store_modes() == ("prefill",)
+
+
+def test_mooncake_store_config_in_an_override_file_is_left_in_place() -> None:
+    """Override variants can change a role's connector, so the user moves the keys."""
+    base = textwrap.indent(MOONCAKE_STORE_CONFIG.format(**VLLM_STORE).replace("schema: 2\n", ""), "  ")
+    text = f"schema: 2\nbase:\n{base}override_size:\n  name: [a, b]\n"
+    result = migrate_recipe_text(text)
+    assert not result.changed
+    assert any("options.store_config left as is (an override file)" in note for note in result.notes)
+
+
+def test_mooncake_store_config_in_a_sweep_file_is_left_in_place() -> None:
+    """A sweep point can change a role's connector (here decode's), so the user moves the keys."""
+    fields = {**VLLM_STORE, "decode_connector": "'{decode_connector}'"}
+    text = MOONCAKE_STORE_CONFIG.format(**fields).replace(
+        "benchmark:\n", "sweep:\n  decode_connector: [nixl, lmcache]\nbenchmark:\n"
+    )
+    result = migrate_recipe_text(text)
+    assert not result.changed
+    assert any("options.store_config left as is (a sweep file)" in note for note in result.notes)
+
+
+def test_mooncake_store_config_of_a_disabled_master_is_not_moved() -> None:
+    """Only the enabled entry is the master the loader keeps; a disabled one's keys never applied."""
+    text = MOONCAKE_STORE_CONFIG.format(**VLLM_STORE).replace(
+        "services:\n",
+        "services:\n  - name: old-master\n    type: mooncake-master\n    enabled: false\n"
+        "    options:\n      store_config: {protocol: tcp}\n",
+    )
+    doc = yaml.safe_load(migrate_recipe_text(text).text)
+    assert doc["services"][0]["options"] == {"store_config": {"protocol": "tcp"}}
+    assert doc["roles"]["prefill"]["mooncake_store_config"]["protocol"] == "rdma"
+
+
+def test_mooncake_store_config_notes_say_why_it_stayed() -> None:
+    engine_form = MOONCAKE_STORE_CONFIG.format(**VLLM_STORE).replace(
+        "engine: vllm\n", "engine:\n  type: vllm\n  mooncake_kv_store:\n    store_config: {protocol: rdma}\n"
+    )
+    engine_form = engine_form[: engine_form.index("services:")] + "benchmark:\n  type: manual\n"
+    result = migrate_recipe_text(engine_form)
+    assert not result.changed
+    assert any("engine.mooncake_kv_store.store_config left as is" in note for note in result.notes)
+    unknown = MOONCAKE_STORE_CONFIG.format(**VLLM_STORE).replace("engine: vllm\n", "engine: not-an-engine\n")
+    assert any("the engine could not be loaded" in note for note in migrate_recipe_text(unknown).notes)
+
+
+def test_mooncake_store_config_comments_stay_where_they_belong() -> None:
+    """End-of-line comments travel with their keys; a banner after the block stays before the next section."""
+    text = MOONCAKE_STORE_CONFIG.format(**VLLM_STORE).replace("\nbenchmark:\n", "\n\n# Benchmark section\nbenchmark:\n")
+    migrated = migrate_recipe_text(text).text
+    assert migrated.count("# Benchmark section") == 1
+    assert "    type: mooncake-master\n\n# Benchmark section\nbenchmark:" in migrated
+    assert migrated.count("# the pool's transport") == 2
+    decode = migrated[migrated.index("  decode:") : migrated.index("services:")]
+    assert "\n\n" not in decode.strip()
 
 
 def test_dynamo_version_and_wheel_and_top_of_tree() -> None:

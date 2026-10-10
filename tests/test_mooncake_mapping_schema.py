@@ -67,7 +67,7 @@ def test_valid_mapping_reaches_runtime_and_dry_run(
     assert isinstance(backend, VLLMBackend)
     assert backend.mooncake_kv_store is not None
     assert backend.mooncake_kv_store.device_names_by_gpu == (devices or [])
-    process = Process("node0", frozenset({2, 3}), 7500, 6100, "decode", 0)
+    process = Process("node0", frozenset({2, 3}), 7500, 6100, "agg" if mode == "agg" else "decode", 0)
     rendered = backend.build_mooncake_process_config(process, "infra", 4)
     if devices:
         assert rendered is not None
@@ -75,7 +75,8 @@ def test_valid_mapping_reaches_runtime_and_dry_run(
         assert rendered[1]["global_segment_size"] == "100GB"
     else:
         assert rendered is None
-    assert backend.build_mooncake_store_config("infra")["device_name"] == "shared"
+    first_role = backend.mooncake_store_modes()[0]
+    assert backend.build_mooncake_store_config(first_role, "infra")["device_name"] == "shared"
     show_config_details(config)
     output = capsys.readouterr().out
     if devices:
@@ -106,18 +107,29 @@ def test_invalid_mapping_rejected_before_submission(tmp_path: Path, style: str, 
 @pytest.mark.parametrize("mode", ["agg", "disagg"])
 @pytest.mark.parametrize("devices", [None, [], ["h0", "h0", "h1", "h1"]])
 def test_migration_preserves_process_mapping(tmp_path: Path, mode: str, devices: list[str] | None) -> None:
-    """Migrating a v1 map yields loadable, runtime-equivalent service options."""
+    """Migrating a v1 map yields loadable, runtime-equivalent service options and role client configs."""
     original = yaml.safe_dump(recipe("v1", mode, devices))
     migrated = migrate_recipe_text(original)
     doc = yaml.safe_load(migrated.text)
     assert doc["engine"] == "vllm"
     assert "backend" not in doc
-    options = next(s for s in doc["services"] if s["type"] == "mooncake-master")["options"]
+    options = next(s for s in doc["services"] if s["type"] == "mooncake-master").get("options", {})
     if devices is None:
         assert "device_names_by_gpu" not in options
     else:
         assert options["device_names_by_gpu"] == devices
-    assert load(tmp_path, doc).backend.mooncake_kv_store.device_names_by_gpu == (devices or [])
+    # The shared client config moved onto every role that uses Mooncake.
+    assert "store_config" not in options
+    for role in doc["roles"].values():
+        assert role["mooncake_store_config"] == {"device_name": "shared", "global_segment_size": "100GB"}
+    backend = load(tmp_path, doc).backend
+    assert backend.mooncake_kv_store.device_names_by_gpu == (devices or [])
+    assert backend.mooncake_master_store_config() == {}
+    reference = load(tmp_path, recipe("v2-services", mode, devices)).backend
+    for role_mode in reference.mooncake_store_modes():
+        assert backend.build_mooncake_store_config(role_mode, "infra") == reference.build_mooncake_store_config(
+            role_mode, "infra"
+        )
     # The v1 spelling itself no longer loads; the migrated document is the only way in.
     with pytest.raises(ValueError, match="srtctl migrate"):
         load(tmp_path, recipe("v1", mode, devices))

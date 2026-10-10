@@ -35,7 +35,7 @@ Internally, srtctl still stores the resolved configuration in fields with these 
 | `backend.aggregated_environment` | `roles.agg.env` |
 | `backend.sglang_config` | `roles.<role>.args` (one mapping per role; the `prefill` / `decode` / `aggregated` keys) |
 | `backend.kv_events_config` | `roles.<role>.kv_events` |
-| `backend.mooncake_kv_store` | a `services:` entry of type `mooncake-master` plus the worker env on `roles.<role>.env` (see [mooncake-kv-store.md](mooncake-kv-store.md)) |
+| `backend.mooncake_kv_store` | a `services:` entry of type `mooncake-master` plus the worker env on `roles.<role>.env`; `store_config` lands in `roles.<role>.mooncake_store_config` of each role whose connector uses Mooncake (see [mooncake-kv-store.md](mooncake-kv-store.md)) |
 | `backend.prefill_extra_args` | `roles.prefill.extra_args` |
 | `backend.decode_extra_args` | `roles.decode.extra_args` |
 | `backend.aggregated_extra_args` | `roles.agg.extra_args` |

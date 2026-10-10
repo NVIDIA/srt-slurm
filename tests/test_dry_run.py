@@ -776,43 +776,45 @@ class TestDryRunExecutionExtensions:
         assert "master_extra_args" in output
         assert "nof_eviction" in output
 
-    def test_vllm_mooncake_store_config_in_dry_run(self, capsys):
-        """vLLM store_config + MOONCAKE_CONFIG_PATH appear in the dry-run extensions panel."""
+    def test_vllm_mooncake_store_config_in_dry_run(self, monkeypatch, capsys):
+        """Each vLLM Mooncake role shows its own client config and MOONCAKE_CONFIG_PATH in the dry run."""
+        monkeypatch.setattr(submit, "console", Console(width=200))
         kv_cfg = '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
         mooncake_env = {"MOONCAKE_PROTOCOL": "rdma"}
+        client = {"metadata_server": "P2PHANDSHAKE", "local_buffer_size": "4GB", "protocol": "rdma"}
         config = _make_config(
             {
                 "engine": "vllm",
                 "roles": {
-                    "prefill": {"args": {"kv-transfer-config": kv_cfg}, "env": mooncake_env},
-                    "decode": {"args": {"kv-transfer-config": kv_cfg}, "env": mooncake_env},
+                    "prefill": {
+                        "args": {"kv-transfer-config": kv_cfg},
+                        "env": mooncake_env,
+                        "mooncake_store_config": {**client, "global_segment_size": "100GB"},
+                    },
+                    "decode": {
+                        "args": {"kv-transfer-config": kv_cfg},
+                        "env": mooncake_env,
+                        "mooncake_store_config": {**client, "global_segment_size": "200GB"},
+                    },
                 },
-                "services": [
-                    {
-                        "name": "mooncake-master",
-                        "type": "mooncake-master",
-                        "options": {
-                            "store_config": {
-                                "metadata_server": "P2PHANDSHAKE",
-                                "global_segment_size": "100GB",
-                                "local_buffer_size": "4GB",
-                                "protocol": "rdma",
-                                "device_name": "",
-                            },
-                        },
-                    }
-                ],
+                "services": [{"name": "mooncake-master", "type": "mooncake-master"}],
             }
         )
         show_config_details(config)
         output = capsys.readouterr().out
-        assert "MOONCAKE_CONFIG_PATH" in output
-        assert "/logs/mooncake_store_config.json" in output
+        assert "MOONCAKE_CONFIG_PATH (prefill)" in output
+        assert "MOONCAKE_CONFIG_PATH (decode)" in output
+        assert "/logs/mooncake_store_config_prefill.json" in output
+        assert "/logs/mooncake_store_config_decode.json" in output
+        assert "mooncake_store_config (prefill)" in output
+        assert "mooncake_store_config (decode)" in output
         assert "P2PHANDSHAKE" in output
         assert "100GB" in output
+        assert "200GB" in output
 
-    def test_trtllm_mooncake_role_configs_in_dry_run(self, capsys):
+    def test_trtllm_mooncake_role_configs_in_dry_run(self, monkeypatch, capsys):
         """Each TRT-LLM role using the mooncake-store connector shows its client config and path."""
+        monkeypatch.setattr(submit, "console", Console(width=200))
         connector = {"kv_connector_config": {"connector": "mooncake-store"}}
         config = _make_config(
             {
@@ -833,15 +835,16 @@ class TestDryRunExecutionExtensions:
         show_config_details(config)
         output = capsys.readouterr().out
         assert "MOONCAKE_CONFIG_PATH" in output
-        assert "store_config (prefill)" in output
-        assert "store_config (decode)" in output
+        assert "mooncake_store_config (prefill)" in output
+        assert "mooncake_store_config (decode)" in output
         assert '"capacity"' in output
         assert "16GiB" in output
         # model_key defaults to the served model name, unknown before the model is staged
         # (the table wraps the placeholder, so match its start).
         assert '"model_key": "<model' in output
 
-    def test_vllm_process_local_mooncake_map_in_dry_run(self, capsys):
+    def test_vllm_process_local_mooncake_map_in_dry_run(self, monkeypatch, capsys):
+        monkeypatch.setattr(submit, "console", Console(width=200))
         config = _make_config(
             {
                 "engine": {
@@ -865,8 +868,8 @@ class TestDryRunExecutionExtensions:
         output = capsys.readouterr().out
         assert "device_names_by_gpu" in output
         assert "mlx5_7" in output
-        assert "mooncake_store_config_gpu" in output
         assert "process config" in output
+        assert "mooncake_store_config_<role>_gpu" in output
 
 
 class TestDryRunServices:

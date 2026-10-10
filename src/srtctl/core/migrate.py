@@ -28,19 +28,27 @@ v1 -> v2 rewrites (each is a pure re-spelling of the same resolved config):
   (schema 2 rejects them; they were silent no-ops).
 - schema 1 ``frontend.type: sglang`` (the router) becomes ``sglang-router``;
   in schema 2 ``sglang`` is the router-free single worker.
+- ``services[mooncake-master].options.store_config`` (where ``backend.mooncake_kv_store.store_config``
+  lands) moves into ``roles.<role>.mooncake_store_config`` of each role whose KV connector
+  uses Mooncake, under that role's own keys. An override or sweep file keeps it in place.
 """
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from marshmallow import ValidationError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.error import CommentMark
+from ruamel.yaml.tokens import CommentToken
 
 from srtctl.core.roles import COLOCATE, ENGINE_CONFIG_KEY, ROLE_NAMES, ROLE_TO_MODE
-from srtctl.core.schema import CURRENT_SCHEMA_VERSION
+from srtctl.core.schema import CURRENT_SCHEMA_VERSION, BackendConfigField, RoleConfig
 from srtctl.core.yaml_utils import dump_yaml_with_comments, load_yaml_text_with_comments
 
 _VARIANT_PREFIXES = ("override_", "zip_override_")
@@ -434,6 +442,120 @@ def _fold_mooncake(variant: CommentedMap, label: str) -> list[str]:
     return notes
 
 
+def _mooncake_store_modes(engine: Any, role_specs: dict[str, CommentedMap]) -> tuple[str, ...] | None:
+    """The roles whose workers read a Mooncake client config, as the engine resolves their connectors.
+
+    None when the engine cannot be loaded from this document (a sweep placeholder, say).
+    """
+    if engine is None:
+        return ()  # the default engine, SGLang, reads no client config file
+    try:
+        backend = BackendConfigField().deserialize(engine)
+        roles = {name: RoleConfig(args=dict(spec.get("args") or {})) for name, spec in role_specs.items()}
+        return dataclasses.replace(backend, roles=roles).mooncake_store_modes()
+    except (ValidationError, ValueError, TypeError):
+        return None
+
+
+def _split_comment(token: CommentToken | None) -> tuple[CommentToken | None, str]:
+    """A key's end-of-line comment alone, and the comment lines after it, which belong to what follows."""
+    if token is None:
+        return None, ""
+    line, _, trailing = token.value.partition("\n")
+    return (CommentToken(line + "\n", token.start_mark, None) if line.strip() else None), trailing
+
+
+def _keep_trailing_comment(mapping: CommentedMap, key: Any, trailing: str) -> None:
+    """Emit ``trailing`` comment lines right after ``mapping[key]``, where a removed block left them."""
+    if not trailing:
+        return
+    slot = mapping.ca.items.setdefault(key, [None, None, None, None])
+    if slot[2] is None:
+        slot[2] = CommentToken("\n" + trailing, CommentMark(0), None)
+    else:
+        slot[2].value += trailing
+
+
+def _fold_mooncake_store_config(variant: CommentedMap, label: str, *, varies: str | None) -> list[str]:
+    """``services[mooncake-master].options.store_config`` -> ``roles.<role>.mooncake_store_config``.
+
+    Those keys were the client config every role's workers read. They move to each role
+    whose KV connector uses Mooncake, under the role's own keys, which won at launch
+    too; other roles never read them. The engine names those roles, so connectors resolve
+    as they do at launch. Runs after ``_fold_engine``. ``varies`` names a document whose
+    variants or sweep points can change a role's connector (an override or sweep file);
+    there the option is left in place, as is ``engine.mooncake_kv_store.store_config``.
+    """
+    services = variant.get("services")
+    masters = (
+        [
+            s
+            for s in services
+            if isinstance(s, CommentedMap) and s.get("type") == "mooncake-master" and s.get("enabled", True)
+        ]
+        if isinstance(services, CommentedSeq)
+        else []
+    )
+    engine = variant.get("engine")
+    engine_store = engine.get("mooncake_kv_store") if isinstance(engine, CommentedMap) else None
+    if not masters and isinstance(engine_store, CommentedMap) and engine_store.get("store_config"):
+        return [
+            f"{label}engine.mooncake_kv_store.store_config left as is; move it into each Mooncake role's mooncake_store_config"
+        ]
+    if len(masters) != 1:
+        return []
+    entry = masters[0]
+    options = entry.get("options")
+    store_config = options.get("store_config") if isinstance(options, CommentedMap) else None
+    if not isinstance(options, CommentedMap) or not isinstance(store_config, CommentedMap) or not store_config:
+        return []
+    where = f"{label}services mooncake-master options.store_config"
+    if varies:
+        return [f"{where} left as is ({varies}); move it into each Mooncake role's mooncake_store_config"]
+    roles = variant.get("roles")
+    role_specs = (
+        {k: v for k, v in roles.items() if isinstance(v, CommentedMap)} if isinstance(roles, CommentedMap) else {}
+    )
+    modes = _mooncake_store_modes(engine, role_specs)
+    if modes is None:
+        return [f"{where} left as is (the engine could not be loaded to resolve the roles' connectors)"]
+    if not modes or any(mode not in role_specs for mode in modes):
+        return [f"{where} left as is (no role's KV connector resolves to Mooncake)"]
+    keys = list(store_config)
+    comments = {key: _split_comment((store_config.ca.items.get(key) or [None] * 4)[2])[0] for key in keys}
+    for mode in modes:
+        spec = role_specs[mode]
+        own = spec.get("mooncake_store_config")
+        if not isinstance(own, CommentedMap):
+            own = CommentedMap()
+            _insert_after(spec, "args" if "args" in spec else "env", "mooncake_store_config", own)
+        # The role's keys won over the shared ones at launch; keep them and put the rest first.
+        for position, key in enumerate(k for k in keys if k not in own):
+            own.insert(position, key, copy.deepcopy(store_config[key]))
+            comment = comments[key]
+            if comment is not None:
+                own.ca.items[key] = [None, None, CommentToken(comment.value, comment.start_mark, None), None]
+    # Comment lines after the block (a section banner, say) belong to what follows it: keep them there.
+    _, trailing = _split_comment((store_config.ca.items.get(keys[-1]) or [None] * 4)[2])
+    option_keys = list(options)
+    position = option_keys.index("store_config")
+    options.pop("store_config")
+    options.ca.items.pop("store_config", None)
+    if position:
+        _keep_trailing_comment(options, option_keys[position - 1], trailing)
+    elif options:
+        if options.ca.comment:
+            options.ca.comment[1] = None  # the lines before store_config described it
+        _keep_trailing_comment(entry, "options", trailing)
+    else:
+        entry_keys = list(entry)
+        before = entry_keys[entry_keys.index("options") - 1] if entry_keys.index("options") else None
+        _drop_if_empty(entry, "options")
+        if before is not None:
+            _keep_trailing_comment(entry, before, trailing)
+    return [f"{where} -> roles.{'/'.join(modes)}.mooncake_store_config"]
+
+
 def _fold_dynamo_source(variant: CommentedMap, label: str) -> list[str]:
     dynamo = variant.get("dynamo")
     if not isinstance(dynamo, CommentedMap) or "source" in dynamo:
@@ -507,6 +629,8 @@ def _migrate_1_to_2(doc: CommentedMap) -> list[str]:
         notes += _strip_unused_benchmark_fields(variant, base, label)
         notes += _fold_mooncake(variant, label)
         notes += _fold_engine(variant, base, label)
+        varies = "an override file" if name else "a sweep file" if "sweep" in doc else None
+        notes += _fold_mooncake_store_config(variant, label, varies=varies)
         for key in ("resources", "dynamo", "frontend"):
             _neutralize_if_empty(variant, key)
     return notes
