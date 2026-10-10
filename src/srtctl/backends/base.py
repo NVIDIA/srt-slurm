@@ -76,7 +76,7 @@ class ProcessGroup:
     comm: tuple[str, ...] = ()
 
 
-class RoleSettings(ABC):
+class RoleSettings(ABC):  # noqa: B024 - its members are declared for the type checker only
     """What an engine reads from one role of the recipe (``roles.<role>``).
 
     ``srtctl.core.schema.RoleConfig`` inherits this data contract. Keeping the
@@ -84,10 +84,20 @@ class RoleSettings(ABC):
     dataclasses supply the fields and defaults.
     """
 
-    env: Mapping[str, str]
-    args: Mapping[str, Any]
-    extra_args: Sequence[str]
-    kv_events: bool | Mapping[str, Any] | None
+    if TYPE_CHECKING:
+        # Read-only, as the frozen dataclass fields that implement them are; declared
+        # only for the type checker so nothing shadows those fields at runtime.
+        @property
+        def env(self) -> Mapping[str, str]: ...
+
+        @property
+        def args(self) -> Mapping[str, Any]: ...
+
+        @property
+        def extra_args(self) -> Sequence[str]: ...
+
+        @property
+        def kv_events(self) -> bool | Mapping[str, Any] | None: ...
 
 
 class BoundRolesField(fields.Field):
@@ -178,8 +188,11 @@ class Backend(ABC):
     #: handler whose command line it would otherwise share.
     process_exporter_groups: ClassVar[tuple[ProcessGroup, ...]] = ()
 
-    # Bound recipe roles; concrete dataclasses own the field and its serialization.
-    roles: Mapping[str, RoleSettings]
+    if TYPE_CHECKING:
+        # Bound recipe roles; concrete frozen dataclasses own the field and its serialization.
+        # Read-only like that field, and declared only for the type checker.
+        @property
+        def roles(self) -> Mapping[str, RoleSettings]: ...
 
     def get_srun_config(self) -> SrunConfig:
         """Get srun configuration for this backend.
