@@ -1,0 +1,256 @@
+{
+  "raplab": {
+    "format": 1,
+    "world_size": 32,
+    "iterations": 200,
+    "warmup": 20,
+    "nccl_rendezvous": {
+      "address": "172.29.39.52",
+      "port": 38179,
+      "host": "vr-r41-cn04"
+    },
+    "results": [
+      {
+        "operation": "MPI_Allgather",
+        "bytes_per_rank": 64,
+        "slowest_rank_per_iteration": {
+          "p50_us": 25.0735,
+          "p99_us": 38.085,
+          "max_us": 65.12
+        }
+      },
+      {
+        "operation": "MPI_Allgather",
+        "bytes_per_rank": 1024,
+        "slowest_rank_per_iteration": {
+          "p50_us": 90.043,
+          "p99_us": 135.611,
+          "max_us": 391.543
+        }
+      },
+      {
+        "operation": "MPI_Allgather",
+        "bytes_per_rank": 8192,
+        "slowest_rank_per_iteration": {
+          "p50_us": 175.94,
+          "p99_us": 461.358,
+          "max_us": 826.848
+        }
+      },
+      {
+        "operation": "MPI_object_allgather",
+        "payload": "rank + 128 integers",
+        "slowest_rank_per_iteration": {
+          "p50_us": 96.9185,
+          "p99_us": 133.094,
+          "max_us": 136.898
+        }
+      },
+      {
+        "operation": "NCCL_allgather",
+        "bytes_per_rank": 32,
+        "slowest_rank_per_iteration": {
+          "p50_us": 59.338499999999996,
+          "p99_us": 1387.157,
+          "max_us": 1514.759
+        }
+      },
+      {
+        "operation": "NCCL_allgather",
+        "bytes_per_rank": 65536,
+        "slowest_rank_per_iteration": {
+          "p50_us": 64.3615,
+          "p99_us": 4007.043,
+          "max_us": 4709.321
+        }
+      },
+      {
+        "operation": "NCCL_allgather",
+        "bytes_per_rank": 1048576,
+        "slowest_rank_per_iteration": {
+          "p50_us": 137.35000000000002,
+          "p99_us": 2840.37,
+          "max_us": 2981.102
+        }
+      }
+    ],
+    "note": "Back-to-back microbenchmarks; not TRT-LLM graph replay or fused MegaMoE dispatch."
+  },
+  "hecate": {
+    "format": 1,
+    "world_size": 32,
+    "iterations": 200,
+    "warmup": 20,
+    "nccl_rendezvous": {
+      "address": "10.66.27.1",
+      "port": 42671,
+      "host": "hecate0073.hecate.clusters.nvidia.com"
+    },
+    "results": [
+      {
+        "operation": "MPI_Allgather",
+        "bytes_per_rank": 64,
+        "slowest_rank_per_iteration": {
+          "p50_us": 362.1805,
+          "p99_us": 531.237,
+          "max_us": 1183.64
+        }
+      },
+      {
+        "operation": "MPI_Allgather",
+        "bytes_per_rank": 1024,
+        "slowest_rank_per_iteration": {
+          "p50_us": 703.3545,
+          "p99_us": 861.695,
+          "max_us": 956.871
+        }
+      },
+      {
+        "operation": "MPI_Allgather",
+        "bytes_per_rank": 8192,
+        "slowest_rank_per_iteration": {
+          "p50_us": 1120.9625,
+          "p99_us": 1441.489,
+          "max_us": 1527.534
+        }
+      },
+      {
+        "operation": "MPI_object_allgather",
+        "payload": "rank + 128 integers",
+        "slowest_rank_per_iteration": {
+          "p50_us": 901.702,
+          "p99_us": 1221.105,
+          "max_us": 1354.1
+        }
+      },
+      {
+        "operation": "NCCL_allgather",
+        "bytes_per_rank": 32,
+        "slowest_rank_per_iteration": {
+          "p50_us": 62.538,
+          "p99_us": 525.926,
+          "max_us": 547.833
+        }
+      },
+      {
+        "operation": "NCCL_allgather",
+        "bytes_per_rank": 65536,
+        "slowest_rank_per_iteration": {
+          "p50_us": 65.63,
+          "p99_us": 81.955,
+          "max_us": 216.974
+        }
+      },
+      {
+        "operation": "NCCL_allgather",
+        "bytes_per_rank": 1048576,
+        "slowest_rank_per_iteration": {
+          "p50_us": 295.1005,
+          "p99_us": 2948.812,
+          "max_us": 3023.625
+        }
+      }
+    ],
+    "note": "Back-to-back microbenchmarks; not TRT-LLM graph replay or fused MegaMoE dispatch."
+  },
+  "comparison": [
+    {
+      "operation": "MPI_Allgather",
+      "bytes_per_rank": 64,
+      "raplab_us": {
+        "p50_us": 25.0735,
+        "p99_us": 38.085,
+        "max_us": 65.12
+      },
+      "hecate_us": {
+        "p50_us": 362.1805,
+        "p99_us": 531.237,
+        "max_us": 1183.64
+      }
+    },
+    {
+      "operation": "MPI_Allgather",
+      "bytes_per_rank": 1024,
+      "raplab_us": {
+        "p50_us": 90.043,
+        "p99_us": 135.611,
+        "max_us": 391.543
+      },
+      "hecate_us": {
+        "p50_us": 703.3545,
+        "p99_us": 861.695,
+        "max_us": 956.871
+      }
+    },
+    {
+      "operation": "MPI_Allgather",
+      "bytes_per_rank": 8192,
+      "raplab_us": {
+        "p50_us": 175.94,
+        "p99_us": 461.358,
+        "max_us": 826.848
+      },
+      "hecate_us": {
+        "p50_us": 1120.9625,
+        "p99_us": 1441.489,
+        "max_us": 1527.534
+      }
+    },
+    {
+      "operation": "MPI_object_allgather",
+      "bytes_per_rank": null,
+      "raplab_us": {
+        "p50_us": 96.9185,
+        "p99_us": 133.094,
+        "max_us": 136.898
+      },
+      "hecate_us": {
+        "p50_us": 901.702,
+        "p99_us": 1221.105,
+        "max_us": 1354.1
+      }
+    },
+    {
+      "operation": "NCCL_allgather",
+      "bytes_per_rank": 32,
+      "raplab_us": {
+        "p50_us": 59.338499999999996,
+        "p99_us": 1387.157,
+        "max_us": 1514.759
+      },
+      "hecate_us": {
+        "p50_us": 62.538,
+        "p99_us": 525.926,
+        "max_us": 547.833
+      }
+    },
+    {
+      "operation": "NCCL_allgather",
+      "bytes_per_rank": 65536,
+      "raplab_us": {
+        "p50_us": 64.3615,
+        "p99_us": 4007.043,
+        "max_us": 4709.321
+      },
+      "hecate_us": {
+        "p50_us": 65.63,
+        "p99_us": 81.955,
+        "max_us": 216.974
+      }
+    },
+    {
+      "operation": "NCCL_allgather",
+      "bytes_per_rank": 1048576,
+      "raplab_us": {
+        "p50_us": 137.35000000000002,
+        "p99_us": 2840.37,
+        "max_us": 2981.102
+      },
+      "hecate_us": {
+        "p50_us": 295.1005,
+        "p99_us": 2948.812,
+        "max_us": 3023.625
+      }
+    }
+  ]
+}

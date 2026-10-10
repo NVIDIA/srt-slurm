@@ -1,0 +1,101 @@
+Hecate debug run 732500 versus Raplab debug run 4544
+
+Both bundles inspected locally. No SSH or new cluster jobs.
+Both completed all phases at 32 ranks, with 200 measured iterations and
+20 warmups. Raplab is in its single rack as confirmed by the user.
+
+1. GPU collective runtime versions are now confirmed to differ.
+
+All 32 NCCL initialization messages report:
+  Raplab: NCCL 2.30.4+cuda13.2
+  Hecate: NCCL 2.31.2gr100+0.8.0+cuda13.5
+
+This is stronger runtime evidence than Python package metadata or the
+separate torch.cuda.nccl.version() probe. Upstream PyTorch's implementation
+returns a version encoded from compile-time NCCL headers, not ncclGetVersion:
+https://github.com/pytorch/pytorch/blob/main/torch/csrc/cuda/nccl.cpp
+(version() and version_suffix()). The exact private PyTorch fork has not been
+inspected; the probe alone should not be treated as runtime verification.
+Earlier descriptions of that probe as runtime evidence were too strong.
+
+Hecate's rank metadata already maps /usr/lib/aarch64-linux-gnu/libnccl.so.2.31.2
+alongside MPI's UCC components BEFORE the explicit GPU tests. Raplab excludes
+ucc/hcoll and has no NCCL mapping at that point. A plausible explanation is
+different library loading/symbol resolution after UCC initialization. This
+remains an inference: post-NCCL library maps and dependency resolution would
+be needed to establish the actual loading chain and Raplab library path.
+
+2. MNNVL and SPCX are present on both clusters.
+
+                                  Raplab                 Hecate
+ MNNVL                            enabled                enabled
+ clique / NVLink domain size      32                     32
+ NCCL topology nNodes/localRanks  1 / 32                 1 / 32
+ network plugin                   SPCX 1.5-0             SPCX 1.5-0
+ tuner plugin                     SPCX v6                SPCX v6
+ coll channels                    32                     16
+ NVLS channels                    24                     48
+ NVLS chunk size                  131072                 131072
+ Pattern 4 graph channels         16                     8
+ graph bandwidth model            45 / 45                140.4 / 140.4
+
+Hecate also logs P2P/MNNVL connections. NCCL's nNodes=1 reflects the MNNVL
+logical grouping of 32 GPUs, not the Slurm physical-node count. The graph
+bandwidth values are internal topology/tuning estimates, not measured link
+bandwidth. Channel counts are communicator configuration, not proof of the
+algorithm/channel count used by every timed all-gather call.
+
+Shared plugin identity does not rule out version-dependent tuning behavior,
+but disabling SPCX is not testing something present only on Raplab. More
+NVLS channels is not automatically better: Hecate's 1 MiB median is higher.
+
+Raplab's IB plugin accepts its exact eight NICs with explicit rails/planes.
+Hecate enumerates those eight IB NICs plus mlx5_3/4/9/10 RoCE devices. It emits
+192 warnings about unavailable device realpaths / RoCE version lookup but
+still completes. No evidence links these initialization warnings to Raplab's
+latency spikes. UCX API 1.22/1.21 warnings occur on both clusters as before.
+
+3. Hecate retains the small-message tail advantage with INFO logging.
+
+NCCL all-gather, microseconds (slowest rank per iteration):
+ Bytes/rank       Raplab p50 / p99 / max       Hecate p50 / p99 / max
+ 32 B                59 / 1387 / 1515             61 / 424 / 473
+ 64 KiB              64 / 4007 / 4709             65 / 103 / 307
+ 1 MiB              137 / 2840 / 2981            295 / 1568 / 3543
+
+The 64 KiB p99 gap is now about 39x, with nearly equal medians. Hecate's prior
+non-debug run had p99 82 us. INFO logging did not reproduce Raplab's 4 ms
+64 KiB tail. Hecate's debug log is about 17.3 MB versus Raplab's 8.6 MB, so
+output volume alone is a weaker explanation; logging effects are not fully
+isolated because code paths and allocated nodes differ.
+
+MPI results remain configuration-dependent. Hecate p50: 411 us for 64 B,
+728 us for 1 KiB, 1086 us for 8 KiB, 785 us for object all-gather. Raplab's
+corresponding medians are 25,90,176,97 us. Hecate still has os_p1s0 and UCC;
+Raplab uses rc_mlx5 and excludes UCC. These are not an isolated fabric comparison.
+
+4. Prioritize library alignment before general NCCL parameter tuning.
+
+First determine and control which NCCL library the GPU backend loads on both
+clusters. This is a concrete version/build difference; it is not yet proven
+to cause the tail gap. Capture post-NCCL library maps and library hashes.
+
+A focused experiment to test the UCC/loading hypothesis is to rerun Hecate
+with the Raplab collective exclusion, retaining NCCL INFO output:
+
+export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=INIT,NET,GRAPH
+export OMPI_MCA_coll='^ucc,hcoll'
+sbatch --nodes=8 --segment=8 --account=coreai_mlperf_inference \
+  --partition=batch-xdr --export=ALL,RUN_NCCL=1 \
+  configs/cluster-diagnostics.sbatch hecate
+
+Check the NCCL initialization version and pre-GPU loaded libraries in that
+run. The experiment can show whether excluding UCC changes runtime selection;
+it is not a promised fix and changes MPI collective behavior too. Explicitly
+controlling the GPU NCCL library is a cleaner subsequent comparison.
+
+Once runtime versions match, separate host wall time from GPU-event duration
+and keep per-rank iteration samples. Only then use individual tuner/algorithm
+experiments to identify an execution-path effect. Copying Hecate's channel
+counts alone would not reproduce its NCCL build or topology model.

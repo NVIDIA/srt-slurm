@@ -1,0 +1,46 @@
+Raplab diagnostic run 4545: tuner-disabled submission versus prior runs
+
+All inspection was local; no SSH or cluster jobs were run.
+
+Run 4545 completed host, container, communication, and all copy phases with
+exit status 0. It used 8 nodes, 4 ranks per node (32 total), 5000 measured
+iterations, and 200 warmups. NCCL correctness checks passed. Runtime output
+reports NCCL 2.30.4+cuda13.2. No NCCL INFO or NCCL WARN lines are present.
+
+The user submitted NCCL_TUNER_PLUGIN=none and NCCL_DEBUG=WARN. The captured
+rank environment uses a fixed allowlist that omits both variables, and
+settings.txt records only preset overrides. Consequently the archive cannot
+independently verify the tuner override. Lack of INFO output is consistent
+with WARN. Do not treat missing tuner initialization output as proof that
+SPCX tuning was disabled.
+
+NCCL all-gather microseconds: slowest rank per iteration, host wall time.
+Payload/rank    Raplab 4544 p50/p99   Raplab 4545 p50/p99/max   Hecate 732500 p50/p99
+32 B             59.34 / 1387.16       58.07 / 4043.59 / 4343.11    61.15 / 424.15
+64 KiB           64.36 / 4007.04       63.06 / 3827.33 / 5193.32    65.30 / 103.45
+1 MiB           137.35 / 2840.37      135.97 / 2850.33 / 4421.14   295.24 / 1567.73
+
+64 KiB p99 improved only 4.5 percent versus 4544 and remains 37 times the
+Hecate debug run. 1 MiB p99 is essentially unchanged. The 32 B p99 is higher,
+but this is not an isolated tuner comparison: logging, iteration count,
+warmup, and execution time changed. Prior runs measured only 200 iterations
+with 20 warmups. Longer sampling better exposes rare stalls; exact outlier
+frequency and timing are unavailable because raw samples are not saved.
+
+MPI remains fast: 64 B p50/p99 24.52/42.45 us; 1 KiB 85.18/123.43 us;
+8 KiB 171.73/209.39 us; object allgather 92.22/130.92 us.
+
+Interpretation: this submission did not eliminate Raplab NCCL millisecond
+tails. The persistence with reduced logging and 200 warmups weakens logging
+and insufficient warmup as complete explanations. If the submitted tuner
+setting reached every rank, disabling the tuner is not sufficient either.
+NCCL build selection still differs from Hecate (2.30.4 vs 2.31.2 Rubin).
+There is no proof yet that NCCL version causes the stalls or serving ITL.
+
+Next useful comparisons: a baseline with identical 5000/200/WARN settings
+and the normal tuner, followed by an explicitly aligned NCCL runtime/build.
+Capture NCCL_TUNER_PLUGIN and NCCL_DEBUG in rank metadata, loaded library
+paths after GPU communicator initialization, raw per-rank samples, and CUDA
+event timing to distinguish host scheduling/launch delays from GPU execution.
+The current timing includes Python dispatch and cuda synchronize; it is not
+a TRT-LLM CUDA graph replay or fused MegaMoE benchmark.

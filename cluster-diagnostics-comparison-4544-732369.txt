@@ -1,0 +1,140 @@
+Raplab 4544 versus Hecate 732369
+
+Inputs: cluster-diagnostics-4544.tar.gz and cluster-diagnostics-732369.tar.gz.
+Companion JSON preserves reported timing statistics. Inspected locally;
+no SSH, remote commands, or new cluster jobs were run.
+Raplab has one rack, as confirmed by the user; segment placement is not an
+outstanding Raplab concern.
+
+1. Both runs completed, at the same rank count.
+
+Both: eight physical nodes, four ranks per node, 32 total ranks, 88 allocated
+logical CPUs/rank, GPU-local CPU and memory binding. All three phase statuses
+are zero. MPI/NCCL correctness checks passed. Each case has 20 warmups and
+200 measured iterations. Automatic rendezvous succeeded on both clusters.
+
+Microseconds, slowest rank per iteration:
+                                 Raplab               Hecate
+                             p50       p99         p50       p99
+ MPI all-gather 64 B          25.07     38.09       362.18    531.24
+ MPI all-gather 1 KiB         90.04    135.61       703.35    861.70
+ MPI all-gather 8 KiB        175.94    461.36      1120.96   1441.49
+ MPI object all-gather       96.92    133.09       901.70   1221.11
+ NCCL all-gather 32 B         59.34   1387.16        62.54    525.93
+ NCCL all-gather 64 KiB       64.36   4007.04        65.63     81.95
+ NCCL all-gather 1 MiB       137.35   2840.37       295.10   2948.81
+
+NCCL maxima:
+  32 B:   Raplab 1.515 ms; Hecate 0.548 ms
+  64 KiB: Raplab 4.709 ms; Hecate 0.217 ms
+  1 MiB:  Raplab 2.981 ms; Hecate 3.024 ms
+
+Raplab MPI medians are 6.4-14.4x lower in these configurations. This does not
+show that Raplab's hardware is inherently faster: transport and collective
+configuration differ. NCCL small-message medians are close, and Raplab's
+1 MiB median is lower. The clearest adverse Raplab difference is the 64 KiB
+NCCL tail: p99 about 49x higher with essentially equal medians. At 1 MiB,
+both clusters have similar roughly 3 ms tails. These data do not show a
+uniform Raplab GPU-communication slowdown.
+
+Raplab's 64 KiB NCCL tail repeats earlier findings: p99 3.66 ms in job 4542
+and 4.01 ms in 4544. The 20 ms maximum in 4542 did not recur in 4544. This
+supports recurring variability, but 200 samples are insufficient to describe
+rare stalls robustly. Timings include host dispatch and synchronization; no
+raw rank/iteration samples or CUDA-event timings identify the source.
+
+2. MPI is configured differently on the two clusters.
+
+Raplab rank environment matches its recipe:
+  OMPI_MCA_pml=ucx; OMPI_MCA_coll=^ucc,hcoll
+  MPI_UCX_TLS=rc,ud,sm,self; all eight requested IB NICs
+  UCX_NET_DEVICES narrowed to four GPU-local IB NICs plus eth0
+  MPI protocol logs confirm rc_mlx5 inter-node communication.
+
+Hecate rank environment:
+  UCX_NET_DEVICES=os_p1s0; no captured MPI_UCX_* or OMPI_MCA_* overrides
+  OMP_NUM_THREADS=1, matching Raplab
+  loaded mca_coll_ucc and UCC, whereas Raplab excludes ucc/hcoll.
+Its UCX network filter is an Ethernet interface. This is consistent with an
+Ethernet/TCP UCX path, but there are no protocol-selection logs to prove the
+exact data path or which collective component executed each test. These
+measurements compare deployed configurations, not an isolated fabric test.
+
+3. Raplab NCCL now provides concrete topology and plugin evidence.
+
+Every Raplab rank logs:
+  NCCL version 2.30.4+cuda13.2
+  MNNVL 1, cliqueSize 32, nvlDomainSize 32
+  nRanks 32, nNodes 1, localRanks 32, MNNVL 1
+  NVLS multicast available
+  32 coll channels, 32 collnet channels, 24 nvls channels
+  Using network SPCX
+  Plugin /opt/hpcx/nccl_spectrum-x_plugin/lib/libnccl-net.so, SPCX 1.5-0
+
+The IB plugin recognizes exactly the requested eight NICs, with four rails
+and two planes, and eth0 as out-of-band interface. This verifies that the
+NCCL_IB_HCA suffixes are parsed as requested. It does not establish physical
+wiring correctness or prove every timed collective sends its payload over IB.
+NCCL recognizes all 32 GPUs as one multi-node NVLink domain even though Slurm
+allocated eight physical hosts. The "nNodes 1" field here is NCCL's topology
+grouping, not evidence that Slurm ran on one host. Per-call algorithm/protocol
+and GPU tracing would be needed to quantify actual NVLink versus IB traffic.
+
+NVIDIA documents MNNVL as multi-node NVLink within an operational IMEX domain:
+https://docs.nvidia.com/deeplearning/nccl/archives/nccl_2303/user-guide/docs/env.html#nccl-mnnvl-enable
+
+Hecate's communication log has no NCCL INFO transport/topology/version output.
+Do not infer that Hecate lacks MNNVL or SPCX; its configuration is unobserved.
+
+4. Package equality does not prove NCCL runtime equality.
+
+All captured Python distribution versions and eight sampled TRT-LLM source
+hashes match across both clusters and within all eight nodes in each bundle.
+Both idle PyTorch probes report CUDA 13.5 and NCCL 2.31.2 gr100+0.8.0.
+But Raplab's actual GPU-collective initialization logs NCCL 2.30.4+cuda13.2.
+Hecate already maps /usr/lib/aarch64-linux-gnu/libnccl.so.2.31.2 during MPI
+metadata collection, alongside UCC. That snapshot is taken BEFORE the
+explicit GPU benchmark; it does not conclusively identify that benchmark's
+NCCL implementation. A preloaded library can affect symbol resolution, but
+these bundles do not establish that this is what happened.
+
+This is a material unresolved software variable. Capture Hecate NCCL INFO
+logs, and post-initialization process library maps, before asserting that the
+GPU tests used the same NCCL build. The separate probe is insufficient.
+Both logs also show the UCP API >=1.22 versus loaded 1.21.0 warning, without
+UCX ERROR or NCCL WARN failures. Raplab logs are much more verbose (about
+8.6 MB versus Hecate 26 KB), another uncontrolled measurement variable.
+No evidence here proves log output caused the measured tails.
+
+5. Local copy hardware remains close.
+
+64 MiB single-copy GiB/s, mean of 32 per-GPU medians:
+                               Raplab       Hecate
+ H2D NUMA-local                 313.23       315.63
+ H2D NUMA-remote                 35.87        35.91
+ H2D unrestricted              128.62       142.61
+ D2H NUMA-local                 305.37       307.05
+ D2H NUMA-remote                 28.83        28.82
+
+No recorded GPU copy errors. The local H2D gap is under 1%, and the roughly
+8.8x remote-memory penalty is similar. Raplab NIC counters remain inaccessible;
+Hecate exposes 392 numeric counters/node. These snapshots and GPU samples
+are collected before the communication step, so they cannot explain its
+latency outliers. No serving PIDs or serving traces were collected.
+
+6. Next measurements that resolve the uncertainty.
+
+First capture Hecate's actual NCCL initialization using:
+  export NCCL_DEBUG=INFO
+  export NCCL_DEBUG_SUBSYS=INIT,NET,GRAPH
+  sbatch --nodes=8 --segment=8 --account=coreai_mlperf_inference \
+    --partition=batch-xdr --export=ALL,RUN_NCCL=1 \
+    configs/cluster-diagnostics.sbatch hecate
+
+Control the collective library build, MPI collective settings, logging levels,
+and workload before interpreting remaining differences as hardware effects.
+Then record per-rank raw timings and separate CUDA-event duration from host
+wall time, with enough repeats to characterize the 64 KiB tail. Trace a slow
+serving run to determine whether these stalls align with its critical path.
+The present results identify a NCCL tail candidate; they do not prove the
+cause of Raplab's slower serving ITL or measure fused MegaMoE kernels.
