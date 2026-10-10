@@ -427,6 +427,11 @@ class ClusterConfig:
     # Cluster-level container mounts (host_path -> container_path)
     # Applied to all jobs on this cluster, useful for cluster-specific paths
     default_mounts: dict[str, str] | None = None
+    # Absolute path of an nsys executable the containers can reach (for example an
+    # unpacked Nsight Systems package under a default_mounts path), used by nsys
+    # profiling and the observability preset when SRTCTL_NSYS_BIN is not set. Unset
+    # resolves `nsys` on the image's PATH, which upstream vLLM images do not have.
+    nsys_binary: str | None = None
     # Shell snippet prepended to every container srun (after env exports, before
     # the main command). Useful for cluster-wide ulimits, e.g.
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for

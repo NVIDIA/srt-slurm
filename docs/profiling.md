@@ -115,6 +115,16 @@ capture. `profiling.type: none` leaves the preset active. With
 
 **Container requirements.** The serving image must include `nsys` (or mount it
 and set `SRTCTL_NSYS_BIN` on the submitting/orchestrating host) and Python 3.
+The upstream `vllm/vllm-openai` images do not ship `nsys`; without it every wrapped
+process exits at launch with `nsys launch failed: [Errno 2] No such file or directory: 'nsys'`.
+Unpack the Nsight Systems package for the compute architecture (for example the
+`nsight-systems` `.deb` from the CUDA repository) onto storage the container mounts,
+and set `nsys_binary` in `srtslurm.yaml` to its `target-linux-<arch>/nsys`
+(`SRTCTL_NSYS_BIN` on the submitting shell overrides it). Submit exports the chosen
+path in the job script, `srtctl dry-run` shows it with its source, and `srtctl apply`
+refuses an absolute path that is missing, not executable or built for another
+architecture. When nsys would come from the image PATH of an engine whose upstream
+image has none (vLLM), dry-run and apply warn.
 `measured_workload` uses Nsight's interactive `launch`/`start`/`stop`/`shutdown`
 commands and a shared writable `/logs` mount. `including_startup` additionally
 needs Bash, `setsid`, `pgrep`, `pkill`, and `timeout`. The preset sets

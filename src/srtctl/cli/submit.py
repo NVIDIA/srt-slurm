@@ -739,7 +739,10 @@ def show_config_details(config: SrtConfig) -> None:
                 if config.frontend.type == "dynamo":
                     targets += " + Dynamo frontends"
                 details.add_row("observability", "nsys targets", targets)
-                details.add_row("observability", "nsys binary", profiling.nsys_binary)
+                if nsys_choice := nsys_binary_choice(config):
+                    details.add_row("observability", "nsys binary", f"{nsys_choice[0]} ({nsys_choice[1]})")
+                if warning := nsys_image_warning(config):
+                    details.add_row("observability", "nsys warning", Text(warning, overflow="fold"))
                 details.add_row("observability", "nsys trace", "NVTX (no CUDA tracing)")
                 window = (
                     "after warmup until workload completes (client start/stop hooks)"
@@ -884,6 +887,76 @@ def _cpu_power_exporter_problem(srtctl_source: Path) -> str | None:
     return None
 
 
+def nsys_binary_choice(config: SrtConfig) -> tuple[str, str] | None:
+    """The nsys the job will run and where that choice came from, or None when no nsys runs.
+
+    SRTCTL_NSYS_BIN on the submit host wins, then srtslurm.yaml ``nsys_binary``, then
+    ``nsys`` resolved on the image's PATH. The job script exports the first two so the
+    orchestrator and the recorded sbatch script agree with what submit checked.
+    """
+    if not (config.observability_nsys_enabled or config.profiling.is_nsys):
+        return None
+    if binary := os.environ.get("SRTCTL_NSYS_BIN"):
+        return binary, "SRTCTL_NSYS_BIN"
+    if binary := get_srtslurm_setting("nsys_binary"):
+        return str(binary), "srtslurm.yaml nsys_binary"
+    return "nsys", "image PATH"
+
+
+def _nsys_problem(config: SrtConfig, srtctl_source: Path) -> str | None:
+    """Why the configured nsys could not run on the compute nodes, checked before the allocation.
+
+    An absolute path must be on storage the submit host shares with the nodes. A bare
+    ``nsys`` lives inside the image, which submit cannot inspect.
+    """
+    choice = nsys_binary_choice(config)
+    if choice is None or not os.path.isabs(choice[0]):
+        return None
+    binary, source = Path(choice[0]), choice[1]
+    label = f"{binary} (nsys from {source})"
+    if not binary.is_file():
+        return f"{label} — not found on this host; it must be on storage the containers mount"
+    if not os.access(binary, os.X_OK):
+        return f"{label} — present but not executable"
+    installed = arch_from_binary(binary)
+    target = detect_target_arch(srtctl_source)
+    if installed is not None and installed != target:
+        return f"{label} — built for {installed}, but the compute nodes are {target}"
+    return None
+
+
+def nsys_image_warning(config: SrtConfig) -> str | None:
+    """A warning when nsys would come from an image whose upstream build has none."""
+    choice = nsys_binary_choice(config)
+    engines = [config.backend, *config.role_backends.values()]
+    if choice is None or choice[1] != "image PATH" or all(engine.upstream_image_has_nsys for engine in engines):
+        return None
+    return (
+        "nsys runs from the image PATH, and upstream images for this engine do not ship nsys; every "
+        "profiled process would exit at launch. Set nsys_binary in srtslurm.yaml (or SRTCTL_NSYS_BIN) to an "
+        "nsys on mounted storage, unless this image adds it."
+    )
+
+
+# The scraper's Parquet writer has emitted this column since srt-slurm #350; DSight
+# (dsight/window.py) refuses captures without it. A scraper built earlier still runs,
+# so the gap otherwise shows up only when the report is built.
+_TACHOMETER_ALIGNMENT_COLUMN = b"timestamp_ns"
+
+
+def _tachometer_scraper_problem(srtctl_source: Path) -> str | None:
+    """Why the installed scraper's captures cannot be aligned by DSight, if they cannot."""
+    scraper = srtctl_source / "bin" / "tachometer-scraper"
+    if not scraper.is_file():
+        return None
+    if _TACHOMETER_ALIGNMENT_COLUMN in scraper.read_bytes():
+        return None
+    return (
+        "bin/tachometer-scraper predates the timestamp_ns capture column, so `srtctl dsight build` "
+        "cannot align its metrics. Re-run make tachometer-scraper-download ARCH=<compute_arch>"
+    )
+
+
 def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None:
     """Validate that make setup has been run and required binaries exist.
 
@@ -911,6 +984,11 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
         problem = _cpu_power_exporter_problem(srtctl_source)
         if problem is not None:
             missing.append(problem)
+    if config is not None and (problem := _nsys_problem(config, srtctl_source)) is not None:
+        missing.append(problem)
+    scraper_problem = _tachometer_scraper_problem(srtctl_source)
+    if scraper_problem is not None and config is not None and config.observability.enabled:
+        missing.append(scraper_problem)
 
     if missing:
         console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")
@@ -930,6 +1008,10 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
             "[yellow]WARNING:[/] configs/process-exporter not found; Tachometer will run without per-process/"
             "per-thread CPU telemetry. Re-run [bold]make setup ARCH=<compute_arch>[/] to install it."
         )
+    if scraper_problem is not None and not (config is not None and config.observability.enabled):
+        console.print(f"[yellow]WARNING:[/] {scraper_problem}")
+    if config is not None and (warning := nsys_image_warning(config)) is not None:
+        console.print(f"[yellow]WARNING:[/] {warning}")
 
 
 def generate_minimal_sbatch_script(
@@ -1012,6 +1094,10 @@ def generate_minimal_sbatch_script(
     job_name = get_job_name(config)
     config_environment = config.dynamo.get_wheel_environment()
     config_environment.update(config.environment)
+    nsys_choice = nsys_binary_choice(config)
+    if nsys_choice is not None and nsys_choice[1] != "image PATH":
+        # Record the nsys submit checked in the script, so the job does not depend on the submitting shell.
+        config_environment.setdefault("SRTCTL_NSYS_BIN", nsys_choice[0])
 
     rendered = template.render(
         job_name=job_name,

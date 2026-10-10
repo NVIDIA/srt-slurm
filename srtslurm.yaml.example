@@ -37,6 +37,10 @@ default_time_limit: "04:00:00"
 #     temperature:
 #       metric: gpu_junction_temperature
 
+# nsys for profiling and observability when the serving image has none (upstream
+# vLLM images): an unpacked Nsight Systems on storage the containers mount.
+# nsys_binary: "/shared/tools/nsight-systems/target-linux-sbsa-armv8/nsys"
+
 # Some clusters see intermittent git smart-HTTP failures negotiating HTTP/2
 # against github.com (stalls, or truncated responses git misreports as
 # "could not read Username" auth-prompt failures) from certain network paths.
