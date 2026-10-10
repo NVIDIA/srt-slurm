@@ -302,8 +302,19 @@ def test_standard_dcgm_binding_path_is_discovered(tmp_path: Path, monkeypatch: p
     assert cpu_power.sys.path[0] == str(binding_dir)
 
 
-def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.MonkeyPatch) -> None:
+def _install_fake_dcgm(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    reject_watch_containing: int | None = None,
+) -> list[object]:
+    """Install a fake pydcgm/dcgm_agent; returns the event log.
+
+    ``reject_watch_containing`` makes ``WatchFields`` raise for any field group
+    whose ids include that field -- the shape of a libdcgm that does not
+    support 1132 for CPU entities.
+    """
     events: list[object] = []
+    field_ids_by_group: dict[int, list[int]] = {}
 
     class FakeHandle:
         handle = object()
@@ -313,6 +324,10 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
 
     class FakeSamples:
         def WatchFields(self, field_group: object, frequency: int, age: float, samples: int) -> None:
+            ids = field_ids_by_group[id(field_group)]
+            if reject_watch_containing is not None and reject_watch_containing in ids:
+                events.append(("watch_rejected", ids))
+                raise RuntimeError(f"field {reject_watch_containing} not supported for CPU entities")
             events.append(("watch", frequency, age, samples))
 
         def UnwatchFields(self, field_group: object) -> None:
@@ -330,6 +345,7 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
 
     class FakeFieldGroup:
         def __init__(self, handle: object, **kwargs: object) -> None:
+            field_ids_by_group[id(self)] = list(kwargs["fieldIds"])  # type: ignore[arg-type]
             events.append(("field_group", kwargs["fieldIds"]))
 
         def Delete(self) -> None:
@@ -353,6 +369,8 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
         return [
             _fake_value(0, cpu_power.CPU_POWER_FIELD_ID, 120.5),
             _fake_value(1, cpu_power.CPU_POWER_FIELD_ID, 130.0),
+            _fake_value(0, 1132, 6.25),  # SysIO rail for socket 0 only
+            _fake_value(9, cpu_power.CPU_POWER_FIELD_ID, 999.0),  # entity we never enumerated: dropped
             _fake_value(0, 1100, 0.42),
             _fake_value(0, 1101, 0.30),
             _fake_value(0, 1103, 0.10),
@@ -378,13 +396,19 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
     }
     monkeypatch.setattr(cpu_power, "_add_standard_dcgm_binding_path", lambda: None)
     monkeypatch.setattr(cpu_power.importlib, "import_module", modules.__getitem__)
+    return events
+
+
+def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.MonkeyPatch) -> None:
+    events = _install_fake_dcgm(monkeypatch)
 
     reader = cpu_power.DcgmCpuPowerReader()
+    assert reader.power_field_ids == (1130, 1132)
     watts = reader.read_watts()
     utilization = reader.read_utilization()
     reader.close()
 
-    expected_fields = [cpu_power.CPU_POWER_FIELD_ID, *(field.field_id for field in CPU_UTILIZATION_FIELDS)]
+    expected_fields = [1130, 1132, *(field.field_id for field in CPU_UTILIZATION_FIELDS)]
     assert ("entity", 7, 0) in events
     assert ("entity", 7, 1) in events
     assert ("field_group", expected_fields) in events
@@ -392,7 +416,20 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
     assert ("update", True) in events
     assert ("latest", 0, expected_fields) in events
     assert events[-4:] == ["unwatch", "field_group_delete", "group_delete", "shutdown"]
-    assert watts == {"CPU0:cpuPowerUsageW": 120.5, "CPU1:cpuPowerUsageW": 130.0}
+    assert watts == {
+        "CPU0:cpuPowerUsageW": 120.5,
+        "CPU0:cpuRailPowerUsageW": 120.5,  # 1130 is the CPU rail read through DCGM
+        "CPU0:socPowerUsageW": 6.25,
+        "CPU1:cpuPowerUsageW": 130.0,
+        "CPU1:cpuRailPowerUsageW": 130.0,
+        "CPU1:socPowerUsageW": None,  # no 1132 sample for socket 1
+    }
+    samples = reader.socket_samples(watts)
+    assert [(s.socket_id, s.power_w, s.rails) for s in samples] == [
+        (0, 120.5, {"cpu_rail": 120.5, "soc": 6.25}),
+        (1, 130.0, {"cpu_rail": 130.0}),
+    ]
+    assert reader.aggregate_watts(watts) == 250.5  # sum of 1130 only; SysIO never joins the total
     assert utilization == {
         0: {"cpu_util_total": 0.42, "cpu_util_user": 0.30, "cpu_util_sys": 0.10},
         1: {"cpu_util_total": 0.05},
@@ -400,6 +437,166 @@ def test_dcgm_reader_watches_cpu_power_before_reading(monkeypatch: pytest.Monkey
     metadata = reader.metadata()
     assert [field["column"] for field in metadata["utilization_fields"]] == list(UTILIZATION_COLUMNS)
     assert metadata["utilization_fields"][0]["field_id"] == 1100
+    assert metadata["aggregate_scope"] == "cpu_rail_only"
+    assert [(f["field_id"], f["rail_kind"], f["column"], f["watched"]) for f in metadata["power_fields"]] == [
+        (1130, "cpu_rail", "power_w", True),
+        (1132, "soc", "soc_w", True),
+    ]
+
+
+def test_dcgm_reader_falls_back_to_the_cpu_rail_alone_when_sysio_is_refused(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A libdcgm that rejects 1132 must still come up on 1130 -- in auto, DCGM is the last resort."""
+    events = _install_fake_dcgm(monkeypatch, reject_watch_containing=1132)
+    utilization_ids = [field.field_id for field in CPU_UTILIZATION_FIELDS]
+
+    with caplog.at_level("WARNING", logger="srtctl.core.cpu_power"):
+        reader = cpu_power.DcgmCpuPowerReader()
+    watts = reader.read_watts()
+    reader.close()
+
+    assert reader.power_field_ids == (1130,)
+    assert ("watch_rejected", [1130, 1132, *utilization_ids]) in events
+    assert ("field_group", [1130, *utilization_ids]) in events
+    assert ("watch", 100_000, 60.0, 600) in events
+    # The rejected attempt's field group is cleaned up; the surviving one at close.
+    assert events.count("field_group_delete") == 2
+    assert any("watching the CPU rail only" in rec.message for rec in caplog.records)
+    # No SysIO kind is expected of a reader that never watched 1132: no blank soc column entries.
+    assert watts == {
+        "CPU0:cpuPowerUsageW": 120.5,
+        "CPU0:cpuRailPowerUsageW": 120.5,
+        "CPU1:cpuPowerUsageW": 130.0,
+        "CPU1:cpuRailPowerUsageW": 130.0,
+    }
+    assert [(s.socket_id, s.power_w, s.rails) for s in reader.socket_samples(watts)] == [
+        (0, 120.5, {"cpu_rail": 120.5}),
+        (1, 130.0, {"cpu_rail": 130.0}),
+    ]
+    assert [(f["field_id"], f["watched"]) for f in reader.metadata()["power_fields"]] == [(1130, True), (1132, False)]
+
+
+def test_dcgm_reader_fails_when_every_field_set_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_dcgm(monkeypatch, reject_watch_containing=1130)
+    with pytest.raises(CpuPowerSourceUnavailable, match="cannot watch DCGM CPU power fields"):
+        cpu_power.DcgmCpuPowerReader()
+
+
+def _acpi_root_reading(tmp_path: Path, *watts: float) -> Path:
+    # One Grace socket envelope sensor per value, under a fresh hwmon root.
+    root = tmp_path / "hwmon"
+    for socket_id, value in enumerate(watts):
+        _make_acpi_sensor(
+            root,
+            hwmon_id=socket_id,
+            socket_id=socket_id,
+            microwatts=round(value * 1_000_000),
+            domain=f"Grace Power Socket {socket_id}",
+        )
+    return root
+
+
+def test_acpi_probe_is_dead_when_every_sensor_reads_zero(tmp_path: Path) -> None:
+    reader = AcpiPowerMeterReader(_acpi_root_reading(tmp_path, 0.0, 0.0))
+    assert reader.probe_live(retries=1, delay_seconds=0.0) == 0
+
+
+def test_acpi_probe_is_live_when_any_sensor_reads_positive(tmp_path: Path) -> None:
+    reader = AcpiPowerMeterReader(_acpi_root_reading(tmp_path, 0.0, 97.5))
+    assert reader.probe_live(retries=0, delay_seconds=0.0) == 1
+
+
+def _stuck_total_live_rail_root(tmp_path: Path) -> Path:
+    # Socket 0 healthy; socket 1's Grace envelope reads 0 while its CPU rail is live.
+    root = tmp_path / "hwmon"
+    _make_acpi_sensor(root, hwmon_id=0, socket_id=0, microwatts=100_000_000, domain="Grace Power Socket 0")
+    _make_acpi_sensor(root, hwmon_id=1, socket_id=0, microwatts=50_000_000, domain="CPU Power Socket 0")
+    _make_acpi_sensor(root, hwmon_id=2, socket_id=1, microwatts=0, domain="Grace Power Socket 1")
+    _make_acpi_sensor(root, hwmon_id=3, socket_id=1, microwatts=52_000_000, domain="CPU Power Socket 1")
+    return root
+
+
+def test_acpi_zero_total_is_missing_not_zero_watts(tmp_path: Path) -> None:
+    """0 from power1_average means the sensor is not reporting; the socket gets no row, never power_w=0."""
+    reader = AcpiPowerMeterReader(_stuck_total_live_rail_root(tmp_path))
+    readings = reader.read_watts()
+    assert readings["CPU1:cpuSidePowerUsageW"] is None
+    assert readings["CPU1:cpuRailPowerUsageW"] == 52.0
+    assert [(s.socket_id, s.power_w, s.rails) for s in reader.socket_samples(readings)] == [
+        (0, 100.0, {"cpu_rail": 50.0}),
+    ]
+    # A stuck envelope also voids the node total: a partial sum must not pass for the node's power.
+    assert reader.aggregate_watts(readings) is None
+
+
+def test_acpi_probe_ignores_live_component_rails_when_every_total_is_zero(tmp_path: Path) -> None:
+    """A live CPU rail must not vouch for ACPI when no socket envelope reads positive."""
+    root = tmp_path / "hwmon"
+    _make_acpi_sensor(root, hwmon_id=0, socket_id=0, microwatts=0, domain="Grace Power Socket 0")
+    _make_acpi_sensor(root, hwmon_id=1, socket_id=0, microwatts=50_000_000, domain="CPU Power Socket 0")
+    assert AcpiPowerMeterReader(root).probe_live(retries=0, delay_seconds=0.0) == 0
+
+
+def test_acpi_probe_counts_only_live_totals(tmp_path: Path) -> None:
+    # Two live rails, one live total: the probe reports the one total.
+    assert AcpiPowerMeterReader(_stuck_total_live_rail_root(tmp_path)).probe_live(retries=0, delay_seconds=0.0) == 1
+
+
+def test_acpi_probe_retries_once_when_the_first_pass_is_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """hwmon averages can read 0 on the first poll after boot; one retry must rescue a good node."""
+    root = _acpi_root_reading(tmp_path, 0.0)
+    reader = AcpiPowerMeterReader(root)
+    sensor_file = next(root.rglob("power1_average"))
+    sleeps: list[float] = []
+
+    def sleep_then_wake(seconds: float) -> None:
+        sleeps.append(seconds)
+        sensor_file.write_text("98000000")  # the sensor comes alive between passes
+
+    monkeypatch.setattr(cpu_power.time, "sleep", sleep_then_wake)
+    assert reader.probe_live(retries=1, delay_seconds=1.0) == 1
+    assert sleeps == [1.0]
+
+
+def test_auto_falls_through_dead_acpi_to_dcgm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Discovered-but-all-zero ACPI sensors must not be published as 0 W; auto steps down to DCGM."""
+    root = _acpi_root_reading(tmp_path, 0.0, 0.0)
+    monkeypatch.setattr(cpu_power, "AcpiPowerMeterReader", lambda *_a, **_k: AcpiPowerMeterReader(root))
+    monkeypatch.setattr(cpu_power, "ACPI_PROBE_RETRY_DELAY_SECONDS", 0.0)
+    _install_fake_dcgm(monkeypatch)
+
+    with caplog.at_level("INFO", logger="srtctl.core.cpu_power"):
+        reader = cpu_power.create_reader("auto")
+    reader.close()
+
+    assert isinstance(reader, cpu_power.DcgmCpuPowerReader)
+    messages = [rec.message for rec in caplog.records]
+    assert any("no ACPI socket-total power_meter sensor read positive across 2 probe(s)" in m for m in messages)
+
+
+def test_auto_commits_to_live_acpi_without_touching_dcgm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _acpi_root_reading(tmp_path, 101.0, 99.0)
+    monkeypatch.setattr(cpu_power, "AcpiPowerMeterReader", lambda *_a, **_k: AcpiPowerMeterReader(root))
+
+    def no_dcgm(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("DCGM must not be constructed when ACPI is live")
+
+    monkeypatch.setattr(cpu_power, "DcgmCpuPowerReader", no_dcgm)
+    reader = cpu_power.create_reader("auto")
+    assert isinstance(reader, AcpiPowerMeterReader)
+
+
+def test_explicit_acpi_source_fails_on_dead_sensors_instead_of_falling_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _acpi_root_reading(tmp_path, 0.0)
+    monkeypatch.setattr(cpu_power, "AcpiPowerMeterReader", lambda *_a, **_k: AcpiPowerMeterReader(root))
+    monkeypatch.setattr(cpu_power, "ACPI_PROBE_RETRY_DELAY_SECONDS", 0.0)
+    with pytest.raises(CpuPowerSourceUnavailable, match="no ACPI socket-total power_meter sensor read positive"):
+        cpu_power.create_reader("acpi")
 
 
 def _fake_value(entity_id: int, field_id: int, dbl: float) -> object:

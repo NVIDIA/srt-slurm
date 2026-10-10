@@ -1928,8 +1928,11 @@ class CpuPowerConfig:
 
     Attributes:
         enabled: Master switch for this leg. Default: False.
-        source: ``auto`` tries ACPI then DCGM and is best-effort; naming
-            ``acpi`` or ``dcgm`` explicitly makes that provider mandatory.
+        source: ``auto`` uses ACPI when some socket-total sensor reads a
+            positive value, else DCGM fields 1130+1132, else 1130 alone,
+            logging each step down; naming ``acpi`` or ``dcgm`` explicitly
+            makes that provider mandatory (it still proves itself, but exits
+            instead of stepping).
         sample_interval_seconds: Read period on each node, in seconds.
         startup_timeout_seconds: How long to wait for every node's collector
             to publish its ready marker before giving up on readiness.
@@ -1958,17 +1961,26 @@ class CpuPowerExporterConfig:
     containerized -- cpu-power-exporter is a bundled binary installed by
     make setup, launched directly on the bare worker host, with a fallback
     to the Python stdlib exporter when the binary is absent.
+
+    Attributes:
+        port: TCP port the per-node exporter listens on for ``/metrics``.
+        source: Power reading back-end passed through to the bundled Rust
+            binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``).
+            ``auto`` tries ACPI first (the only source with the socket
+            envelope) and falls back to DCGM when no ACPI power_meter hwmon
+            sensors exist or no socket-total sensor reads positive on two
+            probes; DCGM
+            watches fields 1130+1132 and falls back to 1130 alone if this
+            libdcgm refuses the pair. DCGM mode reports field 1130 = the CPU
+            rail (plus 1132 = SysIO), about half the ACPI envelope, and the
+            energy report flags such runs as "CPU rail only". Has no effect
+            when the Python stdlib fallback exporter is used instead of the
+            binary -- that fallback is ACPI-only.
     """
 
     # Port the exporter listens on and the head-node collector scrapes.
     port: int = 9405
     source: Literal["auto", "acpi", "dcgm"] = "auto"
-    """Power reading back-end passed through to the bundled Rust binary's own
-    ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries DCGM
-    first and falls back to ACPI when libdcgm.so is absent or reports no CPU
-    entities. Has no effect when the Python stdlib fallback exporter is used
-    instead of the binary -- that fallback is ACPI-only.
-    """
 
     Schema: ClassVar[type[Schema]] = Schema
 

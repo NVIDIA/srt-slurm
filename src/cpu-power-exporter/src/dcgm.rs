@@ -3,12 +3,27 @@
 
 //! DCGM CPU power reader via dynamic loading of libdcgm.so.
 //!
-//! Field 1130 (DCGM_FI_DEV_CPU_POWER_WATTS / DCGM_FI_DEV_CPU_POWER_UTIL_CURRENT) is a watched
-//! field, not a live-data field.  The correct setup sequence is:
+//! DCGM has no CPU power backend of its own: its sysmon module reads the ACPI
+//! `power_meter` hwmon channels by `power1_oem_info` label, so every CPU power
+//! field *is* one ACPI rail (NVIDIA/DCGM `modules/sysmon/DcgmSystemMonitor.cpp`):
+//!
+//! | field | name                                 | hwmon label             | srtctl rail |
+//! |-------|--------------------------------------|-------------------------|-------------|
+//! | 1130  | DCGM_FI_DEV_CPU_POWER_WATTS          | `CPU Power Socket N`    | `cpu_rail`  |
+//! | 1132  | DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT | `SysIO Power Socket N`  | `soc`       |
+//! | 1131  | DCGM_FI_DEV_CPU_POWER_LIMIT_WATTS    | `Grace Power Socket N` **cap** only |
+//!
+//! No field reports the `Grace Power Socket N` envelope's draw, so DCGM mode
+//! can never match ACPI mode's `power_w`; it publishes the rails it has. The
+//! reader watches every field in [`POWER_FIELDS`] and returns one value per
+//! (entity, field). Field 1130 stays the value srtctl files as the socket's
+//! `power_w`, so older collectors see exactly what they always did.
+//!
+//! These are watched fields, not live-data fields.  The correct setup sequence is:
 //!   1. dcgmInit / dcgmStartEmbedded  — initialise the library and get a handle.
 //!   2. dcgmGetEntityGroupEntities    — enumerate DCGM_FE_CPU entity IDs.
 //!   3. dcgmGroupCreate + dcgmGroupAddEntity × N — build an entity group.
-//!   4. dcgmFieldGroupCreate          — name a field group containing field 1130.
+//!   4. dcgmFieldGroupCreate          — name a field group containing the power fields.
 //!   5. dcgmWatchFields               — register the watch on that entity+field group.
 //!   6. dcgmUpdateAllFields(true)     — seed the first sample.
 //!   7. dcgmEntitiesGetLatestValues with flags=0 — read cached values on every tick.
@@ -24,8 +39,25 @@ use std::fmt;
 
 // ── Constants derived from dcgm_fields.h / dcgm_structs.h ────────────────────
 
-/// DCGM_FI_DEV_CPU_POWER_WATTS (alias DCGM_FI_DEV_CPU_POWER_UTIL_CURRENT).
-const CPU_POWER_FIELD_ID: u16 = 1130;
+/// DCGM_FI_DEV_CPU_POWER_WATTS (alias DCGM_FI_DEV_CPU_POWER_UTIL_CURRENT):
+/// the ACPI `CPU Power Socket N` rail read through DCGM. This is the value
+/// srtctl has always filed as a DCGM-mode socket's `power_w`.
+pub const CPU_POWER_FIELD_ID: u16 = 1130;
+
+/// DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT: the ACPI `SysIO Power Socket N` rail.
+pub const SYSIO_POWER_FIELD_ID: u16 = 1132;
+
+/// Every CPU-entity power field the reader watches, in emission order. 1130
+/// first so a consumer that only knows the legacy single-field body still
+/// meets it first.
+pub const POWER_FIELDS: [u16; 2] = [CPU_POWER_FIELD_ID, SYSIO_POWER_FIELD_ID];
+
+/// The field sets the reader tries, most informative first. A libdcgm that
+/// rejects 1132 for CPU entities (older releases, or a build whose sysmon does
+/// not expose SysIO) must still come up on 1130 alone -- that is the floor
+/// every earlier exporter had, and in `auto` mode DCGM is the last resort, so
+/// failing here means no CPU power at all.
+const FIELD_SET_CANDIDATES: [&[u16]; 2] = [&POWER_FIELDS, &[CPU_POWER_FIELD_ID]];
 
 /// DCGM_FE_CPU: entity group for Grace CPU nodes.
 const DCGM_FE_CPU: u32 = 7;
@@ -256,6 +288,43 @@ impl fmt::Display for DcgmUnavailable {
 
 impl std::error::Error for DcgmUnavailable {}
 
+/// Create a field group for `field_ids` and register the watch on `group_id`.
+/// Returns the field-group handle; on failure the partially created group is
+/// destroyed so the next candidate starts clean.
+fn watch_field_set(
+    lib: &DcgmLib,
+    handle: Handle,
+    group_id: Handle,
+    field_ids: &[u16],
+    field_group_name: &CString,
+) -> Result<Handle, DcgmUnavailable> {
+    let mut field_group_id: Handle = 0;
+    check(
+        unsafe {
+            (lib.field_group_create)(
+                handle,
+                field_ids.len() as i32,
+                field_ids.as_ptr(),
+                field_group_name.as_ptr(),
+                &mut field_group_id,
+            )
+        },
+        "dcgmFieldGroupCreate",
+    )?;
+    if let Err(e) = check(
+        unsafe { (lib.watch_fields)(handle, group_id, field_group_id, 100_000, 60.0, 600) },
+        "dcgmWatchFields",
+    ) {
+        // Best effort; a leaked field group on a failed attempt is harmless
+        // but tidy up so the fallback attempt is not confused by it.
+        unsafe {
+            (lib.field_group_destroy)(handle, field_group_id);
+        }
+        return Err(e);
+    }
+    Ok(field_group_id)
+}
+
 fn check(ret: i32, context: &str) -> Result<(), DcgmUnavailable> {
     if ret == DCGM_ST_OK {
         Ok(())
@@ -274,7 +343,18 @@ enum HandleSource {
     Embedded,
 }
 
-/// Per-socket CPU power reading via DCGM field 1130.
+/// One `(cpu_id, field_id, watts)` triple per watched power field per entity.
+/// `watts` is `None` when DCGM returned a non-OK status or a non-positive /
+/// non-finite value for that (entity, field).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PowerReading {
+    pub cpu_id: u32,
+    pub field_id: u16,
+    pub watts: Option<f64>,
+}
+
+/// Per-socket CPU power readings via the DCGM CPU-entity power fields ([`POWER_FIELDS`]),
+/// or field 1130 alone when this libdcgm will not watch 1132 (see [`DcgmReader::fields`]).
 ///
 /// `Drop` cleans up the entity group, field group, embedded handle, and library
 /// in the reverse order of construction.
@@ -287,6 +367,8 @@ pub struct DcgmReader {
     entities: Vec<GroupEntityPair>,
     /// CPU entity IDs in enumeration order (index == socket position).
     pub cpu_ids: Vec<u32>,
+    /// Power fields actually watched (see [`FIELD_SET_CANDIDATES`]).
+    fields: &'static [u16],
 }
 
 // SAFETY: DcgmLib is Send; all other fields are plain integers / Vecs.
@@ -396,27 +478,33 @@ impl DcgmReader {
             )?;
         }
 
-        // Create a field group containing only field 1130.
-        let field_ids: [u16; 1] = [CPU_POWER_FIELD_ID];
-        let mut field_group_id: Handle = 0;
-        check(
-            unsafe {
-                (lib.field_group_create)(
-                    handle,
-                    1,
-                    field_ids.as_ptr(),
-                    field_group_name.as_ptr(),
-                    &mut field_group_id,
-                )
-            },
-            "dcgmFieldGroupCreate",
-        )?;
-
-        // Register the watch: 100 ms interval, keep 60 s of history, 600 max samples.
-        check(
-            unsafe { (lib.watch_fields)(handle, group_id, field_group_id, 100_000, 60.0, 600) },
-            "dcgmWatchFields",
-        )?;
+        // Create a field group and register the watch (100 ms interval, 60 s of
+        // history, 600 max samples). Try every power field first; if this
+        // libdcgm rejects the set, fall back to 1130 alone rather than fail.
+        let mut watched: Option<(Handle, &'static [u16])> = None;
+        let mut last_err: Option<DcgmUnavailable> = None;
+        for (attempt, candidate) in FIELD_SET_CANDIDATES.iter().enumerate() {
+            let name =
+                CString::new(format!("{}_{attempt}", field_group_name.to_str().unwrap())).unwrap();
+            match watch_field_set(&lib, handle, group_id, candidate, &name) {
+                Ok(field_group_id) => {
+                    if attempt > 0 {
+                        tracing::warn!(
+                            fields = ?candidate,
+                            wanted = ?POWER_FIELDS,
+                            reason = %last_err.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+                            "DCGM refused the full CPU power field set; watching the CPU rail only (no SysIO)"
+                        );
+                    }
+                    watched = Some((field_group_id, candidate));
+                    break;
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        let Some((field_group_id, fields)) = watched else {
+            return Err(last_err.expect("at least one field-set attempt"));
+        };
 
         // Force the first watched update so the initial read returns real data
         // rather than a blank sample.  waitForUpdate=1 blocks until done.
@@ -441,14 +529,22 @@ impl DcgmReader {
             field_group_id,
             entities,
             cpu_ids,
+            fields,
         })
     }
 
-    /// Read the latest cached power value for each CPU entity.
+    /// The power fields this reader actually watches: [`POWER_FIELDS`], or
+    /// `[1130]` when the field-group fallback fired. Always starts with 1130.
+    pub fn fields(&self) -> &'static [u16] {
+        self.fields
+    }
+
+    /// Read the latest cached value of every power field for each CPU entity.
     ///
-    /// Returns one `(cpu_id, watts)` pair per entity.  `None` means the DCGM
-    /// status for that entity was not `DCGM_ST_OK` or the value was not finite.
-    pub fn read_watts(&mut self) -> Result<Vec<(u32, Option<f64>)>, DcgmUnavailable> {
+    /// Returns one [`PowerReading`] per (entity, field) in [`POWER_FIELDS`]
+    /// order within each entity. `watts` is `None` when the DCGM status for
+    /// that value was not `DCGM_ST_OK` or the value was not finite/positive.
+    pub fn read_watts(&mut self) -> Result<Vec<PowerReading>, DcgmUnavailable> {
         // Force a fresh hardware sample before reading cached values.  The initial
         // update in new() can return 0.0 if the first hardware poll hasn't
         // completed yet; calling here ensures every scrape gets real data.
@@ -458,7 +554,9 @@ impl DcgmReader {
         )?;
 
         let n = self.entities.len();
-        let mut values: Vec<FieldValueV2> = (0..n)
+        let field_ids = self.fields;
+        // DCGM writes entities × fields values, entity-major.
+        let mut values: Vec<FieldValueV2> = (0..n * field_ids.len())
             .map(|_| FieldValueV2 {
                 version: DCGM_FIELD_VALUE_V2_VERSION,
                 entity_group_id: 0,
@@ -472,8 +570,6 @@ impl DcgmReader {
             })
             .collect();
 
-        let field_ids: [u16; 1] = [CPU_POWER_FIELD_ID];
-
         check(
             unsafe {
                 (self.lib.entities_get_latest_values)(
@@ -481,7 +577,7 @@ impl DcgmReader {
                     self.entities.as_ptr(),
                     n as u32,
                     field_ids.as_ptr(),
-                    1,
+                    field_ids.len() as u32,
                     0, // flags=0: use cached data — DCGM_FV_FLAG_LIVE_DATA breaks watched fields
                     values.as_mut_ptr(),
                 )
@@ -489,13 +585,22 @@ impl DcgmReader {
             "dcgmEntitiesGetLatestValues",
         )?;
 
-        let result: Vec<(u32, Option<f64>)> = values
+        // Trust the ids DCGM stamped on each value rather than our request
+        // order: the API documents entity-major output but the stamps are
+        // authoritative, and a value we did not ask for is dropped.
+        let result: Vec<PowerReading> = values
             .iter()
+            .filter(|v| field_ids.contains(&v.field_id))
             .map(|v| {
                 let watts = if v.status == DCGM_ST_OK {
-                    // SAFETY: field 1130 is a double field; union variant is valid.
+                    // SAFETY: every field in POWER_FIELDS is a double field; union variant is valid.
                     let w = unsafe { v.val.dbl };
-                    tracing::debug!(entity_id = v.entity_id, w, "DCGM raw value");
+                    tracing::debug!(
+                        entity_id = v.entity_id,
+                        field_id = v.field_id,
+                        w,
+                        "DCGM raw value"
+                    );
                     if w.is_finite() && w > 0.0 {
                         Some(w)
                     } else {
@@ -504,12 +609,17 @@ impl DcgmReader {
                 } else {
                     tracing::debug!(
                         entity_id = v.entity_id,
+                        field_id = v.field_id,
                         status = v.status,
-                        "DCGM non-OK status for entity; skipping"
+                        "DCGM non-OK status for entity/field; skipping"
                     );
                     None
                 };
-                (v.entity_id, watts)
+                PowerReading {
+                    cpu_id: v.entity_id,
+                    field_id: v.field_id,
+                    watts,
+                }
             })
             .collect();
 
@@ -559,6 +669,28 @@ mod tests {
     #[test]
     fn group_entity_pair_size() {
         assert_eq!(std::mem::size_of::<GroupEntityPair>(), 8);
+    }
+
+    #[test]
+    fn power_fields_are_the_cpu_rail_and_sysio_fields_with_1130_first() {
+        // 1130 must stay first: a legacy consumer reading the first sample per
+        // socket gets the same value it always did.
+        assert_eq!(POWER_FIELDS, [1130, 1132]);
+        assert_eq!(POWER_FIELDS[0], CPU_POWER_FIELD_ID);
+    }
+
+    #[test]
+    fn field_set_fallback_ends_at_the_cpu_rail_alone() {
+        // Every candidate starts with 1130, and the last resort is 1130 by
+        // itself: the floor every earlier exporter had.
+        assert_eq!(FIELD_SET_CANDIDATES[0], &POWER_FIELDS[..]);
+        assert_eq!(
+            *FIELD_SET_CANDIDATES.last().unwrap(),
+            &[CPU_POWER_FIELD_ID][..]
+        );
+        for candidate in FIELD_SET_CANDIDATES {
+            assert_eq!(candidate[0], CPU_POWER_FIELD_ID);
+        }
     }
 
     #[test]

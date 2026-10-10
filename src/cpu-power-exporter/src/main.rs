@@ -9,13 +9,19 @@
 //!   exposes `cpu_power_acpi_watts{sensor,type,socket,oem_info,source="acpi"}`.
 //!   Firmware-averaged; available without DCGM.
 //!
-//! - `dcgm`: reads DCGM field 1130 (`DCGM_FI_DEV_CPU_POWER_WATTS`) via the DCGM
-//!   C API and exposes `cpu_power_dcgm_watts{socket,source="dcgm"}`.
-//!   Instantaneous; requires `libdcgm.so` and a system running the DCGM embedded
-//!   host engine.
+//! - `dcgm`: reads the DCGM CPU-entity power fields via the DCGM C API and
+//!   exposes `cpu_power_dcgm_watts{socket,field_id,source="dcgm"}`, one sample
+//!   per (socket, field). Field 1130 is the ACPI `CPU Power Socket N` rail
+//!   (`cpu_rail`) and 1132 the `SysIO Power Socket N` rail (`soc`); DCGM has no
+//!   field for the `Grace Power Socket N` envelope, so DCGM mode reports about
+//!   half the socket power ACPI mode does. Requires `libdcgm.so` (see `dcgm.rs`).
 //!
-//! - `auto` (default): tries DCGM first; falls back to ACPI if `libdcgm.so` is
-//!   absent or no CPU entities are found.
+//! - `auto` (default): tries ACPI first — it carries the socket envelope plus
+//!   every rail — and falls back to DCGM only when no ACPI `power_meter` hwmon
+//!   sensors are present or no socket-total channel reads positive. (DCGM reads
+//!   the same hwmon files, so if ACPI is absent DCGM usually is too; the
+//!   fallback covers hosts where sysfs is hidden from this process but a
+//!   privileged nv-hostengine is reachable.)
 //!
 //! Endpoints:
 //!   GET /metrics  — Prometheus text format
@@ -139,12 +145,14 @@ struct Args {
 
     /// Power reading back-end.
     ///
-    /// `auto` tries DCGM first and falls back to ACPI when libdcgm.so is
-    /// absent or reports no CPU entities.
+    /// `auto` tries ACPI first (socket envelope + every rail) and falls back
+    /// to DCGM (CPU rail + SysIO only) when no ACPI power_meter sensors exist
+    /// or no socket-total channel reads positive.
     #[arg(long, default_value = "auto")]
     source: SourceMode,
 }
 
+#[derive(Debug)]
 struct Sensor {
     path: PathBuf,
     /// `<hwmon node>/<channel>`: the one label guaranteed distinct per rail,
@@ -332,7 +340,10 @@ fn read_acpi_watts(path: &Path) -> Option<f64> {
     let raw = read_text(path)?;
     let microwatts: f64 = raw.parse().ok()?;
     let watts = microwatts / 1_000_000.0;
-    if watts.is_finite() && watts >= 0.0 {
+    // 0 from power1_average means the sensor has not produced a reading (not
+    // found / no average yet), never an idle socket: a live Grace socket draws
+    // tens of watts. File it as missing so it can never integrate to 0 J.
+    if watts.is_finite() && watts > 0.0 {
         Some(watts)
     } else {
         None
@@ -363,30 +374,47 @@ fn build_metrics(sensors: &[Sensor]) -> String {
     out
 }
 
+const DCGM_METRICS_HEADER: &str = "# HELP cpu_power_dcgm_watts Grace CPU power via DCGM CPU-entity fields (W): \
+field_id=1130 is the CPU rail (ACPI 'CPU Power Socket N'), 1132 the SysIO rail; DCGM has no socket-envelope field.\n\
+# TYPE cpu_power_dcgm_watts gauge\n";
+
 fn build_metrics_dcgm(reader: &Arc<Mutex<dcgm::DcgmReader>>) -> String {
-    let mut out = String::from(
-        "# HELP cpu_power_dcgm_watts Grace CPU instantaneous power via DCGM field 1130 (W).\n\
-         # TYPE cpu_power_dcgm_watts gauge\n",
-    );
     match reader.lock() {
         Err(_) => {
             tracing::error!("DCGM reader mutex poisoned; skipping scrape");
+            DCGM_METRICS_HEADER.to_owned()
         }
         Ok(mut r) => match r.read_watts() {
-            Err(e) => tracing::warn!(error = %e, "DCGM read failed; skipping scrape"),
-            Ok(readings) => {
-                for (cpu_id, watts) in readings {
-                    if let Some(w) = watts {
-                        let _ = writeln!(
-                            out,
-                            "cpu_power_dcgm_watts{{socket=\"{cpu_id}\",source=\"dcgm\"}} {w:.6}",
-                        );
-                    } else {
-                        tracing::debug!(cpu_id, "no DCGM sample for entity; skipping");
-                    }
-                }
+            Err(e) => {
+                tracing::warn!(error = %e, "DCGM read failed; skipping scrape");
+                DCGM_METRICS_HEADER.to_owned()
             }
+            Ok(readings) => render_dcgm_metrics(&readings),
         },
+    }
+}
+
+/// Render DCGM readings as Prometheus text: one `cpu_power_dcgm_watts` sample per
+/// (socket, field) that has a value, labelled with the DCGM `field_id` it came
+/// from. Readings arrive entity-major with field 1130 first, and emission keeps
+/// that order so a legacy collector that ignores `field_id` still meets 1130 first.
+fn render_dcgm_metrics(readings: &[dcgm::PowerReading]) -> String {
+    let mut out = String::from(DCGM_METRICS_HEADER);
+    for r in readings {
+        match r.watts {
+            Some(w) => {
+                let _ = writeln!(
+                    out,
+                    "cpu_power_dcgm_watts{{socket=\"{}\",field_id=\"{}\",source=\"dcgm\"}} {w:.6}",
+                    r.cpu_id, r.field_id,
+                );
+            }
+            None => tracing::debug!(
+                cpu_id = r.cpu_id,
+                field_id = r.field_id,
+                "no DCGM sample for entity/field; skipping"
+            ),
+        }
     }
     out
 }
@@ -487,58 +515,164 @@ async fn accept(listener: &TcpListener, backoff: &mut Duration) -> TcpStream {
     }
 }
 
-fn init_metrics_state(args: &Args) -> Result<MetricsState> {
-    let want_dcgm = matches!(args.source, SourceMode::Dcgm | SourceMode::Auto);
-    let want_acpi = matches!(args.source, SourceMode::Acpi | SourceMode::Auto);
+/// What the ACPI leg of the `auto` ladder decided, before DCGM is consulted.
+#[derive(Debug)]
+enum AcpiDecision {
+    /// ACPI is live: serve these sensors; DCGM is never touched.
+    Use(Vec<Sensor>),
+    /// ACPI is unusable for `reason`; the caller logs it at WARN and steps
+    /// down to DCGM. Only produced in `Auto` -- in `Acpi` the same condition
+    /// is an `Err`.
+    FallBack(String),
+    /// `--source dcgm`: ACPI was not consulted at all.
+    Skip,
+}
 
-    if want_dcgm {
-        match dcgm::DcgmReader::new() {
-            Ok(mut reader) => {
-                tracing::info!(
-                    cpu_count = reader.cpu_ids.len(),
-                    cpu_ids = ?reader.cpu_ids,
-                    "DCGM reader initialised"
-                );
-                // Probe: if every entity returns zero/None the embedded daemon
-                // lacks hardware access (common when running without root while a
-                // system dcgm-exporter holds the DCGM session as root).  In Auto
-                // mode this is a silent fallback to ACPI; in Dcgm mode it is a
-                // hard failure because the caller explicitly requested DCGM.
-                let probe = reader.read_watts();
-                let any_live = probe
-                    .as_ref()
-                    .map(|v| v.iter().any(|(_, w)| w.is_some()))
-                    .unwrap_or(false);
-                if !any_live {
-                    let reason = match probe {
-                        Err(ref e) => format!("read error: {e}"),
-                        Ok(_) => "all entities returned zero watts".into(),
-                    };
-                    if matches!(args.source, SourceMode::Dcgm) {
-                        anyhow::bail!("DCGM yielded no live data: {reason}");
-                    }
-                    tracing::info!(%reason, "DCGM yielded no live data; falling back to ACPI");
-                } else {
-                    return Ok(MetricsState::Dcgm(Arc::new(Mutex::new(reader))));
-                }
-            }
-            Err(e) => {
-                if matches!(args.source, SourceMode::Dcgm) {
-                    anyhow::bail!("DCGM unavailable: {e}");
-                }
-                tracing::info!(reason = %e, "DCGM unavailable; falling back to ACPI");
-            }
+/// The ACPI leg of source selection, kept free of DCGM so the ladder's order
+/// and the `--source acpi` contract are unit-testable (DCGM needs libdcgm).
+///
+/// ACPI first: it is the only source with the socket envelope. DCGM reads the
+/// same hwmon files (minus the envelope), so it is strictly less informative
+/// and only worth falling back to when sysfs shows nothing usable. Three
+/// conditions make ACPI unusable, each with its own reason: no `power_meter`
+/// sensors at all; sensors but no socket-total channel (rails cannot stand in
+/// for `power_w`); or a total channel that never reads positive (`probe`,
+/// which carries the retry policy). In `Auto` each becomes `FallBack`; in
+/// `Acpi` each is an error, never a silent step down.
+fn decide_acpi(
+    mode: &SourceMode,
+    hwmon_root: &Path,
+    probe: impl Fn(&[Sensor]) -> Option<usize>,
+) -> Result<AcpiDecision> {
+    let acpi_only = match mode {
+        SourceMode::Dcgm => return Ok(AcpiDecision::Skip),
+        SourceMode::Acpi => true,
+        SourceMode::Auto => false,
+    };
+    let fail = |reason: String| -> Result<AcpiDecision> {
+        if acpi_only {
+            anyhow::bail!("{reason}");
         }
+        Ok(AcpiDecision::FallBack(reason))
+    };
+
+    let sensors = match discover_sensors(hwmon_root) {
+        Ok(sensors) => sensors,
+        Err(e) if acpi_only => return Err(e),
+        Err(e) => return Ok(AcpiDecision::FallBack(format!("{e:#}"))),
+    };
+    if sensors.is_empty() {
+        return fail(format!(
+            "no ACPI power_meter hwmon sensors found under {}",
+            hwmon_root.display()
+        ));
+    }
+    if !sensors.iter().any(|s| s.kind == "total") {
+        let mut domains: Vec<&str> = sensors.iter().map(|s| s.oem_info.as_str()).collect();
+        domains.sort_unstable();
+        domains.dedup();
+        return fail(format!(
+            "no ACPI socket-total power_meter channels under {} (found: {})",
+            hwmon_root.display(),
+            domains.join(", ")
+        ));
+    }
+    match probe(&sensors) {
+        Some(live) => {
+            tracing::info!(
+                live,
+                total = sensors.len(),
+                "ACPI socket totals report non-zero power; using ACPI"
+            );
+            Ok(AcpiDecision::Use(sensors))
+        }
+        None => fail(format!(
+            "no ACPI socket-total power_meter sensor under {} read positive across {} probe(s) ({} sensors discovered)",
+            hwmon_root.display(),
+            ACPI_PROBE_RETRIES + 1,
+            sensors.len()
+        )),
+    }
+}
+
+fn init_metrics_state(args: &Args) -> Result<MetricsState> {
+    let probe =
+        |sensors: &[Sensor]| probe_acpi_live(sensors, ACPI_PROBE_RETRIES, ACPI_PROBE_RETRY_DELAY);
+    match decide_acpi(&args.source, &args.hwmon_root, probe)? {
+        AcpiDecision::Use(sensors) => return init_acpi_state(sensors),
+        AcpiDecision::FallBack(reason) => {
+            tracing::warn!(%reason, "ACPI unusable; falling back to DCGM");
+        }
+        AcpiDecision::Skip => {}
     }
 
-    if want_acpi {
-        let sensors: &'static [Sensor] = Vec::leak(discover_sensors(&args.hwmon_root)?);
-        if sensors.is_empty() {
-            anyhow::bail!(
-                "no ACPI power_meter hwmon sensors found under {}",
-                args.hwmon_root.display()
+    match dcgm::DcgmReader::new() {
+        Ok(mut reader) => {
+            tracing::info!(
+                cpu_count = reader.cpu_ids.len(),
+                cpu_ids = ?reader.cpu_ids,
+                fields = ?reader.fields(),
+                "DCGM reader initialised (CPU rail{}; no socket envelope)",
+                if reader.fields().contains(&dcgm::SYSIO_POWER_FIELD_ID) { " + SysIO" } else { " only" }
             );
+            // Probe: if every entity returns zero/None the embedded daemon
+            // lacks hardware access (common when running without root while a
+            // system dcgm-exporter holds the DCGM session as root). DCGM is
+            // the last resort in Auto mode, so either way this is fatal.
+            let probe = reader.read_watts();
+            let any_live = probe
+                .as_ref()
+                .map(|v| v.iter().any(|r| r.watts.is_some()))
+                .unwrap_or(false);
+            if !any_live {
+                let reason = match probe {
+                    Err(ref e) => format!("read error: {e}"),
+                    Ok(_) => "all entities returned zero watts".into(),
+                };
+                anyhow::bail!("DCGM yielded no live data: {reason}");
+            }
+            Ok(MetricsState::Dcgm(Arc::new(Mutex::new(reader))))
         }
+        Err(e) => anyhow::bail!("DCGM unavailable: {e}"),
+    }
+}
+
+/// Extra reads after the first all-zero probe before declaring ACPI dead.
+/// hwmon `power1_average` can legitimately read 0 on the first poll after
+/// boot; a false negative here would put a good node on DCGM's half-size
+/// number for the whole run.
+const ACPI_PROBE_RETRIES: u32 = 1;
+const ACPI_PROBE_RETRY_DELAY: Duration = Duration::from_millis(1_000);
+
+/// Read every socket-total sensor up to `1 + retries` times; `Some(n)` with
+/// the count of totals that produced a finite, positive value on the first
+/// pass where any did, `None` when no total read positive on any pass. Only
+/// `total` counts: it is what becomes `power_w`, and a live component rail
+/// next to a dead envelope would otherwise vouch for a socket whose power can
+/// never be published.
+fn probe_acpi_live(sensors: &[Sensor], retries: u32, delay: Duration) -> Option<usize> {
+    for attempt in 0..=retries {
+        let live = sensors
+            .iter()
+            .filter(|s| s.kind == "total" && read_acpi_watts(&s.path).is_some())
+            .count();
+        if live > 0 {
+            return Some(live);
+        }
+        if attempt < retries {
+            tracing::debug!(
+                attempt,
+                "no ACPI socket-total sensor reads positive; retrying probe"
+            );
+            std::thread::sleep(delay);
+        }
+    }
+    None
+}
+
+fn init_acpi_state(sensors: Vec<Sensor>) -> Result<MetricsState> {
+    {
+        let sensors: &'static [Sensor] = Vec::leak(sensors);
         tracing::info!(count = sensors.len(), "discovered ACPI sensors");
         for s in sensors {
             tracing::debug!(
@@ -564,10 +698,8 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
             })
             .context("spawn acpi-poller thread")?;
 
-        return Ok(MetricsState::Acpi(cache));
+        Ok(MetricsState::Acpi(cache))
     }
-
-    unreachable!("one of want_dcgm or want_acpi must be true");
 }
 
 #[tokio::main]
@@ -630,6 +762,328 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn dcgm_metrics_carry_field_id_and_keep_1130_first_per_socket() {
+        let readings = vec![
+            dcgm::PowerReading {
+                cpu_id: 0,
+                field_id: 1130,
+                watts: Some(50.149),
+            },
+            dcgm::PowerReading {
+                cpu_id: 0,
+                field_id: 1132,
+                watts: Some(6.125),
+            },
+            dcgm::PowerReading {
+                cpu_id: 1,
+                field_id: 1130,
+                watts: Some(46.765),
+            },
+            dcgm::PowerReading {
+                cpu_id: 1,
+                field_id: 1132,
+                watts: None,
+            }, // non-OK status: dropped
+        ];
+        let body = render_dcgm_metrics(&readings);
+        let samples: Vec<&str> = body.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(
+            samples,
+            vec![
+                "cpu_power_dcgm_watts{socket=\"0\",field_id=\"1130\",source=\"dcgm\"} 50.149000",
+                "cpu_power_dcgm_watts{socket=\"0\",field_id=\"1132\",source=\"dcgm\"} 6.125000",
+                "cpu_power_dcgm_watts{socket=\"1\",field_id=\"1130\",source=\"dcgm\"} 46.765000",
+            ]
+        );
+        assert!(body.starts_with("# HELP cpu_power_dcgm_watts "));
+        assert!(body.contains("# TYPE cpu_power_dcgm_watts gauge\n"));
+    }
+
+    #[test]
+    fn dcgm_metrics_with_no_readings_is_just_the_header() {
+        let body = render_dcgm_metrics(&[]);
+        assert_eq!(body, DCGM_METRICS_HEADER);
+    }
+
+    #[test]
+    fn acpi_probe_is_dead_when_every_sensor_reads_zero() {
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "0"),
+                ("power2", Some("CPU Power Socket 0"), "0"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        assert_eq!(sensors.len(), 2);
+        assert_eq!(probe_acpi_live(&sensors, 1, Duration::from_millis(1)), None);
+    }
+
+    #[test]
+    fn acpi_probe_is_live_when_any_sensor_reads_positive() {
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "98029000"),
+                ("power2", Some("CPU Power Socket 0"), "0"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        assert_eq!(probe_acpi_live(&sensors, 0, Duration::ZERO), Some(1));
+    }
+
+    #[test]
+    fn acpi_probe_ignores_live_component_rails_when_every_total_is_zero() {
+        // A live CPU rail must not vouch for ACPI when no socket envelope reads
+        // positive: power_w comes from the total, and 0 there would be filed
+        // as a measurement for the whole run.
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "0"),
+                ("power2", Some("CPU Power Socket 0"), "50000000"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        assert_eq!(sensors.len(), 2);
+        assert_eq!(probe_acpi_live(&sensors, 0, Duration::ZERO), None);
+    }
+
+    #[test]
+    fn acpi_probe_counts_only_live_totals() {
+        // Socket 0 healthy, socket 1's envelope stuck at 0 with a live rail: one live total.
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "100000000"),
+                ("power2", Some("CPU Power Socket 0"), "50000000"),
+                ("power3", Some("Grace Power Socket 1"), "0"),
+                ("power4", Some("CPU Power Socket 1"), "52000000"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        assert_eq!(probe_acpi_live(&sensors, 0, Duration::ZERO), Some(1));
+    }
+
+    // --- source-selection ladder (decide_acpi) ---------------------------
+    //
+    // These pin the contract: `auto` is ACPI-first and `--source acpi` errors
+    // instead of stepping down. The probe is injected so the tests never
+    // sleep; the real one wraps probe_acpi_live.
+
+    fn live_probe(_: &[Sensor]) -> Option<usize> {
+        Some(1)
+    }
+    fn dead_probe(_: &[Sensor]) -> Option<usize> {
+        None
+    }
+
+    fn healthy_root() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "98029000"),
+                ("power2", Some("CPU Power Socket 0"), "50000000"),
+            ],
+        );
+        dir
+    }
+
+    #[test]
+    fn auto_uses_acpi_when_a_socket_total_is_live() {
+        let dir = healthy_root();
+        match decide_acpi(&SourceMode::Auto, dir.path(), live_probe).unwrap() {
+            AcpiDecision::Use(sensors) => assert_eq!(sensors.len(), 2),
+            other => panic!("expected Use, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_falls_back_with_the_reason_when_no_total_reads_positive() {
+        let dir = healthy_root();
+        match decide_acpi(&SourceMode::Auto, dir.path(), dead_probe).unwrap() {
+            AcpiDecision::FallBack(reason) => {
+                assert!(
+                    reason.contains("no ACPI socket-total power_meter sensor"),
+                    "{reason}"
+                );
+                assert!(reason.contains("2 sensors discovered"), "{reason}");
+            }
+            other => panic!("expected FallBack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_falls_back_when_no_power_meter_sensors_exist() {
+        let dir = TempDir::new().unwrap(); // empty hwmon root
+        match decide_acpi(&SourceMode::Auto, dir.path(), live_probe).unwrap() {
+            AcpiDecision::FallBack(reason) => {
+                assert!(
+                    reason.contains("no ACPI power_meter hwmon sensors found"),
+                    "{reason}"
+                )
+            }
+            other => panic!("expected FallBack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_falls_back_when_sensors_have_no_socket_total_channel() {
+        // Rails alone cannot stand in for power_w (matches the Python
+        // collector, which refuses to construct without a total channel).
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("CPU Power Socket 0"), "50000000"),
+                ("power2", Some("SysIO Power Socket 0"), "6000000"),
+            ],
+        );
+        let probed = std::cell::Cell::new(false);
+        let decision = decide_acpi(&SourceMode::Auto, dir.path(), |_| {
+            probed.set(true);
+            Some(1)
+        })
+        .unwrap();
+        match decision {
+            AcpiDecision::FallBack(reason) => {
+                assert!(
+                    reason.contains("no ACPI socket-total power_meter channels"),
+                    "{reason}"
+                );
+                assert!(reason.contains("CPU Power Socket 0"), "{reason}");
+            }
+            other => panic!("expected FallBack, got {other:?}"),
+        }
+        assert!(
+            !probed.get(),
+            "a rails-only node is rejected before the liveness probe"
+        );
+    }
+
+    #[test]
+    fn auto_falls_back_when_the_hwmon_root_is_unreadable() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        match decide_acpi(&SourceMode::Auto, &missing, live_probe).unwrap() {
+            AcpiDecision::FallBack(reason) => assert!(reason.contains("list "), "{reason}"),
+            other => panic!("expected FallBack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_acpi_errors_instead_of_falling_back() {
+        // Every condition that is a FallBack in Auto is an Err in Acpi.
+        let healthy = healthy_root();
+        let err = decide_acpi(&SourceMode::Acpi, healthy.path(), dead_probe).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no ACPI socket-total power_meter sensor"),
+            "{err:#}"
+        );
+
+        let empty = TempDir::new().unwrap();
+        let err = decide_acpi(&SourceMode::Acpi, empty.path(), live_probe).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no ACPI power_meter hwmon sensors found"),
+            "{err:#}"
+        );
+
+        let rails_only = TempDir::new().unwrap();
+        write_hwmon(
+            rails_only.path(),
+            "hwmon0",
+            &[("power1", Some("CPU Power Socket 0"), "50000000")],
+        );
+        let err = decide_acpi(&SourceMode::Acpi, rails_only.path(), live_probe).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no ACPI socket-total power_meter channels"),
+            "{err:#}"
+        );
+
+        let missing = empty.path().join("does-not-exist");
+        assert!(decide_acpi(&SourceMode::Acpi, &missing, live_probe).is_err());
+    }
+
+    #[test]
+    fn explicit_acpi_uses_live_sensors() {
+        let dir = healthy_root();
+        assert!(matches!(
+            decide_acpi(&SourceMode::Acpi, dir.path(), live_probe).unwrap(),
+            AcpiDecision::Use(_)
+        ));
+    }
+
+    #[test]
+    fn explicit_dcgm_never_consults_acpi() {
+        // Even a perfectly healthy ACPI tree is skipped: the probe must not run.
+        let dir = healthy_root();
+        let decision = decide_acpi(&SourceMode::Dcgm, dir.path(), |_| {
+            panic!("ACPI probe must not run under --source dcgm")
+        })
+        .unwrap();
+        assert!(matches!(decision, AcpiDecision::Skip));
+    }
+
+    #[test]
+    fn zero_watts_is_missing_not_a_sample() {
+        // 0 from power1_average means the sensor is not reporting; the rail
+        // is left out of the scrape body rather than published as 0 W.
+        let dir = TempDir::new().unwrap();
+        write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[
+                ("power1", Some("Grace Power Socket 0"), "0"),
+                ("power2", Some("CPU Power Socket 0"), "50000000"),
+            ],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        let total = sensors.iter().find(|s| s.kind == "total").unwrap();
+        assert_eq!(read_acpi_watts(&total.path), None);
+        let body = build_metrics(&sensors);
+        assert!(
+            !body.contains("type=\"total\""),
+            "zero total must not be published:\n{body}"
+        );
+        assert!(body.contains("type=\"cpu_rail\""));
+    }
+
+    #[test]
+    fn acpi_probe_retries_once_when_the_first_pass_is_zero() {
+        // A sensor that reads 0 on the first poll and a real value on the
+        // second (first hwmon average after boot) must not flip the node to DCGM.
+        let dir = TempDir::new().unwrap();
+        let hwmon = write_hwmon(
+            dir.path(),
+            "hwmon0",
+            &[("power1", Some("Grace Power Socket 0"), "0")],
+        );
+        let sensors = discover_sensors(dir.path()).unwrap();
+        let path = hwmon.join("power1_average");
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            fs::write(path, "98029000").unwrap();
+        });
+        let live = probe_acpi_live(&sensors, 1, Duration::from_millis(200));
+        writer.join().unwrap();
+        assert_eq!(live, Some(1));
+    }
 
     fn write_hwmon(root: &Path, node: &str, sensors: &[(&str, Option<&str>, &str)]) -> PathBuf {
         let hwmon = root.join(node);
