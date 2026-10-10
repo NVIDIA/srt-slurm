@@ -1,0 +1,66 @@
+Runtime comparison of Raplab and Hecate DEP32 decode logs
+
+Inputs: vr-r41-cn05_decode_w0.out and hecate0203_decode_w0.out.
+Logs contain all workers but iteration logs are rank 0 only. No SSH or cluster
+commands were executed. Percentiles are iteration-weighted, not request ITL.
+
+Method: parse rank-0 iter, scheduled batch size, host_step_time,
+prev_device_step_time, generation tokens, cached KV tokens, and timestamps.
+Skip iter<1000 and records without generation tokens. Match device-event
+samples to the preceding row when iteration IDs are consecutive: the GPU
+measurement lags the current host step by one iteration in tekit's profiler.
+For the main comparison take minutes 10-50 relative to the first retained
+record, batch size 4, and cached_kv_tokens>=64 to exclude obvious dummy-only
+iterations. Full-batch records actually occur mostly in minutes 20-50.
+This is not a precisely identified client measurement window. Local tekit
+source differs from the container commit; observed consecutive lines show
+the same one-iteration timing lag.
+
+Main full-batch comparison (milliseconds, p50 / p90 / p99):
+                   Raplab                         Hecate
+Samples            75855                          71315
+Host step          16.294 / 23.841 / 83.164       17.024 / 18.700 / 24.087
+Device event span  16.321 / 23.083 / 79.211       17.094 / 18.127 / 24.279
+Host steps >25ms   8.83 percent                    0.83 percent
+Host steps >50ms   2.65 percent                    0.28 percent
+
+Batch4 and cached KV / scheduled request between 131072 and 196608:
+                   Raplab                         Hecate
+Samples            29104                          27345
+Host step          16.257 / 23.874 / 86.669       17.023 / 18.666 / 23.957
+Device event span  16.294 / 23.085 / 82.988       17.088 / 18.118 / 23.946
+Other context bins show the same direction. Local cached KV divided by batch
+is only a rough context-load proxy; global attention-DP load and individual
+request lengths are not matched.
+
+Independent later-window check, iterations 50000-139999, batch4/non-dummy:
+Raplab 80038 samples, host p50/p90/p99 16.376/24.047/81.945 ms.
+Hecate 64927 samples, host p50/p90/p99 17.018/18.706/24.239 ms.
+The tail difference persists after early one-request idle/dummy behavior.
+
+Example: Raplab iter41452, line81628, 4 requests, 24 generation tokens,
+no dummy tokens, cached_kv_tokens1211430, host95.732ms. Next log row
+iter41453 reports the previous device span99.013ms. Adjacent ordinary
+steps are around16ms. Hecate also has occasional stalls, but fewer.
+
+Interpretation: Raplab has a faster typical step but a wider execution tail.
+This directly supports a decode-execution contribution to the user's ITL
+gap; a purely frontend explanation is insufficient. It is not a kernel
+breakdown. CUDA-event spans can include stream idle gaps, dependency waits,
+and distributed synchronization, so they do not prove slow GPU arithmetic
+or identify NCCL, fused MegaMoE, KV copies, or host launch stalls individually.
+
+Other observations: startup engine args match except return_perf_metrics;
+Hecate serving NCCL2.30.4 is confirmed, Raplab serving version not logged.
+NIXL UCX contexts differ (Raplab TCP RMA plus CUDA IPC; Hecate RDMA plus
+CUDA IPC), but actual KV payload lanes are not established. The long Raplab
+checkpoint prefetch is startup-only evidence. Bounce warnings are rate-limited
+in practice (many categories appear exactly32 times), so warning counts are
+not comparable event counts or proof of more transfer contention. Large
+idle/dummy stalls occur on both clusters and should not be treated as ongoing
+request ITL samples.
+
+Next evidence needed: short distributed profiles during busy batch4 decode,
+showing fused MegaMoE, attention, collectives, CUDA copies, stream waits and
+host activity; request token timestamps to compare engine tails with client
+ITL; actual serving NCCL version and actual NIXL KV payload lanes.
