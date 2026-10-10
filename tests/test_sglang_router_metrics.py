@@ -18,9 +18,8 @@ from unittest.mock import MagicMock, patch
 
 from srtctl.backends import SGLangBackend
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
-from srtctl.core.schema import TachometerConfig
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
-from srtctl.core.schema import DynamoConfig, TachometerConfig, RoleConfig
+from srtctl.core.schema import DynamoConfig, RoleConfig, TachometerConfig
 from srtctl.core.slurm import start_srun_process
 from srtctl.core.telemetry import generate_tachometer_config
 from srtctl.core.topology import Process
@@ -146,8 +145,8 @@ def test_tachometer_terminate_signals_the_step_then_waits() -> None:
     scancel = SimpleNamespace(returncode=0, stdout="", stderr="")
     with (
         patch.dict("os.environ", {"SLURM_JOB_ID": "12440"}),
-        patch("srtctl.core.processes.shutil.which", return_value="/usr/bin/slurm-tool"),
-        patch("srtctl.core.processes.subprocess.run", side_effect=[squeue, scancel]) as run,
+        patch("srtctl.core.launcher.shutil.which", return_value="/usr/bin/slurm-tool"),
+        patch("srtctl.core.launcher.subprocess.run", side_effect=[squeue, scancel]) as run,
         patch("srtctl.core.processes.terminate_and_reap") as reap,
     ):
         proc.terminate()
@@ -164,8 +163,8 @@ def test_terminate_falls_back_to_srun_sigterm_when_the_step_is_not_found() -> No
     squeue = SimpleNamespace(returncode=0, stdout="12440.extern extern\n", stderr="")
     with (
         patch.dict("os.environ", {"SLURM_JOB_ID": "12440"}),
-        patch("srtctl.core.processes.shutil.which", return_value="/usr/bin/slurm-tool"),
-        patch("srtctl.core.processes.subprocess.run", return_value=squeue),
+        patch("srtctl.core.launcher.shutil.which", return_value="/usr/bin/slurm-tool"),
+        patch("srtctl.core.launcher.subprocess.run", return_value=squeue),
         patch("srtctl.core.processes.terminate_and_reap") as reap,
     ):
         reap.return_value = SimpleNamespace(reaped=True, force_killed=False)

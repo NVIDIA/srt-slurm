@@ -82,7 +82,9 @@ set -e
 # Setup directories
 SRTCTL_SOURCE="{{ srtctl_source }}"
 OUTPUT_BASE="{{ output_base }}"
-OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
+# SRTCTL_JOB_ID is set by launcher: docker, which runs this script without sbatch.
+JOB_ID="${SLURM_JOB_ID:-${SRTCTL_JOB_ID}}"
+OUTPUT_DIR="${OUTPUT_BASE}/${JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 {% if staged_config_dir %}
@@ -100,7 +102,7 @@ exec 2>&1
 echo "=========================================="
 echo "🚀 srtctl {% if serve_only %}Serve-Only{% else %}Sweep{% endif %} Orchestrator"
 echo "=========================================="
-echo "Job ID: ${SLURM_JOB_ID}"
+echo "Job ID: ${JOB_ID}"
 echo "Config: {{ config_path }}"
 echo "Nodes: ${SLURM_JOB_NUM_NODES}"
 echo "CPUs per node: ${SLURM_JOB_CPUS_PER_NODE:-unknown}"
@@ -129,9 +131,14 @@ echo "Preparing srtctl environment..."
 # This avoids arch mismatch when login node (x86_64) != compute node (aarch64)
 export PATH="${SRTCTL_SOURCE}/bin:$HOME/.local/bin:$PATH"
 
-# Use a compute-specific venv so we don't pick up the login node's .venv/
-# (which may be built for a different arch, e.g. x86_64 login vs aarch64 compute)
-export UV_PROJECT_ENVIRONMENT="${SRTCTL_SOURCE}/.venv-compute"
+# Under Slurm, use a compute-specific venv so we don't pick up the login node's .venv/
+# (which may be built for a different arch, e.g. x86_64 login vs aarch64 compute).
+# A launcher: docker job (SRTCTL_JOB_ID) runs on the machine that ran apply, so it uses .venv.
+if [ -n "${SRTCTL_JOB_ID:-}" ]; then
+    export UV_PROJECT_ENVIRONMENT="${SRTCTL_SOURCE}/.venv"
+else
+    export UV_PROJECT_ENVIRONMENT="${SRTCTL_SOURCE}/.venv-compute"
+fi
 
 if ! command -v uv &> /dev/null; then
     echo "ERROR: uv not found. Run 'make setup ARCH=<compute_arch>' first."
@@ -163,14 +170,14 @@ echo ""
 # Output goes to SLURM's --output (sweep_%j.log)
 set +e  # Temporarily disable exit-on-error to capture exit code
 cd "${SRTCTL_SOURCE}"
-# Lock-protected venv sync to avoid concurrent .venv-compute teardown/recreate
+# Lock-protected venv sync to avoid concurrent venv teardown/recreate
 # races across simultaneous SLURM jobs sharing this directory. uv may decide
 # the existing venv is invalid (broken python interpreter symlink) and tear
 # it down + rebuild; if N jobs do that at once they stomp each other with
 # "Directory not empty" / "Failed to spawn 'python -m'" / missing CACHEDIR.TAG
 # errors. The flock serializes only the venv init; the lock is released
 # before the actual sweep so jobs still run in parallel.
-flock -x "${SRTCTL_SOURCE}/.venv-compute.lock" uv sync --python 3.12 --no-dev
+flock -x "${UV_PROJECT_ENVIRONMENT}.lock" uv sync --python 3.12 --no-dev
 uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"{% if serve_only %} --serve-only{% endif %}
 EXIT_CODE=$?
 set -e  # Re-enable exit-on-error

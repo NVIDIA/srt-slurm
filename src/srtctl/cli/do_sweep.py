@@ -35,6 +35,7 @@ from srtctl.cli.mixins import (
 )
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
+from srtctl.core.launcher import get_launcher
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
     ProcessRegistry,
@@ -44,7 +45,7 @@ from srtctl.core.processes import (
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
-from srtctl.core.slurm import get_slurm_job_id, start_srun_process
+from srtctl.core.slurm import start_srun_process
 from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
 from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
@@ -158,11 +159,8 @@ class SweepOrchestrator(
                     written.add(filename)
 
     def _print_connection_info(self) -> None:
-        """Print srun commands for connecting to nodes."""
-        container_args = f"--container-image={self.runtime.container_image}"
-        mounts_str = ",".join(f"{src}:{dst}" for src, dst in self.runtime.container_mounts.items())
-        if mounts_str:
-            container_args += f" --container-mounts={mounts_str}"
+        """Print the commands for getting a shell next to the job's processes."""
+        launcher = get_launcher()
 
         logger.info("")
         logger.info("=" * 60)
@@ -172,24 +170,14 @@ class SweepOrchestrator(
             logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
         logger.info("")
         logger.info("To connect to head node (%s):", self.runtime.nodes.head)
-        logger.info(
-            "  srun %s --jobid %s -w %s --overlap --pty bash",
-            container_args,
-            self.runtime.job_id,
-            self.runtime.nodes.head,
-        )
+        logger.info("  %s", launcher.shell_command(self.runtime, self.runtime.nodes.head))
 
         # Print worker node connection commands
         for node in self.runtime.nodes.compute:
             if node != self.runtime.nodes.head:
                 logger.info("")
                 logger.info("To connect to worker node (%s):", node)
-                logger.info(
-                    "  srun %s --jobid %s -w %s --overlap --pty bash",
-                    container_args,
-                    self.runtime.job_id,
-                    node,
-                )
+                logger.info("  %s", launcher.shell_command(self.runtime, node))
 
         logger.info("=" * 60)
         logger.info("")
@@ -923,9 +911,9 @@ def main():
             logger.info("Setup script override: %s", setup_script_override)
             config = replace(config, setup_script=setup_script_override)
 
-        job_id = get_slurm_job_id()
+        job_id = get_launcher().job_id()
         if not job_id:
-            logger.error("Not running in SLURM (SLURM_JOB_ID not set)")
+            logger.error("Not running inside a job (SLURM_JOB_ID, or SRTCTL_JOB_ID under launcher: docker, not set)")
             sys.exit(1)
 
         # Type narrowing: job_id is str after the check above
