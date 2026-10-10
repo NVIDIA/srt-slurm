@@ -18,6 +18,7 @@ import itertools
 import logging
 import math
 import os
+import re
 import shlex
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import field
@@ -1293,7 +1294,8 @@ class BenchmarkConfig:
         if self.concurrencies is None:
             return []
         if isinstance(self.concurrencies, str):
-            return [int(x) for x in self.concurrencies.split("x")]
+            # "x" is the documented separator; "," is what trace-replay recipes historically passed through.
+            return [int(x) for x in re.split(r"[x,]", self.concurrencies) if x.strip()]
         return list(self.concurrencies)
 
     Schema: ClassVar[builtins.type[Schema]] = Schema

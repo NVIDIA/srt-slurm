@@ -1315,6 +1315,25 @@ class TestTraceReplayRunner:
         assert cmd[7] == "7"  # itl threshold
         assert cmd[8] == "/model"  # tokenizer path (local model)
 
+    @pytest.mark.parametrize("concurrencies", [[8, 32], "8x32", "8,32"])
+    def test_build_command_accepts_every_concurrency_spelling(self, concurrencies):
+        """bench.sh splits on commas, so the documented "8x32" string is normalized too."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/qwen", container="/image", precision="bf16"),
+            resources=ResourceConfig(gpu_type="gb300"),
+            benchmark=BenchmarkConfig(type="trace-replay", trace_file="/t.jsonl", concurrencies=concurrencies),
+        )
+        assert TraceReplayRunner().build_command(config, runtime)[5] == "8,32"
+
     def test_build_command_default_thresholds(self):
         """Build command uses default thresholds when not specified."""
         from unittest.mock import MagicMock
