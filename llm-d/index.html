@@ -1,0 +1,2989 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/llm-d/">
+      
+      
+        <link rel="prev" href="../smg/">
+      
+      
+        <link rel="next" href="../benchmarks/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>llm-d Router - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#llm-d-router" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              llm-d Router
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../installation/" class="md-tabs__link">
+          
+  
+  
+  Get Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Write a Recipe
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Run and Operate
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../observability/" class="md-tabs__link">
+          
+  
+  
+  Analyze
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../schema-reference/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Internals
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Get Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write a Recipe
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Write a Recipe
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recipe Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../topology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topology and Placement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../frontends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Frontends and Dynamo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../smg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Shepherd Model Gateway
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    llm-d Router
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    llm-d Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-runs-where" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What runs where
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What runs where">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-the-epp-and-envoy-are-the-frontend-and-the-sidecar-is-a-service" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why the EPP and Envoy are the frontend and the sidecar is a service
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#endpoint-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoint discovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#readiness-and-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Readiness and metrics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#images" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Images
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#routing-to-dp-ranks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing to DP ranks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#precise-prefix-cache-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Precise prefix-cache routing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5" id="__nav_3_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runtime-env/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Paths, Mounts, and Environment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_7" id="__nav_3_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Services
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_10" id="__nav_3_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workloads
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Workloads
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sidecars/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native Sidecars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tilert/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TileRT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tokenspeed/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TokenSpeed
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../shadow-engine-recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Shadow Engine Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-weight-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Fast Engine Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run and Operate
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Run and Operate
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Analyze
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Analyze
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability and Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../perf-analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-run Performance Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_4" id="__nav_5_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Power
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Power
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_5" id="__nav_5_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    DSight
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight-data-flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Flow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight-log-metrics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Log Metrics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Internals
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Internals
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-runs-where" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What runs where
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What runs where">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-the-epp-and-envoy-are-the-frontend-and-the-sidecar-is-a-service" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why the EPP and Envoy are the frontend and the sidecar is a service
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#endpoint-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoint discovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#readiness-and-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Readiness and metrics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#images" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Images
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#routing-to-dp-ranks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing to DP ranks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#precise-prefix-cache-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Precise prefix-cache routing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/llm-d.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="llm-d-router">llm-d router<a class="headerlink" href="#llm-d-router" title="Permanent link">&para;</a></h1>
+<p><code>frontend.type: llm-d</code> routes requests with the <a href="https://llm-d.ai">llm-d</a> router: the
+Endpoint Picker (EPP) behind Envoy, in front of direct <code>vllm serve</code> workers. The EPP
+scores the workers with the plugins in <code>frontend.epp_config</code> (prefix-cache affinity,
+queue depth, load, ...) and, for prefill/decode, picks a prefill and a decode worker for
+every request. No Dynamo, NATS, or etcd is involved.</p>
+<p>Upstream references are pinned to llm-d-router
+<a href="https://github.com/llm-d/llm-d-router/tree/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26">v0.10.0</a>
+and the llm-d <a href="https://github.com/llm-d/llm-d/tree/7fb84b0adf8e1d41eb2cef105fc1aafaf5a9b64f/guides/no-kubernetes-deployment">no-Kubernetes guide</a>.</p>
+<h2 id="what-runs-where">What runs where<a class="headerlink" href="#what-runs-where" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Process</th>
+<th>Where</th>
+<th>Launched as</th>
+<th>Port</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Envoy</td>
+<td>router node</td>
+<td>the frontend (<code>llm-d-envoy_0</code>)</td>
+<td>the public port (8000); admin <code>/ready</code> on 9901</td>
+</tr>
+<tr>
+<td>EPP</td>
+<td>router node</td>
+<td>the frontend (<code>llm-d-epp_0</code>)</td>
+<td>ext_proc gRPC 9002, gRPC health 9003, Prometheus 9090</td>
+</tr>
+<tr>
+<td>P/D sidecar</td>
+<td>every routable decode worker (prefill/decode jobs only)</td>
+<td>the implied <code>llm-d-sidecar</code> service</td>
+<td><code>Process.proxy_port</code>, from the allocator</td>
+</tr>
+<tr>
+<td>vLLM</td>
+<td>every worker</td>
+<td>the backend, as for the other static routers</td>
+<td><code>Process.http_port</code></td>
+</tr>
+</tbody>
+</table>
+<p>Envoy owns the public port. For every request it asks the EPP over ext_proc
+(<code>FULL_DUPLEX_STREAMED</code>) which endpoint to use; the EPP sets the
+<code>x-gateway-destination-endpoint</code> header and Envoy's <code>ORIGINAL_DST</code> cluster forwards the
+request there. For prefill/decode the EPP picks a decode endpoint and names the chosen
+prefill worker in <code>x-prefiller-host-port</code>
+(<a href="https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/framework/plugins/scheduling/profilehandler/disagg/disagg_profile_handler.go#L570-L573"><code>disagg_profile_handler.go</code></a>).
+The decode endpoint is llm-d's P/D sidecar: it sends the request to that prefill worker
+first, then hands the returned <code>kv_transfer_params</code> to its own vLLM, whose KV connector
+pulls the cache from the prefill worker
+(<a href="https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/sidecar/proxy/connector_nixlv2.go#L54"><code>connector_nixlv2.go</code></a>).
+Everything else, <code>/metrics</code> included, the sidecar proxies to its vLLM.</p>
+<h3 id="why-the-epp-and-envoy-are-the-frontend-and-the-sidecar-is-a-service">Why the EPP and Envoy are the frontend and the sidecar is a service<a class="headerlink" href="#why-the-epp-and-envoy-are-the-frontend-and-the-sidecar-is-a-service" title="Permanent link">&para;</a></h3>
+<p>The frontend is the process that owns the public port and decides when the job is
+ready, so Envoy and the EPP are the frontend. They also have to start at the frontend's
+moment: llm-d discovers workers through Kubernetes or a file, and the workers here are
+plain engines that register nowhere, so srtctl is the registrar. It writes the endpoints
+file once every worker answers <code>/health</code> (the static routers' pre-start gate), then starts
+the EPP and Envoy; no service phase sits between the workers and the frontend.</p>
+<p>The sidecar is a different process with its own image, placement, and health check, one
+per decode worker, on the worker's node; that is what <code>services</code> with
+<code>placement.per: worker</code> is for. Its <code>GET /health</code> answers 200 on its own
+(<a href="https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/sidecar/proxy/proxy.go#L624-L626"><code>proxy.go</code></a>),
+so it starts in the <code>before_workers</code> phase and gates on that probe. It is critical: a
+dead sidecar takes its decode worker out of the routing pool. The frontend implies it,
+as Dynamo implies etcd; declare a service named <code>llm-d-sidecar</code> to change it:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">llm-d-sidecar</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">llm-d-sidecar</span>
+<span class="w">    </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-llm-d-image</span><span class="w">            </span><span class="c1"># default: frontend.container_image, else the job container</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--enable-prefiller-sampling</span><span class="w">      </span><span class="c1"># appended after the flags srtctl sets</span>
+</code></pre></div>
+<p>srtctl sets <code>--port</code> (the worker's <code>Process.proxy_port</code>), <code>--model-server-port</code> (its
+<code>Process.http_port</code>), <code>--kv-connector</code>, and <code>--secure-proxy=false</code>; overriding these
+flags in <code>command</code> or <code>args</code> is rejected at config load. P/D jobs require exactly one
+enabled sidecar service definition; customize the implied entry by name.
+The allocator hands out the proxy port (<code>PROXY_PORTS</code>) for every routable worker of a
+mode the frontend proxies (<code>Frontend.proxied_worker_modes</code>), so two decode workers on
+one node never collide. The <code>--kv-connector</code> protocol comes from the decode workers' vLLM
+connector class. Engine commands and sidecar selection use the same payload:
+a role's explicit <code>kv-transfer-config</code> takes precedence over its <code>connector</code>,
+which takes precedence over <code>engine.connector</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Decode connector</th>
+<th>Sidecar protocol</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>NixlConnector</code></td>
+<td><code>nixlv2</code></td>
+</tr>
+</tbody>
+</table>
+<p>A <code>MultiConnector</code> maps through the first connector it wraps that has a protocol, so
+NIXL next to vLLM's <code>OffloadingConnector</code> (CPU KV offloading, as in llm-d's tiered
+wide-EP guide) runs <code>nixlv2</code>. Any other decode connector is rejected at load time.</p>
+<h2 id="endpoint-discovery">Endpoint discovery<a class="headerlink" href="#endpoint-discovery" title="Permanent link">&para;</a></h2>
+<p>The EPP runs without Kubernetes when its configuration names a discovery plugin
+(<a href="https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/cmd/epp/runner/runner.go#L253-L261"><code>runner.go</code></a>,
+<a href="https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/cmd/epp/runner/runner.go#L1042-L1208"><code>runWithFileDiscovery</code></a>).
+srtctl writes three files into the log directory (every container sees it at <code>/logs</code>):</p>
+<ul>
+<li><code>llm-d-endpoints.yaml</code>: one endpoint per routable worker process (the one with an HTTP
+  port: a multi-node worker's leader), at its IPv4 address on the cluster's network
+  interface, labelled <code>llm-d.ai/role: prefill</code>, <code>decode</code>, or <code>both</code> (aggregate). A decode
+  endpoint is its sidecar's port.</li>
+<li><code>llm-d-epp-config.yaml</code>: <code>frontend.epp_config</code> with the
+  <a href="https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/framework/plugins/datalayer/discovery/file/plugin.go"><code>file-discovery</code></a>
+  plugin (<code>watchFile: false</code>) and <code>dataLayer.discovery</code> added. <code>discovery.pluginRef</code> is
+  the spelling v0.10 and v0.11 both accept. A recipe that configures discovery itself is
+  rejected.</li>
+<li><code>llm-d-envoy.yaml</code>: the guide's Envoy configuration with the public port, an admin
+  listener srtctl can reach, no request timeout, <code>/metrics</code> answered with 404 (routed, it
+  would return a different worker's counters on every scrape), and an access log
+  (<code>llm-d-envoy-access.log</code>) recording, for every request, the endpoint the EPP picked
+  (<code>upstream=</code>) and the prefill worker it named (<code>prefiller=</code>).</li>
+</ul>
+<h2 id="readiness-and-metrics">Readiness and metrics<a class="headerlink" href="#readiness-and-metrics" title="Permanent link">&para;</a></h2>
+<p>The job is ready when Envoy's admin <code>/ready</code> answers 200 and the EPP's
+<code>llm_d_epp_ready_endpoints</code> gauge, the endpoints whose metrics it scraped within its
+staleness window
+(<a href="https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/metrics/llm_d_router_metrics.go#L238-L245"><code>llm_d_router_metrics.go</code></a>,
+<a href="https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/datalayer/logger/logger.go#L105-L116"><code>logger.go</code></a>),
+counts every endpoint in the file. The EPP scrapes a worker on the address it routes
+to, so a decode worker is scraped through its sidecar. Tachometer scrapes the EPP's
+Prometheus listener as the frontend; worker metrics stay on vLLM's own port.</p>
+<h2 id="images">Images<a class="headerlink" href="#images" title="Permanent link">&para;</a></h2>
+<p>The EPP, Envoy, and the sidecar run from <code>frontend.container_image</code> (the sidecar unless
+its service sets <code>container</code>), or the job container when it is unset, as the executables
+<code>epp</code>, <code>envoy</code>, and <code>pd-sidecar</code> on <code>PATH</code>. llm-d publishes the EPP and the sidecar as
+distroless images (<code>/app/epp</code>, <code>/app/pd-sidecar</code>), which pyxis cannot start: it enters a
+container through <code>sh</code>
+(<a href="https://github.com/NVIDIA/pyxis/blob/107519944221822ea1dace4db8e7234b2eaa4cd5/pyxis_slurmstepd.c#L1128-L1135"><code>pyxis_slurmstepd.c</code></a>). Build an image with a shell that carries the three executables,
+for example on top of the vLLM image the workers run:</p>
+<!-- docs-yaml: skip -->
+<div class="highlight"><pre><span></span><code><span class="k">FROM</span><span class="w"> </span><span class="s">vllm/vllm-openai:&lt;tag&gt;</span>
+<span class="k">COPY</span><span class="w"> </span>--from<span class="o">=</span>ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.10.0<span class="w"> </span>/app/epp<span class="w"> </span>/usr/local/bin/epp
+<span class="k">COPY</span><span class="w"> </span>--from<span class="o">=</span>ghcr.io/llm-d/llm-d-router-disagg-sidecar:v0.10.0<span class="w"> </span>/app/pd-sidecar<span class="w"> </span>/usr/local/bin/pd-sidecar
+<span class="k">COPY</span><span class="w"> </span>--from<span class="o">=</span>envoyproxy/envoy:distroless-v1.33.2<span class="w"> </span>/usr/local/bin/envoy<span class="w"> </span>/usr/local/bin/envoy
+</code></pre></div>
+<h2 id="recipe">Recipe<a class="headerlink" href="#recipe" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="nt">frontend</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">llm-d</span>
+<span class="w">  </span><span class="nt">enable_multiple_frontends</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">  </span><span class="nt">container_image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">llm-d-vllm</span><span class="w">       </span><span class="c1"># optional: the router image</span>
+<span class="w">  </span><span class="nt">epp_config</span><span class="p">:</span><span class="w">                       </span><span class="c1"># EndpointPickerConfig without discovery</span>
+<span class="w">    </span><span class="nt">plugins</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">schedulingProfiles</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">args</span><span class="p">:</span><span class="w">                             </span><span class="c1"># extra EPP flags, e.g. log verbosity</span>
+<span class="w">    </span><span class="nt">v</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="nt">engine</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">vllm</span>
+<span class="w">  </span><span class="nt">connector</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nixl</span>
+</code></pre></div>
+<p><code>frontend.epp_config</code> is accepted only with <code>frontend.type: llm-d</code>.
+<code>frontend.args</code> are passed to the EPP; overriding the pool, configuration, port, or
+<code>secure-serving</code> flags is rejected at config load. A prefill/decode <code>epp_config</code> needs
+<code>prefill</code> and <code>decode</code> scheduling profiles and the <code>disagg-profile-handler</code>.
+Without <code>epp_config</code>, srtctl runs the scorers of llm-d's
+no-Kubernetes guide
+(<a href="https://github.com/llm-d/llm-d/blob/7fb84b0adf8e1d41eb2cef105fc1aafaf5a9b64f/guides/no-kubernetes-deployment/router/epp/config.yaml"><code>config.yaml</code></a>):
+queue depth (2), KV-cache utilization (2), approximate prefix cache (3), and
+no-hit LRU (2). A prefill/decode job gets them as a <code>prefill</code> profile, a <code>decode</code>
+profile that scores by queue depth and KV-cache utilization alone, and the
+<code>disagg-profile-handler</code> with <code>always-disagg-pd-decider</code>. (The EPP's own default applies
+only to a configuration file without plugins, and srtctl's always carries file
+discovery.) See
+<a href="https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-disagg.yaml"><code>examples/vllm/llm-d-disagg.yaml</code></a> and
+<a href="https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-agg.yaml"><code>examples/vllm/llm-d-agg.yaml</code></a>.</p>
+<h2 id="routing-to-dp-ranks">Routing to DP ranks<a class="headerlink" href="#routing-to-dp-ranks" title="Permanent link">&para;</a></h2>
+<p>A vLLM worker with <code>data-parallel-size</code> is one <code>vllm serve</code> that balances its DP ranks
+itself (the leader serves the API, other nodes run headless ranks), so it is one EPP
+endpoint, as it is one SMG worker. Set <code>data-parallel-external-lb: true</code> in the role's
+<code>args</code> to have the EPP route to the ranks themselves, as llm-d's wide-EP guide does: srtctl
+then launches every DP rank as its own <code>vllm serve --data-parallel-rank &lt;r&gt;
+--data-parallel-address &lt;rank 0's node&gt;</code> (vLLM's external load balancing) on its own
+allocated HTTP port, on one node or across several, and lists each rank in the endpoints
+file. Each rank's step and log carry <code>_dp&lt;r&gt;</code> (<code>agg_0_&lt;node&gt;_dp3</code>, <code>&lt;node&gt;_agg_w0_dp3.out</code>),
+and in a prefill/decode job every decode rank gets its own P/D sidecar. vLLM accepts
+external load balancing for MoE models only. See
+<a href="https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-dp-ranks.yaml"><code>examples/vllm/llm-d-dp-ranks.yaml</code></a>.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">agg</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">gpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">data-parallel-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16</span>
+<span class="w">      </span><span class="nt">data-parallel-external-lb</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<h2 id="precise-prefix-cache-routing">Precise prefix-cache routing<a class="headerlink" href="#precise-prefix-cache-routing" title="Permanent link">&para;</a></h2>
+<p>The approximate prefix scorers guess where a prefix is cached from the requests the EPP
+routed. With <code>roles.&lt;role&gt;.kv_events</code> the workers report it instead: every vLLM worker of
+the role publishes its KV-cache events (blocks stored and evicted) to the EPP's
+<a href="https://github.com/llm-d/llm-d-router/tree/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/framework/plugins/requestcontrol/dataproducer/preciseprefixcache"><code>precise-prefix-cache-producer</code></a>,
+which indexes them per endpoint; <code>prefix-cache-scorer</code> with
+<code>prefixMatchInfoProducerName: precise-prefix-cache-producer</code> scores the endpoints from
+that index. The producer hashes the prompt's real token IDs, so the configuration also
+needs a <code>token-producer</code>, which tokenizes through a worker's <code>/v1/*/render</code> endpoints:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">frontend</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">epp_config</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">plugins</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">token-producer</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">precise-prefix-cache-producer</span>
+<span class="w">        </span><span class="nt">parameters</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">indexerConfig</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">kvBlockIndexConfig</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">enableMetrics</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">           </span><span class="c1"># index admissions and lookup hits on /metrics</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prefix-cache-scorer</span>
+<span class="w">        </span><span class="nt">parameters</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">prefixMatchInfoProducerName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">precise-prefix-cache-producer</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">max-score-picker</span>
+<span class="w">    </span><span class="nt">schedulingProfiles</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">agg</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">kv_events</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<p>srtctl wires the rest:</p>
+<ul>
+<li>The producer's <code>kvEventsConfig.zmqEndpoint</code> is <code>tcp://*:5557</code> (<code>discoverPods: false</code>):
+  the EPP binds one ZMQ socket on the router node and every worker connects to it. The
+  producer's per-pod mode dials the same port on every endpoint address, which workers
+  sharing a node cannot all bind (llm-d-router v0.10's file discovery gives every
+  endpoint rank 0).</li>
+<li>Every publishing worker gets <code>--kv-events-config</code> with <code>endpoint:
+  tcp://&lt;router&gt;:5557</code> and <code>topic: kv@&lt;address&gt;:&lt;port&gt;@&lt;served model&gt;</code>, naming the
+  endpoint the EPP routes to (a decode worker's sidecar port) and the model requests
+  name; the producer files the events under that endpoint
+  (<a href="https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/kvevents/engineadapter/vllm_adapter.go#L52-L58"><code>vllm_adapter.go</code></a>).
+  vLLM <a href="https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/distributed/kv_events.py#L336-L340">adds the publisher's DP rank to its port</a>,
+  so an external-LB rank <code>r</code> is given <code>5557 - r</code>. The engine sets
+  <a href="https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/v1/engine/core.py#L1303-L1313"><code>data_parallel_index</code> to the global rank</a>,
+  which the <a href="https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/v1/core/sched/scheduler.py#L161-L164">scheduler passes to the publisher</a>.
+  An explicit TCP address <a href="https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/distributed/kv_events.py#L410-L427">connects rather than binds</a>,
+  so all ranks reach the EPP's one subscriber socket.</li>
+<li>The token producer's <code>vllm.url</code> is the first prefill worker's (else the first worker's)
+  own vLLM API, and <code>modelName</code> defaults to the served model name.</li>
+</ul>
+<p>These vLLM references are pinned to <code>ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9</code>,
+shipped in the tested <code>quay.io/rh-ee-imarkov/llm-d-nokube-vllm:dspark-0814-nightly</code> image.
+The <a href="https://github.com/SemiAnalysisAI/InferenceX/actions/runs/37396765122/artifacts/11388917384">run artifact</a>
+records <code>VLLM_IMAGE_TAG=vllm/vllm-openai:nightly-ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9</code>
+and installed version <code>0.27.2rc1.dev77+gac7509e2b</code> in <code>fingerprint_decode_w0.json</code>.</p>
+<p>With vLLM's <code>OffloadingConnector</code> and its <code>self_describing_kv_events: true</code>, a worker also
+reports the blocks it offloads to host memory; the producer indexes them as the <code>cpu</code> tier
+and weights tiers by <code>indexerConfig.kvCacheBackendConfigs</code> (<code>gpu</code> 1.0, <code>cpu</code> 0.8 by
+default).</p>
+<p>The roles that publish and the producer go together: either without the other is
+rejected, as are a producer <code>kvEventsConfig</code> that sets the socket or discovery, a
+<code>token-producer</code> <code>vllm.url</code>, worker <code>kv_events.endpoint</code> or <code>kv_events.topic</code>, and a
+router not on the head node. The tokenizer URL is managed even without precise routing.
+A role with <code>data-parallel-size</code> publishes only with <code>data-parallel-external-lb: true</code>: each DP rank
+publishes its own events, and the EPP can place a prefix only on an endpoint that is
+that rank.</p>
+<h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
+<ul>
+<li>vLLM workers over HTTP only; gRPC roles are rejected.</li>
+<li>One router replica: the EPP keeps its scheduling state (the approximate prefix index,
+  in-flight load) in memory. Multi-node jobs require <code>enable_multiple_frontends: false</code>:
+  nginx would put the router on a different node from the public endpoint, where readiness
+  checks expect Envoy's admin and the EPP's metrics listeners. Setting
+  <code>num_additional_frontends: 0</code> still enables nginx and is rejected too. Single-node jobs
+  never launch nginx, regardless of <code>enable_multiple_frontends</code>.</li>
+<li>The endpoints file is written once (<code>watchFile: false</code>) and the EPP does not eject a
+  worker that fails; a crashed worker or sidecar fails the job instead.</li>
+<li>vLLM's <code>data-parallel-multi-port-external-lb</code> (one supervisor per node serving a port
+  per rank) is not used: its ranks publish KV events on per-rank ports that file
+  discovery can only reach with llm-d-router's per-endpoint <code>rankIndex</code> (after v0.11.0).</li>
+<li>The precise prefix index lives in the one EPP; KV events go to that EPP alone.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

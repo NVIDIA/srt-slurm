@@ -1,0 +1,3664 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "srt-slurm recipe",
+  "description": "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants).",
+  "if": {
+    "type": "object",
+    "required": [
+      "base"
+    ]
+  },
+  "then": {
+    "type": "object",
+    "required": [
+      "base"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "schema": {
+        "enum": [
+          2
+        ],
+        "description": "Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`)."
+      },
+      "base": {
+        "$ref": "#/$defs/RecipeBase"
+      }
+    },
+    "patternProperties": {
+      "^(zip_)?override_": {
+        "type": "object"
+      }
+    }
+  },
+  "else": {
+    "$ref": "#/$defs/Recipe"
+  },
+  "$defs": {
+    "AIAnalysisConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether to run AI analysis on benchmark failures",
+          "default": false
+        },
+        "openrouter_api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "OpenRouter API key (falls back to OPENROUTER_API_KEY env var)",
+          "default": null
+        },
+        "gh_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GitHub token for gh CLI (falls back to GH_TOKEN env var)",
+          "default": null
+        },
+        "repos_to_search": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "GitHub repos to search for related PRs"
+        },
+        "pr_search_days": {
+          "type": "integer",
+          "description": "Number of days to look back for PRs",
+          "default": 14
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Custom prompt template (uses DEFAULT_AI_ANALYSIS_PROMPT if None) Available variables: {log_dir}, {repos}, {pr_days}",
+          "default": null
+        }
+      },
+      "description": "AI-powered failure analysis configuration."
+    },
+    "AtomBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "atom"
+          ],
+          "description": "Engine type discriminator.",
+          "default": "atom"
+        },
+        "connector": {
+          "enum": [
+            "mooncake"
+          ],
+          "description": "KV-transfer connector between prefill and decode workers.",
+          "default": "mooncake"
+        },
+        "mooncake_protocol": {
+          "anyOf": [
+            {
+              "enum": [
+                "rdma",
+                "tcp"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mooncake transport; unset lets ATOM choose.",
+          "default": null
+        }
+      },
+      "description": "Launch ``atom.entrypoints.openai_server`` on ROCm workers."
+    },
+    "BenchmarkConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Benchmark runner: `manual` (none) or a registered type; see Benchmark types for the keys each accepts.",
+          "default": "manual"
+        },
+        "stream_output": {
+          "type": "boolean",
+          "description": "Mirror benchmark.out to the orchestrator's stdout while the client runs; keep the log file.",
+          "default": false
+        },
+        "isl": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Input sequence length in tokens for synthetic requests.",
+          "default": null
+        },
+        "osl": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Output sequence length in tokens for synthetic requests.",
+          "default": null
+        },
+        "concurrencies": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Concurrency levels, one benchmark phase each: a list or an `x`-separated string (`\"4x8x16\"`). Telemetry uses each phase as a measurement window.",
+          "default": null
+        },
+        "req_rate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Request arrival rate in requests/s; `inf` sends as fast as concurrency allows.",
+          "default": "inf"
+        },
+        "placement": {
+          "$ref": "#/$defs/PlacementConfig",
+          "description": "Where the benchmark client runs. placement.node is \"head\" (default: the orchestrator's node), \"last_decode\" (the last decode/GEN worker-leader node, isolating the client off the CTX/orchestrator node; use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL), or \"dedicated\" (a node reserved for the client: needs at least 2 nodes, not supported with resources.het_jobs: true)."
+        },
+        "colocate_with_frontend": {
+          "type": "boolean",
+          "description": "Governs how dedicated placements combine when more than one of the benchmark client, the frontend, and the etcd/nats services asks for placement.node: dedicated. If True (default), every requested role shares a single reserved node. If False, each requested role gets its own reserved node (requires enough total nodes: worker count + number of dedicated roles).",
+          "default": true
+        },
+        "sweep": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SweepConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Accepted for compatibility; no runner reads it. Sweep a recipe with the top-level `sweep:` block.",
+          "default": null
+        },
+        "num_examples": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Accuracy benchmark fields",
+          "default": null
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum generated tokens per response",
+          "default": null
+        },
+        "repeat": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Times each example is evaluated; scores are averaged",
+          "default": null
+        },
+        "num_threads": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Concurrent evaluation requests",
+          "default": null
+        },
+        "max_context_length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "LongBench v2: skip examples longer than this many tokens",
+          "default": null
+        },
+        "categories": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "LongBench v2: task categories to run; unset runs all",
+          "default": null
+        },
+        "num_shots": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GSM8K few-shot examples",
+          "default": null
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sampling temperature; unset uses the runner's default",
+          "default": null
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nucleus sampling threshold; unset uses the runner's default",
+          "default": null
+        },
+        "top_k": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Top-k sampling cutoff; unset uses the runner's default",
+          "default": null
+        },
+        "num_requests": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Router benchmark fields",
+          "default": null
+        },
+        "concurrency": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Single concurrency level (router, agentperf)",
+          "default": null
+        },
+        "prefix_ratios": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Router: shared-prefix ratios to test (list or space-separated string).",
+          "default": null
+        },
+        "mooncake_workload": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mooncake router benchmark fields (uses aiperf with mooncake_trace)",
+          "default": null
+        },
+        "ttft_threshold_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Goodput TTFT threshold in ms (default: 2000)",
+          "default": null
+        },
+        "itl_threshold_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Goodput ITL threshold in ms (default: 25)",
+          "default": null
+        },
+        "random_range_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Random input/output length range ratio (default: 0.8)",
+          "default": null
+        },
+        "num_prompts_mult": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Multiplier for num_prompts = concurrency * mult (default: 10)",
+          "default": null
+        },
+        "num_warmup_mult": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Multiplier for warmup prompts = concurrency * mult (default: 2)",
+          "default": null
+        },
+        "dataset_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Custom dataset fields (sa-bench)",
+          "default": null
+        },
+        "dataset_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Container path to dataset file (mount via extra_mount)",
+          "default": null
+        },
+        "agentperf_client_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "AgentPerf benchmark fields (agentperf-client trajectory replay)",
+          "default": null
+        },
+        "agentperf_config": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Container path to the client's workload YAML (endpoint/model/concurrency injected)",
+          "default": null
+        },
+        "trace_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)",
+          "default": null
+        },
+        "custom_tokenizer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Custom tokenizer class (e.g., \"module.path.ClassName\")",
+          "default": null
+        },
+        "use_chat_template": {
+          "type": "boolean",
+          "description": "Pass --use-chat-template to benchmark (default: true)",
+          "default": true
+        },
+        "reuse_http_connections": {
+          "type": "boolean",
+          "description": "SA-Bench Dynamo adapter: reuse a benchmark-scoped HTTP connection pool. Opt-in to preserve the historical per-request ClientSession behavior.",
+          "default": false
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Custom benchmark hook. ``command`` is passed to ``bash -lc`` verbatim; srtctl does NOT substitute placeholders like ``{nginx_url}`` or ``{slurm_job_id}``. Render any parameters when generating the recipe. See srtctl.benchmarks.custom.CustomBenchmarkRunner for details.",
+          "default": null
+        },
+        "container_image": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Image the benchmark client runs in (custom, agentperf); unset uses `model.container`.",
+          "default": null
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra environment variables for the benchmark client (custom, agentperf).",
+          "default": {}
+        },
+        "aiperf_package": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "aiperf pip install spec (e.g., \"aiperf>=0.7.0\", \"aiperf @ git+https://...@commit\") If set, runs pip install <spec> before benchmarking. Upgrades if already installed.",
+          "default": null
+        },
+        "aiperf_args": {
+          "type": "object",
+          "description": "Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200)",
+          "default": {}
+        },
+        "slow_down_sleep_time": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SA-Bench: optional SGLang /slow_down on decode workers (sglang frontend only; see benchmark_stage)",
+          "default": null
+        },
+        "slow_down_wait_time": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "seconds until POST clears slow_down; unset = feature off",
+          "default": null
+        }
+      },
+      "description": "Benchmark configuration."
+    },
+    "CpuPowerConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch for this leg. Default: False.",
+          "default": false
+        },
+        "source": {
+          "enum": [
+            "auto",
+            "acpi",
+            "dcgm"
+          ],
+          "description": "``auto`` tries ACPI then DCGM and is best-effort; naming ``acpi`` or ``dcgm`` explicitly makes that provider mandatory.",
+          "default": "auto"
+        },
+        "sample_interval_seconds": {
+          "type": "number",
+          "description": "Read period on each node, in seconds.",
+          "default": 0.1
+        },
+        "startup_timeout_seconds": {
+          "type": "number",
+          "description": "How long to wait for every node's collector to publish its ready marker before giving up on readiness.",
+          "default": 30.0
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Fail the job when the leg does not become ready or does not produce a valid publication.",
+          "default": false
+        },
+        "storage_subdir": {
+          "type": "string",
+          "description": "Directory below the run log directory that holds the CPU samples and manifest. Must differ from ``telemetry.storage_subdir``.",
+          "default": "cpu_power"
+        }
+      },
+      "description": "Host-side CPU power collection on every worker node."
+    },
+    "CpuPowerExporterConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "description": "Port the exporter listens on and the head-node collector scrapes.",
+          "default": 9405
+        },
+        "source": {
+          "enum": [
+            "auto",
+            "acpi",
+            "dcgm"
+          ],
+          "description": "Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries DCGM first and falls back to ACPI when libdcgm.so is absent or reports no CPU entities. Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only.",
+          "default": "auto"
+        }
+      },
+      "description": "Best-effort CPU power collection via the cpu-power-exporter binary."
+    },
+    "DynamoConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "install": {
+          "type": "boolean",
+          "description": "Install Dynamo into the container before workers start; false when the image already has it.",
+          "default": true
+        },
+        "top_of_tree": {
+          "type": "boolean",
+          "description": "Clone and build Dynamo at HEAD (unpinned). No `source` equivalent; prefer a commit in `source.rev`.",
+          "default": false
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DynamoSourceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Which Dynamo to install: exactly one of git+rev, pypi, or wheel. Unset, and not top_of_tree: the PyPI release DEFAULT_PYPI_VERSION.",
+          "default": null
+        },
+        "request_plane": {
+          "enum": [
+            "nats",
+            "tcp",
+            "http"
+          ],
+          "description": "Transport frontends use to send requests to workers.",
+          "default": "tcp"
+        },
+        "event_plane": {
+          "anyOf": [
+            {
+              "enum": [
+                "nats",
+                "zmq"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sets DYN_EVENT_PLANE for KV and worker events; unset follows the Dynamo image's default.",
+          "default": null
+        },
+        "sidecar": {
+          "type": "boolean",
+          "description": "Job-wide native sidecar mode; prefer `roles.<role>.sidecar: true`.",
+          "default": false
+        },
+        "sidecar_port": {
+          "type": "integer",
+          "description": "Base loopback gRPC port between engine and sidecar; co-located workers get deterministic offsets.",
+          "default": 50051
+        },
+        "sidecar_binary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Standalone sidecar executable; unset runs `python3 -m dynamo.<framework>.sidecar`.",
+          "default": null
+        },
+        "sidecar_startup_timeout": {
+          "type": "integer",
+          "description": "Seconds to wait for the native engine's gRPC endpoint.",
+          "default": 3600
+        },
+        "sidecar_context_length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Context length the sidecar advertises (TRT-LLM); unset reads it from the engine.",
+          "default": null
+        },
+        "sidecar_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra arguments appended to the sidecar command.",
+          "default": []
+        }
+      },
+      "description": "Dynamo installation configuration."
+    },
+    "DynamoSourceConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "git": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Repository URL to build from (default upstream when ``rev`` is set without it). Builds ``ai-dynamo-runtime`` with maturin and installs ``ai-dynamo`` from the checkout; cached on ``/configs`` by commit.",
+          "default": null
+        },
+        "rev": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Immutable ref in ``git``: commit SHA, tag, or ``refs/pull/<n>/head``.",
+          "default": null
+        },
+        "sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The commit ``rev`` resolved to; filled in by ``srtctl apply``.",
+          "default": null
+        },
+        "patches": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Cargo dependency replacements applied tree-wide before the build.",
+          "default": null
+        },
+        "pypi": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Release version from PyPI.",
+          "default": null
+        },
+        "wheel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Staged nightly ``ai-dynamo`` version.",
+          "default": null
+        }
+      },
+      "description": "Where Dynamo comes from. Exactly one of ``git``, ``pypi``, or ``wheel``."
+    },
+    "FrontendConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Frontend type - \"dynamo\" (default); \"sglang-router\" (SGLang Model Gateway), \"vllm-router\", \"smg\" (Shepherd Model Gateway, any backend), \"llm-d\" (llm-d Endpoint Picker behind Envoy, vLLM), \"atomesh\", and \"tilert-router\" (static routers); \"sglang\", \"vllm\", and \"trtllm_serve\" (direct: the single aggregate worker binds the public port, no router process); \"none\" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router \"sglang\"; ``srtctl migrate`` rewrites that to \"sglang-router\".",
+          "default": "dynamo"
+        },
+        "enable_multiple_frontends": {
+          "type": "boolean",
+          "description": "Scale with nginx + multiple routers. When ``True`` (default), srtctl stands up nginx and fans out to ``num_additional_frontends + 1`` router replicas. When ``False``, there is NO nginx proxy \u2014 the benchmark must target the single master router (or a worker) directly at ``http://localhost:<port>``. ``benchmark.command`` has no placeholder substitution, so write the URL out literally.",
+          "default": true
+        },
+        "num_additional_frontends": {
+          "type": "integer",
+          "description": "Additional routers beyond master (default: 9)",
+          "default": 9
+        },
+        "nginx_container": {
+          "type": "string",
+          "description": "Custom nginx container image (default: nginx:1.27.4)",
+          "default": "nginx:1.27.4"
+        },
+        "nginx_raise_ulimit": {
+          "type": "boolean",
+          "description": "Raise nofile before nginx and set ``worker_rlimit_nofile`` in generated nginx.conf. Off by default; enable on clusters that allow it. Override per job or set ``nginx_raise_ulimit`` in srtslurm.yaml for the cluster.",
+          "default": false
+        },
+        "nginx_session_affinity": {
+          "type": "boolean",
+          "description": "Consistently hash ``nginx_session_affinity_header`` to a frontend. Requests without that header use a generated request ID and stay distributed.",
+          "default": false
+        },
+        "nginx_session_affinity_header": {
+          "type": "string",
+          "description": "Header hashed when affinity is on (default ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that carry the session id in that header instead.",
+          "default": "X-Dynamo-Session-ID"
+        },
+        "nginx_keepalive_timeout": {
+          "type": "string",
+          "description": "Idle timeout for client and upstream keepalive connections in the generated nginx.conf (default \"600s\"). nginx's own default is 75s, which closes a session's connection during the long recorded think-time of an agentic replay; the client's next write on that pooled socket then fails with \"broken pipe\" / \"server disconnected\" and nothing is logged server-side.",
+          "default": "600s"
+        },
+        "worker_selection": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Inline Dynamo worker-selection policy configuration. srtctl writes this mapping under the top-level ``worker_selection`` key in a generated router policy YAML and passes it to the Dynamo frontend via ``--router-policy-config``.",
+          "default": null
+        },
+        "epp_config": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "llm-d Endpoint Picker configuration (``EndpointPickerConfig``: ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``. srtctl writes it to a file with the ``file-discovery`` plugin and ``dataLayer.discovery`` added, so the EPP reads the job's workers from the endpoints file srtctl renders. Omitted, srtctl runs the scorers of llm-d's no-Kubernetes guide (in prefill and decode profiles for a prefill/decode job).",
+          "default": null
+        },
+        "args": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "CLI arguments passed to the frontend/router process",
+          "default": null
+        },
+        "env": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Environment variables for frontend processes",
+          "default": null
+        },
+        "container_image": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional router-specific image. Static routers use the model/backend image when omitted.",
+          "default": null
+        },
+        "numa_bind": {
+          "type": "boolean",
+          "description": "Prefix the frontend process command with ``numactl --cpunodebind=0 --membind=0``. Off by default. Has no effect on direct frontends (``sglang``, ``vllm``, aggregate ``trtllm_serve``) that launch no separate frontend process.",
+          "default": false
+        },
+        "ctx_router": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.",
+          "default": null
+        },
+        "gen_router": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "generation_servers.router",
+          "default": null
+        },
+        "server_config_extra": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "extra top-level ser.yaml keys",
+          "default": null
+        },
+        "placement": {
+          "$ref": "#/$defs/PlacementConfig",
+          "description": "Where the frontend (trtllm_serve: the disaggregated orchestrator) runs. placement.node is \"head\" (default: the first prefill/CTX node), \"first_decode\" (the first decode/GEN worker-leader node), or \"dedicated\" (a node reserved for the frontend: needs at least 2 nodes, not supported with resources.het_jobs: true)."
+        }
+      },
+      "description": "Frontend/router configuration."
+    },
+    "GpuLabelsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "type": "string",
+          "description": "Label carrying the node-local GPU index srt-slurm allocates by."
+        },
+        "identity": {
+          "type": "string",
+          "description": "Label that is stable for one physical GPU across the run; recorded as `gpu_uuid`."
+        },
+        "instance": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Labels marking logical sub-device samples (MIG instances, partitions); such samples are dropped.",
+          "default": []
+        }
+      },
+      "description": "The labels that identify a GPU in every sample of a GPU exporter's scrape.",
+      "required": [
+        "index",
+        "identity"
+      ]
+    },
+    "GpuMetricConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "type": "string",
+          "description": "Prometheus metric name."
+        }
+      },
+      "description": "One per-GPU metric in a GPU exporter's scrape.",
+      "required": [
+        "metric"
+      ]
+    },
+    "GpuMetricsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "power": {
+          "$ref": "#/$defs/GpuPowerMetricConfig",
+          "description": "Power draw in watts."
+        },
+        "gpu_util": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU utilization, percent.",
+          "default": null
+        },
+        "sm_active": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "DCGM's SM-active fraction, 0-1; map only a metric with that meaning and range.",
+          "default": null
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU temperature, Celsius.",
+          "default": null
+        }
+      },
+      "description": "The per-GPU metrics GPU power telemetry records from a GPU exporter.",
+      "required": [
+        "power"
+      ]
+    },
+    "GpuPowerMetricConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "type": "string",
+          "description": "Prometheus metric name."
+        },
+        "scope": {
+          "type": "string",
+          "description": "What the watts measure, recorded in the power manifest as `power_scope`."
+        }
+      },
+      "description": "The per-GPU power metric in a GPU exporter's scrape, in watts.",
+      "required": [
+        "metric",
+        "scope"
+      ]
+    },
+    "HealthCheckConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "description": "Maximum readiness polls of the frontend before the run fails; 180 x 10 s = 30 minutes by default (large models take time to load).",
+          "default": 180
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "description": "Seconds between readiness polls.",
+          "default": 10
+        },
+        "fatal_log_markers": {
+          "type": "boolean",
+          "description": "Fail the run as soon as a worker's log prints a line the engine names as fatal (for TRT-LLM, the launcher's ``Rank<N> Task exit code: <non-zero>`` and ``Failed to initialize executor``), even while its srun step is still running. Without it a worker whose engine died behind a live launcher is only noticed when this health window runs out.",
+          "default": true
+        },
+        "extra_fatal_log_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional regular expressions, matched against every new worker log line, that fail the run the same way.",
+          "default": []
+        }
+      },
+      "description": "Health check configuration."
+    },
+    "HostSetupConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Shell commands run in order on each node, joined with ``&&``.",
+          "default": []
+        },
+        "teardown": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Shell commands run on each node after workers stop. Runs even when the job fails, so state that outlives the allocation (locked clocks persist for the next tenant) gets reset.",
+          "default": []
+        },
+        "nodes": {
+          "enum": [
+            "all",
+            "workers"
+          ],
+          "description": "Which nodes to target. \"all\" covers head, infra, and workers; \"workers\" covers only the nodes running backend workers.",
+          "default": "all"
+        },
+        "ignore_failure": {
+          "type": "boolean",
+          "description": "When True, a failing node logs a warning instead of failing the job.",
+          "default": false
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "Per-node wall-clock budget for commands and for teardown.",
+          "default": 300
+        }
+      },
+      "description": "Commands run on the bare host of each allocated node, outside the container."
+    },
+    "HttpProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "description": "Port probed on the service node."
+        },
+        "path": {
+          "type": "string",
+          "description": "URL path requested.",
+          "default": "/health"
+        },
+        "status": {
+          "type": "integer",
+          "description": "HTTP status that counts as ready.",
+          "default": 200
+        }
+      },
+      "description": "Ready when ``GET http://<node>:<port><path>`` returns ``status``.",
+      "required": [
+        "port"
+      ]
+    },
+    "IdentityConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/IdentityModelConfig",
+          "description": "Expected HuggingFace repo and revision, checked against the download metadata at runtime."
+        },
+        "container": {
+          "$ref": "#/$defs/IdentityContainerConfig",
+          "description": "Container image URI, recorded for reproduction only."
+        },
+        "frameworks": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Package -> expected version for dynamo and one engine, checked via importlib.metadata at runtime.",
+          "default": {}
+        }
+      },
+      "description": "Virtual identity for runtime verification and reproduction."
+    },
+    "IdentityContainerConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Docker URI, e.g. \"gitlab-master:5005/.../trtllm-arm64\"",
+          "default": null
+        }
+      },
+      "description": "Container identity for reproduction (not verified at runtime)."
+    },
+    "IdentityModelConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "HuggingFace model ID, e.g. \"nvidia/Kimi-K2.5-NVFP4\"",
+          "default": null
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "HuggingFace git commit SHA",
+          "default": null
+        }
+      },
+      "description": "Virtual model identity for runtime verification."
+    },
+    "LogProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regular expression searched for in the service log."
+        }
+      },
+      "description": "Ready when the service's log file contains a line matching the regular expression ``pattern``.",
+      "required": [
+        "pattern"
+      ]
+    },
+    "MockerBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "mocker"
+          ],
+          "description": "Engine type discriminator.",
+          "default": "mocker"
+        },
+        "engine_type": {
+          "type": "string",
+          "description": "Engine whose scheduler and KV-cache behavior the mocker simulates (`vllm`, `sglang`, ...).",
+          "default": "vllm"
+        },
+        "speedup_ratio": {
+          "type": "number",
+          "description": "How much faster than real time the simulated engine runs",
+          "default": 100.0
+        },
+        "decode_speedup_ratio": {
+          "type": "number",
+          "description": "Extra speedup applied to decode steps only",
+          "default": 1.0
+        },
+        "num_gpu_blocks_override": {
+          "type": "integer",
+          "description": "KV-cache blocks the simulated engine has",
+          "default": 16384
+        },
+        "max_num_seqs": {
+          "type": "integer",
+          "description": "Maximum sequences scheduled per step",
+          "default": 256
+        },
+        "max_num_batched_tokens": {
+          "type": "integer",
+          "description": "Maximum tokens scheduled per step",
+          "default": 8192
+        },
+        "block_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "KV-cache block size in tokens; unset uses the mocker default",
+          "default": null
+        },
+        "data_parallel_size": {
+          "type": "integer",
+          "description": "Simulated data-parallel ranks per worker",
+          "default": 1
+        },
+        "num_workers": {
+          "type": "integer",
+          "description": "Mocker engines per worker process",
+          "default": 1
+        },
+        "startup_time": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Simulated model-load delay in seconds",
+          "default": null
+        },
+        "kv_transfer_bandwidth": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Simulated prefill->decode KV transfer bandwidth",
+          "default": null
+        },
+        "kv_cache_dtype": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "KV-cache dtype the simulation sizes blocks for",
+          "default": null
+        },
+        "enable_prefix_caching": {
+          "type": "boolean",
+          "description": "Simulate prefix caching; false passes --no-enable-prefix-caching",
+          "default": true
+        },
+        "enable_chunked_prefill": {
+          "type": "boolean",
+          "description": "Simulate chunked prefill; false passes --no-enable-chunked-prefill",
+          "default": true
+        },
+        "preemption_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Scheduler preemption policy; unset uses the mocker default",
+          "default": null
+        }
+      },
+      "description": "Dynamo Mocker backend configuration and launch implementation."
+    },
+    "ModelConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Model weights directory, or a `model_paths` alias from srtslurm.yaml. Mounted at /model."
+        },
+        "container": {
+          "type": "string",
+          "description": "Container image (`.sqsh` path or registry URI), or a `containers` alias from srtslurm.yaml."
+        },
+        "precision": {
+          "type": "string",
+          "description": "Weight precision (`fp4`, `fp8`, `fp16`, `bf16`). Recorded with results; engine flags set the actual dtype."
+        },
+        "stage_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional: stage the model from shared storage to this node-local dir before workers start (e.g. \"/raid/scratch/models\"). None = use path directly.",
+          "default": null
+        }
+      },
+      "description": "Model configuration.",
+      "required": [
+        "path",
+        "container",
+        "precision"
+      ]
+    },
+    "NsysObservabilityConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Set false to keep other observability signals without launching nsys.",
+          "default": true
+        },
+        "capture_window": {
+          "enum": [
+            "measured_workload",
+            "including_startup"
+          ],
+          "description": "measured_workload excludes warmup; including_startup spans process launch through teardown.",
+          "default": "measured_workload"
+        },
+        "report_timeout_secs": {
+          "type": "integer",
+          "description": "Maximum wait for a control acknowledgment or a step's report finalization.",
+          "default": 1800
+        },
+        "nvtx_injection_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional container path to libToolsInjection64.so for NVTX injection.",
+          "default": null
+        },
+        "cpu_sampling": {
+          "enum": [
+            "system-wide",
+            "process-tree",
+            "none"
+          ],
+          "description": "CPU IP sampling and context-switch scope. process-tree fails on engines with many threads (\"Not enough resources ... switch to system-wide\"); system-wide samples every process on the node, none records NVTX only.",
+          "default": "system-wide"
+        }
+      },
+      "description": "Automatic NVTX tracing and CPU sampling of workers and Dynamo frontends."
+    },
+    "ObservabilityConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master analytics knob. Default: False.",
+          "default": false
+        },
+        "enable_otel": {
+          "type": "boolean",
+          "description": "If True, inject OTEL environment variables into all workers and frontends. Requires otel_endpoint to be set. Default: False.",
+          "default": false
+        },
+        "otel_endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "OTEL collector endpoint (e.g. \"http://10.0.0.1:4317\"). Required when enable_otel is True.",
+          "default": null
+        },
+        "tachometer": {
+          "$ref": "#/$defs/TachometerConfig",
+          "description": "Native Tachometer capture configuration. Collects on every run, independent of ``enabled``, unless ``tachometer.enabled: false`` (see :class:`TachometerConfig`)."
+        },
+        "nsys": {
+          "$ref": "#/$defs/NsysObservabilityConfig",
+          "description": "Automatic Nsight Systems capture, enabled with the master switch."
+        }
+      },
+      "description": "Observability configuration for OTEL tracing."
+    },
+    "OutputConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "log_dir": {
+          "type": "string",
+          "description": "Directory for job logs and results; a FormattablePath, so `{job_id}` and `$VARS` expand."
+        }
+      },
+      "description": "Output configuration with formattable paths."
+    },
+    "PlacementConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "type": "string",
+          "description": "A location name resolved against the worker topology (``head``, or a role-relative name such as ``first_decode`` / ``last_decode``), or ``dedicated`` to reserve a node for the component. A dedicated node is always the head location, so the two never combine.",
+          "default": "head"
+        }
+      },
+      "description": "Where a component (the frontend or the benchmark client) runs."
+    },
+    "PostEvalConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "passthrough_env": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra environment variable names forwarded from the orchestrator's environment into the eval process when set (on top of the built-in list: RUN_EVAL, EVAL_ONLY, MODEL, ISL, OSL, ...).",
+          "default": []
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Argv that replaces the built-in lm-eval runner command. May use the placeholders ``{endpoint}`` (the frontend URL) and ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell.",
+          "default": null
+        }
+      },
+      "description": "How the post-benchmark (or eval-only) accuracy evaluation is dispatched."
+    },
+    "ProfilingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "\"none\", \"nsys\", \"nsys-time\", or \"torch\"",
+          "default": "none"
+        },
+        "extra_nsys_args": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)",
+          "default": null
+        },
+        "nsys_trace": {
+          "type": "string",
+          "description": "Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected explicitly where software tracing is preferred over hardware tracing.",
+          "default": "cuda,nvtx"
+        },
+        "trace_fork_before_exec": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "None preserves the existing Dynamo-specific default. Set explicitly for worker launchers that require or cannot tolerate child-process injection.",
+          "default": null
+        },
+        "capture_range_end": {
+          "type": "string",
+          "description": "Non-TRT-LLM behavior when cudaProfilerStop closes a capture range.",
+          "default": "stop"
+        },
+        "detailed_trace_annotation": {
+          "type": "boolean",
+          "description": "Adds detailed nvtx marker flag for vLLM",
+          "default": false
+        },
+        "nsys_library_paths": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional paths prepended to LD_LIBRARY_PATH for the Nsight wrapper and profiled worker, for containers that do not discover the host libcuda.",
+          "default": null
+        },
+        "prefill": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProfilingPhaseConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Phase-specific profiling step configs (not used for nsys-time)",
+          "default": null
+        },
+        "decode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProfilingPhaseConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Step window for the decode role (disaggregated runs).",
+          "default": null
+        },
+        "aggregated": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProfilingPhaseConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Step window for the `agg` role (aggregated runs).",
+          "default": null
+        },
+        "delay_secs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "nsys-time fields: time-based capture window, same on all workers",
+          "default": null
+        },
+        "duration_secs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "nsys --duration: seconds to capture after delay",
+          "default": null
+        },
+        "benchmark_duration_secs": {
+          "type": "integer",
+          "description": "total traffic generation duration (must cover delay + duration)",
+          "default": 300
+        }
+      },
+      "description": "Profiling configuration."
+    },
+    "ProfilingPhaseConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start_step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Step to start profiling",
+          "default": null
+        },
+        "stop_step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Step to stop profiling",
+          "default": null
+        },
+        "capture_scope": {
+          "enum": [
+            "selected",
+            "all"
+          ],
+          "description": "`all` profiles every process of the phase; `selected` only `worker_index` / `worker_rank`.",
+          "default": "all"
+        },
+        "worker_index": {
+          "type": "integer",
+          "description": "Logical worker within the phase",
+          "default": 0
+        },
+        "worker_rank": {
+          "type": "integer",
+          "description": "Physical process rank within that worker",
+          "default": 0
+        }
+      },
+      "description": "Profiling config for a single phase (prefill/decode/aggregated)."
+    },
+    "Recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Job name: the Slurm `--job-name` (unless RUNNER_NAME is set) and the run's label in results."
+        },
+        "model": {
+          "$ref": "#/$defs/ModelConfig",
+          "description": "Model weights, container image, and precision."
+        },
+        "resources": {
+          "$ref": "#/$defs/ResourceConfig",
+          "description": "GPU type, GPUs per node, and allocation knobs. The worker topology is `roles`."
+        },
+        "schema": {
+          "enum": [
+            2
+          ],
+          "description": "Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`)."
+        },
+        "slurm": {
+          "$ref": "#/$defs/SlurmConfig",
+          "description": "Slurm account, partition, and time limit; unset values come from srtslurm.yaml."
+        },
+        "engine": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "atom",
+                "sglang",
+                "tilert",
+                "tokenspeed",
+                "trtllm",
+                "vllm",
+                "mocker"
+              ]
+            },
+            {
+              "$ref": "#/$defs/AtomBackend"
+            },
+            {
+              "$ref": "#/$defs/SGLangBackend"
+            },
+            {
+              "$ref": "#/$defs/TileRTBackend"
+            },
+            {
+              "$ref": "#/$defs/TokenSpeedBackend"
+            },
+            {
+              "$ref": "#/$defs/TRTLLMBackend"
+            },
+            {
+              "$ref": "#/$defs/VLLMBackend"
+            },
+            {
+              "$ref": "#/$defs/MockerBackend"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The engine type (`atom`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types).",
+          "default": null
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RoleConfig"
+          },
+          "description": "One block per worker role (`prefill`, `decode`, `agg`): nodes, workers, GPUs, env, engine args.",
+          "default": {}
+        },
+        "frontend": {
+          "$ref": "#/$defs/FrontendConfig",
+          "description": "The HTTP entry point in front of the workers (Dynamo frontend, router, nginx) and where it runs."
+        },
+        "dynamo": {
+          "$ref": "#/$defs/DynamoConfig",
+          "description": "Which Dynamo to install, its request/event planes, and native sidecar mode."
+        },
+        "benchmark": {
+          "$ref": "#/$defs/BenchmarkConfig",
+          "description": "The client run once the workers are ready; `type` selects the runner."
+        },
+        "profiling": {
+          "$ref": "#/$defs/ProfilingConfig",
+          "description": "Nsight Systems or PyTorch profiling of the workers."
+        },
+        "output": {
+          "$ref": "#/$defs/OutputConfig",
+          "description": "Where the job writes logs and results."
+        },
+        "health_check": {
+          "$ref": "#/$defs/HealthCheckConfig",
+          "description": "How long to poll the frontend for ready workers before failing the run."
+        },
+        "observability": {
+          "$ref": "#/$defs/ObservabilityConfig",
+          "description": "Engine metrics and traces, Tachometer collection, and automatic Nsight tracing."
+        },
+        "telemetry": {
+          "$ref": "#/$defs/TelemetryConfig",
+          "description": "GPU (DCGM) and CPU power sampling over the benchmark measurement windows."
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment variables for every worker; applied after `roles.<role>.env`, so a key set in both takes this value. Values may use `{node}` and `{node_id}`.",
+          "default": {}
+        },
+        "container_mounts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Host path -> container path mounts for every container; both sides are FormattablePaths.",
+          "default": {}
+        },
+        "extra_mount": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Extra mounts as `host:container[:ro]` strings; `$VARS` expand, `{placeholders}` do not.",
+          "default": null
+        },
+        "srun_options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra srun options (`key: value` -> `--key=value`; empty value -> `--key`) for every job step.",
+          "default": {}
+        },
+        "sbatch_directives": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra `#SBATCH --key=value` lines (empty value -> `--key`); wins over the cluster defaults.",
+          "default": {}
+        },
+        "enable_config_dump": {
+          "type": "boolean",
+          "description": "Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it.",
+          "default": true
+        },
+        "setup_script": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Custom setup script (runs before dynamo install and worker startup) e.g. \"custom-setup.sh\" -> runs /configs/custom-setup.sh",
+          "default": null
+        },
+        "host_setup": {
+          "$ref": "#/$defs/HostSetupConfig",
+          "description": "Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default."
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ServiceConfig"
+          },
+          "description": "Long-running processes launched next to the job: generic sidecars (an experimental router built from a PR) and typed ones (a standalone Mooncake store per worker node). See docs/services.md.",
+          "default": []
+        },
+        "post_eval": {
+          "$ref": "#/$defs/PostEvalConfig",
+          "description": "Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the eval process and an optional command override. Replaces the downstream source patch that used to extend the passthrough list in do_sweep.py."
+        },
+        "identity": {
+          "$ref": "#/$defs/IdentityConfig",
+          "description": "Virtual identity \u2014 declares what *should* be running (verified against fingerprint)"
+        },
+        "reporting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReportingConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reporting configuration (status API, future: logs to S3, etc.)",
+          "default": null
+        },
+        "sweep": {
+          "type": "object",
+          "description": "Parameter sweep: each key maps to a list of values substituted into `{key}` placeholders; `srtctl apply` submits one job per combination and drops this block from each.",
+          "additionalProperties": {
+            "type": "array"
+          }
+        }
+      },
+      "description": "Complete srtctl job configuration (frozen, immutable).",
+      "required": [
+        "name",
+        "model",
+        "resources",
+        "schema"
+      ]
+    },
+    "RecipeBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Job name: the Slurm `--job-name` (unless RUNNER_NAME is set) and the run's label in results."
+        },
+        "model": {
+          "$ref": "#/$defs/ModelConfig",
+          "description": "Model weights, container image, and precision."
+        },
+        "resources": {
+          "$ref": "#/$defs/ResourceConfig",
+          "description": "GPU type, GPUs per node, and allocation knobs. The worker topology is `roles`."
+        },
+        "schema": {
+          "enum": [
+            2
+          ],
+          "description": "Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`)."
+        },
+        "slurm": {
+          "$ref": "#/$defs/SlurmConfig",
+          "description": "Slurm account, partition, and time limit; unset values come from srtslurm.yaml."
+        },
+        "engine": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "atom",
+                "sglang",
+                "tilert",
+                "tokenspeed",
+                "trtllm",
+                "vllm",
+                "mocker"
+              ]
+            },
+            {
+              "$ref": "#/$defs/AtomBackend"
+            },
+            {
+              "$ref": "#/$defs/SGLangBackend"
+            },
+            {
+              "$ref": "#/$defs/TileRTBackend"
+            },
+            {
+              "$ref": "#/$defs/TokenSpeedBackend"
+            },
+            {
+              "$ref": "#/$defs/TRTLLMBackend"
+            },
+            {
+              "$ref": "#/$defs/VLLMBackend"
+            },
+            {
+              "$ref": "#/$defs/MockerBackend"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The engine type (`atom`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types).",
+          "default": null
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RoleConfig"
+          },
+          "description": "One block per worker role (`prefill`, `decode`, `agg`): nodes, workers, GPUs, env, engine args.",
+          "default": {}
+        },
+        "frontend": {
+          "$ref": "#/$defs/FrontendConfig",
+          "description": "The HTTP entry point in front of the workers (Dynamo frontend, router, nginx) and where it runs."
+        },
+        "dynamo": {
+          "$ref": "#/$defs/DynamoConfig",
+          "description": "Which Dynamo to install, its request/event planes, and native sidecar mode."
+        },
+        "benchmark": {
+          "$ref": "#/$defs/BenchmarkConfig",
+          "description": "The client run once the workers are ready; `type` selects the runner."
+        },
+        "profiling": {
+          "$ref": "#/$defs/ProfilingConfig",
+          "description": "Nsight Systems or PyTorch profiling of the workers."
+        },
+        "output": {
+          "$ref": "#/$defs/OutputConfig",
+          "description": "Where the job writes logs and results."
+        },
+        "health_check": {
+          "$ref": "#/$defs/HealthCheckConfig",
+          "description": "How long to poll the frontend for ready workers before failing the run."
+        },
+        "observability": {
+          "$ref": "#/$defs/ObservabilityConfig",
+          "description": "Engine metrics and traces, Tachometer collection, and automatic Nsight tracing."
+        },
+        "telemetry": {
+          "$ref": "#/$defs/TelemetryConfig",
+          "description": "GPU (DCGM) and CPU power sampling over the benchmark measurement windows."
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment variables for every worker; applied after `roles.<role>.env`, so a key set in both takes this value. Values may use `{node}` and `{node_id}`.",
+          "default": {}
+        },
+        "container_mounts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Host path -> container path mounts for every container; both sides are FormattablePaths.",
+          "default": {}
+        },
+        "extra_mount": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Extra mounts as `host:container[:ro]` strings; `$VARS` expand, `{placeholders}` do not.",
+          "default": null
+        },
+        "srun_options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra srun options (`key: value` -> `--key=value`; empty value -> `--key`) for every job step.",
+          "default": {}
+        },
+        "sbatch_directives": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra `#SBATCH --key=value` lines (empty value -> `--key`); wins over the cluster defaults.",
+          "default": {}
+        },
+        "enable_config_dump": {
+          "type": "boolean",
+          "description": "Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it.",
+          "default": true
+        },
+        "setup_script": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Custom setup script (runs before dynamo install and worker startup) e.g. \"custom-setup.sh\" -> runs /configs/custom-setup.sh",
+          "default": null
+        },
+        "host_setup": {
+          "$ref": "#/$defs/HostSetupConfig",
+          "description": "Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default."
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ServiceConfig"
+          },
+          "description": "Long-running processes launched next to the job: generic sidecars (an experimental router built from a PR) and typed ones (a standalone Mooncake store per worker node). See docs/services.md.",
+          "default": []
+        },
+        "post_eval": {
+          "$ref": "#/$defs/PostEvalConfig",
+          "description": "Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the eval process and an optional command override. Replaces the downstream source patch that used to extend the passthrough list in do_sweep.py."
+        },
+        "identity": {
+          "$ref": "#/$defs/IdentityConfig",
+          "description": "Virtual identity \u2014 declares what *should* be running (verified against fingerprint)"
+        },
+        "reporting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReportingConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reporting configuration (status API, future: logs to S3, etc.)",
+          "default": null
+        },
+        "sweep": {
+          "type": "object",
+          "description": "Parameter sweep: each key maps to a list of values substituted into `{key}` placeholders; `srtctl apply` submits one job per combination and drops this block from each.",
+          "additionalProperties": {
+            "type": "array"
+          }
+        }
+      },
+      "description": "Complete srtctl job configuration (frozen, immutable)."
+    },
+    "ReportingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReportingStatusConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Status collector endpoints that receive job lifecycle events. Unset sends nothing.",
+          "default": null
+        },
+        "ai_analysis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AIAnalysisConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Failure analysis run after a failed job. Unset disables it.",
+          "default": null
+        },
+        "s3": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/S3Config"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Upload of the log directory to S3-compatible storage after the run. Unset disables it.",
+          "default": null
+        }
+      },
+      "description": "Reporting configuration for status updates, AI analysis, and log exports."
+    },
+    "ReportingStatusConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Base URL of one status collector; srtctl POSTs job lifecycle events there (see status-api-spec.md).",
+          "default": null
+        },
+        "endpoints": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Several collectors, each sent every event; merged with `endpoint`, deduplicated, trailing slash dropped.",
+          "default": null
+        },
+        "token_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Name of the environment variable holding the bearer token the reporter sends as ``Authorization: Bearer`` on every request (default SRTCTL_STATUS_TOKEN). Only the variable name belongs in a recipe: the resolved config is written to the lockfile and the log directory, so a literal token there would leak.",
+          "default": null
+        },
+        "logging-stream-interval": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds between uploads of raw logs and Tachometer captures to every endpoint. Unset disables streaming; lifecycle events are unaffected.",
+          "default": null
+        }
+      },
+      "description": "Status reporting configuration."
+    },
+    "ResourceConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gpu_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional: a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth setting in a recipe so it is self-describing for result rollups.",
+          "default": null
+        },
+        "gpus_per_node": {
+          "type": "integer",
+          "description": "GPUs on each node. Inherits the cluster `gpus_per_node` when omitted, else 4.",
+          "default": 4
+        },
+        "spread_workers": {
+          "type": "boolean",
+          "description": "If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).",
+          "default": false
+        },
+        "het_jobs": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster default `use_het_jobs` on ClusterConfig; True/False overrides per recipe. When effectively True (and we are in disaggregated mode), the prefill and decode sides are submitted as two het components each with their own `--segment`. See HetComponent above and docs/slurm-faq.md.",
+          "default": null
+        }
+      },
+      "description": "Cluster facts and allocation knobs; the worker topology is the `roles:` block."
+    },
+    "RestartPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy": {
+          "enum": [
+            "never",
+            "on-failure",
+            "always"
+          ],
+          "description": "``never`` leaves a worker exit to ``critical`` (the default, today's behavior). ``on-failure`` relaunches after a non-zero exit; ``always`` relaunches after any exit, including a clean one.",
+          "default": "never"
+        },
+        "max_restarts": {
+          "type": "integer",
+          "description": "Relaunches allowed per endpoint over the whole job.",
+          "default": 3
+        },
+        "backoff_seconds": {
+          "type": "number",
+          "description": "Delay before the first relaunch. Doubles on every further relaunch of the same endpoint (10 s, 20 s, 40 s, ...).",
+          "default": 10.0
+        },
+        "max_backoff_seconds": {
+          "type": "number",
+          "description": "Cap on the doubled delay.",
+          "default": 300.0
+        }
+      },
+      "description": "How the worker supervisor treats a worker of one role that exits mid-run."
+    },
+    "RoleConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "nodes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "colocate"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nodes reserved for this role. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit.",
+          "default": null
+        },
+        "workers": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Number of workers of this role.",
+          "default": null
+        },
+        "gpus": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPUs per worker. Defaults to `nodes * gpus_per_node // workers`; required when decode colocates.",
+          "default": null
+        },
+        "srun_options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Merged over the recipe srun_options on this role's worker steps only (e.g. a per-step mem cap).",
+          "default": {}
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment for every worker of this role.",
+          "default": {}
+        },
+        "args": {
+          "type": "object",
+          "description": "The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`).",
+          "default": {}
+        },
+        "extra_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Raw extra CLI arguments (TRT-LLM only).",
+          "default": []
+        },
+        "engine": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "atom",
+                "sglang",
+                "tilert",
+                "tokenspeed",
+                "trtllm",
+                "vllm",
+                "mocker"
+              ]
+            },
+            {
+              "$ref": "#/$defs/AtomBackend"
+            },
+            {
+              "$ref": "#/$defs/SGLangBackend"
+            },
+            {
+              "$ref": "#/$defs/TileRTBackend"
+            },
+            {
+              "$ref": "#/$defs/TokenSpeedBackend"
+            },
+            {
+              "$ref": "#/$defs/TRTLLMBackend"
+            },
+            {
+              "$ref": "#/$defs/VLLMBackend"
+            },
+            {
+              "$ref": "#/$defs/MockerBackend"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Engine type or mapping with engine options. Set on every role when no top-level `engine` is declared; the two forms cannot be mixed, and role engines do not inherit options from each other.",
+          "default": null
+        },
+        "container": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional role image; accepts cluster container aliases. Defaults to `model.container`.",
+          "default": null
+        },
+        "kv_events": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`.",
+          "default": null
+        },
+        "sidecar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree.",
+          "default": null
+        },
+        "critical": {
+          "type": "boolean",
+          "description": "A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers.",
+          "default": true
+        },
+        "restart": {
+          "anyOf": [
+            {
+              "enum": [
+                "never",
+                "on-failure",
+                "always"
+              ]
+            },
+            {
+              "$ref": "#/$defs/RestartPolicy"
+            }
+          ],
+          "description": "Relaunch exited workers in place: `never`, `on-failure`, `always`, or a mapping with `policy`, `max_restarts`, `backoff_seconds`, and `max_backoff_seconds`."
+        }
+      },
+      "description": "One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`."
+    },
+    "S3Config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bucket": {
+          "type": "string",
+          "description": "S3 bucket name"
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional prefix/path within bucket (e.g., \"srtslurm/logs\")",
+          "default": null
+        },
+        "region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "AWS region (e.g., \"us-west-2\")",
+          "default": null
+        },
+        "endpoint_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Custom S3-compatible endpoint URL (optional)",
+          "default": null
+        },
+        "access_key_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "AWS access key ID (falls back to AWS_ACCESS_KEY_ID env var)",
+          "default": null
+        },
+        "secret_access_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "AWS secret access key (falls back to AWS_SECRET_ACCESS_KEY env var)",
+          "default": null
+        },
+        "exclude": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Patterns `aws s3 sync` skips, relative to the log directory (`*` matches across directories). Omit for the defaults: aiperf's per-interval metrics scrapes and `inputs.json` under `artifacts/*/` and `sa-bench_*/*/` (tachometer already stores that series as parquet). Set to `[]` to ship the whole directory.",
+          "default": null
+        },
+        "archive": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Patterns (Python glob, `**` allowed) packed into one `bundle.tar.zst` uploaded next to the loose files and left out of the plain sync. Omit for the default, aiperf's per-request `profile_export.jsonl`; set to `[]` for no archive.",
+          "default": null
+        }
+      },
+      "description": "S3 upload configuration for log artifacts.",
+      "required": [
+        "bucket"
+      ]
+    },
+    "SGLangBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "sglang"
+          ],
+          "description": "Engine type discriminator.",
+          "default": "sglang"
+        },
+        "gpu_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Accepted for compatibility; srtctl does not read it. Set `resources.gpu_type` instead.",
+          "default": null
+        }
+      },
+      "description": "SGLang backend configuration and launch implementation."
+    },
+    "ServiceConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique label; names the log file (``service_<name>.out``) and the tracked process."
+        },
+        "type": {
+          "type": "string",
+          "description": "Service kind. ``generic`` (default) launches exactly what you wrote; ``mooncake-store`` runs a standalone Mooncake Store wired to the managed master. See ``docs/services.md`` for the kinds.",
+          "default": "generic"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Argv to launch (not shell-interpreted). Required for ``generic``; typed kinds supply a default.",
+          "default": null
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra argv appended to ``command``.",
+          "default": []
+        },
+        "container": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Container image or ``srtslurm.yaml`` alias. Defaults to the kind's fallback image, then the job container.",
+          "default": null
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment for the service process, on top of what the kind injects.",
+          "default": {}
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional git source to clone before ``build_command`` and ``command`` run. Single-node placements only.",
+          "default": null
+        },
+        "build_command": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Argv run once inside the service container, from the clone, before ``command`` starts. Only meaningful with ``source``.",
+          "default": null
+        },
+        "placement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ServicePlacementConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the service runs. Defaults to the kind's placement (``head`` for generic services, ``infra`` for etcd/nats/mooncake-master, ``workers`` for the exporters).",
+          "default": null
+        },
+        "nodes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whole nodes this service owns: its pool. Pools add to the allocation next to the engine roles' nodes and are carved after them in declaration order, so a Ray cluster, a sandbox fleet and an engine role can each have their own nodes in one recipe. An owner is placed on its own pool (``placement.node: workers``); other services join it with ``placement.pool: <name>``.",
+          "default": null
+        },
+        "start": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``).",
+          "default": null
+        },
+        "readiness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ServiceReadinessConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional TCP port gate; the job waits for it on every service node before continuing.",
+          "default": null
+        },
+        "inherit_discovery_env": {
+          "type": "boolean",
+          "description": "Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so the service can register with the job's Dynamo discovery plane.",
+          "default": true
+        },
+        "critical": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When true a crash fails the run, like a worker dying. Default false for ``generic`` (a dead sidecar costs its own log, not the run) and true for ``mooncake-store``. Set true for anything in the live request path.",
+          "default": null
+        },
+        "terminal": {
+          "type": "boolean",
+          "description": "This service is the job's run: the job ends when every instance of every terminal service has exited, and the worst exit code becomes the job's. A recipe with a terminal service has no benchmark step (``benchmark.type`` stays ``manual``); a torchrun pool that trains to completion is the shape.",
+          "default": false
+        },
+        "preamble": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Shell run inside the container before ``command`` (``ulimit`` and friends).",
+          "default": null
+        },
+        "cpus_per_task": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional ``srun --cpus-per-task``.",
+          "default": null
+        },
+        "cpu_bind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional ``srun --cpu-bind``.",
+          "default": null
+        },
+        "srun_options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra srun options for this service only.",
+          "default": {}
+        },
+        "build_timeout_seconds": {
+          "type": "integer",
+          "description": "Kill ``build_command`` after this many seconds.",
+          "default": 1800
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "``false`` drops the service, including an implicit one (``etcd`` / ``nats`` under the Dynamo frontend, the default exporters) declared here by name.",
+          "default": true
+        },
+        "external": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For discovery-plane kinds (``etcd``, ``nats``, ``mooncake-master``): use this already-running endpoint and launch nothing; the URL is what the job's processes are pointed at.",
+          "default": null
+        },
+        "options": {
+          "type": "object",
+          "description": "Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` and ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind.",
+          "default": {}
+        },
+        "metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ServiceMetricsConfig"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ServiceMetricsConfig"
+              }
+            }
+          ],
+          "description": "Prometheus endpoints this service serves: one mapping or a list of ``{port, path, nodes, name}`` (``path`` defaults to ``/metrics``, ``nodes`` to ``all``). Tachometer scrapes each on every node the service runs on, or on its first node with ``nodes: first``, as endpoint ``<name>_<node>`` where ``name`` defaults to the service name. The exporter kinds declare theirs; write it for a generic service that publishes metrics, or on a ``ray`` service whose head serves a trainer's collector and router.",
+          "default": []
+        }
+      },
+      "description": "One entry of the top-level ``services:`` list.",
+      "required": [
+        "name"
+      ]
+    },
+    "ServiceMetricsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "description": "Port the endpoint is served on."
+        },
+        "path": {
+          "type": "string",
+          "description": "URL path of the endpoint.",
+          "default": "/metrics"
+        },
+        "nodes": {
+          "type": "string",
+          "description": "`all` scrapes every node the service runs on; `first` only its first node.",
+          "default": "all"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Endpoint name in the Tachometer parquet (`<name>_<node>`); defaults to the service name.",
+          "default": null
+        }
+      },
+      "description": "One Prometheus endpoint a service serves: ``port``, ``path`` (default ``/metrics``), ``nodes``, ``name``.",
+      "required": [
+        "port"
+      ]
+    },
+    "ServicePlacementConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "type": "string",
+          "description": "``head`` or ``infra`` (one instance), ``dedicated`` (reserve the infra node exclusively; infra-class kinds only), ``prefill`` / ``decode`` / ``agg`` (one instance per distinct physical node that role's workers use), ``workers`` (one instance per engine worker node; on a service that owns nodes, its own pool), ``compute`` (engine worker nodes plus every pool), or ``all`` (every node of the allocation).",
+          "default": "head"
+        },
+        "pool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Run on the nodes another service owns (``services[].nodes``), one instance per node of that pool. Replaces ``node``.",
+          "default": null
+        },
+        "per": {
+          "type": "string",
+          "description": "``node`` (default): one instance per placed node. ``worker``: one instance per engine worker on each placed node, attached to that worker: it runs with the worker's ``CUDA_VISIBLE_DEVICES`` and sees ``{worker_role}``, ``{worker_index}``, ``{worker_node_rank}``, ``{worker_gpus}``, ``{worker_gpu_count}``. A sidecar in the Kubernetes sense (the GPU Memory Service next to each vLLM worker). Only with ``node`` in ``prefill``, ``decode``, ``agg``, ``workers``.",
+          "default": "node"
+        }
+      },
+      "description": "Where a service runs."
+    },
+    "ServiceReadinessConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Shorthand for ``tcp: {port: <port>}``.",
+          "default": null
+        },
+        "tcp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TcpProbe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "TCP connect probe.",
+          "default": null
+        },
+        "http": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HttpProbe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "HTTP GET probe.",
+          "default": null
+        },
+        "log": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LogProbe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Log-pattern probe against ``service_<name>.out``.",
+          "default": null
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "How long to wait per node before failing the job.",
+          "default": 120
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "description": "Seconds between probe attempts.",
+          "default": 2
+        }
+      },
+      "description": "Readiness gate: the launch blocks until the probe passes on every service node."
+    },
+    "SlurmConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Slurm account. Unset uses `default_account` from srtslurm.yaml.",
+          "default": null
+        },
+        "partition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Slurm partition. Unset uses `default_partition` from srtslurm.yaml.",
+          "default": null
+        },
+        "time_limit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Job time limit (HH:MM:SS). Unset uses `default_time_limit` from srtslurm.yaml.",
+          "default": null
+        }
+      },
+      "description": "SLURM job settings."
+    },
+    "SourceConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "git": {
+          "type": "string",
+          "description": "Repository URL to clone."
+        },
+        "rev": {
+          "type": "string",
+          "description": "Immutable ref: a commit SHA, a tag, or ``refs/pull/<n>/head`` for an unmerged PR. Branch names are rejected because they move."
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional subdirectory of the clone to build and run from.",
+          "default": null
+        },
+        "sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The commit ``rev`` resolved to. Filled in by ``srtctl apply`` at submit time; write it yourself only to pin an exact commit while keeping the human-readable ``rev`` beside it.",
+          "default": null
+        }
+      },
+      "description": "A git repository at an immutable ref.",
+      "required": [
+        "git",
+        "rev"
+      ]
+    },
+    "SweepConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "zip",
+            "grid"
+          ],
+          "description": "`zip` pairs the i-th value of every list; `grid` takes the Cartesian product.",
+          "default": "zip"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array"
+          },
+          "description": "Parameter name -> list of values to sweep over.",
+          "default": {}
+        }
+      },
+      "description": "Configuration for benchmark parameter sweeps."
+    },
+    "TRTLLMBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "trtllm"
+          ],
+          "description": "Engine type discriminator.",
+          "default": "trtllm"
+        },
+        "served_model_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The name clients must use in a request's \"model\" field. Defaults to the checkpoint directory name. engine: type: trtllm served_model_name: \"deepseek-ai/deepseek-r1\" Set it when the client cannot be told which name to ask for. agentperf takes the name as a flag, so it never needs this; the MLPerf harness has it fixed in the benchmark definition, so the server must match or every request 404s. Top-level rather than a roles.<role>.args key because a role's args are dumped straight into the engine's YAML file, and this is a launcher flag the engine does not recognise.",
+          "default": null
+        },
+        "publish_metrics": {
+          "type": "boolean",
+          "description": "Publish TRT-LLM engine metrics without enabling KV-cache events. Requires a Dynamo build supporting --publish-metrics; set False to omit the flag for older builds. Native trtllm-serve and sidecars are unaffected. Iteration statistics stay off regardless: srtctl bakes enable_iter_perf_stats: false into every engine section unless the recipe or observability sets it (TRTLLM_ENGINE_DEFAULTS), so this flag costs the per-request perf metrics only.",
+          "default": true
+        },
+        "publish_events_and_metrics": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Legacy compatibility flag for Dynamo builds without --publish-metrics. True emits only --publish-events-and-metrics, regardless of publish_metrics. False or None uses publish_metrics instead. Observability does not enable it.",
+          "default": null
+        },
+        "sequential_node_start": {
+          "type": "integer",
+          "description": "Controls batched startup of workers that share the same node. 0 = start all workers in parallel (no constraint). 1 = fully sequential: one worker at a time, each must be ready before the next. N > 1 = start N workers simultaneously per batch, wait for all to be ready, then next batch. For trtllm_serve: readiness is an HTTP 200 on the worker's http_port. For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.",
+          "default": 0
+        },
+        "numa_memory_bind": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "enum": [
+                "local"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Worker memory policy. None (default) uses `numactl -m 0,1` only for gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type). True uses nodes 0,1 for any GPU type or mode; False leaves the policy unchanged. CPU binding does not change these policies. \"local\" requires numa_cpu_bind=True and strictly binds memory to the task GPU's NUMA node. Local mode fails startup if GPU NUMA affinity is unknown. Local memory exhaustion can fail allocations; existing/shared pages are not migrated.",
+          "default": null
+        },
+        "numa_cpu_bind": {
+          "type": "boolean",
+          "description": "Optional stricter NUMA CPU affinity for the worker process, in addition to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID` approach (see bind-b300-prefill-cpus.sh) only pins the leader PID *after* launch, so secondary threads spawned by Python/UCX/MPI/TRT-LLM can still land cross-socket. When true, srtctl instead: 1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own internal NUMA thread-pinning, which fights with the OS-level mask) 2. wraps the worker command (prefill/decode/agg) in `taskset -c <cpu_list>`, applied *before* exec so every spawned thread inherits the mask. The CPU list is discovered at runtime (configs/numa_cpu_bind.sh) from the physical GPU this task owns, not a static SLURM_LOCALID table \u2014 a static table assumes SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two endpoints share a node (each gets its own srun step, so LOCALID restarts at 0 for both). Set numa_memory_bind=\"local\" to also bind memory to that same NUMA node.",
+          "default": false
+        }
+      },
+      "description": "TRTLLM backend configuration and launch implementation."
+    },
+    "TachometerConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "None (default) collects on every run; false opts out.",
+          "default": null
+        },
+        "binary_path": {
+          "type": "string",
+          "description": "Scraper command or path on the compute nodes.",
+          "default": "tachometer-scraper"
+        },
+        "collect_interval_ms": {
+          "type": "integer",
+          "description": "Milliseconds between scrapes of every endpoint \u2014 the same unit and name as dcgm-exporter's --collect-interval. Replaces the retired Hz-based ``default_frequency`` (1000ms == the old 1.0 Hz default).",
+          "default": 1000
+        },
+        "sync_interval_secs": {
+          "type": "integer",
+          "description": "Seconds between intermediate Parquet compactions; 0 disables them.",
+          "default": 120
+        },
+        "shutdown_grace_secs": {
+          "type": "number",
+          "description": "How long the scraper gets after SIGTERM to flush + compact final.parquet before the SIGKILL escalation. Compaction time scales with the arrow WAL accumulated since the last periodic sync.",
+          "default": 120.0
+        },
+        "compaction_threads": {
+          "type": "integer",
+          "description": "Threads for Parquet compaction (POLARS_MAX_THREADS).",
+          "default": 4
+        },
+        "storage_subdir": {
+          "type": "string",
+          "description": "Output directory below the run's log directory.",
+          "default": "tachometer"
+        },
+        "extra_metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Static key/value metadata attached to every scraped endpoint.",
+          "default": {}
+        },
+        "default_exporters": {
+          "type": "boolean",
+          "description": "Run the built-in DCGM, node, and process exporters when their blocks are unset; false disables them.",
+          "default": true
+        },
+        "default_gpu_exporter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TelemetryExporterConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Resolved from srtslurm.yaml at load time; never read global config here."
+        },
+        "dcgm_exporter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TelemetryExporterConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU exporter; unset uses the cluster default (DCGM exporter on port 9401).",
+          "default": null
+        },
+        "node_exporter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TelemetryExporterConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Host metrics exporter; unset uses node-exporter on port 9101.",
+          "default": null
+        },
+        "process_exporter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TelemetryExporterConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Per-process /proc exporter; unset uses the host-native configs/process-exporter on port 9256.",
+          "default": null
+        }
+      },
+      "description": "Native Tachometer collection for an observability-enabled run."
+    },
+    "TcpProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "description": "Port probed on the service node."
+        }
+      },
+      "description": "Ready when ``port`` accepts a TCP connection on the service node.",
+      "required": [
+        "port"
+      ]
+    },
+    "TelemetryConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Collect GPU power over each benchmark concurrency window.",
+          "default": false
+        },
+        "dcgm_exporter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TelemetryExporterConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU power exporter image, port, command, labels and metrics. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.",
+          "default": null
+        },
+        "collect_interval_ms": {
+          "type": "integer",
+          "description": "Milliseconds between collector cycles. Replaces the retired ``default_frequency``, which despite its name was a period in seconds (1000ms == the old 1.0 default).",
+          "default": 1000
+        },
+        "storage_subdir": {
+          "type": "string",
+          "description": "Output directory below the run's log directory.",
+          "default": "power"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort.",
+          "default": false
+        },
+        "clock_sync_check": {
+          "type": "boolean",
+          "description": "Before any server starts, verify every allocation node reports an NTP-synchronised system clock. Sample timestamps (orchestrator host) and window boundaries (benchmark client host) are compared directly, so an unsynchronised node silently misaligns the measurement. Fails the job when ``required`` is true; otherwise the run continues and the manifest records ``clock_sync_unverified`` with ``publication_valid: false``. Set false on clusters where timedatectl/chronyc/ntpq are unavailable to unprivileged users.",
+          "default": true
+        },
+        "startup_timeout_seconds": {
+          "type": "number",
+          "description": "Seconds to wait for the exporters to answer before giving up (DCGM and CPU legs).",
+          "default": 30.0
+        },
+        "request_timeout_seconds": {
+          "type": "number",
+          "description": "Per-request exporter timeout in seconds (DCGM and CPU legs).",
+          "default": 2.0
+        },
+        "collector_join_timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "None derives a safe shutdown budget from request_timeout_seconds.",
+          "default": null
+        },
+        "cpu_power_exporter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CpuPowerExporterConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Head-node scrape of a per-node CPU power exporter. Setting the block enables it.",
+          "default": null
+        },
+        "cpu_power": {
+          "$ref": "#/$defs/CpuPowerConfig",
+          "description": "In-job CPU power collector on each node, independent of `cpu_power_exporter`."
+        }
+      },
+      "description": "DCGM power telemetry for benchmark measurement windows."
+    },
+    "TelemetryExporterConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "container_image": {
+          "type": "string",
+          "description": "Exporter image (registry URI or `containers` alias); ignored, and may be `\"\"`, when `binary` is set."
+        },
+        "port": {
+          "type": "integer",
+          "description": "Port the exporter serves `/metrics` on, on every worker node."
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Command line replacing the image's default entrypoint arguments.",
+          "default": null
+        },
+        "binary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Host executable to run without a container; relative paths resolve against the srtctl checkout.",
+          "default": null
+        },
+        "kind": {
+          "enum": [
+            "dcgm",
+            "custom"
+          ],
+          "description": "GPU exporter kind: `dcgm` (built-in DCGM command, labels, metrics and tachometer scrape) or `custom` (any other exporter; set `command`, `gpu_labels` and `gpu_metrics`, and tachometer keeps its rows as served).",
+          "default": "dcgm"
+        },
+        "gpu_labels": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuLabelsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU power telemetry: labels identifying a GPU in the scrape; unset means DCGM (`gpu`, `UUID`).",
+          "default": null
+        },
+        "gpu_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuMetricsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU power telemetry: per-GPU metrics to record; unset means DCGM.",
+          "default": null
+        }
+      },
+      "description": "Configuration for a metrics exporter deployed on worker nodes.",
+      "required": [
+        "container_image",
+        "port"
+      ]
+    },
+    "TileRTBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "tilert"
+          ],
+          "description": "Engine type discriminator.",
+          "default": "tilert"
+        },
+        "served_model_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Model name the server reports to clients; unset uses the default served name.",
+          "default": null
+        }
+      },
+      "description": "Launch TileRT's decode server with recipe-owned model and transport settings."
+    },
+    "TokenSpeedBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "tokenspeed"
+          ],
+          "description": "Engine type discriminator.",
+          "default": "tokenspeed"
+        }
+      },
+      "description": "Launch TokenSpeed workers behind the Dynamo frontend or a static router such as SMG."
+    },
+    "VLLMBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "vllm"
+          ],
+          "description": "Engine type discriminator.",
+          "default": "vllm"
+        },
+        "set_visible_devices": {
+          "type": "boolean",
+          "description": "Use an environment mask instead of the engine's --device-ids option.",
+          "default": false
+        },
+        "connector": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Default KV connector: \"nixl\", \"lmcache\", \"lmcache-mp\", \"kvbm\", \"moriio\", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting \"connector\" in roles.<role>.args; connector_for_mode resolves it. \"moriio\" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).",
+          "default": "nixl"
+        },
+        "failover": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VLLMFailoverConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Shadow engine recovery: when set, every worker runs shadow_engines standby engines on its GPUs next to an implied `gms` service that owns the weights. Dynamo frontend only.",
+          "default": null
+        },
+        "allow_prefill_decode_colocation": {
+          "type": "boolean",
+          "description": "Allow prefill and decode workers to share one node when the combined GPU request fits within gpus_per_node. Defaults off to preserve existing P/D node separation.",
+          "default": false
+        },
+        "allow_prefill_decode_colocation_across_nodes": {
+          "type": "boolean",
+          "description": "Extend P/D colocation to multi-node topologies. When enabled together with allow_prefill_decode_colocation, workers are packed contiguously across the minimum number of nodes instead of reserving separate P/D node pools. Defaults off to preserve the original one-node-only policy.",
+          "default": false
+        },
+        "dp_launch_mode": {
+          "enum": [
+            "per_gpu",
+            "per_node"
+          ],
+          "description": "DP process layout. Per-node lets vLLM manage the node-local portion of a DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP rendezvous when a replica is larger than the node-local GPU allocation. Per-GPU remains available as a deprecated compatibility layout.",
+          "default": "per_node"
+        },
+        "vllm_serve_binary": {
+          "type": "string",
+          "description": "Executable used by direct aggregate frontend.type=vllm jobs. This can be set to vllm-rs (or its absolute path) to use the Rust OpenAI frontend.",
+          "default": "vllm"
+        }
+      },
+      "description": "vLLM backend configuration and launch implementation."
+    },
+    "VLLMFailoverConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "shadow_engines": {
+          "type": "integer",
+          "description": "Standby engines per worker.",
+          "default": 1
+        },
+        "shared_dir": {
+          "type": "string",
+          "description": "Node-local host directory that every container on a node sees. The GMS sockets and the lock file of a worker live under ``<shared_dir>/srtctl-<job_id>/<role>_<index>``. enroot bind-mounts the host's ``/dev/shm`` into every container; ``/tmp`` is a fresh tmpfs per container and does not work.",
+          "default": "/dev/shm"
+        }
+      },
+      "description": "Shadow engine recovery for vLLM workers (Dynamo GPU Memory Service)."
+    }
+  }
+}
