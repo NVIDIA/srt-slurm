@@ -61,6 +61,7 @@ Once allocated, workers launch inside containers, discover each other through et
 - [Parameter Sweeps](sweeps.md) - Run grid searches across configurations
 - [Config Overrides](overrides.md) - Multi-variant jobs from a single file
 - [Profiling](profiling.md) - Performance analysis with torch/nsys
+- [Cluster Performance Diagnostics](cluster-performance-diagnostics.md) - Compare serving placement and communication latency across clusters
 - [SGLang Router](sglang-router.md) - Alternative to Dynamo for PD disaggregation
 - [Services](services.md) - Sidecars and standalone stores launched next to the job
 - [Configuration Reference](config-reference.md) - Every recipe section, with the generated field tables in [Schema Reference](schema-reference.md)

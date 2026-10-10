@@ -1,0 +1,106 @@
+Raplab versus Hecate: current findings and next measurements
+
+Inputs reviewed:
+  cluster-diagnostics-comparison-4254-707665.txt
+  cluster-diagnostics-comparison-4256-707729.txt
+  Extracted bundles under /tmp/cluster-diagnostics-comparison/
+  Current c560 recipes under dynamo-1004/ and raplab-dyanmo-1004/
+
+No remote connections or new cluster jobs were run. The existing reports are
+idle-node diagnostics; they do not establish the cause of serving ITL or TTFT.
+
+1. Establish comparable software/model/workload first.
+
+The current reference recipe names GLM-5.2 model weights and an image containing
+4dece7f in its filename. The current Raplab recipe names GLM-5.3 weights and an
+image containing f1bdd25 in its filename. Names alone cannot prove different
+weights/builds, but equivalence has not been established. Older bundle package
+versions and the three sampled source hashes matched; those measurements do
+not verify these current images or their CUDA/NCCL binaries and kernel code.
+
+Other current recipe differences:
+  Reference memory policy: nodes 0,1; Raplab: strict GPU-local memory.
+  Reference UCX_TLS: all; Raplab: cuda_ipc,cuda_copy,sm,self,tcp.
+  Raplab explicitly overrides MPI to UCX rc/ud and disables ucc/hcoll.
+  Raplab supplies NCCL rail/plane assignments; reference does not.
+  Reference frontend NUMA binding is enabled; Raplab omits it.
+  Reference client placement is last_decode; Raplab colocates with frontend.
+  Both use stream_interval=20, max_draft_len=5 and forced acceptance=2.61.
+
+These are experimental variables, not diagnosed faults. Check actual worker
+environment and runtime config, model metadata/provenance, loaded libraries,
+and the same benchmark trace before crediting a difference to the cluster.
+Raplab's UCX RDMA device list does not enable RDMA transports when UCX_TLS
+excludes them. MPI uses its separate MPI_UCX_TLS list. Mooncake protocol=rdma
+is a separate transport contract; neither UCX list proves its actual payload path.
+
+2. NUMA placement is important, but bound copy hardware looks similar.
+
+The first diagnostic restricted all tasks to NUMA0 CPUs, so its NUMA1 tests
+failed. The second fixed the CPU allocation and completed both NUMA policies.
+Recalculated from the second pair's raw per-GPU copy records:
+
+Test (mean of 8 per-GPU medians)        Raplab GiB/s    Hecate GiB/s
+H2D local, 64 MiB single copy             311.18          315.69
+H2D remote, 64 MiB single copy             35.82           35.92
+H2D local, 1 MiB chunks                  150.11          153.80
+H2D local, 64 KiB chunks                  27.34           27.50
+D2H local, 64 MiB single copy             309.86          304.79
+D2H remote, 64 MiB single copy             28.78           28.84
+
+The local bulk H2D gap is about 1.4%, whereas going remote costs roughly 8.7x
+on both clusters. Older unrestricted/local-buffer Raplab measurements were
+134.7-205.9 GiB/s versus 298.4-316.3 GiB/s fully bound. The experiment changed
+CPU and memory policy together and reused a process/pinned allocator across
+GPUs, so it does not isolate CPU affinity or reproduce independent serving ranks.
+
+The current Raplab recipe now binds CPUs and memory locally for both roles.
+Verify all worker threads and actual page placement under serving load. A
+startup message or allowed memory mask alone does not prove physical placement.
+
+3. Networking differs and requires measurements at the actual rank count.
+
+Raplab exposes veth eth0 with MTU 8980 and a default route via 169.254.1.1.
+Hecate exposes a physical 400-Gbit/s interface plus IPoIB interfaces/routes.
+The veth's nominal speed is not a physical bandwidth measurement. Measure
+the serving TCP/RPC path rather than inferring it from the interface label.
+
+Raplab's eight RDMA NICs split into two reported subnet/SM groups:
+  mlx5_0/1/2/5: fe80 prefix, SM LID 1
+  mlx5_6/7/8/11: fec0 prefix, SM LID 35
+Hecate's eight NICs report one group: fe80, SM LID 1.
+All selected NICs show 800-Gbit/s XDR and matching firmware/link specifications.
+Subnet/SM data do not prove reachability, congestion, or the physical meaning
+of a NCCL rail/plane label. Validate those labels against the cluster wiring.
+
+Raplab's numeric NIC counters were unavailable in the old host/container data.
+That means unknown errors/retries/congestion, not zero errors. Compare counters
+under load where available; obtain hidden fabric counters from cluster owners.
+
+For ITL, measure 32-rank MPI buffer/object all-gather p50/p99 and selected
+devices. Separately measure NCCL GPU all-gather and inspect NCCL transport logs.
+Neither benchmark substitutes for MegaMoE fused NVLink kernel measurements.
+
+4. Driver/firmware is a remaining controlled-comparison candidate.
+
+Old Raplab data: GPU driver 620.47, VBIOS 99.00.16.47.12.
+Old Hecate data: GPU driver 620.43, VBIOS 99.00.16.47.0F.
+Both reported healthy/full fabric and matching maximum clocks/power limits.
+Idle clock snapshots cannot establish running clocks or power throttling.
+Collect clocks, power, utilization, and pressure during matched serving runs.
+Do not change drivers or firmware before separating software, placement, and
+transport effects with these measurements.
+
+New tooling:
+  configs/cluster-perf-diagnostics.py
+    collect: serving PID/thread masks, allowed environment, numa_maps, cgroups,
+             library maps, source hashes, model metadata/sizes, GPU samples,
+             readable NIC counter deltas.
+    communication: MPI small-buffer/object all-gather; optional NCCL GPU
+                   all-gather with correctness checks and slowest-rank tails.
+    compare: structured field differences, optionally restricted by section.
+  docs/cluster-performance-diagnostics.md: commands and interpretation limits.
+
+The tool does not install packages or modify the host. Collection is read-only;
+communication runs temporary microbenchmarks in an explicitly chosen allocation.
+GPU and multi-node execution still require runs by the user on both clusters.
