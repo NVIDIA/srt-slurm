@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMBackend
+from srtctl.backends.vllm import VLLMBackend
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
@@ -130,18 +130,21 @@ class SweepOrchestrator(
         self.start_services("infra", registry)
 
     def _write_mooncake_store_config(self) -> None:
-        """vLLM's MooncakeStoreConnector reads its config from a JSON file, not env.
+        """vLLM's and TRT-LLM's Mooncake connectors read their config from a JSON file, not env.
 
         Written into log_dir (mounted at /logs in every worker) before workers
         start, pointing at the Mooncake master on the infra node.
         """
         backend = self.config.backend
+        served_model_name = backend.get_served_model_name(self.runtime.model_path.name)
+        for filename, store_cfg in backend.mooncake_store_configs(
+            self.runtime.infra_node_ip, served_model_name
+        ).items():
+            store_cfg_path = self.runtime.log_dir / filename
+            store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
+            logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
         if not isinstance(backend, VLLMBackend) or backend.mooncake_kv_store is None:
             return
-        store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
-        store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
-        store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
-        logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
         if not backend.mooncake_kv_store.device_names_by_gpu:
             return
         # Render only GPU subsets actually launched, rather than all 2**N subsets.

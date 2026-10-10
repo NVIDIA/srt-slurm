@@ -599,18 +599,26 @@ class VLLMBackend(Backend):
             env["VLLM_PORT"] = str(process.vllm_scan_port)
         return env
 
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+    def get_mooncake_worker_env(
+        self, infra_node_ip: str, local_hostname: str, mode: WorkerMode | None = None
+    ) -> dict[str, str]:
         """The shared MOONCAKE_* environment plus ``MOONCAKE_CONFIG_PATH``.
 
         ``MOONCAKE_CONFIG_PATH`` points to the JSON file srtslurm writes at job
         start (mounted into the container at ``/logs``). vLLM's
         ``MooncakeStoreConnector`` requires this — it does not read the
-        ``MOONCAKE_*`` env vars directly.
+        ``MOONCAKE_*`` env vars directly. Every mode reads the same file.
         """
-        env = super().get_mooncake_worker_env(infra_node_ip, local_hostname)
+        env = super().get_mooncake_worker_env(infra_node_ip, local_hostname, mode)
         if env:
             env["MOONCAKE_CONFIG_PATH"] = MOONCAKE_STORE_CONFIG_CONTAINER_PATH
         return env
+
+    def mooncake_store_configs(self, infra_node_ip: str, served_model_name: str) -> dict[str, dict[str, Any]]:
+        """The shared store config; process-local device configs are written per process."""
+        if self.mooncake_kv_store is None:
+            return {}
+        return {MOONCAKE_STORE_CONFIG_FILENAME: self.build_mooncake_store_config(infra_node_ip)}
 
     def build_mooncake_store_config(self, infra_node_ip: str) -> dict[str, Any]:
         """Build the JSON payload for vLLM's ``MooncakeStoreConfig.load_from_env()``.

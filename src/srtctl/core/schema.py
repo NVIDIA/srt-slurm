@@ -50,6 +50,11 @@ from srtctl.backends import (
     VLLMMooncakeKVStoreConfig,
 )
 from srtctl.backends.base import RoleSettings, WorkerMode
+from srtctl.backends.trtllm import (
+    trtllm_mooncake_block_only_key_problem,
+    trtllm_mooncake_role_key_problem,
+    trtllm_mooncake_store_config_problem,
+)
 from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
@@ -824,7 +829,7 @@ class RoleConfig(RoleSettings):
     worker, its environment and engine arguments, and optionally its own engine and
     image. ``SrtConfig.topology`` derives the per-role counts the launch path reads;
     ``SrtConfig.backend`` binds the roles onto the engine, which reads ``env`` / ``args`` /
-    ``extra_args`` / ``kv_events`` from them.
+    ``extra_args`` / ``kv_events`` / ``mooncake_store_config`` from them.
     """
 
     # Nodes reserved for this role. `colocate` (decode only) reserves none and packs the
@@ -851,6 +856,9 @@ class RoleConfig(RoleSettings):
     container: str | None = None
     # `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`.
     kv_events: bool | dict[str, Any] | None = None
+    # TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`,
+    # ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there.
+    mooncake_store_config: dict[str, Any] = field(default_factory=dict)
     # Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree.
     sidecar: bool | None = field(
         default=None,
@@ -3290,6 +3298,10 @@ class SrtConfig:
         ``MooncakeConnector``), the master we launch is unused and workers fall
         back to the default transport — almost never what the user intends.
         """
+        self._validate_role_mooncake_store_config()
+        if isinstance(self.backend, TRTLLMBackend):
+            self._validate_trtllm_mooncake_store(self.backend)
+            return
         mooncake_cfg = self.backend.mooncake_kv_store
         if mooncake_cfg is None:
             return
@@ -3351,6 +3363,117 @@ class SrtConfig:
                     "one) so workers actually use the mooncake master srtslurm launches "
                     "for you."
                 )
+
+    def _validate_role_mooncake_store_config(self) -> None:
+        """``roles.<role>.mooncake_store_config`` is read by a TRT-LLM role's engine only."""
+        for role, spec in self.roles.items():
+            if spec.mooncake_store_config and not isinstance(self.role_backends.get(role, self.backend), TRTLLMBackend):
+                raise ValidationError(
+                    f"roles.{role}.mooncake_store_config is read by TRT-LLM only. For SGLang, set per-role Mooncake "
+                    "settings as MOONCAKE_* variables in roles.<role>.env; for vLLM, in the mooncake-master "
+                    "service's options.store_config."
+                )
+
+    def _validate_trtllm_mooncake_store(self, backend: TRTLLMBackend) -> None:
+        """TRT-LLM's Mooncake Store connector against the master srtslurm launches.
+
+        With a ``mooncake-master`` service, srtslurm renders each connector role's
+        client config and points ``MOONCAKE_CONFIG_PATH`` at it, which TRT-LLM reads
+        before its ``kv_connector_config.mooncake_store`` block. Everything checked
+        here would otherwise fail in every rank after the model has loaded.
+        """
+        store = backend.mooncake_kv_store
+        modes = backend.mooncake_store_modes()
+        role_keys = {
+            role: dict(spec.mooncake_store_config) for role, spec in self.roles.items() if spec.mooncake_store_config
+        }
+        if store is None:
+            if role_keys:
+                raise ValidationError(
+                    f"roles.{min(role_keys)}.mooncake_store_config needs a mooncake-master service: srtslurm writes "
+                    "it into the client config it renders for the master's pool"
+                )
+            self._validate_trtllm_own_mooncake_pool(backend, modes)
+            return
+        if any(s.enabled and s.type == "mooncake-master" and s.external for s in self.services):
+            raise ValidationError(
+                "an external mooncake-master is not supported for TRT-LLM: srtslurm renders each role's "
+                "master_server_address from the infra node, where nothing would be listening"
+            )
+        if not modes:
+            raise ValidationError(
+                "a mooncake-master service is configured but no roles.<role>.args.kv_connector_config resolves to "
+                "the Mooncake Store connector (connector: mooncake-store, with connector_module unset or "
+                "tensorrt_llm._torch.pyexecutor.connectors.mooncake_store), so no TRT-LLM worker would use the master."
+            )
+        for mode in modes:
+            if backend.get_config_for_mode(mode)["kv_connector_config"].get("mooncake_store") is not None:
+                raise ValidationError(
+                    f"roles.{mode}.args.kv_connector_config.mooncake_store is set, but with a mooncake-master "
+                    "service srtslurm gives this role its Mooncake client config through MOONCAKE_CONFIG_PATH, "
+                    "which TRT-LLM reads instead of that block. Remove the block and put its settings in the "
+                    "service's options.store_config or roles.<role>.mooncake_store_config (segment_size is "
+                    "global_segment_size there; pool, run_dir, and master_timeout have no equivalent)."
+                )
+        unused = sorted(set(role_keys) - set(modes))
+        if unused:
+            raise ValidationError(
+                f"roles.{unused[0]}.mooncake_store_config is set, but only {list(modes)} use the Mooncake Store "
+                "connector"
+            )
+        sources = {"mooncake-master options.store_config": store.store_config or {}}
+        sources.update({f"roles.{role}.mooncake_store_config": keys for role, keys in role_keys.items()})
+        for where, keys in sources.items():
+            problem = trtllm_mooncake_block_only_key_problem(keys)
+            if problem is None and where.startswith("roles."):
+                problem = trtllm_mooncake_role_key_problem(keys)
+            if problem is not None:
+                raise ValidationError(f"{where}: {problem}")
+        served_model_name = backend.get_served_model_name("<model directory name>")
+        for mode in modes:
+            problem = trtllm_mooncake_store_config_problem(
+                backend.build_mooncake_store_config(mode, "<infra_ip>", served_model_name)
+            )
+            if problem is not None:
+                raise ValidationError(f"Mooncake client config for roles.{mode}: {problem}")
+
+    def _validate_trtllm_own_mooncake_pool(self, backend: TRTLLMBackend, modes: tuple[WorkerMode, ...]) -> None:
+        """Connector roles without a mooncake-master service must find a client config themselves.
+
+        Every rank runs under trtllm-llmapi-launch, so a MOONCAKE_CONFIG_PATH that trtllm-serve
+        exports never reaches it: ranks read the config trtllm-serve rendered back from
+        ``mooncake_store.run_dir``, which one server claims for itself. ``dynamo.trtllm``
+        renders none; a Dynamo sidecar engine is ``tensorrt_llm.commands.serve`` and does.
+        """
+        from srtctl.frontends import get_frontend
+
+        workers = {
+            "prefill": self.topology.num_prefill,
+            "decode": self.topology.num_decode,
+            "agg": self.topology.num_agg,
+        }
+        run_dirs: dict[str, WorkerMode] = {}
+        for mode in modes:
+            if "MOONCAKE_CONFIG_PATH" in {**self.environment, **backend.get_environment_for_mode(mode)}:
+                continue
+            block = backend.get_config_for_mode(mode)["kv_connector_config"].get("mooncake_store")
+            run_dir = block.get("run_dir") if isinstance(block, Mapping) else None
+            serve_renders = self.dynamo.sidecar or get_frontend(self.frontend.type).worker_launch == "direct"
+            if not run_dir or not serve_renders:
+                raise ValidationError(
+                    f"roles.{mode}.args.kv_connector_config selects the mooncake-store connector, but its workers "
+                    "would not find a Mooncake client config. Declare a mooncake-master service: srtslurm then "
+                    "launches the master and gives this role its config through MOONCAKE_CONFIG_PATH. (Without "
+                    f"one, set MOONCAKE_CONFIG_PATH in roles.{mode}.env, or, when trtllm-serve runs the engine, "
+                    "a mooncake_store block with run_dir.)"
+                )
+            if workers[mode] > 1 or run_dir in run_dirs:
+                raise ValidationError(
+                    f"roles.{mode}.args.kv_connector_config.mooncake_store.run_dir {run_dir!r} would be shared by "
+                    "several servers, and TRT-LLM lets one live server own a run_dir. Give each role its own "
+                    "run_dir and one worker, or declare a mooncake-master service."
+                )
+            run_dirs[run_dir] = mode
 
     def _profiling_worker_ranks(self, mode: WorkerMode) -> set[int]:
         """Derive selectable physical ranks from the configured worker layout."""

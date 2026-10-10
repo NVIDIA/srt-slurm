@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from srtctl.backends.sglang import MooncakeKVStoreConfig
+    from srtctl.backends.trtllm import TRTLLMMooncakeKVStoreConfig
     from srtctl.backends.vllm import VLLMFailoverConfig, VLLMMooncakeKVStoreConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
@@ -88,6 +89,7 @@ class RoleSettings(ABC):
     args: Mapping[str, Any]
     extra_args: Sequence[str]
     kv_events: bool | Mapping[str, Any] | None
+    mooncake_store_config: Mapping[str, Any]
 
 
 class BoundRolesField(fields.Field):
@@ -115,6 +117,12 @@ def role_env(roles: Mapping[str, RoleSettings], mode: str) -> dict[str, str]:
     """``roles.<role>.env`` for a worker mode, as a fresh dict; empty when the role is absent."""
     role = role_for_mode(roles, mode)
     return dict(role.env) if role is not None else {}
+
+
+def role_mooncake_store_config(roles: Mapping[str, RoleSettings], mode: str) -> dict[str, Any]:
+    """``roles.<role>.mooncake_store_config`` for a worker mode, as a fresh dict; empty when the role is absent."""
+    role = role_for_mode(roles, mode)
+    return dict(role.mooncake_store_config) if role is not None else {}
 
 
 def role_kv_events(roles: Mapping[str, RoleSettings], mode: str, defaults: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -156,7 +164,9 @@ class Backend(ABC):
         raise NotImplementedError
 
     @property
-    def mooncake_kv_store(self) -> "MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | None":
+    def mooncake_kv_store(
+        self,
+    ) -> "MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | TRTLLMMooncakeKVStoreConfig | None":
         """The recipe's Mooncake KV store block, or None when the engine has none.
 
         Set, it implies the mooncake-master service and the MOONCAKE_* worker
@@ -264,7 +274,9 @@ class Backend(ABC):
         """
         return {}
 
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+    def get_mooncake_worker_env(
+        self, infra_node_ip: str, local_hostname: str, mode: WorkerMode | None = None
+    ) -> dict[str, str]:
         """MOONCAKE_* environment for a worker; empty when mooncake_kv_store is None.
 
         - MOONCAKE_LOCAL_HOSTNAME defaults to the worker's resolved IP, but the
@@ -278,6 +290,7 @@ class Backend(ABC):
             infra_node_ip: Resolved IP of the infra node where mooncake_master runs.
             local_hostname: Resolved IP of the worker's own node, for peer-to-peer
                 transfers. Defaults to the worker's primary network interface IP.
+            mode: The worker's mode, for engines whose client config differs by role.
         """
         store = self.mooncake_kv_store
         if store is None:
@@ -288,6 +301,17 @@ class Backend(ABC):
             "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
             "MOONCAKE_TE_META_DATA_SERVER": f"http://{infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata",
         }
+
+    def mooncake_store_configs(self, infra_node_ip: str, served_model_name: str) -> dict[str, dict[str, Any]]:
+        """Mooncake client configs to write into log_dir before workers start, by file name.
+
+        log_dir is mounted at /logs in every worker, where get_mooncake_worker_env
+        points MOONCAKE_CONFIG_PATH. Empty for an engine that reads its Mooncake
+        settings from the MOONCAKE_* environment instead (SGLang).
+        ``served_model_name`` is the name the workers serve, for engines that key the
+        pool by the model.
+        """
+        return {}
 
     def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
         """Shadow engine recovery environment for a worker; empty when failover is None."""
