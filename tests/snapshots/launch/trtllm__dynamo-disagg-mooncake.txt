@@ -1,0 +1,249 @@
+# examples/trtllm/dynamo-disagg-mooncake.yaml
+# exit_code: 0
+# srun calls: 13
+
+## service_etcd
+nodelist: node-01
+output: <output>/logs/service_etcd.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/etcd && mkdir -p /tmp/etcd
+command: |
+    /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_mooncake-master
+nodelist: node-01
+output: <output>/logs/service_mooncake-master.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: True
+command: |
+    mooncake_master --port=8700 --enable_http_metadata_server=true --http_metadata_server_port=8701 --eviction_high_watermark_ratio=0.9 --default_kv_lease_ttl=10000 --rpc_thread_num=16 --enable_metric_reporting=true --metrics_port=8702
+
+## prefill_0_node-01
+nodes: 1
+ntasks: 1
+nodelist: node-01
+output: <output>/logs/node-01_prefill_w0.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7500
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    MASTER_ADDR: 127.0.0.1
+    MASTER_PORT: 29500
+    MOONCAKE_CONFIG_PATH: /logs/mooncake_store_config_prefill.json
+    MOONCAKE_LOCAL_HOSTNAME: 127.0.0.1
+    MOONCAKE_MASTER: 127.0.0.1:8700
+    MOONCAKE_TE_META_DATA_SERVER: http://127.0.0.1:8701/metadata
+    PYTHONUNBUFFERED: 1
+    TLLM_LOG_LEVEL: INFO
+    TRTLLM_EPLB_SHM_NAME: <random>
+srun_options:
+    kill-on-bad-exit: 1
+    ntasks-per-node: 1
+mpi: pmix
+oversubscribe: True
+cpu_bind: verbose,none
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name Qwen/Qwen3-0.6B --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane tcp --publish-metrics
+
+## decode_0_node-02
+nodes: 1
+ntasks: 1
+nodelist: node-02
+output: <output>/logs/node-02_decode_w0.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7501
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    MASTER_ADDR: 127.0.0.1
+    MASTER_PORT: 29501
+    MOONCAKE_CONFIG_PATH: /logs/mooncake_store_config_decode.json
+    MOONCAKE_LOCAL_HOSTNAME: 127.0.0.1
+    MOONCAKE_MASTER: 127.0.0.1:8700
+    MOONCAKE_TE_META_DATA_SERVER: http://127.0.0.1:8701/metadata
+    PYTHONUNBUFFERED: 1
+    TLLM_LOG_LEVEL: INFO
+    TRTLLM_EPLB_SHM_NAME: <random>
+srun_options:
+    kill-on-bad-exit: 1
+    ntasks-per-node: 1
+mpi: pmix
+oversubscribe: True
+cpu_bind: verbose,none
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name Qwen/Qwen3-0.6B --disaggregation-mode decode --extra-engine-args /logs/trtllm_config_decode.yaml --request-plane tcp --publish-metrics
+
+## frontend_0
+nodelist: node-01
+output: <output>/logs/node-01_frontend_0.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+mpi: pmix
+command: |
+    python3 -m dynamo.frontend --http-port=8000
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    SRTCTL_FRONTEND_TYPE: dynamo
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+command: |
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4x8 inf /model Qwen/Qwen3-0.6B true 2 1 1 0.8 10 2 '' true random '' false

@@ -790,6 +790,21 @@ def show_config_details(config: SrtConfig) -> None:
                     "MOONCAKE_CONFIG_PATH",
                     "/logs/mooncake_store_config.json (auto)",
                 )
+            elif isinstance(backend, TRTLLMBackend):
+                # One client config per role using the mooncake-store connector; the
+                # role's workers read it through MOONCAKE_CONFIG_PATH. model_key defaults
+                # to the served model name, which needs the staged model when not configured.
+                served_model_name = backend.get_served_model_name("<model directory name>")
+                for mode in backend.mooncake_store_modes():
+                    path = backend.get_mooncake_worker_env("<infra_ip>", "<worker_ip>", mode)["MOONCAKE_CONFIG_PATH"]
+                    details.add_row("mooncake", f"MOONCAKE_CONFIG_PATH ({mode})", f"{path} (auto)")
+                    details.add_row(
+                        "mooncake",
+                        f"store_config ({mode})",
+                        json.dumps(
+                            backend.build_mooncake_store_config(mode, "<infra_ip>", served_model_name), indent=2
+                        ),
+                    )
 
         console.print(Panel(details, border_style="blue"))
 

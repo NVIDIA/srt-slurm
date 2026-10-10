@@ -2538,6 +2538,11 @@
           "description": "`true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`.",
           "default": null
         },
+        "mooncake_store_config": {
+          "type": "object",
+          "description": "TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`, ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there.",
+          "default": {}
+        },
         "sidecar": {
           "anyOf": [
             {
@@ -2924,7 +2929,7 @@
         },
         "options": {
           "type": "object",
-          "description": "Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` and ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind.",
+          "description": "Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` for vLLM and TRT-LLM, ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind.",
           "default": {}
         },
         "metrics": {
