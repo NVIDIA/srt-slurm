@@ -45,7 +45,7 @@ engine:
   numa_cpu_bind: true
   type: trtllm
   served_model_name: GLM-5.3
-  numa_memory_bind: true
+  numa_memory_bind: local
 roles:
   prefill:
     nodes: 3
@@ -143,6 +143,7 @@ roles:
       UCX_NET_DEVICES: all
       UCX_RNDV_SCHEME: put_zcopy
       UCX_TLS: all
+      UCX_LOG_LEVEL: info
       HF_HOME: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache
       DYN_ENGINE_CONV_AFFINITY: '1'
   decode:
@@ -233,6 +234,7 @@ roles:
       UCX_NET_DEVICES: all
       UCX_RNDV_SCHEME: put_zcopy
       UCX_TLS: all
+      UCX_LOG_LEVEL: info
       HF_HOME: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ROUTER_MODE: least-loaded
