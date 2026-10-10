@@ -419,7 +419,7 @@ class WorkerStageMixin:
             local_hostname = env_to_set.get("MOONCAKE_LOCAL_HOSTNAME") or get_hostname_ip(
                 process.node, self.runtime.network_interface
             )
-            env_to_set.update(backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
+            env_to_set.update(backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname, mode))
 
         self._apply_mooncake_process_config(process, env_to_set)
 
@@ -647,7 +647,7 @@ class WorkerStageMixin:
             local_hostname = env_to_set.get("MOONCAKE_LOCAL_HOSTNAME") or get_hostname_ip(
                 leader.node, self.runtime.network_interface
             )
-            env_to_set.update(backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
+            env_to_set.update(backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname, mode))
 
         # Add profiling environment variables after the worker environment.
         if profiling.enabled and profiling_selects_process:

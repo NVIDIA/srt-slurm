@@ -39,9 +39,10 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
 
 - The master is the `mooncake-master` service (`services/`); `services/normalize.py` maps a declared entry onto the internal `backend.mooncake_kv_store` field before schema load, and `engine.mooncake_kv_store` sets that field directly.
 - srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, and `MOONCAKE_LOCAL_HOSTNAME` on every worker; `MOONCAKE_LOCAL_HOSTNAME` is the worker's own IP on `runtime.network_interface`. A value in a role's `env` pins the NIC; `MOONCAKE_MASTER` is never set by hand.
-- vLLM reads its store config from JSON: `store_config` is rendered into the file `MOONCAKE_CONFIG_PATH` names.
+- vLLM reads its store config from JSON, one file per role whose `kv-transfer-config` uses Mooncake: `VLLMBackend.build_mooncake_store_config(mode, ...)` renders `mooncake_store_config_for_mode(mode)`, and `get_mooncake_worker_env(..., mode)` points that role's `MOONCAKE_CONFIG_PATH` at it.
+- TRT-LLM's `mooncake-store` connector reads JSON too, one file per role: `TRTLLMBackend.build_mooncake_store_config(mode, ...)` renders `mooncake_store_config_for_mode(mode)` (`roles.<role>.mooncake_store_config` over the deprecated service `store_config`) over a per-role `role` default and a `model_key` of the served model name, `Backend.mooncake_store_configs` lists the files the orchestrator writes, and `get_mooncake_worker_env(..., mode)` sets that role's `MOONCAKE_CONFIG_PATH` on the srun task so every MPI rank inherits it. Roles select the connector with `kv_connector_config: {connector: mooncake-store}` and no `mooncake_store` block; `trtllm-serve mooncake_master` and donors are not used.
 - SGLang disaggregated recipes must set `disaggregation-transfer-backend: mooncake` in the prefill and decode `args`; the validator rejects a master without it, because workers would silently fall back to the default transport.
-- Consumers read `backend.mooncake_kv_store` / `backend.get_mooncake_worker_env(...)`; a backend without Mooncake returns `None` / `{}`.
+- Consumers read `backend.mooncake_kv_store` / `backend.get_mooncake_worker_env(...)`; a backend without Mooncake returns `None` / `{}`. Per-role client config goes through `backend.mooncake_store_modes()` and `backend.mooncake_store_config_for_mode(mode)` (empty for SGLang); `Backend.mooncake_pool_keys` lists the keys the validator checks match across roles.
 
 ## Shadow engine recovery (vLLM, `engine.failover`)
 

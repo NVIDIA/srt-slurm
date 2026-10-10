@@ -1,0 +1,101 @@
+# TRT-LLM disaggregated prefill/decode with a shared Mooncake Store pool, fronted
+# by `trtllm-serve disaggregated`.
+#
+# The `mooncake-master` service runs the upstream `mooncake_master` on the infra
+# node, the same master SGLang and vLLM recipes use. Both roles select TRT-LLM's
+# `mooncake-store` KV connector with no `mooncake_store` block: srtctl renders each
+# role's Mooncake client config into /logs/mooncake_store_config_<role>.json and
+# sets MOONCAKE_CONFIG_PATH on that role's workers, which TRT-LLM reads instead.
+# Each role's `mooncake_store_config` is that role's Mooncake client config. The
+# context server reads and writes the pool (role: both); the generation server only
+# lends its segment (role: capacity) and lends more. model_key defaults to the served
+# model name. No `trtllm-serve mooncake_master` or donor process runs. Needs a TRT-LLM build with the refined Mooncake connector
+# API (NVIDIA/TensorRT-LLM#19706). See docs/mooncake-kv-store.md.
+#
+# Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-trtllm-serve-disagg-mooncake"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "trtllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+frontend:
+  type: trtllm_serve
+  enable_multiple_frontends: false
+
+engine:
+  type: trtllm
+  served_model_name: "Qwen/Qwen3-0.6B"
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+      TLLM_LOG_LEVEL: "INFO"
+    args:
+      backend: "pytorch"
+      tensor_parallel_size: 1
+      max_batch_size: 8
+      max_num_tokens: 8192
+      max_seq_len: 4096
+      trust_remote_code: true
+      disable_overlap_scheduler: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.5
+        use_kv_cache_manager_v2: true
+      cache_transceiver_config:        # KV cache manager v2 needs the Python NIXL transceiver
+        backend: "NIXL"
+        transceiver_runtime: "PYTHON"
+      kv_connector_config:
+        connector: mooncake-store
+    mooncake_store_config:           # this role's Mooncake client config
+      protocol: rdma
+      global_segment_size: 8GiB      # host memory each prefill rank lends; binary units only
+      stage_through_host: true       # no GPUDirect RDMA needed for the KV pools
+  decode:
+    nodes: colocate
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+      TLLM_LOG_LEVEL: "INFO"
+    args:
+      backend: "pytorch"
+      tensor_parallel_size: 1
+      max_batch_size: 64
+      max_num_tokens: 4096
+      max_seq_len: 4096
+      trust_remote_code: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.5
+        use_kv_cache_manager_v2: true
+      cache_transceiver_config:        # KV cache manager v2 needs the Python NIXL transceiver
+        backend: "NIXL"
+        transceiver_runtime: "PYTHON"
+      kv_connector_config:
+        connector: mooncake-store
+    mooncake_store_config:
+      protocol: rdma                 # keys the whole pool shares must match across roles
+      global_segment_size: 16GiB     # decode ranks lend more host memory
+      stage_through_host: true
+
+services:
+  - name: mooncake-master
+    type: mooncake-master
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

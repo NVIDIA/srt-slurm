@@ -111,6 +111,7 @@ One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
 | `engine` | str \| mapping | `None` | Engine type or mapping with engine options. Set on every role when no top-level `engine` is declared; the two forms cannot be mixed, and role engines do not inherit options from each other. |
 | `container` | str \| None | `None` | Optional role image; accepts cluster container aliases. Defaults to `model.container`. |
 | `kv_events` | bool \| dict[str, Any] \| None | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
+| `mooncake_store_config` | dict[str, Any] | `{}` | Mooncake client config for this role's workers (vLLM, TRT-LLM): the keys srtslurm writes into the JSON file MOONCAKE_CONFIG_PATH names (`protocol`, `global_segment_size`, ...). Keys the whole pool shares must match across roles. The mooncake-master service's deprecated `options.store_config` still applies underneath. |
 | `sidecar` | bool \| None | `None` | Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree. |
 | `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
 | `restart` | [RestartPolicy](#restartpolicy) | `RestartPolicy()` | Relaunch exited workers in place: `never`, `on-failure`, `always`, or a mapping with `policy`, `max_restarts`, `backoff_seconds`, and `max_backoff_seconds`. |
@@ -345,7 +346,7 @@ One entry of the top-level ``services:`` list.
 | `build_timeout_seconds` | int | `1800` | Kill ``build_command`` after this many seconds. |
 | `enabled` | bool | `True` | ``false`` drops the service, including an implicit one (``etcd`` / ``nats`` under the Dynamo frontend, the default exporters) declared here by name. |
 | `external` | str \| None | `None` | For discovery-plane kinds (``etcd``, ``nats``, ``mooncake-master``): use this already-running endpoint and launch nothing; the URL is what the job's processes are pointed at. |
-| `options` | dict[str, Any] | `{}` | Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` and ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind. |
+| `options` | dict[str, Any] | `{}` | Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` for vLLM and TRT-LLM, ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind. |
 | `metrics` | list[[ServiceMetricsConfig](#servicemetricsconfig)] | `[]` | Prometheus endpoints this service serves: one mapping or a list of ``{port, path, nodes, name}`` (``path`` defaults to ``/metrics``, ``nodes`` to ``all``). Tachometer scrapes each on every node the service runs on, or on its first node with ``nodes: first``, as endpoint ``<name>_<node>`` where ``name`` defaults to the service name. The exporter kinds declare theirs; write it for a generic service that publishes metrics, or on a ``ray`` service whose head serves a trainer's collector and router. |
 
 ### PostEvalConfig

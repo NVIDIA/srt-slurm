@@ -31,19 +31,28 @@ def process(gpus, node="n0"):
     return Process(node, frozenset(gpus), 7500, 6100, "decode", 0)
 
 
-def backend(devices=()):
+MOONCAKE_ARGS = {"kv-transfer-config": '{"kv_connector":"MooncakeStoreConnector"}'}
+
+
+def backend(devices=(), role_config=None, *, bind_role=True):
+    """A decode role on Mooncake; its client keys come from the deprecated shared store_config plus ``role_config``.
+
+    ``bind_role=False`` leaves the roles to ``SrtConfig``, which binds the recipe's own.
+    """
+    roles = {"decode": RoleConfig(args=MOONCAKE_ARGS, mooncake_store_config=role_config or {})} if bind_role else {}
     return VLLMBackend(
         mooncake_kv_store=VLLMMooncakeKVStoreConfig(
             device_names_by_gpu=list(devices),
             store_config={"device_name": "shared", "global_segment_size": "170GB"},
-        )
+        ),
+        roles=roles,
     )
 
 
 def test_default_unchanged():
     b = backend()
     assert b.build_mooncake_process_config(process([0]), "infra", 4) is None
-    assert b.build_mooncake_store_config("infra")["device_name"] == "shared"
+    assert b.build_mooncake_store_config("decode", "infra")["device_name"] == "shared"
     assert VLLMBackend().build_mooncake_process_config(process([0]), "infra", 4) is None
 
 
@@ -51,12 +60,20 @@ def test_default_unchanged():
 def test_physical_gpu_subsets(gpus, expected):
     b = backend(["h0", "h1", "h2", "h3"])
     filename, payload = b.build_mooncake_process_config(process(gpus), "infra", 4)
-    assert filename == "mooncake_store_config_gpu" + "-".join(map(str, sorted(gpus))) + ".json"
+    assert filename == "mooncake_store_config_decode_gpu" + "-".join(map(str, sorted(gpus))) + ".json"
     assert payload["device_name"] == expected
     assert payload["global_segment_size"] == "170GB"
     assert payload["master_server_address"] == "infra:8700"
     assert b.mooncake_kv_store.store_config["device_name"] == "shared"
     assert b.build_mooncake_process_config(process(gpus, node="n1"), "infra", 4) == (filename, payload)
+
+
+def test_role_keys_reach_the_process_config():
+    b = backend(["h0", "h1", "h2", "h3"], role_config={"global_segment_size": "200GB"})
+    filename, payload = b.build_mooncake_process_config(process([1]), "infra", 4)
+    assert filename == "mooncake_store_config_decode_gpu1.json"
+    assert payload["global_segment_size"] == "200GB"
+    assert payload["device_name"] == "h1"
 
 
 def test_shared_hca_deduplicated():
@@ -67,7 +84,13 @@ def test_shared_hca_deduplicated():
 def test_rendered_configs_match_worker_environment(tmp_path):
     workers = [process([0, 1]), process([2, 3]), process([2, 3], node="n1")]
     b = backend(["h0", "h1", "h2", "h3"])
-    runtime = SimpleNamespace(log_dir=tmp_path, container_log_dir=Path("/logs"), infra_node_ip="infra", gpus_per_node=4)
+    runtime = SimpleNamespace(
+        log_dir=tmp_path,
+        container_log_dir=Path("/logs"),
+        infra_node_ip="infra",
+        gpus_per_node=4,
+        model_path=Path("/model"),
+    )
     context = SimpleNamespace(
         config=SimpleNamespace(backend=b, backend_for_role=lambda _mode: b),
         backend=b,
@@ -76,12 +99,12 @@ def test_rendered_configs_match_worker_environment(tmp_path):
     )
     SweepOrchestrator._write_mooncake_store_config(context)
     assert sorted(p.name for p in tmp_path.iterdir()) == [
-        "mooncake_store_config.json",
-        "mooncake_store_config_gpu0-1.json",
-        "mooncake_store_config_gpu2-3.json",
+        "mooncake_store_config_decode.json",
+        "mooncake_store_config_decode_gpu0-1.json",
+        "mooncake_store_config_decode_gpu2-3.json",
     ]
     for worker, expected in zip(workers, ["h0,h1", "h2,h3", "h2,h3"], strict=True):
-        env = b.get_mooncake_worker_env("infra", worker.node)
+        env = b.get_mooncake_worker_env("infra", worker.node, "decode")
         WorkerStageMixin._apply_mooncake_process_config(context, worker, env)
         payload = json.loads((tmp_path / env["MOONCAKE_CONFIG_PATH"].split("/")[-1]).read_text())
         assert payload["device_name"] == expected
@@ -89,16 +112,17 @@ def test_rendered_configs_match_worker_environment(tmp_path):
         assert not any(k.startswith("SRT_MOONCAKE") for k in env)
 
 
-def test_default_writer_and_worker_keep_shared_config(tmp_path):
+def test_default_writer_and_worker_keep_role_config(tmp_path):
     b = backend()
     context = SimpleNamespace(
         config=SimpleNamespace(backend=b, backend_for_role=lambda _mode: b),
         backend=b,
-        runtime=SimpleNamespace(log_dir=tmp_path, infra_node_ip="infra", gpus_per_node=4),
+        runtime=SimpleNamespace(log_dir=tmp_path, infra_node_ip="infra", gpus_per_node=4, model_path=Path("/model")),
     )
     SweepOrchestrator._write_mooncake_store_config(context)
-    assert [p.name for p in tmp_path.iterdir()] == ["mooncake_store_config.json"]
-    env = b.get_mooncake_worker_env("infra", "node")
+    assert [p.name for p in tmp_path.iterdir()] == ["mooncake_store_config_decode.json"]
+    env = b.get_mooncake_worker_env("infra", "node", "decode")
+    assert env["MOONCAKE_CONFIG_PATH"] == "/logs/mooncake_store_config_decode.json"
     before = dict(env)
     WorkerStageMixin._apply_mooncake_process_config(context, process([2]), env)
     assert env == before
@@ -113,7 +137,7 @@ def test_worker_launch_uses_rendered_config(
     """Protect the real writer-to-srun wiring, including profiling selection."""
     roles = ["prefill", "decode"] if disaggregated else ["aggregated"]
     args = {"tensor-parallel-size": 2, "kv-transfer-config": '{"kv_connector":"MooncakeStoreConnector"}'}
-    b = backend(["h0", "h1", "h2", "h3"] if mapped else [])
+    b = backend(["h0", "h1", "h2", "h3"] if mapped else [], bind_role=False)
     profiling = ProfilingConfig()
     if capture_scope is not None:
         phase = ProfilingPhaseConfig(start_step=2, stop_step=5, capture_scope=capture_scope, worker_index=1)
@@ -165,7 +189,8 @@ def test_worker_launch_uses_rendered_config(
         launch = call.kwargs
         env = launch["env_to_set"]
         gpu_ids = "-".join(map(str, sorted(worker.gpu_indices)))
-        filename = f"mooncake_store_config_gpu{gpu_ids}.json" if mapped else "mooncake_store_config.json"
+        role = worker.endpoint_mode
+        filename = f"mooncake_store_config_{role}_gpu{gpu_ids}.json" if mapped else f"mooncake_store_config_{role}.json"
         assert env["MOONCAKE_CONFIG_PATH"] == f"/logs/{filename}"
         assert launch["container_mounts"][tmp_path] == Path("/logs")
         assert launch["nodelist"] == [worker.node]
