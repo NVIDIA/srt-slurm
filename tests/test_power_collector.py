@@ -495,6 +495,35 @@ class TestCollection:
         assert {row.hostname for row in rows} == {"node-a", "node-b"}
         assert {row.scrape_seq for row in rows} == {0}
 
+    def test_idle_gpus_on_a_worker_node_are_not_recorded(self, tmp_path, exporters):
+        a = exporters(_body("a", count=2 * GPUS_PER_NODE))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)))
+        session.initialize()
+
+        written = session.collect_once()
+        outcome = session.stop_and_finalize()
+
+        rows, _ = read_samples(session.power_dir / SAMPLES_FILENAME)
+        assert written == 2 * GPUS_PER_NODE
+        assert {(row.hostname, row.gpu_index) for row in rows} == {
+            (node, index) for node in ("node-a", "node-b") for index in range(GPUS_PER_NODE)
+        }
+        assert Reason.UNEXPECTED_DEVICE not in outcome.reason_codes
+        assert Reason.EXPECTED_DEVICE_MISSING not in outcome.reason_codes
+
+    def test_a_node_without_workers_keeps_every_gpu(self, tmp_path, exporters):
+        a = exporters(_body("a"))
+        pool = exporters(_body("p"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", pool.url)), processes=_processes()[:1])
+        session.initialize()
+
+        session.collect_once()
+        session.stop_and_finalize()
+
+        rows, _ = read_samples(session.power_dir / SAMPLES_FILENAME)
+        assert {row.gpu_index for row in rows if row.hostname == "node-b"} == set(range(GPUS_PER_NODE))
+
     def test_terminal_manifest_records_the_samples_digest(self, tmp_path, exporters):
         endpoint = exporters(_body("a"))
         session = _session(
@@ -796,18 +825,6 @@ class TestFailurePaths:
         outcome = session.stop_and_finalize()
 
         assert Reason.EXPORTER_EXITED not in outcome.reason_codes
-
-    def test_unexpected_device_invalidates_publication(self, tmp_path, exporters):
-        a = exporters(_body("a", count=GPUS_PER_NODE + 1))
-        b = exporters(_body("b"))
-        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)))
-        session.initialize()
-
-        session.collect_once()
-        outcome = session.stop_and_finalize()
-
-        assert Reason.UNEXPECTED_DEVICE in outcome.reason_codes
-        assert outcome.publication_valid is False
 
 
 class TestPublication:

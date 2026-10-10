@@ -204,7 +204,9 @@ For any `kind: custom` exporter:
 `schema_version,timestamp_unix,scrape_seq,hostname,gpu_index,gpu_uuid,power_w,gpu_util_pct,sm_active,temperature_c` (version 3),
 one row per observation, `(scrape_seq, hostname, gpu_index)` unique. Rows are
 never interpolated, averaged, or role-attributed — role and heterogeneous
-group live once in the manifest topology.
+group live once in the manifest topology. An exporter can report every GPU on
+its node, so on a worker node the collector keeps only the GPUs that workers
+occupy. Service pool nodes keep every GPU.
 
 GPU temperature is optional Celsius from `gpu_metrics.temperature` (`DCGM_FI_DEV_GPU_TEMP`
 for DCGM, `gpu_junction_temperature` on AMD MI3xx) in the same
