@@ -79,7 +79,7 @@ def test_trtllm_decode_cpu_override_is_visible(capsys):
     show_config_details(config)
     output = capsys.readouterr().out
     assert "CPU affinity unchanged and strict GPU-local memory binding" in output
-    assert "TRT-LLM decode memory override for testing: numactl -m 0,1" in output
+    assert "TRT-LLM decode memory: strict GPU-local memory binding" in output
     assert "TRT-LLM decode CPU override: GPU-local CPU binding (taskset -c)" in output
 
 

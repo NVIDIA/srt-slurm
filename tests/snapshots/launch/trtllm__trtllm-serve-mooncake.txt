@@ -179,7 +179,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch trtllm-serve /model --host 0.0.0.0 --port 6100 --tensor_parallel_size 1 --config /logs/trtllm_config_decode.yaml --served_model_name Qwen/Qwen3-0.6B
+    bash /configs/numa_cpu_bind.sh --bind-memory trtllm-llmapi-launch trtllm-serve /model --host 0.0.0.0 --port 6100 --tensor_parallel_size 1 --config /logs/trtllm_config_decode.yaml --served_model_name Qwen/Qwen3-0.6B
 
 ## trtllm_serve_orchestrator
 nodelist: node-01

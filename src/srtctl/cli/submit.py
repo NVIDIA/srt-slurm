@@ -283,7 +283,7 @@ def show_config_details(config: SrtConfig) -> None:
             cpu_policy = "GPU-local CPU binding" if config.backend.numa_cpu_bind else "CPU affinity unchanged"
             console.print(f"TRT-LLM NUMA: {cpu_policy} and strict GPU-local memory binding (--bind-memory)")
             if config.resources.is_disaggregated:
-                console.print("TRT-LLM decode memory override for testing: numactl -m 0,1")
+                console.print("TRT-LLM decode memory: strict GPU-local memory binding")
         if config.backend.decode_numa_cpu_bind is not None:
             cpu_policy = (
                 "GPU-local CPU binding (taskset -c)"

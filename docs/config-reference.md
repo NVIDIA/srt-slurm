@@ -359,32 +359,31 @@ cluster GPU visibility variables are not supported by this wrapper.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
 Whenever the NUMA wrapper runs, it also restricts
-`UCX_NET_DEVICES` and `NCCL_IB_HCA` to devices on the task GPU's NUMA node,
+`UCX_NET_DEVICES` to devices on the task GPU's NUMA node,
 using sysfs device affinity. UCX candidates include RDMA ports and physical
-Ethernet interfaces; NCCL candidates include RDMA ports. Existing include/exclude
-filters and port selections are retained, as are explicit NCCL rail/plane fields.
-NCCL exports use exact device names. Unset filters select all discovered local
+Ethernet interfaces. Existing include/exclude filters and port selections
+are retained. Unset filters select all discovered local
 devices. Devices with unknown NUMA affinity are excluded by default. You
 can explicitly include Ethernet interfaces in `UCX_NET_DEVICES` (for example,
 `mlx5_0:1,mlx5_6:1,eth0`); those interfaces remain available regardless of NUMA
 affinity, while RDMA ports still require a local match. A configured filter
-with no local match fails startup; hosts without RDMA devices leave an unset
-`NCCL_IB_HCA` unset. The wrapper logs each resolved network variable before
+with no local match fails startup. The wrapper logs the resolved UCX filter before
 launch. This selection requires `python3` in the container and applies in
 memory-only binding mode too.
-`MPI_UCX_NET_DEVICES` is inherited unchanged, so a recipe can allow all its
-RDMA devices for MPI while restricting UCX and NCCL per NUMA node.
+`MPI_UCX_NET_DEVICES` and `NCCL_IB_HCA` are inherited unchanged, so a recipe
+can allow all its RDMA devices for MPI and NCCL (including NCCL rail/plane
+fields) while restricting UCX per NUMA node.
 
 `numa_memory_bind: true` uses `numactl -m 0,1` for any GPU type or worker mode.
 When omitted or null, this two-node policy applies only to `gb200`, `gb300`,
 and `vrnvl72` prefill and decode workers. Enabling CPU binding does not change
 these memory policies.
 
-For disaggregated workers, `numa_memory_bind: local` binds prefill memory to
-the task GPU's NUMA node while decode uses `numactl -m 0,1`.
+For disaggregated workers, `numa_memory_bind: local` binds both prefill and
+decode memory to each task GPU's NUMA node.
 Use `decode_numa_cpu_bind` to override CPU binding for decode only; omitted
 or null inherits `numa_cpu_bind`. For local prefill memory without CPU binding
-and decode memory on nodes 0,1 with GPU-local `taskset -c` binding:
+and local decode memory with GPU-local `taskset -c` binding:
 
 ```yaml
 engine:

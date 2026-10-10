@@ -4354,7 +4354,8 @@ class TestHuggingFaceModelSupport:
             (None, "gb200", "agg", None, "dynamo"),
             (True, "h100", "agg", "0,1", "trtllm_serve"),
             (False, "gb200", "decode", None, "dynamo"),
-            ("local", "gb200", "decode", "0,1", "dynamo"),
+            ("local", "gb200", "decode", "local", "dynamo"),
+            ("local", "vrnvl72", "prefill", "local", "dynamo"),
             ("local", "h100", "agg", "local", "trtllm_serve"),
         ],
     )
@@ -4422,14 +4423,11 @@ class TestHuggingFaceModelSupport:
             cmd = backend.build_worker_command(process, [process], runtime)
         env = backend.get_environment_for_mode(mode)
         assert (env.get("TLLM_NUMA_AWARE_WORKER_AFFINITY") == "0") is expected_cpu
-        if mode == "decode":
-            prefix = ["bash", "/configs/numa_cpu_bind.sh"] if expected_cpu else []
-            prefix.extend(["numactl", "-m", "0,1"])
-        else:
-            prefix = ["bash", "/configs/numa_cpu_bind.sh", "--bind-memory"]
-            if not expected_cpu:
-                prefix.append("--no-bind-cpu")
+        prefix = ["bash", "/configs/numa_cpu_bind.sh", "--bind-memory"]
+        if not expected_cpu:
+            prefix.append("--no-bind-cpu")
         assert cmd[: len(prefix)] == prefix
+        assert "numactl" not in cmd
 
     def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_taskset(self):
         """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Restrict worker network device filters to the GPU's NUMA node."""
+"""Restrict the worker's UCX device filter to the GPU's NUMA node."""
 
 import os
 import sys
@@ -25,12 +25,11 @@ def local_devices(sysfs: Path, node: str) -> tuple[list[str], list[str]]:
     return rdma, ethernet
 
 
-def restrict(value: str, candidates: list[str], *, nccl: bool = False) -> str:
+def restrict(value: str, candidates: list[str]) -> str:
     if not value or value == "all":
-        return ("=" if nccl and candidates else "") + ",".join(candidates)
+        return ",".join(candidates)
     exclude = value.startswith("^")
     value = value.removeprefix("^")
-    exact = value.startswith("=") or not nccl
     entries = value.removeprefix("=").split(",")
     selected = []
     for candidate in candidates:
@@ -38,18 +37,15 @@ def restrict(value: str, candidates: list[str], *, nccl: bool = False) -> str:
         matches = []
         for entry in entries:
             fields = entry.split(":")
-            device_match = name == fields[0] if exact else name.startswith(fields[0])
+            device_match = name == fields[0]
             if device_match and (len(fields) == 1 or not fields[1] or fields[1] == port):
                 matches.append(fields)
         if exclude:
             if not matches:
                 selected.append(candidate)
         elif matches:
-            fields = next((fields for fields in matches if fields[0] == name), matches[0])
-            # Retain explicit NCCL rail/plane identities, using the resolved port.
-            selected.append(":".join([name, port, *fields[2:]]) if nccl else candidate)
-    # A single leading '=' applies exact matching to the whole NCCL list.
-    return ("=" if nccl and selected else "") + ",".join(dict.fromkeys(selected))
+            selected.append(candidate)
+    return ",".join(dict.fromkeys(selected))
 
 
 def resolve(sysfs: Path, node: str, env: dict[str, str]) -> dict[str, str]:
@@ -67,21 +63,13 @@ def resolve(sysfs: Path, node: str, env: dict[str, str]) -> dict[str, str]:
                     ucx_ethernet.append(name)
             except OSError:
                 continue
-    result: dict[str, str] = {}
-    for key, candidates in (
-        ("UCX_NET_DEVICES", rdma + ucx_ethernet),
-        ("NCCL_IB_HCA", rdma),
-    ):
-        # Ethernet-only hosts can run UCX TCP; do not invent RDMA settings there.
-        if key == "NCCL_IB_HCA" and not rdma and key not in env:
-            continue
-        if not candidates and key not in env:
-            continue
-        value = restrict(env.get(key, ""), candidates, nccl=key == "NCCL_IB_HCA")
-        if not value:
-            raise ValueError(f"{key} has no permitted devices on NUMA node {node}")
-        result[key] = value
-    return result
+    candidates = rdma + ucx_ethernet
+    if not candidates and "UCX_NET_DEVICES" not in env:
+        return {}
+    value = restrict(ucx_filter, candidates)
+    if not value:
+        raise ValueError(f"UCX_NET_DEVICES has no permitted devices on NUMA node {node}")
+    return {"UCX_NET_DEVICES": value}
 
 
 if __name__ == "__main__":

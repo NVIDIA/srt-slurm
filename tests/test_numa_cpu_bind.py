@@ -89,6 +89,8 @@ elif name == "cat":
         print({"0": "0-3", "1": "4-7"}[node])
 elif name == "numactl":
     assert args[0].startswith("--membind=")
+    if os.environ["TEST_BIND_CPU"] == "1":
+        assert os.environ.get("TEST_CPU_MASK"), "taskset must run before numactl"
     if os.environ["TEST_NUMA_NODE"] == "denied":
         sys.exit(42)
     os.environ["TEST_MEMORY_POLICY"] = "bind:" + args.pop(0).split("=", 1)[1]

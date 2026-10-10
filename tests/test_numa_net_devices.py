@@ -60,7 +60,7 @@ def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
         env["MPI_UCX_NET_DEVICES"] = "^mlx5_9:1"
         env["NCCL_IB_HCA"] = "^=mlx5_9"
     if mode == "no-match":
-        env["NCCL_IB_HCA"] = "=mlx5_9"
+        env["UCX_NET_DEVICES"] = "mlx5_9:1"
     if mode == "explicit-ethernet":
         env["UCX_NET_DEVICES"] = "mlx5_0:1,mlx5_1:1,mlx5_11:1,eth0"
         env["NCCL_IB_HCA"] = "=" + env["NCCL_IB_HCA"]
@@ -81,11 +81,11 @@ def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
     assert result.returncode == 0, result.stderr
     rdma = "mlx5_0:1" if node == "0" else "mlx5_1:1,mlx5_11:1"
     ucx = f"{rdma},eth{node}"
-    nccl = "=mlx5_0:1:0:0" if node == "0" else "=mlx5_1:1:1:0,mlx5_11:1:3:1"
     assert json.loads(result.stdout) == {
         "MPI_UCX_NET_DEVICES": env.get("MPI_UCX_NET_DEVICES"),
         "UCX_NET_DEVICES": f"{rdma},eth0" if mode == "explicit-ethernet" else ucx,
-        "NCCL_IB_HCA": f"={rdma}" if mode in ("defaults", "excluded") else nccl,
+        "NCCL_IB_HCA": env.get("NCCL_IB_HCA"),
     }
-    assert all(f"{key}=" in result.stderr for key in keys[1:])
+    assert "UCX_NET_DEVICES=" in result.stderr
     assert "MPI_UCX_NET_DEVICES=" not in result.stderr
+    assert "NCCL_IB_HCA=" not in result.stderr

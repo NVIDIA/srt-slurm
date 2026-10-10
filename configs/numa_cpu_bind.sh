@@ -10,7 +10,7 @@ set -euo pipefail
 # the rest to land cross-socket.
 # With --bind-memory, also restrict allocations to the GPU's NUMA node.
 # With --no-bind-cpu, apply memory binding without changing CPU affinity.
-# Network device filters are restricted to the same NUMA node before launch.
+# UCX_NET_DEVICES is restricted to the same NUMA node before launch.
 # Local memory exhaustion can fail allocations; existing/shared pages are not migrated.
 #
 # CPU range is discovered at runtime from the physical GPU this task owns,
@@ -85,7 +85,7 @@ fi
 if [[ "${bind_memory}" == true ]]; then
     echo "numa_cpu_bind.sh: memory_policy=bind:${numa_node}" >&2
     if [[ "${bind_cpu}" == true ]]; then
-        exec numactl --membind="${numa_node}" taskset -c "${cpu_list}" "$@"
+        exec taskset -c "${cpu_list}" numactl --membind="${numa_node}" "$@"
     fi
     exec numactl --membind="${numa_node}" "$@"
 fi

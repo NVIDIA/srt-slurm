@@ -190,8 +190,8 @@ class TRTLLMProtocol:
     # gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type).
     # True uses nodes 0,1 for any GPU type or mode; False leaves the policy
     # unchanged. CPU binding does not change these policies. "local" strictly
-    # binds prefill/aggregated memory to the task GPU's NUMA node independently
-    # of CPU binding; decode keeps the two-node policy (nodes 0,1).
+    # binds each worker's memory to the task GPU's NUMA node independently
+    # of CPU binding, for prefill, decode, and aggregated workers.
     # Local mode fails startup if GPU NUMA affinity is unknown. Local memory
     # exhaustion can fail allocations; existing/shared pages are not migrated.
     numa_memory_bind: bool | Literal["local"] | None = None
@@ -433,10 +433,7 @@ class TRTLLMProtocol:
         # For local models, model is mounted to /model in the container
         model_arg = runtime.worker_model_arg
 
-        # Temporary A/B policy: keep decode on both NUMA nodes when testing local prefill memory.
         memory_bind = self.numa_memory_bind
-        if memory_bind == "local" and mode == "decode":
-            memory_bind = True
         if memory_bind is None:
             use_numactl = runtime.gpu_type in ("gb200", "gb300", "vrnvl72") and mode in ("prefill", "decode")
         else:
