@@ -14,9 +14,13 @@ Origin (``source``) decides which rail is *primary*:
 
 * ``acpi`` -- the ``total`` envelope (``Grace Power Socket N``); the component
   rails ``cpu_rail``/``soc``/``dram`` ride along as reference breakdowns.
-* ``dcgm`` -- field 1130, one already-aggregated value per socket, no rails.
+* ``dcgm`` -- field 1130, one already-aggregated value per socket, no
+  component rails.
 
-A socket without its primary reading is not a sample: a component rail must
+The ``module`` rail (superchip module power, GPUs included) is a reference
+rail too and rides on the socket row under either origin.
+
+A socket without its primary reading is not a sample: a reference rail must
 never stand in for the socket's power.
 """
 
@@ -25,7 +29,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from srtctl.core.power.cpu_rails import COMPONENT_RAIL_KINDS, DCGM_KIND, TOTAL_KIND, sensor_name
+from srtctl.core.power.cpu_rails import DCGM_KIND, REFERENCE_RAIL_KINDS, TOTAL_KIND, sensor_name
 
 PRIMARY_KIND_BY_SOURCE: dict[str, str] = {"acpi": TOTAL_KIND, "dcgm": DCGM_KIND}
 
@@ -45,7 +49,7 @@ class RailReading:
     """One classified sensor value: which socket, which rail, from which sensor."""
 
     socket_id: int
-    kind: str  # cpu_rails.TOTAL_KIND / DCGM_KIND / a COMPONENT_RAIL_KINDS member
+    kind: str  # cpu_rails.TOTAL_KIND / DCGM_KIND / a REFERENCE_RAIL_KINDS member
     sensor: str
     watts: float
 
@@ -87,9 +91,9 @@ class CpuSample:
 
     @property
     def rails(self) -> dict[str, float]:
-        """Component rails only (never the primary), in canonical column order."""
+        """Reference rails only (never the primary), in canonical column order."""
         by_kind = {reading.kind: reading.watts for reading in self.readings}
-        return {kind: by_kind[kind] for kind in COMPONENT_RAIL_KINDS if kind in by_kind}
+        return {kind: by_kind[kind] for kind in REFERENCE_RAIL_KINDS if kind in by_kind}
 
     def reading(self, kind: str) -> RailReading | None:
         return next((reading for reading in self.readings if reading.kind == kind), None)

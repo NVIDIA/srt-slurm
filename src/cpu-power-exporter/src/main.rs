@@ -17,11 +17,18 @@
 //! - `auto` (default): tries DCGM first; falls back to ACPI if `libdcgm.so` is
 //!   absent or no CPU entities are found.
 //!
+//! Alongside either back-end, NVML module power is exposed as
+//! `cpu_power_nvml_watts{type="module",socket,gpus,source="nvml"}`:
+//! one sample per Grace socket covering Grace, its GPUs, HBM, LPDDR5X and
+//! regulators, averaged over the socket's GPUs. Best-effort; the family is
+//! absent when `libnvidia-ml.so` or module power is unavailable.
+//!
 //! Endpoints:
 //!   GET /metrics  — Prometheus text format
 //!   GET /health   — "ok\n"
 
 mod dcgm;
+mod nvml;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -43,14 +50,15 @@ use tokio::time::{timeout, Duration};
 /// the socket ID must follow the phrase directly, so "Grace Power Socket 1"
 /// stays `total` even when the string also mentions CPU power elsewhere.
 ///
-/// Mirrors `AcpiPowerMeterReader._DOMAIN_PATTERNS` in
-/// `src/srtctl/core/cpu_power.py`: some platforms suffix a rail's OEM string
-/// with "in uW" (e.g. "Total Power in uW socket 0" vs. "Total Power socket
-/// 0"), so each variable-form domain lists both spellings. `total` is the
-/// complete CPU-side socket envelope (Grace's own reading, or a platform's
-/// generic "Total Power" rail); `cpu_rail`/`soc`/`dram` are component rails
-/// that must not be summed into a node's total power.
-const OEM_KINDS: [(&str, &[&str]); 4] = [
+/// Mirrors `ACPI_LABEL_PATTERNS` in `src/srtctl/core/power/cpu_rails.py`:
+/// some platforms suffix a rail's OEM string with "in uW" (e.g. "Total Power
+/// in uW socket 0" vs. "Total Power socket 0"), so each variable-form domain
+/// lists both spellings. `total` is the complete CPU-side socket envelope
+/// (Grace's own reading, or a platform's generic "Total Power" rail);
+/// `cpu_rail`/`soc`/`dram` are component rails that must not be summed into
+/// a node's total power. `module` is the whole superchip, Grace plus its
+/// GPUs, so it overlaps both CPU and GPU readings.
+const OEM_KINDS: [(&str, &[&str]); 5] = [
     (
         "total",
         &[
@@ -90,6 +98,7 @@ const OEM_KINDS: [(&str, &[&str]); 4] = [
             "dram input power in uw socket ",
         ],
     ),
+    ("module", &["module power socket "]),
 ];
 
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -165,13 +174,37 @@ struct Candidate {
     oem_info: Option<String>,
 }
 
-/// Live state shared across connection handlers.
+/// The CPU power family resolved once at startup by `init_metrics_state`.
 #[derive(Clone)]
 enum MetricsState {
     /// Pre-rendered Prometheus text, refreshed every `ACPI_POLL_INTERVAL` by a
     /// background OS thread.  Scrapes read from this cache and return instantly.
     Acpi(Arc<RwLock<String>>),
     Dcgm(Arc<Mutex<dcgm::DcgmReader>>),
+}
+
+/// Live state shared across connection handlers: the CPU family plus the
+/// optional NVML module series.
+#[derive(Clone)]
+struct Metrics {
+    base: MetricsState,
+    module: Option<Arc<nvml::NvmlModuleReader>>,
+}
+
+impl Metrics {
+    /// The `/metrics` body: the CPU family first, then the module series
+    /// when NVML is available.
+    fn render(&self) -> String {
+        let mut body = match &self.base {
+            MetricsState::Acpi(cache) => cache.read().unwrap().clone(),
+            MetricsState::Dcgm(reader) => build_metrics_dcgm(reader),
+        };
+        if let Some(module) = &self.module {
+            let readings = module.read();
+            body.push_str(&nvml::render_module_metrics(&readings));
+        }
+        body
+    }
 }
 
 fn read_text(p: &Path) -> Option<String> {
@@ -417,7 +450,7 @@ async fn read_request(stream: &mut TcpStream) -> Option<String> {
     timeout(READ_TIMEOUT, read_headers).await.ok()?
 }
 
-async fn handle_connection(mut stream: TcpStream, state: MetricsState) {
+async fn handle_connection(mut stream: TcpStream, metrics: Metrics) {
     let Some(req) = read_request(&mut stream).await else {
         return;
     };
@@ -436,13 +469,11 @@ async fn handle_connection(mut stream: TcpStream, state: MetricsState) {
         // /health deliberately touches no sensor: it must still answer while
         // the collection thread is stuck on a firmware read.
         ("GET" | "HEAD", "/health") => ("200 OK", "text/plain", "ok\n".to_owned()),
-        ("GET" | "HEAD", "/metrics") => {
-            let body = match &state {
-                MetricsState::Acpi(cache) => cache.read().unwrap().clone(),
-                MetricsState::Dcgm(reader) => build_metrics_dcgm(reader),
-            };
-            ("200 OK", "text/plain; version=0.0.4; charset=utf-8", body)
-        }
+        ("GET" | "HEAD", "/metrics") => (
+            "200 OK",
+            "text/plain; version=0.0.4; charset=utf-8",
+            metrics.render(),
+        ),
         ("GET" | "HEAD", _) => ("404 Not Found", "text/plain", "Not Found\n".to_owned()),
         _ => {
             extra_headers = "Allow: GET, HEAD\r\n";
@@ -570,6 +601,23 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
     unreachable!("one of want_dcgm or want_acpi must be true");
 }
 
+fn init_module_reader() -> Option<Arc<nvml::NvmlModuleReader>> {
+    match nvml::NvmlModuleReader::new(Path::new("/sys/bus/pci/devices")) {
+        Ok(reader) => {
+            tracing::info!(
+                gpu_count = reader.gpu_count(),
+                sockets = ?reader.sockets(),
+                "NVML module reader initialised"
+            );
+            Some(Arc::new(reader))
+        }
+        Err(e) => {
+            tracing::info!(reason = %e, "NVML module power unavailable; module series not exported");
+            None
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Without the `env-filter` feature this honours RUST_LOG via `Targets` and
@@ -578,7 +626,10 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
-    let state = init_metrics_state(&args)?;
+    let metrics = Metrics {
+        base: init_metrics_state(&args)?,
+        module: init_module_reader(),
+    };
 
     let addr = SocketAddr::new(args.bind, args.port);
     let listener = TcpListener::bind(addr)
@@ -598,7 +649,7 @@ async fn main() -> Result<()> {
             // the exporter is sitting at its connection limit.
             Some(_) = conns.join_next(), if at_capacity => {}
             stream = accept(&listener, &mut backoff), if !at_capacity => {
-                conns.spawn(handle_connection(stream, state.clone()));
+                conns.spawn(handle_connection(stream, metrics.clone()));
             }
             _ = signal::ctrl_c() => {
                 tracing::info!("received SIGINT, shutting down");
@@ -798,6 +849,10 @@ mod tests {
             classify_oem("CPU Rail Output Power in uW socket 0"),
             ("other", String::new())
         );
+        assert_eq!(
+            classify_oem("Module Power Socket 1"),
+            ("module", "1".into())
+        );
     }
 
     #[test]
@@ -851,7 +906,10 @@ mod tests {
             &[("power1", Some("CPU Power Socket 0"), "150000000")],
         );
         let sensors: &'static [Sensor] = Vec::leak(discover_sensors(dir.path()).unwrap());
-        let state = MetricsState::Acpi(Arc::new(RwLock::new(build_metrics(sensors))));
+        let metrics = Metrics {
+            base: MetricsState::Acpi(Arc::new(RwLock::new(build_metrics(sensors)))),
+            module: None,
+        };
 
         let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
             .await
@@ -859,7 +917,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                handle_connection(stream, state.clone()).await;
+                handle_connection(stream, metrics.clone()).await;
             }
         });
 

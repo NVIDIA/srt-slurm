@@ -28,9 +28,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from srtctl.core.power.cpu_rails import (
-    COMPONENT_RAIL_KINDS,
     DCGM_KIND,
     RAIL_COLUMN_NAMES,
+    REFERENCE_RAIL_KINDS,
     TOTAL_KIND,
     classify_acpi_label,
     sensor_name,
@@ -71,7 +71,9 @@ _UTILIZATION_COLUMN_BY_FIELD_ID = {field.field_id: field.column for field in CPU
 # pivots to one row per socket with the ACPI component rails as columns
 # (power_w is the socket "total" envelope, or the DCGM value). v3 wrote one
 # row per rail, which left readers to work out which rows were one socket.
-SAMPLES_SCHEMA_VERSION = 4
+# v5 appends module_w after dram_w, filled only from an ACPI module meter:
+# this collector has no NVML path.
+SAMPLES_SCHEMA_VERSION = 5
 SAMPLES_HEADER_V2 = (
     "schema_version",
     "timestamp_unix",
@@ -93,7 +95,7 @@ SAMPLES_HEADER = (
     "sensor",  # the sensor that fed power_w (provenance only)
     "socket_id",
     "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130
-    *RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI only, blank for DCGM
+    *RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w, module_w -- ACPI only, blank for DCGM
     "total_power_w",  # node aggregate: sum of power_w over sockets
     *UTILIZATION_COLUMNS,
 )
@@ -270,7 +272,7 @@ class AcpiPowerMeterReader(CpuPowerReader):
             "sensors": sensors,
             "available_power_domains": self._available_domains,
             "total_method": (
-                "sum of recognized CPU-side socket-total domains only; component rails are reference breakdowns"
+                "sum of recognized CPU-side socket-total domains only; component and module rails are reference only"
             ),
             "aggregate_scope": "cpu_side_socket_total",
         }
@@ -522,7 +524,7 @@ def collect(*, output_dir: Path, ready_dir: Path, source: str, interval_seconds:
                         sample.sensor,
                         sample.socket_id,
                         repr(sample.power_w),
-                        *(repr(rails[kind]) if kind in rails else "" for kind in COMPONENT_RAIL_KINDS),
+                        *(repr(rails[kind]) if kind in rails else "" for kind in REFERENCE_RAIL_KINDS),
                         "" if total is None else repr(total),
                         *(
                             repr(socket_utilization[column]) if column in socket_utilization else ""

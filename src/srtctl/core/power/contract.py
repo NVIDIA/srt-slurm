@@ -73,11 +73,14 @@ SAMPLES_HEADER_V2 = (*SAMPLES_HEADER_V1, *(metric.column for metric in UTILIZATI
 SAMPLES_HEADER = (*SAMPLES_HEADER_V2, "temperature_c")
 
 CPU_SCHEMA_VERSION_V1 = 1
+CPU_SCHEMA_VERSION_V2 = 2
 # v2 pivots to one row per (timestamp, hostname, socket): power_w is the
 # socket's authoritative figure (ACPI "total" envelope or the DCGM value),
 # with the ACPI component rails as their own columns. v1 wrote one row per
 # rail, which left readers to work out which rows were the same socket.
-CPU_SCHEMA_VERSION = 2
+# v3 appends module_w before total_power_w: superchip module power, a superset
+# of power_w (it includes the GPUs), so it is never summed into total_power_w.
+CPU_SCHEMA_VERSION = 3
 CPU_SAMPLES_FILENAME = "samples.csv"  # written under <power_dir>/cpu/
 CPU_MANIFEST_FILENAME = "cpu_manifest.json"  # written under <power_dir>/cpu/, non-authoritative
 
@@ -91,6 +94,19 @@ CPU_SAMPLES_HEADER_V1 = (
     "power_w",
     "total_power_w",
 )
+CPU_SAMPLES_HEADER_V2 = (
+    "schema_version",
+    "timestamp_unix",
+    "hostname",
+    "source",
+    "sensor",
+    "socket_id",
+    "power_w",
+    "cpu_rail_w",
+    "soc_w",
+    "dram_w",
+    "total_power_w",
+)
 CPU_SAMPLES_HEADER = (
     "schema_version",
     "timestamp_unix",
@@ -99,7 +115,7 @@ CPU_SAMPLES_HEADER = (
     "sensor",  # the sensor that fed power_w (provenance only)
     "socket_id",
     "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130
-    *CPU_RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI only, blank for DCGM
+    *CPU_RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w (ACPI only); module_w (either source)
     "total_power_w",  # node aggregate: sum of power_w over sockets
 )
 # NOTE: in ACPI mode, power_w / total_power_w carry only "total"-kind channels

@@ -30,6 +30,12 @@ Rail kinds
     per socket. Treated like ``total`` for ``power_w`` purposes. Whether it
     equals the ACPI ``cpu_rail`` or the ``total`` envelope is unverified, so
     DCGM rows leave every rail column blank.
+``module``
+    Superchip module power for one socket: Grace plus its GPUs, HBM, LPDDR5X
+    and regulators. Sourced from NVML (``cpu_power_nvml_watts``) or a
+    firmware-bound ACPI ``Module Power Socket N`` meter. A superset of the
+    socket's power that includes the GPUs, so it never sums into
+    ``total_power_w`` and never stands in as a socket's power.
 """
 
 from __future__ import annotations
@@ -38,17 +44,21 @@ import re
 
 TOTAL_KIND = "total"
 DCGM_KIND = "dcgm"
+MODULE_KIND = "module"
 OTHER_KIND = "other"
 
 # Component rails, in wide-CSV column order.
 COMPONENT_RAIL_KINDS: tuple[str, ...] = ("cpu_rail", "soc", "dram")
+# Rails persisted beside the primary, in wide-CSV column order. None adds to
+# the socket's power: the components are parts of it, the module contains it.
+REFERENCE_RAIL_KINDS: tuple[str, ...] = (*COMPONENT_RAIL_KINDS, MODULE_KIND)
 # Every kind an ACPI channel can classify to.
-ACPI_RAIL_KINDS: frozenset[str] = frozenset((TOTAL_KIND, *COMPONENT_RAIL_KINDS))
+ACPI_RAIL_KINDS: frozenset[str] = frozenset((TOTAL_KIND, *REFERENCE_RAIL_KINDS))
 
-# Wide-CSV column name per component rail. ``total`` has no column of its
+# Wide-CSV column name per reference rail. ``total`` has no column of its
 # own: it *is* ``power_w``.
-RAIL_COLUMNS: dict[str, str] = {kind: f"{kind}_w" for kind in COMPONENT_RAIL_KINDS}
-RAIL_COLUMN_NAMES: tuple[str, ...] = tuple(RAIL_COLUMNS[kind] for kind in COMPONENT_RAIL_KINDS)
+RAIL_COLUMNS: dict[str, str] = {kind: f"{kind}_w" for kind in REFERENCE_RAIL_KINDS}
+RAIL_COLUMN_NAMES: tuple[str, ...] = tuple(RAIL_COLUMNS[kind] for kind in REFERENCE_RAIL_KINDS)
 
 # Sensor-name suffix per kind (``CPU<socket>:<suffix>``). The host collector
 # has always written these; the scraper wrote raw OEM labels before v2.
@@ -57,6 +67,7 @@ SENSOR_SUFFIXES: dict[str, str] = {
     "cpu_rail": "cpuRailPowerUsageW",
     "soc": "socPowerUsageW",
     "dram": "dramPowerUsageW",
+    MODULE_KIND: "modulePowerUsageW",
     DCGM_KIND: "cpuPowerUsageW",
 }
 _KIND_BY_SUFFIX = {suffix: kind for kind, suffix in SENSOR_SUFFIXES.items()}
@@ -66,7 +77,9 @@ LEGACY_TYPE_ALIASES: dict[str, str] = {"grace": TOTAL_KIND, "cpu": "cpu_rail", "
 
 # Firmware OEM label -> rail kind. Ordered: the first match wins, so the
 # specific Grace forms precede the generic ones and "CPU Power Socket N"
-# (a Grace *component* rail) is matched after every "total" form.
+# (a Grace *component* rail) is matched after every "total" form. The
+# ``module`` form overlaps none of the others and sits last, in the same
+# order as ``OEM_KINDS`` in the Rust exporter.
 ACPI_LABEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (TOTAL_KIND, re.compile(r"\bGrace\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     (TOTAL_KIND, re.compile(r"\bTotal(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
@@ -75,11 +88,12 @@ ACPI_LABEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("dram", re.compile(r"\bDRAM(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     ("cpu_rail", re.compile(r"\bCPU(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     ("soc", re.compile(r"\bSysIO\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
+    (MODULE_KIND, re.compile(r"\bModule\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
 )
 
 
 def classify_acpi_label(label: str) -> tuple[str, int] | None:
-    """Firmware OEM label -> ``(kind, socket_id)``; None for unrecognised rails (NVSwitch, module, ...)."""
+    """Firmware OEM label -> ``(kind, socket_id)``; None for unrecognised rails (NVSwitch, ...)."""
     for kind, pattern in ACPI_LABEL_PATTERNS:
         match = pattern.search(label)
         if match is not None:
@@ -115,7 +129,7 @@ def classify_sensor(sensor: str) -> str:
 
 # Preference when a legacy long-format CSV holds several rails for one socket
 # and exactly one must feed the per-socket power series.
-LEGACY_RAIL_PREFERENCE: tuple[str, ...] = (TOTAL_KIND, DCGM_KIND, *COMPONENT_RAIL_KINDS, OTHER_KIND)
+LEGACY_RAIL_PREFERENCE: tuple[str, ...] = (TOTAL_KIND, DCGM_KIND, *REFERENCE_RAIL_KINDS, OTHER_KIND)
 
 
 def legacy_rail_rank(sensor: str) -> int:

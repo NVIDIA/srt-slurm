@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from srtctl.core.power.cpu_parser import parse_cpu_scrape
+from srtctl.core.power.cpu_parser import ParsedCpuScrape, parse_cpu_scrape
 
 
 def _dcgm_body():
@@ -26,6 +26,15 @@ def _acpi_body(*, include_grace=True):
         )
     lines.append('cpu_power_acpi_watts{sensor="a/3",type="other",socket="",oem_info="Module Socket A"} 1.0\n')
     return "".join(lines)
+
+
+def _nvml_body(*samples: str) -> str:
+    lines = ["# HELP cpu_power_nvml_watts x", "# TYPE cpu_power_nvml_watts gauge"]
+    return "".join(f"{line}\n" for line in (*lines, *(f"cpu_power_nvml_watts{sample}" for sample in samples)))
+
+
+MODULE_SOCKET_0 = '{type="module",socket="0",gpus="0,1",source="nvml"} 498.720000'
+MODULE_SOCKET_1 = '{type="module",socket="1",gpus="2,3",source="nvml"} 470.500000'
 
 
 def test_dcgm_mode_sums_all_sockets_into_the_total():
@@ -164,3 +173,56 @@ def test_empty_body_yields_no_readings():
 
     assert scrape.readings == ()
     assert scrape.mode == "unknown"
+
+
+def test_nvml_module_merges_into_an_acpi_scrape():
+    scrape = parse_cpu_scrape(_acpi_body() + _nvml_body(MODULE_SOCKET_0))
+
+    assert scrape.mode == "acpi"
+    assert [(s.socket_id, s.power_w, s.rails) for s in scrape.sockets] == [
+        (0, 93.4, {"cpu_rail": 48.1, "soc": 5.2, "module": 498.72}),
+    ]
+    assert scrape.total_power_w == 93.4
+
+
+def test_nvml_module_merges_into_a_dcgm_scrape():
+    scrape = parse_cpu_scrape(_dcgm_body() + _nvml_body(MODULE_SOCKET_0, MODULE_SOCKET_1))
+
+    assert scrape.mode == "dcgm"
+    assert [(s.socket_id, s.power_w, s.rails) for s in scrape.sockets] == [
+        (0, 43.878, {"module": 498.72}),
+        (1, 52.35, {"module": 470.5}),
+    ]
+    assert scrape.total_power_w == 43.878 + 52.35
+
+
+def test_nvml_only_body_yields_an_empty_scrape():
+    scrape = parse_cpu_scrape(_nvml_body(MODULE_SOCKET_0))
+
+    assert scrape == ParsedCpuScrape()
+
+
+def test_nvml_family_ignores_non_module_types_and_invalid_samples():
+    body = _dcgm_body() + _nvml_body(
+        '{type="gpu",socket="0",source="nvml"} 300.0',
+        '{type="total",socket="0",source="nvml"} 310.0',
+        '{socket="0",source="nvml"} 320.0',
+        '{type="module",socket="",source="nvml"} 330.0',
+        '{type="module",socket="-1",source="nvml"} 340.0',
+        '{type="module",socket="1",source="nvml"} -1.0',
+    )
+
+    scrape = parse_cpu_scrape(body)
+
+    assert [(s.socket_id, s.power_w, s.rails) for s in scrape.sockets] == [(0, 43.878, {}), (1, 52.35, {})]
+    assert all(reading.source == "dcgm" for reading in scrape.readings)
+
+
+def test_acpi_module_meter_wins_over_nvml_for_the_same_socket():
+    acpi_module = (
+        'cpu_power_acpi_watts{type="module",socket="0",oem_info="Module Power Socket 0",source="acpi"} 505.0\n'
+    )
+
+    scrape = parse_cpu_scrape(_acpi_body() + acpi_module + _nvml_body(MODULE_SOCKET_0))
+
+    assert scrape.sockets[0].rails["module"] == 505.0

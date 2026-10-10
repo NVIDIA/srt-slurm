@@ -40,8 +40,12 @@ from typing import TextIO, TypeVar
 import numpy as np
 
 from srtctl.core.cpu_power import UTILIZATION_COLUMNS as CPU_UTILIZATION_COLUMNS
-from srtctl.core.power.contract import MAX_SAMPLE_GAP_SECONDS, UTILIZATION_METRICS
-from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES as CPU_RAIL_COLUMN_NAMES
+from srtctl.core.power.contract import (
+    CPU_SAMPLES_HEADER_V1,
+    CPU_SAMPLES_HEADER_V2,
+    MAX_SAMPLE_GAP_SECONDS,
+    UTILIZATION_METRICS,
+)
 from srtctl.core.power.cpu_rails import legacy_rail_rank
 
 GPU_UTILIZATION_COLUMNS = tuple(metric.column for metric in UTILIZATION_METRICS)
@@ -456,9 +460,14 @@ def load_cpu_samples(path: Path) -> CpuSamples:
         return load_cpu_samples_from(handle)
 
 
+# The rail columns v2 introduced and every later per-socket layout keeps.
+# v2 files predate module_w, so the current header is too strict a marker.
+_WIDE_LAYOUT_COLUMNS = tuple(column for column in CPU_SAMPLES_HEADER_V2 if column not in CPU_SAMPLES_HEADER_V1)
+
+
 def _is_wide_cpu_csv(fieldnames: Sequence[str] | None) -> bool:
     """Wide layout (one row per socket, rails as columns) vs. legacy long layout (one row per rail)."""
-    return fieldnames is not None and all(column in fieldnames for column in CPU_RAIL_COLUMN_NAMES)
+    return fieldnames is not None and all(column in fieldnames for column in _WIDE_LAYOUT_COLUMNS)
 
 
 def _select_legacy_socket_series(
