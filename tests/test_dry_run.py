@@ -762,6 +762,36 @@ class TestDryRunExecutionExtensions:
         assert "P2PHANDSHAKE" in output
         assert "100GB" in output
 
+    def test_trtllm_mooncake_role_configs_in_dry_run(self, capsys):
+        """Each TRT-LLM role using the mooncake-store connector shows its client config and path."""
+        connector = {"kv_connector_config": {"connector": "mooncake-store"}}
+        config = _make_config(
+            {
+                "engine": "trtllm",
+                "roles": {
+                    "prefill": {"args": connector},
+                    "decode": {"args": connector, "mooncake_store_config": {"global_segment_size": "16GiB"}},
+                },
+                "services": [
+                    {
+                        "name": "mooncake-master",
+                        "type": "mooncake-master",
+                        "options": {"store_config": {"global_segment_size": "8GiB"}},
+                    }
+                ],
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "MOONCAKE_CONFIG_PATH" in output
+        assert "store_config (prefill)" in output
+        assert "store_config (decode)" in output
+        assert '"capacity"' in output
+        assert "16GiB" in output
+        # model_key defaults to the served model name, unknown before the model is staged
+        # (the table wraps the placeholder, so match its start).
+        assert '"model_key": "<model' in output
+
     def test_vllm_process_local_mooncake_map_in_dry_run(self, capsys):
         config = _make_config(
             {
