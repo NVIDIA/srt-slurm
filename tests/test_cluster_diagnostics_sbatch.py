@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "configs/cluster-diagnostics.sbatch"
@@ -33,8 +34,9 @@ def test_image_presets(cluster: str, image: str) -> None:
 
 @pytest.mark.parametrize("fail_communication", [False, True])
 @pytest.mark.parametrize("manual_endpoint", [False, True])
+@pytest.mark.parametrize("cluster", ["raplab", "hecate"])
 def test_spooled_batch_stages_helpers_and_uses_all_allocated_cpus(
-    tmp_path: Path, fail_communication: bool, manual_endpoint: bool
+    tmp_path: Path, fail_communication: bool, manual_endpoint: bool, cluster: str
 ) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -70,7 +72,7 @@ def test_spooled_batch_stages_helpers_and_uses_all_allocated_cpus(
         env.pop(key, None)
     if manual_endpoint:
         env.update(MASTER_ADDR="192.0.2.1", MASTER_PORT="23456")
-    result = subprocess.run(["bash", str(spooled), "raplab"], env=env, capture_output=True, text=True)
+    result = subprocess.run(["bash", str(spooled), cluster], env=env, capture_output=True, text=True)
     assert result.returncode == int(fail_communication), result.stderr
     launches = calls.read_text().splitlines()
     assert len(launches) == 3
@@ -88,3 +90,20 @@ def test_spooled_batch_stages_helpers_and_uses_all_allocated_cpus(
     assert (log_dir / "runner.sh").read_text() == (ROOT / "configs/raplab-cluster-diagnostics.sbatch").read_text()
     assert (log_dir / "communication.exit-status").read_text().strip() == env["COMM_RC"]
     assert Path(f"{log_dir}.tar.gz").exists()
+    recipe = yaml.safe_load(
+        (ROOT / "recipes/trtllm/vr200-fp4/glm5.2/raplab-dyanmo-1004/disagg-3p-dep-1d-dep-c560.yaml").read_text()
+    )
+    knobs = {
+        key: value
+        for key, value in recipe["roles"]["decode"]["env"].items()
+        if key.startswith(("MPI_UCX_", "UCX_", "NCCL_", "OMPI_MCA_"))
+    }
+    for key, value in knobs.items():
+        assignment = f"{key}={value}"
+        assert assignment not in launches[0]
+        assert assignment not in launches[1]
+        if cluster == "raplab":
+            assert assignment in launches[2]
+            assert assignment in (log_dir / "settings.txt").read_text()
+        else:
+            assert assignment not in launches[2]

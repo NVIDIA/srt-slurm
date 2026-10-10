@@ -30,8 +30,28 @@ if [[ ${1:-} == --collect ]]; then
     exit
 fi
 
+communication_env=()
 case ${1:-} in
-    raplab) default_image=/home/rihuo/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh ;;
+    raplab)
+        default_image=/home/rihuo/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh
+        # Match the c560 Raplab recipe's decode communication settings.
+        # Apply only to benchmark ranks, before the NUMA wrapper and MPI import.
+        communication_env=(
+            'MPI_UCX_TLS=rc,ud,sm,self'
+            'MPI_UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1'
+            'MPI_UCX_PROTO_INFO=y'
+            'OMPI_MCA_pml=ucx'
+            'OMPI_MCA_coll=^ucc,hcoll'
+            'UCX_CUDA_IPC_ENABLE_MNNVL=y'
+            'UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1,eth0'
+            'UCX_RNDV_SCHEME=put_zcopy'
+            'UCX_TLS=cuda_ipc,cuda_copy,sm,self,tcp'
+            'UCX_LOG_LEVEL=info'
+            'NCCL_GRAPH_MIXING_SUPPORT=0'
+            'NCCL_IB_HCA==mlx5_0::0:0,mlx5_1::1:0,mlx5_2::2:0,mlx5_5::3:0,mlx5_6::0:1,mlx5_7::1:1,mlx5_8::2:1,mlx5_11::3:1'
+            'NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE=0'
+        )
+        ;;
     hecate) default_image=/lustre/share/coreai_comparch_inferencex/rihuo/trtllm-release-f1bdd25-user_imant_glm5-rubin-30428-arm64.sqsh ;;
     *) echo 'Usage: sbatch [allocation options] configs/cluster-diagnostics.sbatch raplab|hecate' >&2; exit 2 ;;
 esac
@@ -79,6 +99,10 @@ scontrol show node "$SLURM_JOB_NODELIST" > "$LOG_DIR/slurm-nodes.txt" 2>&1 || tr
     printf 'cluster=%s\nimage=%s\nnodes=%s\nallocated_cpus=%s\n' "$1" "$CONTAINER_IMAGE" "${nodes[*]}" "$SLURM_JOB_CPUS_PER_NODE"
     printf 'ranks_per_node=%s\ncpus_per_rank=%s\nmpi_plugin=%s\n' "$RANKS_PER_NODE" "$rank_cpus" "$MPI_PLUGIN"
     printf 'copy=%s\ncommunication=%s\nnccl=%s\ninstall_tools=%s\n' "$RUN_COPY_BENCH" "$RUN_COMM_BENCH" "$RUN_NCCL" "$INSTALL_TOOLS"
+    if [[ ${#communication_env[@]} -gt 0 ]]; then
+        printf '\ncommunication_environment_overrides:\n'
+        printf '%s\n' "${communication_env[@]}"
+    fi
     stat "$CONTAINER_IMAGE"
 } > "$LOG_DIR/settings.txt"
 common=(--exact --nodes="${#nodes[@]}" --cpu-bind=none --kill-on-bad-exit=1)
@@ -109,7 +133,7 @@ if [[ $RUN_COMM_BENCH == 1 ]]; then
     run_phase communication srun "${common[@]}" --mpi="$MPI_PLUGIN" \
         --ntasks="$((${#nodes[@]} * RANKS_PER_NODE))" --ntasks-per-node="$RANKS_PER_NODE" \
         --cpus-per-task="$rank_cpus" "${container[@]}" \
-        bash "$LOG_DIR/numa_cpu_bind.sh" --bind-memory \
+        env ${communication_env[@]+"${communication_env[@]}"} bash "$LOG_DIR/numa_cpu_bind.sh" --bind-memory \
         python3 "$LOG_DIR/cluster-perf-diagnostics.py" "${comm_args[@]}"
 fi
 cat > "$LOG_DIR/README.txt" <<'NOTES'
@@ -117,7 +141,8 @@ Host/container hardware checks and sequential copies reuse the existing collecto
 performance.json describes an idle collector, not a serving worker. For serving
 placement, run the Python collect command with actual worker PIDs inside their container.
 communication.json records rank environments/placement and MPI timings, optionally NCCL.
-Transport settings are inherited; the NUMA wrapper filters UCX_NET_DEVICES by GPU NUMA.
+Raplab communication ranks use recipe settings recorded in settings.txt; Hecate
+inherits transport settings. The NUMA wrapper filters UCX_NET_DEVICES by GPU NUMA.
 No serving processes are launched. Missing commands/counters are unknown, not zero errors.
 Check all phase exit-status files, per-node COMPLETE markers, copy exit-status/stderr,
 and container-setup.txt. Package installation is disabled unless INSTALL_TOOLS=1.

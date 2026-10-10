@@ -64,9 +64,16 @@ Export overrides before submission (sbatch's normal `--export=ALL` inheritance):
 | `RUN_NCCL` | `0`; set `1` to include NCCL GPU all-gather |
 | `MASTER_ADDR`, `MASTER_PORT` | Optional overrides; otherwise address and port are detected inside the communication step |
 
-Export the intended `MPI_UCX_*`, `UCX_*`, `NCCL_*`, and `OMPI_MCA_*` settings for
-each experiment. The script inherits them; the existing NUMA wrapper filters
-`UCX_NET_DEVICES` by GPU locality. MPI and NCCL device lists remain inherited.
+Raplab communication tests apply all `MPI_UCX_*`, `UCX_*`, `NCCL_*`, and
+`OMPI_MCA_*` settings from the c560 Raplab recipe's decode environment. These
+overrides are applied only to communication ranks, before MPI initialization,
+and recorded in `settings.txt` and per-rank metadata. They include the eight
+requested NICs, NCCL's exact-match rail/plane suffixes, MPI's UCX PML and
+collective exclusions, and the separate MPI/UCX transport settings. The NUMA
+wrapper narrows `UCX_NET_DEVICES` by GPU locality and retains explicit `eth0`;
+MPI and NCCL retain all eight devices. Hardware/copy collection continues to
+use the submission environment. Hecate communication tests also inherit their
+settings from the submission environment; export any intended overrides there.
 Every rank must see all four node GPUs for the default mapping. Packages are not
 installed by default; missing MPI/PyTorch dependencies fail the communication phase
 explicitly. These commands submit jobs from your cluster environment and use no SSH.
