@@ -5,21 +5,23 @@
 For nodes with a known physical-GPU-to-HCA mapping, opt in through the v2 `mooncake-master` service options:
 
 ```yaml
+roles:
+  decode:
+    mooncake_store_config:
+      metadata_server: P2PHANDSHAKE
+      global_segment_size: 150GB
+      local_buffer_size: 4GB
+      protocol: rdma
 services:
   - name: mooncake-master
     type: mooncake-master
     options:
       device_names_by_gpu: [mlx5_0, mlx5_1, mlx5_2, mlx5_3]
-      store_config:
-        metadata_server: P2PHANDSHAKE
-        global_segment_size: 150GB
-        local_buffer_size: 4GB
-        protocol: rdma
 ```
 
 The same fields are supported under `engine.mooncake_kv_store` (or legacy `backend.mooncake_kv_store`), but do not combine that form with a declared `mooncake-master` service. `srtctl migrate` moves the legacy mapping into the service's `options.device_names_by_gpu` without changing its meaning.
 
-This mapping is indexed by **physical GPU ID on each node**, not by the CUDA ordinal inside a container. A process on GPU 2 receives `device_name: mlx5_2`; two TP2 processes on GPUs `[0,1]` and `[2,3]` receive disjoint device subsets. Only the configs needed by the allocated processes are generated in `/logs`, and each worker receives its own `MOONCAKE_CONFIG_PATH`. Other store settings, including segment capacity and the managed master address, are preserved. When the map is nonempty, it overrides `store_config.device_name` in each process-local JSON; the original shared configuration is not mutated. The map must cover every physical GPU on the node; repeated HCA names are allowed for machines where multiple GPUs share an HCA. Without the option, or with an empty list, the existing shared JSON behavior is unchanged. Config loading (including dry-run) rejects wrong-length maps and entries that are empty, contain whitespace, or contain a comma, before allocating nodes.
+This mapping is indexed by **physical GPU ID on each node**, not by the CUDA ordinal inside a container. A process on GPU 2 receives `device_name: mlx5_2`; two TP2 processes on GPUs `[0,1]` and `[2,3]` receive disjoint device subsets. Only the configs needed by the allocated processes are generated in `/logs`, and each worker receives its own `MOONCAKE_CONFIG_PATH`. Other store settings, including segment capacity and the managed master address, are preserved. When the map is nonempty, it overrides the role's `device_name` in each process-local JSON (`/logs/mooncake_store_config_<role>_gpu<ids>.json`); the role's own configuration is not mutated. The map must cover every physical GPU on the node; repeated HCA names are allowed for machines where multiple GPUs share an HCA. Without the option, or with an empty list, each role's JSON is used unchanged. Config loading (including dry-run) rejects wrong-length maps and entries that are empty, contain whitespace, or contain a comma, before allocating nodes.
 
 This is **process-local**, not nested-rank-local: all TP ranks spawned inside one process still inherit its subset. A one-HCA-per-nested-rank policy requires separate connector support. This option does not patch vLLM, set private vLLM environment variables, or change store capacity. Use homogeneous mappings across nodes, and verify device locality on the target cluster. Restricting a process to its assigned HCAs can avoid unnecessary RDMA registration fanout; performance equivalence to other HCA policies must be measured, not assumed.
 
@@ -83,7 +85,7 @@ services:
     type: mooncake-master
     container: nvcr.io/nvidia/mooncake:latest   # optional; default: job container
     args: []                                     # appended to mooncake_master
-    # options.store_config: ...                  # vLLM, TensorRT-LLM; rendered into MOONCAKE_CONFIG_PATH
+    # options.store_config: ...                  # deprecated: use roles.<role>.mooncake_store_config
     # placement.node: dedicated                  # share the reserved infra node with etcd/nats
     # external: 10.0.0.5:8700                    # a master that already runs; nothing launches
 ```
@@ -134,7 +136,7 @@ services:
 
 ## Quick Start (vLLM)
 
-vLLM's `MooncakeStoreConnector` reads its configuration from a JSON file pointed to by `MOONCAKE_CONFIG_PATH` rather than directly from env vars, so the vLLM master entry takes an extra `options.store_config:` section that srtslurm renders into that JSON at job start:
+vLLM's `MooncakeStoreConnector` reads its configuration from a JSON file pointed to by `MOONCAKE_CONFIG_PATH` rather than directly from env vars, so each role that uses it takes a `mooncake_store_config:` section that srtslurm renders into that role's JSON at job start:
 
 ```yaml
 engine: vllm
@@ -145,27 +147,34 @@ roles:
       MC_STORE_CLIENT_METRIC: "1"
     args:
       kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true}}]}}'
+    mooncake_store_config:                # rendered into this role's MOONCAKE_CONFIG_PATH JSON
+      metadata_server: "P2PHANDSHAKE"
+      global_segment_size: "100GB"
+      local_buffer_size: "4GB"
+      protocol: "rdma"
+      device_name: "mlx5_0,mlx5_1"
   decode:
     env:
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
       MC_STORE_CLIENT_METRIC: "1"
     args:
       kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true}}]}}'
+    mooncake_store_config:
+      metadata_server: "P2PHANDSHAKE"
+      global_segment_size: "100GB"
+      local_buffer_size: "4GB"
+      protocol: "rdma"
+      device_name: "mlx5_0,mlx5_1"
 services:
   - name: mooncake-master
     type: mooncake-master
-    options:
-      store_config:                       # rendered into the MOONCAKE_CONFIG_PATH JSON
-        metadata_server: "P2PHANDSHAKE"
-        global_segment_size: "100GB"
-        local_buffer_size: "4GB"
-        protocol: "rdma"
-        device_name: "mlx5_0,mlx5_1"
 ```
 
 Real-world production form: `MultiConnector` wraps `NixlConnector` (P2P transfer between prefill and decode) **and** `MooncakeStoreConnector` (shared store for cross-instance reuse), both with `kv_role: "kv_both"` so prefill and decode workers run identical connector stacks. srtslurm's validator accepts `MooncakeStoreConnector` standalone or wrapped in `MultiConnector`.
 
-srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, `MOONCAKE_LOCAL_HOSTNAME`, and `MOONCAKE_CONFIG_PATH` on every worker; you supply the rest. `master_server_address` in `store_config` is also auto-filled from the infra node IP and ignored if set by hand.
+srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, and `MOONCAKE_LOCAL_HOSTNAME` on every worker, and `MOONCAKE_CONFIG_PATH=/logs/mooncake_store_config_<role>.json` on the workers of each role whose `kv-transfer-config` uses Mooncake; you supply the rest. `master_server_address` is also auto-filled from the infra node IP and ignored if set by hand. `metadata_server` and `protocol` must have the same value in every role.
+
+Older recipes set these keys once, in the `mooncake-master` service's `options.store_config`. That still works: the keys apply under every role's own `mooncake_store_config`, and srtslurm logs a deprecation warning.
 
 The role `env:` maps are injected on the vLLM workers (not on the standalone `mooncake_master` daemon; the master gets the service entry's own `env`). Use them for in-process Mooncake C++ knobs like `MC_ENABLE_DEST_DEVICE_AFFINITY`, `MC_STORE_CLIENT_METRIC`, `MC_TE_METRIC`.
 
@@ -185,6 +194,11 @@ roles:
         transceiver_runtime: PYTHON
       kv_connector_config:
         connector: mooncake-store        # no mooncake_store block
+    mooncake_store_config:               # this role's Mooncake client config
+      protocol: rdma
+      device_name: "mlx5_0,mlx5_1"       # optional; empty lets Mooncake discover RDMA devices
+      global_segment_size: 16GiB         # host memory each rank lends; byte counts or binary units
+      stage_through_host: true           # copy through host memory; no GPUDirect RDMA needed
   decode:
     args:
       kv_cache_config:
@@ -194,32 +208,29 @@ roles:
         transceiver_runtime: PYTHON
       kv_connector_config:
         connector: mooncake-store
-    mooncake_store_config:               # this role's client config keys, over store_config
-      global_segment_size: 32GiB
+    mooncake_store_config:
+      protocol: rdma                     # keys the whole pool shares match across roles
+      device_name: "mlx5_0,mlx5_1"
+      global_segment_size: 32GiB         # decode ranks lend more
+      stage_through_host: true
 services:
   - name: mooncake-master
     type: mooncake-master
-    options:
-      store_config:                       # TensorRT-LLM Mooncake client config keys, every role
-        protocol: rdma
-        device_name: "mlx5_0,mlx5_1"      # optional; empty lets Mooncake discover RDMA devices
-        global_segment_size: 16GiB        # host memory each rank lends; byte counts or binary units
-        stage_through_host: true          # copy through host memory; no GPUDirect RDMA needed
 ```
 
-For every role whose `args` select the connector, srtslurm writes `/logs/mooncake_store_config_<role>.json` before workers start and sets `MOONCAKE_CONFIG_PATH` to it on that role's srun task, so every rank `trtllm-llmapi-launch` starts inherits it. The file layers, later wins: a per-role `role` default and `model_key` (the served model name), the service's `store_config`, then `roles.<role>.mooncake_store_config`; `master_server_address` is always `<infra_node_ip>:8700`:
+For every role whose `args` select the connector, srtslurm writes `/logs/mooncake_store_config_<role>.json` before workers start and sets `MOONCAKE_CONFIG_PATH` to it on that role's srun task, so every rank `trtllm-llmapi-launch` starts inherits it. The file layers, later wins: a per-role `role` default and `model_key` (the served model name), then `roles.<role>.mooncake_store_config` (over the deprecated service `options.store_config`, if any); `master_server_address` is always `<infra_node_ip>:8700`:
 
 | Role | Default `role` | What the server does with the pool |
 | --- | --- | --- |
 | `prefill`, `agg` | `both` | Looks up prefixes before computing them and stores what it computed. |
 | `decode` | `capacity` | Lends its ranks' segments and never transfers: prompt KV reaches it over the cache transceiver. |
 
-`model_key` names the checkpoint in the pool's keys. TensorRT-LLM gives it no default, so that two checkpoints sharing a pool cannot read each other's KV; an srtslurm pool belongs to one job, so the served model name (`engine.served_model_name`, else the model directory name) is safe, and a `store_config.model_key` overrides it. Keys every server of the pool must agree on (`model_key`, `namespace`, `metadata_server`, `protocol`, `master_server_address`) cannot be set per role. The rest of the keys pass through to TensorRT-LLM's reader, which supplies its own defaults (`metadata_server: P2PHANDSHAKE`, `protocol: rdma`, `namespace: trtllm`, ...). Notes:
+`model_key` names the checkpoint in the pool's keys. TensorRT-LLM gives it no default, so that two checkpoints sharing a pool cannot read each other's KV; an srtslurm pool belongs to one job, so the served model name (`engine.served_model_name`, else the model directory name) is safe, and a `model_key` set in every role overrides it. Keys every server of the pool must agree on (`model_key`, `namespace`, `metadata_server`, `protocol`) must have the same value in every role. The rest of the keys pass through to TensorRT-LLM's reader, which supplies its own defaults (`metadata_server: P2PHANDSHAKE`, `protocol: rdma`, `namespace: trtllm`, ...). Notes:
 
 - The same recipe works with `frontend.type: trtllm_serve` and `frontend.type: dynamo`. trtllm-serve skips its own pool provisioning when `MOONCAKE_CONFIG_PATH` is already set ([`provision_pool`](https://github.com/NVIDIA/TensorRT-LLM/blob/1ab6bbc990a30de41bd0e30f1af38761ec342b8c/tensorrt_llm/_torch/pyexecutor/connectors/mooncake_store/master.py#L810-L833)), and `dynamo.trtllm` provisions nothing, so no wrapper is needed around either worker.
 - No `trtllm-serve mooncake_master` runs: it starts this same `mooncake_master` binary ([`_launch_master`](https://github.com/NVIDIA/TensorRT-LLM/blob/1ab6bbc990a30de41bd0e30f1af38761ec342b8c/tensorrt_llm/_torch/pyexecutor/connectors/mooncake_store/master.py#L469-L503)). There are no donor processes either; a `capacity` role's ranks lend the memory.
 - `global_segment_size` is per rank: a node needs its ranks times the segment size of host memory. TensorRT-LLM refuses `GB`/`MB`, because vLLM's reader of the same file scales them by 1024 and TensorRT-LLM's by 1000; write `GiB` or a byte count.
-- Leave `local_hostname` unset so each rank uses its own address; a value in `store_config` would apply to every rank of the role. TensorRT-LLM does not read `MOONCAKE_LOCAL_HOSTNAME`, `MOONCAKE_MASTER`, or `MOONCAKE_TE_META_DATA_SERVER`; srtslurm still stamps them, and they are inert for these workers.
+- Leave `local_hostname` unset so each rank uses its own address; a value in `mooncake_store_config` would apply to every rank of the role. TensorRT-LLM does not read `MOONCAKE_LOCAL_HOSTNAME`, `MOONCAKE_MASTER`, or `MOONCAKE_TE_META_DATA_SERVER`; srtslurm still stamps them, and they are inert for these workers.
 - Engine-side limits are TensorRT-LLM's and depend on the build, so srtslurm does not repeat them. On the `feat/m3_with_msa` branch, a disaggregated server on KV cache manager v2 needs `cache_transceiver_config: {backend: NIXL, transceiver_runtime: PYTHON}`; the C++ transceiver is refused at startup ([`kv_cache_transceiver.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/1ab6bbc990a30de41bd0e30f1af38761ec342b8c/tensorrt_llm/_torch/pyexecutor/kv_cache_transceiver.py#L188-L196)); `main` requires it only for hybrid Mamba models. On a cluster without GPUDirect RDMA, set `stage_through_host: true`. On `main` ([NVIDIA/TensorRT-LLM#19171](https://github.com/NVIDIA/TensorRT-LLM/pull/19171)) a server with any KV connector also rejects attention DP, and speculative decoding on KV cache manager v2.
 
 ## What srtslurm Owns vs What You Set
@@ -230,10 +241,10 @@ For every role whose `args` select the connector, srtslurm writes `/logs/mooncak
 | `MOONCAKE_MASTER` env var on workers            | srtslurm  | Always computed as `<infra_node_ip>:8700`. User values in role `env` are overridden.                  |
 | `MOONCAKE_TE_META_DATA_SERVER` env var          | srtslurm  | Always computed as `http://<infra_node_ip>:8701/metadata`.                                            |
 | `MOONCAKE_LOCAL_HOSTNAME` env var               | srtslurm  | Auto-resolved per-worker via `runtime.network_interface`. User can override in role `env` for custom NICs. |
-| `MOONCAKE_CONFIG_PATH` (vLLM, TensorRT-LLM)      | srtslurm  | Always points to the JSON file srtslurm renders from `options.store_config:` (TensorRT-LLM: one file per role, `/logs/mooncake_store_config_<role>.json`). Mounted under `/logs` in every worker. |
-| `master_server_address` in `store_config`       | srtslurm  | (vLLM, TensorRT-LLM) Always overridden with `<infra_node_ip>:8700`. User values are ignored.          |
+| `MOONCAKE_CONFIG_PATH` (vLLM, TensorRT-LLM)      | srtslurm  | Points to the JSON file srtslurm renders from the role's `mooncake_store_config`, one per role: `/logs/mooncake_store_config_<role>.json`. Mounted under `/logs` in every worker. |
+| `master_server_address` in the client config    | srtslurm  | (vLLM, TensorRT-LLM) Always overridden with `<infra_node_ip>:8700`. User values are ignored.          |
 | `role` in the TensorRT-LLM client config        | srtslurm  | Defaults to `both` for prefill and agg and `capacity` for decode; set it in `roles.<role>.mooncake_store_config` to override. |
-| `model_key` in the TensorRT-LLM client config   | srtslurm  | Defaults to the served model name; set it in `options.store_config` to override. |
+| `model_key` in the TensorRT-LLM client config   | srtslurm  | Defaults to the served model name; set it in every role's `mooncake_store_config` to override. |
 | `MOONCAKE_PROTOCOL`, `MOONCAKE_DEVICE`, etc.    | User      | Set in `roles.prefill.env` and `roles.decode.env`.                                                    |
 | `disaggregation-transfer-backend: mooncake`     | User      | (SGLang only) Set in `roles.prefill.args` and `roles.decode.args`. srtslurm validates this is present. |
 | `disaggregation-ib-device`                      | User      | (SGLang only) Set in `roles.prefill.args` and `roles.decode.args`. Format: `"mlx5_0,mlx5_1"` or JSON map. |
@@ -285,23 +296,28 @@ roles:
       MC_TE_METRIC: "0"                  # default 0 (disabled)
     args:
       kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
+    mooncake_store_config:               # rendered into this role's MOONCAKE_CONFIG_PATH JSON
+      metadata_server: "P2PHANDSHAKE"
+      global_segment_size: "100GB"
+      local_buffer_size: "4GB"
+      protocol: "rdma"
+      device_name: "mlx5_0,mlx5_1"
   decode:
     env:
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
     args:
       kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
+    mooncake_store_config:
+      metadata_server: "P2PHANDSHAKE"
+      global_segment_size: "200GB"       # decode ranks lend more
+      local_buffer_size: "4GB"
+      protocol: "rdma"
+      device_name: "mlx5_0,mlx5_1"
 services:
   - name: mooncake-master
     type: mooncake-master
     container: ...                       # optional, default: job container
     args: []                             # optional, appended to mooncake_master
-    options:
-      store_config:                      # required for vLLM; rendered into MOONCAKE_CONFIG_PATH JSON
-        metadata_server: "P2PHANDSHAKE"
-        global_segment_size: "100GB"
-        local_buffer_size: "4GB"
-        protocol: "rdma"
-        device_name: "mlx5_0,mlx5_1"
 ```
 
 ### Fields
@@ -310,15 +326,17 @@ On the `mooncake-master` service entry (the generic service fields such as `plac
 
 - **`container`** (`str`, optional): Container image used for the `mooncake_master` srun. Defaults to the job container if unset. Useful when mooncake needs a different runtime than your worker container.
 - **`args`** (`list[str]`, optional): Extra arguments appended to the standalone `mooncake_master` command. Use this for flags supported only by the Mooncake version in the selected container. Do not use it to override the RPC, HTTP metadata, or metrics ports because srtslurm configures worker endpoints and readiness checks from its own port values.
-- **`options.store_config`** (vLLM and TensorRT-LLM, `dict[str, Any]`): Pass-through dict rendered as JSON into the file pointed to by `MOONCAKE_CONFIG_PATH`. For TensorRT-LLM the keys are those of its Mooncake client config (`protocol`, `device_name`, `global_segment_size`, `local_buffer_size`, `namespace`, `metadata_server`, `transfer_batch_size`, `stage_through_host`, and `model_key`, which defaults to the served model name); sizes are byte counts or binary units, `role` defaults per role, and `mooncake_store`-block names (`segment_size`, `pool`, `run_dir`, `master_timeout`) are refused because the client config would ignore them.
-- **`options.store_config`, vLLM**: Keys map 1:1 to vLLM's `MooncakeStoreConfig` dataclass, a mix of `str` (e.g. `protocol`), `int` (e.g. `port`), and human-readable size strings (e.g. `"4GB"`). srtslurm does not default these fields; values like `global_segment_size`, `protocol`, and `device_name` are hardware-specific and silently using a srtslurm-picked default is worse than failing loudly, so set them explicitly. `master_server_address` is auto-filled and any user value is ignored.
+- **`options.store_config`** (vLLM and TensorRT-LLM, `dict[str, Any]`, deprecated): The client config keys every role used to share. They still apply under each role's `roles.<role>.mooncake_store_config`, and srtslurm logs a deprecation warning; move them to the roles.
 
 On the roles:
 
-- **`roles.<role>.mooncake_store_config`** (TensorRT-LLM only, `dict[str, Any]`, optional): Client config keys for that role's workers, layered over `options.store_config`, for example `role` or a larger `global_segment_size`. The role must select the `mooncake-store` connector, and keys every server of the pool must agree on (`model_key`, `namespace`, `metadata_server`, `protocol`, `master_server_address`) stay in `options.store_config`. SGLang takes per-role Mooncake settings in `roles.<role>.env` instead.
+- **`roles.<role>.mooncake_store_config`** (vLLM and TensorRT-LLM, `dict[str, Any]`, optional): The Mooncake client config for that role's workers, rendered as JSON into the file `MOONCAKE_CONFIG_PATH` names. The role must use Mooncake (vLLM: its `kv-transfer-config`; TensorRT-LLM: `kv_connector_config.connector: mooncake-store`), and a `mooncake-master` service must exist. Keys every client of the pool must agree on have to match across roles (vLLM: `metadata_server`, `protocol`; TensorRT-LLM: also `model_key` and `namespace`). SGLang takes per-role Mooncake settings in `roles.<role>.env` instead.
+  - For **vLLM**, keys map 1:1 to vLLM's `MooncakeStoreConfig` dataclass, a mix of `str` (e.g. `protocol`), `int` (e.g. `port`), and human-readable size strings (e.g. `"4GB"`). srtslurm does not default these fields; values like `global_segment_size`, `protocol`, and `device_name` are hardware-specific and silently using a srtslurm-picked default is worse than failing loudly, so set them explicitly.
+  - For **TensorRT-LLM**, the keys are those of its Mooncake client config (`protocol`, `device_name`, `global_segment_size`, `local_buffer_size`, `namespace`, `metadata_server`, `transfer_batch_size`, `stage_through_host`, and `model_key`, which defaults to the served model name); sizes are byte counts or binary units, `role` defaults per role, and `mooncake_store`-block names (`segment_size`, `pool`, `run_dir`, `master_timeout`) are refused because the client config would ignore them.
+  - `master_server_address` is auto-filled and any user value is ignored.
 - **`roles.<role>.env`** (`dict[str, str]`, optional): Env vars injected on that role's workers.
   - For **SGLang**, keys map directly to mooncake's environment variable names. See the [SGLang server_args.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/environ.py) and [mooncake_store.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py) for the full list.
-  - For **vLLM**, this is for in-process Mooncake C++ knobs (`MC_*`) read by the transfer engine / store client. vLLM's connector itself reads configuration from `MOONCAKE_CONFIG_PATH` (the JSON rendered from `options.store_config:`), not from these env vars.
+  - For **vLLM**, this is for in-process Mooncake C++ knobs (`MC_*`) read by the transfer engine / store client. vLLM's connector itself reads configuration from `MOONCAKE_CONFIG_PATH` (the JSON rendered from the role's `mooncake_store_config`), not from these env vars.
   - Setting `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, or `MOONCAKE_CONFIG_PATH` here is a no-op (srtslurm always wins).
 
 Mooncake `v0.3.11+` adds NoF SSD-tier eviction flags. Enable them only in recipes using a compatible Mooncake image:
@@ -382,12 +400,13 @@ use the mooncake master srtslurm launches for you.
 
 Both dash and underscore forms (`disaggregation-transfer-backend`, `disaggregation_transfer_backend`) are accepted. The vLLM check looks for a Mooncake connector in each role's `kv-transfer-config`.
 
+For every engine, `roles.<role>.mooncake_store_config` needs a role whose workers read a Mooncake client config file (refused on SGLang roles and on vLLM or TensorRT-LLM roles without a Mooncake connector) and a `mooncake-master` service, and the keys the pool shares must match across roles.
+
 For TensorRT-LLM, srtslurm checks at load what the workers would otherwise reject in every rank after the model has loaded:
 
 - A `mooncake-master` service needs at least one role with `kv_connector_config.connector: mooncake-store`, and those roles must not also set a `mooncake_store` block: TensorRT-LLM would read the srtslurm config instead of it.
 - Each rendered config needs a non-empty `model_key` and a known `role`; sizes must be byte counts or binary units (`local_buffer_size` at least 1, `global_segment_size` at least 0), `transfer_batch_size` must be positive, and `stage_through_host` must not be a string (TensorRT-LLM reads `"false"` as true).
-- `store_config` and `roles.<role>.mooncake_store_config` must not carry `mooncake_store`-block keys (`segment_size`, `pool`, `run_dir`, `master_timeout`), which the client config would ignore.
-- `roles.<role>.mooncake_store_config` needs a `mooncake-master` service and a role that selects the connector, must not set keys the whole pool shares, and is refused on SGLang and vLLM roles.
+- `roles.<role>.mooncake_store_config` and the deprecated `options.store_config` must not carry `mooncake_store`-block keys (`segment_size`, `pool`, `run_dir`, `master_timeout`), which the client config would ignore.
 - A role that selects the connector without a `mooncake-master` service must name its pool itself: `MOONCAKE_CONFIG_PATH` in its `env`, or, when trtllm-serve runs the engine (`frontend.type: trtllm_serve`, or a Dynamo sidecar), a `mooncake_store` block with its own `run_dir` and one worker. Every TensorRT-LLM rank runs under `trtllm-llmapi-launch`, so it reads a config trtllm-serve rendered only back from `run_dir`, which one server owns; `dynamo.trtllm` renders none.
 - `external` on the `mooncake-master` service is refused for TensorRT-LLM: the rendered `master_server_address` always names the infra node.
 

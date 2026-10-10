@@ -736,13 +736,18 @@ class TestVLLMMooncakeKVStore:
         from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
         from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 
-        backend = VLLMBackend(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
-        env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
+        from srtctl.core.schema import RoleConfig
+
+        backend = VLLMBackend(
+            mooncake_kv_store=VLLMMooncakeKVStoreConfig(),
+            roles={"decode": RoleConfig(args={"kv-transfer-config": '{"kv_connector":"MooncakeStoreConnector"}'})},
+        )
+        env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42", "decode")
         assert env == {
             "MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
             "MOONCAKE_TE_META_DATA_SERVER": f"http://10.0.0.1:{MOONCAKE_HTTP_METADATA_PORT}/metadata",
             "MOONCAKE_LOCAL_HOSTNAME": "10.0.0.42",
-            "MOONCAKE_CONFIG_PATH": "/logs/mooncake_store_config.json",
+            "MOONCAKE_CONFIG_PATH": "/logs/mooncake_store_config_decode.json",
         }
 
     def test_vllm_mooncake_master_overrides_user_env(self):
@@ -936,7 +941,7 @@ roles:
         from srtctl.ports import MOONCAKE_MASTER_PORT
 
         backend = VLLMBackend(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
-        cfg = backend.build_mooncake_store_config("10.0.0.1")
+        cfg = backend.build_mooncake_store_config("decode", "10.0.0.1")
         # srtslurm intentionally does not default hardware-specific fields
         # (protocol, device_name, global_segment_size, …) — users must set
         # them in YAML. vLLM will fail loudly if they're missing.
@@ -959,7 +964,7 @@ roles:
                 }
             )
         )
-        cfg = backend.build_mooncake_store_config("10.0.0.1")
+        cfg = backend.build_mooncake_store_config("decode", "10.0.0.1")
         assert cfg["metadata_server"] == "http://my-metadata:9000"
         # master_server_address is always auto-filled, never user-controlled
         assert cfg["master_server_address"] == f"10.0.0.1:{MOONCAKE_MASTER_PORT}"
@@ -977,22 +982,26 @@ roles:
                 store_config={"new_upstream_field": "some_value", "another_new_field": 42}
             )
         )
-        cfg = backend.build_mooncake_store_config("10.0.0.1")
+        cfg = backend.build_mooncake_store_config("decode", "10.0.0.1")
         assert cfg["new_upstream_field"] == "some_value"
         assert cfg["another_new_field"] == 42
 
     def test_vllm_mooncake_config_path_injected_into_worker_env(self):
-        """MOONCAKE_CONFIG_PATH is auto-injected so vLLM workers find the JSON config."""
-        from srtctl.backends.vllm import (
-            MOONCAKE_STORE_CONFIG_CONTAINER_PATH,
-            VLLMMooncakeKVStoreConfig,
-            VLLMBackend,
-        )
+        """MOONCAKE_CONFIG_PATH names the role's own JSON config; a role without Mooncake gets none."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMBackend
+        from srtctl.core.schema import RoleConfig
 
-        backend = VLLMBackend(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
-        env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
-        assert env["MOONCAKE_CONFIG_PATH"] == MOONCAKE_STORE_CONFIG_CONTAINER_PATH
-        assert MOONCAKE_STORE_CONFIG_CONTAINER_PATH == "/logs/mooncake_store_config.json"
+        backend = VLLMBackend(
+            mooncake_kv_store=VLLMMooncakeKVStoreConfig(),
+            roles={
+                "prefill": RoleConfig(args={"kv-transfer-config": '{"kv_connector":"MooncakeStoreConnector"}'}),
+                "decode": RoleConfig(args={"kv-transfer-config": '{"kv_connector":"NixlConnector"}'}),
+            },
+        )
+        env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42", "prefill")
+        assert env["MOONCAKE_CONFIG_PATH"] == "/logs/mooncake_store_config_prefill.json"
+        assert "MOONCAKE_CONFIG_PATH" not in backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42", "decode")
+        assert backend.mooncake_store_modes() == ("prefill",)
 
     def test_vllm_mooncake_store_config_loads_from_yaml(self):
         """store_config block round-trips through YAML deserialization."""

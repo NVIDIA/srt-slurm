@@ -125,6 +125,11 @@ def role_mooncake_store_config(roles: Mapping[str, RoleSettings], mode: str) -> 
     return dict(role.mooncake_store_config) if role is not None else {}
 
 
+def mooncake_store_config_filename(mode: WorkerMode) -> str:
+    """The Mooncake client config file srtslurm writes into log_dir (mounted at /logs) for one worker mode."""
+    return f"mooncake_store_config_{mode}.json"
+
+
 def role_kv_events(roles: Mapping[str, RoleSettings], mode: str, defaults: Mapping[str, Any]) -> dict[str, Any] | None:
     """``roles.<role>.kv_events`` for a worker mode over ``defaults``; None when the role publishes none."""
     role = role_for_mode(roles, mode)
@@ -156,6 +161,9 @@ class Backend(ABC):
     #: Environment that turns on the engine's own NVTX ranges; the automatic nsys
     #: preset (``observability.nsys``) sets it on every worker it wraps.
     nvtx_environment: ClassVar[Mapping[str, str]] = {}
+    #: Mooncake client config keys every server of one pool must agree on. Roles set
+    #: their client config separately, so the validator checks these match across roles.
+    mooncake_pool_keys: ClassVar[tuple[str, ...]] = ()
 
     @property
     @abstractmethod
@@ -311,6 +319,14 @@ class Backend(ABC):
         ``served_model_name`` is the name the workers serve, for engines that key the
         pool by the model.
         """
+        return {}
+
+    def mooncake_store_modes(self) -> tuple[WorkerMode, ...]:
+        """Worker modes whose workers read a Mooncake client config file; empty for an engine that reads none."""
+        return ()
+
+    def mooncake_store_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
+        """The Mooncake client config keys the recipe sets for ``mode``'s workers; empty for an engine that reads none."""
         return {}
 
     def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:

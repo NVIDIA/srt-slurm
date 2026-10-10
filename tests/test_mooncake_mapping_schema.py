@@ -75,7 +75,8 @@ def test_valid_mapping_reaches_runtime_and_dry_run(
         assert rendered[1]["global_segment_size"] == "100GB"
     else:
         assert rendered is None
-    assert backend.build_mooncake_store_config("infra")["device_name"] == "shared"
+    first_role = backend.mooncake_store_modes()[0]
+    assert backend.build_mooncake_store_config(first_role, "infra")["device_name"] == "shared"
     show_config_details(config)
     output = capsys.readouterr().out
     if devices:

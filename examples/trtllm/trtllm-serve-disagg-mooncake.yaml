@@ -6,10 +6,10 @@
 # `mooncake-store` KV connector with no `mooncake_store` block: srtctl renders each
 # role's Mooncake client config into /logs/mooncake_store_config_<role>.json and
 # sets MOONCAKE_CONFIG_PATH on that role's workers, which TRT-LLM reads instead.
-# The context server reads and writes the pool (role: both); the generation server
-# only lends its segment (role: capacity), and `roles.decode.mooncake_store_config`
-# gives it a larger one. model_key defaults to the served model name. No
-# `trtllm-serve mooncake_master` or donor process runs. Needs a TRT-LLM build with the refined Mooncake connector
+# Each role's `mooncake_store_config` is that role's Mooncake client config. The
+# context server reads and writes the pool (role: both); the generation server only
+# lends its segment (role: capacity) and lends more. model_key defaults to the served
+# model name. No `trtllm-serve mooncake_master` or donor process runs. Needs a TRT-LLM build with the refined Mooncake connector
 # API (NVIDIA/TensorRT-LLM#19706). See docs/mooncake-kv-store.md.
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
@@ -59,6 +59,10 @@ roles:
         transceiver_runtime: "PYTHON"
       kv_connector_config:
         connector: mooncake-store
+    mooncake_store_config:           # this role's Mooncake client config
+      protocol: rdma
+      global_segment_size: 8GiB      # host memory each prefill rank lends; binary units only
+      stage_through_host: true       # no GPUDirect RDMA needed for the KV pools
   decode:
     nodes: colocate
     workers: 1
@@ -81,17 +85,14 @@ roles:
         transceiver_runtime: "PYTHON"
       kv_connector_config:
         connector: mooncake-store
-    mooncake_store_config:           # this role's client keys, over the master's store_config
+    mooncake_store_config:
+      protocol: rdma                 # keys the whole pool shares must match across roles
       global_segment_size: 16GiB     # decode ranks lend more host memory
+      stage_through_host: true
 
 services:
   - name: mooncake-master
     type: mooncake-master
-    options:
-      store_config:                  # TRT-LLM Mooncake client config keys, shared by every role
-        protocol: rdma
-        global_segment_size: 8GiB    # per rank; binary units only ("GB" is refused)
-        stage_through_host: true     # no GPUDirect RDMA needed for the KV pools
 
 benchmark:
   type: "sa-bench"

@@ -111,7 +111,7 @@ One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
 | `engine` | str \| mapping | `None` | Engine type or mapping with engine options. Set on every role when no top-level `engine` is declared; the two forms cannot be mixed, and role engines do not inherit options from each other. |
 | `container` | str \| None | `None` | Optional role image; accepts cluster container aliases. Defaults to `model.container`. |
 | `kv_events` | bool \| dict[str, Any] \| None | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
-| `mooncake_store_config` | dict[str, Any] | `{}` | TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`, ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there. |
+| `mooncake_store_config` | dict[str, Any] | `{}` | Mooncake client config for this role's workers (vLLM, TRT-LLM): the keys srtslurm writes into the JSON file MOONCAKE_CONFIG_PATH names (`protocol`, `global_segment_size`, ...). Keys the whole pool shares must match across roles. The mooncake-master service's deprecated `options.store_config` still applies underneath. |
 | `sidecar` | bool \| None | `None` | Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree. |
 | `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
 | `restart` | [RestartPolicy](#restartpolicy) | `RestartPolicy()` | Relaunch exited workers in place: `never`, `on-failure`, `always`, or a mapping with `policy`, `max_restarts`, `backoff_seconds`, and `max_backoff_seconds`. |

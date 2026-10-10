@@ -19,6 +19,7 @@ from srtctl.backends.base import (
     ProcessGroup,
     RoleSettings,
     WorkerMode,
+    mooncake_store_config_filename,
     role_env,
     role_for_mode,
     role_mooncake_store_config,
@@ -45,16 +46,6 @@ TRTLLM_MOONCAKE_STORE_MODULE = "tensorrt_llm._torch.pyexecutor.connectors.moonca
 TRTLLM_MOONCAKE_DEFAULT_ROLES: dict[str, str] = {"prefill": "both", "agg": "both", "decode": "capacity"}
 TRTLLM_MOONCAKE_STORE_ROLES = frozenset({"both", "producer", "consumer", "capacity"})
 
-# Client config keys every server of one pool must agree on, so ``roles.<role>.mooncake_store_config``
-# cannot set them: they stay in the ``mooncake-master`` service's ``options.store_config``.
-TRTLLM_MOONCAKE_POOL_KEYS: tuple[str, ...] = (
-    "model_key",
-    "namespace",
-    "metadata_server",
-    "protocol",
-    "master_server_address",
-)
-
 # Keys of the ``kv_connector_config.mooncake_store`` block that the client config does
 # not read; TRT-LLM would drop them silently.
 _TRTLLM_MOONCAKE_BLOCK_ONLY_KEYS: dict[str, str] = {
@@ -78,11 +69,6 @@ _TRTLLM_MOONCAKE_SIZE_UNITS: dict[str, int] = {
 }
 
 
-def trtllm_mooncake_store_config_filename(mode: WorkerMode) -> str:
-    """The client config file srtslurm writes into log_dir (mounted at /logs) for one worker mode."""
-    return f"mooncake_store_config_{mode}.json"
-
-
 def _trtllm_mooncake_size(key: str, value: Any) -> int | str:
     """``value`` in bytes as TRT-LLM's ``parse_size(strict_units=True)`` reads it, or why it cannot."""
     if isinstance(value, bool) or not isinstance(value, int | float | str):
@@ -104,17 +90,6 @@ def trtllm_mooncake_block_only_key_problem(keys: Mapping[str, Any]) -> str | Non
         if key in keys:
             hint = " (set global_segment_size)" if key == "segment_size" else "; drop it"
             return f"{key} belongs to the mooncake_store block and the client config ignores it: {why}{hint}"
-    return None
-
-
-def trtllm_mooncake_role_key_problem(keys: Mapping[str, Any]) -> str | None:
-    """Why a key cannot go in ``roles.<role>.mooncake_store_config``, or None."""
-    pool_wide = [key for key in TRTLLM_MOONCAKE_POOL_KEYS if key in keys]
-    if pool_wide:
-        return (
-            f"{', '.join(pool_wide)} must be the same for every server of the pool; "
-            "set it in the mooncake-master service's options.store_config"
-        )
     return None
 
 
@@ -169,17 +144,15 @@ class TRTLLMMooncakeKVStoreConfig:
     own) join the pool the same way, without ``trtllm-serve mooncake_master``.
 
     Each config is ``{"role": <role default>, "model_key": <served model name>,
-    **store_config, **roles.<role>.mooncake_store_config,
-    "master_server_address": "<infra_ip>:8700"}``. The role default is ``both``
-    for prefill and agg and ``capacity`` for decode.
+    **roles.<role>.mooncake_store_config, "master_server_address": "<infra_ip>:8700"}``.
+    The role default is ``both`` for prefill and agg and ``capacity`` for decode.
 
     Attributes:
         container: Container image for the master; defaults to the job container.
         env: Environment injected on every worker, e.g. in-process Mooncake ``MC_*`` knobs.
         master_extra_args: Extra arguments appended to the ``mooncake_master`` command.
-        store_config: Keys of TRT-LLM's Mooncake client config shared by every role
-            (``protocol``, ``device_name``, ``global_segment_size``, ...); a role
-            overrides the per-server ones in ``roles.<role>.mooncake_store_config``.
+        store_config: Deprecated: the ``mooncake-master`` service's ``options.store_config``.
+            Its keys still apply under every role's ``roles.<role>.mooncake_store_config``.
     """
 
     container: str | None = None
@@ -256,6 +229,8 @@ class TRTLLMBackend(Backend):
     # return_perf_metrics is true); its /metrics route is JSON iteration stats.
     prometheus_metrics_path: ClassVar[str] = "/prometheus/metrics"
     nvtx_environment: ClassVar[Mapping[str, str]] = {"TLLM_LLMAPI_ENABLE_NVTX": "1", "TLLM_PROFILE_LOG_RANKS": "all"}
+    # TRT-LLM keys its pool by model_key and namespace; protocol and metadata server are the transport.
+    mooncake_pool_keys: ClassVar[tuple[str, ...]] = ("model_key", "namespace", "metadata_server", "protocol")
 
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
     # never written on `engine:`. Per-role env and args (the engine YAML) are read from
@@ -469,22 +444,25 @@ class TRTLLMBackend(Backend):
         modes: tuple[WorkerMode, ...] = ("prefill", "decode", "agg")
         return tuple(mode for mode in modes if self.uses_mooncake_store(mode))
 
+    def mooncake_store_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
+        """``roles.<mode>.mooncake_store_config`` over the deprecated service ``options.store_config``."""
+        store = self.mooncake_kv_store
+        base = dict(store.store_config or {}) if store is not None else {}
+        return {**base, **role_mooncake_store_config(self.roles, mode)}
+
     def build_mooncake_store_config(
         self, mode: WorkerMode, infra_node_ip: str, served_model_name: str
     ) -> dict[str, Any]:
         """The Mooncake client config a ``mode`` worker reads from ``MOONCAKE_CONFIG_PATH``.
 
         Layers, later wins: the role default and ``model_key`` (the served model name;
-        the pool belongs to this job alone), the service's ``options.store_config``, then
-        ``roles.<mode>.mooncake_store_config``. Keys pass through to TRT-LLM's reader,
-        which supplies its own defaults. ``master_server_address`` is always the master
-        srtslurm launches; a value set by hand is ignored, as for vLLM.
+        the pool belongs to this job alone), then ``mooncake_store_config_for_mode``. Keys
+        pass through to TRT-LLM's reader, which supplies its own defaults.
+        ``master_server_address`` is always the master srtslurm launches; a value set by
+        hand is ignored, as for vLLM.
         """
         payload: dict[str, Any] = {"role": TRTLLM_MOONCAKE_DEFAULT_ROLES[mode], "model_key": served_model_name}
-        store = self.mooncake_kv_store
-        if store is not None:
-            payload.update(store.store_config or {})
-        payload.update(role_mooncake_store_config(self.roles, mode))
+        payload.update(self.mooncake_store_config_for_mode(mode))
         payload["master_server_address"] = f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}"
         return payload
 
@@ -493,7 +471,7 @@ class TRTLLMBackend(Backend):
         if self.mooncake_kv_store is None:
             return {}
         return {
-            trtllm_mooncake_store_config_filename(mode): self.build_mooncake_store_config(
+            mooncake_store_config_filename(mode): self.build_mooncake_store_config(
                 mode, infra_node_ip, served_model_name
             )
             for mode in self.mooncake_store_modes()
@@ -509,7 +487,7 @@ class TRTLLMBackend(Backend):
         """
         env = super().get_mooncake_worker_env(infra_node_ip, local_hostname, mode)
         if env and mode is not None and self.uses_mooncake_store(mode):
-            env["MOONCAKE_CONFIG_PATH"] = f"/logs/{trtllm_mooncake_store_config_filename(mode)}"
+            env["MOONCAKE_CONFIG_PATH"] = f"/logs/{mooncake_store_config_filename(mode)}"
         return env
 
     def allocate_endpoints(

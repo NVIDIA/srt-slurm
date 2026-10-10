@@ -728,7 +728,7 @@ class TestDryRunExecutionExtensions:
         assert "nof_eviction" in output
 
     def test_vllm_mooncake_store_config_in_dry_run(self, capsys):
-        """vLLM store_config + MOONCAKE_CONFIG_PATH appear in the dry-run extensions panel."""
+        """The deprecated service store_config still reaches each role's config and MOONCAKE_CONFIG_PATH in the dry run."""
         kv_cfg = '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
         mooncake_env = {"MOONCAKE_PROTOCOL": "rdma"}
         config = _make_config(
@@ -758,7 +758,8 @@ class TestDryRunExecutionExtensions:
         show_config_details(config)
         output = capsys.readouterr().out
         assert "MOONCAKE_CONFIG_PATH" in output
-        assert "/logs/mooncake_store_config.json" in output
+        assert "store_config (prefill)" in output
+        assert "store_config (decode)" in output
         assert "P2PHANDSHAKE" in output
         assert "100GB" in output
 
@@ -816,7 +817,6 @@ class TestDryRunExecutionExtensions:
         output = capsys.readouterr().out
         assert "device_names_by_gpu" in output
         assert "mlx5_7" in output
-        assert "mooncake_store_config_gpu" in output
         assert "process config" in output
 
 

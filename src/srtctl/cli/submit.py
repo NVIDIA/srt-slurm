@@ -38,6 +38,7 @@ from rich.table import Table
 from rich.text import Text
 
 from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
+from srtctl.backends.base import mooncake_store_config_filename
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -769,42 +770,26 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
             if isinstance(mooncake_cfg, VLLMMooncakeKVStoreConfig) and mooncake_cfg.device_names_by_gpu:
                 details.add_row("mooncake", "device_names_by_gpu", str(mooncake_cfg.device_names_by_gpu))
-                details.add_row("mooncake", "process config", "/logs/mooncake_store_config_gpu<physical-ids>.json")
+                details.add_row(
+                    "mooncake", "process config", "/logs/mooncake_store_config_<role>_gpu<physical-ids>.json"
+                )
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
-            if isinstance(backend, VLLMBackend):
-                # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
-                # — srtslurm writes this at job start. Show the resolved JSON
-                # so operators can sanity-check protocol/device_name/sizes
-                # before submitting. infra IP is unknown until allocation, so
-                # use a placeholder for master_server_address.
-                store_cfg = backend.build_mooncake_store_config("<infra_ip>")
+            # One client config per role whose workers read one (vLLM, TRT-LLM); the role's
+            # workers get it through MOONCAKE_CONFIG_PATH. The infra IP is unknown until
+            # allocation, and TRT-LLM's model_key default needs the staged model, so both
+            # show as placeholders.
+            served_model_name = backend.get_served_model_name("<model directory name>")
+            store_configs = backend.mooncake_store_configs("<infra_ip>", served_model_name)
+            for mode in backend.mooncake_store_modes():
+                path = backend.get_mooncake_worker_env("<infra_ip>", "<worker_ip>", mode)["MOONCAKE_CONFIG_PATH"]
+                details.add_row("mooncake", f"MOONCAKE_CONFIG_PATH ({mode})", f"{path} (auto)")
                 details.add_row(
                     "mooncake",
-                    "store_config",
-                    json.dumps(store_cfg, indent=2),
+                    f"store_config ({mode})",
+                    json.dumps(store_configs[mooncake_store_config_filename(mode)], indent=2),
                 )
-                details.add_row(
-                    "mooncake",
-                    "MOONCAKE_CONFIG_PATH",
-                    "/logs/mooncake_store_config.json (auto)",
-                )
-            elif isinstance(backend, TRTLLMBackend):
-                # One client config per role using the mooncake-store connector; the
-                # role's workers read it through MOONCAKE_CONFIG_PATH. model_key defaults
-                # to the served model name, which needs the staged model when not configured.
-                served_model_name = backend.get_served_model_name("<model directory name>")
-                for mode in backend.mooncake_store_modes():
-                    path = backend.get_mooncake_worker_env("<infra_ip>", "<worker_ip>", mode)["MOONCAKE_CONFIG_PATH"]
-                    details.add_row("mooncake", f"MOONCAKE_CONFIG_PATH ({mode})", f"{path} (auto)")
-                    details.add_row(
-                        "mooncake",
-                        f"store_config ({mode})",
-                        json.dumps(
-                            backend.build_mooncake_store_config(mode, "<infra_ip>", served_model_name), indent=2
-                        ),
-                    )
 
         console.print(Panel(details, border_style="blue"))
 

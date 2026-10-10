@@ -2540,7 +2540,7 @@
         },
         "mooncake_store_config": {
           "type": "object",
-          "description": "TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`, ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there.",
+          "description": "Mooncake client config for this role's workers (vLLM, TRT-LLM): the keys srtslurm writes into the JSON file MOONCAKE_CONFIG_PATH names (`protocol`, `global_segment_size`, ...). Keys the whole pool shares must match across roles. The mooncake-master service's deprecated `options.store_config` still applies underneath.",
           "default": {}
         },
         "sidecar": {
