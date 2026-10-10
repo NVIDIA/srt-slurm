@@ -9,8 +9,8 @@
 schema: 2
 name: disagg-3p-dep-1d-dep-c560
 model:
-  path: /lustre/share/coreai_dlalgo_ci/artifacts/model/nvidia_glm-5.2-nvfp4/hf/hf-b0b2b68_orig
-  container: /lustre/share/coreai_comparch_inferencex/rihuo/trtllm-release-4dece7f-user_imant_glm5-rubin-arm64.sqsh
+  path: /lustre/fsw/coreai_comparch_inferencex/rihuo/GLM-5.3-NVFP4
+  container: /lustre/share/coreai_comparch_inferencex/rihuo/trtllm-release-f1bdd25-user_imant_glm5-rubin-30428-arm64.sqsh
   precision: nvfp4
 resources:
   gpu_type: vrnvl72
@@ -44,7 +44,7 @@ frontend:
 engine:
   numa_cpu_bind: true
   type: trtllm
-  served_model_name: GLM-5.2
+  served_model_name: GLM-5.3
   numa_memory_bind: true
 roles:
   prefill:
@@ -52,6 +52,7 @@ roles:
     workers: 3
     gpus: 4
     args:
+      iter_perf_stats_interval: 40
       backend: pytorch
       cache_transceiver_config:
         backend: NIXL
@@ -66,6 +67,7 @@ roles:
       disable_overlap_scheduler: false
       enable_attention_dp: true
       kv_cache_config:
+        iteration_stats_interval: 40
         enable_block_reuse: true
         host_cache_size: 0
         dtype: nvfp4
@@ -148,6 +150,7 @@ roles:
     workers: 1
     gpus: 32
     args:
+      iter_perf_stats_interval: 40
       backend: pytorch
       cache_transceiver_config:
         backend: NIXL
@@ -167,6 +170,7 @@ roles:
         max_draft_len: 5
       enable_attention_dp: true
       kv_cache_config:
+        iteration_stats_interval: 40
         enable_block_reuse: false
         host_cache_size: 0
         dtype: nvfp4
@@ -284,7 +288,7 @@ benchmark:
   command: |
     set -euo pipefail
     # AgentX treats any nonempty offline flag (including '0') as enabled.
-    unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
+    unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE PIP_EXTRA_INDEX_URL
     # Install the local AgentX checkout in an isolated environment with pinned dependencies.
     agentx_venv=$(mktemp -d /tmp/glm52-agentx.XXXXXX)
     trap 'rm -rf "$agentx_venv"' EXIT
@@ -299,7 +303,7 @@ benchmark:
       --url "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}" \
       --endpoint /v1/chat/completions \
       --endpoint-type chat \
-      --model GLM-5.2 \
+      --model GLM-5.3 \
       --tokenizer /model \
       --benchmark-duration 3600 \
       --concurrency 560 \
