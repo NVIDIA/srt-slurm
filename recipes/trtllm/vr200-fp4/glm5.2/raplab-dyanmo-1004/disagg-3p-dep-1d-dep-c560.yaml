@@ -19,6 +19,7 @@ dynamo:
 frontend:
   type: dynamo
   enable_multiple_frontends: false
+  numa_bind: true
   args:
     router-mode: least-loaded
   env:
