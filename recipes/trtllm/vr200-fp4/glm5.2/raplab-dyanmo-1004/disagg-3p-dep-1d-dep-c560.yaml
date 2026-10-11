@@ -136,12 +136,13 @@ roles:
       TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
       TRTLLM_WORKER_DISABLE_GC: '1'
       UCX_CUDA_IPC_ENABLE_MNNVL: y
-      UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1,eth0
+      UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       UCX_RNDV_SCHEME: put_zcopy
       UCX_TLS: all
       HF_HOME: /home/rihuo/hf_cache
       DYN_ENGINE_CONV_AFFINITY: '1'
       UCX_LOG_LEVEL: info
+      UCX_PROTO_INFO: y
       MPI_UCX_TLS: rc,ud,sm,self
       MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       MPI_UCX_PROTO_INFO: y
@@ -236,13 +237,14 @@ roles:
       TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
       TRTLLM_WORKER_DISABLE_GC: '1'
       UCX_CUDA_IPC_ENABLE_MNNVL: y
-      UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1,eth0
+      UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       UCX_RNDV_SCHEME: put_zcopy
       UCX_TLS: all
       HF_HOME: /home/rihuo/hf_cache
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ROUTER_MODE: least-loaded
       UCX_LOG_LEVEL: info
+      UCX_PROTO_INFO: y
       MPI_UCX_TLS: rc,ud,sm,self
       MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       MPI_UCX_PROTO_INFO: y
