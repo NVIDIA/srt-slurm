@@ -19,7 +19,6 @@ dynamo:
 frontend:
   type: dynamo
   enable_multiple_frontends: false
-  numa_bind: true
   args:
     router-mode: least-loaded
   env:
@@ -143,8 +142,6 @@ roles:
       HF_HOME: /home/rihuo/hf_cache
       DYN_ENGINE_CONV_AFFINITY: '1'
       UCX_LOG_LEVEL: info
-      OMPI_MCA_pml: ucx
-      OMPI_MCA_coll: ^ucc,hcoll
       MPI_UCX_TLS: rc,ud,sm,self
       MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       MPI_UCX_PROTO_INFO: y
@@ -246,8 +243,6 @@ roles:
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ROUTER_MODE: least-loaded
       UCX_LOG_LEVEL: info
-      OMPI_MCA_pml: ucx
-      OMPI_MCA_coll: ^ucc,hcoll
       MPI_UCX_TLS: rc,ud,sm,self
       MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       MPI_UCX_PROTO_INFO: y
