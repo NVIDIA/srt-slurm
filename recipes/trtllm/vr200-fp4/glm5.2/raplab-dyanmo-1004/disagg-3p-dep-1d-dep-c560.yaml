@@ -12,7 +12,7 @@ resources:
   het_jobs: false
 # Node-swap test: drop half of the previous decode nodes (cn01/05/09/10/11/12/16/18).
 sbatch_directives:
-  exclude: vr-r41-cn01,vr-r41-cn05,vr-r41-cn09,vr-r41-cn10
+  exclude: vr-r41-cn01,vr-r41-cn05,vr-r41-cn09,vr-r41-cn10,vr-r41-cn16
 extra_mount:
 - /home/rihuo:/home/rihuo
 - /home/rihuo/dynamo_wheels:/dynamo_wheels
