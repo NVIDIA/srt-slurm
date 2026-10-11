@@ -4495,6 +4495,28 @@ class TestHuggingFaceModelSupport:
         assert "numactl" not in cmd
 
     @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
+    def test_trtllm_decode_memory_override(self, mode):
+        """decode_numa_memory_bind=True gives decode numactl -m 0,1 while prefill stays local."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=True, numa_memory_bind="local", decode_numa_memory_bind=True)
+        process = self._make_process(mode=mode)
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        with patch("pathlib.Path.write_text"):
+            cmd = backend.build_worker_command(process, [process], runtime)
+        if mode == "decode":
+            assert backend.numa_memory_bind_for_mode(mode) is True
+            assert cmd[:5] == ["bash", "/configs/numa_cpu_bind.sh", "numactl", "-m", "0,1"]
+        else:
+            assert backend.numa_memory_bind_for_mode(mode) == "local"
+            assert cmd[:3] == ["bash", "/configs/numa_cpu_bind.sh", "--bind-memory"]
+            assert "numactl" not in cmd
+
+    @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
     @pytest.mark.parametrize("net_bind", [False, True])
     def test_trtllm_numa_net_bind_flag(self, mode, net_bind):
         """numa_net_bind=False tells the NUMA wrapper to leave UCX_NET_DEVICES unchanged."""

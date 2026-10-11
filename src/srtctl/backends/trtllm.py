@@ -218,6 +218,11 @@ class TRTLLMProtocol:
     # and aggregated workers continue to use numa_cpu_bind.
     decode_numa_cpu_bind: bool | None = None
 
+    # Decode-only memory policy override, same values as numa_memory_bind.
+    # None inherits numa_memory_bind; True gives decode `numactl -m 0,1`
+    # while prefill keeps, for example, "local".
+    decode_numa_memory_bind: bool | Literal["local"] | None = None
+
     # Whenever the NUMA wrapper runs, it narrows UCX_NET_DEVICES to the task
     # GPU's NUMA node. Set false on fabrics where each NUMA node's NICs sit on a
     # different IB subnet, so every rank keeps a NIC that can reach every peer.
@@ -374,6 +379,12 @@ class TRTLLMProtocol:
         # the allocation is uniform and any rank could lead.
         return [replace(p, trtllm_dist_init_port=allocator.next(TRTLLM_DIST_INIT_PORTS)) for p in processes]
 
+    def numa_memory_bind_for_mode(self, mode: WorkerMode) -> bool | Literal["local"] | None:
+        """Resolve the decode memory override, falling back to the shared policy."""
+        if mode == "decode" and self.decode_numa_memory_bind is not None:
+            return self.decode_numa_memory_bind
+        return self.numa_memory_bind
+
     def numa_cpu_bind_for_mode(self, mode: WorkerMode) -> bool:
         """Resolve the decode CPU override, falling back to the shared policy."""
         if mode == "decode" and self.decode_numa_cpu_bind is not None:
@@ -440,7 +451,7 @@ class TRTLLMProtocol:
         # For local models, model is mounted to /model in the container
         model_arg = runtime.worker_model_arg
 
-        memory_bind = self.numa_memory_bind
+        memory_bind = self.numa_memory_bind_for_mode(mode)
         if memory_bind is None:
             use_numactl = runtime.gpu_type in ("gb200", "gb300", "vrnvl72") and mode in ("prefill", "decode")
         else:

@@ -1189,3 +1189,13 @@ def test_node_order_is_visible(capsys, order):
     show_config_details(config)
     shown = "Node order: decode on lowest hostnames, then prefill, then frontend/client" in capsys.readouterr().out
     assert shown is (order == "decode_first")
+
+
+def test_trtllm_decode_memory_override_is_visible(capsys):
+    recipe = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-mooncake.yaml"
+    config = SrtConfig.from_yaml(recipe)
+    config = replace(config, backend=replace(config.backend, numa_memory_bind="local", decode_numa_memory_bind=True))
+    show_config_details(config)
+    output = capsys.readouterr().out
+    assert "TRT-LLM decode memory: numactl -m 0,1" in output
+    assert "and strict GPU-local memory" in output

@@ -284,8 +284,13 @@ def show_config_details(config: SrtConfig) -> None:
         if config.backend.numa_memory_bind == "local":
             cpu_policy = "GPU-local CPU binding" if config.backend.numa_cpu_bind else "CPU affinity unchanged"
             console.print(f"TRT-LLM NUMA: {cpu_policy} and strict GPU-local memory binding (--bind-memory)")
-            if config.resources.is_disaggregated:
-                console.print("TRT-LLM decode memory: strict GPU-local memory binding")
+        if config.resources.is_disaggregated and config.backend.numa_memory_bind_for_mode("decode") is not None:
+            decode_memory = {
+                "local": "strict GPU-local memory binding",
+                True: "numactl -m 0,1",
+                False: "memory policy unchanged",
+            }[config.backend.numa_memory_bind_for_mode("decode")]
+            console.print(f"TRT-LLM decode memory: {decode_memory}")
         if config.backend.decode_numa_cpu_bind is not None:
             cpu_policy = (
                 "GPU-local CPU binding (taskset -c)"
