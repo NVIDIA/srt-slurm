@@ -162,8 +162,7 @@ roles:
       backend: pytorch
       cache_transceiver_config:
         backend: NIXL
-        # A/B: no receive bounce region, so the decode executor never waits to reserve one.
-        kv_cache_bounce_size_mb: 0
+        kv_cache_bounce_size_mb: 5120
         kv_transfer_timeout_ms: 600000
         max_tokens_in_buffer: 1048576
         transceiver_runtime: PYTHON

@@ -35,11 +35,11 @@ frontend:
   placement:
     node: dedicated
 engine:
-  numa_cpu_bind: false
-  decode_numa_cpu_bind: true
+  numa_cpu_bind: true
   type: trtllm
   served_model_name: GLM-5.3
   numa_memory_bind: local
+  numa_net_bind: false
 roles:
   prefill:
     nodes: 6
@@ -115,6 +115,7 @@ roles:
       HF_HUB_OFFLINE: '1'
       MIMALLOC_PURGE_DELAY: '0'
       NCCL_GRAPH_MIXING_SUPPORT: '0'
+      NCCL_IB_HCA: '=mlx5_0::0:0,mlx5_1::1:0,mlx5_2::2:0,mlx5_5::3:0,mlx5_6::0:1,mlx5_7::1:1,mlx5_8::2:1,mlx5_11::3:1'
       NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE: '0'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: '0.10'
@@ -136,17 +137,16 @@ roles:
       TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
       TRTLLM_WORKER_DISABLE_GC: '1'
       UCX_CUDA_IPC_ENABLE_MNNVL: y
-      UCX_NET_DEVICES: ^mlx5_9:1
+      UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       UCX_RNDV_SCHEME: put_zcopy
-      UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+      UCX_TLS: all
       HF_HOME: /home/rihuo/hf_cache
       DYN_ENGINE_CONV_AFFINITY: '1'
       UCX_LOG_LEVEL: info
-      OMPI_MCA_pml: ucx
-      OMPI_MCA_coll: ^ucc,hcoll
+      UCX_PROTO_INFO: y
       MPI_UCX_TLS: rc,ud,sm,self
       MPI_UCX_PROTO_INFO: y
-      MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_6:1
+      MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       MC_ENABLE_PARALLEL_REG_MR: '0'
       MC_MS_AUTO_DISC: '0'
       MC_TE_FILTERS: mlx5_0,mlx5_1,mlx5_2,mlx5_5,mlx5_6,mlx5_7,mlx5_8,mlx5_11
@@ -217,6 +217,7 @@ roles:
       HF_HUB_OFFLINE: '1'
       MIMALLOC_PURGE_DELAY: '0'
       NCCL_GRAPH_MIXING_SUPPORT: '0'
+      NCCL_IB_HCA: '=mlx5_0::0:0,mlx5_1::1:0,mlx5_2::2:0,mlx5_5::3:0,mlx5_6::0:1,mlx5_7::1:1,mlx5_8::2:1,mlx5_11::3:1'
       NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE: '0'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: '0.10'
@@ -241,18 +242,17 @@ roles:
       TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
       TRTLLM_WORKER_DISABLE_GC: '1'
       UCX_CUDA_IPC_ENABLE_MNNVL: y
-      UCX_NET_DEVICES: ^mlx5_9:1
+      UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       UCX_RNDV_SCHEME: put_zcopy
-      UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+      UCX_TLS: all
       HF_HOME: /home/rihuo/hf_cache
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ROUTER_MODE: least-loaded
       UCX_LOG_LEVEL: info
-      OMPI_MCA_pml: ucx
-      OMPI_MCA_coll: ^ucc,hcoll
+      UCX_PROTO_INFO: y
       MPI_UCX_TLS: rc,ud,sm,self
       MPI_UCX_PROTO_INFO: y
-      MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_6:1
+      MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
 health_check:
   max_attempts: 270
   interval_seconds: 10
