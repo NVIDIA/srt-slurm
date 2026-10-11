@@ -10,7 +10,6 @@ resources:
   gpu_type: vrnvl72
   gpus_per_node: 4
   het_jobs: false
-  node_order: decode_first
 # vr-r41-cn03 GPU 2 fails CUDA init (cudaErrorDevicesUnavailable, gpu-availability job 4601).
 sbatch_directives:
   exclude: vr-r41-cn03
