@@ -4429,6 +4429,25 @@ class TestHuggingFaceModelSupport:
         assert cmd[: len(prefix)] == prefix
         assert "numactl" not in cmd
 
+    @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
+    @pytest.mark.parametrize("net_bind", [False, True])
+    def test_trtllm_numa_net_bind_flag(self, mode, net_bind):
+        """numa_net_bind=False tells the NUMA wrapper to leave UCX_NET_DEVICES unchanged."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=True, numa_memory_bind="local", numa_net_bind=net_bind)
+        process = self._make_process(mode=mode)
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        with patch("pathlib.Path.write_text"):
+            cmd = backend.build_worker_command(process, [process], runtime)
+        prefix = ["bash", "/configs/numa_cpu_bind.sh", "--bind-memory"]
+        assert cmd[: len(prefix)] == prefix
+        assert ("--no-bind-net" in cmd) is (not net_bind)
+
     def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_taskset(self):
         """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
         from pathlib import Path

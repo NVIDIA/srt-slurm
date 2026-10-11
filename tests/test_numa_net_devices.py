@@ -12,7 +12,9 @@ import pytest
 
 
 @pytest.mark.parametrize("node", ["0", "1"])
-@pytest.mark.parametrize("mode", ["filters", "defaults", "excluded", "no-match", "unknown-nic", "explicit-ethernet"])
+@pytest.mark.parametrize(
+    "mode", ["filters", "defaults", "excluded", "no-match", "unknown-nic", "explicit-ethernet", "no-bind-net"]
+)
 def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
     sysfs = tmp_path / "sys"
 
@@ -64,9 +66,13 @@ def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
     if mode == "explicit-ethernet":
         env["UCX_NET_DEVICES"] = "mlx5_0:1,mlx5_1:1,mlx5_11:1,eth0"
         env["NCCL_IB_HCA"] = "=" + env["NCCL_IB_HCA"]
+    if mode == "no-bind-net":
+        # Remote-node RDMA ports stay listed; no NUMA filtering is applied.
+        env["UCX_NET_DEVICES"] = "mlx5_0:1,mlx5_1:1,mlx5_11:1"
+    flags = ["--no-bind-cpu", "--no-bind-net"] if mode == "no-bind-net" else ["--no-bind-cpu"]
     worker = "import json, os; print(json.dumps({key: os.getenv(key) for key in " + repr(keys) + "}))"
     result = subprocess.run(
-        ["bash", str(script), "--no-bind-cpu", sys.executable, "-c", worker],
+        ["bash", str(script), *flags, sys.executable, "-c", worker],
         env=env,
         capture_output=True,
         text=True,
@@ -79,6 +85,10 @@ def test_worker_network_affinity(tmp_path: Path, node: str, mode: str) -> None:
         assert "no permitted devices on NUMA node" in result.stderr
         return
     assert result.returncode == 0, result.stderr
+    if mode == "no-bind-net":
+        assert json.loads(result.stdout)["UCX_NET_DEVICES"] == "mlx5_0:1,mlx5_1:1,mlx5_11:1"
+        assert "UCX_NET_DEVICES unchanged (mlx5_0:1,mlx5_1:1,mlx5_11:1)" in result.stderr
+        return
     rdma = "mlx5_0:1" if node == "0" else "mlx5_1:1,mlx5_11:1"
     ucx = f"{rdma},eth{node}"
     assert json.loads(result.stdout) == {

@@ -374,6 +374,21 @@ memory-only binding mode too.
 can allow all its RDMA devices for MPI and NCCL (including NCCL rail/plane
 fields) while restricting UCX per NUMA node.
 
+Set `numa_net_bind: false` to keep CPU and memory binding but leave
+`UCX_NET_DEVICES` exactly as configured. Use it when each NUMA node's NICs sit
+on a different IB subnet: a NUMA-local filter then leaves a rank on one subnet
+unable to reach peers on the other, and UCX connections between them hang.
+Listing every NIC keeps a shared subnet for each pair, at the cost of some
+transfers using a NIC on the GPU's remote NUMA node.
+
+```yaml
+engine:
+  type: trtllm
+  numa_cpu_bind: true
+  numa_memory_bind: local
+  numa_net_bind: false
+```
+
 `numa_memory_bind: true` uses `numactl -m 0,1` for any GPU type or worker mode.
 When omitted or null, this two-node policy applies only to `gb200`, `gb300`,
 and `vrnvl72` prefill and decode workers. Enabling CPU binding does not change

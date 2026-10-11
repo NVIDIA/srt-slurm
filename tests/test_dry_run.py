@@ -5,6 +5,7 @@
 
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1168,3 +1169,13 @@ def test_trtllm_mooncake_pool_is_visible_in_dry_run(capsys):
     assert "file:///logs/mooncake_master.addr" in output
     assert "mpi': 'none" in output
     assert "TRTLLM_MOONCAKE_RUN_DIR" in output
+
+
+@pytest.mark.parametrize("net_bind", [False, True])
+def test_trtllm_numa_net_bind_is_visible(capsys, net_bind):
+    recipe = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-agg-numa-local.yaml"
+    config = SrtConfig.from_yaml(recipe)
+    config = replace(config, backend=replace(config.backend, numa_net_bind=net_bind))
+    show_config_details(config)
+    output = capsys.readouterr().out
+    assert ("UCX_NET_DEVICES not NUMA-filtered (--no-bind-net)" in output) is (not net_bind)

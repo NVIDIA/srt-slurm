@@ -39,6 +39,9 @@ engine:
   type: trtllm
   served_model_name: GLM-5.3
   numa_memory_bind: local
+  # Raplab's NUMA0 and NUMA1 NICs are on different IB subnets; keep all eight
+  # in UCX_NET_DEVICES so every prefill/decode rank pair shares a subnet.
+  numa_net_bind: false
 roles:
   prefill:
     nodes: 3

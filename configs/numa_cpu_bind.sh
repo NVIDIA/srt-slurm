@@ -10,7 +10,9 @@ set -euo pipefail
 # the rest to land cross-socket.
 # With --bind-memory, also restrict allocations to the GPU's NUMA node.
 # With --no-bind-cpu, apply memory binding without changing CPU affinity.
-# UCX_NET_DEVICES is restricted to the same NUMA node before launch.
+# UCX_NET_DEVICES is restricted to the same NUMA node before launch, unless
+# --no-bind-net leaves it unchanged (for fabrics whose NUMA nodes' NICs sit on
+# different IB subnets, where a rank needs remote NICs to reach every peer).
 # Local memory exhaustion can fail allocations; existing/shared pages are not migrated.
 #
 # CPU range is discovered at runtime from the physical GPU this task owns,
@@ -25,10 +27,12 @@ set -euo pipefail
 
 bind_memory=false
 bind_cpu=true
+bind_net=true
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --bind-memory) bind_memory=true; shift ;;
         --no-bind-cpu) bind_cpu=false; shift ;;
+        --no-bind-net) bind_net=false; shift ;;
         --) shift; break ;;
         *) break ;;
     esac
@@ -64,12 +68,16 @@ if [[ ! "${numa_node}" =~ ^[0-9]+$ ]]; then
     exec "$@"
 fi
 
-network_env="$(python3 "$(dirname "${BASH_SOURCE[0]}")/numa_net_devices.py" "${numa_node}")"
-while IFS=$'\t' read -r key value; do
-    [[ -n "${key}" ]] || continue
-    export "${key}=${value}"
-    echo "numa_cpu_bind.sh: numa_node=${numa_node} ${key}=${value}" >&2
-done <<< "${network_env}"
+if [[ "${bind_net}" == true ]]; then
+    network_env="$(python3 "$(dirname "${BASH_SOURCE[0]}")/numa_net_devices.py" "${numa_node}")"
+    while IFS=$'\t' read -r key value; do
+        [[ -n "${key}" ]] || continue
+        export "${key}=${value}"
+        echo "numa_cpu_bind.sh: numa_node=${numa_node} ${key}=${value}" >&2
+    done <<< "${network_env}"
+else
+    echo "numa_cpu_bind.sh: numa_node=${numa_node} UCX_NET_DEVICES unchanged (${UCX_NET_DEVICES:-unset})" >&2
+fi
 
 if [[ "${bind_cpu}" == true ]]; then
     cpu_list="$(cat "/sys/devices/system/node/node${numa_node}/cpulist" 2>/dev/null || true)"

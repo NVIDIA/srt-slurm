@@ -218,6 +218,11 @@ class TRTLLMProtocol:
     # and aggregated workers continue to use numa_cpu_bind.
     decode_numa_cpu_bind: bool | None = None
 
+    # Whenever the NUMA wrapper runs, it narrows UCX_NET_DEVICES to the task
+    # GPU's NUMA node. Set false on fabrics where each NUMA node's NICs sit on a
+    # different IB subnet, so every rank keeps a NIC that can reach every peer.
+    numa_net_bind: bool = True
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     @property
@@ -392,6 +397,8 @@ class TRTLLMProtocol:
         memory_args = ["--bind-memory"] if bind_memory else []
         if not bind_cpu:
             memory_args.append("--no-bind-cpu")
+        if not self.numa_net_bind:
+            memory_args.append("--no-bind-net")
         return ["bash", "/configs/numa_cpu_bind.sh", *memory_args, *cmd]
 
     def build_worker_command(

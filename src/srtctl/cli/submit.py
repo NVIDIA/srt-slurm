@@ -291,6 +291,8 @@ def show_config_details(config: SrtConfig) -> None:
                 else "CPU affinity unchanged"
             )
             console.print(f"TRT-LLM decode CPU override: {cpu_policy}")
+        if not config.backend.numa_net_bind:
+            console.print("TRT-LLM NUMA: UCX_NET_DEVICES not NUMA-filtered (--no-bind-net)")
         # Engine-yaml statistics keys srtctl defaults at config load
         # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
         # expand_observability). Shown for both frontends so a run that expects
