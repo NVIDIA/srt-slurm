@@ -53,16 +53,19 @@ try:
     torch.cuda.synchronize()
     print(f"OK gpu={gpu}")
 except Exception as e:
-    print(f"FAIL gpu={gpu} {type(e).__name__}: {str(e).splitlines()[0]}")
-    traceback.print_exc()
+    print(f"FAIL gpu={gpu} {type(e).__name__}: {str(e).splitlines()[0]}", flush=True)
+    traceback.print_exc(file=sys.stdout)
 PY
     pids+=($!)
 done
 for pid in "${pids[@]}"; do wait "$pid" || true; done
 
 for ((gpu = 0; gpu < ngpu; gpu++)); do
-    result=$(head -1 "$OUT/$node.gpu$gpu.result" 2>/dev/null)
-    echo "$node ${result:-FAIL gpu=$gpu no result (timeout or crash)}"
+    # Anything other than an OK line is a failure (timeout, crash, Python error).
+    result=$(grep -m1 -E '^(OK|FAIL) gpu=' "$OUT/$node.gpu$gpu.result" 2>/dev/null)
+    [[ $result == OK* ]] || result="FAIL gpu=$gpu ${result#FAIL gpu=$gpu }"
+    [[ $result == "FAIL gpu=$gpu " ]] && result="FAIL gpu=$gpu no result line (timeout or crash); see $node.gpu$gpu.result"
+    echo "$node $result"
 done
 [[ $ngpu -gt 0 ]] || echo "$node FAIL nvidia-smi sees no GPUs"
 NODE
