@@ -689,6 +689,14 @@ class ResourceConfig:
     # `--segment`. See HetComponent above and docs/slurm-faq.md.
     het_jobs: bool | None = None
 
+    # Node assignment order. "slurm" (default) takes nodes in SLURM_NODELIST
+    # order: prefill workers first, then decode, with a dedicated frontend or
+    # benchmark client on the last node. "decode_first" sorts hostnames in
+    # natural order (node2 before node10) and gives decode the lowest-numbered
+    # nodes, then prefill, then the dedicated frontend/client. Disaggregated,
+    # non-heterogeneous jobs only.
+    node_order: Literal["slurm", "decode_first"] = "slurm"
+
     # Explicit GPUs per worker (override computed values)
     # Use data_key to map from YAML field names to internal attribute names
     _explicit_gpus_per_prefill: int | None = field(
@@ -2348,6 +2356,7 @@ class SrtConfig:
         self._validate_telemetry()
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
+        self._validate_node_order()
         self._validate_colocated_decode()
         self._validate_dedicated_node_placement()
         self._validate_frontend()
@@ -2359,6 +2368,15 @@ class SrtConfig:
         self._validate_services_only()
         self._validate_services()
         self._warn_dp_launch_mode()
+
+    def _validate_node_order(self) -> None:
+        """``decode_first`` reorders the prefill and decode node groups of one nodelist."""
+        if self.resources.node_order != "decode_first":
+            return
+        if not self.resources.is_disaggregated:
+            raise ValidationError("resources.node_order: decode_first requires prefill and decode roles")
+        if self.resources.het_jobs is True:
+            raise ValidationError("resources.node_order: decode_first is not supported with resources.het_jobs: true")
 
     def _validate_services_only(self) -> None:
         """Rules for ``frontend.type: none`` and for services that own nodes (pools).

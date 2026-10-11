@@ -1518,6 +1518,71 @@ class TestInfraConfig:
         assert config.infra.etcd_nats_dedicated_node is True
 
 
+class TestDecodeFirstNodeOrder:
+    """resources.node_order: decode_first puts decode on the lowest hostnames."""
+
+    RAPLAB_ORDER = ["cn04", "cn02", "cn06", "cn05", "cn01", "cn10", "cn09", "cn11", "cn12", "cn16", "cn18", "cn17"]
+
+    def _nodes(self, nodelist):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=nodelist):
+            return Nodes.from_slurm(
+                frontend_dedicated_node=True,
+                client_dedicated_node=True,
+                colocate_dedicated_nodes=True,
+                decode_first=(3, 8),
+            )
+
+    def test_decode_lowest_then_prefill_then_frontend(self):
+        from srtctl.core.topology import allocate_endpoints
+
+        nodes = self._nodes(self.RAPLAB_ORDER)
+        assert nodes.head == nodes.bench == "cn18"
+        endpoints = allocate_endpoints(
+            num_prefill=3,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=4,
+            gpus_per_decode=32,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=nodes.worker,
+            pack_multinode_workers=True,
+        )
+        placed = {(e.mode, e.index): e.nodes for e in endpoints}
+        assert placed[("decode", 0)] == ("cn01", "cn02", "cn04", "cn05", "cn06", "cn09", "cn10", "cn11")
+        assert [placed[("prefill", i)] for i in range(3)] == [("cn12",), ("cn16",), ("cn17",)]
+
+    def test_batch_host_stays_off_client_node(self):
+        nodes = self._nodes(["cn18", *[n for n in self.RAPLAB_ORDER if n != "cn18"]])
+        assert nodes.bench == "cn17"
+        assert "cn18" in nodes.worker
+
+    def test_natural_sort(self):
+        from srtctl.core.runtime import _natural_order
+
+        assert _natural_order(["node10", "node2", "node1"], keep_first_off_tail=False) == ["node1", "node2", "node10"]
+
+    def test_requires_disaggregated(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import SrtConfig
+
+        with pytest.raises(ValidationError, match="node_order: decode_first requires prefill and decode"):
+            SrtConfig.Schema().load(
+                {
+                    "name": "agg",
+                    "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+                    "resources": {"gpu_type": "h100", "agg_nodes": 1, "agg_workers": 1, "node_order": "decode_first"},
+                    "backend": {"type": "trtllm"},
+                }
+            )
+
+
 class TestNodesInfraAllocation:
     """Tests for Nodes infra node allocation."""
 

@@ -253,6 +253,8 @@ def show_config_details(config: SrtConfig) -> None:
     """
     visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
     console.print(f"GPU subset visibility variable: {visible_devices_env}")
+    if config.resources.node_order == "decode_first":
+        console.print("Node order: decode on lowest hostnames, then prefill, then frontend/client")
 
     if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
         from srtctl.backends.trtllm import TRTLLMProtocol
@@ -1081,7 +1083,11 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
         infra_dedicated=config.infra.etcd_nats_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
-    if het is None:
+    if het is None and config.resources.node_order == "decode_first":
+        # Positions depend on hostnames, which are only known at job start.
+        total_nodes = planned_total_nodes(config)
+        indices: dict[str, int | None] = {"frontend_node_index": None, "client_node_index": None}
+    elif het is None:
         total_nodes = planned_total_nodes(config)
         head, client = Nodes.planned_role_indices(
             total_nodes,
@@ -1090,7 +1096,7 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
             etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
         )
-        indices: dict[str, int | None] = {"frontend_node_index": head, "client_node_index": client}
+        indices = {"frontend_node_index": head, "client_node_index": client}
     else:
         total_nodes = sum(c.nodes for c in het)
         indices = {"frontend_node_index": None, "client_node_index": None}

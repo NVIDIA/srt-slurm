@@ -99,6 +99,7 @@ Resource allocation configuration.
 | `agg_critical` | bool | `True` | An aggregated worker exiting fails the run. False keeps the run alive. |
 | `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). |
 | `het_jobs` | bool \| None | `None` | SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster default `use_het_jobs` on ClusterConfig; True/False overrides per recipe. When effectively True (and we are in disaggregated mode), the prefill and decode sides are submitted as two het components each with their own `--segment`. See HetComponent above and docs/slurm-faq.md. |
+| `node_order` | one of `'slurm'`, `'decode_first'` | `'slurm'` | Node assignment order. "slurm" (default) takes nodes in SLURM_NODELIST order: prefill workers first, then decode, with a dedicated frontend or benchmark client on the last node. "decode_first" sorts hostnames in natural order (node2 before node10) and gives decode the lowest-numbered nodes, then prefill, then the dedicated frontend/client. Disaggregated, non-heterogeneous jobs only. |
 
 ### SlurmConfig
 

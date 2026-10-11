@@ -1179,3 +1179,13 @@ def test_trtllm_numa_net_bind_is_visible(capsys, net_bind):
     show_config_details(config)
     output = capsys.readouterr().out
     assert ("UCX_NET_DEVICES not NUMA-filtered (--no-bind-net)" in output) is (not net_bind)
+
+
+@pytest.mark.parametrize("order", ["slurm", "decode_first"])
+def test_node_order_is_visible(capsys, order):
+    recipe = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-mooncake.yaml"
+    config = SrtConfig.from_yaml(recipe)
+    config = replace(config, resources=replace(config.resources, node_order=order))
+    show_config_details(config)
+    shown = "Node order: decode on lowest hostnames, then prefill, then frontend/client" in capsys.readouterr().out
+    assert shown is (order == "decode_first")

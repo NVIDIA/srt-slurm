@@ -655,6 +655,7 @@ resources:
   gpus_per_node: 4          # GPUs per node (default: from srtslurm.yaml)
   spread_workers: false     # one partial-node worker per node instead of packing
   het_jobs: null            # SLURM heterogeneous job for prefill and decode; null: cluster default
+  node_order: slurm         # or decode_first: decode on the lowest hostnames, then prefill, then frontend/client
 ```
 
 | Field             | Type   | Default            | Description                           |
@@ -663,6 +664,7 @@ resources:
 | `gpus_per_node`   | int    | cluster / 4        | GPUs per node; inherits the cluster `gpus_per_node` when omitted, else 4 |
 | `spread_workers`  | bool   | false              | Place each partial-node worker on its own node instead of packing several onto one node. The recipe must reserve enough nodes (e.g. `roles.decode.nodes` equal to `roles.decode.workers` when `gpus` is below `gpus_per_node`) |
 | `het_jobs`        | bool or null | null         | Submit prefill and decode as two SLURM heterogeneous-job components, each with its own `--segment`. `null` defers to the cluster's `use_het_jobs`; see [slurm-faq.md](slurm-faq.md) |
+| `node_order`      | string | `slurm`            | `slurm` takes nodes in `SLURM_NODELIST` order: prefill first, then decode, with a dedicated frontend or benchmark client on the last node. `decode_first` sorts hostnames in natural order (`node2` before `node10`) and places decode on the lowest-numbered nodes, then prefill, then the dedicated frontend/client. Use it on clusters whose nodelist is not in hostname order. Disaggregated, non-heterogeneous jobs only. If the node SLURM runs the batch script on would sort last, it swaps with its neighbor so a dedicated client stays off it |
 
 The total node count is the sum of every role's `nodes`, every service's `nodes` (a pool of whole nodes the service owns, see [pools.md](pools.md)), plus one for each `placement.node: dedicated` (frontend, benchmark client, the discovery plane through its services). Pools are carved after the engine roles' nodes, in declaration order. `srtctl dry-run` prints the resulting sbatch request and the node map.
 

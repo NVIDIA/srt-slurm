@@ -10,6 +10,7 @@ resources:
   gpu_type: vrnvl72
   gpus_per_node: 4
   het_jobs: false
+  node_order: decode_first
 extra_mount:
 - /home/rihuo:/home/rihuo
 - /home/rihuo/dynamo_wheels:/dynamo_wheels

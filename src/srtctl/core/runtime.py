@@ -10,6 +10,7 @@ replacing scattered bash variables and Jinja templating with typed Python.
 
 import logging
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,39 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from srtctl.core.schema import DynamoConfig, SrtConfig
+
+
+def _natural_key(hostname: str) -> list[int | str]:
+    """Sort key that orders digit runs numerically (node2 before node10)."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", hostname)]
+
+
+def _natural_order(nodelist: Sequence[str], *, keep_first_off_tail: bool) -> list[str]:
+    """Hostnames in natural order.
+
+    SLURM runs the batch script on the first node of its nodelist. A dedicated
+    benchmark client is reserved from the tail, so when that node sorts last it
+    swaps with its neighbour to keep the client isolated from the orchestrator.
+    """
+    ordered = sorted(nodelist, key=_natural_key)
+    if keep_first_off_tail and len(ordered) > 1 and ordered[-1] == nodelist[0]:
+        ordered[-2], ordered[-1] = ordered[-1], ordered[-2]
+    return ordered
+
+
+def _decode_nodes_first(worker: tuple[str, ...], prefill_nodes: int, decode_nodes: int) -> tuple[str, ...]:
+    """Reorder worker nodes so prefill-first allocation puts decode on the lowest ones.
+
+    Endpoint allocation walks the worker list prefill first, so the prefill
+    group is moved ahead of the (lower-numbered) decode group.
+    """
+    if len(worker) < prefill_nodes + decode_nodes:
+        raise ValueError(
+            f"node_order decode_first needs {prefill_nodes + decode_nodes} worker nodes, allocation has {len(worker)}"
+        )
+    decode = worker[:decode_nodes]
+    prefill = worker[decode_nodes : decode_nodes + prefill_nodes]
+    return prefill + decode + worker[decode_nodes + prefill_nodes :]
 
 
 @dataclass(frozen=True)
@@ -93,6 +127,7 @@ class Nodes:
         colocate_dedicated_nodes: bool = True,
         engine_nodes: int | None = None,
         pools: Sequence[tuple[str, int]] = (),
+        decode_first: tuple[int, int] | None = None,
     ) -> "Nodes":
         """Create Nodes from SLURM environment.
 
@@ -126,6 +161,12 @@ class Nodes:
                           worker node.
             pools: ``(service name, node count)`` pairs for services that own
                    nodes, carved after the engine worker nodes in this order.
+            decode_first: ``(prefill nodes, decode nodes)`` for
+                          ``resources.node_order: decode_first``. Hostnames are
+                          sorted in natural order and the worker nodes are
+                          reordered so decode lands on the lowest-numbered
+                          nodes and prefill on the next ones; dedicated
+                          frontend/client nodes come from the tail.
         """
         dedicated_roles = [
             role
@@ -145,15 +186,21 @@ class Nodes:
                 )
             if pools:
                 raise ValueError("services[].nodes (pools) are not supported for heterogeneous SLURM jobs")
+            if decode_first is not None:
+                raise ValueError("resources.node_order: decode_first is not supported for heterogeneous SLURM jobs")
             return cls._from_het_slurm(het_lists, etcd_nats_dedicated_node)
 
         nodelist = get_slurm_nodelist()
         if not nodelist:
             raise RuntimeError("SLURM_NODELIST not set - are we running in SLURM?")
+        if decode_first is not None:
+            nodelist = _natural_order(nodelist, keep_first_off_tail=client_dedicated_node)
 
         if not dedicated_roles:
             head = bench = infra = nodelist[0]
             worker, carved = cls._carve_pools(tuple(nodelist), engine_nodes, pools)
+            if decode_first is not None:
+                worker = _decode_nodes_first(worker, *decode_first)
             return cls(head=head, bench=bench, infra=infra, worker=worker, pools=carved)
 
         num_reserved = 1 if colocate_dedicated_nodes else len(dedicated_roles)
@@ -187,6 +234,8 @@ class Nodes:
                 worker = tuple(nodelist[len(front_roles) :])
 
         worker, carved = cls._carve_pools(tuple(worker), engine_nodes, pools)
+        if decode_first is not None:
+            worker = _decode_nodes_first(worker, *decode_first)
         first_compute = (worker or tuple(n for nodes in carved.values() for n in nodes))[0]
         head = reserved.get("frontend", first_compute)
         bench = reserved.get("client", head)
@@ -403,6 +452,11 @@ class RuntimeContext:
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
             engine_nodes=config.engine_node_count if pools else None,
             pools=pools,
+            decode_first=(
+                (config.resources.prefill_nodes or 0, config.resources.decode_nodes or 0)
+                if config.resources.node_order == "decode_first"
+                else None
+            ),
         )
 
         # Compute run_name
