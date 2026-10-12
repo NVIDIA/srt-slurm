@@ -38,7 +38,7 @@ The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m
 
 TensorRT-LLM supports aggregate, prefill, and decode workers through OpenEngine gRPC. Each endpoint runs one sidecar on global MPI rank zero; prefill and decode sidecars register their disaggregation roles. The engine receives the configured parallelism and served model name, while the sidecar reads tokenizer artifacts from the model path. `dynamo.sidecar_context_length` can override the context length inferred from the corresponding role's `args.max_seq_len`. The image must include compatible TensorRT-LLM OpenEngine and Dynamo sidecar builds.
 
-The [disaggregated TRT-LLM example](../examples/trtllm/dynamo-sidecar-disagg.yaml) places a prefill and decode worker with sidecars on separate nodes.
+The [disaggregated TRT-LLM example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/dynamo-sidecar-disagg.yaml) places a prefill and decode worker with sidecars on separate nodes.
 
 ## SGLang topology and launch requirements
 
