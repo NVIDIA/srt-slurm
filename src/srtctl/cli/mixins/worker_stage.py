@@ -21,6 +21,7 @@ from srtctl.core.health import wait_for_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.processes import ManagedProcess, NamedProcesses, ProcessRegistry
 from srtctl.core.schema import build_otel_env, installs_dynamo
+from srtctl.services.otel import lifecycle_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
 from srtctl.core.supervisor import EndpointKey, WorkerSupervisor
 from srtctl.frontends import get_frontend
@@ -199,6 +200,7 @@ class WorkerStageMixin:
         env = {"HEAD_NODE_IP": self.runtime.head_node_ip}
         if get_frontend(self.config.frontend.type).worker_launch == "dynamo":
             env.update(discovery_env(self.config, self.runtime))
+            env.update(lifecycle_otel_env(self.config.services, self.runtime.head_node_ip, process.endpoint_mode))
             env.update(
                 DYN_SYSTEM_PORT=str(process.sys_port),
                 DYN_REQUEST_PLANE=self.config.dynamo.request_plane,

@@ -269,13 +269,13 @@ Health check configuration.
 
 ### ObservabilityConfig
 
-Observability configuration for OTEL tracing.
+Optional analytics capture and external OTEL export.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `False` | Master analytics knob. Default: False. |
-| `enable_otel` | bool | `False` | If True, inject OTEL environment variables into all workers and frontends. Requires otel_endpoint to be set. Default: False. |
-| `otel_endpoint` | str \| None | `None` | OTEL collector endpoint (e.g. "http://10.0.0.1:4317"). Required when enable_otel is True. |
+| `enabled` | bool | `False` | Additional analytics (including nsys); does not gate Dynamo lifecycle tracing or Tachometer. Default: False. |
+| `enable_otel` | bool | `False` | Export traces to an explicit endpoint and enable JSONL logs. Not needed for default Dynamo lifecycle capture. Requires otel_endpoint to be set. Default: False. |
+| `otel_endpoint` | str \| None | `None` | Explicit OTEL trace endpoint (e.g. "http://10.0.0.1:4317"). Used with enable_otel; overrides Dynamo's local trace destination. |
 | `tachometer` | [TachometerConfig](#tachometerconfig) | `TachometerConfig()` | Native Tachometer capture configuration. Collects on every run, independent of ``enabled``, unless ``tachometer.enabled: false`` (see :class:`TachometerConfig`). |
 | `nsys` | [NsysObservabilityConfig](#nsysobservabilityconfig) | `NsysObservabilityConfig()` | Automatic Nsight Systems capture, enabled with the master switch. |
 

@@ -1833,7 +1833,11 @@ class NsysObservabilityConfig:
 
 @dataclass(frozen=True)
 class ObservabilityConfig:
-    """Observability configuration for OTEL tracing.
+    """Optional analytics capture and external OTEL export.
+
+    Dynamo stacks always enable native request-lifecycle OTEL tracing to a
+    managed local collector, independent of ``enabled`` and ``enable_otel``.
+    Other frontend stacks do not receive that collector or its environment.
 
     When enable_otel is True, OTEL environment variables (DYN_LOGGING_JSONL,
     OTEL_EXPORT_ENABLED, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_SERVICE_NAME)
@@ -1876,11 +1880,13 @@ class ObservabilityConfig:
     ``BenchmarkStageMixin``.)
 
     Attributes:
-        enabled: Master analytics knob. Default: False.
-        enable_otel: If True, inject OTEL environment variables into all workers
-            and frontends. Requires otel_endpoint to be set. Default: False.
-        otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
-            Required when enable_otel is True.
+        enabled: Additional analytics (including nsys); does not gate Dynamo
+            lifecycle tracing or Tachometer. Default: False.
+        enable_otel: Export traces to an explicit endpoint and enable JSONL logs.
+            Not needed for default Dynamo lifecycle capture. Requires
+            otel_endpoint to be set. Default: False.
+        otel_endpoint: Explicit OTEL trace endpoint (e.g. "http://10.0.0.1:4317").
+            Used with enable_otel; overrides Dynamo's local trace destination.
         nsys: Automatic Nsight Systems capture, enabled with the master switch.
         tachometer: Native Tachometer capture configuration. Collects on every run,
             independent of ``enabled``, unless ``tachometer.enabled: false`` (see

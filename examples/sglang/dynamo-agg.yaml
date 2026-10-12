@@ -6,6 +6,9 @@
 # container already ships it.
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+# Dynamo lifecycle OTel capture is automatic, even with observability.enabled: false.
+# Use a Dynamo build containing PR #14101 for native lifecycle spans; make setup
+# installs the local collector. No OTEL endpoint or lifecycle environment is needed.
 
 schema: 2
 name: "qwen3-0.6b-sglang-dynamo-agg"

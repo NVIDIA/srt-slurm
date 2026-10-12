@@ -554,7 +554,9 @@ def show_config_details(config: SrtConfig) -> None:
                 continue
             console.print(f"    [yellow]command:[/] {shlex.join(service.preview_command())}", crop=False)
             container = service.container or get_service_kind(service.type).container_fallback(config)
-            console.print(f"    [yellow]container:[/] {container or '<job container>'}")
+            launch_kind = get_service_kind(service.type)
+            container_label = "<host-native>" if launch_kind.host_native(service) else container or "<job container>"
+            console.print(f"    [yellow]container:[/] {container_label}")
             if service.source is not None:
                 console.print(f"    [yellow]source:[/] {service.source.git} @ {service.source.rev}", crop=False)
                 if service.source.path:
