@@ -1,6 +1,6 @@
 # examples/trtllm/dynamo-sidecar-disagg.yaml
 # exit_code: 0
-# srun calls: 15
+# srun calls: 13
 
 ## service_etcd
 nodelist: node-01
@@ -324,21 +324,6 @@ use_bash_wrapper: False
 command: |
     dcgm-exporter --collect-interval=1000 --address :9401
 
-## service_dcgm-exporter_node-04
-nodelist: node-04
-output: <output>/logs/service_dcgm-exporter_node-04.out
-container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    dcgm-exporter --collect-interval=1000 --address :9401
-
 ## service_node-exporter_node-01
 nodelist: node-01
 output: <output>/logs/service_node-exporter_node-01.out
@@ -372,21 +357,6 @@ command: |
 ## service_node-exporter_node-03
 nodelist: node-03
 output: <output>/logs/service_node-exporter_node-03.out
-container_image: quay.io#prometheus/node-exporter:v1.8.2
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-srun_export_env:
-    ETCD_ENDPOINTS: http://127.0.0.1:2379
-use_bash_wrapper: False
-command: |
-    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
-
-## service_node-exporter_node-04
-nodelist: node-04
-output: <output>/logs/service_node-exporter_node-04.out
 container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks

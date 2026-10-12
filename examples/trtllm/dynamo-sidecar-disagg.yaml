@@ -1,6 +1,6 @@
 # TRT-LLM disaggregated prefill/decode behind the Dynamo frontend.
 #
-# One TP1 prefill and one TP1 decode native OpenEngine worker on separate nodes.
+# One TP1 prefill and one TP1 decode native OpenEngine worker sharing a node.
 # Each worker has a Dynamo sidecar that registers it with the frontend.
 # TensorRT-LLM comes from the specified release image. srtctl installs the pinned
 # Dynamo nightly wheels, including the native sidecar runtime, at job start.
@@ -56,7 +56,7 @@ roles:
       cache_transceiver_config:
         backend: "UCX"
   decode:
-    nodes: 1
+    nodes: colocate
     workers: 1
     gpus: 1
     sidecar: true
