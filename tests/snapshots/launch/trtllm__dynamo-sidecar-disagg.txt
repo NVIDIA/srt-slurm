@@ -5,7 +5,7 @@
 ## service_etcd
 nodelist: node-01
 output: <output>/logs/service_etcd.out
-container_image: trtllm
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
@@ -31,7 +31,7 @@ nodes: 1
 ntasks: 1
 nodelist: node-01
 output: <output>/logs/node-01_prefill_w0.out
-container_image: trtllm
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
@@ -39,6 +39,8 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     CUDA_VISIBLE_DEVICES: 0
+    DYNAMO_VERSION: 1.6.0.dev20261010
+    DYNAMO_WHEEL_NAME: ai_dynamo-1.6.0.dev20261010-py3-none-any.whl
     DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: tcp
@@ -57,11 +59,13 @@ env_to_set:
 srun_options:
     kill-on-bad-exit: 1
     ntasks-per-node: 1
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
 mpi: pmix
 oversubscribe: True
 cpu_bind: verbose,none
 bash_preamble: |
-    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing ai-dynamo-runtime and ai-dynamo from wheel ai_dynamo-1.6.0.dev20261010-py3-none-any.whl...' && if [ -f /srtctl-runtime/dynamo_wheels.py ]; then python3 /srtctl-runtime/dynamo_wheels.py install; else echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; exit 1; fi && echo 'ai-dynamo-runtime and ai-dynamo install path completed for ai_dynamo-1.6.0.dev20261010-py3-none-any.whl' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
@@ -140,7 +144,7 @@ nodes: 1
 ntasks: 1
 nodelist: node-02
 output: <output>/logs/node-02_decode_w0.out
-container_image: trtllm
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
@@ -148,6 +152,8 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     CUDA_VISIBLE_DEVICES: 0
+    DYNAMO_VERSION: 1.6.0.dev20261010
+    DYNAMO_WHEEL_NAME: ai_dynamo-1.6.0.dev20261010-py3-none-any.whl
     DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: tcp
@@ -166,11 +172,13 @@ env_to_set:
 srun_options:
     kill-on-bad-exit: 1
     ntasks-per-node: 1
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
 mpi: pmix
 oversubscribe: True
 cpu_bind: verbose,none
 bash_preamble: |
-    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing ai-dynamo-runtime and ai-dynamo from wheel ai_dynamo-1.6.0.dev20261010-py3-none-any.whl...' && if [ -f /srtctl-runtime/dynamo_wheels.py ]; then python3 /srtctl-runtime/dynamo_wheels.py install; else echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; exit 1; fi && echo 'ai-dynamo-runtime and ai-dynamo install path completed for ai_dynamo-1.6.0.dev20261010-py3-none-any.whl' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
@@ -247,13 +255,15 @@ command: |
 ## frontend_0
 nodelist: node-01
 output: <output>/logs/node-01_frontend_0.out
-container_image: trtllm
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    DYNAMO_VERSION: 1.6.0.dev20261010
+    DYNAMO_WHEEL_NAME: ai_dynamo-1.6.0.dev20261010-py3-none-any.whl
     DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -261,7 +271,11 @@ env_to_set:
     OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
     OTEL_EXPORT_ENABLED: 1
     OTEL_SERVICE_NAME: dynamo-frontend
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
 mpi: pmix
+bash_preamble: |
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing ai-dynamo-runtime and ai-dynamo from wheel ai_dynamo-1.6.0.dev20261010-py3-none-any.whl...' && if [ -f /srtctl-runtime/dynamo_wheels.py ]; then python3 /srtctl-runtime/dynamo_wheels.py install; else echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; exit 1; fi && echo 'ai-dynamo-runtime and ai-dynamo install path completed for ai_dynamo-1.6.0.dev20261010-py3-none-any.whl' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"
 command: |
     python3 -m dynamo.frontend --http-port=8000
 
@@ -397,13 +411,15 @@ command: |
 ## <unnamed>
 nodelist: node-01
 output: <output>/logs/benchmark.out
-container_image: trtllm
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    DYNAMO_VERSION: 1.6.0.dev20261010
+    DYNAMO_WHEEL_NAME: ai_dynamo-1.6.0.dev20261010-py3-none-any.whl
     SRTCTL_FRONTEND_TYPE: dynamo
     SRT_FRONTEND_HOST: 127.0.0.1
     SRT_FRONTEND_PORT: 8000

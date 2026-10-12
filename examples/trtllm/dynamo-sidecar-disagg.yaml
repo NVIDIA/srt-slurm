@@ -2,11 +2,12 @@
 #
 # One TP1 prefill and one TP1 decode native OpenEngine worker on separate nodes.
 # Each worker has a Dynamo sidecar that registers it with the frontend.
-# The image must ship compatible TensorRT-LLM OpenEngine and Dynamo sidecar builds.
+# TensorRT-LLM comes from the specified release image. srtctl installs the pinned
+# Dynamo nightly wheels, including the native sidecar runtime, at job start.
 # KV moves through the UCX cache transceiver. The sidecar does not publish
 # KV events, so this example uses the frontend's default routing.
 #
-# Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
+# The `qwen3-0.6b` model alias resolves through srtslurm.yaml; see examples/README.md.
 
 schema: 2
 name: "qwen3-0.6b-trtllm-dynamo-sidecar-disagg"
@@ -16,14 +17,15 @@ slurm:
 
 model:
   path: "qwen3-0.6b"
-  container: "trtllm"
+  container: "nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007"
   precision: "bf16"
 
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
 dynamo:
-  install: false
+  source:
+    wheel: "1.6.0.dev20261010"
 
 frontend:
   type: dynamo
