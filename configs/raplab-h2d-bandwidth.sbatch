@@ -4,7 +4,6 @@
 #SBATCH --partition=batch-r42
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
 #SBATCH --exclusive
 #SBATCH --time=00:15:00
 #SBATCH --output=h2d-bandwidth-%j.out
@@ -173,10 +172,18 @@ export ENROOT_REMAP_ROOT=yes
 mkdir -p "$LOG_DIR"
 cp "${BASH_SOURCE[0]}" "$LOG_DIR/runner.sh"
 scontrol show job "$SLURM_JOB_ID" > "$LOG_DIR/allocation.txt"
-# Request the whole allocation so the step's CPU cgroup permits both NUMA nodes.
+# The step must own every CPU on the node so both NUMA nodes are usable;
+# fail rather than measure with a partial CPU set.
 : "${SLURM_JOB_CPUS_PER_NODE:?Need the allocated CPU count}"
 step_cpus=${SLURM_JOB_CPUS_PER_NODE%%(*}
 [[ $step_cpus =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid allocated CPU count' >&2; exit 1; }
+node_cpus=$(scontrol show node "${SLURMD_NODENAME:-$(hostname -s)}" -o | sed -n 's/.*CPUTot=\([0-9]*\).*/\1/p')
+[[ $node_cpus =~ ^[1-9][0-9]*$ ]] || node_cpus=$(nproc --all)
+if (( step_cpus < node_cpus )); then
+    echo "Job owns $step_cpus of $node_cpus CPUs on this node; submit with --exclusive" >&2
+    exit 1
+fi
+echo "CPUs for the copy step: $step_cpus of $node_cpus"
 rc=0
 srun --mpi=none --exact --nodes=1 --ntasks=1 --cpus-per-task="$step_cpus" --cpu-bind=none \
     --container-image="$CONTAINER_IMAGE" --no-container-mount-home \
