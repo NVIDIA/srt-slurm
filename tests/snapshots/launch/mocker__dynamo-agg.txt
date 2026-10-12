@@ -1,6 +1,6 @@
 # examples/mocker/dynamo-agg.yaml
 # exit_code: 0
-# srun calls: 11
+# srun calls: 12
 
 ## service_etcd
 nodelist: node-01
@@ -17,6 +17,15 @@ bash_preamble: |
 command: |
     /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
 
+## service_otel-collector
+nodelist: node-01
+output: <output>/logs/service_otel-collector.out
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: True
+command: |
+    configs/otelcol-contrib --config <output>/logs/otel-collector.yaml
+
 ## agg_0_node-01
 nodelist: node-01
 output: <output>/logs/node-01_agg_w0.out
@@ -27,12 +36,16 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
     DYN_SYSTEM_PORT: 7500
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-agg
 srun_export_env:
     ENROOT_REMAP_ROOT: yes
 bash_preamble: |
@@ -53,9 +66,13 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
     ETCD_ENDPOINTS: http://127.0.0.1:2379
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-frontend
 srun_export_env:
     ENROOT_REMAP_ROOT: yes
 mpi: pmix

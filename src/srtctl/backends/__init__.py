@@ -9,42 +9,42 @@ Supported backends:
 - TRTLLM: TensorRT-LLM backend with prefill/decode disaggregation
 """
 
-from .atom import AtomProtocol, AtomServerConfig
-from .base import BackendProtocol, BackendType, SrunConfig
-from .mocker import MockerProtocol, MockerServerConfig
-from .sglang import MooncakeKVStoreConfig, SGLangProtocol, SGLangServerConfig
-from .tilert import TileRTProtocol, TileRTServerConfig
-from .trtllm import TRTLLMProtocol, TRTLLMServerConfig
-from .vllm import VLLMFailoverConfig, VLLMMooncakeKVStoreConfig, VLLMProtocol, VLLMServerConfig
+from .atom import AtomBackend
+from .base import Backend, BackendType, RoleSettings, SrunConfig
+from .mocker import MockerBackend
+from .sglang import MooncakeKVStoreConfig, SGLangBackend
+from .tilert import TileRTBackend
+from .tokenspeed import TokenSpeedBackend
+from .trtllm import TRTLLMBackend
+from .vllm import VLLMBackend, VLLMFailoverConfig, VLLMMooncakeKVStoreConfig
 
 # Union type for all backend configs
-BackendConfig = AtomProtocol | SGLangProtocol | TileRTProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
+BackendConfig = (
+    AtomBackend | SGLangBackend | TileRTBackend | TokenSpeedBackend | TRTLLMBackend | VLLMBackend | MockerBackend
+)
 
 __all__ = [
     # ATOM
-    "AtomProtocol",
-    "AtomServerConfig",
-    "BackendConfig",
+    "AtomBackend",
     # Base types
-    "BackendProtocol",
+    "Backend",
+    "BackendConfig",
     "BackendType",
     # Mocker
-    "MockerProtocol",
-    "MockerServerConfig",
+    "MockerBackend",
     # SGLang
     "MooncakeKVStoreConfig",
-    "SGLangProtocol",
-    "SGLangServerConfig",
+    "RoleSettings",
+    "SGLangBackend",
     "SrunConfig",
     # TRTLLM
-    "TRTLLMProtocol",
-    "TRTLLMServerConfig",
+    "TRTLLMBackend",
     # TileRT
-    "TileRTProtocol",
-    "TileRTServerConfig",
+    "TileRTBackend",
+    # TokenSpeed
+    "TokenSpeedBackend",
     # vLLM
+    "VLLMBackend",
     "VLLMFailoverConfig",
     "VLLMMooncakeKVStoreConfig",
-    "VLLMProtocol",
-    "VLLMServerConfig",
 ]

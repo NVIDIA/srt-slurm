@@ -56,6 +56,7 @@ class AgentPerfAdapter:
             "end_time",
             "ttft",
             "success",
+            "has_output",
             "server_input_tokens",
             "server_output_tokens",
             "server_cached_tokens",
@@ -72,7 +73,7 @@ class AgentPerfAdapter:
                         key = (int(match[1]), *identity(row))
                         if key in self.analysis:
                             raise ValueError(f"{artifact}: ambiguous AgentPerf analysis identity {key}")
-                        self.analysis[key] = ({k: row.get(k) for k in fields}, [sid, line])
+                        self.analysis[key] = ({k: row[k] for k in fields if k in row}, [sid, line])
 
     def normalize(self, raw: dict[str, Any], line: int) -> dict[str, Any]:
         phase = raw.get("phase_idx", 0)
@@ -93,6 +94,12 @@ class AgentPerfAdapter:
             "usage_prompt_cache_read_tokens": "server_cached_tokens",
         }
         metrics = {dest: {"value": row.get(src)} for dest, src in metric_fields.items()}
+        cache_evidence = evidence
+        # Some phase-end exports omit cache usage even though the exactly
+        # matched HTTP record contains it. Preserve an explicit phase null.
+        if analysis and "server_cached_tokens" not in row:
+            metrics["usage_prompt_cache_read_tokens"] = {"value": raw.get("server_cached_tokens")}
+            cache_evidence = [self.source_id, line]
         metrics["time_to_first_token"] = {"value": row["ttft"] * 1000 if row.get("ttft") is not None else None}
         return {
             "metadata": {
@@ -106,11 +113,16 @@ class AgentPerfAdapter:
                 "benchmark_phase": "profiling" if measured else "settling" if measured is False else None,
             },
             "metrics": metrics,
-            "error": row.get("success") is False,
+            # An HTTP-successful stream can end without output. AgentPerf's
+            # phase analysis explicitly records that unsuccessful outcome.
+            "error": row.get("success") is False or row.get("has_output") is False,
             "client_kind": "agentperf",
             "timing_quality": "phase analysis" if analysis else "request log (liveness)",
             "timing_evidence": evidence,
             "identity_evidence": [self.source_id, line],
+            "cache_usage_evidence": cache_evidence
+            if metrics["usage_prompt_cache_read_tokens"]["value"] is not None
+            else None,
             "phase_evidence": window[1] if window else None,
             "original_start_time": row["start_time"],
             "original_end_time": row["end_time"],

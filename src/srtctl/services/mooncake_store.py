@@ -6,7 +6,7 @@
 Lets inference workers run embedded Mooncake clients with
 ``MOONCAKE_GLOBAL_SEGMENT_SIZE=0`` while dedicated per-node stores own the DRAM
 segments (decode nodes contribute host memory without an in-process HiCache
-pool). Requires ``backend.mooncake_kv_store``, which is what launches the master
+pool). Requires ``engine.mooncake_kv_store``, which is what launches the master
 the store registers with. Starts before workers and is critical by default.
 """
 
@@ -35,7 +35,7 @@ class MooncakeStoreService(ServiceKind):
     def validate(self, service: ServiceConfig, config: SrtConfig) -> None:
         if config.backend.mooncake_kv_store is None:
             raise ValidationError(
-                f"services[{service.name}] (type mooncake-store) requires backend.mooncake_kv_store, "
+                f"services[{service.name}] (type mooncake-store) requires engine.mooncake_kv_store, "
                 "which launches the master the store registers with"
             )
 

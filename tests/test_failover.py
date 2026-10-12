@@ -20,7 +20,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, VLLMFailoverConfig, VLLMProtocol, failover_worker_dir
+from srtctl.backends.vllm import FAILOVER_LOCK_FILENAME, VLLMFailoverConfig, VLLMBackend, failover_worker_dir
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.submit import show_config_details
 from srtctl.core.runtime import Nodes, RuntimeContext
@@ -130,7 +130,7 @@ def _process(engine_id: int = 0, gpus: frozenset[int] = frozenset({3}), node_ran
 
 def test_defaults_and_engines_per_worker() -> None:
     config = _load()
-    assert isinstance(config.backend, VLLMProtocol)
+    assert isinstance(config.backend, VLLMBackend)
     failover = config.backend.failover
     assert failover == VLLMFailoverConfig()
     assert failover.shadow_engines == 1
@@ -379,7 +379,10 @@ def _orchestrator(config: SrtConfig, tmp_path: Path) -> SweepOrchestrator:
 
 
 def test_gms_service_launches_one_pinned_instance_per_worker(tmp_path: Path) -> None:
-    orchestrator = _orchestrator(_load(), tmp_path)
+    # Isolate the GMS launch from the independent default lifecycle collector.
+    orchestrator = _orchestrator(
+        _load(services=[{"name": "otel-collector", "type": "otel-collector", "enabled": False}]), tmp_path
+    )
     with (
         patch(SRUN_SERVICE, return_value=_proc()) as srun,
         patch(WAIT_SERVICE, return_value=True) as wait,
@@ -438,7 +441,7 @@ def test_worker_stage_launches_only_engines(tmp_path: Path) -> None:
 
 
 def test_full_node_worker_pins_nothing(tmp_path: Path) -> None:
-    data = _data()
+    data = _data(services=[{"name": "otel-collector", "type": "otel-collector", "enabled": False}])
     data["roles"]["agg"] = {"nodes": 1, "workers": 1, "gpus": 8, "args": {"tensor-parallel-size": 8}}
     orchestrator = _orchestrator(_load_data(data), tmp_path)
     with (

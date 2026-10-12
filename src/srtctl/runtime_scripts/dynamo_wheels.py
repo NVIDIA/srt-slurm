@@ -242,7 +242,8 @@ def install(env: Env | None = None) -> None:
         if wheel_dir.is_dir():
             find_links_args.extend(["--find-links", str(wheel_dir)])
 
-    print(f"Installing ai-dynamo-runtime and ai-dynamo {version} from local wheels")
+    # Install the exact staged artifacts and resolve their dependencies from the package indexes.
+    print(f"Installing ai-dynamo-runtime and ai-dynamo {version} from local wheels with dependencies")
     subprocess.run(
         [
             sys.executable,
@@ -250,11 +251,13 @@ def install(env: Env | None = None) -> None:
             "pip",
             "install",
             "--pre",
-            "--no-deps",
-            "--no-index",
+            "--index-url",
+            runtime_env.get("DYNAMO_INDEX_URL", DEFAULT_INDEX_URL),
+            "--extra-index-url",
+            runtime_env.get("DYNAMO_EXTRA_INDEX_URL", DEFAULT_EXTRA_INDEX_URL),
             *find_links_args,
-            f"ai-dynamo-runtime=={version}",
-            f"ai-dynamo=={version}",
+            str(runtime_wheel),
+            str(dynamo_wheel),
         ],
         check=True,
     )

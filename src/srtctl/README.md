@@ -25,7 +25,7 @@ srtctl/
 │       ├── __init__.py      # Python wrappers for bash functions
 │       └── get_node_ip.sh   # IP detection bash functions
 ├── backends/
-│   ├── base.py              # BackendProtocol interface
+│   ├── base.py              # Backend interface
 │   └── sglang.py            # SGLang implementation
 ├── benchmarks/
 │   ├── base.py              # BenchmarkRunner ABC
@@ -113,16 +113,28 @@ wait_for_model(
 
 For aggregated mode, pass `n_prefill=0, n_decode=num_agg`.
 
-### BackendProtocol
+### Backend
 
-Interface for different serving frameworks:
+`Backend` is an abstract base class for serving frameworks. Concrete frozen dataclasses
+inherit it, provide their `type`, and implement `allocate_endpoints`,
+`endpoints_to_processes`, and `build_worker_command`. The base supplies optional
+feature defaults and reads per-mode arguments and environment from bound roles.
 
 ```python
-class BackendProtocol(Protocol):
-    @property
-    def type(self) -> BackendType: ...
-    def build_worker_command(self, process, runtime) -> list[str]: ...
+from dataclasses import dataclass
+
+from srtctl.backends.base import Backend
+
+
+@dataclass(frozen=True)
+class MyBackend(Backend):
+    type: str = "mybackend"
+    # Declare schema fields and implement the three abstract launch hooks.
 ```
+
+`Frontend` likewise uses explicit inheritance. `StaticRouterFrontend` and
+`DynamicFrontend` share router behavior, and registration accepts only concrete
+`Frontend` subclasses. Existing recipes keep the same engine and frontend names.
 
 ### Multiple Workers Per Node
 

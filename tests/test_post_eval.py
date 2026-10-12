@@ -27,15 +27,15 @@ model:
 resources:
   gpu_type: h100
   gpus_per_node: 8
-  agg_nodes: 1
-  agg_workers: 2
-  gpus_per_agg: 1
 frontend:
   type: dynamo
-backend:
-  type: sglang
-  sglang_config:
-    aggregated:
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    args:
       served-model-name: Qwen/Qwen3-0.6B
 benchmark:
   type: sa-bench

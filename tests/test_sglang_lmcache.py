@@ -5,8 +5,9 @@
 
 import pytest
 
-from srtctl.backends.sglang import SGLangProtocol, SGLangServerConfig
+from srtctl.backends.sglang import SGLangBackend
 from srtctl.core.topology import Process
+from srtctl.core.schema import RoleConfig
 
 
 def _process(mode: str = "prefill") -> Process:
@@ -14,7 +15,7 @@ def _process(mode: str = "prefill") -> Process:
 
 
 def test_enable_lmcache_points_the_worker_at_the_node_local_server() -> None:
-    backend = SGLangProtocol(sglang_config=SGLangServerConfig(prefill={"enable-lmcache": True}))
+    backend = SGLangBackend(roles={"prefill": RoleConfig(args={"enable-lmcache": True})})
 
     assert backend.get_process_environment(_process("prefill")) == {
         "LMCACHE_MP_HOST": "127.0.0.1",
@@ -31,9 +32,6 @@ def test_enable_lmcache_points_the_worker_at_the_node_local_server() -> None:
     ],
 )
 def test_recipe_owned_lmcache_address_is_left_alone(prefill: dict, environment: dict) -> None:
-    backend = SGLangProtocol(
-        sglang_config=SGLangServerConfig(prefill=prefill),
-        prefill_environment=environment,
-    )
+    backend = SGLangBackend(roles={"prefill": RoleConfig(env=environment, args=prefill)})
 
     assert backend.get_process_environment(_process()) == {}

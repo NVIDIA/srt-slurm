@@ -20,19 +20,17 @@ import yaml
 from srtctl.cli import submit as submit_cli
 
 MINIMAL_CONFIG = {
+    "schema": 2,
     "name": "test-job",
     "model": {
         "path": "/models/test-model",
         "container": "test-container.sqsh",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "prefill_nodes": 1,
-        "decode_nodes": 1,
-        "prefill_workers": 1,
-        "decode_workers": 1,
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "roles": {
+        "prefill": {"nodes": 1, "workers": 1},
+        "decode": {"nodes": 1, "workers": 1},
     },
     "benchmark": {"type": "manual"},
 }

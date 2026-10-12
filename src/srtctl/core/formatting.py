@@ -100,6 +100,7 @@ class FormattablePath:
         Path('/home/user/containers/model.sqsh')
     """
 
+    # The path text, with `{placeholders}` and `$VARS` expanded at runtime.
     template: str
 
     def raw_path_no_context(

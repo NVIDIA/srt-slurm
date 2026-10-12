@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from srtctl.backends import TRTLLMProtocol, TRTLLMServerConfig
+from srtctl.backends import TRTLLMBackend
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import DynamoConfig, SrtConfig
+from srtctl.core.schema import DynamoConfig, SrtConfig, RoleConfig
 
 
 def _runtime(*, staged=None, hf=False, model="/lustre/DeepSeek-V4-Pro"):
@@ -54,7 +54,7 @@ class TestSchema:
             ({"publish_metrics": False}, False, None, ()),
             ({"publish_metrics": True, "publish_events_and_metrics": None}, True, None, ("--publish-metrics",)),
             ({"publish_metrics": False, "publish_events_and_metrics": None}, False, None, ()),
-            ({"publish_metrics": True, "publish_events_and_metrics": False}, True, False, ()),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, True, False, ("--publish-metrics",)),
             ({"publish_metrics": False, "publish_events_and_metrics": False}, False, False, ()),
             (
                 {"publish_metrics": False, "publish_events_and_metrics": True},
@@ -66,7 +66,7 @@ class TestSchema:
                 {"publish_metrics": True, "publish_events_and_metrics": True},
                 True,
                 True,
-                ("--publish-metrics", "--publish-events-and-metrics"),
+                ("--publish-events-and-metrics",),
             ),
         ],
     )
@@ -76,8 +76,9 @@ class TestSchema:
         data = {
             "name": "publishing-test",
             "model": {"path": "/lustre/m", "container": "trtllm", "precision": "fp4"},
-            "resources": {"gpu_type": "gb300", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {"type": "trtllm", **publishing},
+            "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
+            "engine": {"type": "trtllm", **publishing},
         }
         schema = SrtConfig.Schema()
         config = schema.load(data)
@@ -86,16 +87,17 @@ class TestSchema:
 
         assert config.backend.publish_metrics is expected_metrics
         assert config.backend.publish_events_and_metrics is expected_events
-        assert dumped["backend"]["publish_metrics"] is expected_metrics
-        assert dumped["backend"]["publish_events_and_metrics"] is expected_events
+        assert dumped["engine"]["publish_metrics"] is expected_metrics
+        assert dumped["engine"]["publish_events_and_metrics"] is expected_events
         assert reloaded.backend.publish_metrics is expected_metrics
         assert reloaded.backend.publish_events_and_metrics is expected_events
-        assert TRTLLMProtocol(**publishing).dynamo_metrics_flags == expected_flags
+        assert TRTLLMBackend(**publishing).dynamo_metrics_flags == expected_flags
         assert config.backend.dynamo_metrics_flags == expected_flags
         assert reloaded.backend.dynamo_metrics_flags == expected_flags
 
     def test_stage_dir_loads(self):
         data = {
+            "schema": 2,
             "name": "stage-test",
             "model": {
                 "path": "/lustre/DeepSeek-V4-Pro",
@@ -103,8 +105,9 @@ class TestSchema:
                 "precision": "fp4",
                 "stage_dir": "/raid/scratch/models",
             },
-            "resources": {"gpu_type": "gb300", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {"type": "trtllm"},
+            "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+            "engine": "trtllm",
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)
@@ -114,10 +117,12 @@ class TestSchema:
 
     def test_stage_dir_defaults_none(self):
         data = {
+            "schema": 2,
             "name": "no-stage",
             "model": {"path": "/lustre/m", "container": "trtllm", "precision": "fp4"},
-            "resources": {"gpu_type": "gb300", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {"type": "trtllm"},
+            "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+            "engine": "trtllm",
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)
@@ -149,7 +154,7 @@ class TestWorkerCommandUsesStagedPath:
         return rt
 
     def test_trtllm_serve_worker_uses_staged_path(self, tmp_path):
-        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))
+        backend = TRTLLMBackend(roles={"decode": RoleConfig(args={"tensor_parallel_size": 4})})
         cmd = backend.build_worker_command(
             self._proc(),
             [self._proc()],
@@ -164,7 +169,7 @@ class TestWorkerCommandUsesStagedPath:
         process = replace(process, endpoint_mode="agg")
         runtime = self._runtime_mock(tmp_path, "/model")
         runtime.frontend_port = 8000
-        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 8}))
+        backend = TRTLLMBackend(roles={"agg": RoleConfig(args={"tensor_parallel_size": 8})})
 
         cmd = backend.build_worker_command(
             process,
@@ -176,7 +181,7 @@ class TestWorkerCommandUsesStagedPath:
         assert cmd[cmd.index("--port") + 1] == "8000"
 
     def test_dynamo_worker_uses_staged_path(self, tmp_path):
-        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))
+        backend = TRTLLMBackend(roles={"decode": RoleConfig(args={"tensor_parallel_size": 4})})
         cmd = backend.build_worker_command(
             self._proc(),
             [self._proc()],
@@ -194,17 +199,17 @@ class TestWorkerCommandUsesStagedPath:
             ({"publish_metrics": False}, []),
             ({"publish_metrics": True, "publish_events_and_metrics": None}, ["--publish-metrics"]),
             ({"publish_metrics": False, "publish_events_and_metrics": None}, []),
-            ({"publish_metrics": True, "publish_events_and_metrics": False}, []),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, ["--publish-metrics"]),
             ({"publish_metrics": False, "publish_events_and_metrics": False}, []),
             ({"publish_metrics": False, "publish_events_and_metrics": True}, ["--publish-events-and-metrics"]),
             (
                 {"publish_metrics": True, "publish_events_and_metrics": True},
-                ["--publish-metrics", "--publish-events-and-metrics"],
+                ["--publish-events-and-metrics"],
             ),
         ],
     )
     def test_dynamo_worker_publishing_policy(self, tmp_path, mode, publishing, expected_flags):
-        backend = TRTLLMProtocol(**publishing)
+        backend = TRTLLMBackend(**publishing)
         assert backend.publish_metrics is publishing.get("publish_metrics", True)
         assert backend.publish_events_and_metrics is publishing.get("publish_events_and_metrics")
         assert backend.dynamo_metrics_flags == tuple(expected_flags)
@@ -228,8 +233,8 @@ class TestWorkerCommandUsesStagedPath:
         process = replace(self._proc(), endpoint_mode=mode)
         runtime = self._runtime_mock(tmp_path, "/model")
         runtime.frontend_port = 8000
-        baseline = TRTLLMProtocol(publish_metrics=False, publish_events_and_metrics=False)
-        backend = TRTLLMProtocol(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
+        baseline = TRTLLMBackend(publish_metrics=False, publish_events_and_metrics=False)
+        backend = TRTLLMBackend(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
 
         expected = baseline.build_worker_command(process, [process], runtime, frontend_type="trtllm_serve")
         actual = backend.build_worker_command(process, [process], runtime, frontend_type="trtllm_serve")
@@ -246,8 +251,8 @@ class TestWorkerCommandUsesStagedPath:
         process = replace(self._proc(), endpoint_mode="agg", sidecar_grpc_port=50051)
         runtime = self._runtime_mock(tmp_path, "/model")
         runtime.dynamo = DynamoConfig(sidecar=True)
-        baseline = TRTLLMProtocol(publish_metrics=False, publish_events_and_metrics=False)
-        backend = TRTLLMProtocol(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
+        baseline = TRTLLMBackend(publish_metrics=False, publish_events_and_metrics=False)
+        backend = TRTLLMBackend(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
 
         expected = baseline.build_worker_command(process, [process], runtime, frontend_type="dynamo")
         actual = backend.build_worker_command(process, [process], runtime, frontend_type="dynamo")

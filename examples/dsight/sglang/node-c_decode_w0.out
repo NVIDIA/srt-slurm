@@ -1,0 +1,1 @@
+[2026-01-01 00:00:01.100 DP1 TP1 EP1] Decode batch [10], #running-req: 2, #token: 8192, token usage: 0.40, accept len: 3.00, accept rate: 0.75, pre-allocated usage: 0.25, #prealloc-req: 0, #transfer-req: 1, #retracted-req: 0, cuda graph: True, gen throughput (token/s): 150.00, #queue-req: 1

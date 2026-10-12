@@ -32,11 +32,12 @@ model:
 resources:
   gpu_type: b200
   gpus_per_node: 8
-  agg_nodes: 1
-  agg_workers: 2
-  gpus_per_agg: 1
-backend:
-  type: sglang
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
 frontend:
   type: sglang-router
 benchmark:
@@ -172,7 +173,7 @@ services:
 def test_full_node_workers_are_not_pinned(tmp_path: Path) -> None:
     config = SrtConfig.Schema().load(
         yaml.safe_load(
-            HEAD.replace("agg_workers: 2", "agg_workers: 1").replace("gpus_per_agg: 1", "gpus_per_agg: 8")
+            HEAD.replace("    workers: 2", "    workers: 1").replace("    gpus: 1", "    gpus: 8")
             + "services:\n  - name: w\n    command: [/bin/true]\n    placement: {node: workers, per: worker}\n"
             "    start: before_workers\n"
         )

@@ -91,7 +91,7 @@ class SABenchRunner(BenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
-        r = config.resources
+        r = config.topology
         endpoint = f"http://localhost:{runtime.frontend_port}"
 
         # Format concurrencies as x-separated string if it's a list

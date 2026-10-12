@@ -10,11 +10,11 @@ Uses NATS/etcd for communication between frontend and backend workers.
 import logging
 import shlex
 import threading
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import yaml
 
-from srtctl.backends.vllm import VLLMProtocol
+from srtctl.backends.vllm import VLLMBackend
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.schema import build_otel_env
@@ -30,8 +30,10 @@ from srtctl.services.implicit import (
     infra_placement,
     nats_implied_reasons,
 )
+from srtctl.services.otel import OTEL_SERVICE_NAME, lifecycle_otel_env
 
 if TYPE_CHECKING:
+    from srtctl.backends.base import WorkerMode
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
@@ -42,22 +44,15 @@ ROUTER_POLICY_CONFIG_FILENAME = "router_policy_config.yaml"
 ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
 
 
-def _vllm_mode_config(backend: VLLMProtocol, mode: str) -> dict[str, Any]:
-    """The recipe's vLLM args for a health mode name (prefill, decode, aggregated)."""
-    if backend.vllm_config is None:
-        return {}
-    by_mode = {
-        "prefill": backend.vllm_config.prefill,
-        "decode": backend.vllm_config.decode,
-        "aggregated": backend.vllm_config.aggregated,
-    }
-    return by_mode.get(mode) or {}
+def _vllm_mode_config(backend: VLLMBackend, mode: str) -> dict[str, Any]:
+    """The recipe's vLLM args (``roles.<role>.args``) for a health mode name (prefill, decode, aggregated)."""
+    return backend.get_config_for_mode(cast("WorkerMode", "agg" if mode == "aggregated" else mode))
 
 
 def vllm_data_parallel_size(config: Any, mode: str) -> int:
     """Return vLLM data parallel size for a mode, defaulting to one."""
     backend = config.backend
-    if not isinstance(backend, VLLMProtocol):
+    if not isinstance(backend, VLLMBackend):
         return 1
     mode_config = _vllm_mode_config(backend, mode)
     return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
@@ -76,7 +71,7 @@ def vllm_health_entries(
     spans nodes.
     """
     backend = config.backend
-    if not isinstance(backend, VLLMProtocol):
+    if not isinstance(backend, VLLMBackend):
         return logical_workers
     dp_size = vllm_data_parallel_size(config, mode)
     if dp_size > 1 and backend.dp_launch_mode == "per_node":
@@ -137,11 +132,12 @@ class DynamoFrontend(DynamicFrontend):
         return process.sys_port
 
     def implied_services(self, config: Any) -> list[EffectiveService]:
-        """The discovery plane: etcd always, NATS only when a Dynamo plane rides on it.
+        """Discovery and lifecycle tracing, independent of the observability preset.
 
         The default request plane is tcp and KV events go over direct ZMQ, so a
-        plain Dynamo job runs etcd alone; a recipe declares a ``nats`` service to
-        force one anyway.
+        plain Dynamo job needs only etcd for discovery; a recipe declares a
+        ``nats`` service to force one anyway. The collector is independent of
+        the discovery planes and the observability preset.
         """
         placement = infra_placement(config)
         implied = [
@@ -149,13 +145,18 @@ class DynamoFrontend(DynamicFrontend):
                 ServiceConfig(name=ETCD_SERVICE_NAME, type="etcd", placement=placement),
                 implicit=True,
                 reason="frontend.type dynamo",
-            )
+            ),
+            EffectiveService(
+                ServiceConfig(name=OTEL_SERVICE_NAME, type="otel-collector"),
+                implicit=True,
+                reason="Dynamo lifecycle tracing (independent of observability.enabled)",
+            ),
         ]
         nats_reasons = nats_implied_reasons(config)
         if nats_reasons:
             nats_options = {}
-            if config.infra.nats_max_payload_mb is not None:
-                nats_options["max_payload_mb"] = config.infra.nats_max_payload_mb
+            if config.nats_max_payload_mb is not None:
+                nats_options["max_payload_mb"] = config.nats_max_payload_mb
             implied.append(
                 EffectiveService(
                     ServiceConfig(name=NATS_SERVICE_NAME, type="nats", placement=placement, options=nats_options),
@@ -182,9 +183,9 @@ class DynamoFrontend(DynamicFrontend):
         logical worker.
         """
         logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
-        if not isinstance(config.backend, VLLMProtocol):
+        if not isinstance(config.backend, VLLMBackend):
             return logical_prefill, logical_decode, worker_desc
-        if config.resources.num_agg > 0:
+        if config.topology.num_agg > 0:
             n_prefill = 0
             n_decode = vllm_health_entries(config, "aggregated", logical_decode, processes)
         else:
@@ -201,7 +202,7 @@ class DynamoFrontend(DynamicFrontend):
         topology: Any,  # FrontendTopology
         runtime: "RuntimeContext",
         config: Any,  # SrtConfig
-        backend: Any,  # BackendProtocol
+        backend: Any,  # Backend
         backend_processes: list["Process"],
         stop_event: "threading.Event | None" = None,  # unused: returns immediately
     ) -> list["ManagedProcess"]:
@@ -247,11 +248,12 @@ class DynamoFrontend(DynamicFrontend):
                 env_to_set["DYN_EVENT_PLANE"] = config.dynamo.event_plane
 
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
+            env_to_set.update(lifecycle_otel_env(config.services, runtime.head_node_ip, "frontend"))
             env_to_set.update(build_otel_env(config.observability, "frontend"))
             env_to_set.update(nsys_env)
 
             # Add global recipe environment, including values derived from
-            # dynamo.wheel, before frontend-specific overrides.
+            # dynamo.source.wheel, before frontend-specific overrides.
             env_to_set.update(runtime.environment)
 
             # Add frontend env from config

@@ -72,11 +72,11 @@ observability:
   enabled: true
 ```
 
-Add `tachometer: {enabled: true}` under `observability` when parsed Parquet output is also needed. See [Observability](config-reference.md#observability) for optional DCGM and node exporter collection.
+Add `tachometer: {enabled: true}` under `observability` when parsed Parquet output is also needed. See [Observability](observability.md#observability) for optional DCGM and node exporter collection.
 
 ## Configure srtslurm.yaml
 
-After setup, edit `srtslurm.yaml` to add model paths, containers, and cluster-specific settings. The file is schema-validated as a whole: one unknown key (for example the old `default_container`) rejects it with a single WARNING and srtctl continues on built-in defaults, so a dry-run that renders `--partition=default` means the file was not loaded. `touch srtslurm.yaml` before `make setup` skips the interactive prompt if you would rather write the file yourself. The full key list is in [Cluster Config Fields](config-reference.md#cluster-config-fields).
+After setup, edit `srtslurm.yaml` to add model paths, containers, and cluster-specific settings. The file is schema-validated as a whole: one unknown key (for example the old `default_container`) rejects it with a single WARNING and srtctl continues on built-in defaults, so a dry-run that renders `--partition=default` means the file was not loaded. `touch srtslurm.yaml` before `make setup` skips the interactive prompt if you would rather write the file yourself. The full key list is in [Cluster Config Fields](cluster-config.md#cluster-config-fields).
 
 ### Adding Model Paths
 

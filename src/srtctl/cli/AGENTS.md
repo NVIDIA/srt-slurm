@@ -1,6 +1,6 @@
 # CLI and orchestrator
 
-`cli/do_sweep.py` is the `SweepOrchestrator` that runs inside the job; its stages are mixins under `cli/mixins/` (services, workers, frontend, benchmark, telemetry, postprocess). Stages hold no frontend- or backend-name branches: they ask the frontend protocol or `BackendProtocol` (Design Rules in the root `CLAUDE.md`, enforced by `tests/test_design_rules.py`). `cli/submit.py` owns `srtctl apply` / `dry-run`; any config that reaches srun must show up in `show_config_details()`.
+`cli/do_sweep.py` is the `SweepOrchestrator` that runs inside the job; its stages are mixins under `cli/mixins/` (services, workers, frontend, benchmark, telemetry, postprocess). Stages hold no frontend- or backend-name branches: they ask `Frontend` or `Backend` (Design Rules in the root `CLAUDE.md`, enforced by `tests/test_design_rules.py`). `cli/submit.py` owns `srtctl apply` / `dry-run`; any config that reaches srun must show up in `show_config_details()`.
 
 Every launch goes through `srtctl.core.slurm.start_srun_process` with a `step_name`. A module that imports it (or `get_hostname_ip`, `wait_for_health`, `wait_for_http_endpoints`) by name must also be patched in `src/srtctl/mock.py`, or the mock orchestrator and the launch snapshots will try to reach a real cluster.
 

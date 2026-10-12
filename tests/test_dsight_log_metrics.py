@@ -12,7 +12,7 @@ import pytest
 from test_dsight import write_run
 
 from srtctl.dsight.importer import Importer
-from srtctl.dsight.log_metrics import LogMetricDefinition, LogMetricEvent
+from srtctl.dsight.log_metrics import LogMetricDefinition, LogMetricEvent, LogMetricGenerator
 from srtctl.dsight.log_metrics.reader import read_log_metrics
 from srtctl.dsight.log_metrics.tokenspeed import (
     ACTIVE_DECODE,
@@ -121,6 +121,24 @@ def test_limits_do_not_join_across_workers_or_files(tmp_path):
     assert all(s["reference"]["series_id"] is None for s in active)
 
 
+def test_multinode_worker_preserves_host_scopes_and_never_borrows_limits(tmp_path):
+    logs, _ = write_run(tmp_path)
+    (logs / "decode-host_decode_w0.out").write_text(config() + "\n" + batch() + "\n")
+    (logs / "second-host_decode_w0.out").write_text(batch(active=7) + "\n")
+    data = Importer(logs, iteration_timezone="UTC").run()
+    worker = next(w for w in data["workers"] if w["id"] == "decode-0")
+    assert worker["hosts"] == ["decode-host", "second-host"]
+    assert worker["host"] is None
+    active = {s["host"]: s for s in data["metrics"] if s["name"] == ACTIVE_DECODE}
+    assert active["decode-host"]["points"][0][1] == 4
+    assert active["second-host"]["points"][0][1] == 7
+    assert active["decode-host"]["reference"]["series_id"] is not None
+    assert active["second-host"]["reference"]["series_id"] is None
+    assert active["decode-host"]["source_ids"] != active["second-host"]["source_ids"]
+    snapshots = [r for r in data["iterations"] if r["worker"] == "decode-0"]
+    assert {r["host"] for r in snapshots} == {"decode-host", "second-host"}
+
+
 def test_config_after_first_sample_is_not_moved_backwards(tmp_path):
     _, data = log_run(tmp_path, [batch(), config(35), batch(36)])
     limit = metrics(data)[DECODE_LIMIT]
@@ -175,8 +193,8 @@ def test_missing_page_fields_are_not_zero(tmp_path):
     assert metrics(data)[ACTIVE_DECODE]["reference"]["series_id"] is None
 
 
-class ExampleGenerator:
-    """Different syntax and rank namespace exercise the shared Protocol boundary."""
+class ExampleGenerator(LogMetricGenerator):
+    """Different syntax and rank namespace exercise the shared base class."""
 
     name = "example"
     definitions = (

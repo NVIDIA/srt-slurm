@@ -163,8 +163,8 @@ def test_pin_source_revs_walks_override_format_and_leaves_failures_unpinned(capl
 def test_dynamo_source_git_maps_to_hash_and_defaults_upstream_repo() -> None:
     config = DynamoConfig(source=DynamoSourceConfig(rev="refs/pull/14000/head"))
     assert config.source is not None and config.source.git == UPSTREAM
-    assert config.hash == "refs/pull/14000/head"
-    assert config.version is None
+    assert config.git_rev == "refs/pull/14000/head"
+    assert config.pypi_version is None
     assert config.needs_source_install
     cmd = config.get_install_commands()
     # An unpinned ref is fetched by name; a plain clone has no PR refs.
@@ -180,7 +180,7 @@ def test_dynamo_source_pinned_sha_and_fork_and_patches() -> None:
             git="https://github.com/me/dynamo-fork", rev="refs/pull/3/head", sha=SHA, patches=[patch_line]
         )
     )
-    assert config.hash == SHA
+    assert config.git_rev == SHA
     assert config.cargo_patches == [patch_line]
     cmd = config.get_install_commands()
     assert "clone https://github.com/me/dynamo-fork dynamo" in cmd
@@ -190,11 +190,11 @@ def test_dynamo_source_pinned_sha_and_fork_and_patches() -> None:
 
 
 def test_dynamo_source_pypi_and_wheel() -> None:
-    assert DynamoConfig(source=DynamoSourceConfig(pypi="1.4.2")).version == "1.4.2"
+    assert DynamoConfig(source=DynamoSourceConfig(pypi="1.4.2")).pypi_version == "1.4.2"
     assert "ai-dynamo==1.4.2" in DynamoConfig(source=DynamoSourceConfig(pypi="1.4.2")).get_install_commands()
     wheel = DynamoConfig(source=DynamoSourceConfig(wheel="1.5.0.dev20260901"))
-    assert wheel.wheel == "1.5.0.dev20260901"
-    assert wheel.version is None
+    assert wheel.wheel_version == "1.5.0.dev20260901"
+    assert wheel.pypi_version is None
     assert not wheel.needs_source_install
 
 
@@ -209,10 +209,10 @@ def test_dynamo_source_validation() -> None:
         DynamoSourceConfig(rev="main")
     with pytest.raises(ValidationError, match="only apply to a git source"):
         DynamoSourceConfig(pypi="1.0", patches=["x = 1"])
-    with pytest.raises(ValueError, match="cannot be combined with dynamo.hash"):
-        DynamoConfig(hash="abc1234", source=DynamoSourceConfig(pypi="1.0"))
-    with pytest.raises(ValueError, match="cannot be combined with dynamo.top_of_tree, dynamo.cargo_patches"):
-        DynamoConfig(top_of_tree=True, cargo_patches=["x = 1"], source=DynamoSourceConfig(rev="v1"))
+    with pytest.raises(ValueError, match="top_of_tree cannot be combined with dynamo.source"):
+        DynamoConfig(top_of_tree=True, source=DynamoSourceConfig(rev="v1"))
+    assert DynamoConfig().effective_source == DynamoSourceConfig(pypi=DynamoConfig.DEFAULT_PYPI_VERSION)
+    assert DynamoConfig(top_of_tree=True).effective_source is None
 
 
 def test_dynamo_source_loads_from_recipe_yaml() -> None:
@@ -226,9 +226,12 @@ model:
 resources:
   gpu_type: h100
   gpus_per_node: 8
-  agg_nodes: 1
-  agg_workers: 2
-  gpus_per_agg: 1
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
 frontend:
   type: dynamo
 dynamo:
@@ -236,15 +239,13 @@ dynamo:
     git: https://github.com/ai-dynamo/dynamo
     rev: v1.4.2
     sha: 2ecbdfdf192c69c02c6d21e931d20d3b4a0bb64a
-backend:
-  type: sglang
 benchmark:
   type: manual
 """
     )
     config = SrtConfig.Schema().load(raw)
-    assert config.dynamo.hash == SHA
-    assert config.dynamo.version is None
+    assert config.dynamo.git_rev == SHA
+    assert config.dynamo.pypi_version is None
     assert config.dynamo.source is not None and config.dynamo.source.rev == "v1.4.2"
 
 

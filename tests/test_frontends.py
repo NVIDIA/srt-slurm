@@ -69,9 +69,11 @@ class TestFrontendRegistry:
         assert list_frontend_types() == [
             "atomesh",
             "dynamo",
+            "llm-d",
             "none",
             "sglang",
             "sglang-router",
+            "smg",
             "tilert-router",
             "trtllm_serve",
             "vllm",
@@ -151,6 +153,7 @@ class TestFrontendRegistry:
 
     def test_dynamic_frontend_base_carries_the_registration_defaults(self, monkeypatch):
         """Dynamo is a DynamicFrontend; a future registration-based frontend inherits the same defaults."""
+        from srtctl.core.health import WorkerHealthResult
         from srtctl.frontends import DynamicFrontend, base
 
         assert isinstance(get_frontend("dynamo"), DynamicFrontend)
@@ -160,6 +163,24 @@ class TestFrontendRegistry:
         class ToyDiscovery(DynamicFrontend):
             type = "toy-discovery"
             worker_launch = "direct"
+
+            def parse_health(self, response_json, expected_prefill, expected_decode):
+                return WorkerHealthResult(ready=True, message="ready")
+
+            def worker_metrics_port(self, process, runtime):
+                return process.sys_port
+
+            def worker_endpoint_port(self, process, config, runtime):
+                return process.sys_port
+
+            def profiling_control_port(self, process, config, runtime):
+                return process.sys_port
+
+            def worker_ready_port(self, process):
+                return process.sys_port
+
+            def start_frontends(self, topology, runtime, config, backend, backend_processes, stop_event=None):
+                return []
 
         toy = get_frontend("toy-discovery")
         assert isinstance(toy, ToyDiscovery)
@@ -182,22 +203,15 @@ class TestFrontendRegistry:
 
         monkeypatch.setattr(base, "_FRONTENDS", dict(base._FRONTENDS))
 
+        from srtctl.frontends.static_router import StaticRouterFrontend
+
         @register_frontend("toy-router")
-        class ToyRouter:
+        class ToyRouter(StaticRouterFrontend):
+            type = "toy-router"
             required_backend = "vllm"
-            worker_launch = "direct"
-            expands_node_local_dp = False
-
-            @property
-            def type(self) -> str:
-                return "toy-router"
-
-            def validate(self, config) -> None:
-                del config
-
-            def worker_api_port(self, mode: str) -> str:
-                del mode
-                return "allocated"
+            executable = ("toy-router",)
+            pd_flag = "--disaggregated"
+            process_name = "toy-router"
 
         assert isinstance(get_frontend("toy-router"), ToyRouter)
         assert "toy-router" in list_frontend_types()
@@ -205,16 +219,19 @@ class TestFrontendRegistry:
     def test_schema_rejects_unknown_type_at_load(self):
         from marshmallow import ValidationError
 
-        from srtctl.backends import SGLangProtocol
-        from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+        from srtctl.backends import SGLangBackend
+        from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 
-        with pytest.raises(ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, none"):
+        with pytest.raises(
+            ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, llm-d, none"
+        ):
             SrtConfig(
                 name="toy",
                 model={"path": "model", "container": "image", "precision": "fp8"},
-                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 frontend=FrontendConfig(type="toy-router", enable_multiple_frontends=False),
-                backend=SGLangProtocol(),
+                engine=SGLangBackend(),
             )
 
     @pytest.mark.parametrize(
@@ -224,17 +241,18 @@ class TestFrontendRegistry:
     def test_schema_enforces_required_backend_generically(self, frontend_type, required):
         from marshmallow import ValidationError
 
-        from srtctl.backends import TRTLLMProtocol
-        from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+        from srtctl.backends import TRTLLMBackend
+        from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 
         assert get_frontend(frontend_type).required_backend == required
         with pytest.raises(ValidationError, match=f"frontend.type: {frontend_type} requires backend.type: {required}"):
             SrtConfig(
                 name="pairing",
                 model={"path": "model", "container": "image", "precision": "fp8"},
-                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 frontend=FrontendConfig(type=frontend_type, enable_multiple_frontends=False),
-                backend=TRTLLMProtocol(),
+                engine=TRTLLMBackend(),
             )
 
 
@@ -286,11 +304,13 @@ class TestFrontendProperties:
         dynamo_config = SimpleNamespace(
             frontend=SimpleNamespace(type="dynamo"),
             dynamo=SimpleNamespace(request_plane="nats", event_plane="zmq"),
-            infra=SimpleNamespace(etcd_nats_dedicated_node=False, nats_max_payload_mb=None),
+            infra_dedicated_node=False,
+            nats_max_payload_mb=None,
         )
         implied = get_frontend("dynamo").implied_services(dynamo_config)
         assert [(entry.service.name, entry.service.type, entry.reason) for entry in implied] == [
             ("etcd", "etcd", "frontend.type dynamo"),
+            ("otel-collector", "otel-collector", "Dynamo lifecycle tracing (independent of observability.enabled)"),
             ("nats", "nats", "dynamo.request_plane nats"),
         ]
         for frontend_type in ("vllm", "sglang", "sglang-router", "trtllm_serve", "vllm-router"):
@@ -429,8 +449,8 @@ class MockFrontendConfig:
 
 
 @dataclass
-class MockResourceConfig:
-    """Mock ResourceConfig for testing."""
+class MockWorkerCounts:
+    """Mock SrtConfig.topology (worker counts) for testing."""
 
     num_prefill: int = 0
     num_decode: int = 0
@@ -450,7 +470,7 @@ class MockConfig:
     """Mock SrtConfig for testing."""
 
     frontend: MockFrontendConfig
-    resources: MockResourceConfig
+    topology: MockWorkerCounts
     observability: MockObservabilityConfig = field(default_factory=MockObservabilityConfig)
     # None skips the pre-start worker probe; the probe has its own test with a real health_check.
     health_check: object | None = None
@@ -459,7 +479,7 @@ class MockConfig:
 @pytest.mark.parametrize("ready", [True, False])
 def test_sglang_router_starts_only_after_workers_are_healthy(tmp_path, ready):
     """Probe the advertised worker IPs before spawning the static router."""
-    from srtctl.backends.sglang import SGLangProtocol
+    from srtctl.backends.sglang import SGLangBackend
 
     stop = Event()
     probed = []
@@ -499,7 +519,7 @@ def test_sglang_router_starts_only_after_workers_are_healthy(tmp_path, ready):
         patch("srtctl.frontends.sglang.start_srun_process", side_effect=launch) as start,
     ):
         frontend = SGLangRouterFrontend()
-        args = (MockTopology(["node0"]), runtime, config, SGLangProtocol(), workers)
+        args = (MockTopology(["node0"]), runtime, config, SGLangBackend(), workers)
         if ready:
             processes = frontend.start_frontends(*args, stop_event=stop)
             assert len(processes) == 1
@@ -524,7 +544,7 @@ class TestSGLangGrpcScheme:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=2),
+            topology=MockWorkerCounts(num_agg=2),
         )
 
         # Mock backend without gRPC
@@ -565,13 +585,13 @@ class TestSGLangGrpcScheme:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
 
-        # Mock SGLangProtocol backend with gRPC enabled
-        from srtctl.backends.sglang import SGLangProtocol
+        # Mock SGLangBackend backend with gRPC enabled
+        from srtctl.backends.sglang import SGLangBackend
 
-        backend = MagicMock(spec=SGLangProtocol)
+        backend = MagicMock(spec=SGLangBackend)
         backend.is_grpc_mode.side_effect = lambda mode: mode == "agg"
 
         # Mock runtime
@@ -606,7 +626,7 @@ class TestSGLangGrpcScheme:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_prefill=1, num_decode=2),
+            topology=MockWorkerCounts(num_prefill=1, num_decode=2),
         )
 
         backend = MagicMock()
@@ -650,7 +670,7 @@ class TestSGLangGrpcScheme:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=2),
+            topology=MockWorkerCounts(num_agg=2),
         )
 
         backend = MagicMock()
@@ -696,7 +716,7 @@ class TestFrontendEnvHandling:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(env={"MY_VAR": "my_value", "ANOTHER": "123"}),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
 
         backend = MagicMock()
@@ -732,7 +752,7 @@ class TestFrontendEnvHandling:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
         backend = MagicMock()
         backend.is_grpc_mode.return_value = False
@@ -767,7 +787,7 @@ class TestFrontendEnvHandling:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(env=None),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
 
         backend = MagicMock()
@@ -802,7 +822,7 @@ class TestFrontendEnvHandling:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(args={"policy": "cache_aware", "verbose": True}),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
 
         backend = MagicMock()
@@ -841,7 +861,7 @@ class TestNumaBind:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(numa_bind=True),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
         backend = MagicMock()
         backend.is_grpc_mode.return_value = False
@@ -867,7 +887,7 @@ class TestNumaBind:
         topology = MockTopology(frontend_nodes=["node0"])
         config = MockConfig(
             frontend=MockFrontendConfig(),
-            resources=MockResourceConfig(num_agg=1),
+            topology=MockWorkerCounts(num_agg=1),
         )
         backend = MagicMock()
         backend.is_grpc_mode.return_value = False
@@ -890,6 +910,7 @@ class TestNumaBind:
             log_dir=Path("/logs"),
             nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
             infra_node_ip="10.0.0.9",
+            head_node_ip="10.0.0.8",
             container_image=Path("/container.sqsh"),
             container_mounts={},
             environment={},
@@ -897,6 +918,7 @@ class TestNumaBind:
         config = SimpleNamespace(
             frontend=SimpleNamespace(args=None, env=None, worker_selection=None, numa_bind=True),
             observability=ObservabilityConfig(),
+            services=[],
             dynamo=SimpleNamespace(
                 install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None
             ),
@@ -925,6 +947,7 @@ def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
         log_dir=Path("/logs"),
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         infra_node_ip="10.0.0.9",
+        head_node_ip="10.0.0.8",
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},
@@ -932,6 +955,7 @@ def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
     config = SimpleNamespace(
         frontend=SimpleNamespace(args=None, env=None),
         observability=ObservabilityConfig(),
+        services=[],
         dynamo=SimpleNamespace(install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None),
         setup_script=None,
     )
@@ -951,6 +975,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         log_dir=Path("/logs"),
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         infra_node_ip="10.0.0.9",
+        head_node_ip="10.0.0.8",
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},
@@ -958,6 +983,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
     config = SimpleNamespace(
         frontend=SimpleNamespace(type="dynamo", args=None, env=None, worker_selection=None),
         observability=ObservabilityConfig(),
+        services=[],
         dynamo=SimpleNamespace(
             install=dynamo_install,
             get_install_commands=lambda: "echo install-dynamo",
@@ -1009,6 +1035,7 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
     runtime = SimpleNamespace(
         log_dir=tmp_path,
         infra_node_ip="10.0.0.9",
+        head_node_ip="10.0.0.8",
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         container_image=Path("/container.sqsh"),
         container_mounts={tmp_path: Path("/logs")},
@@ -1030,8 +1057,11 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
         ],
     }
     config = SimpleNamespace(
-        frontend=SimpleNamespace(type="dynamo", args={"router-mode": "kv"}, env=None, worker_selection=worker_selection),
+        frontend=SimpleNamespace(
+            type="dynamo", args={"router-mode": "kv"}, env=None, worker_selection=worker_selection
+        ),
         observability=ObservabilityConfig(),
+        services=[],
         dynamo=SimpleNamespace(
             install=False,
             get_install_commands=lambda: "",

@@ -20,8 +20,8 @@ After (Python):
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal
 
+from srtctl.backends.base import WorkerMode
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
     DYN_SYSTEM_PORT_BASE,
@@ -33,9 +33,6 @@ from srtctl.ports import (
     SYS_PORTS,
     PortKind,
 )
-
-# Worker mode type
-WorkerMode = Literal["prefill", "decode", "agg"]
 
 
 @dataclass
@@ -159,18 +156,23 @@ class Process:
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
         node_rank: Rank within the endpoint (0 for leader)
+        dp_rank: The DP rank this process runs when the endpoint is one process per rank
+            (vLLM ``dp_launch_mode: per_gpu`` or external load balancing); None otherwise
         engine_id: Which engine of the worker this is. 0 is the one every job has;
             under ``backend.failover`` (vLLM shadow engine recovery) engines 1.. are
             the standbys, sharing node, GPUs and node_rank with engine 0 but with
             their own ports and their own srun step.
         kvbm_zmq_port: KVBM leader ZMQ pub port (ack is the next port); the leader's is used
         sidecar_grpc_port: Dynamo sidecar gRPC listener, allocated when the job runs sidecars
+        proxy_port: Per-worker proxy listener (e.g. llm-d's decode sidecar), when required by the frontend
         nccl_port: SGLang local TP rendezvous port, one per server process
         dist_init_port: SGLang multi-node dist-init port; the same value on every process of an endpoint
+        grpc_http_port: HTTP sidecar (/metrics, profiler routes) of an SGLang gRPC-mode leader
         vllm_scan_port: first port of this vLLM process's private ``get_open_port()`` scan range
         moriio_handshake_port: MoRI-IO handshake listener of a vLLM discovery-connector worker
         moriio_notify_port: first port of that worker's MoRI-IO notify block (one port per local rank)
         trtllm_dist_init_port: TRT-LLM torch.distributed bootstrap port; the leader's is used
+        tokenspeed_port: TokenSpeed ``--port``, the base of the engine's own free-port scan
 
     Every port is allocated by ``NodePortAllocator`` in ``endpoints_to_processes``;
     consumers read these fields and never derive one port from another.
@@ -190,12 +192,16 @@ class Process:
     # Inherited from the parent Endpoint when the job is heterogeneous.
     het_group: int | None = None
     engine_id: int = 0
+    dp_rank: int | None = None
     kvbm_zmq_port: int | None = None
     sidecar_grpc_port: int | None = None
+    proxy_port: int | None = None
     nccl_port: int | None = None
     dist_init_port: int | None = None
+    grpc_http_port: int | None = None
     vllm_scan_port: int | None = None
     trtllm_dist_init_port: int | None = None
+    tokenspeed_port: int | None = None
     moriio_handshake_port: int | None = None
     moriio_notify_port: int | None = None
 
@@ -206,8 +212,9 @@ class Process:
 
     @property
     def engine_suffix(self) -> str:
-        """Step-name and log-name suffix that tells a shadow engine apart from engine 0 (``""`` for it)."""
-        return f"_e{self.engine_id}" if self.engine_id else ""
+        """Disambiguate colocated processes with optional ``_dp<rank>`` and ``_e<engine>`` suffixes."""
+        rank = f"_dp{self.dp_rank}" if self.dp_rank is not None else ""
+        return f"{rank}_e{self.engine_id}" if self.engine_id else rank
 
     @property
     def cuda_visible_devices(self) -> str:
@@ -572,6 +579,8 @@ def endpoints_to_processes(
     port_allocator: NodePortAllocator | None = None,
     engines_per_process: int = 1,
     sidecar_grpc: bool = False,
+    kv_events_port_sizes: dict[WorkerMode, int] | None = None,
+    bootstrap_ports: bool = True,
 ) -> list[Process]:
     """Convert endpoints to physical processes, one per node of each endpoint.
 
@@ -590,6 +599,9 @@ def endpoints_to_processes(
             engine of a node then gets its own Process (same GPUs and node_rank,
             distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
         sidecar_grpc: Allocate a Dynamo sidecar gRPC port for every process.
+        kv_events_port_sizes: KV publisher port range per process, keyed by worker mode.
+        bootstrap_ports: Allocate the prefill bootstrap port; ``False`` for an engine
+            that has no bootstrap rendezvous (vLLM hands KV over its NIXL side channel).
 
     Returns:
         List of Process objects
@@ -604,7 +616,7 @@ def endpoints_to_processes(
         # engine's processes); each engine of a worker binds its own.
         leader_node = endpoint.nodes[0]
         endpoint_bootstrap_ports = [
-            allocator.next(BOOTSTRAP_PORTS, leader_node) if endpoint.mode == "prefill" else None
+            allocator.next(BOOTSTRAP_PORTS, leader_node) if bootstrap_ports and endpoint.mode == "prefill" else None
             for _ in range(engines_per_process)
         ]
 
@@ -624,7 +636,9 @@ def endpoints_to_processes(
                         node_rank=node_rank,
                         bootstrap_port=endpoint_bootstrap_ports[engine_id],
                         # Every process publishes KV events and opens a NIXL side channel of its own.
-                        kv_events_port=allocator.next(KV_EVENTS_PORTS),
+                        kv_events_port=allocator.next(
+                            KV_EVENTS_PORTS, size=(kv_events_port_sizes or {}).get(endpoint.mode, 1)
+                        ),
                         nixl_port=allocator.next(NIXL_PORTS),
                         het_group=endpoint.het_group,
                         engine_id=engine_id,

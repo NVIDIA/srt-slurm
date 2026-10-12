@@ -20,7 +20,8 @@ SCHEMA_VERSION = 1
 # The samples CSV is versioned independently: SCHEMA_VERSION is shared with
 # manifest.json and with measurement-window files whose writer keeps its own copy.
 SAMPLES_SCHEMA_VERSION_V1 = 1
-SAMPLES_SCHEMA_VERSION = 2
+SAMPLES_SCHEMA_VERSION_V2 = 2
+SAMPLES_SCHEMA_VERSION = 3
 
 PRODUCER = "srt-slurm.dcgm-power"
 POWER_METRIC = "DCGM_FI_DEV_POWER_USAGE"
@@ -30,6 +31,10 @@ CLOCK_SOURCE = "head_node_unix_clock"
 
 GPU_UTIL_METRIC = "DCGM_FI_DEV_GPU_UTIL"
 SM_ACTIVE_METRIC = "DCGM_FI_PROF_SM_ACTIVE"
+TEMPERATURE_METRIC = "DCGM_FI_DEV_GPU_TEMP"
+# Physical sanity bound for GPU temperature; exporter blank/error sentinels (DCGM's
+# are near 2**31) fall far outside it.
+MAX_TEMPERATURE_C = 200.0
 
 
 @dataclass(frozen=True)
@@ -64,7 +69,8 @@ SAMPLES_HEADER_V1 = (
     "gpu_uuid",
     "power_w",
 )
-SAMPLES_HEADER = (*SAMPLES_HEADER_V1, *(metric.column for metric in UTILIZATION_METRICS))
+SAMPLES_HEADER_V2 = (*SAMPLES_HEADER_V1, *(metric.column for metric in UTILIZATION_METRICS))
+SAMPLES_HEADER = (*SAMPLES_HEADER_V2, "temperature_c")
 
 CPU_SCHEMA_VERSION_V1 = 1
 # v2 pivots to one row per (timestamp, hostname, socket): power_w is the
@@ -159,6 +165,9 @@ class Reason:
     MEASUREMENT_WINDOW_NOT_BRACKETED = "measurement_window_not_bracketed"
     SAMPLE_GAP_EXCEEDED = "sample_gap_exceeded"
     SAMPLE_LOSS_EXCEEDED = "sample_loss_exceeded"
+    # A node whose clock feeds an artifact could not prove NTP synchronisation
+    # before servers started; sample and window timestamps are not comparable.
+    CLOCK_SYNC_UNVERIFIED = "clock_sync_unverified"
 
 
 ALL_REASON_CODES: frozenset[str] = frozenset(
@@ -198,6 +207,11 @@ def is_safe_relative_subpath(value: str) -> bool:
 def is_finite_number(value: Any) -> TypeGuard[int | float]:
     """Whether ``value`` is a finite real number; bools are not numbers here."""
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def is_valid_temperature_c(value: float) -> bool:
+    """Shared value domain; scrape and CSV readers own their distinct rejection effects."""
+    return math.isfinite(value) and -273.15 <= value <= MAX_TEMPERATURE_C
 
 
 def dedupe(values: list[str]) -> tuple[str, ...]:

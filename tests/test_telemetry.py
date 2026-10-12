@@ -13,6 +13,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
+from srtctl.backends import SGLangBackend, TRTLLMBackend, VLLMBackend
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
@@ -22,12 +23,13 @@ from srtctl.core.schema import (
     CpuPowerConfig,
     CpuPowerExporterConfig,
     FrontendConfig,
-    InfraConfig,
     ModelConfig,
     ObservabilityConfig,
+    PlacementConfig,
     ReportingConfig,
     ReportingStatusConfig,
     ResourceConfig,
+    RoleConfig,
     SrtConfig,
     TachometerConfig,
     TelemetryConfig,
@@ -35,6 +37,8 @@ from srtctl.core.schema import (
 )
 from srtctl.core.telemetry import ServiceMetricsTarget, generate_tachometer_config
 from srtctl.core.topology import Process
+from srtctl.frontends import get_frontend
+from srtctl.services import ServiceConfig, ServicePlacementConfig
 
 
 def _make_config(
@@ -55,7 +59,7 @@ def _make_config(
 
 
 def _sa_bench(**overrides) -> BenchmarkConfig:
-    return BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="head", **overrides)
+    return BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="head"), **overrides)
 
 
 def _dcgm_power(**overrides) -> TelemetryConfig:
@@ -131,7 +135,7 @@ class TestTachometerConfig:
         from srtctl.services.exporters import ProcessExporterService, process_exporter_config_yaml
         from srtctl.services.registry import ServiceLaunchContext
 
-        text = process_exporter_config_yaml()
+        text = process_exporter_config_yaml((TRTLLMBackend(), SGLangBackend(), VLLMBackend()))
         names = [line.split("name:", 1)[1].strip() for line in text.splitlines() if "name:" in line]
         assert names[0] == "frontend"
         assert names.index("trtllm_llmapi_launch") < names.index("dynamo_trtllm")
@@ -142,12 +146,20 @@ class TestTachometerConfig:
             "sglang_dp_controller",
             "sglang_detokenizer",
             "dynamo_vllm",
+            "vllm_engine_core",
+            "vllm_worker",
+            "vllm_api_server",
+            "vllm_dp_coordinator",
+            "vllm_serve",
+            "vllm_router",
             "aiperf",
             "etcd",
             "nats",
         ):
             assert expected in names
         assert names.index("sglang_scheduler") < names.index("dynamo_sglang")
+        assert names.index("vllm_engine_core") < names.index("dynamo_vllm")
+        assert names.index("vllm_worker") < names.index("dynamo_vllm")
         assert "dynamo\\.frontend" in text
 
         # The container launch (a declared container) reaches the group file through /logs.
@@ -171,6 +183,19 @@ class TestTachometerConfig:
             ("sglang::scheduler_DP1_TP1_EP1", "sglang_scheduler"),
             ("sglang::data_parallel_controller", "sglang_dp_controller"),
             ("sglang::detokenizer", "sglang_detokenizer"),
+            ("python3 -m dynamo.vllm --disaggregation-mode decode", "dynamo_vllm"),
+            ("VLLM::EngineCore", "vllm_engine_core"),
+            ("VLLM::EngineCore_DP3", "vllm_engine_core"),
+            ("VLLM::Worker_DP0_TP1_EP1", "vllm_worker"),
+            ("VLLM::APIServer_DP2", "vllm_api_server"),
+            ("VLLM::DPCoordinator", "vllm_dp_coordinator"),
+            ("/usr/bin/python3 /usr/local/bin/vllm serve /model --port 8000", "vllm_serve"),
+            ("vllm-rs serve /model --grpc-port 50051", "vllm_serve"),
+            ("python3 -m vllm.entrypoints.cli.main serve /model --headless", "vllm_serve"),
+            ("python3 -m vllm.entrypoints.openai.api_server", None),
+            ('srun --overlap bash -c "export A=1 && exec vllm serve /model --port 8000"', None),
+            ("python3 /srtctl-runtime/nsys_window.py worker --spec {} -- vllm serve /model", None),
+            ("/opt/nvidia/nsys/bin/nsys launch --trace=nvtx vllm serve /model", None),
             ("trtllm-llmapi-launch-other", None),
             ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node_extra", None),
         ],
@@ -179,7 +204,8 @@ class TestTachometerConfig:
         """Match full argv, including interpreter prefixes and separate engine children."""
         from srtctl.services.exporters import process_exporter_config_yaml
 
-        groups = yaml.safe_load(process_exporter_config_yaml())["process_names"]
+        engines = (TRTLLMBackend(), SGLangBackend(), VLLMBackend())
+        groups = yaml.safe_load(process_exporter_config_yaml(engines))["process_names"]
         matched = next(
             (
                 group["name"]
@@ -189,6 +215,24 @@ class TestTachometerConfig:
             None,
         )
         assert matched == expected
+
+    @pytest.mark.parametrize("engine", [TRTLLMBackend(), SGLangBackend(), VLLMBackend()], ids=lambda b: b.type)
+    def test_process_exporter_groups_come_from_the_recipe_engine(self, engine):
+        """An engine contributes its own groups between the frontend and the shared
+        client/infra groups; other engines' groups are not written."""
+        from srtctl.services.exporters import process_exporter_config_yaml
+
+        names = [group["name"] for group in yaml.safe_load(process_exporter_config_yaml((engine,)))["process_names"]]
+        own = [group.name for group in engine.process_exporter_groups]
+        assert own and names[1 : 1 + len(own)] == own
+        assert names[0] == "frontend" and names[-1] == "dcgm_exporter"
+        others = {
+            group.name
+            for other in (TRTLLMBackend(), SGLangBackend(), VLLMBackend())
+            if other.type != engine.type
+            for group in other.process_exporter_groups
+        }
+        assert not others & set(names)
 
     def test_process_exporter_host_command_uses_host_paths(self):
         """Host-native launch: no /logs mount exists, so the binary and the
@@ -217,7 +261,7 @@ class TestTachometerConfig:
         inherit the power template's 100ms — 10 Hz NVML sampling measured
         ~2% ITL p50 overhead on GB300 decode (isolation runs, 2026-09-06);
         the power path keeps 100ms because dense sampling is its purpose."""
-        from srtctl.cli.mixins.telemetry_stage import DCGM_EXPORTER_COMMAND_TEMPLATE
+        from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE
         from srtctl.services.implicit import find_service
         from srtctl.services.registry import ServiceLaunchContext, get_service_kind
 
@@ -416,11 +460,6 @@ class TestDcgmPowerConfig:
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=None), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[4, 4]), "benchmark.concurrencies"),
             ({}, BenchmarkConfig(type="sa-bench", concurrencies=[0]), "benchmark.concurrencies"),
-            (
-                {},
-                BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="last_decode"),
-                "benchmark.client_placement",
-            ),
         ],
     )
     def test_invalid_configurations_are_rejected(self, telemetry_overrides, benchmark, match):
@@ -429,6 +468,24 @@ class TestDcgmPowerConfig:
                 telemetry=_dcgm_power(**telemetry_overrides),
                 benchmark=benchmark or _sa_bench(),
             )
+
+    @pytest.mark.parametrize("node", ["head", "first_decode", "last_decode"])
+    def test_any_client_placement_is_accepted(self, node):
+        """Clocks are assumed NTP-synchronised across the allocation, so the client may run anywhere."""
+        config = _make_config(
+            telemetry=_dcgm_power(),
+            benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node=node)),
+        )
+
+        assert config.benchmark.placement.node == node
+
+    def test_a_dedicated_client_node_is_accepted(self):
+        config = _make_config(
+            telemetry=_dcgm_power(),
+            benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[4], placement=PlacementConfig(node="dedicated")),
+        )
+
+        assert config.benchmark.placement.dedicated is True
 
     def test_dcgm_power_rejects_a_sample_interval_above_the_contract_limit(self):
         telemetry = TelemetryConfig(
@@ -494,15 +551,19 @@ class TestDcgmPowerConfig:
                 resources=ResourceConfig(gpu_type="h100"),
                 benchmark=_sa_bench(),
                 telemetry=telemetry,
-                infra=InfraConfig(etcd_nats_dedicated_node=dedicated),
+                services=(
+                    [ServiceConfig(name="etcd", type="etcd", placement=ServicePlacementConfig(node="dedicated"))]
+                    if dedicated
+                    else []
+                ),
             )
 
         if rejected:
-            with pytest.raises(ValidationError, match="etcd_nats_dedicated_node"):
+            with pytest.raises(ValidationError, match="placement.node: dedicated"):
                 build()
             return
 
-        assert build().infra.etcd_nats_dedicated_node is dedicated
+        assert build().infra_dedicated_node is dedicated
 
 
 class TestCpuPowerExporterConfig:
@@ -638,7 +699,8 @@ class TestCpuPowerExporterConfig:
             SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/image", precision="fp4"),
-                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+                roles={"agg": RoleConfig(nodes=1, workers=1)},
                 benchmark=_sa_bench(),
                 frontend=FrontendConfig(type="dynamo"),
                 telemetry=TelemetryConfig(
@@ -799,6 +861,32 @@ class TestTachometerConfigGeneration:
         assert 'url = "http://10.0.0.1:8081/metrics"' in config_text
         assert '"cluster" = "pdx"' in config_text
         assert 'name = "frontend0"' in config_text
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_no_worker_metrics_path_adds_no_worker_targets(self, _mock_get_hostname_ip):
+        """A mode with no metrics path (gRPC workers, or a job with no workers) gets no worker target."""
+        runtime = MagicMock()
+        runtime.log_dir = Path("/runs/12345/logs")
+        process = Process(
+            node="node-a",
+            gpu_indices=frozenset({0}),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=[process],
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=TachometerConfig(enabled=True),
+            worker_metrics_paths={"agg": None},
+        )
+
+        assert "backend_" not in config_text
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_storage_leaf_is_never_pre_created(self, _mock_get_hostname_ip, tmp_path):
@@ -992,6 +1080,10 @@ class TestTachometerConfigGeneration:
             runtime=runtime,
             tachometer=tachometer,
             frontend_type="trtllm_serve",
+            worker_metrics_paths={
+                mode: get_frontend("trtllm_serve").worker_metrics_path(TRTLLMBackend(), mode)
+                for mode in ("prefill", "decode", "agg")
+            },
         )
 
         # Worker leaders: OpenAI http_port at the Prometheus mount.

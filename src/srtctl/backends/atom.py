@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import builtins
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -15,91 +15,39 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, role_args
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, LMCACHE_SERVER_PORT
 
 if TYPE_CHECKING:
-    from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
-WorkerMode = Literal["prefill", "decode", "agg"]
-
 
 @dataclass(frozen=True)
-class AtomServerConfig:
-    """Native ATOM CLI arguments for each serving role."""
-
-    prefill: dict[str, Any] | None = None
-    decode: dict[str, Any] | None = None
-    aggregated: dict[str, Any] | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
-class AtomProtocol:
+class AtomBackend(Backend):
     """Launch ``atom.entrypoints.openai_server`` on ROCm workers."""
 
+    # Engine type discriminator.
     type: Literal["atom"] = "atom"
-    prefill_environment: dict[str, str] = field(default_factory=dict)
-    decode_environment: dict[str, str] = field(default_factory=dict)
-    aggregated_environment: dict[str, str] = field(default_factory=dict)
-    atom_config: AtomServerConfig | None = None
+    # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
+    # never written on `engine:`. Per-role env and native ATOM CLI args are read from here.
+    roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
+    # KV-transfer connector between prefill and decode workers.
     connector: Literal["mooncake"] = "mooncake"
+    # Mooncake transport; unset lets ATOM choose.
     mooncake_protocol: Literal["rdma", "tcp"] | None = None
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
-    def get_srun_config(self) -> SrunConfig:
-        from srtctl.backends.base import SrunConfig
-
-        return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
-
-    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
-        """The srun step exits with the engine; its exit code is the whole story."""
-        return ()
-
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        if self.atom_config is None:
-            return {}
-        values = {
-            "prefill": self.atom_config.prefill,
-            "decode": self.atom_config.decode,
-            "agg": self.atom_config.aggregated,
-        }
-        return dict(values.get(mode) or {})
-
-    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        values = {
-            "prefill": self.prefill_environment,
-            "decode": self.decode_environment,
-            "agg": self.aggregated_environment,
-        }
-        return dict(values.get(mode) or {})
-
-    def get_process_environment(self, process: Process) -> dict[str, str]:
-        return {}
-
     def get_served_model_name(self, default: str) -> str:
+        """The name ATOM serves: a role's ``served-model-name``, else its literal ``--model``."""
+        for mode in ("prefill", "agg", "decode"):
+            args = role_args(self.roles, mode)
+            name = args.get("served-model-name") or args.get("served_model_name")
+            if name:
+                return name
         return default
-
-    @property
-    def mooncake_kv_store(self) -> None:
-        return None
-
-    @property
-    def failover(self) -> None:
-        return None
-
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        return {}
-
-    def get_failover_environment(self, process: Process, job_id: str) -> dict[str, str]:
-        return {}
-
-    def should_set_visible_devices(self) -> bool:
-        return True
 
     def allocate_endpoints(
         self,

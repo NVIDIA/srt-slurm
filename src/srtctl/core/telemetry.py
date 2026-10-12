@@ -13,7 +13,7 @@ from srtctl.core.ip_utils import url_host
 from srtctl.core.slurm import get_hostname_ip
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from srtctl.cli.mixins.frontend_stage import FrontendTopology
     from srtctl.core.runtime import RuntimeContext
@@ -69,6 +69,7 @@ def generate_tachometer_config(
     tachometer: TachometerConfig,
     frontend_type: str = "dynamo",
     frontend_metrics_port: int | None = None,
+    worker_metrics_paths: Mapping[str, str | None] | None = None,
     service_targets: Sequence[ServiceMetricsTarget] = (),
 ) -> str:
     """Generate Tachometer TOML from the worker and frontend topology plus the services' metrics.
@@ -104,7 +105,9 @@ def generate_tachometer_config(
     """
     from srtctl.frontends import FRONTEND_NONE, get_frontend
 
-    # The frontend says which rank serves metrics on which port and at what path;
+    # The frontend says which rank serves metrics on which port, and at what path
+    # (``worker_metrics_paths``, one per worker mode, resolved by the caller with the
+    # backend; a mode missing or ``None`` serves no metrics; unset means ``/metrics``);
     # a services-only job has no frontend and no worker processes.
     frontend = None if frontend_type == FRONTEND_NONE else get_frontend(frontend_type)
     metrics_path = frontend.metrics_path if frontend is not None else "/metrics"
@@ -126,10 +129,13 @@ def generate_tachometer_config(
         # (Dynamo: every rank on its system port; native servers: the leader or
         # each routable pool on its HTTP port) is the frontend's call.
         port = frontend.worker_metrics_port(process, runtime) if frontend is not None else None
-        if port is None:
+        worker_metrics_path = (
+            "/metrics" if worker_metrics_paths is None else worker_metrics_paths.get(process.endpoint_mode)
+        )
+        if port is None or worker_metrics_path is None:
             continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        url = f"http://{url_host(node_ip)}:{port}{metrics_path}"
+        url = f"http://{url_host(node_ip)}:{port}{worker_metrics_path}"
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),

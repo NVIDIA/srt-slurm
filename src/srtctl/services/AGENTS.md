@@ -11,13 +11,13 @@ services:
   - name: etcd
     type: etcd
     placement:
-      node: dedicated    # reserve a node for the discovery plane (v1: infra.etcd_nats_dedicated_node)
+      node: dedicated    # reserve a node for the discovery plane
   - name: nats
     type: nats
     placement:
       node: dedicated
     options:
-      max_payload_mb: 24 # v1: infra.nats_max_payload_mb
+      max_payload_mb: 24
 ```
 
 `services/normalize.py` maps declared etcd/nats/mooncake-master entries back onto `infra` and `backend.mooncake_kv_store` before schema load, so the runtime reads one set of fields. Adding a kind: subclass `ServiceKind` in `services/`, `@register_service("<type>")`, import it from `services/__init__.py`; if the rest of the recipe should imply it, add it to `implied_services`. See `docs/services.md`.

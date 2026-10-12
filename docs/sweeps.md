@@ -117,6 +117,8 @@ benchmark:
   concurrencies: "{conc}"
 ```
 
+A value that is exactly one placeholder takes the swept value with its original type (an integer stays an integer); a placeholder inside a longer string is interpolated as text. Each job is named `<name>_<param><value>_<param><value>...` and is otherwise the recipe with `sweep:` removed. To combine a sweep with override variants, see [Combining All Modes](overrides.md#combining-all-modes).
+
 ## Auto-Detection
 
 Sweep configs are automatically detected by the presence of a `sweep:` section. You don't need to pass `--sweep` flag:

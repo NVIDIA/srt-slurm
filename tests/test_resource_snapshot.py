@@ -32,20 +32,22 @@ CPU revision    : 1
 ARM_CPU_MODEL = "ARM CPU implementer 0x41 part 0xd49 (architecture 8, variant 0x1, revision 1)"
 
 
-def _config(**resource_overrides) -> SrtConfig:
-    resources = {
-        "gpu_type": "b300",
-        "gpus_per_node": 8,
-        "agg_nodes": 1,
-        "agg_workers": 1,
-        "gpus_per_agg": 4,
-    }
-    resources.update(resource_overrides)
+def _config(**overrides) -> SrtConfig:
+    resources = {"gpu_type": "b300", "gpus_per_node": 8}
+    agg = {"nodes": 1, "workers": 1, "gpus": 4}
+    for key, value in overrides.items():
+        if key.startswith("agg_"):
+            agg[key.removeprefix("agg_")] = value
+        elif key == "gpus_per_agg":
+            agg["gpus"] = value
+        else:
+            resources[key] = value
     return SrtConfig.Schema().load(
         {
             "name": "cpu-allocation-test",
             "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
             "resources": resources,
+            "roles": {"agg": agg},
         }
     )
 

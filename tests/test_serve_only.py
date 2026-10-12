@@ -14,26 +14,23 @@ import yaml
 from srtctl.cli import submit as submit_cli
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
-from srtctl.core.config import load_config
+from srtctl.core.config import load_config, resolve_config_with_defaults
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import JobStage, JobStatus
 from srtctl.core.topology import Process
 
 CONFIG = {
+    "schema": 2,
     "name": "serve-only-test",
     "model": {
         "path": "hf:fake/mock-model",
         "container": "nvcr.io/fake:latest",
         "precision": "fp8",
     },
-    "resources": {
-        "gpu_type": "h100",
-        "gpus_per_node": 8,
-        "agg_nodes": 1,
-        "agg_workers": 1,
-    },
-    "backend": {"type": "sglang"},
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "engine": "sglang",
+    "roles": {"agg": {"nodes": 1, "workers": 1}},
     "frontend": {"type": "sglang-router", "enable_multiple_frontends": False},
     "benchmark": {"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": [1]},
 }
@@ -80,7 +77,9 @@ def test_serve_only_is_forwarded_to_the_slurm_orchestrator(monkeypatch, tmp_path
 class _ServeOnlyHarness(BenchmarkStageMixin):
     def __init__(self, log_dir: Path) -> None:
         self.serve_only = True
-        self.config = SrtConfig.Schema().load(CONFIG)
+        # Expand the 2.0 engine:/roles: vocabularies into the internal fields the
+        # marshmallow schema reads; the dict is deep-copied, CONFIG is untouched.
+        self.config = SrtConfig.Schema().load(resolve_config_with_defaults(CONFIG, None))
         self.runtime = RuntimeContext(
             job_id="12345",
             run_name="serve-only-test",
@@ -105,6 +104,7 @@ class _ServeOnlyHarness(BenchmarkStageMixin):
 def test_serve_only_waits_for_health_but_never_loads_a_benchmark(tmp_path: Path) -> None:
     harness = _ServeOnlyHarness(tmp_path)
     registry = MagicMock()
+    registry.has_failures = False
     reporter = MagicMock()
     stop_event = threading.Event()
     stop_event.set()
@@ -124,6 +124,29 @@ def test_serve_only_waits_for_health_but_never_loads_a_benchmark(tmp_path: Path)
     wait_for_model.assert_called_once()
     get_runner.assert_not_called()
     reporter.report.assert_called_once_with(JobStatus.FRONTEND, JobStage.FRONTEND, "Inference endpoint ready")
+
+
+def test_serve_only_fails_when_the_process_monitor_stopped_it_after_a_critical_exit(tmp_path: Path) -> None:
+    """The monitor thread ticks faster than the serve loop and sets stop_event on a critical
+    failure; the loop must not mistake that stop for a clean shutdown."""
+    harness = _ServeOnlyHarness(tmp_path)
+    registry = MagicMock()
+    registry.has_failures = True  # the monitor already recorded the failure before stopping us
+    registry.check_failures.return_value = False  # a rescan after cleanup must not be what decides
+    stop_event = threading.Event()
+    stop_event.set()
+
+    with (
+        patch(
+            "srtctl.cli.mixins.benchmark_stage._get_health_expectations",
+            return_value=(0, 1, "one aggregate worker", 1),
+        ),
+        patch("srtctl.cli.mixins.benchmark_stage.wait_for_model", return_value=True),
+        patch("srtctl.cli.mixins.benchmark_stage.collect_worker_fingerprints", return_value=[]),
+    ):
+        exit_code = harness.run_benchmark(registry, stop_event, MagicMock())
+
+    assert exit_code == 1
 
 
 def test_serve_only_takes_precedence_over_eval_only(monkeypatch, tmp_path: Path) -> None:

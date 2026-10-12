@@ -42,13 +42,17 @@ disclosure exposes normalized identity plus complete raw metadata and label JSON
 The chart uses `uPlot.join` to align the original timestamps. Explicit nulls stay
 null and alignment holes are undefined, as documented by the upstream
 [`join` implementation](https://github.com/leeoniya/uPlot/blob/1.6.32/src/utils.js).
-It does not resample or add observations. A series with `temporal: "setting"`
+It does not resample sample observations. A series with `temporal: "setting"`
 has separate display coordinates that hold configuration until its next recorded
 change and clip it to the view boundaries; raw points remain unchanged. Hover values show the
 nearest recorded sample with its actual timestamp. Sample evidence remains in
 the unchanged input objects; this component only reads timestamps and values.
 When a series declares `conflict_timestamps`, those timestamps become explicit
 plot gaps; conflicting numeric observations remain in the raw query evidence.
+For `temporal: "event"`, every source-line observation remains in raw queries.
+The chart needs one value per timestamp and uses the median of simultaneous
+events only for display; its hover text gives the event count. It does not add
+a raw point or alter per-request query statistics.
 
 ## Metric catalog and loading
 

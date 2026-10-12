@@ -111,13 +111,13 @@ def _cpu_model() -> str | None:
 
 
 def _worker_gpu_count(config: SrtConfig) -> int:
-    resources = config.resources
+    resources = config.topology
     return resources.prefill_gpus + resources.decode_gpus + resources.num_agg * resources.gpus_per_agg
 
 
 def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[str, int]:
     """Return backend GPU demand by node, using the same endpoint placement as workers."""
-    resources = config.resources
+    resources = config.topology
     try:
         if runtime.nodes.het:
             from srtctl.core.topology import allocate_endpoints_het

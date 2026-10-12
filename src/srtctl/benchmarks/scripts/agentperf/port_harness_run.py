@@ -15,8 +15,8 @@ artifacts the harness leaves behind and emits:
 
 Sources parsed (all verified against real harness runs):
   job_params.env         container image, model path, concurrencies, backend
-  ctx_config.yaml        -> backend.trtllm_config.prefill (verbatim, paths rewritten)
-  gen_config.yaml        -> backend.trtllm_config.decode  (verbatim, paths rewritten)
+  ctx_config.yaml        -> roles.prefill.args (verbatim, paths rewritten)
+  gen_config.yaml        -> roles.decode.args  (verbatim, paths rewritten)
   client_cmds_base.sh    pinned agentperf-client checkout path
   client.log             the client's resolved-config banner (workload knobs)
   job.log                srun lines: worker env, frontend env, topology
@@ -242,7 +242,7 @@ def parse_job_log(run_dir: Path, prov: Provenance) -> dict:
             toks = _quoted_env_tokens(line)
             if toks and not out["prefill_env"]:
                 out["prefill_env"] = translate_env(toks)
-                prov.add("backend.prefill_environment", "job.log CTX srun line (translated)")
+                prov.add("roles.prefill.env", "job.log CTX srun line (translated)")
                 cvd = next((t for t in toks if t.startswith("CUDA_VISIBLE_DEVICES=")), None)
                 if cvd:
                     gpus_per_node = len(cvd.split("=", 1)[1].split(","))
@@ -252,7 +252,7 @@ def parse_job_log(run_dir: Path, prov: Provenance) -> dict:
             toks = _quoted_env_tokens(line)
             if toks and not out["decode_env"]:
                 out["decode_env"] = translate_env(toks)
-                prov.add("backend.decode_environment", "job.log GEN srun line (translated)")
+                prov.add("roles.decode.env", "job.log GEN srun line (translated)")
             if nodelist:
                 gen_nodelists.append(nodelist.group(1).split(","))
         elif "4_output_frontend" in line:
@@ -350,11 +350,11 @@ def main(argv: list[str] | None = None) -> int:
     ctx = yaml.safe_load(_read(run_dir / "ctx_config.yaml") or "") or {}
     gen = yaml.safe_load(_read(run_dir / "gen_config.yaml") or "") or {}
     if ctx:
-        prov.add("backend.trtllm_config.prefill", "ctx_config.yaml (verbatim, paths rewritten)")
+        prov.add("roles.prefill.args", "ctx_config.yaml (verbatim, paths rewritten)")
     else:
         prov.todo("ctx_config.yaml unreadable")
     if gen:
-        prov.add("backend.trtllm_config.decode", "gen_config.yaml (verbatim, paths rewritten)")
+        prov.add("roles.decode.args", "gen_config.yaml (verbatim, paths rewritten)")
     else:
         prov.todo("gen_config.yaml unreadable")
     ctx, gen = rewrite_tree(ctx, rewrites), rewrite_tree(gen, rewrites)
@@ -398,6 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     topo = joblog["topology"]
     model_path = rewrite(params.get("MODEL_PATH", "/TODO/model/path"), rewrites)
     recipe = {
+        "schema": 2,
         "name": re.sub(r"[^a-zA-Z0-9-]+", "-", run_dir.resolve().parent.name)[:64] or "agentperf-ported-run",
         "model": {
             "path": model_path,
@@ -407,20 +408,23 @@ def main(argv: list[str] | None = None) -> int:
         "resources": {
             "gpu_type": "gb300",  # TODO'd below — not recoverable from the run dir
             "gpus_per_node": topo.get("gpus_per_node") or 4,
-            "prefill_nodes": topo.get("prefill_nodes") or 1,
-            "prefill_workers": topo.get("prefill_workers") or 1,
-            "decode_nodes": topo.get("decode_nodes") or 1,
-            "decode_workers": topo.get("decode_workers") or 1,
         },
         "dynamo": {"install": False, "request_plane": joblog["frontend_env"].get("DYN_REQUEST_PLANE", "tcp"),
                    "event_plane": "zmq"},
-        "backend": {
-            "type": "trtllm",
-            "numa_memory_bind": True,
-            "numa_cpu_bind": cpu_pinned,
-            "prefill_environment": joblog["prefill_env"],
-            "decode_environment": joblog["decode_env"],
-            "trtllm_config": {"prefill": ctx, "decode": gen},
+        "engine": {"type": "trtllm", "numa_memory_bind": True, "numa_cpu_bind": cpu_pinned},
+        "roles": {
+            "prefill": {
+                "nodes": topo.get("prefill_nodes") or 1,
+                "workers": topo.get("prefill_workers") or 1,
+                "env": joblog["prefill_env"],
+                "args": ctx,
+            },
+            "decode": {
+                "nodes": topo.get("decode_nodes") or 1,
+                "workers": topo.get("decode_workers") or 1,
+                "env": joblog["decode_env"],
+                "args": gen,
+            },
         },
         "frontend": {
             "type": "dynamo",
@@ -428,11 +432,10 @@ def main(argv: list[str] | None = None) -> int:
             "args": build_frontend_args(joblog["frontend_env"]),
             "env": joblog["frontend_env"],
         },
-        "infra": {"etcd_nats_dedicated_node": False},
         "observability": {"enabled": False},
         "benchmark": {
             "type": "agentperf",
-            "client_placement": "last_decode",
+            "placement": {"node": "last_decode"},
             "concurrency": concurrencies[0] if concurrencies and len(concurrencies) == 1 else None,
             "concurrencies": concurrencies if concurrencies and len(concurrencies) > 1 else None,
             "agentperf_client_dir": rewrite(client_dir, rewrites) if client_dir else "/TODO/agentperf-client",
@@ -444,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     prov.todo("resources.gpu_type is guessed as gb300 — set it for your cluster")
     prov.todo(f"benchmark.agentperf_config is set to {args.workload_out.resolve()} — "
               "move the workload YAML somewhere container-visible and update the path")
-    prov.todo("review benchmark.client_placement (last_decode = client on the decode leader node, "
+    prov.todo("review benchmark.placement.node (last_decode = client on the decode leader node, "
               "matching the harness's client-on-GEN placement)")
 
     args.out.write_text(yaml.safe_dump(recipe, sort_keys=False))

@@ -24,9 +24,7 @@ roles:
     workers: 1
     gpus: 8
 
-backend:
-  type: sglang
-
+engine: sglang
 frontend:
   type: sglang
   enable_multiple_frontends: false

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from srtctl.backends import VLLMProtocol
+from srtctl.backends import VLLMBackend
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.schema import ClusterConfig, SrtConfig
@@ -36,7 +36,7 @@ def test_worker_mask_uses_cluster_setting(indices, enabled, sidecar, expected):
     )
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
-        backend=VLLMProtocol(set_visible_devices=enabled),
+        backend=VLLMBackend(set_visible_devices=enabled),
         dynamo=SimpleNamespace(sidecar=sidecar),
     )
     mixin.config.backend_for_role = lambda mode: mixin.config.backend
@@ -49,9 +49,11 @@ def test_cluster_can_disable_gpu_exporter_without_disabling_host_metrics():
     cluster = ClusterConfig.Schema().dump(ClusterConfig.Schema().load({"default_gpu_exporter": None}))
     resolved = resolve_config_with_defaults(
         {
+            "schema": 2,
             "name": "test",
             "model": {"path": "/model", "container": "/image", "precision": "bf16"},
-            "resources": {"gpu_type": "mi355x", "agg_nodes": 1},
+            "resources": {"gpu_type": "mi355x"},
+            "roles": {"agg": {"nodes": 1}},
         },
         cluster,
     )
@@ -64,9 +66,11 @@ def test_cluster_can_disable_gpu_exporter_without_disabling_host_metrics():
 @pytest.mark.parametrize("recipe_override", [False, True])
 def test_exporter_resolution_honors_recipe_and_resolves_cluster_image_alias(recipe_override):
     recipe = {
+        "schema": 2,
         "name": "test",
         "model": {"path": "/model", "container": "/image", "precision": "bf16"},
-        "resources": {"gpu_type": "mi355x", "agg_nodes": 1},
+        "resources": {"gpu_type": "mi355x"},
+        "roles": {"agg": {"nodes": 1}},
     }
     if recipe_override:
         recipe["observability"] = {

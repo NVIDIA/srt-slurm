@@ -47,6 +47,7 @@ UNAVAILABLE = "unavailable"
 FRAMEWORK_PACKAGES: dict[str, str] = {
     "vllm": "vllm",
     "tilert": "tilert",
+    "tokenspeed": "tokenspeed",
     "sglang": "sglang",
     "sglang-router": "sglang-router",
     "amd-mori": "amd_mori",

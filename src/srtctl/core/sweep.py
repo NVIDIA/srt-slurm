@@ -51,6 +51,14 @@ def expand_template(template: Any, values: dict[str, Any]) -> Any:
 def generate_sweep_configs(sweep_config: dict) -> list[tuple[dict, dict]]:
     """Generate all job configs from a sweep configuration.
 
+    Each point is the sweep document minus ``sweep:``, with every ``{param}``
+    placeholder substituted and a unique ``name``. It stays in the recipe layout
+    the author wrote (``schema: 2``, ``engine:``, ``roles:``, ...), so the file
+    ``srtctl apply`` writes for the job is a recipe like any other: the job's
+    ``load_config`` applies the cluster defaults and the same validation as a
+    hand-written recipe. Every point is loaded here first so a bad sweep fails
+    before anything is submitted.
+
     Args:
         sweep_config: Config dict with 'sweep' section defining parameters
 
@@ -60,11 +68,17 @@ def generate_sweep_configs(sweep_config: dict) -> list[tuple[dict, dict]]:
     if "sweep" not in sweep_config:
         raise ValueError("Sweep config must have 'sweep' section")
 
-    # Apply cluster defaults before sweep expansion
-    from srtctl.core.config import load_cluster_config, resolve_config_with_defaults
+    from srtctl.core.config import (
+        expand_engine_config_defaults,
+        load_cluster_config,
+        require_current_schema,
+        resolve_config_with_defaults,
+    )
+    from srtctl.core.schema import SrtConfig
 
+    require_current_schema(sweep_config)
     cluster_config = load_cluster_config()
-    sweep_config = resolve_config_with_defaults(sweep_config, cluster_config)
+    schema = SrtConfig.Schema()
 
     # Extract sweep parameters
     sweep_params = sweep_config["sweep"]
@@ -89,12 +103,10 @@ def generate_sweep_configs(sweep_config: dict) -> list[tuple[dict, dict]]:
         param_str = "_".join(f"{k}{v}" for k, v in params.items())
         config["name"] = f"{sweep_config['name']}_{param_str}"
 
-        # Validate and serialize back to dict
-        from srtctl.core.schema import SrtConfig
-
-        schema = SrtConfig.Schema()
-        validated = schema.load(config)
-        config = schema.dump(validated)
+        # Validate the point exactly as load_config will when it is submitted.
+        resolved = resolve_config_with_defaults(config, cluster_config)
+        expand_engine_config_defaults(resolved)
+        schema.load(resolved)
 
         configs.append((config, params))
 

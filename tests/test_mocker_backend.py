@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from srtctl.backends import MockerProtocol, MockerServerConfig
-from srtctl.core.schema import SrtConfig
+from srtctl.backends import MockerBackend
+from srtctl.core.schema import SrtConfig, RoleConfig
 
 # ============================================================================
 # Helpers
@@ -55,10 +55,12 @@ class TestMockerConfigLoading:
     def test_minimal_mocker_config(self):
         """Minimal mocker configuration loads correctly."""
         data = {
+            "schema": 2,
             "name": "test-mocker",
             "model": {"path": "hf:Qwen/Qwen3-0.6B", "container": "test", "precision": "fp16"},
-            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {"type": "mocker"},
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "engine": "mocker",
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)
@@ -66,11 +68,11 @@ class TestMockerConfigLoading:
             config = SrtConfig.from_yaml(Path(f.name))
 
         assert config.backend_type == "mocker"
-        assert isinstance(config.backend, MockerProtocol)
+        assert isinstance(config.backend, MockerBackend)
 
     def test_mocker_defaults(self):
-        """MockerProtocol has correct defaults."""
-        backend = MockerProtocol()
+        """MockerBackend has correct defaults."""
+        backend = MockerBackend()
         assert backend.type == "mocker"
         assert backend.engine_type == "vllm"
         assert backend.speedup_ratio == 100.0
@@ -91,10 +93,11 @@ class TestMockerConfigLoading:
     def test_mocker_with_custom_fields(self):
         """Custom fields deserialize correctly."""
         data = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "test", "container": "test", "precision": "fp16"},
-            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "engine": {
                 "type": "mocker",
                 "engine_type": "sglang",
                 "speedup_ratio": 50.0,
@@ -103,6 +106,7 @@ class TestMockerConfigLoading:
                 "kv_cache_dtype": "fp8_e4m3",
                 "enable_prefix_caching": False,
             },
+            "roles": {"agg": {"nodes": 1, "workers": 1}},
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(data, f)
@@ -110,7 +114,7 @@ class TestMockerConfigLoading:
             config = SrtConfig.from_yaml(Path(f.name))
 
         backend = config.backend
-        assert isinstance(backend, MockerProtocol)
+        assert isinstance(backend, MockerBackend)
         assert backend.engine_type == "sglang"
         assert backend.speedup_ratio == 50.0
         assert backend.num_gpu_blocks_override == 8192
@@ -121,15 +125,15 @@ class TestMockerConfigLoading:
     def test_mocker_with_per_mode_config(self):
         """Per-mode mocker_config deserializes correctly."""
         data = {
+            "schema": 2,
             "name": "test",
             "model": {"path": "test", "container": "test", "precision": "fp16"},
-            "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-            "backend": {
-                "type": "mocker",
-                "mocker_config": {
-                    "prefill": {"max-num-seqs": 512},
-                    "decode": {"max-num-seqs": 128},
-                },
+            "resources": {"gpu_type": "gb200", "gpus_per_node": 4},
+            "engine": "mocker",
+            "roles": {
+                "prefill": {"args": {"max-num-seqs": 512}},
+                "decode": {"args": {"max-num-seqs": 128}},
+                "agg": {"nodes": 1, "workers": 1},
             },
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -138,16 +142,15 @@ class TestMockerConfigLoading:
             config = SrtConfig.from_yaml(Path(f.name))
 
         backend = config.backend
-        assert isinstance(backend, MockerProtocol)
+        assert isinstance(backend, MockerBackend)
         assert backend.get_config_for_mode("prefill") == {"max-num-seqs": 512}
         assert backend.get_config_for_mode("decode") == {"max-num-seqs": 128}
         assert backend.get_config_for_mode("agg") == {}
 
     def test_mocker_with_environment(self):
         """Per-mode environment vars deserialize correctly."""
-        backend = MockerProtocol(
-            prefill_environment={"FOO": "bar"},
-            decode_environment={"BAZ": "qux"},
+        backend = MockerBackend(
+            roles={"prefill": RoleConfig(env={"FOO": "bar"}), "decode": RoleConfig(env={"BAZ": "qux"})}
         )
         assert backend.get_environment_for_mode("prefill") == {"FOO": "bar"}
         assert backend.get_environment_for_mode("decode") == {"BAZ": "qux"}
@@ -162,7 +165,7 @@ class TestMockerConfigLoading:
         for example in example_dir.glob("*.yaml"):
             config = SrtConfig.from_yaml(example)
             assert config.backend_type == "mocker"
-            assert isinstance(config.backend, MockerProtocol)
+            assert isinstance(config.backend, MockerBackend)
 
 
 # ============================================================================
@@ -175,7 +178,7 @@ class TestMockerCommandConstruction:
 
     def test_agg_basic_command(self):
         """Aggregated mode produces correct base command."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process(mode="agg")
         runtime = _make_runtime(is_hf=False)
 
@@ -191,7 +194,7 @@ class TestMockerCommandConstruction:
 
     def test_prefill_mode(self):
         """Prefill mode includes disaggregation and bootstrap port."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process(mode="prefill", bootstrap_port=31000)
         runtime = _make_runtime(is_hf=False)
 
@@ -204,7 +207,7 @@ class TestMockerCommandConstruction:
 
     def test_decode_mode(self):
         """Decode mode includes disaggregation, no bootstrap port."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process(mode="decode")
         runtime = _make_runtime(is_hf=False)
 
@@ -216,7 +219,7 @@ class TestMockerCommandConstruction:
 
     def test_hf_model_uses_model_id(self):
         """HF model passes model ID directly."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process()
         runtime = _make_runtime(is_hf=True)
 
@@ -227,7 +230,7 @@ class TestMockerCommandConstruction:
 
     def test_local_model_uses_container_mount(self):
         """Local model passes /model container path."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process()
         runtime = _make_runtime(is_hf=False)
 
@@ -242,7 +245,7 @@ class TestMockerCommandConstruction:
         Without it the mocker registers the /model mount as "model" and the
         benchmark 404s.
         """
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process()
 
         local_cmd = backend.build_worker_command(
@@ -257,7 +260,7 @@ class TestMockerCommandConstruction:
 
     def test_core_params_always_present(self):
         """Core simulation params are always emitted."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process()
         runtime = _make_runtime(is_hf=False)
 
@@ -279,7 +282,7 @@ class TestMockerCommandConstruction:
 
     def test_optional_flags_omitted_by_default(self):
         """Default optional fields don't produce CLI flags."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process()
         runtime = _make_runtime(is_hf=False)
 
@@ -298,7 +301,7 @@ class TestMockerCommandConstruction:
 
     def test_optional_flags_emitted_when_set(self):
         """Non-default optional fields produce correct CLI flags."""
-        backend = MockerProtocol(
+        backend = MockerBackend(
             block_size=32,
             num_workers=4,
             startup_time=5.0,
@@ -326,10 +329,8 @@ class TestMockerCommandConstruction:
 
     def test_per_mode_config_appended(self):
         """Per-mode mocker_config overrides are appended as CLI args."""
-        backend = MockerProtocol(
-            mocker_config=MockerServerConfig(
-                prefill={"max-num-seqs": 512, "enable-prefix-caching": True},
-            ),
+        backend = MockerBackend(
+            roles={"prefill": RoleConfig(args={"max-num-seqs": 512, "enable-prefix-caching": True})}
         )
         process = _make_process(mode="prefill", bootstrap_port=31000)
         runtime = _make_runtime(is_hf=False)
@@ -349,7 +350,7 @@ class TestMockerCommandConstruction:
 
     def test_nsys_prefix(self):
         """nsys prefix is prepended to command."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process()
         runtime = _make_runtime(is_hf=False)
         nsys = ["nsys", "profile", "-o", "output"]
@@ -372,7 +373,7 @@ class TestMockerTopology:
 
     def test_agg_allocation(self):
         """Aggregated mode allocates a single endpoint."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         endpoints = backend.allocate_endpoints(
             num_prefill=0,
             num_decode=0,
@@ -388,7 +389,7 @@ class TestMockerTopology:
 
     def test_disagg_allocation(self):
         """Disaggregated mode allocates prefill and decode endpoints."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         endpoints = backend.allocate_endpoints(
             num_prefill=1,
             num_decode=1,
@@ -404,7 +405,7 @@ class TestMockerTopology:
 
     def test_srun_config(self):
         """Mocker uses per-process launching, no MPI."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         srun_config = backend.get_srun_config()
         assert srun_config.mpi is None
         assert srun_config.oversubscribe is False
@@ -412,11 +413,11 @@ class TestMockerTopology:
 
     def test_process_environment_empty(self):
         """Mocker has no per-process env vars."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         process = _make_process()
         assert backend.get_process_environment(process) == {}
 
     def test_served_model_name_default(self):
         """Mocker returns the default model name."""
-        backend = MockerProtocol()
+        backend = MockerBackend()
         assert backend.get_served_model_name("my-model") == "my-model"

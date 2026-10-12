@@ -5,8 +5,8 @@ Use `roles.prefill.engine: vllm`, `roles.decode.engine: tilert`, and
 Set `frontend.enable_multiple_frontends: false`.
 Recipes:
 
-- [B200 / NIXL](../examples/tilert/glm5-disagg.yaml)
-- [MI355X / Mooncake](../examples/tilert/glm5-rocm-mooncake-disagg.yaml)
+- [B200 / NIXL](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tilert/glm5-disagg.yaml)
+- [MI355X / Mooncake](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tilert/glm5-rocm-mooncake-disagg.yaml)
 
 The supported pairing is **vLLM prefill + TileRT decode + TileRT router**.
 Configuration loading rejects other engine/router combinations before Slurm
@@ -43,7 +43,7 @@ srtctl sets the decode HTTP/control ports and `--engine tilert`; other options
 come from `roles.decode.args`. Workers must pass `/health` before the router
 starts. TileRT decode has no `/metrics`, so only prefill metrics are scraped.
 
-The [role-engine restrictions](config-reference.md#roles) also apply.
+The [role-engine restrictions](topology.md#roles) also apply.
 
 ## Benchmarks
 

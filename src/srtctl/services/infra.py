@@ -83,7 +83,7 @@ class NatsService(_InfraKind):
     """NATS with JetStream for the Dynamo request and event planes.
 
     ``options.max_payload_mb`` raises the message size limit (needed for long
-    prompts on the NATS request plane; today's ``infra.nats_max_payload_mb``).
+    prompts on the NATS request plane).
     """
 
     default_readiness_ports = (NATS_PORT,)

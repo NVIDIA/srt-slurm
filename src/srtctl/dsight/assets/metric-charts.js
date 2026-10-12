@@ -94,13 +94,33 @@
 
   function normalizedSeries(raw) {
     const conflicts = new Set(raw.conflict_timestamps || []), seen = new Set(), points = [];
+    const eventCounts = new Map();
+    if (raw.temporal === "event") {
+      // Keep every request in raw/query points. Plot one display value per clock
+      // tick because uPlot requires unique x coordinates within each series.
+      const groups = new Map();
+      for (const point of raw.points || []) {
+        if (!Number.isFinite(point[0])) continue;
+        if (!groups.has(point[0])) groups.set(point[0], []);
+        groups.get(point[0]).push(point);
+      }
+      for (const [time, events] of groups) {
+        const values = events.map(point => point[1]).filter(Number.isFinite).sort((a, b) => a - b);
+        const middle = Math.floor(values.length / 2);
+        const median = values.length ? (values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2) : null;
+        points.push([time, median, ...(events.length === 1 ? events[0].slice(2) : [])]);
+        eventCounts.set(time, events.length);
+      }
+      points.sort((a, b) => a[0] - b[0]);
+      return {raw, id: String(raw.id), labels: labelMap(raw), fullLabel: seriesLabel(raw), points, eventCounts};
+    }
     for (const point of raw.points || []) {
       if (!Number.isFinite(point[0]) || seen.has(point[0])) continue;
       seen.add(point[0]);
       points.push([point[0], conflicts.has(point[0]) || !Number.isFinite(point[1]) ? null : point[1], ...point.slice(2)]);
     }
     points.sort((a, b) => a[0] - b[0]);
-    return {raw, id: String(raw.id), labels: labelMap(raw), fullLabel: seriesLabel(raw), points};
+    return {raw, id: String(raw.id), labels: labelMap(raw), fullLabel: seriesLabel(raw), points, eventCounts};
   }
 
   function referenceAt(item, time) {
@@ -186,6 +206,7 @@
       ...series.filter(item => item.reference).map(item => ({item: item.reference, owner: item, reference: true})),
     ];
     const note = element("p", "ds-metric-note", "Click a legend entry to show or hide its line. Drag across the plot to set the shared time range. Hover values show the nearest recorded sample and its timestamp." + (hasConflicts ? " Conflicting values at the same timestamp are shown as gaps; raw evidence retains every value." : ""));
+    if (series.some(item => item.raw.temporal === "event")) note.textContent += " Request events remain separate in raw queries. When events share a logged timestamp, this chart displays their median at that timestamp; hover shows the event count. The line between events is a display guide, not continuous occupancy.";
     if (hasCapacity) note.textContent += " Solid lines show observations; matching dashed lines show limits. Settings are held until the next recorded configuration; sampled limits are not extended. Peak and usage summarize recorded samples in this range, not continuous occupancy.";
     else if (series.some(item => item.raw.temporal === "setting")) note.textContent += " Dashed steps hold the recorded configuration until it changes; hover shows the original setting timestamp.";
     tools.append(element("h3", "ds-metric-title", title), count);
@@ -249,9 +270,13 @@
       for (const {item, value} of legendRows) {
         const sample = item.raw.temporal === "setting" ? referenceAt(item, time ?? to) : nearestPoint(item.points, time ?? to, from, to);
         const unit = item.raw.unit ? " " + item.raw.unit : "";
-        value.textContent = sample ? `${numberText(sample[1])}${sample[1] === null ? "" : unit} @ ${numberText(sample[0])}s` : "No sample in range";
+        const eventCount = item.raw.temporal === "event" && sample ? item.eventCounts.get(sample[0]) || 1 : 0;
+        value.textContent = sample ? `${eventCount > 1 ? "median " : ""}${numberText(sample[1])}${sample[1] === null ? "" : unit} @ ${numberText(sample[0])}s${eventCount > 1 ? ` (${eventCount} events)` : ""}` : "No sample in range";
         const unavailable = item.raw.conflict_timestamps?.includes(sample?.[0]) ? "conflicting recorded values" : "unavailable";
-        value.title = sample ? `Recorded ${item.raw.temporal === "setting" ? "setting" : "sample"} at ${sample[0]} elapsed seconds: ${sample[1] ?? unavailable}${unit}` : "No recorded sample in the selected range";
+        value.title = sample ? (eventCount > 1
+          ? `Display median of ${eventCount} request events at ${sample[0]} elapsed seconds: ${sample[1] ?? unavailable}${unit}. Raw queries preserve every value and source line.`
+          : `Recorded ${item.raw.temporal === "setting" ? "setting" : item.raw.temporal === "event" ? "request event" : "sample"} at ${sample[0]} elapsed seconds: ${sample[1] ?? unavailable}${unit}`)
+          : "No recorded sample in the selected range";
         if (sample && item.raw.reference) {
           const reference = referenceAt(item.reference, sample[0]);
           value.textContent += ` · limit ${capacityNumber(reference?.[1])}`;

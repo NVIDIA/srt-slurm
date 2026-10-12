@@ -8,23 +8,27 @@ from __future__ import annotations
 import logging
 import shlex
 import threading
+import time
+from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from urllib.parse import urlsplit
 
 from srtctl.core.health import (
     WorkerHealthResult,
     check_static_router_health,
     probe_json_health,
     wait_for_http_endpoints,
+    wait_for_port,
 )
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
-from srtctl.frontends.base import logical_health_expectations, numactl_prefix
+from srtctl.frontends.base import Frontend, numactl_prefix
 
 if TYPE_CHECKING:
+    from srtctl.backends.base import WorkerMode
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
-    from srtctl.services.implicit import EffectiveService
 
 logger = logging.getLogger(__name__)
 
@@ -38,43 +42,74 @@ class RouterWorker:
     bootstrap_port: int | None = None
 
 
-class StaticRouterFrontend:
+def setup_script_preamble(config: Any) -> str | None:
+    """Shell that runs the recipe's ``setup_script`` in a router's own container.
+
+    A router that ships as a package (``pip install``) rather than in the model
+    image installs itself this way; the script is looked up in ``/configs`` and
+    then ``/configs/patches``, as for the workers.
+    """
+    setup_script = getattr(config, "setup_script", None)
+    if not setup_script:
+        return None
+    script_name = shlex.quote(setup_script)
+    return (
+        f"setup_script={script_name} && "
+        'script_path="/configs/${setup_script}" && '
+        'patch_script_path="/configs/patches/${setup_script}" && '
+        'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
+        'if [ -f "${script_path}" ]; then bash "${script_path}"; '
+        'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
+        'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
+    )
+
+
+class StaticRouterFrontend(Frontend):
     """Base class for routers whose worker topology is supplied on the CLI.
 
     A subclass sets the class attributes, registers with ``@register_frontend``,
     and overrides only the hooks whose behavior differs.
     """
 
-    type: ClassVar[str]
-    required_backend: ClassVar[str | None]
-    model_name_role: ClassVar[str | None] = None
-    executable: ClassVar[tuple[str, ...]]
-    pd_flag: ClassVar[str]
-    process_name: ClassVar[str]
+    @property
+    @abstractmethod
+    def executable(self) -> tuple[str, ...]:
+        """Router executable and any fixed launch arguments."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def pd_flag(self) -> str:
+        """CLI flag enabling prefill/decode disaggregation."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def process_name(self) -> str:
+        """Name used for the router's managed process and logs."""
+        raise NotImplementedError
+
     log_label: ClassVar[str | None] = None
     allow_empty_workers: ClassVar[bool] = False
     # Probe every advertised HTTP worker for 200 before launching the router. A router whose
     # static registration expires when model loading outlasts its startup window sets this.
     wait_for_workers_before_start: ClassVar[bool] = False
-    # Workers are the engines' own servers, each on its allocated HTTP port.
-    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
-    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def health_endpoint(self) -> str:
         return "/workers"
 
-    def validate(self, config: Any) -> None:
-        """Recipe-level rules beyond the backend pairing; none by default."""
-
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """A routed worker binds its own allocated port; the router owns the public one."""
         return "allocated"
 
-    metrics_path: ClassVar[str] = "/metrics"
-
     def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
-        """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing."""
+        """A native server's leader rank binds the HTTP server that carries /metrics; followers serve nothing.
+
+        A gRPC-mode leader with an HTTP sidecar serves it there instead.
+        """
+        if process.grpc_http_port is not None:
+            return process.grpc_http_port
         if process.is_leader and process.http_port > 0:
             return process.http_port
         return None
@@ -85,13 +120,9 @@ class StaticRouterFrontend:
         return None
 
     def profiling_control_port(self, process: Process, config: Any, runtime: RuntimeContext) -> int | None:
+        if process.grpc_http_port is not None:
+            return process.grpc_http_port
         return process.http_port if process.http_port > 0 else None
-
-    def profiling_control_is_leader_only(self, config: Any) -> bool:
-        return False
-
-    def direct_endpoint_nodes(self, processes: list[Process]) -> list[str]:
-        return []
 
     def worker_ready_port(self, process: Process) -> int:
         return process.sys_port
@@ -109,18 +140,6 @@ class StaticRouterFrontend:
     ) -> WorkerHealthResult:
         """One GET of the router's worker registry, parsed against the expected counts."""
         return probe_json_health(host, port, self.health_endpoint, self.parse_health, expected_prefill, expected_decode)
-
-    def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
-        """The registry lists one entry per logical worker unless the router expands them."""
-        return logical_health_expectations(config)
-
-    def implied_services(self, config: Any) -> list[EffectiveService]:
-        """A static router needs no discovery plane."""
-        return []
-
-    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
-        """Metrics share the routing port unless the router runs a separate listener."""
-        return None
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert config values to CLI arguments, preserving repeated values."""
@@ -149,9 +168,9 @@ class StaticRouterFrontend:
         """Return adapter-managed CLI arguments derived from srtctl config."""
         return []
 
-    def worker_scheme(self, backend: Any, mode: str) -> str:
-        """Return the protocol used to reach one worker endpoint."""
-        return "http"
+    def worker_scheme(self, backend: Any, mode: WorkerMode) -> str:
+        """Return the protocol used to reach one worker endpoint: gRPC when the backend's mode serves it."""
+        return "grpc" if backend.is_grpc_mode(mode) else "http"
 
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
         """Return the optional P/D bootstrap port advertised for a worker."""
@@ -204,6 +223,41 @@ class StaticRouterFrontend:
     ) -> list[str]:
         """Return extra direct readiness requirements, if any."""
         return []
+
+    def wait_for_workers(
+        self, workers: list[RouterWorker], config: Any, stop_event: threading.Event | None = None
+    ) -> None:
+        """Wait for HTTP ``/health`` or gRPC TCP connections; skip when health checks are disabled.
+
+        Raise on cancellation or exhaustion of the recipe's health-check budget.
+        """
+        if config.health_check is None:
+            return
+        health_check = config.health_check
+        timeout = float(health_check.max_attempts * health_check.interval_seconds)
+        health_urls = [
+            f"{worker.url.rstrip('/')}/health" for worker in workers if worker.url.startswith(("http://", "https://"))
+        ]
+        grpc_targets = [urlsplit(worker.url) for worker in workers if worker.url.startswith("grpc://")]
+        logger.info("Waiting for %d advertised backend endpoints before starting %s", len(workers), self.type)
+        deadline = time.monotonic() + timeout
+        ready = all(
+            wait_for_port(
+                str(target.hostname),
+                int(target.port or 0),
+                timeout=max(deadline - time.monotonic(), 0.0),
+                stop_event=stop_event,
+            )
+            for target in grpc_targets
+        ) and wait_for_http_endpoints(
+            health_urls,
+            poll_interval=float(health_check.interval_seconds),
+            timeout=max(deadline - time.monotonic(), 0.0),
+            report_every=60.0,
+            stop_event=stop_event,
+        )
+        if not ready:
+            raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
 
     def discovers_workers(self, backend: Any) -> bool:
         """Whether the router learns its workers by registration instead of from its command line.
@@ -264,25 +318,8 @@ class StaticRouterFrontend:
             )
 
         workers = self.collect_workers(backend, backend_processes, runtime.network_interface)
-        if self.wait_for_workers_before_start and config.health_check is not None:
-            health_urls = [
-                f"{worker.url.rstrip('/')}/health"
-                for worker in workers
-                if worker.url.startswith(("http://", "https://"))
-            ]
-            if health_urls:
-                logger.info(
-                    "Waiting for %d advertised backend endpoints before starting %s", len(health_urls), self.type
-                )
-                health_check = config.health_check
-                if not wait_for_http_endpoints(
-                    health_urls,
-                    poll_interval=float(health_check.interval_seconds),
-                    timeout=float(health_check.max_attempts * health_check.interval_seconds),
-                    report_every=60.0,
-                    stop_event=stop_event,
-                ):
-                    raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
+        if self.wait_for_workers_before_start:
+            self.wait_for_workers(workers, config, stop_event)
 
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):

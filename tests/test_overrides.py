@@ -27,8 +27,9 @@ PLAIN = {
     "schema": 2,
     "name": "override-test",
     "model": {"path": "hf:fake/mock-model", "container": "nvcr.io/fake:latest", "precision": "fp8"},
-    "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1},
-    "backend": {"type": "sglang", "sglang_config": {"aggregated": {"tp-size": 1}}},
+    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+    "engine": "sglang",
+    "roles": {"agg": {"nodes": 1, "workers": 1, "args": {"tp-size": 1}}},
     "frontend": {"type": "sglang-router", "enable_multiple_frontends": False},
     "health_check": {"max_attempts": 180, "interval_seconds": 10},
     "benchmark": {"type": "custom", "command": "echo hi"},
@@ -219,15 +220,15 @@ def test_apply_mock_json_records_applied_overrides(tmp_path: Path, monkeypatch, 
 def test_resolve_override_stdout_applies_overrides(tmp_path: Path, monkeypatch, capsys) -> None:
     path = _write(
         tmp_path,
-        {"schema": 2, "base": dict(PLAIN), "override_small": {"resources": {"agg_workers": 4}}},
+        {"schema": 2, "base": dict(PLAIN), "override_small": {"roles": {"agg": {"workers": 4}}}},
         "override.yaml",
     )
     monkeypatch.setattr(
         sys,
         "argv",
-        ["srtctl", "resolve-override", "-f", f"{path}:override_small", "--stdout", "--set", "resources.agg_workers=2"],
+        ["srtctl", "resolve-override", "-f", f"{path}:override_small", "--stdout", "--set", "roles.agg.workers=2"],
     )
     submit_cli.main()
     out = capsys.readouterr().out
-    assert "agg_workers: 2" in out
-    assert "agg_workers: 4" not in out
+    assert "workers: 2" in out
+    assert "workers: 4" not in out

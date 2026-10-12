@@ -13,6 +13,7 @@ from dataclasses import dataclass
 ETCD_CLIENT_PORT = 2379
 ETCD_PEER_PORT = 2380
 NATS_PORT = 4222
+OTEL_GRPC_PORT = 4317
 
 # Frontend service ports.
 FRONTEND_PUBLIC_PORT = 8000
@@ -31,12 +32,34 @@ SGLANG_DIST_INIT_PORT_BASE = 8300
 # One per physical SGLang server process. This is used for SGLang's local TP
 # rendezvous; a deterministic assignment avoids concurrent free-port races.
 SGLANG_NCCL_PORT_BASE = 17500
+# HTTP sidecar of an SGLang gRPC-mode server (--grpc-http-sidecar-port): /metrics and
+# the profiler routes, which the gRPC listener does not serve.
+SGLANG_GRPC_HTTP_PORT_BASE = 6700
 # SGLang Model Gateway (sglang_router) Prometheus listener; the router's own default.
 # Only started when --prometheus-port is passed, which srtctl does so tachometer can scrape it.
 SGLANG_ROUTER_METRICS_PORT = 29000
 
+# Shepherd Model Gateway (frontend.type: smg) Prometheus listener on each router node,
+# passed as --prometheus-port so srtctl, not upstream's default, owns it.
+SMG_METRICS_PORT = 29000
+
+# llm-d router-node listeners, passed explicitly; Envoy admin serves /ready.
+LLM_D_EPP_GRPC_PORT = 9002
+LLM_D_EPP_HEALTH_PORT = 9003
+LLM_D_EPP_METRICS_PORT = 9090
+LLM_D_ENVOY_ADMIN_PORT = 9901
+# EPP binds this ZMQ subscriber; all KV-event publishers connect to it.
+LLM_D_EPP_KV_EVENTS_PORT = 5557
+# Per-worker proxy listeners, including llm-d decode sidecars; see PROXY_PORTS.
+WORKER_PROXY_PORT_BASE = 9600
+
 # TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
 TRTLLM_DIST_INIT_PORT_BASE = 29500
+
+# TokenSpeed --port, one per process: a follower node's health listener and the base
+# of the engine's own NCCL free-port scan, which starts 100 to 1000 ports above it.
+TOKENSPEED_PORT_BASE = 10000
+TOKENSPEED_PORT_STRIDE = 1024
 
 # Mooncake transfer-engine ports (shared by SGLang and vLLM backends).
 MOONCAKE_MASTER_PORT = 8700
@@ -84,6 +107,15 @@ RAY_DASHBOARD_PORT = 8265
 DYNAMO_SIDECAR_GRPC_PORT = 50051
 
 
+def rank_offset_subscriber_port(port: int, rank: int) -> int:
+    """Undo vLLM's global DP-rank offset to reach a shared KV-event subscriber.
+
+    Tested image's offset_endpoint_port:
+    https://github.com/vllm-project/vllm/blob/ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9/vllm/distributed/kv_events.py#L495-L523
+    """
+    return port - rank
+
+
 @dataclass(frozen=True)
 class PortKind:
     """One kind of listener a worker process binds, allocated by ``NodePortAllocator``.
@@ -113,11 +145,15 @@ DP_RPC_PORTS = PortKind("dp_rpc", VLLM_DATA_PARALLEL_RPC_PORT, per_node=True)
 # KVBM leader ZMQ pair: pub at the port, ack at the port + 1.
 KVBM_ZMQ_PORTS = PortKind("kvbm_zmq", KVBM_ZMQ_PORT_BASE, 2)
 SIDECAR_GRPC_PORTS = PortKind("sidecar_grpc", DYNAMO_SIDECAR_GRPC_PORT)
+# Allocated on each worker's node for Frontend.proxied_worker_modes.
+PROXY_PORTS = PortKind("proxy", WORKER_PROXY_PORT_BASE, per_node=True)
 # Engine-specific: the backend allocates these for its own processes.
 NCCL_PORTS = PortKind("nccl", SGLANG_NCCL_PORT_BASE)
 DIST_INIT_PORTS = PortKind("dist_init", SGLANG_DIST_INIT_PORT_BASE, per_node=True)
+GRPC_HTTP_PORTS = PortKind("grpc_http", SGLANG_GRPC_HTTP_PORT_BASE, per_node=True)
 VLLM_SCAN_PORTS = PortKind("vllm_scan", VLLM_PORT_BASE, VLLM_PORT_STRIDE)
 # vLLM discovery-connector (MoRI-IO) workers: one port per local rank in each block.
 MORIIO_HANDSHAKE_PORTS = PortKind("moriio_handshake", VLLM_MORIIO_HANDSHAKE_PORT_BASE)
 MORIIO_NOTIFY_PORTS = PortKind("moriio_notify", VLLM_MORIIO_NOTIFY_PORT_BASE)
 TRTLLM_DIST_INIT_PORTS = PortKind("trtllm_dist_init", TRTLLM_DIST_INIT_PORT_BASE)
+TOKENSPEED_PORTS = PortKind("tokenspeed", TOKENSPEED_PORT_BASE, TOKENSPEED_PORT_STRIDE, per_node=True)

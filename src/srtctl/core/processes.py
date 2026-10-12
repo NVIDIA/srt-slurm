@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -101,8 +102,13 @@ class ManagedProcess:
     # False for wrappers that finalize a profiler before signalling its application.
     signal_full: bool = True
     fatal_log_patterns: tuple[str, ...] = ()
+    # Owned by a WorkerSupervisor with a restart policy: an exit is the
+    # supervisor's to handle (relaunch), so ``check_failures`` leaves it alone
+    # until the supervisor gives up and clears the flag.
+    supervised: bool = False
     _stopped_via_step: bool = field(default=False, init=False, repr=False)
     _stop_deadline: float | None = field(default=None, init=False, repr=False)
+    _stop_escalations: int = field(default=0, init=False, repr=False)
     # Log-watch state: bytes already scanned, the partial line after the last newline,
     # and the compiled patterns (built on first use).
     _log_offset: int = field(default=0, init=False, repr=False)
@@ -196,6 +202,38 @@ class ManagedProcess:
         if not self._stopped_via_step:
             self.popen.terminate()
         self._stop_deadline = time.monotonic() + self.terminate_timeout
+        self._stop_escalations = 0
+
+    def advance_stop(self) -> bool:
+        """Non-blocking ``await_stop``: escalate once the current deadline passes; True once the process is gone.
+
+        Past the SIGTERM deadline a step-signalled process gets SIGTERM on its srun
+        (which aborts the step), anything else SIGKILL; each escalation allows 5s
+        more. For callers that must not block, such as a process-monitor tick.
+        """
+        if not self.is_running:
+            return True
+        now = time.monotonic()
+        if self._stop_deadline is None or now < self._stop_deadline:
+            return False
+        if self._stop_escalations == 0 and self._stopped_via_step:
+            logger.warning(
+                "Step %s (%s) did not exit %.0fs after SIGTERM; terminating srun",
+                self.step_name,
+                self.name,
+                self.terminate_timeout,
+            )
+            self.popen.terminate()
+        else:
+            first_kill = self._stop_escalations == (1 if self._stopped_via_step else 0)
+            if first_kill:
+                logger.warning("Process %s did not exit after SIGTERM, killing...", self.name)
+            else:
+                logger.error("Process %s was not reaped after SIGKILL", self.name)
+            self.popen.kill()
+        self._stop_escalations += 1
+        self._stop_deadline = now + 5.0
+        return False
 
     def await_stop(self) -> None:
         """Wait out this process's own deadline after ``request_stop``, then escalate to SIGKILL."""
@@ -379,6 +417,8 @@ class ProcessRegistry:
         """
         with self._lock:
             for name, proc in self._processes.items():
+                if proc.supervised:
+                    continue  # a WorkerSupervisor decides whether this exit is a relaunch or a failure
                 if not proc.critical or name in self._failed_processes:
                     continue
                 if not proc.is_running:
@@ -404,6 +444,24 @@ class ProcessRegistry:
                         line,
                     )
 
+            return len(self._failed_processes) > 0
+
+    def record_failure(self, name: str, reason: str | None = None) -> None:
+        """Mark ``name`` failed from outside ``check_failures`` (a supervisor that gave up on a fatal marker)."""
+        with self._lock:
+            if name not in self._failed_processes:
+                self._failed_processes.append(name)
+            if reason is not None:
+                self._failure_reasons[name] = reason
+
+    @property
+    def has_failures(self) -> bool:
+        """Whether ``check_failures`` has recorded a critical failure, without scanning again.
+
+        Use this after a stop: a fresh scan would also count the processes that
+        cleanup itself just terminated.
+        """
+        with self._lock:
             return len(self._failed_processes) > 0
 
     def cleanup(self) -> None:
@@ -480,6 +538,11 @@ class ProcessRegistry:
         with self._lock:
             return self._processes.get(name)
 
+    def pop_process(self, name: str) -> ManagedProcess | None:
+        """Remove and return a process by name (None when absent). Does not stop it."""
+        with self._lock:
+            return self._processes.pop(name, None)
+
     def get_all_processes(self) -> dict[str, ManagedProcess]:
         """Get a copy of all registered processes."""
         with self._lock:
@@ -518,6 +581,7 @@ def start_process_monitor(
     stop_event: threading.Event,
     registry: ProcessRegistry,
     poll_interval: float = 2.0,
+    reconcile: Callable[[], None] | None = None,
 ) -> threading.Thread:
     """Start a background thread that monitors for process failures.
 
@@ -525,6 +589,10 @@ def start_process_monitor(
         stop_event: Event that signals the monitor to stop
         registry: ProcessRegistry to monitor
         poll_interval: Seconds between checks
+        reconcile: Called at the top of every tick, before the failure check, so
+            a supervisor can relaunch an exited worker (or hand it back to the
+            registry) before the check sees it. A raising reconcile is logged
+            and the monitor keeps going; it must never take the job down.
 
     Returns:
         The monitoring thread (already started)
@@ -532,6 +600,11 @@ def start_process_monitor(
 
     def monitor_loop():
         while not stop_event.is_set():
+            if reconcile is not None:
+                try:
+                    reconcile()
+                except Exception:
+                    logger.exception("Worker supervisor reconcile failed; continuing")
             if registry.check_failures():
                 logger.error("Critical process failure detected!")
                 stop_event.set()

@@ -20,7 +20,7 @@ Env-var fallback (mirrors sglang ``serving_chat.py``):
   ``"chat"`` to ``"thinking"`` when the caller does not pass ``thinking``
   explicitly. This keeps ISL / TPOT / accept-rate metrics in lock-step
   with the server when users set the env on both sides of a run (e.g.
-  in a recipe's ``prefill_environment`` / ``decode_environment``).
+  in a recipe's ``roles.<role>.env``).
 - ``SGLANG_REASONING_EFFORT`` provides a default for ``reasoning_effort``
   when the caller does not pass one. Only ``"max"`` / ``"high"`` are
   honored; any other value is filtered out to match sglang.

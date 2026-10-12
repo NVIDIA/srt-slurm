@@ -9,7 +9,7 @@ import re
 
 from ..engines import parse_tokenspeed_log
 from ..sources import SourceIdentity
-from .base import LogMetricDefinition, LogMetricEvent
+from .base import LogMetricDefinition, LogMetricEvent, LogMetricGenerator
 
 ACTIVE_DECODE = "log_tokenspeed_active_decode_requests"
 DECODE_LIMIT = "log_tokenspeed_decode_request_limit"
@@ -20,7 +20,7 @@ _CONFIG = re.compile(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)\s+ATTN TP RANK (\d
 _MAX_BATCH = re.compile(r"(?:^|\s)max_batch_size=(\d+)(?=\s|$)")
 
 
-class DynamoTokenSpeedLogMetrics:
+class DynamoTokenSpeedLogMetrics(LogMetricGenerator):
     name = "dynamo-tokenspeed"
     definitions = (
         LogMetricDefinition(

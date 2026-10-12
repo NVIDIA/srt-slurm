@@ -18,6 +18,7 @@ from srtctl.core.power.contract import (
     SAMPLES_FILENAME,
     SAMPLES_HEADER,
     SAMPLES_HEADER_V1,
+    SAMPLES_HEADER_V2,
     SAMPLES_SCHEMA_VERSION,
     SAMPLES_SCHEMA_VERSION_V1,
     SCHEMA_VERSION,
@@ -417,9 +418,10 @@ class TestSampleArtifact:
             "gpu_uuid",
             "power_w",
         )
-        assert (*SAMPLES_HEADER_V1, "gpu_util_pct", "sm_active") == SAMPLES_HEADER
+        assert (*SAMPLES_HEADER_V1, "gpu_util_pct", "sm_active") == SAMPLES_HEADER_V2
+        assert (*SAMPLES_HEADER_V2, "temperature_c") == SAMPLES_HEADER
         assert SAMPLES_SCHEMA_VERSION_V1 == 1
-        assert SAMPLES_SCHEMA_VERSION == 2
+        assert SAMPLES_SCHEMA_VERSION == 3
         assert SCHEMA_VERSION == 1
 
     def test_utilization_metrics_are_pinned(self):
@@ -430,7 +432,7 @@ class TestSampleArtifact:
         ]
         assert GPU_UTIL_METRIC == "DCGM_FI_DEV_GPU_UTIL"
         assert SM_ACTIVE_METRIC == "DCGM_FI_PROF_SM_ACTIVE"
-        assert tuple(m.column for m in UTILIZATION_METRICS) == SAMPLES_HEADER[len(SAMPLES_HEADER_V1) :]
+        assert tuple(m.column for m in UTILIZATION_METRICS) == SAMPLES_HEADER_V2[len(SAMPLES_HEADER_V1) :]
 
     def test_round_trip_preserves_rows_and_derives_devices(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
@@ -512,7 +514,7 @@ class TestSampleArtifact:
     )
     def test_malformed_rows_are_reported(self, tmp_path, bad_row, reason):
         path = tmp_path / SAMPLES_FILENAME
-        path.write_text(",".join(SAMPLES_HEADER) + "\n" + bad_row + "\n")
+        path.write_text(",".join(SAMPLES_HEADER_V2) + "\n" + bad_row + "\n")
 
         rows, reasons = read_samples(path)
 
@@ -522,7 +524,7 @@ class TestSampleArtifact:
     def test_duplicate_row_key_is_reported(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
         path.write_text(
-            ",".join(SAMPLES_HEADER) + "\n2,1000.0,0,node-a,0,GPU-aaa,400.0,,\n2,1000.5,0,node-a,0,GPU-aaa,401.0,,\n"
+            ",".join(SAMPLES_HEADER_V2) + "\n2,1000.0,0,node-a,0,GPU-aaa,400.0,,\n2,1000.5,0,node-a,0,GPU-aaa,401.0,,\n"
         )
 
         _, reasons = read_samples(path)
@@ -532,7 +534,7 @@ class TestSampleArtifact:
     def test_non_monotonic_device_timestamps_are_reported(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
         path.write_text(
-            ",".join(SAMPLES_HEADER) + "\n2,1001.0,0,node-a,0,GPU-aaa,400.0,,\n2,1000.0,1,node-a,0,GPU-aaa,401.0,,\n"
+            ",".join(SAMPLES_HEADER_V2) + "\n2,1001.0,0,node-a,0,GPU-aaa,400.0,,\n2,1000.0,1,node-a,0,GPU-aaa,401.0,,\n"
         )
 
         _, reasons = read_samples(path)
@@ -542,7 +544,7 @@ class TestSampleArtifact:
     def test_equal_device_timestamps_are_allowed(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
         path.write_text(
-            ",".join(SAMPLES_HEADER) + "\n2,1000.0,0,node-a,0,GPU-aaa,400.0,,\n2,1000.0,1,node-a,0,GPU-aaa,401.0,,\n"
+            ",".join(SAMPLES_HEADER_V2) + "\n2,1000.0,0,node-a,0,GPU-aaa,400.0,,\n2,1000.0,1,node-a,0,GPU-aaa,401.0,,\n"
         )
 
         _, reasons = read_samples(path)
@@ -551,7 +553,7 @@ class TestSampleArtifact:
 
     def test_invalid_utf8_bytes_are_reported(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
-        path.write_bytes(",".join(SAMPLES_HEADER).encode() + b"\n2,1000.0,0,node-\xff\xfe,0,GPU-aaa,400.0,,\n")
+        path.write_bytes(",".join(SAMPLES_HEADER_V2).encode() + b"\n2,1000.0,0,node-\xff\xfe,0,GPU-aaa,400.0,,\n")
 
         rows, reasons = read_samples(path)
 
@@ -561,7 +563,7 @@ class TestSampleArtifact:
     def test_oversized_field_is_reported(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
         giant = "x" * (csv.field_size_limit() + 1)
-        path.write_text(",".join(SAMPLES_HEADER) + f"\n2,1000.0,0,{giant},0,GPU-aaa,400.0,,\n")
+        path.write_text(",".join(SAMPLES_HEADER_V2) + f"\n2,1000.0,0,{giant},0,GPU-aaa,400.0,,\n")
 
         rows, reasons = read_samples(path)
 
@@ -599,7 +601,7 @@ class TestSampleArtifact:
         ]
         text = path.read_text().splitlines()
         assert text[0] == ",".join(SAMPLES_HEADER)
-        assert text[4].endswith(",403.0,,")
+        assert text[4].endswith(",403.0,,,")
 
     def test_v1_file_reads_with_utilization_none(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME

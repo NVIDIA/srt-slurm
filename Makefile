@@ -1,8 +1,9 @@
-.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check snapshots snapshots-check golden-check tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
+.PHONY: lint test test-cov ci check setup cleanup examples docs schema-docs schema-docs-check snapshots snapshots-check tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
 PROCESS_EXPORTER_VERSION ?= 0.8.7
+OTEL_COLLECTOR_VERSION ?= 0.146.1
 LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
 TACHOMETER_RELEASE ?= latest
@@ -22,13 +23,16 @@ test:
 test-cov:
 	uv run pytest tests/ --cov=srtctl --cov-report=term-missing --cov-report=html
 
-# Regenerate docs/schema-reference.md (2.0) and docs/legacy-v1.md (v1) from the code
+# Regenerate docs/schema-reference.md from the code
 schema-docs:
 	uv run srtctl schema-docs
 
-# Fail if docs/schema-reference.md or docs/legacy-v1.md is stale (also enforced by CI and tests/test_schema_docs.py)
+# Fail if docs/schema-reference.md is stale (also enforced by CI and tests/test_schema_docs.py)
 schema-docs-check:
 	uv run srtctl schema-docs --check
+
+docs:
+	uvx --with mkdocs-material mkdocs build --strict
 
 snapshots:
 	uv run python tests/launch_snapshots.py
@@ -38,16 +42,6 @@ snapshots-check:
 
 # Run lint + tests in one command
 check: lint schema-docs-check test
-
-# Golden equality: migrate every known v1 recipe in memory and prove the resolved
-# config is unchanged. Extracts the historical recipes from the last commit that
-# carried recipes/ (same corpus as the CI job).
-GOLDEN_RECIPES_COMMIT ?= e6e9d8b9bee3e6c85e6f121eb4dacd88d8ca1d2c
-golden-check:
-	@rm -rf /tmp/srt-golden && mkdir -p /tmp/srt-golden
-	@git archive $(GOLDEN_RECIPES_COMMIT) recipes | tar -x -C /tmp/srt-golden
-	uv run srtctl migrate --verify -f examples -f /tmp/srt-golden/recipes
-	@echo "✓ All checks passed"
 
 tachometer-scraper:
 	cargo build --release --locked --bin tachometer-scraper
@@ -134,7 +128,33 @@ cpu-power-exporter-setup:
 		$(MAKE) --no-print-directory cpu-power-exporter-download; \
 	fi
 
-setup: tachometer-scraper-download cpu-power-exporter-setup
+.PHONY: otel-collector-download
+otel-collector-download:
+	@set -eu; \
+	case "$(ARCH)" in \
+		x86_64) arch_short=amd64; file_pattern=x86-64 ;; \
+		aarch64) arch_short=arm64; file_pattern=aarch64 ;; \
+		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
+	esac; \
+	marker=configs/.otelcol-contrib.release; \
+	if [ -x configs/otelcol-contrib ] && \
+	   [ "$$(cat "$$marker" 2>/dev/null || true)" = "$(OTEL_COLLECTOR_VERSION)" ] && \
+	   file configs/otelcol-contrib | grep -q "$$file_pattern"; then \
+		echo "OTel Collector $(OTEL_COLLECTOR_VERSION) already installed ($(ARCH))"; exit 0; \
+	fi; \
+	asset="otelcol-contrib_$(OTEL_COLLECTOR_VERSION)_linux_$$arch_short.tar.gz"; \
+	base_url="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v$(OTEL_COLLECTOR_VERSION)"; \
+	tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	curl --fail --location --retry 3 "$$base_url/$$asset" --output "$$tmp_dir/$$asset"; \
+	curl --fail --location --retry 3 "$$base_url/opentelemetry-collector-releases_otelcol-contrib_checksums.txt" --output "$$tmp_dir/checksums.txt"; \
+	awk -v asset="$$asset" '$$2 == asset {print}' "$$tmp_dir/checksums.txt" > "$$tmp_dir/selected.sha256"; \
+	(cd "$$tmp_dir" && sha256sum --check selected.sha256); \
+	tar -xzf "$$tmp_dir/$$asset" -C "$$tmp_dir" otelcol-contrib; \
+	install -Dm755 "$$tmp_dir/otelcol-contrib" configs/otelcol-contrib; \
+	printf '%s' "$(OTEL_COLLECTOR_VERSION)" > "$$marker"
+
+setup: tachometer-scraper-download cpu-power-exporter-setup otel-collector-download
 	@echo "📦 Setting up configs and logs directories..."
 	@mkdir -p logs
 	@echo "🖥️  Using architecture: $(ARCH)"

@@ -1,6 +1,6 @@
 # examples/features/mlperf-client.yaml
 # exit_code: 0
-# srun calls: 12
+# srun calls: 13
 
 ## service_etcd
 nodelist: node-01
@@ -38,6 +38,16 @@ bash_preamble: |
 command: |
     /configs/nats-server -js -sd /tmp/nats
 
+## service_otel-collector
+nodelist: node-01
+output: <output>/logs/service_otel-collector.out
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: True
+command: |
+    configs/otelcol-contrib --config <output>/logs/otel-collector.yaml
+
 ## agg_0_node-01
 nodes: 1
 ntasks: 4
@@ -53,6 +63,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: nats
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -64,6 +75,9 @@ env_to_set:
     NATS_SERVER: nats://127.0.0.1:4222
     NCCL_CUMEM_ENABLE: 1
     NCCL_MNNVL_ENABLE: 1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-agg
     TLLM_LOG_LEVEL: INFO
     TRTLLM_ENABLE_PDL: 1
     TRTLLM_EPLB_SHM_NAME: <random>
@@ -94,10 +108,14 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_REQUEST_PLANE: nats
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     NATS_SERVER: nats://127.0.0.1:4222
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-frontend
 mpi: pmix
 command: |
     python3 -m dynamo.frontend --http-port=8000
@@ -260,6 +278,9 @@ env_to_set:
     SRT_SERVICE_NODE_EXPORTER_IPS: 127.0.0.1,127.0.0.1,127.0.0.1
     SRT_SERVICE_NODE_EXPORTER_NODES: node-01,node-02,node-03
     SRT_SERVICE_NODE_EXPORTER_NODE_COUNT: 3
+    SRT_SERVICE_OTEL_COLLECTOR_IPS: 127.0.0.1
+    SRT_SERVICE_OTEL_COLLECTOR_NODES: node-01
+    SRT_SERVICE_OTEL_COLLECTOR_NODE_COUNT: 1
     SRT_SERVICE_PROCESS_EXPORTER_IPS: 127.0.0.1,127.0.0.1,127.0.0.1
     SRT_SERVICE_PROCESS_EXPORTER_NODES: node-01,node-02,node-03
     SRT_SERVICE_PROCESS_EXPORTER_NODE_COUNT: 3

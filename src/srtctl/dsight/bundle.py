@@ -12,6 +12,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import itertools
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ MAX_CHUNK_ROWS = 8192
 DENSITY_BINS = 512
 
 
-def _chunks(rows: list[list[Any]], folder: Path, *, intervals: bool = False) -> list[dict[str, Any]]:
+def _chunks(rows: Iterable[list[Any]], folder: Path, *, intervals: bool = False) -> list[dict[str, Any]]:
     result = []
     encoded: list[str] = []
     batch: list[list[Any]] = []

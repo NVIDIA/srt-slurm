@@ -58,17 +58,15 @@ def test_ser_gen_router():
 def test_frontend_config_accepts_router_fields(tmp_path: Path):
     # The FrontendConfig schema must round-trip the new fields.
     data = {
+        "schema": 2,
         "name": "r",
         "model": {"path": "/lustre/m", "container": "trtllm", "precision": "fp4"},
-        "resources": {
-            "gpu_type": "gb300",
-            "gpus_per_node": 4,
-            "prefill_nodes": 1,
-            "prefill_workers": 1,
-            "decode_nodes": 1,
-            "decode_workers": 1,
+        "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+        "engine": "trtllm",
+        "roles": {
+            "prefill": {"nodes": 1, "workers": 1},
+            "decode": {"nodes": 1, "workers": 1},
         },
-        "backend": {"type": "trtllm"},
         "frontend": {
             "type": "trtllm_serve",
             "enable_multiple_frontends": False,
@@ -85,16 +83,12 @@ def test_frontend_config_accepts_router_fields(tmp_path: Path):
 
 def _aggregate_config(agg_workers: int) -> dict:
     return {
+        "schema": 2,
         "name": "trtllm-raw",
         "model": {"path": "/model", "container": "trtllm", "precision": "fp4"},
-        "resources": {
-            "gpu_type": "gb300",
-            "gpus_per_node": 4,
-            "agg_nodes": 2,
-            "agg_workers": agg_workers,
-            "gpus_per_agg": 8,
-        },
-        "backend": {"type": "trtllm"},
+        "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+        "engine": "trtllm",
+        "roles": {"agg": {"nodes": 2, "workers": agg_workers, "gpus": 8}},
         "frontend": {"type": "trtllm_serve", "enable_multiple_frontends": False},
     }
 
@@ -104,7 +98,7 @@ def test_frontend_config_accepts_single_aggregate_worker(tmp_path: Path):
     config_path.write_text(yaml.safe_dump(_aggregate_config(agg_workers=1)))
     config = SrtConfig.from_yaml(config_path)
 
-    assert config.resources.num_agg == 1
+    assert config.topology.num_agg == 1
 
 
 @pytest.mark.parametrize("agg_workers", [0, 2])
@@ -121,7 +115,7 @@ def test_aggregate_frontend_uses_worker_directly():
     topology = SimpleNamespace(uses_nginx=False, frontend_nodes=["node0"], public_port=8000)
     config = SimpleNamespace(
         backend=SimpleNamespace(type="trtllm"),
-        resources=SimpleNamespace(is_disaggregated=False),
+        topology=SimpleNamespace(is_disaggregated=False),
     )
     worker = SimpleNamespace(endpoint_mode="agg", is_leader=True)
 

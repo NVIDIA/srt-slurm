@@ -85,7 +85,8 @@ def _config() -> SimpleNamespace:
     return SimpleNamespace(
         name="llama-pd",
         model=SimpleNamespace(path="/models/llama", precision="fp8"),
-        resources=SimpleNamespace(gpu_type="h100", gpus_per_node=8, num_prefill=1, num_decode=2, num_agg=0),
+        resources=SimpleNamespace(gpu_type="h100", gpus_per_node=8),
+        topology=SimpleNamespace(num_prefill=1, num_decode=2, num_agg=0),
         benchmark=SimpleNamespace(type="sa-bench"),
         backend_type="sglang",
         frontend=SimpleNamespace(type="dynamo"),

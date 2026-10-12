@@ -1,0 +1,49 @@
+# TRT-LLM aggregate worker with strict GPU-local CPU and memory placement.
+# Requires GPU NUMA affinity, numactl, and enough memory on the local node.
+# Aliases resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-trtllm-serve-agg-numa-local"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "trtllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+frontend:
+  type: trtllm_serve
+  enable_multiple_frontends: false
+
+engine:
+  type: trtllm
+  served_model_name: "Qwen/Qwen3-0.6B"
+  numa_cpu_bind: true
+  numa_memory_bind: local
+
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    args:
+      backend: "pytorch"
+      tensor_parallel_size: 1
+      max_batch_size: 64
+      max_num_tokens: 8192
+      max_seq_len: 4096
+      trust_remote_code: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.5
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

@@ -110,15 +110,14 @@ class Rule:
 
 RULES = [
     Rule(
-        "Backends answer through BackendProtocol, frontends through FrontendConfig/FrontendProtocol",
+        "Backends answer through Backend, frontends through FrontendConfig/Frontend",
         reflective_access,
         "Read the typed field or protocol member directly (backend.failover, frontend.numa_bind). "
-        "If a backend lacks the feature, add the member to BackendProtocol with a neutral default on "
-        "every backend; if a frontend lacks a hook, add it to FrontendProtocol.",
+        "If a backend lacks the feature, add the member to Backend with a neutral default on "
+        "every backend; if a frontend lacks a hook, add it to Frontend.",
         # Frontend field reads kept reflective because stage tests pass partial SimpleNamespace frontends.
         frozenset(
             {
-                ("cli/mixins/benchmark_stage.py", "getattr(frontend, 'orchestrator_placement')"),
                 ("frontends/base.py", "getattr(frontend, 'numa_bind')"),
                 ("frontends/dynamo.py", "getattr(frontend, 'worker_selection')"),
                 ("frontends/static_router.py", "getattr(frontend, 'container_image')"),
@@ -129,7 +128,7 @@ RULES = [
     Rule(
         "Names go in tables, never in branches",
         frontend_name_branches,
-        "Put the behavior on the frontend (a FrontendProtocol attribute or hook) and read it through "
+        "Put the behavior on the frontend (a Frontend attribute or hook) and read it through "
         "get_frontend(config.frontend.type) instead of comparing the name outside src/srtctl/frontends/.",
         frozenset(
             {

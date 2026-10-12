@@ -27,8 +27,7 @@ SHARED_BENCHMARK_FIELDS: frozenset[str] = frozenset(
     {
         "type",
         "stream_output",
-        "client_placement",
-        "client_dedicated_node",
+        "placement",
         "colocate_with_frontend",
         "sweep",
         "aiperf_package",
@@ -43,7 +42,7 @@ class BenchmarkRunner(ABC):
 
     # BenchmarkConfig fields this runner reads, beyond SHARED_BENCHMARK_FIELDS. A
     # recipe that sets a field outside shared + these for its type is rejected
-    # (schema 2) or warned about (schema 1) at load, see SrtConfig._validate_benchmark_type.
+    # at load, see SrtConfig._validate_benchmark_type.
     config_fields: ClassVar[frozenset[str]] = frozenset()
 
     @property

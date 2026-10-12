@@ -15,17 +15,14 @@ The DAG engine POC showed the runtime hosts a task graph well (2.9k lines, 108 t
 
 ## Concept
 
-```
-  recipe (schema 2)          workload kinds             workflow fragments (optional, sflow shape)
-  roles / frontend / workload   miles, aiperf, ...        tasks + probes + depends_on
-        │                          │                             │
-        └──────── compilers: kinds render pod-shaped steps into one plan ────────┘
-                                   │
-                          plan.json  (pools, steps, probes, edges, terminal set)
-                                   │
-        engine: resolve node-derived refs, gate on edges and probes, launch, watch, tier teardown, event log
-                                   │
-             executors: srun inside an sbatch (today) | docker on one host | kubernetes
+```mermaid
+flowchart TD
+    recipe["recipe (schema 2)<br/>roles / frontend / workload"] --> compilers
+    kinds["workload kinds<br/>miles, aiperf, ..."] --> compilers
+    fragments["workflow fragments (optional, sflow shape)<br/>tasks + probes + depends_on"] --> compilers
+    compilers["compilers: kinds render pod-shaped steps into one plan"] --> plan["plan.json<br/>pools, steps, probes, edges, terminal set"]
+    plan --> engine["engine: resolve node-derived refs, gate on edges and probes, launch, watch, tier teardown, event log"]
+    engine --> executors["executors: srun inside an sbatch (today), docker on one host, or kubernetes"]
 ```
 
 Three layers, each with one job:

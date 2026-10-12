@@ -36,7 +36,7 @@ First-class support for [Mooncake](https://github.com/kvcache-ai/Mooncake) as th
 - [Master Metrics Endpoint](#master-metrics-endpoint)
 - [Validation](#validation)
 - [Common Configurations](#common-configurations)
-  - [RDMA / InfiniBand](#rdma--infiniband)
+  - [RDMA / InfiniBand](#rdma-infiniband)
   - [TCP](#tcp)
   - [Custom Master Container](#custom-master-container)
 - [Troubleshooting](#troubleshooting)

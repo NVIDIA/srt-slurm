@@ -81,15 +81,13 @@ def test_submit_writes_git_state_for_extra_mount(tmp_path: Path) -> None:
     cfg.write_text(
         yaml.safe_dump(
             {
+                "schema": 2,
                 "name": "git-state-test",
                 "model": {"path": str(model_dir), "container": str(container), "precision": "fp8"},
-                "resources": {
-                    "gpu_type": "h100",
-                    "gpus_per_node": 8,
-                    "prefill_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_nodes": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
                 "benchmark": {"type": "manual"},
                 "extra_mount": [f"{repo}:/workspace/extra-repo"],
@@ -132,15 +130,13 @@ def test_submit_skips_git_state_without_extra_mount(tmp_path: Path) -> None:
     cfg.write_text(
         yaml.safe_dump(
             {
+                "schema": 2,
                 "name": "no-extra-mount-test",
                 "model": {"path": str(model_dir), "container": str(container), "precision": "fp8"},
-                "resources": {
-                    "gpu_type": "h100",
-                    "gpus_per_node": 8,
-                    "prefill_nodes": 1,
-                    "prefill_workers": 1,
-                    "decode_nodes": 1,
-                    "decode_workers": 1,
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+                "roles": {
+                    "prefill": {"nodes": 1, "workers": 1},
+                    "decode": {"nodes": 1, "workers": 1},
                 },
                 "benchmark": {"type": "manual"},
             },
