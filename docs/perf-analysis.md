@@ -9,11 +9,6 @@ For **every Slurm run you launch or analyze**, write and maintain
 paths. Keep the authoritative report in this logs directory; local copies and
 campaign summaries may link to it.
 
-S3 reporting syncs the logs directory, so this location includes the report in
-the upload when it exists at sync time and is not excluded. A report written or
-updated after that sync requires a subsequent upload to the same run's S3
-destination.
-
 ## Metrics for this run
 
 Record the job/config, model/engine and benchmark versions, hardware/GPU count,
