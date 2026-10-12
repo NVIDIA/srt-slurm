@@ -13,7 +13,10 @@
 # Submit: sbatch configs/raplab-h2d-bandwidth.sbatch
 # Overrides: --nodelist=<node>, --account=<account>, --partition=<partition>
 # Environment: CONTAINER_IMAGE, LOG_DIR, COPY_MIB=64, COPY_ITERATIONS=5,
-#              H2D_POLICIES="unrestricted memory0 memory1 bound0 bound1"
+#              H2D_POLICIES="unrestricted unrestricted-local memory0 memory1 bound0 bound1"
+# unrestricted-local measures each GPU in its own process: the pinned buffer is
+# first touched on the GPU's NUMA node, then CPU affinity is widened to every CPU
+# before timing. CUDA threads created during setup keep the GPU-local mask.
 # Directly inside a GPU container: bash raplab-h2d-bandwidth.sbatch --copy manual
 # Derived from raplab-cluster-diagnostics.sbatch; measures H2D only.
 # GPUs run sequentially. This does not measure RDMA or serving contention.
@@ -45,11 +48,37 @@ print(json.dumps({"type": "metadata", "hostname": socket.gethostname(), "policy"
                   "gpus": torch.cuda.device_count()}), flush=True)
 
 failed = False
-for gpu in range(torch.cuda.device_count()):
+all_cpus = os.sched_getaffinity(0)
+only_gpu = os.environ.get("COPY_GPU")
+gpus = [int(only_gpu)] if only_gpu is not None else range(torch.cuda.device_count())
+
+
+def gpu_node_cpus(gpu):
+    props = torch.cuda.get_device_properties(gpu)
+    address = f"{props.pci_domain_id:04x}:{props.pci_bus_id:02x}:{props.pci_device_id:02x}.0"
+    with open(f"/sys/bus/pci/devices/{address}/numa_node") as handle:
+        node = int(handle.read())
+    with open(f"/sys/devices/system/node/node{node}/cpulist") as handle:
+        cpus = set()
+        for part in handle.read().strip().split(","):
+            low, _, high = part.partition("-")
+            cpus.update(range(int(low), int(high or low) + 1))
+    return node, cpus & all_cpus
+
+
+for gpu in gpus:
     try:
+        first_touch = policy == "unrestricted-local"
+        if first_touch:
+            node, node_cpus = gpu_node_cpus(gpu)
+            os.sched_setaffinity(0, node_cpus)
         torch.cuda.set_device(gpu)
         source = torch.empty(size, dtype=torch.uint8, pin_memory=True)
         source.fill_(1)
+        if first_touch:
+            os.sched_setaffinity(0, all_cpus)
+            print(json.dumps({"type": "first_touch", "gpu": gpu, "numa_node": node,
+                              "timed_cpus": len(os.sched_getaffinity(0))}), flush=True)
         device = torch.empty(size, dtype=torch.uint8, device=f"cuda:{gpu}")
         device.copy_(source, non_blocking=True)
         torch.cuda.synchronize()
@@ -118,7 +147,7 @@ run_tests() {
     [[ ${#policies[@]} -gt 0 ]] || { echo 'H2D_POLICIES is empty' >&2; return 1; }
     for policy in "${policies[@]}"; do
         case "$policy" in
-            unrestricted) prefix=(env) ;;
+            unrestricted|unrestricted-local) prefix=(env) ;;
             memory0) prefix=(numactl --membind=0) ;;
             memory1) prefix=(numactl --membind=1) ;;
             bound0) prefix=(numactl --cpunodebind=0 --membind=0) ;;
@@ -127,8 +156,17 @@ run_tests() {
         esac
         echo "Running $policy"
         rc=0
-        timeout 120 "${prefix[@]}" bash "$LOG_DIR/runner.sh" --copy "$policy" \
-            > "$LOG_DIR/h2d-$policy.jsonl" 2> "$LOG_DIR/h2d-$policy.stderr" || rc=$?
+        if [[ $policy == unrestricted-local ]]; then
+            # One process per GPU so each pinned buffer is a fresh, GPU-local allocation.
+            : > "$LOG_DIR/h2d-$policy.jsonl"; : > "$LOG_DIR/h2d-$policy.stderr"
+            for gpu in $(seq 0 $(( $(nvidia-smi -L | grep -c '^GPU ') - 1 ))); do
+                COPY_GPU=$gpu timeout 120 bash "$LOG_DIR/runner.sh" --copy "$policy" \
+                    >> "$LOG_DIR/h2d-$policy.jsonl" 2>> "$LOG_DIR/h2d-$policy.stderr" || rc=$?
+            done
+        else
+            timeout 120 "${prefix[@]}" bash "$LOG_DIR/runner.sh" --copy "$policy" \
+                > "$LOG_DIR/h2d-$policy.jsonl" 2> "$LOG_DIR/h2d-$policy.stderr" || rc=$?
+        fi
         printf '%s\n' "$rc" > "$LOG_DIR/h2d-$policy.exit-status"
         [[ $rc == 0 ]] || failed=1
     done
@@ -166,7 +204,7 @@ esac
 export CONTAINER_IMAGE=${CONTAINER_IMAGE:-/home/rihuo/tensorrt-llm-release-arm64-0c74fcd-user_imant_glm5-rubin-30427.sqsh}
 export LOG_DIR=${LOG_DIR:-${SLURM_SUBMIT_DIR}/h2d-bandwidth-${SLURM_JOB_ID}}
 export COPY_MIB=${COPY_MIB:-64} COPY_ITERATIONS=${COPY_ITERATIONS:-5}
-export H2D_POLICIES=${H2D_POLICIES:-unrestricted memory0 memory1 bound0 bound1}
+export H2D_POLICIES=${H2D_POLICIES:-unrestricted unrestricted-local memory0 memory1 bound0 bound1}
 export ENROOT_REMAP_ROOT=yes
 [[ -f $CONTAINER_IMAGE ]] || { echo "Missing image: $CONTAINER_IMAGE" >&2; exit 1; }
 mkdir -p "$LOG_DIR"
