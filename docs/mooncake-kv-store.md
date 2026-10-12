@@ -214,7 +214,13 @@ For every role whose `args` select the connector, srtslurm writes `/logs/mooncak
 | `prefill`, `agg` | `both` | Looks up prefixes before computing them and stores what it computed. |
 | `decode` | `capacity` | Lends its ranks' segments and never transfers: prompt KV reaches it over the cache transceiver. |
 
-`model_key` names the checkpoint in the pool's keys. TensorRT-LLM gives it no default, so that two checkpoints sharing a pool cannot read each other's KV; an srtslurm pool belongs to one job, so the served model name (`engine.served_model_name`, else the model directory name) is safe, and a `store_config.model_key` overrides it. Keys every server of the pool must agree on (`model_key`, `namespace`, `metadata_server`, `protocol`, `master_server_address`) cannot be set per role. The rest of the keys pass through to TensorRT-LLM's reader, which supplies its own defaults (`metadata_server: P2PHANDSHAKE`, `protocol: rdma`, `namespace: trtllm`, ...). Notes:
+`model_key` names the checkpoint in the pool's keys. TensorRT-LLM gives it no default, so that two checkpoints sharing a pool cannot read each other's KV. An srtslurm pool belongs to one job, so recipes can omit it. All roles receive the same key, chosen in this order:
+
+1. Explicit `services[].options.store_config.model_key` on the `mooncake-master` service.
+2. `engine.served_model_name`, when set.
+3. The basename of the resolved model path: `/models/checkpoint-revision-42` becomes `checkpoint-revision-42`, and `hf:Qwen/Qwen3-0.6B` becomes `Qwen3-0.6B`. Local paths use the checkpoint directory name before it is mounted at `/model` in workers.
+
+Keys every server of the pool must agree on (`model_key`, `namespace`, `metadata_server`, `protocol`, `master_server_address`) cannot be set per role. The rest of the keys pass through to TensorRT-LLM's reader, which supplies its own defaults (`metadata_server: P2PHANDSHAKE`, `protocol: rdma`, `namespace: trtllm`, ...). Notes:
 
 - The same recipe works with `frontend.type: trtllm_serve` and `frontend.type: dynamo`. trtllm-serve skips its own pool provisioning when `MOONCAKE_CONFIG_PATH` is already set ([`provision_pool`](https://github.com/NVIDIA/TensorRT-LLM/blob/1ab6bbc990a30de41bd0e30f1af38761ec342b8c/tensorrt_llm/_torch/pyexecutor/connectors/mooncake_store/master.py#L810-L833)), and `dynamo.trtllm` provisions nothing, so no wrapper is needed around either worker.
 - No `trtllm-serve mooncake_master` runs: it starts this same `mooncake_master` binary ([`_launch_master`](https://github.com/NVIDIA/TensorRT-LLM/blob/1ab6bbc990a30de41bd0e30f1af38761ec342b8c/tensorrt_llm/_torch/pyexecutor/connectors/mooncake_store/master.py#L469-L503)). There are no donor processes either; a `capacity` role's ranks lend the memory.

@@ -100,20 +100,30 @@ def test_role_mooncake_store_config_layers_over_the_shared_keys(tmp_path: Path) 
     assert _written(outputs, "mooncake_store_config_decode.json")["global_segment_size"] == "16GiB"
 
 
-def test_model_key_defaults_to_the_served_model_name(tmp_path: Path) -> None:
-    """The pool belongs to this job alone, so the name the workers serve is a safe key; a recipe value wins."""
-    recipe = _recipe()
+@pytest.mark.parametrize("frontend", ["trtllm_serve", "dynamo"])
+@pytest.mark.parametrize("local_model", [False, True], ids=["huggingface", "local-checkpoint"])
+def test_model_key_falls_back_to_the_resolved_model_path(tmp_path: Path, frontend: str, local_model: bool) -> None:
+    """All roles share the model basename, including when the worker sees only the /model mount."""
+    recipe = _recipe(frontend)
     del recipe["engine"]["served_model_name"]
-    launches, outputs = _sweep(recipe, tmp_path)
-    prefill = next(launch for launch in launches if launch.get("step_name", "").startswith("prefill_"))
-    model_arg = prefill["command"][prefill["command"].index("trtllm-serve") + 1]
+    expected = "Qwen3-0.6B"
+    if local_model:
+        model_path = tmp_path / "checkpoint-revision-42"
+        model_path.mkdir()
+        recipe["model"]["path"] = str(model_path)
+        expected = "checkpoint-revision-42"
+    _, outputs = _sweep(recipe, tmp_path)
     for mode in ("prefill", "decode"):
-        assert _written(outputs, f"mooncake_store_config_{mode}.json")["model_key"] == Path(model_arg).name
+        assert _written(outputs, f"mooncake_store_config_{mode}.json")["model_key"] == expected
 
+
+@pytest.mark.parametrize("frontend", ["trtllm_serve", "dynamo"])
+def test_shared_model_key_overrides_the_served_name_for_every_role(tmp_path: Path, frontend: str) -> None:
+    recipe = _recipe(frontend)
     _master(recipe)["options"]["store_config"]["model_key"] = "qwen3-pool"
-    backend = _load(recipe, tmp_path).backend
-    assert isinstance(backend, TRTLLMBackend)
-    assert backend.build_mooncake_store_config("decode", "10.1.1.1", "served")["model_key"] == "qwen3-pool"
+    _, outputs = _sweep(recipe, tmp_path)
+    for mode in ("prefill", "decode"):
+        assert _written(outputs, f"mooncake_store_config_{mode}.json")["model_key"] == "qwen3-pool"
 
 
 @pytest.mark.parametrize("engine", ["sglang", "vllm"])
