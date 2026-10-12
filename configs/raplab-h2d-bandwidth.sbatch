@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=h2d-bandwidth
 #SBATCH --account=root
-#SBATCH --partition=batch-r42
+#SBATCH --partition=batch-r41
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --exclusive
