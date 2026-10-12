@@ -58,9 +58,9 @@ def test_checked_in_schema_reference_is_current() -> None:
     Fix with: uv run srtctl schema-docs
     """
     assert DEFAULT_OUTPUT.exists(), f"{DEFAULT_OUTPUT} is missing; run `srtctl schema-docs`"
-    assert (
-        schema_reference_is_current()
-    ), f"{DEFAULT_OUTPUT.name} is stale relative to the code; run `srtctl schema-docs` and commit the result"
+    assert schema_reference_is_current(), (
+        f"{DEFAULT_OUTPUT.name} is stale relative to the code; run `srtctl schema-docs` and commit the result"
+    )
 
 
 def test_render_is_deterministic() -> None:

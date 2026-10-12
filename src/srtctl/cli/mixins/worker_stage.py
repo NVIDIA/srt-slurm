@@ -21,11 +21,11 @@ from srtctl.core.health import wait_for_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.processes import ManagedProcess, NamedProcesses, ProcessRegistry
 from srtctl.core.schema import build_otel_env, installs_dynamo
-from srtctl.services.otel import lifecycle_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
 from srtctl.core.supervisor import EndpointKey, WorkerSupervisor
 from srtctl.frontends import get_frontend
 from srtctl.services.implicit import discovery_env
+from srtctl.services.otel import lifecycle_otel_env
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

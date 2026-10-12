@@ -636,7 +636,9 @@ def test_otel_collector_launch_writes_dsight_input_and_survives_worker_shutdown(
     assert proc.critical and proc.shutdown_tier == 1
     assert launch.call_args.kwargs["container_image"] is None
     assert launch.call_args.kwargs["command"] == [
-        "/srt/configs/otelcol-contrib", "--config", str(tmp_path / "otel-collector.yaml")
+        "/srt/configs/otelcol-contrib",
+        "--config",
+        str(tmp_path / "otel-collector.yaml"),
     ]
     assert wait.call_args.args[0].port == 14317
     collector = yaml.safe_load((tmp_path / "otel-collector.yaml").read_text())
@@ -775,7 +777,11 @@ def test_declared_infra_services_drive_placement_and_payload(tmp_path: Path) -> 
     )
     assert config.infra_dedicated_node is True
     assert config.nats_max_payload_mb == 24
-    assert [entry.service.effective_placement for entry in effective_services(config)] == ["dedicated", "head", "dedicated"]
+    assert [entry.service.effective_placement for entry in effective_services(config)] == [
+        "dedicated",
+        "head",
+        "dedicated",
+    ]
 
 
 def test_declared_etcd_dedicated_must_agree_with_nats(tmp_path: Path) -> None:
