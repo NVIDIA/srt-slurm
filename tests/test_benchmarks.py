@@ -1042,6 +1042,7 @@ class TestMooncakeRouterRunner:
         runtime = MagicMock()
         runtime.frontend_port = 8000
         runtime.is_hf_model = False  # Local model mounted at /model
+        runtime.worker_model_arg = "/model"
 
         cmd = runner.build_command(config, runtime)
 
@@ -1122,6 +1123,7 @@ class TestTraceReplayRunner:
         runtime = MagicMock()
         runtime.frontend_port = 8000
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
 
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
@@ -1160,6 +1162,7 @@ class TestTraceReplayRunner:
         runtime = MagicMock()
         runtime.frontend_port = 8000
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
 
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
@@ -1188,6 +1191,7 @@ class TestTraceReplayRunner:
         runtime = MagicMock()
         runtime.frontend_port = 8000
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
 
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 

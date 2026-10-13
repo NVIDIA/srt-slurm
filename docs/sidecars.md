@@ -40,6 +40,8 @@ TensorRT-LLM supports aggregate, prefill, and decode workers through OpenEngine 
 
 The [disaggregated TRT-LLM example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/dynamo-sidecar-disagg.yaml) places a prefill and decode worker with sidecars on separate nodes.
 
+For an `hf:` model, set `model.hf_snapshot_path` to the absolute path of its commit-specific snapshot inside the container, such as `/hf/hub/models--org--name/snapshots/<40-character-commit>`. Set `identity.model.revision` to the same commit and mount the full Hugging Face hub cache at `/hf/hub` so the snapshot's links to `blobs/` resolve. Workers, sidecars, and benchmark tokenizers then use that snapshot path; the served model name remains the configured model ID. An absent snapshot fails the launch instead of selecting a moving cache reference.
+
 ## SGLang topology and launch requirements
 
 SGLang's endpoint leader runs the serving sidecar and registers the complete global DP range. With attention DP and `roles.<role>.kv_events: true`, srtctl also exposes native gRPC and runs a sidecar on each follower that owns a KV publisher. Dynamo automatically selects serving or telemetry-only mode from the local engine's `GetServerInfo` metadata; no mode flag is passed. These followers relay their node-local events with the leader's serving-worker identity and the source's global DP rank; they do not add inference workers. Followers without publishers, including TP-only ranks and later pipeline stages, remain engine-only. For example, TP8/DP2 across four nodes publishes on nodes 0 and 2, so only node 2 needs a telemetry sidecar. Each sidecar discovers its local sources through SGLang's `GetServerInfo`; no context file or manually assigned DP rank is needed.

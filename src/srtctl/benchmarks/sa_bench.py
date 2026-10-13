@@ -115,7 +115,7 @@ class SABenchRunner(BenchmarkRunner):
             decode_gpus = 0
 
         # Tokenizer path: HF model ID or container mount path
-        tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        tokenizer_path = runtime.worker_model_arg
 
         dataset_name = b.dataset_name or "random"
 

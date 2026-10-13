@@ -864,7 +864,7 @@ def format_identity_verification(results: list[IdentityCheckResult], identity: A
 # ============================================================================
 
 
-def generate_capture_script(output_path: str) -> str:
+def generate_capture_script(output_path: str, model_path: str = "/model") -> str:
     """Generate a bash one-liner that captures a fingerprint inside a container.
 
     The generated command:
@@ -1008,6 +1008,8 @@ def model_identity(model_path):
     mp = Path(model_path) if model_path else None
     if not mp or not mp.exists():
         return None
+    if mp.parent.name == 'snapshots' and len(mp.name) == 40 and all(c in '0123456789abcdef' for c in mp.name):
+        info['hf_revision'] = mp.name
     # HuggingFace snapshot_download: refs/main has commit SHA
     for refs_path in [mp / '.huggingface' / 'refs' / 'main', mp / 'refs' / 'main']:
         if refs_path.exists():
@@ -1074,7 +1076,7 @@ fp = {{
     'cuda_version': run('nvcc --version 2>/dev/null | grep release') or 'unavailable',
     'nccl_version': run(f'{{PY}} -c "import torch; print(torch.cuda.nccl.version())"'.format(PY=PY)) or 'unavailable',
     'frameworks': framework_versions(),
-    'model': model_identity('/model'),
+    'model': model_identity({model_path!r}),
     'env': env_vars(),
     'pip_packages': pip_pkgs(),
 }}

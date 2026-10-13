@@ -89,7 +89,10 @@ def _isolated_cluster(model_dir: Path, container_file: Path) -> Iterator[None]:
         container = cfg.model.container
         if container.startswith(("/", "./")):
             container = str(container_file)
-        return dataclasses.replace(cfg, model=dataclasses.replace(cfg.model, path=str(model_dir), container=container))
+        # Pinned HF examples must retain the ID and snapshot so the launch plan
+        # captures the actual engine and tokenizer arguments.
+        model_path = cfg.model.path if cfg.model.hf_snapshot_path else str(model_dir)
+        return dataclasses.replace(cfg, model=dataclasses.replace(cfg.model, path=model_path, container=container))
 
     with (
         patch.object(config_module, "load_cluster_config", lambda: None),

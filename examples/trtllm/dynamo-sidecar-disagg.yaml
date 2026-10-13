@@ -6,7 +6,7 @@
 # transceiver transfers KV between roles; KV events are disabled in this variant.
 # The image and Dynamo wheel are updated nightlies, distinct from the source PR.
 # Mount an HF cache containing the pinned revision at /hf/hub; the recipe
-# resolves that model ID offline in the engine and benchmark containers.
+# uses the pinned snapshot offline in the engine and benchmark containers.
 # The short sa-bench sweep is an E2E smoke, not the source PR's AgentX workload.
 # The sidecar registers the HF model ID, so the served name must match it.
 
@@ -17,6 +17,7 @@ slurm:
   time_limit: 00:45:00
 model:
   path: hf:nvidia/GLM-5.2-NVFP4
+  hf_snapshot_path: /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab
   container: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
   precision: fp4
 identity:

@@ -494,6 +494,12 @@ class SweepOrchestrator(
         if not self.runtime.is_hf_model:
             return
 
+        if self.runtime.hf_snapshot_path:
+            logger.info(
+                "Using pinned HF snapshot %s; skipping unversioned model pre-download", self.runtime.hf_snapshot_path
+            )
+            return
+
         hf_home = self._get_hf_home()
         if not hf_home:
             logger.warning(

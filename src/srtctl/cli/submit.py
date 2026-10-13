@@ -326,7 +326,10 @@ def show_config_details(config: SrtConfig) -> None:
 
     # Built-in mounts (always present at runtime)
     model_path = os.path.expandvars(config.model.path)
-    mounts_table.add_row("built-in", model_path, "/model")
+    if config.model.hf_snapshot_path:
+        console.print(f"Pinned HF model snapshot (engine and benchmark): {config.model.hf_snapshot_path}")
+    if not model_path.startswith("hf:"):
+        mounts_table.add_row("built-in", model_path, "/model")
     mounts_table.add_row("built-in", "<log_dir>", "/logs")
 
     # Cluster-level mounts from srtslurm.yaml

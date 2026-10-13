@@ -696,3 +696,20 @@ def test_trtllm_sidecar_rejects_direct_frontend(tmp_path: Path) -> None:
             _runtime(tmp_path),
             frontend_type="trtllm_serve",
         )
+
+
+def test_trtllm_sidecar_uses_pinned_snapshot_for_engine_and_tokenizer(tmp_path: Path) -> None:
+    snapshot = "/hf/hub/models--org--name/snapshots/" + "a" * 40
+    runtime = _runtime(tmp_path)
+    runtime.model_path = Path("org/name")
+    runtime.worker_model_arg = snapshot
+    backend = TRTLLMBackend(
+        roles={"prefill": RoleConfig(args={"tensor_parallel_size": 4, "max_seq_len": 4096})},
+        served_model_name="org/name",
+    )
+
+    script = backend.build_worker_command(_process(mode="prefill"), [], runtime)[2]
+
+    assert f"tensorrt_llm.commands.serve {snapshot} " in script
+    assert f"dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path {snapshot} " in script
+    assert "--served_model_name org/name" in script

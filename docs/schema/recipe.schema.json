@@ -1439,7 +1439,7 @@
       "properties": {
         "path": {
           "type": "string",
-          "description": "Model weights directory, or a `model_paths` alias from srtslurm.yaml. Mounted at /model."
+          "description": "Model weights directory, model_paths alias, or hf:<repo-id>. Local paths are mounted at /model."
         },
         "container": {
           "type": "string",
@@ -1459,6 +1459,18 @@
             }
           ],
           "description": "Optional: stage the model from shared storage to this node-local dir before workers start (e.g. \"/raid/scratch/models\"). None = use path directly.",
+          "default": null
+        },
+        "hf_snapshot_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Container path to an HF cache snapshot; keeps weights and tokenizer on one immutable revision.",
           "default": null
         }
       },

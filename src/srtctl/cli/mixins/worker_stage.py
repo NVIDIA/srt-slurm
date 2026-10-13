@@ -447,7 +447,9 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}{suffix}.json")
+        fp_cmd = generate_capture_script(
+            f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}{suffix}.json", self.runtime.worker_model_arg
+        )
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
@@ -673,7 +675,9 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}.json")
+        fp_cmd = generate_capture_script(
+            f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}.json", self.runtime.worker_model_arg
+        )
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"

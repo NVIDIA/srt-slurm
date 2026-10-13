@@ -9,7 +9,6 @@ container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 use_bash_wrapper: True
 bash_preamble: |
@@ -35,7 +34,6 @@ container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 env_to_set:
     DYNAMO_VERSION: 1.6.0.dev20261010
@@ -124,7 +122,7 @@ command: |
         exit "${status}"
     }
     trap cleanup EXIT INT TERM
-    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /model --grpc --grpc-protocol openengine --host 127.0.0.1 --port 50051 --extra_llm_api_options /logs/trtllm_config_prefill.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 4 --moe_expert_parallel_size 4 --pipeline_parallel_size 1 &
+    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --grpc --grpc-protocol openengine --host 127.0.0.1 --port 50051 --extra_llm_api_options /logs/trtllm_config_prefill.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 4 --moe_expert_parallel_size 4 --pipeline_parallel_size 1 &
     ENGINE_PID=$!
     if [[ "${SLURM_PROCID:-0}" != "0" ]]; then
         set +e
@@ -151,7 +149,7 @@ command: |
         echo "Timed out waiting for TensorRT-LLM native gRPC on port 50051" >&2
         exit 1
     fi
-    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path /model --disaggregation-mode prefill --context-length 1048576 &
+    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --disaggregation-mode prefill --context-length 1048576 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
@@ -171,7 +169,6 @@ container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 env_to_set:
     DYNAMO_VERSION: 1.6.0.dev20261010
@@ -261,7 +258,7 @@ command: |
         exit "${status}"
     }
     trap cleanup EXIT INT TERM
-    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /model --grpc --grpc-protocol openengine --host 127.0.0.1 --port 50052 --extra_llm_api_options /logs/trtllm_config_decode.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 8 --moe_expert_parallel_size 1 --pipeline_parallel_size 1 &
+    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --grpc --grpc-protocol openengine --host 127.0.0.1 --port 50052 --extra_llm_api_options /logs/trtllm_config_decode.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 8 --moe_expert_parallel_size 1 --pipeline_parallel_size 1 &
     ENGINE_PID=$!
     if [[ "${SLURM_PROCID:-0}" != "0" ]]; then
         set +e
@@ -288,7 +285,7 @@ command: |
         echo "Timed out waiting for TensorRT-LLM native gRPC on port 50052" >&2
         exit 1
     fi
-    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50052 --model-path /model --disaggregation-mode decode --context-length 1048576 &
+    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50052 --model-path /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --disaggregation-mode decode --context-length 1048576 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
@@ -306,7 +303,6 @@ container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 env_to_set:
     DYNAMO_VERSION: 1.6.0.dev20261010
@@ -344,7 +340,6 @@ container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -359,7 +354,6 @@ container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -374,7 +368,6 @@ container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -389,7 +382,6 @@ container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -404,7 +396,6 @@ container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -419,7 +410,6 @@ container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -434,7 +424,6 @@ container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -449,7 +438,6 @@ container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -464,7 +452,6 @@ container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -479,7 +466,6 @@ container_image: quay.io#prometheus/node-exporter:v1.8.2
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 srun_export_env:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
@@ -503,7 +489,6 @@ container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
     <output>/logs: /logs
 env_to_set:
     DYNAMO_VERSION: 1.6.0.dev20261010
@@ -514,4 +499,4 @@ env_to_set:
     SRT_FRONTEND_HOST: 127.0.0.1
     SRT_FRONTEND_PORT: 8000
 command: |
-    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 32 1 inf /model nvidia/GLM-5.2-NVFP4 true 12 4 8 0.8 2 0 glm_moe_dsa true random '' false
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 32 1 inf /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab nvidia/GLM-5.2-NVFP4 true 12 4 8 0.8 2 0 glm_moe_dsa true random '' false

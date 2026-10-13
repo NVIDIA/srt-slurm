@@ -73,6 +73,23 @@ def test_cluster_gpu_visibility_is_visible(tmp_path, monkeypatch, capsys):
     assert "GPU subset visibility variable: ROCR_VISIBLE_DEVICES" in capsys.readouterr().out
 
 
+def test_pinned_hf_snapshot_is_visible_and_validated(capsys):
+    revision = "a" * 40
+    snapshot = f"/hf/hub/models--org--name/snapshots/{revision}"
+    overrides = {
+        "model": {"path": "hf:org/name", "hf_snapshot_path": snapshot},
+        "identity": {"model": {"revision": revision}},
+    }
+    config = _make_config(overrides)
+    show_config_details(config)
+    assert snapshot in " ".join(capsys.readouterr().out.split())
+    assert config.model.hf_snapshot_path == snapshot
+
+    overrides["identity"] = {"model": {"revision": "b" * 40}}
+    with pytest.raises(ValueError, match="model.hf_snapshot_path must end with identity.model.revision"):
+        _make_config(overrides)
+
+
 def test_role_restart_policy_and_limits_are_visible(capsys):
     config = _make_config(
         {"roles": {"decode": {"restart": {"policy": "on-failure", "max_restarts": 2, "backoff_seconds": 4}}}}
