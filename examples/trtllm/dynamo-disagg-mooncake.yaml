@@ -5,8 +5,8 @@
 # the upstream `mooncake_master` on the infra node, and srtctl gives each role's
 # workers its Mooncake client config through MOONCAKE_CONFIG_PATH. `dynamo.trtllm`
 # provisions no pool itself, so that variable is how its ranks find the master; no
-# wrapper around the worker is needed. Needs a TRT-LLM build with the refined
-# Mooncake connector API (NVIDIA/TensorRT-LLM#19706). See docs/mooncake-kv-store.md.
+# wrapper around the worker is needed. Needs a TRT-LLM build supporting
+# MOONCAKE_CONFIG_PATH and the capacity role. See docs/mooncake-kv-store.md.
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 

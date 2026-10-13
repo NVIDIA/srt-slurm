@@ -10,7 +10,7 @@
 # only lends its segment (role: capacity), and `roles.decode.mooncake_store_config`
 # gives it a larger one. model_key defaults to the served model name. No
 # `trtllm-serve mooncake_master` or donor process runs. Needs a TRT-LLM build with the refined Mooncake connector
-# API (NVIDIA/TensorRT-LLM#19706). See docs/mooncake-kv-store.md.
+# API with MOONCAKE_CONFIG_PATH and the capacity role. See docs/mooncake-kv-store.md.
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 

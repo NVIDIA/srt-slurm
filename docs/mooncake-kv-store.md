@@ -171,7 +171,7 @@ The role `env:` maps are injected on the vLLM workers (not on the standalone `mo
 
 ## Quick Start (TensorRT-LLM)
 
-TensorRT-LLM's `mooncake-store` KV connector shares one Mooncake Store pool between context and generation servers. It needs a TensorRT-LLM build with the refined connector API ([NVIDIA/TensorRT-LLM#19706](https://github.com/NVIDIA/TensorRT-LLM/pull/19706)). Every rank reads its Mooncake client config from the JSON file `MOONCAKE_CONFIG_PATH` names before it looks at `kv_connector_config.mooncake_store` ([`MooncakeStoreConnectorConfig.resolve`](https://github.com/NVIDIA/TensorRT-LLM/blob/1ab6bbc990a30de41bd0e30f1af38761ec342b8c/tensorrt_llm/_torch/pyexecutor/connectors/mooncake_store/config.py#L282-L302)). So srtslurm runs the same `mooncake_master` it runs for SGLang and vLLM, and gives each role its own client config:
+TensorRT-LLM's `mooncake-store` KV connector shares one Mooncake Store pool between context and generation servers. Use a TensorRT-LLM build that supports loading the connector's client JSON through `MOONCAKE_CONFIG_PATH` and the `capacity` role. Every rank reads that file before it looks at `kv_connector_config.mooncake_store`. srtslurm runs the same `mooncake_master` it runs for SGLang and vLLM, and gives each role its own client config:
 
 ```yaml
 engine: trtllm
@@ -207,6 +207,8 @@ services:
         stage_through_host: true          # copy through host memory; no GPUDirect RDMA needed
 ```
 
+`global_segment_size` is inherited from the `mooncake-master` service's `options.store_config` unless a role overrides it in `roles.<role>.mooncake_store_config`. In this example, each prefill rank lends **16 GiB** and each decode rank lends **32 GiB**. If the decode override is omitted, both roles inherit **16 GiB per rank**. Use `global_segment_size` in these mappings: `segment_size` belongs to TensorRT-LLM's `kv_connector_config.mooncake_store` block and is rejected here because the client JSON would ignore it.
+
 For every role whose `args` select the connector, srtslurm writes `/logs/mooncake_store_config_<role>.json` before workers start and sets `MOONCAKE_CONFIG_PATH` to it on that role's srun task, so every rank `trtllm-llmapi-launch` starts inherits it. The file layers, later wins: a per-role `role` default and `model_key` (the served model name), the service's `store_config`, then `roles.<role>.mooncake_store_config`; `master_server_address` is always `<infra_node_ip>:8700`:
 
 | Role | Default `role` | What the server does with the pool |
@@ -222,11 +224,11 @@ For every role whose `args` select the connector, srtslurm writes `/logs/mooncak
 
 Keys every server of the pool must agree on (`model_key`, `namespace`, `metadata_server`, `protocol`, `master_server_address`) cannot be set per role. The rest of the keys pass through to TensorRT-LLM's reader, which supplies its own defaults (`metadata_server: P2PHANDSHAKE`, `protocol: rdma`, `namespace: trtllm`, ...). Notes:
 
-- The same recipe works with `frontend.type: trtllm_serve` and `frontend.type: dynamo`. trtllm-serve skips its own pool provisioning when `MOONCAKE_CONFIG_PATH` is already set ([`provision_pool`](https://github.com/NVIDIA/TensorRT-LLM/blob/1ab6bbc990a30de41bd0e30f1af38761ec342b8c/tensorrt_llm/_torch/pyexecutor/connectors/mooncake_store/master.py#L810-L833)), and `dynamo.trtllm` provisions nothing, so no wrapper is needed around either worker.
-- No `trtllm-serve mooncake_master` runs: it starts this same `mooncake_master` binary ([`_launch_master`](https://github.com/NVIDIA/TensorRT-LLM/blob/1ab6bbc990a30de41bd0e30f1af38761ec342b8c/tensorrt_llm/_torch/pyexecutor/connectors/mooncake_store/master.py#L469-L503)). There are no donor processes either; a `capacity` role's ranks lend the memory.
+- The same recipe works with `frontend.type: trtllm_serve` and `frontend.type: dynamo`. trtllm-serve skips its own pool provisioning when `MOONCAKE_CONFIG_PATH` is already set, and `dynamo.trtllm` provisions nothing, so no wrapper is needed around either worker.
+- srtslurm launches the native `mooncake_master` binary directly. A `capacity` role's ranks lend the memory, so separate donor processes are unnecessary.
 - `global_segment_size` is per rank: a node needs its ranks times the segment size of host memory. TensorRT-LLM refuses `GB`/`MB`, because vLLM's reader of the same file scales them by 1024 and TensorRT-LLM's by 1000; write `GiB` or a byte count.
 - Leave `local_hostname` unset so each rank uses its own address; a value in `store_config` would apply to every rank of the role. TensorRT-LLM does not read `MOONCAKE_LOCAL_HOSTNAME`, `MOONCAKE_MASTER`, or `MOONCAKE_TE_META_DATA_SERVER`; srtslurm still stamps them, and they are inert for these workers.
-- Engine-side limits are TensorRT-LLM's and depend on the build, so srtslurm does not repeat them. On the `feat/m3_with_msa` branch, a disaggregated server on KV cache manager v2 needs `cache_transceiver_config: {backend: NIXL, transceiver_runtime: PYTHON}`; the C++ transceiver is refused at startup ([`kv_cache_transceiver.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/1ab6bbc990a30de41bd0e30f1af38761ec342b8c/tensorrt_llm/_torch/pyexecutor/kv_cache_transceiver.py#L188-L196)); `main` requires it only for hybrid Mamba models. On a cluster without GPUDirect RDMA, set `stage_through_host: true`. On `main` ([NVIDIA/TensorRT-LLM#19171](https://github.com/NVIDIA/TensorRT-LLM/pull/19171)) a server with any KV connector also rejects attention DP, and speculative decoding on KV cache manager v2.
+- Engine-side limits depend on the TensorRT-LLM build. These examples select KV cache manager v2 and the Python NIXL transceiver with `cache_transceiver_config: {backend: NIXL, transceiver_runtime: PYTHON}`. Check the installed engine's support before enabling attention DP or speculative decoding. On a cluster without GPUDirect RDMA, set `stage_through_host: true`.
 
 ## What srtslurm Owns vs What You Set
 
