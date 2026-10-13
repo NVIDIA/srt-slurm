@@ -88,7 +88,7 @@ containers:
   dsv4-blackwell: "/shared/containers/sglang-deepseek-v4-blackwell.sqsh"
   dsv4-grace-blackwell: "/shared/containers/sglang-deepseek-v4-grace-blackwell.sqsh"
   dsv4-hopper: "/shared/containers/sglang-deepseek-v4-hopper.sqsh"
-  # NeMo Skills eval container for accuracy benchmarks (AIME / GPQA / etc.)
+  # NeMo Skills eval container for accuracy benchmarks (AIME, HLE, etc.)
   # via `benchmark.container_image: nemo-skills`. Has the `ns` CLI baked in.
   # Pre-cache with: enroot import 'docker://nvcr.io#nvidia/eval-factory/nemo-skills:26.03'
   # Or pass the URI directly in the recipe to let Pyxis auto-pull on first run.
