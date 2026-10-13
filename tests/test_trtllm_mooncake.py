@@ -101,7 +101,9 @@ def test_role_mooncake_store_config_layers_over_the_shared_keys(tmp_path: Path, 
     recipe["roles"]["decode"]["mooncake_store_config"] = {"global_segment_size": "16GiB"} if override else {}
     _, outputs = _sweep(recipe, tmp_path)
     assert _written(outputs, "mooncake_store_config_prefill.json")["global_segment_size"] == "8GiB"
-    assert _written(outputs, "mooncake_store_config_decode.json")["global_segment_size"] == ("16GiB" if override else "8GiB")
+    assert _written(outputs, "mooncake_store_config_decode.json")["global_segment_size"] == (
+        "16GiB" if override else "8GiB"
+    )
 
 
 @pytest.mark.parametrize("frontend", ["trtllm_serve", "dynamo"])
