@@ -684,3 +684,15 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, mode: str,
         assert "--disaggregation-mode" not in script
     else:
         assert f"--disaggregation-mode {mode}" in script
+
+
+def test_trtllm_sidecar_rejects_direct_frontend(tmp_path: Path) -> None:
+    backend = TRTLLMBackend()
+
+    with pytest.raises(ValueError, match="sidecar mode requires frontend.type: dynamo"):
+        backend.build_worker_command(
+            _process(mode="prefill"),
+            [],
+            _runtime(tmp_path),
+            frontend_type="trtllm_serve",
+        )
