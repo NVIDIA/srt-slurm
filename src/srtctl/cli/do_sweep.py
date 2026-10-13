@@ -330,8 +330,8 @@ class SweepOrchestrator(
     # evidence and wins, so clock_sync_<node>.out records *which* source
     # vouched (and, for chrony/ntp, the offset it reported). Every probe is
     # read-only and unprivileged on stock images: timedatectl reads the kernel
-    # STA_UNSYNC flag over D-Bus, chronyc/ntpq ask their daemon. The last
-    # branch reads that same kernel flag directly through adjtimex(2), for
+    # maxerror over D-Bus, chronyc/ntpq ask their daemon. The last
+    # branch reads that same kernel value directly through adjtimex(2), for
     # hosts whose clock is disciplined but expose no daemon to ask: no systemd
     # PID 1 or D-Bus (container-rooted Slurm nodes), no chrony/ntp CLI. Each
     # probe's stderr is kept and printed on the failure path, so the .out says
@@ -344,8 +344,8 @@ class SweepOrchestrator(
         import ctypes
         import sys
 
-        STA_UNSYNC = 0x0040  # status bit: set at boot, cleared while a time daemon disciplines the clock
-        TIME_ERROR = 5  # clock state returned while STA_UNSYNC or STA_CLOCKERR is set
+        # Match systemd ntp_synced(): STA_UNSYNC can stay set when chrony disables RTC sync.
+        MAXERROR_LIMIT_US = 16_000_000
 
 
         class timex(ctypes.Structure):  # struct timex, LP64 layout (adjtimex(2))
@@ -378,7 +378,7 @@ class SweepOrchestrator(
         state = ctypes.CDLL(None, use_errno=True).adjtimex(ctypes.byref(tx))
         if state < 0:
             sys.exit("adjtimex failed: errno %d" % ctypes.get_errno())
-        if state == TIME_ERROR or tx.status & STA_UNSYNC:
+        if tx.maxerror >= MAXERROR_LIMIT_US:
             sys.exit("kernel clock unsynchronised: state %d status 0x%x maxerror %dus" % (state, tx.status, tx.maxerror))
         print("maxerror %dus status 0x%x" % (tx.maxerror, tx.status))
         """
@@ -392,7 +392,7 @@ class SweepOrchestrator(
         "if ntpq=$(ntpq -pn 2>&1) && grep -q '^[*]' <<<\"$ntpq\"; then "
         'echo "$(hostname): ntpq has a selected peer"; grep \'^[*]\' <<<"$ntpq"; exit 0; fi; '
         f"if adjtimex=$(python3 -c '{CLOCK_SYNC_ADJTIMEX_PROBE}' 2>&1); then "
-        'echo "$(hostname): kernel adjtimex STA_UNSYNC clear ($adjtimex)"; exit 0; fi; '
+        'echo "$(hostname): kernel adjtimex maxerror below 16s ($adjtimex)"; exit 0; fi; '
         '{ echo "$(hostname): system clock is not NTP-synchronised"; '
         'echo "timedatectl: $timedatectl"; echo "chronyc: $chronyc"; echo "ntpq: $ntpq"; echo "adjtimex: $adjtimex"; } >&2; '
         "exit 1"

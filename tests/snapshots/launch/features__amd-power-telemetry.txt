@@ -9,8 +9,8 @@ command: |
     bash -c 'timedatectl=$(timedatectl show -p NTPSynchronized --value 2>&1); if grep -qx yes <<<"$timedatectl"; then echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; if chronyc=$(chronyc -n tracking 2>&1) && grep -Eq '"'"'^Leap status *: *Normal'"'"' <<<"$chronyc"; then echo "$(hostname): chronyc Leap status Normal"; grep -E '"'"'^(Reference ID|System time|Last offset)'"'"' <<<"$chronyc"; exit 0; fi; if ntpq=$(ntpq -pn 2>&1) && grep -q '"'"'^[*]'"'"' <<<"$ntpq"; then echo "$(hostname): ntpq has a selected peer"; grep '"'"'^[*]'"'"' <<<"$ntpq"; exit 0; fi; if adjtimex=$(python3 -c '"'"'import ctypes
     import sys
     
-    STA_UNSYNC = 0x0040  # status bit: set at boot, cleared while a time daemon disciplines the clock
-    TIME_ERROR = 5  # clock state returned while STA_UNSYNC or STA_CLOCKERR is set
+    # Match systemd ntp_synced(): STA_UNSYNC can stay set when chrony disables RTC sync.
+    MAXERROR_LIMIT_US = 16_000_000
     
     
     class timex(ctypes.Structure):  # struct timex, LP64 layout (adjtimex(2))
@@ -43,10 +43,10 @@ command: |
     state = ctypes.CDLL(None, use_errno=True).adjtimex(ctypes.byref(tx))
     if state < 0:
         sys.exit("adjtimex failed: errno %d" % ctypes.get_errno())
-    if state == TIME_ERROR or tx.status & STA_UNSYNC:
+    if tx.maxerror >= MAXERROR_LIMIT_US:
         sys.exit("kernel clock unsynchronised: state %d status 0x%x maxerror %dus" % (state, tx.status, tx.maxerror))
     print("maxerror %dus status 0x%x" % (tx.maxerror, tx.status))
-    '"'"' 2>&1); then echo "$(hostname): kernel adjtimex STA_UNSYNC clear ($adjtimex)"; exit 0; fi; { echo "$(hostname): system clock is not NTP-synchronised"; echo "timedatectl: $timedatectl"; echo "chronyc: $chronyc"; echo "ntpq: $ntpq"; echo "adjtimex: $adjtimex"; } >&2; exit 1'
+    '"'"' 2>&1); then echo "$(hostname): kernel adjtimex maxerror below 16s ($adjtimex)"; exit 0; fi; { echo "$(hostname): system clock is not NTP-synchronised"; echo "timedatectl: $timedatectl"; echo "chronyc: $chronyc"; echo "ntpq: $ntpq"; echo "adjtimex: $adjtimex"; } >&2; exit 1'
 
 ## <unnamed>
 nodelist: node-02
@@ -55,8 +55,8 @@ command: |
     bash -c 'timedatectl=$(timedatectl show -p NTPSynchronized --value 2>&1); if grep -qx yes <<<"$timedatectl"; then echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; if chronyc=$(chronyc -n tracking 2>&1) && grep -Eq '"'"'^Leap status *: *Normal'"'"' <<<"$chronyc"; then echo "$(hostname): chronyc Leap status Normal"; grep -E '"'"'^(Reference ID|System time|Last offset)'"'"' <<<"$chronyc"; exit 0; fi; if ntpq=$(ntpq -pn 2>&1) && grep -q '"'"'^[*]'"'"' <<<"$ntpq"; then echo "$(hostname): ntpq has a selected peer"; grep '"'"'^[*]'"'"' <<<"$ntpq"; exit 0; fi; if adjtimex=$(python3 -c '"'"'import ctypes
     import sys
     
-    STA_UNSYNC = 0x0040  # status bit: set at boot, cleared while a time daemon disciplines the clock
-    TIME_ERROR = 5  # clock state returned while STA_UNSYNC or STA_CLOCKERR is set
+    # Match systemd ntp_synced(): STA_UNSYNC can stay set when chrony disables RTC sync.
+    MAXERROR_LIMIT_US = 16_000_000
     
     
     class timex(ctypes.Structure):  # struct timex, LP64 layout (adjtimex(2))
@@ -89,10 +89,10 @@ command: |
     state = ctypes.CDLL(None, use_errno=True).adjtimex(ctypes.byref(tx))
     if state < 0:
         sys.exit("adjtimex failed: errno %d" % ctypes.get_errno())
-    if state == TIME_ERROR or tx.status & STA_UNSYNC:
+    if tx.maxerror >= MAXERROR_LIMIT_US:
         sys.exit("kernel clock unsynchronised: state %d status 0x%x maxerror %dus" % (state, tx.status, tx.maxerror))
     print("maxerror %dus status 0x%x" % (tx.maxerror, tx.status))
-    '"'"' 2>&1); then echo "$(hostname): kernel adjtimex STA_UNSYNC clear ($adjtimex)"; exit 0; fi; { echo "$(hostname): system clock is not NTP-synchronised"; echo "timedatectl: $timedatectl"; echo "chronyc: $chronyc"; echo "ntpq: $ntpq"; echo "adjtimex: $adjtimex"; } >&2; exit 1'
+    '"'"' 2>&1); then echo "$(hostname): kernel adjtimex maxerror below 16s ($adjtimex)"; exit 0; fi; { echo "$(hostname): system clock is not NTP-synchronised"; echo "timedatectl: $timedatectl"; echo "chronyc: $chronyc"; echo "ntpq: $ntpq"; echo "adjtimex: $adjtimex"; } >&2; exit 1'
 
 ## <unnamed>
 nodelist: node-03
@@ -101,8 +101,8 @@ command: |
     bash -c 'timedatectl=$(timedatectl show -p NTPSynchronized --value 2>&1); if grep -qx yes <<<"$timedatectl"; then echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; if chronyc=$(chronyc -n tracking 2>&1) && grep -Eq '"'"'^Leap status *: *Normal'"'"' <<<"$chronyc"; then echo "$(hostname): chronyc Leap status Normal"; grep -E '"'"'^(Reference ID|System time|Last offset)'"'"' <<<"$chronyc"; exit 0; fi; if ntpq=$(ntpq -pn 2>&1) && grep -q '"'"'^[*]'"'"' <<<"$ntpq"; then echo "$(hostname): ntpq has a selected peer"; grep '"'"'^[*]'"'"' <<<"$ntpq"; exit 0; fi; if adjtimex=$(python3 -c '"'"'import ctypes
     import sys
     
-    STA_UNSYNC = 0x0040  # status bit: set at boot, cleared while a time daemon disciplines the clock
-    TIME_ERROR = 5  # clock state returned while STA_UNSYNC or STA_CLOCKERR is set
+    # Match systemd ntp_synced(): STA_UNSYNC can stay set when chrony disables RTC sync.
+    MAXERROR_LIMIT_US = 16_000_000
     
     
     class timex(ctypes.Structure):  # struct timex, LP64 layout (adjtimex(2))
@@ -135,10 +135,10 @@ command: |
     state = ctypes.CDLL(None, use_errno=True).adjtimex(ctypes.byref(tx))
     if state < 0:
         sys.exit("adjtimex failed: errno %d" % ctypes.get_errno())
-    if state == TIME_ERROR or tx.status & STA_UNSYNC:
+    if tx.maxerror >= MAXERROR_LIMIT_US:
         sys.exit("kernel clock unsynchronised: state %d status 0x%x maxerror %dus" % (state, tx.status, tx.maxerror))
     print("maxerror %dus status 0x%x" % (tx.maxerror, tx.status))
-    '"'"' 2>&1); then echo "$(hostname): kernel adjtimex STA_UNSYNC clear ($adjtimex)"; exit 0; fi; { echo "$(hostname): system clock is not NTP-synchronised"; echo "timedatectl: $timedatectl"; echo "chronyc: $chronyc"; echo "ntpq: $ntpq"; echo "adjtimex: $adjtimex"; } >&2; exit 1'
+    '"'"' 2>&1); then echo "$(hostname): kernel adjtimex maxerror below 16s ($adjtimex)"; exit 0; fi; { echo "$(hostname): system clock is not NTP-synchronised"; echo "timedatectl: $timedatectl"; echo "chronyc: $chronyc"; echo "ntpq: $ntpq"; echo "adjtimex: $adjtimex"; } >&2; exit 1'
 
 ## agg_0_node-01
 nodelist: node-01

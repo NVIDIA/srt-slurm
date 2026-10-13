@@ -272,7 +272,7 @@ class TestProbeScript:
         assert lines[0].endswith(": ntpq has a selected peer")
         assert lines[1].startswith("*10.0.0.1")
 
-    def test_kernel_flag_vouches_when_no_daemon_answers(self, tmp_path):
+    def test_kernel_maxerror_vouches_when_no_daemon_answers(self, tmp_path):
         """Hosts without systemd/D-Bus or a chrony/ntp CLI (container-rooted Slurm nodes) still prove sync."""
         r = self._run(
             tmp_path,
@@ -286,7 +286,7 @@ class TestProbeScript:
         assert r.returncode == 0
         lines = r.stdout.splitlines()
         assert len(lines) == 1  # the evidence line only; the daemon probes\' stderr stays out of the OK path
-        assert lines[0].endswith(": kernel adjtimex STA_UNSYNC clear (maxerror 4508us status 0x2001)")
+        assert lines[0].endswith(": kernel adjtimex maxerror below 16s (maxerror 4508us status 0x2001)")
 
     def test_failure_report_keeps_every_probe_stderr(self, tmp_path):
         """clock_sync_<node>.out must say why nothing vouched, not just that nothing did."""
@@ -322,6 +322,42 @@ class TestProbeScript:
 
 class TestAdjtimexProbe:
     """The python one-liner the kernel branch runs on the bare host."""
+
+    @pytest.mark.parametrize(
+        "state,status,maxerror,synced",
+        [
+            pytest.param(0, 0x2001, 7_000, True, id="synced"),
+            pytest.param(5, 0x2041, 7_000, True, id="synced-without-rtcsync"),
+            pytest.param(5, 0x0040, 16_000_000, False, id="unsynced-since-boot"),
+            pytest.param(0, 0x2001, 16_000_000, False, id="at-limit-with-flag-clear"),
+            pytest.param(0, 0x2001, 15_999_999, True, id="just-below-limit"),
+            pytest.param(0, 0x2001, 16_000_001, False, id="above-limit"),
+        ],
+    )
+    def test_sync_decision(self, state: int, status: int, maxerror: int, synced: bool, capsys) -> None:
+        def adjtimex(pointer) -> int:
+            tx = pointer._obj
+            assert tx.modes == 0  # The probe must never change the host clock.
+            tx.status = status
+            tx.maxerror = maxerror
+            return state
+
+        with patch("ctypes.CDLL") as cdll:
+            cdll.return_value.adjtimex.side_effect = adjtimex
+            if synced:
+                exec(SweepOrchestrator.CLOCK_SYNC_ADJTIMEX_PROBE, {})  # noqa: S102 - execute the trusted embedded probe
+                assert capsys.readouterr().out == f"maxerror {maxerror}us status 0x{status:x}\n"
+            else:
+                with pytest.raises(SystemExit, match="kernel clock unsynchronised"):
+                    exec(SweepOrchestrator.CLOCK_SYNC_ADJTIMEX_PROBE, {})  # noqa: S102 - execute the trusted embedded probe
+                assert capsys.readouterr().out == ""
+
+    def test_syscall_failure(self, capsys) -> None:
+        with patch("ctypes.CDLL") as cdll, patch("ctypes.get_errno", return_value=1):
+            cdll.return_value.adjtimex.return_value = -1
+            with pytest.raises(SystemExit, match="adjtimex failed: errno 1"):
+                exec(SweepOrchestrator.CLOCK_SYNC_ADJTIMEX_PROBE, {})  # noqa: S102 - execute the trusted embedded probe
+        assert capsys.readouterr().out == ""
 
     def test_embeds_in_the_bash_single_quotes(self):
         probe = SweepOrchestrator.CLOCK_SYNC_ADJTIMEX_PROBE
