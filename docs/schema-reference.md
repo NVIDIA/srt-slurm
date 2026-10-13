@@ -224,7 +224,7 @@ Benchmark configuration.
 | `mmlu` | MMLU accuracy evaluation benchmark. | `max_tokens`, `num_examples`, `num_threads`, `repeat` |
 | `mooncake-router` | Mooncake Router benchmark for testing KV-aware routing using aiperf. | `itl_threshold_ms`, `mooncake_workload`, `ttft_threshold_ms` |
 | `router` | Router performance benchmark. | `concurrency`, `isl`, `num_requests`, `osl`, `prefix_ratios` |
-| `sa-bench` | SA-Bench throughput and latency benchmark. | `custom_tokenizer`, `dataset_name`, `dataset_path`, `isl`, `num_prompts_mult`, `num_warmup_mult`, `osl`, `random_range_ratio`, `req_rate`, `reuse_http_connections`, `slow_down_sleep_time`, `slow_down_wait_time`, `use_chat_template` |
+| `sa-bench` | SA-Bench throughput and latency benchmark. | `custom_tokenizer`, `dataset_name`, `dataset_path`, `env`, `isl`, `num_prompts_mult`, `num_warmup_mult`, `osl`, `random_range_ratio`, `req_rate`, `reuse_http_connections`, `slow_down_sleep_time`, `slow_down_wait_time`, `use_chat_template` |
 | `sglang-bench` | SGLang benchmark runner. | `isl`, `osl`, `req_rate` |
 | `trace-replay` | Trace replay benchmark using aiperf with a user-provided dataset. | `itl_threshold_ms`, `trace_file`, `ttft_threshold_ms` |
 

@@ -617,6 +617,10 @@ def _load_glm_moe_dsa_tokenizer(pretrained_model_name_or_path: str) -> "PreTrain
     )
 
     path = Path(pretrained_model_name_or_path)
+    if not path.is_dir():
+        from huggingface_hub import snapshot_download
+
+        path = Path(snapshot_download(pretrained_model_name_or_path, local_files_only=True))
     tokenizer_json = path / "tokenizer.json"
     if not tokenizer_json.exists():
         raise FileNotFoundError(

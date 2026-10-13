@@ -40,6 +40,17 @@ class TestBenchmarkRegistry:
 class TestSABenchRunner:
     """Test SA-Bench runner."""
 
+    def test_environment_reaches_benchmark_client(self):
+        from unittest.mock import MagicMock
+
+        from srtctl.core.config import load_config
+
+        config = load_config("examples/trtllm/dynamo-sidecar-disagg.yaml")
+        assert get_runner("sa-bench").get_environment(config, MagicMock()) == {
+            "HF_HUB_CACHE": "/hf/hub",
+            "HF_HUB_OFFLINE": "1",
+        }
+
     def test_validate_config_missing_isl(self):
         """Validates that isl is required."""
         from srtctl.benchmarks.sa_bench import SABenchRunner

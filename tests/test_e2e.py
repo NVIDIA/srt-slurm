@@ -18,10 +18,12 @@ EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 CI_DIR = Path(__file__).parent.parent / "ci"
 SGLANG_ROUTER_DISAGG = EXAMPLES_DIR / "sglang" / "sglang-router-disagg.yaml"
 MOCKER_EXAMPLE = EXAMPLES_DIR / "mocker" / "dynamo-agg.yaml"
+GLM52_SIDECAR_EXAMPLE = EXAMPLES_DIR / "trtllm" / "dynamo-sidecar-disagg.yaml"
 # Every topology example (Dynamo, native router, and direct frontends for each engine).
 TOPOLOGY_EXAMPLES = tuple(
     sorted(path for engine in ("sglang", "vllm", "trtllm") for path in (EXAMPLES_DIR / engine).glob("*.yaml"))
 )
+H100_TOPOLOGY_EXAMPLES = tuple(path for path in TOPOLOGY_EXAMPLES if path != GLM52_SIDECAR_EXAMPLE)
 
 
 def test_interactive_discovers_curated_examples():
@@ -248,7 +250,7 @@ class TestH100Examples:
     """Every topology example on an H100 rack (13 nodes × 8 GPUs)."""
 
     RACK = H100Rack
-    EXAMPLES = TOPOLOGY_EXAMPLES
+    EXAMPLES = H100_TOPOLOGY_EXAMPLES
 
     @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
     def test_gpus_per_node_is_8(self, example_path):
@@ -370,6 +372,34 @@ class TestCIConfigs:
                 assert ep.total_gpus == r.gpus_per_decode
 
 
+def test_glm52_sidecar_example_spans_three_gb300_nodes():
+    """The TP8 decode endpoint owns two whole four-GPU nodes after TP4 prefill."""
+    rack = GB200NVLRack
+    with (
+        patch.dict(os.environ, rack.slurm_env(), clear=False),
+        patch("subprocess.run", side_effect=rack.mock_scontrol()),
+    ):
+        config = load_config(str(GLM52_SIDECAR_EXAMPLE))
+        topology = config.topology
+        endpoints = config.backend.allocate_endpoints(
+            num_prefill=topology.num_prefill,
+            num_decode=topology.num_decode,
+            num_agg=topology.num_agg,
+            gpus_per_prefill=topology.gpus_per_prefill,
+            gpus_per_decode=topology.gpus_per_decode,
+            gpus_per_agg=topology.gpus_per_agg,
+            gpus_per_node=topology.gpus_per_node,
+            available_nodes=rack.nodes()[:3],
+        )
+
+    assert config.resources.gpu_type == "gb300"
+    assert config.dynamo.sidecar
+    assert [(ep.mode, ep.total_gpus, ep.nodes) for ep in endpoints] == [
+        ("prefill", 4, (rack.nodes()[0],)),
+        ("decode", 8, tuple(rack.nodes()[1:3])),
+    ]
+
+
 class TestSharedNodeDisaggExample:
     """Disaggregated examples share one node between prefill and decode (decode_nodes=0)."""
 
@@ -387,7 +417,7 @@ class TestSharedNodeDisaggExample:
             assert config.name is not None
             assert config.resources.gpus_per_node == 8
 
-    DISAGG_EXAMPLES = tuple(path for path in TOPOLOGY_EXAMPLES if path.name.endswith("-disagg.yaml"))
+    DISAGG_EXAMPLES = tuple(path for path in H100_TOPOLOGY_EXAMPLES if path.name.endswith("-disagg.yaml"))
 
     @pytest.mark.parametrize("example_path", DISAGG_EXAMPLES, ids=lambda p: f"{p.parent.name}/{p.name}")
     def test_disagg_shared_node_allocation(self, example_path):

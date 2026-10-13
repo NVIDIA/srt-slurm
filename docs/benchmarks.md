@@ -125,11 +125,14 @@ benchmark:
   concurrencies: [256, 512]          # Required: Concurrency levels to test
   req_rate: "inf"                    # Optional: Request rate (default: "inf")
   reuse_http_connections: false      # Optional: Reuse HTTP connections (default: false)
+  env: {}                            # Optional: Environment passed to the benchmark client
 ```
 
 **Concurrencies format**: Can be a list `[128, 256, 512]` or x-separated string `"128x256x512"`.
 
 When `reuse_http_connections` is enabled, each `benchmark_serving.py` process uses one keep-alive connection pool. Warmup and formal runs remain isolated in separate processes and therefore never share a pool. The option currently applies only to SA-Bench's Dynamo HTTP adapter.
+
+For offline Hugging Face models, mount the model cache in the benchmark container and set `HF_HUB_CACHE` and `HF_HUB_OFFLINE` in `benchmark.env`. The `glm_moe_dsa` custom tokenizer resolves a cached model ID to its local snapshot.
 
 ### sglang-bench
 

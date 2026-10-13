@@ -48,6 +48,7 @@ class SABenchRunner(BenchmarkRunner):
             "dataset_name",
             "dataset_path",
             "custom_tokenizer",
+            "env",
             "use_chat_template",
             "reuse_http_connections",
             "slow_down_sleep_time",
@@ -66,6 +67,9 @@ class SABenchRunner(BenchmarkRunner):
     @property
     def local_script_dir(self) -> str:
         return str(SCRIPTS_DIR / "sa-bench")
+
+    def get_environment(self, config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
+        return dict(config.benchmark.env)
 
     def validate_config(self, config: SrtConfig) -> list[str]:
         errors = []

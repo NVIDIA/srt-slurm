@@ -44,7 +44,7 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | `features/worker-restart.yaml` | `roles.<role>.restart:` relaunching a killed worker in place with backoff; serves with `benchmark.type: manual` so you can SIGKILL a worker step and watch the sweep log |
 | `features/sglang-weight-cache.yaml` | SGLang fast engine recovery on the existing machinery: a generic per-worker service runs SGLang's weight cache daemon (tensors kept in HBM, handed out over CUDA IPC), the engines start with `--weight-cache-mode client` and skip the disk load, and `roles.<role>.restart` relaunches a killed engine in place. Needs SGLang v0.5.19+; see [docs/sglang-weight-cache.md](../docs/sglang-weight-cache.md) |
 
-See [Native sidecar mode](../docs/sidecars.md) for configuration and lifecycle behavior. The [TRT-LLM disaggregated sidecar example](trtllm/dynamo-sidecar-disagg.yaml) uses OpenEngine gRPC on prefill and decode workers.
+See [Native sidecar mode](../docs/sidecars.md) for configuration and lifecycle behavior. The [TRT-LLM disaggregated sidecar example](trtllm/dynamo-sidecar-disagg.yaml) adapts the [InferenceX GLM-5.2 GB300 1p1d TP8 variant](https://github.com/SemiAnalysisAI/InferenceX/pull/3586) to OpenEngine gRPC with one sidecar per prefill and decode endpoint. Mount an HF cache containing its pinned model revision at `/hf/hub`; the engine and benchmark resolve the model ID offline. Its short `sa-bench` workload is a connectivity check, not the linked AgentX benchmark.
 
 ## Cluster aliases
 
