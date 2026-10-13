@@ -496,13 +496,13 @@ def test_vllm_sidecar_exposes_each_nodes_hybrid_dp_range(dp_size: int) -> None:
 
 @pytest.mark.parametrize(
     ("value", "forwarded"),
-    [("none", False), ("None", False), ("auto", True), ("deepseek_v41", True)],
+    [("none", False), ("None", False), ("deepseek_v41", True)],
 )
 def test_vllm_sidecar_python_launcher_drops_reasoning_parser_none(value: str, forwarded: bool) -> None:
     # Regression: hybrid DP launches through Python `vllm serve`, whose engine args treat every
-    # `--reasoning-parser` value as a registry name (its disabled value is omission). The vllm-rs
-    # sentinel `none`, which Dynamo sidecars require vLLM to run with, must therefore be dropped on
-    # that launcher only; other selections still reach Python unchanged.
+    # `--reasoning-parser` value as a registry name (its disabled value is omission), and the Rust
+    # frontend it bootstraps defaults to no parser. The vllm-rs sentinel `none`, which Dynamo
+    # sidecars require vLLM to run with, is therefore dropped on that launcher; parser names pass.
     backend = VLLMBackend(
         connector=None,
         roles={
@@ -529,6 +529,30 @@ def test_vllm_sidecar_python_launcher_drops_reasoning_parser_none(value: str, fo
             assert engine[engine.index("--reasoning-parser") + 1] == value
         else:
             assert "--reasoning-parser" not in engine
+
+
+def test_vllm_sidecar_python_launcher_rejects_reasoning_parser_auto() -> None:
+    # `auto` cannot be expressed on the Python launcher: Python has no auto selection and the
+    # bootstrapped Rust frontend ignores it, so fail loudly instead of changing the selection.
+    backend = VLLMBackend(
+        connector=None,
+        roles={
+            "decode": RoleConfig(
+                args={"data-parallel-size": 8, "enable-expert-parallel": True, "reasoning-parser": "auto"},
+                kv_events=True,
+            )
+        },
+    )
+    endpoint = Endpoint(
+        mode="decode", index=0, nodes=("node0", "node1"), gpu_indices=frozenset(range(4)), gpus_per_node=4
+    )
+    processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
+
+    with (
+        patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        pytest.raises(ValueError, match="`auto` is a vllm-rs selection"),
+    ):
+        backend.build_worker_command(processes[0], processes, _runtime())
 
 
 def test_vllm_sidecar_rust_launcher_keeps_reasoning_parser_none() -> None:
