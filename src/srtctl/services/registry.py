@@ -12,6 +12,7 @@ with :func:`register_service`, the same pattern as ``@register_benchmark``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
 if TYPE_CHECKING:
@@ -54,6 +55,7 @@ class ServiceLaunchContext:
             head_node_ip="<head_ip>",
             infra_node_ip="<infra_ip>",
             job_id="<job_id>",
+            log_dir=Path("<log_dir>"),
         )
         return cls(
             runtime=cast("RuntimeContext", runtime),

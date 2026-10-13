@@ -494,6 +494,85 @@ def test_vllm_sidecar_exposes_each_nodes_hybrid_dp_range(dp_size: int) -> None:
         assert kv_config["endpoint"] == f"tcp://{node_ips[process.node]}:{process.kv_events_port}"
 
 
+@pytest.mark.parametrize(
+    ("value", "forwarded"),
+    [("none", False), ("None", False), ("deepseek_v41", True)],
+)
+def test_vllm_sidecar_python_launcher_drops_reasoning_parser_none(value: str, forwarded: bool) -> None:
+    # Regression: hybrid DP launches through Python `vllm serve`, whose engine args treat every
+    # `--reasoning-parser` value as a registry name (its disabled value is omission), and the Rust
+    # frontend it bootstraps defaults to no parser. The vllm-rs sentinel `none`, which Dynamo
+    # sidecars require vLLM to run with, is therefore dropped on that launcher; parser names pass.
+    backend = VLLMBackend(
+        connector=None,
+        roles={
+            "decode": RoleConfig(
+                args={"data-parallel-size": 8, "enable-expert-parallel": True, "reasoning-parser": value},
+                kv_events=True,
+            )
+        },
+    )
+    endpoint = Endpoint(
+        mode="decode", index=0, nodes=("node0", "node1"), gpu_indices=frozenset(range(4)), gpus_per_node=4
+    )
+    processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
+    node_ips = {"node0": "10.0.0.1", "node1": "10.0.0.2"}
+
+    with patch("srtctl.core.slurm.get_hostname_ip", side_effect=lambda node, _interface=None: node_ips[node]):
+        commands = [backend.build_worker_command(process, processes, _runtime()) for process in processes]
+
+    for command in commands:
+        engine_line = next(line for line in command[2].splitlines() if "vllm.entrypoints.cli.main serve" in line)
+        engine = shlex.split(engine_line)
+        assert "VLLM_USE_RUST_FRONTEND=1" in engine
+        if forwarded:
+            assert engine[engine.index("--reasoning-parser") + 1] == value
+        else:
+            assert "--reasoning-parser" not in engine
+
+
+def test_vllm_sidecar_python_launcher_rejects_reasoning_parser_auto() -> None:
+    # `auto` cannot be expressed on the Python launcher: Python has no auto selection and the
+    # bootstrapped Rust frontend ignores it, so fail loudly instead of changing the selection.
+    backend = VLLMBackend(
+        connector=None,
+        roles={
+            "decode": RoleConfig(
+                args={"data-parallel-size": 8, "enable-expert-parallel": True, "reasoning-parser": "auto"},
+                kv_events=True,
+            )
+        },
+    )
+    endpoint = Endpoint(
+        mode="decode", index=0, nodes=("node0", "node1"), gpu_indices=frozenset(range(4)), gpus_per_node=4
+    )
+    processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
+
+    with (
+        patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        pytest.raises(ValueError, match="`auto` is a vllm-rs selection"),
+    ):
+        backend.build_worker_command(processes[0], processes, _runtime())
+
+
+def test_vllm_sidecar_rust_launcher_keeps_reasoning_parser_none() -> None:
+    # Single-node endpoints launch `vllm-rs serve`, which parses `none` itself.
+    backend = VLLMBackend(
+        connector=None,
+        roles={"prefill": RoleConfig(args={"data-parallel-size": 2, "reasoning-parser": "none"}, kv_events=True)},
+    )
+    endpoint = Endpoint(mode="prefill", index=0, nodes=("node0",), gpu_indices=frozenset(range(2)), gpus_per_node=4)
+    processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
+
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        command = backend.build_worker_command(processes[0], processes, _runtime())
+
+    engine_line = next(line for line in command[2].splitlines() if "vllm-rs serve" in line)
+    engine = shlex.split(engine_line)
+    assert "vllm.entrypoints.cli.main" not in engine
+    assert engine[engine.index("--reasoning-parser") + 1] == "none"
+
+
 @pytest.mark.parametrize("override", [{"grpc": True}, {"data_parallel_external_lb": True}, {"api-server-count": 0}])
 def test_vllm_sidecar_rejects_frontend_options_that_bypass_hybrid_lb(override: dict) -> None:
     # A valid recipe must not disable the local frontend or select Python gRPC

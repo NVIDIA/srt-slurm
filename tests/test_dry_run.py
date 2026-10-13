@@ -88,6 +88,16 @@ def test_default_restart_policy_keeps_dry_run_unchanged(capsys):
     assert "restart=" not in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_dynamo_lifecycle_collector_visible_independently_of_observability(capsys, enabled):
+    show_config_details(_make_config({"observability": {"enabled": enabled}}))
+    output = " ".join(capsys.readouterr().out.split())
+    assert "otel-collector" in output
+    assert "Dynamo lifecycle tracing (independent of observability.enabled)" in output
+    assert "otel-collector.yaml" in output
+    assert "<host-native>" in output
+
+
 def test_role_engines_images_and_environments_are_visible(capsys):
     data = yaml.safe_load(Path("examples/vllm/vllm-router-disagg.yaml").read_text())
     engine = data.pop("engine")

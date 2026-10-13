@@ -13,6 +13,7 @@ from srtctl.services import (
     lmcache_server,
     mooncake_master,
     mooncake_store,
+    otel,
     ray,
 )
 from srtctl.services.config import (
@@ -56,6 +57,7 @@ __all__ = [
     "lmcache_server",
     "mooncake_master",
     "mooncake_store",
+    "otel",
     "ray",
     "register_service",
 ]

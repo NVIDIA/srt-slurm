@@ -13,6 +13,7 @@ from dataclasses import dataclass
 ETCD_CLIENT_PORT = 2379
 ETCD_PEER_PORT = 2380
 NATS_PORT = 4222
+OTEL_GRPC_PORT = 4317
 
 # Frontend service ports.
 FRONTEND_PUBLIC_PORT = 8000

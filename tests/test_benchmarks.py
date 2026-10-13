@@ -1822,6 +1822,7 @@ class TestRunPostEval:
 
         from srtctl.cli.do_sweep import SweepOrchestrator
         from srtctl.core.runtime import Nodes, RuntimeContext
+        from srtctl.services.config import ServiceConfig
         from srtctl.core.schema import (
             BenchmarkConfig,
             FrontendConfig,
@@ -1840,6 +1841,7 @@ class TestRunPostEval:
             # These tests exercise the eval flow, not telemetry; opt out of the
             # default-on Tachometer so run() needs no scraper mocks.
             observability=ObservabilityConfig(tachometer=TachometerConfig(enabled=False)),
+            services=[ServiceConfig(name="otel-collector", type="otel-collector", enabled=False)],
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
             roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=2, workers=2)},
             benchmark=BenchmarkConfig(type="sa-bench", isl=1024, osl=1024, concurrencies="128x256x512"),

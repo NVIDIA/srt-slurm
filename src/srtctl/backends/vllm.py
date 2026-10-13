@@ -521,7 +521,9 @@ class VLLMBackend(Backend):
         """``--kv-transfer-config`` JSON for a worker mode, or None when the mode has no connector.
 
         Table connectors expand to their preset for the mode; a raw JSON string
-        from the recipe passes through unchanged. A discovery connector also needs
+        in ``connector`` passes through unchanged. A discovery connector uses an
+        explicit ``kv-transfer-config`` as a template, binding its unique matching
+        child without modifying the recipe or sibling connectors. It also needs
         the realized topology (``process`` and ``runtime``) for its
         ``kv_connector_extra_config``: the router's address and discovery port,
         this worker's HTTP port and routable IP, and the handshake and notify
@@ -530,7 +532,10 @@ class VLLMBackend(Backend):
         connector = self._effective_connector_for_mode(mode, use_default=use_default)
         if not connector or connector.lower() in ("null", "none"):
             return None
-        row = kv_connector_row(connector)
+        config = self.get_config_for_mode(mode)
+        row = self.kv_connector_for_mode(mode)
+        if not use_default and config.get("connector") is None:
+            row = None
         if row is None or not row.discovery:
             return _connector_to_kv_transfer_config(connector, mode)
         if process is None or runtime is None:
@@ -538,8 +543,41 @@ class VLLMBackend(Backend):
                 f"connector {connector!r} registers workers with the vLLM Router and needs the worker topology; "
                 "it is only available with frontend.type: vllm-router"
             )
-        payload = row.transfer_config(mode)
-        payload["kv_connector_extra_config"] = self._discovery_extra_config(process, runtime)
+        if "kv-transfer-config" in config and "kv_transfer_config" in config:
+            raise ValueError("discovery template must not set both kv-transfer-config and kv_transfer_config")
+        payload = json.loads(_connector_to_kv_transfer_config(connector, mode))
+        targets: list[dict[str, Any]] = []
+
+        def visit(node: Any) -> None:
+            if not isinstance(node, dict):
+                raise TypeError("discovery kv-transfer-config and its connectors must be JSON objects")
+            if node.get("kv_connector") == row.kv_connector:
+                targets.append(node)
+            extra = node.get("kv_connector_extra_config", {})
+            if not isinstance(extra, dict):
+                raise TypeError("kv_connector_extra_config must be a JSON object")
+            children = extra.get("connectors", [])
+            if not isinstance(children, list):
+                raise TypeError("connectors must be a list")
+            for child in children:
+                visit(child)
+
+        visit(payload)
+        if len(targets) != 1:
+            raise ValueError(f"discovery kv-transfer-config requires exactly one {row.kv_connector}")
+        target = targets[0]
+        expected_role = row.transfer_config(mode)["kv_role"]
+        if target.get("kv_role", expected_role) != expected_role:
+            raise ValueError(f"discovery kv_role must be {expected_role} for {mode}")
+        target["kv_role"] = expected_role
+        extra = target.setdefault("kv_connector_extra_config", {})
+        for key, value in self._discovery_extra_config(process, runtime).items():
+            configured = extra.get(key, value)
+            if key.endswith("_port") and type(configured) is int:
+                configured = str(configured)
+            if configured != value:
+                raise ValueError(f"discovery {key} conflicts with the allocated worker topology")
+            extra[key] = value
         return json.dumps(payload)
 
     def _discovery_extra_config(self, process: Process, runtime: RuntimeContext) -> dict[str, Any]:
@@ -1597,6 +1635,21 @@ class VLLMBackend(Backend):
             # or equivalent backports. See docs/sidecars.md for compatibility.
             # VLLM_RUST_FRONTEND_PATH, when configured, is inherited unchanged.
             command.extend(["env", "VLLM_USE_RUST_FRONTEND=1", "python3", "-m", "vllm.entrypoints.cli.main"])
+            # Python `vllm serve` looks every --reasoning-parser value up in its parser registry and
+            # disables the parser by omission, while the Rust frontend it bootstraps defaults to no
+            # parser. So the vllm-rs sentinel `none` (what Dynamo sidecars need) maps to dropping the
+            # flag, and `auto` has no equivalent on this launcher.
+            for key in ("reasoning-parser", "reasoning_parser"):
+                value = config.get(key)
+                if not isinstance(value, str):
+                    continue
+                if value.strip().lower() == "none":
+                    config.pop(key)
+                elif value.strip().lower() == "auto":
+                    raise ValueError(
+                        f"roles.{mode}.args.{key}: `auto` is a vllm-rs selection; the multi-node sidecar "
+                        "launcher runs Python `vllm serve`, which needs a parser name or no flag"
+                    )
         else:
             command.append("vllm-rs")
         command.extend(["serve", model_arg, "--served-model-name", served_model_name])

@@ -25,6 +25,7 @@ from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, star
 from srtctl.core.supervisor import EndpointKey, WorkerSupervisor
 from srtctl.frontends import get_frontend
 from srtctl.services.implicit import discovery_env
+from srtctl.services.otel import lifecycle_otel_env
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -199,6 +200,7 @@ class WorkerStageMixin:
         env = {"HEAD_NODE_IP": self.runtime.head_node_ip}
         if get_frontend(self.config.frontend.type).worker_launch == "dynamo":
             env.update(discovery_env(self.config, self.runtime))
+            env.update(lifecycle_otel_env(self.config.services, self.runtime.head_node_ip, process.endpoint_mode))
             env.update(
                 DYN_SYSTEM_PORT=str(process.sys_port),
                 DYN_REQUEST_PLANE=self.config.dynamo.request_plane,

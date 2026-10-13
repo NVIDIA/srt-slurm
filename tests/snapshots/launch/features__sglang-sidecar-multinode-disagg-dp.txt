@@ -1,6 +1,6 @@
 # examples/features/sglang-sidecar-multinode-disagg-dp.yaml
 # exit_code: 0
-# srun calls: 21
+# srun calls: 22
 
 ## service_etcd
 nodelist: node-01
@@ -32,6 +32,16 @@ bash_preamble: |
 command: |
     /configs/nats-server -js -sd /tmp/nats
 
+## service_otel-collector
+nodelist: node-01
+output: <output>/logs/service_otel-collector.out
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    NATS_SERVER: nats://127.0.0.1:4222
+use_bash_wrapper: True
+command: |
+    configs/otelcol-contrib --config <output>/logs/otel-collector.yaml
+
 ## prefill_0_node-01
 nodelist: node-01
 output: <output>/logs/node-01_prefill_w0.out
@@ -43,6 +53,7 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     DYN_EVENT_PLANE: nats
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: nats
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -50,6 +61,9 @@ env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
     NATS_SERVER: nats://127.0.0.1:4222
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-prefill
     PYTHONUNBUFFERED: 1
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
@@ -132,6 +146,7 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     DYN_EVENT_PLANE: nats
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: nats
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -139,6 +154,9 @@ env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
     NATS_SERVER: nats://127.0.0.1:4222
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-prefill
     PYTHONUNBUFFERED: 1
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
@@ -221,6 +239,7 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     DYN_EVENT_PLANE: nats
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: nats
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -228,6 +247,9 @@ env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
     NATS_SERVER: nats://127.0.0.1:4222
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-decode
     PYTHONUNBUFFERED: 1
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
@@ -310,6 +332,7 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     DYN_EVENT_PLANE: nats
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: nats
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -317,6 +340,9 @@ env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
     NATS_SERVER: nats://127.0.0.1:4222
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-decode
     PYTHONUNBUFFERED: 1
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
@@ -340,10 +366,14 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     DYN_EVENT_PLANE: nats
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_REQUEST_PLANE: nats
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     NATS_SERVER: nats://127.0.0.1:4222
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-frontend
 mpi: pmix
 command: |
     python3 -m dynamo.frontend --http-port=8000 --router-mode kv

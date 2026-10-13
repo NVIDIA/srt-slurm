@@ -4,10 +4,9 @@ The agent writes this report from the run's saved artifacts; srtctl does not
 generate it automatically.
 
 For **every Slurm run you launch or analyze**, write and maintain
-`<run_dir>/perf-analysis.md` on the cluster. Use the actual job output directory
-reported by submission: normally `outputs/<job_id>/`, the parent of
-`RuntimeContext.log_dir`. Honor custom output paths. Keep the authoritative
-report beside the run's configuration, metadata and `logs/`; local copies and
+`<run_dir>/logs/perf-analysis.md` on the cluster. Use the actual job's
+`RuntimeContext.log_dir`: normally `outputs/<job_id>/logs/`. Honor custom output
+paths. Keep the authoritative report in this logs directory; local copies and
 campaign summaries may link to it.
 
 ## Metrics for this run

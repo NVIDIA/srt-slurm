@@ -58,9 +58,9 @@ def test_checked_in_schema_reference_is_current() -> None:
     Fix with: uv run srtctl schema-docs
     """
     assert DEFAULT_OUTPUT.exists(), f"{DEFAULT_OUTPUT} is missing; run `srtctl schema-docs`"
-    assert (
-        schema_reference_is_current()
-    ), f"{DEFAULT_OUTPUT.name} is stale relative to the code; run `srtctl schema-docs` and commit the result"
+    assert schema_reference_is_current(), (
+        f"{DEFAULT_OUTPUT.name} is stale relative to the code; run `srtctl schema-docs` and commit the result"
+    )
 
 
 def test_render_is_deterministic() -> None:
@@ -249,7 +249,7 @@ def test_required_field_renders_as_required() -> None:
 
 def test_docstring_attributes_become_descriptions() -> None:
     rows = {row.key: row for row in field_docs(ObservabilityConfig)}
-    assert "Master analytics knob" in rows["enabled"].description
+    assert "does not gate Dynamo lifecycle tracing" in rows["enabled"].description
 
 
 def test_field_comments_become_descriptions() -> None:

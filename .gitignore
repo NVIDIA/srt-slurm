@@ -52,6 +52,8 @@ configs/nats-server
 configs/etcd
 configs/etcdctl
 configs/process-exporter
+configs/otelcol-contrib
+configs/.otelcol-contrib.release
 configs/*.whl
 configs/*.deb
 configs/*.tar.gz

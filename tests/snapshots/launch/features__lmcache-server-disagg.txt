@@ -1,6 +1,6 @@
 # examples/features/lmcache-server-disagg.yaml
 # exit_code: 0
-# srun calls: 13
+# srun calls: 14
 
 ## service_etcd
 nodelist: node-01
@@ -16,6 +16,15 @@ bash_preamble: |
     rm -rf /tmp/etcd && mkdir -p /tmp/etcd
 command: |
     /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_otel-collector
+nodelist: node-01
+output: <output>/logs/service_otel-collector.out
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: True
+command: |
+    configs/otelcol-contrib --config <output>/logs/otel-collector.yaml
 
 ## service_lmcache
 nodelist: node-01
@@ -46,6 +55,7 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -53,6 +63,9 @@ env_to_set:
     DYN_VLLM_KV_EVENT_PORT: 5200
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-prefill
     PYTHONHASHSEED: 0
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -79,6 +92,7 @@ container_mounts:
     <output>/logs: /logs
 env_to_set:
     DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -86,6 +100,9 @@ env_to_set:
     DYN_VLLM_KV_EVENT_PORT: 5201
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-decode
     PYTHONHASHSEED: 0
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -111,9 +128,13 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
     ETCD_ENDPOINTS: http://127.0.0.1:2379
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-frontend
     PYTHONHASHSEED: 0
 srun_export_env:
     ENROOT_REMAP_ROOT: yes

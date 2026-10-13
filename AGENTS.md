@@ -1,8 +1,8 @@
 Read `CLAUDE.md` for the development guide: commands, PR descriptions, style, and the Design Rules.
 Subsystem rules are in the `AGENTS.md` file of each directory you touch; review criteria are in `REVIEW.md`; recurring procedures are skills in `.agents/skills/`.
 
-For every Slurm run you launch or analyze, write `<run_dir>/perf-analysis.md` in
-the actual run output directory on the cluster.
+For every Slurm run you launch or analyze, write `<run_dir>/logs/perf-analysis.md`
+in the actual run's logs directory on the cluster.
 Follow [Per-run Performance Analysis](docs/perf-analysis.md)
 for the required TTFT/ITL percentiles, throughput, agentic Pareto/SLO metrics,
 sources and missing-data handling. For performance diagnosis, debugging or

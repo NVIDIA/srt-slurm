@@ -1521,12 +1521,12 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Master analytics knob. Default: False.",
+          "description": "Additional analytics (including nsys); does not gate Dynamo lifecycle tracing or Tachometer. Default: False.",
           "default": false
         },
         "enable_otel": {
           "type": "boolean",
-          "description": "If True, inject OTEL environment variables into all workers and frontends. Requires otel_endpoint to be set. Default: False.",
+          "description": "Export traces to an explicit endpoint and enable JSONL logs. Not needed for default Dynamo lifecycle capture. Requires otel_endpoint to be set. Default: False.",
           "default": false
         },
         "otel_endpoint": {
@@ -1538,7 +1538,7 @@
               "type": "null"
             }
           ],
-          "description": "OTEL collector endpoint (e.g. \"http://10.0.0.1:4317\"). Required when enable_otel is True.",
+          "description": "Explicit OTEL trace endpoint (e.g. \"http://10.0.0.1:4317\"). Used with enable_otel; overrides Dynamo's local trace destination.",
           "default": null
         },
         "tachometer": {
@@ -1550,7 +1550,7 @@
           "description": "Automatic Nsight Systems capture, enabled with the master switch."
         }
       },
-      "description": "Observability configuration for OTEL tracing."
+      "description": "Optional analytics capture and external OTEL export."
     },
     "OutputConfig": {
       "type": "object",

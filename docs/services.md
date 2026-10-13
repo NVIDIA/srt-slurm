@@ -126,6 +126,13 @@ services:
 
 ## Implicit Services
 
+Dynamo stacks also imply a critical, host-native `otel-collector` on the head
+node, independent of `observability.enabled`. It starts `before_workers`, stays
+alive through their shutdown, and writes `otel/traces.jsonl` and `otel/logs.jsonl`
+under the log directory. `make setup` installs its binary; `options.binary` and
+`options.port` override the executable and OTLP/gRPC port (4317). See
+[Dynamo lifecycle tracing](observability.md#observability).
+
 Things the recipe asks for elsewhere are services the job runs without an entry; the Mooncake master is the one built-in kind that is always declared. NATS is not implied by the Dynamo frontend alone: the default request plane is `tcp` and KV events travel over direct ZMQ, so a plain Dynamo job runs etcd only. Declare a `nats` service to run one regardless.
 
 | Implied by | Services | Where |
@@ -297,6 +304,7 @@ environment its process needs; the launch path is shared by every kind. Register
 | Type | Default command | Start | Critical | Notes |
 | --- | --- | --- | --- | --- |
 | `generic` | none (required) | `after_frontend` | `false` | Launches exactly what you wrote. |
+| `otel-collector` | `configs/otelcol-contrib --config <log_dir>/otel-collector.yaml` on the bare node | `before_workers` | `true` | Implied only by Dynamo, independent of observability. Head node, OTLP/gRPC port 4317. `options`: `binary`, `port`. Writes DSight-compatible OTLP JSONL and stops after workers. |
 | `etcd` | `/configs/etcd` from the job container, advertising the node's IP | `infra` | `true` | Implied by the Dynamo frontend. Placement `head`, `infra`, or `dedicated`; supports `external`. Fresh data dir on node-local `/tmp` each job. |
 | `nats` | `/configs/nats-server -js` from the job container | `infra` | `true` | Implied by the Dynamo frontend. `options.max_payload_mb` writes a server config. Same placements as etcd; supports `external`. |
 | `mooncake-master` | `mooncake_master` with the RPC, HTTP metadata, and metrics ports srtctl owns | `before_workers` | `true` | Declared by name; see [Mooncake KV Store](mooncake-kv-store.md). `args` are appended; `options.store_config` is the vLLM or TRT-LLM connector JSON (a TRT-LLM role layers its own keys in `roles.<role>.mooncake_store_config`). Container falls back to the job container. Supports `dedicated` and `external`. |

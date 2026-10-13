@@ -4,6 +4,33 @@ The `observability:` preset (nsys, OTEL, Tachometer) and the `telemetry:` provid
 
 ## observability
 
+**Dynamo request-lifecycle OTel tracing is on by default**, including when
+`observability.enabled: false` or the entire block is omitted. It applies only to
+the Dynamo stack (`frontend.type: dynamo`). No `enable_otel`, `otel_endpoint`, or
+`DYN_LIFECYCLE_TRACE_ENABLED` recipe setting is needed.
+
+The implied `otel-collector` service starts on the head node before workers,
+receives OTLP/gRPC on port 4317, and saves `<log_dir>/otel/traces.jsonl` and
+`logs.jsonl`. Dynamo frontends and workers receive `DYN_LIFECYCLE_TRACE_ENABLED=1`,
+`OTEL_EXPORT_ENABLED=1`, the head-node OTLP endpoint, and a component service name.
+The collector stops after the serving processes so they can flush spans. This
+uses Dynamo's native `dynamo.request_lifecycle` instrumentation (Dynamo PR
+[#14101](https://github.com/ai-dynamo/dynamo/pull/14101)); the installed Dynamo build
+must include it. The default lifecycle mode is Dynamo's `core` mode.
+
+`make setup ARCH=<compute_arch>` installs the pinned, checksum-verified
+`otelcol-contrib` host binary. A missing binary fails startup with a setup hint.
+An air-gapped installation can set `services[name: otel-collector].options.binary`
+to a shared executable; `options.port` changes both its listener and the automatic
+endpoint. `srtctl dry-run` shows the implied collector regardless of the analytics
+level. [DSight](dsight.md) discovers the saved OTLP JSONL when building the report.
+
+Explicit recipe environment still wins. The existing `enable_otel: true` plus
+`otel_endpoint` redirects traces to that external endpoint, so those traces are
+not saved locally. To opt out of automatic collection, declare the
+`otel-collector` service with `enabled: false`; this also removes its default
+lifecycle/export environment. Neither option changes other stacks' defaults.
+
 Tachometer collection is **on by default for every run** (no configuration needed; `observability.tachometer.enabled: false` opts out). `observability.enabled` turns on the server metrics *content* (the TRT-LLM publish flag and engine statistics) and the trace surfaces:
 
 ```yaml

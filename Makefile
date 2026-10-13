@@ -3,6 +3,7 @@
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
 PROCESS_EXPORTER_VERSION ?= 0.8.7
+OTEL_COLLECTOR_VERSION ?= 0.146.1
 LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
 TACHOMETER_RELEASE ?= latest
@@ -127,7 +128,33 @@ cpu-power-exporter-setup:
 		$(MAKE) --no-print-directory cpu-power-exporter-download; \
 	fi
 
-setup: tachometer-scraper-download cpu-power-exporter-setup
+.PHONY: otel-collector-download
+otel-collector-download:
+	@set -eu; \
+	case "$(ARCH)" in \
+		x86_64) arch_short=amd64; file_pattern=x86-64 ;; \
+		aarch64) arch_short=arm64; file_pattern=aarch64 ;; \
+		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
+	esac; \
+	marker=configs/.otelcol-contrib.release; \
+	if [ -x configs/otelcol-contrib ] && \
+	   [ "$$(cat "$$marker" 2>/dev/null || true)" = "$(OTEL_COLLECTOR_VERSION)" ] && \
+	   file configs/otelcol-contrib | grep -q "$$file_pattern"; then \
+		echo "OTel Collector $(OTEL_COLLECTOR_VERSION) already installed ($(ARCH))"; exit 0; \
+	fi; \
+	asset="otelcol-contrib_$(OTEL_COLLECTOR_VERSION)_linux_$$arch_short.tar.gz"; \
+	base_url="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v$(OTEL_COLLECTOR_VERSION)"; \
+	tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	curl --fail --location --retry 3 "$$base_url/$$asset" --output "$$tmp_dir/$$asset"; \
+	curl --fail --location --retry 3 "$$base_url/opentelemetry-collector-releases_otelcol-contrib_checksums.txt" --output "$$tmp_dir/checksums.txt"; \
+	awk -v asset="$$asset" '$$2 == asset {print}' "$$tmp_dir/checksums.txt" > "$$tmp_dir/selected.sha256"; \
+	(cd "$$tmp_dir" && sha256sum --check selected.sha256); \
+	tar -xzf "$$tmp_dir/$$asset" -C "$$tmp_dir" otelcol-contrib; \
+	install -Dm755 "$$tmp_dir/otelcol-contrib" configs/otelcol-contrib; \
+	printf '%s' "$(OTEL_COLLECTOR_VERSION)" > "$$marker"
+
+setup: tachometer-scraper-download cpu-power-exporter-setup otel-collector-download
 	@echo "📦 Setting up configs and logs directories..."
 	@mkdir -p logs
 	@echo "🖥️  Using architecture: $(ARCH)"

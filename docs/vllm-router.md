@@ -182,6 +182,50 @@ Readiness is the Router's `/health`: it answers 503 `Waiting for discovered work
 
 Rules the recipe must satisfy: both `prefill` and `decode` run the connector (an engine-wide `connector: moriio`, or the same value in both roles' `args`), the topology is prefill/decode, `frontend.enable_multiple_frontends` is `false`, and `frontend.orchestrator_placement` is `head`. `srtctl dry-run` rejects anything else, and any other `frontend.type` with this connector. Upstream key names are those `moriio_common.py` reads (vllm-project/vllm 9679173788). `examples/vllm/vllm-router-moriio-disagg.yaml` is the reference recipe.
 
+### Discovery templates and CPU offload
+
+Keep `engine.connector: moriio` to select discovery and allocate listeners.
+`roles.<role>.args.kv-transfer-config` (or `kv_transfer_config`) may supply a JSON
+object or JSON string containing exactly one `MoRIIOConnector`, directly or inside
+a connector chain. Supplying both argument spellings is rejected.
+The renderer preserves failure policies, transport options and sibling connectors,
+and fills the discovery child's role and topology fields. Explicit roles or binding
+values that conflict with the allocated topology are rejected when the worker command
+is built. Matching port values may be integers or decimal strings; rendered ports use
+the allocator's string values.
+Do not hard-code worker addresses or listener ports in a reusable recipe.
+
+For example, a prefill template can combine RDMA READ with CPU offload:
+
+```yaml
+engine:
+  type: vllm
+  connector: moriio
+roles:
+  prefill:
+    args:
+      kv-transfer-config:
+        kv_connector: MultiConnector
+        kv_role: kv_both
+        kv_load_failure_policy: fail
+        kv_connector_extra_config:
+          connectors:
+            - kv_connector: MoRIIOConnector
+              kv_role: kv_producer
+              kv_load_failure_policy: fail
+              kv_connector_extra_config:
+                backend: rdma
+                qp_per_transfer: 8
+            - kv_connector: SimpleCPUOffloadConnector
+              kv_role: kv_both
+              kv_connector_extra_config:
+                cpu_bytes_to_use: 1073741824
+                lazy_offload: false
+```
+
+The pinned vLLM image must support the supplied connectors and their fields.
+Apply this template to the prefill role of `examples/vllm/vllm-router-moriio-disagg.yaml`, the existing colocated discovery recipe. As with all discovery recipes, listener blocks remain allocator-owned.
+
 ## Multiple Router processes
 
 With `enable_multiple_frontends: true`, srtctl starts nginx on the public port
