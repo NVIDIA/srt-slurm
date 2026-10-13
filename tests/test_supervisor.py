@@ -349,7 +349,7 @@ def test_a_multi_node_endpoint_restarts_as_a_unit(tmp_path: Path) -> None:
     leader, follower = h.steps["decode_1_node-a"], h.steps["decode_1_node-b"]
 
     follower.exit(1)
-    with patch("srtctl.core.processes.shutil.which", return_value=None):  # no scancel: SIGTERM srun directly
+    with patch("srtctl.core.launcher.shutil.which", return_value=None):  # no scancel: SIGTERM srun directly
         h.tick()
 
     # The surviving rank cannot carry on without its peer; it was stopped so the endpoint comes back whole.
@@ -377,7 +377,7 @@ def test_a_step_that_ignores_sigterm_does_not_block_the_monitor_tick(tmp_path: P
     clock = [0.0]
 
     with (
-        patch("srtctl.core.processes.shutil.which", return_value=None),
+        patch("srtctl.core.launcher.shutil.which", return_value=None),
         patch("srtctl.core.processes.time.monotonic", side_effect=lambda: clock[0]),
     ):
         follower.exit(1)
