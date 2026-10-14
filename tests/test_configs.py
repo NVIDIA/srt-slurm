@@ -2992,6 +2992,7 @@ class TestVLLMDataParallelMode:
         runtime = MagicMock()
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
         runtime.frontend_port = 9000
         runtime.network_interface = "eth0"
 
@@ -3030,6 +3031,7 @@ class TestVLLMDataParallelMode:
         runtime = MagicMock()
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
         runtime.frontend_port = 8000
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
@@ -3076,6 +3078,7 @@ class TestVLLMDataParallelMode:
         runtime = SimpleNamespace(
             model_path=Path("Qwen/Qwen3-0.6B"),
             is_hf_model=True,
+            worker_model_arg="Qwen/Qwen3-0.6B",
             frontend_port=8000,
             head_node_ip="10.20.30.40",
             network_interface="ib0",
@@ -3121,6 +3124,7 @@ class TestVLLMDataParallelMode:
         runtime = SimpleNamespace(
             model_path=Path("/model"),
             is_hf_model=False,
+            worker_model_arg="/model",
             frontend_port=8000,
             head_node_ip="10.0.0.1",
             network_interface=None,
@@ -3162,6 +3166,7 @@ class TestVLLMDataParallelMode:
         runtime = MagicMock()
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
         runtime.frontend_port = 9000
         runtime.network_interface = "eth0"
 
@@ -3525,7 +3530,9 @@ class TestVLLMDataParallelMode:
             gpus_per_node=4,
         )
         processes = backend.endpoints_to_processes([endpoint])
-        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
+        runtime = MagicMock(
+            model_path=Path("/model"), is_hf_model=False, worker_model_arg="/model", request_plane="tcp"
+        )
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             commands = [backend.build_worker_command(process, processes, runtime) for process in processes]
@@ -3556,7 +3563,9 @@ class TestVLLMDataParallelMode:
             gpus_per_node=4,
         )
         processes = backend.endpoints_to_processes([endpoint])
-        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
+        runtime = MagicMock(
+            model_path=Path("/model"), is_hf_model=False, worker_model_arg="/model", request_plane="tcp"
+        )
 
         with patch("srtctl.core.slurm.get_hostname_ip", side_effect=lambda node: f"10.0.0.{int(node[-1]) + 1}"):
             commands = [backend.build_worker_command(process, processes, runtime) for process in processes]
@@ -3634,7 +3643,9 @@ class TestVLLMDataParallelMode:
             gpus_per_node=4,
         )
         processes = backend.endpoints_to_processes([endpoint])
-        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
+        runtime = MagicMock(
+            model_path=Path("/model"), is_hf_model=False, worker_model_arg="/model", request_plane="tcp"
+        )
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             commands = [backend.build_worker_command(process, processes, runtime) for process in processes]
@@ -4112,6 +4123,21 @@ class TestHuggingFaceModelSupport:
 
         idx = cmd.index("--model")
         assert cmd[idx + 1] == "/model"
+
+    def test_vllm_uses_resolved_worker_model_path(self):
+        from unittest.mock import patch
+
+        from srtctl.backends import VLLMBackend
+
+        backend = VLLMBackend(connector=None)
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+        runtime.worker_model_arg = "/srtctl-model-cache/snapshots/revision"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[cmd.index("--model") + 1] == "/srtctl-model-cache/snapshots/revision"
 
     # --- SGLang ---
 
@@ -4666,6 +4692,7 @@ class TestDirectVllmMultiNode:
         runtime = MagicMock()
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
         runtime.frontend_port = 9000
         runtime.network_interface = "eth0"
 

@@ -100,9 +100,7 @@ class MooncakeRouterRunner(AIPerfBenchmarkRunner):
         ttft_threshold = getattr(b, "ttft_threshold_ms", None) or 2000
         itl_threshold = getattr(b, "itl_threshold_ms", None) or 25
 
-        # Tokenizer path: HF model ID or container mount path
-        # For HF models, use the model ID directly so transformers downloads it
-        tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        tokenizer_path = runtime.worker_model_arg
 
         cmd = [
             "bash",

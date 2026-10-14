@@ -8,6 +8,7 @@ import pytest
 from srtctl.core.power.cpu_sample import (
     CpuSample,
     RailReading,
+    dcgm_rail_readings,
     node_total_watts,
     pivot_socket_samples,
     primary_kind,
@@ -42,11 +43,31 @@ def test_acpi_sample_power_is_the_total_envelope_and_rails_are_the_components():
     assert sample.reading("dram") is None
 
 
-def test_dcgm_sample_has_no_rails():
+def test_dcgm_sample_with_only_the_primary_has_no_rails():
     sample = CpuSample("dcgm", 1, (RailReading(1, "dcgm", "CPU1:cpuPowerUsageW", 52.35),))
 
     assert sample.power_w == 52.35
     assert sample.rails == {}
+
+
+def test_dcgm_rail_readings_files_1130_as_primary_and_cpu_rail_and_1132_as_soc():
+    readings = dcgm_rail_readings(1, {1130: 52.35, 1132: 6.1, 1133: 70.0})
+
+    assert [(r.kind, r.sensor, r.watts) for r in readings] == [
+        ("dcgm", "CPU1:cpuPowerUsageW", 52.35),
+        ("cpu_rail", "CPU1:cpuRailPowerUsageW", 52.35),
+        ("soc", "CPU1:socPowerUsageW", 6.1),
+    ]
+    (sample,) = pivot_socket_samples("dcgm", readings)
+    assert sample.power_w == 52.35
+    assert sample.rails == {"cpu_rail": 52.35, "soc": 6.1}
+
+
+def test_dcgm_rail_readings_without_1130_yield_no_primary():
+    readings = dcgm_rail_readings(0, {1132: 6.1})
+
+    assert [r.kind for r in readings] == ["soc"]
+    assert pivot_socket_samples("dcgm", readings) == ()
 
 
 def test_sample_refuses_to_exist_without_exactly_one_primary():

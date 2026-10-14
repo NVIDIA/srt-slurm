@@ -345,10 +345,7 @@ class SGLangBackend(Backend):
         # Get served model name from config
         served_model_name = self.get_served_model_name(runtime.model_path.name)
 
-        # Determine model path: HF model ID or container mount path
-        # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
-        # For local models, model is mounted to /model in the container
-        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        model_arg = runtime.worker_model_arg
 
         # Start with nsys prefix if provided
         cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
@@ -472,7 +469,7 @@ class SGLangBackend(Backend):
         grpc_port = sidecar_grpc_port(process)
 
         served_model_name = self.get_served_model_name(runtime.model_path.name)
-        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        model_arg = runtime.worker_model_arg
         engine: list[str] = list(nsys_prefix or [])
         engine.extend(
             [

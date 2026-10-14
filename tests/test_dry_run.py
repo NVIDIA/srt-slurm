@@ -37,6 +37,13 @@ BASE_CONFIG = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_local_cluster_config(tmp_path, monkeypatch):
+    # A developer's srtslurm.yaml in the repo root would add default_mounts rows whose
+    # long paths make rich truncate the cells these tests assert on.
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
+
+
 def _make_config(overrides: dict | None = None) -> SrtConfig:
     """Build an SrtConfig from BASE_CONFIG with optional overrides merged in.
 
@@ -285,6 +292,20 @@ class TestDryRunMounts:
         output = capsys.readouterr().out
         assert "/model" in output
         assert "/logs" in output
+
+    def test_hf_snapshot_mount_shows_preserved_cache_layout(self, tmp_path, monkeypatch, capsys):
+        cache_root = tmp_path / "models--Inferact--Qwen"
+        (cache_root / "blobs").mkdir(parents=True)
+        snapshot = cache_root / "snapshots" / "revision"
+        snapshot.mkdir(parents=True)
+        monkeypatch.setattr(submit, "console", Console(width=200))
+
+        show_config_details(_make_config({"model": {"path": str(snapshot)}}))
+
+        output = capsys.readouterr().out
+        assert str(cache_root) in output
+        assert "/srtctl-model-cache" in output
+        assert str(snapshot) not in output
 
     def test_extra_mount_from_recipe(self, capsys):
         config = _make_config({"extra_mount": ["/data/custom:/custom", "/shared/cache:/cache"]})
@@ -789,6 +810,36 @@ class TestDryRunExecutionExtensions:
         assert "/logs/mooncake_store_config.json" in output
         assert "P2PHANDSHAKE" in output
         assert "100GB" in output
+
+    def test_trtllm_mooncake_role_configs_in_dry_run(self, capsys):
+        """Each TRT-LLM role using the mooncake-store connector shows its client config and path."""
+        connector = {"kv_connector_config": {"connector": "mooncake-store"}}
+        config = _make_config(
+            {
+                "engine": "trtllm",
+                "roles": {
+                    "prefill": {"args": connector},
+                    "decode": {"args": connector, "mooncake_store_config": {"global_segment_size": "16GiB"}},
+                },
+                "services": [
+                    {
+                        "name": "mooncake-master",
+                        "type": "mooncake-master",
+                        "options": {"store_config": {"global_segment_size": "8GiB"}},
+                    }
+                ],
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "MOONCAKE_CONFIG_PATH" in output
+        assert "store_config (prefill)" in output
+        assert "store_config (decode)" in output
+        assert '"capacity"' in output
+        assert "16GiB" in output
+        # model_key defaults to the served model name, unknown before the model is staged
+        # (the table wraps the placeholder, so match its start).
+        assert '"model_key": "<model' in output
 
     def test_vllm_process_local_mooncake_map_in_dry_run(self, capsys):
         config = _make_config(

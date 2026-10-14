@@ -17,6 +17,9 @@ srtctl apply -f examples/sglang/sglang-router-disagg.yaml --serve-only
 # Preview without submitting
 srtctl dry-run -f config.yaml
 
+# Pre-generate SA-Bench datasets so the benchmark job starts measuring right away
+srtctl cache-inputs -f config.yaml
+
 # Live dashboard - monitor all jobs in one place
 srtctl monitor
 ```
@@ -295,6 +298,60 @@ Dry-run output includes:
 - For sweeps: table of all jobs with parameters
 - Generated configs saved to `dry-runs/` folder
 
+### `srtctl cache-inputs`
+
+Pre-generate the datasets a recipe's benchmark run would build, so the benchmark
+job spends its GPU time measuring instead of tokenizing.
+
+```bash
+srtctl cache-inputs -f <config.yaml> [options]
+```
+
+The command asks the recipe's benchmark runner what it can build ahead of time;
+a benchmark that has nothing to pre-generate says so and nothing runs. SA-Bench
+is the one that does today, and it requires `benchmark.dataset_cache_dir` in the
+recipe — that is where the datasets are written, and where the benchmark looks
+for them. See [Dataset caching](benchmarks.md#dataset-caching).
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `-f, --file` | Recipe YAML file (required) |
+| `--dry-run` | Print the datasets and the srun command, then exit |
+| `--account` | SLURM account (default: recipe `slurm.account`) |
+| `--partition` | SLURM partition (default: recipe `slurm.partition`) |
+| `--time` | SLURM time limit (default: recipe `slurm.time_limit`) |
+| `--num-workers` | Worker processes for prompt generation (default: `min(cpu_count, 8)`) |
+
+**Examples:**
+
+```bash
+# Build every dataset the recipe needs
+srtctl cache-inputs -f disagg.yaml
+
+# See what it would build first
+srtctl cache-inputs -f disagg.yaml --dry-run
+
+# Long sweep on a wide node
+srtctl cache-inputs -f disagg.yaml --time 4:00:00 --num-workers 32
+```
+
+One dataset is built per prompt count the run asks for. Warmup and measured runs
+each get their own file because `num_prompts` changes how many draws come out of
+the seeded RNG, so a recipe with `concurrencies: "64x128"`, `num_prompts_mult: 8`
+and `num_warmup_mult: 1` produces four datasets: `n=64`, `n=512`, `n=128`,
+`n=1024`. Counts that repeat across concurrency levels are built once.
+
+The command allocates a single node with no GPUs and runs only the prompt build
+in the recipe's container, so it can run while the cluster is busy with the jobs
+it is preparing for. Run from inside an existing allocation it attaches to it
+instead of queueing again.
+
+Re-running is cheap and safe: datasets already in the cache are verified and
+skipped, and only missing ones are generated. That makes this the fastest way to
+resume after a time limit cut a long prewarm short.
+
 ### `srtctl render`
 
 Write the exact sbatch script `srtctl apply` would submit, without submitting it.
@@ -393,6 +450,76 @@ srtctl monitor --interval 10            # Refresh every 10s (default: 5)
 srtctl monitor --once                   # Snapshot and exit
 srtctl monitor --resume KEY             # Resume a previous session
 ```
+
+### `srtctl bake-image`
+
+Preinstall dynamo, the sa-bench Python packages, a recipe `setup_script`, and/or
+a vLLM unified diff into a new container image, so jobs stop paying for the same
+work on every run.
+
+```bash
+srtctl bake-image --image my-model-fp8 --dynamo 1.2.0.dev20260526 --sa-bench
+srtctl bake-image --image my-model-fp8 --script install-nixl-dsv4.sh
+srtctl bake-image --image my-model-fp8 --patch mine.diff
+```
+
+No allocation needed: srun requests a node itself, taking `default_account` and
+`default_partition` from `srtslurm.yaml`. Run it inside an existing `salloc` and
+it joins that allocation instead, skipping the queue.
+
+| Flag | Description |
+| ---- | ----------- |
+| `--image` | Source `.sqsh` path, or a container alias from `srtslurm.yaml` |
+| `-o`, `--output` | Output path (default: source name plus what was installed) |
+| `--dynamo VERSION` | `ai-dynamo` version to pip-install |
+| `--sa-bench` | Install the packages sa-bench needs at runtime |
+| `--script`, `--setup-script` | Run a `configs/` setup script inside the image (same as recipe `setup_script`). Name under `configs/` or `configs/patches/`, or a path |
+| `--patch FILE.diff` | Apply a unified diff to the image's vLLM tree (repeatable). Name under `configs/patches/` or a path. A conflict aborts the bake; no output image is kept |
+| `--force` | Overwrite an existing output image |
+| `--time` | Time limit when srun allocates a node itself (default: `0:30:00`) |
+| `--account`, `--partition` | Override the `srtslurm.yaml` defaults |
+| `--dry-run` | Print the srun command and install script without running them |
+
+Inside the container the steps run in this order: `--script`, then each
+`--patch`, then dynamo, then sa-bench. `--script` mounts the repo `configs/`
+tree at `/configs`, the same path jobs use. `--patch` dry-runs `patch(1)`
+against the installed vLLM package first; if a hunk does not apply, the step
+exits non-zero and a newly written `.sqsh` is removed so a conflicted tree is
+not baked.
+
+The default output name records its contents, so a directory of images stays
+readable:
+
+```
+my-model-fp8-dynamo1.2.0.dev20260526-sa-bench.sqsh
+my-model-fp8-install-nixl-dsv4.sqsh
+my-model-fp8-mine.sqsh
+my-model-fp8-dynamo1.2.0.dev20260526-sa-bench.manifest.json
+```
+
+The manifest records the source image, what was installed (including the setup
+script and patch filenames) and when.
+
+Nothing understands the squashfs format here: pyxis' `--container-save` exports
+the container filesystem to a new image when the step ends. Bind mounts are not
+part of that export; only overlay writes (patched site-packages, pip installs)
+persist. The install runs as root inside the container via `ENROOT_REMAP_ROOT`,
+and pip caches plus `/tmp` are cleared before the save so they are not baked in.
+
+Once an image is baked, drop the matching work from your recipes:
+
+```yaml
+dynamo:
+  install: false        # already in the image
+# setup_script: "install-nixl-dsv4.sh"   # already baked; omit
+```
+
+SA-Bench dependencies are installed into
+`/opt/srtctl/venvs/sa-bench`, isolated from the model server's Python
+environment. `bench.sh` activates that venv automatically; recipes do not need
+to modify `PATH`. Both sides read the package list and venv path from
+`src/srtctl/benchmarks/scripts/sa-bench/deps.sh`, which keeps a baked image
+aligned with what the benchmark expects.
 
 ### `srtctl status-server`
 

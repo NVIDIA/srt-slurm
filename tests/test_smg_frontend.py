@@ -313,6 +313,7 @@ def test_sglang_grpc_workers_are_scraped_on_their_http_sidecar() -> None:
     runtime = MagicMock()
     runtime.model_path = Path("/model")
     runtime.is_hf_model = False
+    runtime.worker_model_arg = "/model"
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         command = backend.build_worker_command(processes[1], [processes[1]], runtime, frontend_type="smg")
     assert command[command.index("--grpc-http-sidecar-port") + 1] == "6701"

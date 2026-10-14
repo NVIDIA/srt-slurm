@@ -31,17 +31,21 @@ import argparse
 import asyncio
 import base64
 import gc
+import hashlib
 import io
 import json
 import os
+import pickle
 import random
+import re
 import time
 import warnings
 from collections.abc import AsyncGenerator, Collection
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from multiprocessing import Pool, cpu_count
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -55,6 +59,7 @@ from backend_request_func import (
 )
 from backend_request_func import (
     get_tokenizer as get_sa_bench_tokenizer,
+    is_chat_completions_url,
 )
 from datasets import load_dataset
 from PIL.Image import Image
@@ -423,22 +428,248 @@ def _process_random_no_chat(args):
     return (prompt, int(prefix_len + input_len), int(output_len), None)
 
 
-def _process_random_chat(args):
-    """Per-prompt body for the chat-template path — verbatim from the
-    existing serial loop in ``sample_random_requests``."""
-    i, offset, input_len, output_len, chat_template_len, vocab_size = args
+def _random_chat_prompt_text(i, offset, input_len, vocab_size):
+    """Prompt body shared by both chat paths: exactly ``input_len`` tokens."""
     tokenizer = _worker_tokenizer
     origin_text = tokenizer.decode(
         [(offset + i + j) % vocab_size for j in range(int(input_len * 1.5))]
     )
     re_encoded_sequence = tokenizer.encode(origin_text, add_special_tokens=False)[: input_len]
-    prompt_text = tokenizer.decode(re_encoded_sequence)
-    prompt = tokenizer.apply_chat_template(
+    return tokenizer.decode(re_encoded_sequence)
+
+
+def _process_random_chat(args):
+    """Per-prompt body for the chat-template path — verbatim from the
+    existing serial loop in ``sample_random_requests``."""
+    i, offset, input_len, output_len, chat_template_len, vocab_size = args
+    prompt_text = _random_chat_prompt_text(i, offset, input_len, vocab_size)
+    prompt = _worker_tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt_text}],
         add_generation_prompt=True,
         tokenize=False,
     )
     return (prompt, int(input_len + chat_template_len), int(output_len), None)
+
+
+# Bump when sample_random_requests() changes in a way that makes previously
+# cached datasets no longer reproducible.
+RANDOM_DATASET_CACHE_VERSION = 1
+
+# Files that decide how prompts are tokenized. Model weights never affect the
+# generated prompts, so hashing these is enough to notice that a different
+# model was dropped in at the same path.
+_TOKENIZER_FINGERPRINT_FILES = ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json")
+
+
+def _tokenizer_fingerprint(tokenizer_id: str) -> str:
+    """Content hash of the local tokenizer files.
+
+    Falls back to the bare id for HF repo ids, where there is nothing local to
+    hash and the id (plus revision) already identifies the tokenizer.
+    """
+    root = Path(tokenizer_id)
+    if not root.is_dir():
+        return f"id:{tokenizer_id}"
+
+    digest = hashlib.sha256()
+    hashed_any = False
+    for name in _TOKENIZER_FINGERPRINT_FILES:
+        path = root / name
+        if not path.is_file():
+            continue
+        digest.update(name.encode())
+        with open(path, "rb") as f:
+            for chunk in iter(partial(f.read, 1 << 20), b""):
+                digest.update(chunk)
+        hashed_any = True
+
+    return f"sha256:{digest.hexdigest()}" if hashed_any else f"id:{tokenizer_id}"
+
+
+def _random_dataset_cache_key(
+    tokenizer_id: str,
+    prefix_len: int,
+    input_len: int,
+    output_len: int,
+    num_prompts: int,
+    range_ratio: float,
+    use_chat_template: bool,
+    wrap_chat_template: bool,
+    seed: int,
+    tokenizer_mode: str,
+    custom_tokenizer: str | None,
+) -> dict[str, Any]:
+    """Every input that changes the generated prompts, collected in one dict.
+
+    num_prompts and output_len belong here even though they look like sizing
+    knobs: both consume draws from the seeded RNG, so changing either shifts
+    every prompt in the dataset.
+    """
+    return {
+        "version": RANDOM_DATASET_CACHE_VERSION,
+        "tokenizer_id": tokenizer_id,
+        "tokenizer_fingerprint": _tokenizer_fingerprint(tokenizer_id),
+        "tokenizer_mode": tokenizer_mode,
+        "custom_tokenizer": custom_tokenizer or "",
+        "prefix_len": prefix_len,
+        "input_len": input_len,
+        "output_len": output_len,
+        "num_prompts": num_prompts,
+        "range_ratio": range_ratio,
+        "use_chat_template": use_chat_template,
+        "wrap_chat_template": wrap_chat_template,
+        "seed": seed,
+    }
+
+
+def _random_dataset_cache_path(cache_dir: str, model_name: str, key: dict[str, Any]) -> Path:
+    """Human-readable file name plus a digest of the remaining key fields.
+
+    The readable part (model/ISL/OSL/prompt count) is what makes stale entries
+    identifiable for manual cleanup; the digest keeps datasets that differ only
+    in seed, range ratio, chat template or tokenizer from colliding.
+    """
+    digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:8]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", model_name).strip("._-") or "model"
+    return Path(cache_dir) / (
+        f"{slug}_isl{key['input_len']}_osl{key['output_len']}_n{key['num_prompts']}_{digest}.pkl"
+    )
+
+
+def _log_stamp() -> str:
+    """Wall-clock prefix for progress lines, matching the format bench.sh prints."""
+    return datetime.now().strftime("[%H:%M:%S]")
+
+
+def _read_cached_random_requests(cache_path: Path, key: dict[str, Any]) -> list | None:
+    """Return the cached dataset, or None when it is absent, unreadable or stale."""
+    if not cache_path.exists():
+        print(f"{_log_stamp()} [cache] miss: {cache_path} not found")
+        return None
+
+    try:
+        with open(cache_path, "rb") as f:
+            payload = pickle.load(f)
+    except Exception as e:
+        # A corrupt or truncated cache file must never fail the benchmark.
+        print(f"{_log_stamp()} [cache] warning: cannot read {cache_path} ({e}); regenerating")
+        return None
+
+    if not isinstance(payload, dict) or payload.get("key") != key:
+        print(f"{_log_stamp()} [cache] stale: {cache_path} was built with different parameters; regenerating")
+        return None
+
+    requests = payload["requests"]
+    print(
+        f"{_log_stamp()} [cache] hit: loaded {len(requests)} prompts from {cache_path} "
+        f"(built {payload.get('created_utc')})"
+    )
+    return requests
+
+
+def _write_cached_random_requests(cache_path: Path, key: dict[str, Any], requests: list) -> None:
+    payload = {
+        "key": key,
+        "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "requests": requests,
+    }
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        # Publish atomically so a concurrent sweep never reads a half-written file.
+        tmp_path = cache_path.with_name(f"{cache_path.name}.tmp.{os.getpid()}")
+        with open(tmp_path, "wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, cache_path)
+        print(f"{_log_stamp()} [cache] saved dataset to {cache_path}")
+    except OSError as e:
+        # Best effort: a read-only or full cache dir must not fail the benchmark.
+        print(f"{_log_stamp()} [cache] warning: could not write {cache_path} ({e}); continuing")
+
+
+def load_or_build_random_requests(
+    cache_dir: str | None,
+    model_name: str,
+    tokenizer_id: str,
+    seed: int,
+    *,
+    prefix_len: int,
+    input_len: int,
+    output_len: int,
+    num_prompts: int,
+    range_ratio: float,
+    tokenizer: PreTrainedTokenizerBase,
+    use_chat_template: bool = False,
+    wrap_chat_template: bool = True,
+    num_workers: int = 0,
+    tokenizer_mode: str = "auto",
+    trust_remote_code: bool = False,
+    custom_tokenizer: str | None = None,
+) -> list[tuple[str, int, int]]:
+    """Build the random dataset, reusing a cached copy when one matches.
+
+    Without ``cache_dir`` this is just sample_random_requests(). With it, a hit
+    skips the tokenize/decode loop entirely, which dominates startup for long
+    ISL sweeps.
+    """
+    build = partial(
+        sample_random_requests,
+        prefix_len=prefix_len,
+        input_len=input_len,
+        output_len=output_len,
+        num_prompts=num_prompts,
+        range_ratio=range_ratio,
+        tokenizer=tokenizer,
+        use_chat_template=use_chat_template,
+        wrap_chat_template=wrap_chat_template,
+        num_workers=num_workers,
+        tokenizer_id=tokenizer_id,
+        tokenizer_mode=tokenizer_mode,
+        trust_remote_code=trust_remote_code,
+        custom_tokenizer=custom_tokenizer,
+    )
+
+    if not cache_dir:
+        return build()
+
+    key = _random_dataset_cache_key(
+        tokenizer_id=tokenizer_id,
+        prefix_len=prefix_len,
+        input_len=input_len,
+        output_len=output_len,
+        num_prompts=num_prompts,
+        range_ratio=range_ratio,
+        use_chat_template=use_chat_template,
+        wrap_chat_template=wrap_chat_template,
+        seed=seed,
+        tokenizer_mode=tokenizer_mode,
+        custom_tokenizer=custom_tokenizer,
+    )
+    cache_path = _random_dataset_cache_path(cache_dir, model_name, key)
+
+    cached = _read_cached_random_requests(cache_path, key)
+    if cached is not None:
+        return cached
+
+    print(f"{_log_stamp()} [cache] generating {num_prompts} prompts (isl={input_len}, osl={output_len})...")
+    build_started = time.perf_counter()
+    input_requests = build()
+    print(
+        f"{_log_stamp()} [cache] generated {num_prompts} prompts in {time.perf_counter() - build_started:.1f}s"
+    )
+    _write_cached_random_requests(cache_path, key, input_requests)
+    return input_requests
+
+
+def _process_random_chat_server_side(args):
+    """Per-prompt body for chat-API endpoints.
+
+    Reserves the template's tokens in the ISL budget but ships the bare text:
+    the server renders the template itself when it reads ``messages``, so
+    wrapping here would apply it twice.
+    """
+    i, offset, input_len, output_len, chat_template_len, vocab_size = args
+    prompt_text = _random_chat_prompt_text(i, offset, input_len, vocab_size)
+    return (prompt_text, int(input_len + chat_template_len), int(output_len), None)
 
 
 def sample_random_requests(
@@ -449,6 +680,7 @@ def sample_random_requests(
     range_ratio: float,
     tokenizer: PreTrainedTokenizerBase,
     use_chat_template: bool = False,
+    wrap_chat_template: bool = True,
     num_workers: int = 0,
     tokenizer_id: str | None = None,
     tokenizer_mode: str = "auto",
@@ -487,7 +719,7 @@ def sample_random_requests(
              chat_template_len, vocab_size)
             for i in range(num_prompts)
         ]
-        worker_fn = _process_random_chat
+        worker_fn = _process_random_chat if wrap_chat_template else _process_random_chat_server_side
     else:
         prefix_token_ids = np.random.randint(0, vocab_size, size=prefix_len).tolist()
         args_list = [
@@ -741,9 +973,9 @@ async def benchmark(
 
     print("Starting initial single prompt test run...")
     test_prompt, test_prompt_len, test_output_len, test_mm_content = input_requests[0]
-    if backend != "openai-chat" and test_mm_content is not None:
-        # multi-modal benchmark is only available on OpenAI Chat backend.
-        raise ValueError("Multi-modal content is only supported on 'openai-chat' backend.")
+    if test_mm_content is not None and not (backend == "openai-chat" or is_chat_completions_url(api_url)):
+        # Attachments can only ride along in a chat message.
+        raise ValueError("Multi-modal content is only supported on the chat completions API.")
     test_input = RequestFuncInput(
         model=model_id,
         model_name=model_name,
@@ -850,6 +1082,7 @@ async def benchmark(
         measurement_window.mark_running(time.time())
     benchmark_start_time = time.perf_counter()
     benchmark_start_time_unix = time.time()
+    benchmark_started_at = datetime.fromtimestamp(benchmark_start_time_unix).astimezone()
     tasks: list[asyncio.Task] = []
     try:
         async for request in get_request(input_requests, request_rate, burstiness):
@@ -912,6 +1145,7 @@ async def benchmark(
     benchmark_end_time = time.perf_counter()
     benchmark_end_time_unix = time.time()
     benchmark_duration = benchmark_end_time - benchmark_start_time
+    benchmark_finished_at = datetime.fromtimestamp(benchmark_end_time_unix).astimezone()
     if measurement_window is not None:
         measurement_window.record_boundary(
             start_unix=benchmark_start_time_unix,
@@ -937,6 +1171,8 @@ async def benchmark(
 
     print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
+    print("{:<40} {:<10}".format("Benchmark start:", benchmark_started_at.strftime("%H:%M:%S")))
+    print("{:<40} {:<10}".format("Benchmark finish:", benchmark_finished_at.strftime("%H:%M:%S")))
     print("{:<40} {:<10.2f}".format("Benchmark duration (s):", benchmark_duration))
     print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
     print("{:<40} {:<10}".format("Total generated tokens:", metrics.total_output))
@@ -949,6 +1185,8 @@ async def benchmark(
 
     result = {
         "duration": benchmark_duration,
+        "benchmark_start_time": benchmark_started_at.isoformat(timespec="seconds"),
+        "benchmark_finish_time": benchmark_finished_at.isoformat(timespec="seconds"),
         "benchmark_start_time_unix": benchmark_start_time_unix,
         "benchmark_end_time_unix": benchmark_end_time_unix,
         "completed": metrics.completed,
@@ -1104,6 +1342,20 @@ def main(args: argparse.Namespace):
     print(args)
     if args.slow_down_servers is None:
         args.slow_down_servers = []
+
+    prewarm_cache_dir = getattr(args, "dataset_cache_dir", None) or os.environ.get("SA_BENCH_DATASET_CACHE_DIR")
+    prewarm_dataset_cache = getattr(args, "prewarm_dataset_cache", False)
+    if prewarm_dataset_cache:
+        if args.dataset_name != "random":
+            raise ValueError(
+                f"--prewarm-dataset-cache only applies to --dataset-name random, got '{args.dataset_name}'"
+            )
+        if not prewarm_cache_dir:
+            raise ValueError(
+                "--prewarm-dataset-cache needs a cache to fill: pass --dataset-cache-dir "
+                "or set SA_BENCH_DATASET_CACHE_DIR"
+            )
+
     random.seed(args.seed)
     np.random.seed(args.seed)
 
@@ -1119,6 +1371,10 @@ def main(args: argparse.Namespace):
     else:
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
+
+    # On the chat API the prompt travels as a message and the server renders the
+    # chat template, so sa-bench must not render it a second time.
+    server_applies_chat_template = is_chat_completions_url(api_url)
 
     tokenizer = load_tokenizer(
         tokenizer_id,
@@ -1159,6 +1415,13 @@ def main(args: argparse.Namespace):
                 "  benchmark:\n"
                 "    use_chat_template: false\n"
             )
+    elif server_applies_chat_template and args.dataset_name == "random":
+        print(
+            f"Warning: {args.endpoint} makes the server wrap every prompt in the chat "
+            "template, so the served input length is random_input_len plus the template's "
+            "tokens and the reported input length undercounts it. Set "
+            "benchmark.use_chat_template: true to reserve room for the template instead."
+        )
 
     if args.dataset_name == "custom":
         from benchmark_dataset import sample_custom_requests
@@ -1243,7 +1506,11 @@ def main(args: argparse.Namespace):
             )
 
         elif args.dataset_name == "random":
-            input_requests = sample_random_requests(
+            input_requests = load_or_build_random_requests(
+                prewarm_cache_dir,
+                args.model,
+                tokenizer_id,
+                args.seed,
                 prefix_len=args.random_prefix_len,
                 input_len=args.random_input_len,
                 output_len=args.random_output_len,
@@ -1251,8 +1518,8 @@ def main(args: argparse.Namespace):
                 range_ratio=args.random_range_ratio,
                 tokenizer=tokenizer,
                 use_chat_template=args.use_chat_template,
+                wrap_chat_template=not server_applies_chat_template,
                 num_workers=args.random_num_workers,
-                tokenizer_id=tokenizer_id,
                 tokenizer_mode=args.tokenizer_mode,
                 trust_remote_code=args.trust_remote_code,
                 custom_tokenizer=args.custom_tokenizer,
@@ -1260,6 +1527,11 @@ def main(args: argparse.Namespace):
 
         else:
             raise ValueError(f"Unknown dataset: {args.dataset_name}")
+
+    if prewarm_dataset_cache:
+        # The dataset is on disk now; everything below needs a live server.
+        print(f"{_log_stamp()} [cache] prewarm done: {len(input_requests)} prompts ready in {prewarm_cache_dir}")
+        return
 
     goodput_config_dict = check_goodput_args(args)
 
@@ -1648,6 +1920,23 @@ if __name__ == "__main__":
         "--use-chat-template",
         action="store_true",
         help="Use chat template to format the prompt.",
+    )
+    random_group.add_argument(
+        "--dataset-cache-dir",
+        type=str,
+        default=None,
+        help="Directory for caching generated random datasets. When set, the "
+        "expensive tokenize/decode prompt build runs once and is reused by "
+        "later runs with identical parameters. Falls back to the "
+        "SA_BENCH_DATASET_CACHE_DIR environment variable when unset. Only "
+        "applies to the 'random' dataset.",
+    )
+    random_group.add_argument(
+        "--prewarm-dataset-cache",
+        action="store_true",
+        help="Populate --dataset-cache-dir and exit without sending any "
+        "requests. No server is contacted, so the dataset for a future run can "
+        "be built while the cluster is busy. Used by 'srtctl cache-inputs'.",
     )
     random_group.add_argument(
         "--random-num-workers",

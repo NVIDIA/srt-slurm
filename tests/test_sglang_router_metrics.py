@@ -97,6 +97,7 @@ def _runtime() -> MagicMock:
     runtime = MagicMock()
     runtime.model_path = Path("/models/m")
     runtime.is_hf_model = False
+    runtime.worker_model_arg = "/model"
     runtime.gpu_type = "h100"
     runtime.log_dir = Path("/tmp")
     runtime.network_interface = None

@@ -46,7 +46,9 @@ def test_dp_ranks_own_complete_model_parallel_groups(frontend, node_count, tp, p
     if frontend != "dynamo":
         assert all(p.http_port > 0 for p in processes)
         assert len({(p.node, p.http_port) for p in processes}) == len(processes)
-        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, frontend_port=8000)
+        runtime = MagicMock(
+            model_path=Path("/model"), is_hf_model=False, worker_model_arg="/model", frontend_port=8000
+        )
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="127.0.0.1"):
             for process in processes:
                 command = backend.build_worker_command(

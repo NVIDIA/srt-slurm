@@ -104,7 +104,9 @@ def test_direct_aggregate_worker_runs_only_its_role_connector(aggregated, expect
         endpoint_index=0,
         node_rank=0,
     )
-    runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, frontend_port=9000)
+    runtime = MagicMock(
+        model_path=Path("/model"), is_hf_model=False, worker_model_arg="/model", frontend_port=9000
+    )
 
     cmd = backend.build_worker_command(
         process=process, endpoint_processes=[process], runtime=runtime, frontend_type="vllm"
@@ -149,7 +151,9 @@ def test_explicit_transfer_config_is_shared_by_commands_and_sidecar(frontend, si
     endpoint = Endpoint(mode, 0, ("node0",), frozenset({0}))
     processes = backend.endpoints_to_processes([endpoint], frontend_type=frontend, dynamo_sidecar=sidecar)
     assert all(p.moriio_handshake_port is None for p in processes)
-    runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, frontend_port=9000)
+    runtime = MagicMock(
+        model_path=Path("/model"), is_hf_model=False, worker_model_arg="/model", frontend_port=9000
+    )
     runtime.dynamo = DynamoConfig(sidecar=sidecar)
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="127.0.0.1"):
         command = backend.build_worker_command(

@@ -637,18 +637,26 @@ class VLLMBackend(Backend):
             env["VLLM_PORT"] = str(process.vllm_scan_port)
         return env
 
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+    def get_mooncake_worker_env(
+        self, infra_node_ip: str, local_hostname: str, mode: WorkerMode | None = None
+    ) -> dict[str, str]:
         """The shared MOONCAKE_* environment plus ``MOONCAKE_CONFIG_PATH``.
 
         ``MOONCAKE_CONFIG_PATH`` points to the JSON file srtslurm writes at job
         start (mounted into the container at ``/logs``). vLLM's
         ``MooncakeStoreConnector`` requires this — it does not read the
-        ``MOONCAKE_*`` env vars directly.
+        ``MOONCAKE_*`` env vars directly. Every mode reads the same file.
         """
-        env = super().get_mooncake_worker_env(infra_node_ip, local_hostname)
+        env = super().get_mooncake_worker_env(infra_node_ip, local_hostname, mode)
         if env:
             env["MOONCAKE_CONFIG_PATH"] = MOONCAKE_STORE_CONFIG_CONTAINER_PATH
         return env
+
+    def mooncake_store_configs(self, infra_node_ip: str, served_model_name: str) -> dict[str, dict[str, Any]]:
+        """The shared store config; process-local device configs are written per process."""
+        if self.mooncake_kv_store is None:
+            return {}
+        return {MOONCAKE_STORE_CONFIG_FILENAME: self.build_mooncake_store_config(infra_node_ip)}
 
     def build_mooncake_store_config(self, infra_node_ip: str) -> dict[str, Any]:
         """Build the JSON payload for vLLM's ``MooncakeStoreConfig.load_from_env()``.
@@ -1188,10 +1196,7 @@ class VLLMBackend(Backend):
         else:
             leader_ip = get_hostname_ip(endpoint_nodes[0])
 
-        # Determine model path: HF model ID or container mount path
-        # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
-        # For local models, model is mounted to /model in the container
-        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        model_arg = runtime.worker_model_arg
 
         # Get served model name from config or use model path name
         served_model_name = self.get_served_model_name(runtime.model_path.name)
@@ -1627,6 +1632,21 @@ class VLLMBackend(Backend):
             # or equivalent backports. See docs/sidecars.md for compatibility.
             # VLLM_RUST_FRONTEND_PATH, when configured, is inherited unchanged.
             command.extend(["env", "VLLM_USE_RUST_FRONTEND=1", "python3", "-m", "vllm.entrypoints.cli.main"])
+            # Python `vllm serve` looks every --reasoning-parser value up in its parser registry and
+            # disables the parser by omission, while the Rust frontend it bootstraps defaults to no
+            # parser. So the vllm-rs sentinel `none` (what Dynamo sidecars need) maps to dropping the
+            # flag, and `auto` has no equivalent on this launcher.
+            for key in ("reasoning-parser", "reasoning_parser"):
+                value = config.get(key)
+                if not isinstance(value, str):
+                    continue
+                if value.strip().lower() == "none":
+                    config.pop(key)
+                elif value.strip().lower() == "auto":
+                    raise ValueError(
+                        f"roles.{mode}.args.{key}: `auto` is a vllm-rs selection; the multi-node sidecar "
+                        "launcher runs Python `vllm serve`, which needs a parser name or no flag"
+                    )
         else:
             command.append("vllm-rs")
         command.extend(["serve", model_arg, "--served-model-name", served_model_name])

@@ -24,6 +24,7 @@ def _runtime() -> SimpleNamespace:
     return SimpleNamespace(
         model_path=Path("/model"),
         is_hf_model=False,
+        worker_model_arg="/model",
         frontend_port=8000,
         network_interface="ib0",
         request_plane="nats",

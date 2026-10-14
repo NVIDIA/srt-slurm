@@ -38,9 +38,11 @@ def _make_runtime(*, is_hf: bool):
     if is_hf:
         runtime.model_path = Path("Qwen/Qwen3-0.6B")
         runtime.is_hf_model = True
+        runtime.worker_model_arg = "Qwen/Qwen3-0.6B"
     else:
         runtime.model_path = Path("/models/my-model")
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
     return runtime
 
 
