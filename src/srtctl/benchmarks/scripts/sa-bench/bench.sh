@@ -8,26 +8,36 @@
 set -e
 
 # Ensure benchmark dependencies are available.
-# Creates an isolated venv with --system-site-packages so container packages are
-# reused and only missing deps get installed — without touching system Python.
-SA_BENCH_VENV="/tmp/sa-bench-venv"
+# A non-baked image gets a temporary venv. `bake-image --sa-bench` creates the
+# persistent venv named in deps.sh instead, and this script activates it without
+# requiring PATH changes in the recipe.
+SA_BENCH_RUNTIME_VENV="/tmp/sa-bench-venv"
 # SA_BENCH_DEPS / SA_BENCH_IMPORTS live in deps.sh so that `srtctl bake-image`
 # can preinstall exactly this list into a container image.
 # shellcheck source=deps.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deps.sh"
 
 ensure_sa_bench_deps() {
+    if [ -x "$SA_BENCH_BAKED_VENV/bin/python" ]; then
+        # shellcheck disable=SC1091
+        source "$SA_BENCH_BAKED_VENV/bin/activate"
+        python3 -c "import ${SA_BENCH_IMPORTS}"
+        echo "Using baked sa-bench venv at $SA_BENCH_BAKED_VENV"
+        return
+    fi
+
     # Quick check: if all deps import fine in current Python, skip venv entirely
     if python3 -c "import ${SA_BENCH_IMPORTS}" 2>/dev/null; then
         echo "All sa-bench deps already available — skipping venv setup"
         return
     fi
 
-    echo "Missing sa-bench deps — installing into venv at $SA_BENCH_VENV ..."
-    if [ ! -d "$SA_BENCH_VENV" ]; then
-        python3 -m venv --system-site-packages "$SA_BENCH_VENV"
+    echo "Missing sa-bench deps — installing into venv at $SA_BENCH_RUNTIME_VENV ..."
+    if [ ! -d "$SA_BENCH_RUNTIME_VENV" ]; then
+        python3 -m venv --system-site-packages "$SA_BENCH_RUNTIME_VENV"
     fi
-    source "$SA_BENCH_VENV/bin/activate"
+    # shellcheck disable=SC1091
+    source "$SA_BENCH_RUNTIME_VENV/bin/activate"
     pip install "${SA_BENCH_DEPS[@]}"
     echo "sa-bench deps ready"
 }
@@ -223,7 +233,7 @@ prewarm_dataset_cache() {
             --trust-remote-code \
             "${CHAT_TEMPLATE_ARGS[@]}" \
             "${CUSTOM_TOKENIZER_ARGS[@]}" \
-            --prewarm-dataset-cache
+            --prewarm-dataset-cache || return $?
     done
 
     echo "[sa-bench] prewarm: all ${total} dataset(s) ready in ${DATASET_CACHE_DIR}"

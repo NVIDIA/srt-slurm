@@ -16,6 +16,7 @@ from srtctl.benchmarks import get_runner
 from srtctl.benchmarks.base import SCRIPTS_DIR, PrewarmPlan
 from srtctl.benchmarks.sa_bench import DATASET_CACHE_MOUNT
 from srtctl.benchmarks.sa_bench_cache import (
+    HF_MODEL_CACHE_MOUNT,
     PREWARM_ENV_VAR,
     parse_concurrencies,
     prompt_counts,
@@ -137,6 +138,21 @@ class TestPlan:
 
         assert plan.mounts[(tmp_path / "my-model-fp8").resolve()] == Path("/model")
         assert plan.mounts[SCRIPTS_DIR.resolve()] == Path("/srtctl-benchmarks")
+
+    def test_hf_snapshot_mount_keeps_blob_symlinks_reachable(self, tmp_path):
+        cache_root = tmp_path / "models--Inferact--Qwen"
+        blob = cache_root / "blobs" / "tokenizer-digest"
+        snapshot = cache_root / "snapshots" / "revision"
+        blob.parent.mkdir(parents=True)
+        snapshot.mkdir(parents=True)
+        blob.write_text("{}")
+        (snapshot / "tokenizer.json").symlink_to(Path("../../blobs") / blob.name)
+
+        plan = _plan(_config(tmp_path, model_path=str(snapshot)))
+
+        assert plan.mounts[cache_root.resolve()] == HF_MODEL_CACHE_MOUNT
+        assert str(HF_MODEL_CACHE_MOUNT / "snapshots" / "revision") in plan.command
+        assert Path("/model") not in plan.mounts.values()
 
     def test_hf_models_are_not_mounted(self, tmp_path):
         """An "hf:" id is downloaded in-container, so there is nothing to mount."""
@@ -267,3 +283,30 @@ class TestBenchScriptPrewarmMode:
             assert args[args.index("--random-input-len") + 1] == "8192"
             assert "--max-concurrency" not in args
             assert "--save-result" not in args
+
+    def test_first_failed_dataset_stops_prewarm(self, tmp_path):
+        plan = _plan(_config(tmp_path))
+        command = list(plan.command)
+        command[1] = str(BENCH_SCRIPT)
+        command[-1] = str(plan.cache_dir)
+        harness = "\n".join(
+            [
+                "python3() {",
+                '  if [ "$1" = "-c" ]; then return 0; fi',
+                "  return 17",
+                "}",
+                "export -f python3",
+                shlex.join(command),
+            ]
+        )
+
+        result = subprocess.run(
+            ["bash", "-c", harness],
+            env={**os.environ, PREWARM_ENV_VAR: "1"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 17
+        assert "all 4 dataset(s) ready" not in result.stdout

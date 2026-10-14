@@ -12,3 +12,7 @@
 
 SA_BENCH_DEPS=(aiohttp numpy pandas datasets Pillow tqdm transformers huggingface_hub)
 SA_BENCH_IMPORTS="aiohttp, numpy, pandas, datasets, PIL, tqdm, transformers, huggingface_hub"
+
+# A baked image keeps benchmark-client packages out of the model server's
+# Python environment. bench.sh activates this automatically when it exists.
+SA_BENCH_BAKED_VENV="/opt/srtctl/venvs/sa-bench"

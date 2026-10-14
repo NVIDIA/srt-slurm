@@ -23,6 +23,7 @@ from srtctl.core.image_bake import (
     default_output_image,
     infer_vllm_patch_args,
     read_sa_bench_deps,
+    read_sa_bench_venv,
     resolve_setup_script,
     resolve_vllm_patch,
 )
@@ -105,6 +106,7 @@ class TestSaBenchDeps:
         # Pillow imports under a different name, which is why deps.sh carries both.
         assert "PIL" in imports
         assert "Pillow" not in imports
+        assert read_sa_bench_venv() == Path("/opt/srtctl/venvs/sa-bench")
 
     def test_bench_sh_sources_the_same_list(self):
         """A baked image is only useful if bench.sh checks for exactly these packages."""
@@ -112,6 +114,7 @@ class TestSaBenchDeps:
 
         assert "deps.sh" in bench_sh
         assert "import ${SA_BENCH_IMPORTS}" in bench_sh
+        assert 'source "$SA_BENCH_BAKED_VENV/bin/activate"' in bench_sh
         # The list must live only in deps.sh, otherwise the two can drift apart.
         assert not re.search(r"^SA_BENCH_DEPS=", bench_sh, re.MULTILINE)
 
@@ -120,13 +123,13 @@ class TestOutputNaming:
     def test_name_records_what_was_installed(self, tmp_path):
         out = default_output_image(tmp_path / "for-model-nvfp4.sqsh", dynamo_version="1.2.0", sa_bench=True)
 
-        assert out.name == "for-model-nvfp4+dynamo1.2.0+sa-bench.sqsh"
+        assert out.name == "for-model-nvfp4-dynamo1.2.0-sa-bench.sqsh"
         assert out.parent == tmp_path
 
     def test_single_tag(self, tmp_path):
         out = default_output_image(tmp_path / "base.sqsh", dynamo_version=None, sa_bench=True)
 
-        assert out.name == "base+sa-bench.sqsh"
+        assert out.name == "base-sa-bench.sqsh"
 
     def test_setup_script_tag_uses_stem(self, tmp_path):
         out = default_output_image(
@@ -136,7 +139,7 @@ class TestOutputNaming:
             setup_script="vllm-pr51924-one-sided.sh",
         )
 
-        assert out.name == "base+vllm-pr51924-one-sided.sqsh"
+        assert out.name == "base-vllm-pr51924-one-sided.sqsh"
 
     def test_patch_tag_uses_stem(self, tmp_path):
         out = default_output_image(
@@ -146,7 +149,17 @@ class TestOutputNaming:
             vllm_patches=[tmp_path / "mine.diff"],
         )
 
-        assert out.name == "base+mine.sqsh"
+        assert out.name == "base-mine.sqsh"
+
+    def test_unsafe_characters_are_removed_from_the_entire_name(self, tmp_path):
+        out = default_output_image(
+            tmp_path / "base+old.sqsh",
+            dynamo_version="1.2.0+cu134",
+            sa_bench=True,
+        )
+
+        assert out.name == "base-old-dynamo1.2.0-cu134-sa-bench.sqsh"
+        assert "+" not in out.name
 
 
 class TestPlanValidation:
@@ -212,7 +225,10 @@ class TestInstallScript:
 
         for package in packages:
             assert package in script
-        assert f'python3 -c "import {imports}"' in script
+        assert f'/bin/python" -c "import {imports}"' in script
+        assert 'python3 -m venv --clear --system-site-packages "${SA_BENCH_VENV}"' in script
+        assert '"${SA_BENCH_VENV}/bin/pip" install --upgrade' in script
+        assert "pip install --break-system-packages" not in script
 
     def test_setup_script_runs_from_configs_mount(self, tmp_path):
         script = _script_plan(tmp_path).install_script()
@@ -581,7 +597,7 @@ class TestCliWiring:
         assert plan.setup_script == script.resolve()
         assert plan.configs_dir == configs
         assert plan.dynamo_version is None
-        assert plan.output_image.name == "base+overlay.sqsh"
+        assert plan.output_image.name == "base-overlay.sqsh"
 
     def test_patch_flag_builds_a_patch_only_plan(self, tmp_path):
         from argparse import Namespace
@@ -621,4 +637,4 @@ class TestCliWiring:
         plan = captured["plan"]
         assert plan.vllm_patches[0].host_path == diff.resolve()
         assert plan.setup_script is None
-        assert plan.output_image.name == "base+mine.sqsh"
+        assert plan.output_image.name == "base-mine.sqsh"

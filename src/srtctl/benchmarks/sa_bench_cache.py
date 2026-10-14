@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, cast
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.benchmarks.sa_bench import DEFAULT_NUM_PROMPTS_MULT, DEFAULT_NUM_WARMUP_MULT
 from srtctl.core.config import get_srtslurm_setting
-from srtctl.core.runtime import resolve_container_image, resolve_model_path
+from srtctl.core.runtime import resolve_container_image, resolve_local_model_mount, resolve_model_path
 from srtctl.core.slurm import get_container_mounts_str, get_slurm_job_id
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Read by bench.sh to build datasets instead of running the benchmark.
 PREWARM_ENV_VAR = "SA_BENCH_PREWARM_ONLY"
+HF_MODEL_CACHE_MOUNT = Path("/sa-bench-model-cache")
 
 JOB_NAME = "srtctl-cache-inputs"
 
@@ -58,6 +59,7 @@ class _PrewarmRuntime:
     model_path: Path
     is_hf_model: bool
     container_mounts: dict[Path, Path]
+    worker_model_arg: str
     # bench.sh takes an endpoint as its first argument and ignores it while
     # prewarming. The real default keeps the rendered command honest.
     frontend_port: int = FRONTEND_PUBLIC_PORT
@@ -188,15 +190,19 @@ def prompt_counts(
     return tuple(counts)
 
 
-def _base_mounts(config: SrtConfig, model_path: Path, is_hf_model: bool) -> dict[Path, Path]:
+def _base_mounts(config: SrtConfig, model_path: Path, is_hf_model: bool) -> tuple[dict[Path, Path], Path]:
     """Mounts the prompt build needs: tokenizer, scripts and user extras.
 
     Deliberately narrower than a benchmark job's mount set — there is no log
     dir to write, no infra binaries to run and no wheelhouse to install from.
     """
     mounts: dict[Path, Path] = {}
+    container_model_path = model_path
     if not is_hf_model:
-        mounts[model_path] = Path("/model")
+        model_mount, model_mount_target, container_model_path = resolve_local_model_mount(
+            model_path, HF_MODEL_CACHE_MOUNT
+        )
+        mounts[model_mount] = model_mount_target
     if SCRIPTS_DIR.exists():
         mounts[SCRIPTS_DIR.resolve()] = Path("/srtctl-benchmarks")
 
@@ -209,7 +215,7 @@ def _base_mounts(config: SrtConfig, model_path: Path, is_hf_model: bool) -> dict
         host_path, container_path = mount_spec.split(":", 1)
         mounts[Path(os.path.expandvars(host_path)).expanduser().resolve()] = Path(container_path)
 
-    return mounts
+    return mounts, container_model_path
 
 
 def plan_cache_inputs(
@@ -254,12 +260,14 @@ def plan_cache_inputs(
     )
 
     model_path, is_hf_model = resolve_model_path(config.model.path)
+    base_mounts, container_model_path = _base_mounts(config, model_path, is_hf_model)
     runtime = cast(
         "RuntimeContext",
         _PrewarmRuntime(
             model_path=model_path,
             is_hf_model=is_hf_model,
-            container_mounts=_base_mounts(config, model_path, is_hf_model),
+            container_mounts=base_mounts,
+            worker_model_arg=str(container_model_path),
         ),
     )
 

@@ -5,6 +5,7 @@
 
 import json
 import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -43,7 +44,7 @@ def _process(
         node_rank=node_rank,
         bootstrap_port=7200 if mode == "prefill" else None,
         kv_events_port=kv_events_port,
-        sidecar_grpc_port=50051 + ordinal,
+        sidecar_grpc_port=19000 + ordinal,
         nccl_port=17500 + ordinal,
         dist_init_port=8300,
     )
@@ -93,8 +94,8 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
 
     leader_script = leader_command[2]
     assert "python3 -m sglang.launch_server" in leader_script
-    assert "--grpc-port 50051" in leader_script
-    assert "python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:50051" in leader_script
+    assert "--grpc-port 19000" in leader_script
+    assert "python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:19000" in leader_script
     assert 'wait -n "${ENGINE_PID}" "${SIDECAR_PID}"' in leader_script
     assert follower_command[:3] == ["python3", "-m", "sglang.launch_server"]
     assert "--grpc-port" not in follower_command
@@ -487,8 +488,8 @@ def test_vllm_sidecar_exposes_each_nodes_hybrid_dp_range(dp_size: int) -> None:
         assert "--headless" not in engine
         assert engine[engine.index("--data-parallel-address") + 1] == node_ips["node0"]
         assert engine[engine.index("--data-parallel-rpc-port") + 1] == str(processes[0].dp_rpc_port)
-        assert engine[engine.index("--grpc-port") + 1] == str(50051 + i)
-        assert f"python3 -m dynamo.vllm.sidecar --grpc-endpoint 127.0.0.1:{50051 + i}" in script
+        assert engine[engine.index("--grpc-port") + 1] == str(19000 + i)
+        assert f"python3 -m dynamo.vllm.sidecar --grpc-endpoint 127.0.0.1:{19000 + i}" in script
         assert 'wait -n "${ENGINE_PID}" "${SIDECAR_PID}"' in script
         kv_config = json.loads(engine[engine.index("--kv-events-config") + 1])
         assert kv_config["endpoint"] == f"tcp://{node_ips[process.node]}:{process.kv_events_port}"
@@ -667,7 +668,7 @@ def test_vllm_sidecar_multi_node_replica_has_one_frontend(parallelism: dict) -> 
         assert "--headless" in engine
         assert not {"--grpc", "--grpc-port", "--port", "--api-server-count"}.intersection(engine)
         assert "dynamo.vllm.sidecar" not in command[2]
-        assert "/dev/tcp" not in command[2]
+        assert "/proc/net/tcp" not in command[2]
 
     from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
 
@@ -690,7 +691,7 @@ def test_headless_follower_exit_is_reported_as_failure(exit_code: int) -> None:
     command = build_sidecar_launch_command(
         engine=["bash", "-c", f"exit {exit_code}"],
         sidecar=None,
-        grpc_port=50051,
+        grpc_port=19000,
         engine_name="vLLM follower",
         startup_timeout=60,
     )
@@ -714,7 +715,7 @@ def test_headless_follower_termination_reaps_engine(tmp_path: Path) -> None:
     command = build_sidecar_launch_command(
         engine=[sys.executable, "-c", engine],
         sidecar=None,
-        grpc_port=50051,
+        grpc_port=19000,
         engine_name="vLLM follower",
         startup_timeout=60,
     )
@@ -734,6 +735,46 @@ def test_headless_follower_termination_reaps_engine(tmp_path: Path) -> None:
             child.wait(timeout=15)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="the readiness probe reads /proc/net/tcp")
+def test_sidecar_waits_for_listener_without_connecting(tmp_path: Path) -> None:
+    # A connect probe can connect to itself before the engine listens and leave a
+    # TIME_WAIT socket that fails the engine's bind, so the only connection the
+    # engine accepts must be the sidecar's, made after the engine listens.
+    from srtctl.backends.sidecar import build_sidecar_launch_command
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    accepted = tmp_path / "accepted"
+    partial = tmp_path / "accepted.tmp"
+    engine = (
+        "import socket,time; from pathlib import Path; time.sleep(1.5); "
+        f"server = socket.create_server(('127.0.0.1', {port})); conn, _ = server.accept(); "
+        f"Path({str(partial)!r}).write_bytes(conn.recv(16)); Path({str(partial)!r}).rename({str(accepted)!r}); "
+        "time.sleep(60)"
+    )
+    sidecar = (
+        f"import socket,time; socket.create_connection(('127.0.0.1', {port})).sendall(b'sidecar'); time.sleep(60)"
+    )
+    command = build_sidecar_launch_command(
+        engine=[sys.executable, "-c", engine],
+        sidecar=[sys.executable, "-c", sidecar],
+        grpc_port=port,
+        engine_name="engine",
+        startup_timeout=30,
+    )
+    command[1] = "-c"
+    child = subprocess.Popen(command)
+    try:
+        deadline = time.monotonic() + 15
+        while not accepted.exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert accepted.read_bytes() == b"sidecar"
+    finally:
+        child.terminate()
+        child.wait(timeout=15)
+
+
 @pytest.mark.parametrize("memory_bind", [False, True, "local"])
 def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, memory_bind) -> None:
     process = _process()
@@ -749,8 +790,8 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, memory_bin
     assert "trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /model" in script
     assert ("bash /configs/numa_cpu_bind.sh --bind-memory" in script) is (memory_bind == "local")
     assert ("numactl -m 0,1" in script) is (memory_bind is True)
-    assert "--grpc --host 127.0.0.1 --port 50051" in script
-    assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path /model" in script
+    assert "--grpc --host 127.0.0.1 --port 19000" in script
+    assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path /model" in script
     assert "--context-length 4096" in script
     assert "${SLURM_PROCID:-0}" in script
 

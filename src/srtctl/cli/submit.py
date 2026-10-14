@@ -72,7 +72,7 @@ from srtctl.core.image_bake import (
     resolve_vllm_patch,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
-from srtctl.core.runtime import Nodes
+from srtctl.core.runtime import Nodes, resolve_local_model_mount, resolve_model_path
 from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
@@ -337,9 +337,15 @@ def show_config_details(config: SrtConfig) -> None:
     mounts_table.add_column("Host Path", style="green")
     mounts_table.add_column("Container Path", style="cyan")
 
-    # Built-in mounts (always present at runtime)
-    model_path = os.path.expandvars(config.model.path)
-    mounts_table.add_row("built-in", model_path, "/model")
+    # Built-in mounts
+    try:
+        model_path, is_hf_model = resolve_model_path(config.model.path)
+    except (FileNotFoundError, ValueError):
+        model_path = Path(os.path.expandvars(config.model.path))
+        is_hf_model = config.model.path.startswith("hf:")
+    if not is_hf_model:
+        model_mount, model_mount_target, _ = resolve_local_model_mount(model_path)
+        mounts_table.add_row("built-in", str(model_mount), str(model_mount_target))
     mounts_table.add_row("built-in", "<log_dir>", "/logs")
 
     # Cluster-level mounts from srtslurm.yaml

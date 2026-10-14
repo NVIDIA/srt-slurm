@@ -125,6 +125,7 @@ class TestSABenchRunner:
         runtime.frontend_port = 8000
         runtime.model_path = "/model"
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
 
         config = SrtConfig(
             name="test",
@@ -153,6 +154,7 @@ class TestSABenchRunner:
         runtime.frontend_port = 8000
         runtime.model_path = "/model"
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
 
         config = SrtConfig(
             name="test",
@@ -172,7 +174,7 @@ class TestSABenchRunner:
         from srtctl.benchmarks.sa_bench import SABenchRunner
 
         runner = SABenchRunner()
-        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+        runtime = MagicMock(frontend_port=8000, worker_model_arg="/model")
 
         cmd = runner.build_command(self._endpoint_config("/v1/chat/completions"), runtime)
 
@@ -186,7 +188,7 @@ class TestSABenchRunner:
         from srtctl.benchmarks.sa_bench import DATASET_CACHE_MOUNT, SABenchRunner
 
         runner = SABenchRunner()
-        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+        runtime = MagicMock(frontend_port=8000, worker_model_arg="/model")
         config = self._endpoint_config("/v1/chat/completions")
         config = replace(config, benchmark=replace(config.benchmark, dataset_cache_dir="/lustre/cache"))
 
@@ -233,7 +235,7 @@ class TestSABenchRunner:
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
         runner = SABenchRunner()
-        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+        runtime = MagicMock(frontend_port=8000, worker_model_arg="/model")
         config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/image", precision="fp4"),
@@ -261,7 +263,7 @@ class TestSABenchRunner:
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
         runner = SABenchRunner()
-        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+        runtime = MagicMock(frontend_port=8000, worker_model_arg="/model")
         config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/image", precision="fp4"),
@@ -1169,6 +1171,7 @@ class TestMooncakeRouterRunner:
         runtime = MagicMock()
         runtime.frontend_port = 8000
         runtime.is_hf_model = False  # Local model mounted at /model
+        runtime.worker_model_arg = "/model"
 
         cmd = runner.build_command(config, runtime)
 
@@ -1249,6 +1252,7 @@ class TestTraceReplayRunner:
         runtime = MagicMock()
         runtime.frontend_port = 8000
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
 
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
@@ -1287,6 +1291,7 @@ class TestTraceReplayRunner:
         runtime = MagicMock()
         runtime.frontend_port = 8000
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
 
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
@@ -1315,6 +1320,7 @@ class TestTraceReplayRunner:
         runtime = MagicMock()
         runtime.frontend_port = 8000
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
 
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
@@ -1360,6 +1366,7 @@ class TestTraceReplayRunner:
         runtime = MagicMock()
         runtime.frontend_port = 8000
         runtime.is_hf_model = False
+        runtime.worker_model_arg = "/model"
 
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 

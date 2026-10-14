@@ -65,6 +65,7 @@ def _command(
     runtime = SimpleNamespace(
         model_path=Path("/weights"),
         is_hf_model=False,
+        worker_model_arg="/model",
         frontend_port=8000,
         network_interface="rdma-test",
         request_plane="nats",

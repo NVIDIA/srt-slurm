@@ -275,6 +275,20 @@ class TestDryRunMounts:
         assert "/model" in output
         assert "/logs" in output
 
+    def test_hf_snapshot_mount_shows_preserved_cache_layout(self, tmp_path, monkeypatch, capsys):
+        cache_root = tmp_path / "models--Inferact--Qwen"
+        (cache_root / "blobs").mkdir(parents=True)
+        snapshot = cache_root / "snapshots" / "revision"
+        snapshot.mkdir(parents=True)
+        monkeypatch.setattr(submit, "console", Console(width=200))
+
+        show_config_details(_make_config({"model": {"path": str(snapshot)}}))
+
+        output = capsys.readouterr().out
+        assert str(cache_root) in output
+        assert "/srtctl-model-cache" in output
+        assert str(snapshot) not in output
+
     def test_extra_mount_from_recipe(self, capsys):
         config = _make_config({"extra_mount": ["/data/custom:/custom", "/shared/cache:/cache"]})
         show_config_details(config)
@@ -839,6 +853,17 @@ class TestDryRunExecutionExtensions:
 
 class TestDryRunServices:
     """services: command, env, source, and readiness must be visible before submitting."""
+
+    def test_service_file_readiness_is_shown(self, capsys):
+        config = _make_config(
+            {
+                "services": [
+                    {"name": "donor", "command": ["/bin/true"], "readiness": {"file": {"path": "donor_{index}.ready"}}}
+                ]
+            }
+        )
+        show_config_details(config)
+        assert "file /logs/donor_{index}.ready exists" in capsys.readouterr().out
 
     def test_service_command_env_and_readiness_shown(self, capsys):
         config = _make_config(

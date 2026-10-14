@@ -1196,10 +1196,7 @@ class VLLMBackend(Backend):
         else:
             leader_ip = get_hostname_ip(endpoint_nodes[0])
 
-        # Determine model path: HF model ID or container mount path
-        # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
-        # For local models, model is mounted to /model in the container
-        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        model_arg = runtime.worker_model_arg
 
         # Get served model name from config or use model path name
         served_model_name = self.get_served_model_name(runtime.model_path.name)

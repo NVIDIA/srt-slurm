@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from marshmallow import ValidationError
 
-from srtctl.core.readiness import ProcessDied, probe_log, run_probe, wait_until_ready
-from srtctl.services import HttpProbe, LogProbe, ServiceReadinessConfig, TcpProbe
+from srtctl.core.readiness import ProcessDied, probe_file, probe_log, run_probe, wait_until_ready
+from srtctl.services import FileProbe, HttpProbe, LogProbe, ServiceReadinessConfig, TcpProbe
 
 
 class FakeClock:
@@ -65,6 +65,21 @@ def test_exactly_one_probe() -> None:
         ServiceReadinessConfig.Schema().load({"http": {"port": 80, "path": "health"}})
     with pytest.raises(ValidationError, match="interval_seconds must be positive"):
         ServiceReadinessConfig.Schema().load({"port": 80, "interval_seconds": 0})
+    with pytest.raises(ValidationError, match="exactly one probe"):
+        ServiceReadinessConfig.Schema().load({"file": {"path": "x.ready"}, "log": {"pattern": "ready"}})
+
+
+def test_file_probe_schema() -> None:
+    ready = ServiceReadinessConfig.Schema().load({"file": {"path": "donor_{index}.ready"}})
+    assert isinstance(ready.probe, FileProbe)
+    assert ready.probe_port is None
+    assert ready.describe() == "file /logs/donor_{index}.ready exists, timeout=120s"
+
+
+@pytest.mark.parametrize("path", ["", " ", ".", "/logs/donor.ready", "../donor.ready", "sub/../../donor.ready"])
+def test_file_probe_cannot_escape_run_logs(path: str) -> None:
+    with pytest.raises(ValidationError, match="relative file path"):
+        ServiceReadinessConfig.Schema().load({"file": {"path": path}})
 
 
 # --- probes ------------------------------------------------------------------------
@@ -76,6 +91,40 @@ def test_log_probe_reads_the_file(tmp_path: Path) -> None:
     log.write_text("starting\nserver ready on 9000\n")
     assert probe_log(log, r"ready on \d+")
     assert not probe_log(None, "ready")
+
+
+def test_file_probe_checks_the_marker_in_shared_logs(tmp_path: Path) -> None:
+    log = tmp_path / "service_donor.out"
+    marker = tmp_path / "donor.ready"
+    probe = FileProbe(path=marker.name)
+    assert not run_probe(probe, host="decode-node", log_file=log)
+    marker.mkdir()
+    assert not run_probe(probe, host="decode-node", log_file=log)
+    marker.rmdir()
+    marker.write_text("10.1.2.3 34359738368\n")
+    assert run_probe(probe, host="decode-node", log_file=log)
+    assert not probe_file(None, marker.name)
+
+
+def test_file_readiness_waits_until_marker_is_created(tmp_path: Path) -> None:
+    clock = FakeClock()
+    marker = tmp_path / "donor.ready"
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        marker.write_text("registered\n")
+
+    assert wait_until_ready(
+        FileProbe(path=marker.name),
+        host="decode-node",
+        log_file=tmp_path / "service_donor.out",
+        timeout=10,
+        interval=2,
+        is_alive=lambda: True,
+        sleep=sleep,
+        clock=clock,
+    )
+    assert clock.slept == [2]
 
 
 def test_http_probe_checks_status() -> None:

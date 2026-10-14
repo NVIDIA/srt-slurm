@@ -150,6 +150,11 @@ benchmark:
 
 The directory is created if missing and mounted into the benchmark container at `/sa-bench-dataset-cache`, so cache files written by one job are picked up by the next. Caching applies to `dataset_name: random` only; leaving the field unset keeps the default behavior of regenerating prompts every run. The `SA_BENCH_DATASET_CACHE_DIR` environment variable works as a fallback when the benchmark script is invoked directly.
 
+When `model.path` points into a Hugging Face `models--*/snapshots/<revision>`
+cache, srt-slurm mounts the model cache root rather than only the snapshot and
+passes the preserved snapshot path to workers and `cache-inputs`. This keeps
+relative links into `blobs/` valid; no extra recipe mount is required.
+
 Cache files are named for the values that matter when deciding what to delete — served model name, ISL, OSL and prompt count — followed by a digest of the remaining key fields:
 
 ```

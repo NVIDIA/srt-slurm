@@ -161,8 +161,7 @@ class MockerBackend(Backend):
         mode = process.endpoint_mode
         config = self.get_config_for_mode(mode)
 
-        # Determine model path: HF model ID or container mount path
-        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        model_arg = runtime.worker_model_arg
 
         # Register under the name the benchmark client requests (the model path
         # basename, see SrtConfig.served_model_name). Left to its own devices the

@@ -103,8 +103,14 @@ KVBM_ZMQ_PORT_BASE = 5600
 RAY_GCS_PORT = 6379
 RAY_DASHBOARD_PORT = 8265
 
-# Dynamo sidecar gRPC listener next to a native engine (dynamo.sidecar_port).
-DYNAMO_SIDECAR_GRPC_PORT = 50051
+# Dynamo sidecar gRPC listener next to a native engine (dynamo.sidecar_port), one
+# per sidecar process across the job. Keep this block below Linux's default
+# ephemeral range (32768-60999): a loopback connect to a port inside it can be
+# handed that port as its source and connect to itself, and the TIME_WAIT socket
+# it leaves makes the engine's bind fail. 19000 clears SGLang NCCL (17500 + n)
+# and TokenSpeed's per-node scans (below 18200 at 8 processes per node), and
+# stays under vLLM's scan ranges (20000) for up to 1000 sidecars.
+DYNAMO_SIDECAR_GRPC_PORT = 19000
 
 
 def rank_offset_subscriber_port(port: int, rank: int) -> int:

@@ -106,7 +106,7 @@ def test_per_worker_service_rules() -> None:
         _load(
             "services:\n  - name: w\n    command: [/bin/true]\n    nodes: 1\n    placement: {node: workers, per: worker}\n"
         )
-    with pytest.raises(ValidationError, match="readiness must be a log probe"):
+    with pytest.raises(ValidationError, match="readiness must be a log or file probe"):
         _load(
             "services:\n  - name: w\n    command: [/bin/true]\n    placement: {node: agg, per: worker}\n"
             "    readiness: {port: 9000}\n"
@@ -114,6 +114,10 @@ def test_per_worker_service_rules() -> None:
     _load(
         "services:\n  - name: w\n    command: [/bin/true]\n    placement: {node: agg, per: worker}\n"
         "    readiness: {log: {pattern: up}}\n"
+    )
+    _load(
+        "services:\n  - name: w\n    command: [/bin/true]\n    placement: {node: agg, per: worker}\n"
+        "    readiness: {file: {path: 'worker_{index}.ready'}}\n"
     )
 
 

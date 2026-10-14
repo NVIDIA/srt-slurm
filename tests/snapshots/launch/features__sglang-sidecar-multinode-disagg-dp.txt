@@ -105,7 +105,7 @@ command: |
         exit "${status}"
     }
     trap cleanup EXIT INT TERM
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 0 --grpc-port 50051 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:5200"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --disaggregation-transfer-backend nixl --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 0 --grpc-port 19000 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:5200"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --disaggregation-transfer-backend nixl --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
     ENGINE_PID=$!
     port_ready=0
     for _ in $(seq 1 3600); do
@@ -113,18 +113,17 @@ command: |
             echo "SGLang exited before native gRPC became ready" >&2
             exit 1
         fi
-        if (exec 3<>/dev/tcp/127.0.0.1/50051) 2>/dev/null; then
-            exec 3>&-
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A38 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
             port_ready=1
             break
         fi
         sleep 1
     done
     if [[ "${port_ready}" != 1 ]]; then
-        echo "Timed out waiting for SGLang native gRPC on port 50051" >&2
+        echo "Timed out waiting for SGLang native gRPC on port 19000" >&2
         exit 1
     fi
-    python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:50051 --bootstrap-host 127.0.0.1 &
+    python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:19000 --bootstrap-host 127.0.0.1 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
@@ -198,7 +197,7 @@ command: |
         exit "${status}"
     }
     trap cleanup EXIT INT TERM
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 0 --nccl-port 17501 --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 1 --grpc-port 50052 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:5202"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --disaggregation-transfer-backend nixl --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 0 --nccl-port 17501 --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 1 --grpc-port 19001 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:5202"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --disaggregation-transfer-backend nixl --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
     ENGINE_PID=$!
     port_ready=0
     for _ in $(seq 1 3600); do
@@ -206,18 +205,17 @@ command: |
             echo "SGLang exited before native gRPC became ready" >&2
             exit 1
         fi
-        if (exec 3<>/dev/tcp/127.0.0.1/50052) 2>/dev/null; then
-            exec 3>&-
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A39 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
             port_ready=1
             break
         fi
         sleep 1
     done
     if [[ "${port_ready}" != 1 ]]; then
-        echo "Timed out waiting for SGLang native gRPC on port 50052" >&2
+        echo "Timed out waiting for SGLang native gRPC on port 19001" >&2
         exit 1
     fi
-    python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:50052 &
+    python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:19001 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
@@ -291,7 +289,7 @@ command: |
         exit "${status}"
     }
     trap cleanup EXIT INT TERM
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17502 --disaggregation-mode decode --skip-server-warmup --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 0 --grpc-port 50053 --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --disaggregation-transfer-backend nixl --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17502 --disaggregation-mode decode --skip-server-warmup --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 0 --grpc-port 19002 --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --disaggregation-transfer-backend nixl --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
     ENGINE_PID=$!
     port_ready=0
     for _ in $(seq 1 3600); do
@@ -299,18 +297,17 @@ command: |
             echo "SGLang exited before native gRPC became ready" >&2
             exit 1
         fi
-        if (exec 3<>/dev/tcp/127.0.0.1/50053) 2>/dev/null; then
-            exec 3>&-
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A3A [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
             port_ready=1
             break
         fi
         sleep 1
     done
     if [[ "${port_ready}" != 1 ]]; then
-        echo "Timed out waiting for SGLang native gRPC on port 50053" >&2
+        echo "Timed out waiting for SGLang native gRPC on port 19002" >&2
         exit 1
     fi
-    python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:50053 &
+    python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:19002 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"

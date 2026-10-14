@@ -23,6 +23,8 @@ from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
 
 logger = logging.getLogger(__name__)
 
+HF_MODEL_CACHE_MOUNT = Path("/srtctl-model-cache")
+
 if TYPE_CHECKING:
     from srtctl.core.schema import DynamoConfig, SrtConfig
 
@@ -350,6 +352,22 @@ def resolve_container_image(image: str) -> Path:
     return container_image
 
 
+def resolve_local_model_mount(
+    model_path: Path,
+    hf_cache_mount: Path = HF_MODEL_CACHE_MOUNT,
+) -> tuple[Path, Path, Path]:
+    """Return host mount, container mount, and container-side model path.
+
+    Hugging Face snapshots use relative links into ``../../blobs``. Mounting a
+    snapshot directly at ``/model`` relocates those links and makes the model
+    unreadable, so mount the repository cache root and preserve its layout.
+    """
+    cache_root = model_path.parent.parent
+    if model_path.parent.name == "snapshots" and (cache_root / "blobs").is_dir():
+        return cache_root.resolve(), hf_cache_mount, hf_cache_mount / model_path.relative_to(cache_root)
+    return model_path, Path("/model"), Path("/model")
+
+
 @dataclass(frozen=True)
 class RuntimeContext:
     """Runtime context with all computed values.
@@ -397,6 +415,7 @@ class RuntimeContext:
     # Optional lustre->node-local model staging (see model.stage_dir)
     stage_dir: str | None = None
     staged_model_path: Path | None = None
+    container_model_path: Path | None = None
     # Request plane for dynamo workers
     request_plane: str = "tcp"
     # Full Dynamo configuration for native sidecar launch settings.
@@ -472,8 +491,10 @@ class RuntimeContext:
             log_dir: Path(CONTAINER_LOG_DIR),
         }
         # Only mount local model paths - HF models are downloaded at runtime
+        container_model_path: Path | None = None
         if not is_hf_model:
-            container_mounts[model_path] = Path("/model")
+            model_mount, model_mount_target, container_model_path = resolve_local_model_mount(model_path)
+            container_mounts[model_mount] = model_mount_target
 
         # Optional: stage the model to node-local storage before workers start.
         # Mount the node-local ROOT (parent of stage_dir; it pre-exists on nodes)
@@ -573,6 +594,7 @@ class RuntimeContext:
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
+            container_model_path=container_model_path,
             request_plane=config.dynamo.request_plane,
             dynamo=config.dynamo,
         )
@@ -602,6 +624,7 @@ class RuntimeContext:
             is_hf_model=is_hf_model,
             stage_dir=stage_dir,
             staged_model_path=staged_model_path,
+            container_model_path=container_model_path,
             request_plane=config.dynamo.request_plane,
             dynamo=config.dynamo,
         )
@@ -614,7 +637,7 @@ class RuntimeContext:
             return str(self.model_path)
         if self.staged_model_path is not None:
             return str(self.staged_model_path)
-        return "/model"
+        return str(self.container_model_path or "/model")
 
     def format_string(self, template: str, **extra_kwargs) -> str:
         """Format a template string with runtime values.

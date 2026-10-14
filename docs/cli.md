@@ -491,10 +491,10 @@ The default output name records its contents, so a directory of images stays
 readable:
 
 ```
-my-model-fp8+dynamo1.2.0.dev20260526+sa-bench.sqsh
-my-model-fp8+install-nixl-dsv4.sqsh
-my-model-fp8+mine.sqsh
-my-model-fp8+dynamo1.2.0.dev20260526+sa-bench.manifest.json
+my-model-fp8-dynamo1.2.0.dev20260526-sa-bench.sqsh
+my-model-fp8-install-nixl-dsv4.sqsh
+my-model-fp8-mine.sqsh
+my-model-fp8-dynamo1.2.0.dev20260526-sa-bench.manifest.json
 ```
 
 The manifest records the source image, what was installed (including the setup
@@ -514,10 +514,13 @@ dynamo:
 # setup_script: "install-nixl-dsv4.sh"   # already baked; omit
 ```
 
-`bench.sh` needs no change — it skips its own install when every package it
-checks for is importable. Both sides read the same list from
-`src/srtctl/benchmarks/scripts/sa-bench/deps.sh`, which is what keeps a baked
-image from drifting away from what the benchmark expects.
+SA-Bench dependencies are installed into
+`/opt/srtctl/venvs/sa-bench`, isolated from the model server's Python
+environment. `bench.sh` activates that venv automatically; recipes do not need
+to modify `PATH`. Both sides read the package list and venv path from
+`src/srtctl/benchmarks/scripts/sa-bench/deps.sh`, which keeps a baked image
+aligned with what the benchmark expects.
+
 ### `srtctl status-server`
 
 Run the native status collector. Point `reporting.status.endpoint` in `srtslurm.yaml` or a recipe at it and every `srtctl apply` shows up as a job row with an ordered event feed (`submitted`, `starting`, `workers`, `frontend`, `benchmark`, then `completed` or `failed`, each with its stage and message). Jobs and events persist in one SQLite file and the process prints one line per transition. The endpoints are in [Status API](status-api-spec.md).

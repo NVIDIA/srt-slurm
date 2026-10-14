@@ -1,0 +1,48 @@
+# examples/features/file-readiness.yaml
+# exit_code: 0
+# srun calls: 3
+
+## service_initialized_node-01
+nodelist: node-01
+output: <output>/logs/service_initialized_node-01.out
+container_image: python:3.12-slim
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+command: |
+    python3 -c 'from pathlib import Path; import time; Path('"'"'/logs/service_0.ready'"'"').write_text('"'"'ready\n'"'"'); time.sleep(3600)'
+
+## service_initialized_node-02
+nodelist: node-02
+output: <output>/logs/service_initialized_node-02.out
+container_image: python:3.12-slim
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+command: |
+    python3 -c 'from pathlib import Path; import time; Path('"'"'/logs/service_1.ready'"'"').write_text('"'"'ready\n'"'"'); time.sleep(3600)'
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: python:3.12-slim
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    SRTCTL_FRONTEND_TYPE: none
+    SRT_GPUS_PER_NODE: 8
+    SRT_SERVICE_INITIALIZED_IPS: 127.0.0.1,127.0.0.1
+    SRT_SERVICE_INITIALIZED_NODES: node-01,node-02
+    SRT_SERVICE_INITIALIZED_NODE_COUNT: 2
+    SRT_WORKER_NODES:
+command: |
+    bash -lc 'test -f /logs/service_0.ready && test -f /logs/service_1.ready'

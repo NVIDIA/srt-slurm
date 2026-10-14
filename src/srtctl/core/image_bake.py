@@ -237,6 +237,20 @@ def read_sa_bench_deps(script: Path = SA_BENCH_DEPS_SCRIPT) -> tuple[tuple[str, 
     return tuple(shlex.split(packages[1:-1])), " ".join(shlex.split(imports))
 
 
+def read_sa_bench_venv(script: Path = SA_BENCH_DEPS_SCRIPT) -> Path:
+    """Return the persistent venv path shared by bake-image and bench.sh."""
+    text = script.read_text()
+    values = shlex.split(_parse_bash_assignment(text, "SA_BENCH_BAKED_VENV", script))
+    if len(values) != 1 or not values[0].startswith("/"):
+        raise ValueError(f"SA_BENCH_BAKED_VENV in {script} must be one absolute path")
+    return Path(values[0])
+
+
+def _safe_image_component(value: str) -> str:
+    """Make a filename component accepted by conservative image tooling."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
+
+
 def default_output_image(
     source: Path,
     *,
@@ -260,7 +274,9 @@ def default_output_image(
     for item in vllm_patches or ():
         host = item.host_path if isinstance(item, VllmPatch) else Path(item)
         tags.append(host.stem)
-    return source.with_name(f"{source.stem}+{'+'.join(tags)}.sqsh")
+    safe_stem = _safe_image_component(source.stem)
+    safe_tags = (_safe_image_component(tag) for tag in tags)
+    return source.with_name(f"{safe_stem}-{'-'.join(safe_tags)}.sqsh")
 
 
 @dataclass(frozen=True)
@@ -354,11 +370,14 @@ class BakePlan:
             steps.append(f"pip show ai-dynamo >/dev/null && echo 'bake-image: ai-dynamo {self.dynamo_version} present'")
 
         if self.sa_bench:
-            packages = " ".join(self.sa_bench_deps)
-            steps.append("echo 'bake-image: installing sa-bench deps...'")
-            steps.append(f"pip install --break-system-packages --quiet {packages}")
-            steps.append(f'python3 -c "import {self.sa_bench_imports}"')
-            steps.append("echo 'bake-image: sa-bench deps importable'")
+            venv = shlex.quote(str(read_sa_bench_venv()))
+            packages = shlex.join(self.sa_bench_deps)
+            steps.append(f"SA_BENCH_VENV={venv}")
+            steps.append('echo "bake-image: installing sa-bench deps into ${SA_BENCH_VENV}..."')
+            steps.append('python3 -m venv --clear --system-site-packages "${SA_BENCH_VENV}"')
+            steps.append(f'"${{SA_BENCH_VENV}}/bin/pip" install --upgrade --quiet {packages}')
+            steps.append(f'"${{SA_BENCH_VENV}}/bin/python" -c "import {self.sa_bench_imports}"')
+            steps.append('echo "bake-image: sa-bench venv ready at ${SA_BENCH_VENV}"')
 
         steps.append(_CLEANUP)
         return "\n".join(steps)
@@ -372,6 +391,7 @@ class BakePlan:
             "installed": {
                 "ai-dynamo": self.dynamo_version,
                 "sa_bench_deps": list(self.sa_bench_deps) if self.sa_bench else None,
+                "sa_bench_venv": str(read_sa_bench_venv()) if self.sa_bench else None,
                 "setup_script": self.setup_script.name if self.setup_script else None,
                 "vllm_patches": [patch.host_path.name for patch in self.vllm_patches] or None,
             },
