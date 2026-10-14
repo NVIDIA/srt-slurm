@@ -318,7 +318,7 @@ impl NvmlModuleReader {
             disagreeing: BTreeSet::new(),
         };
         if reader.read().is_empty() {
-            return Err(NvmlUnavailable("no GPU reports module power".into()));
+            return Err(NvmlUnavailable("no socket reports module power".into()));
         }
         Ok(reader)
     }

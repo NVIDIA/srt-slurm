@@ -649,9 +649,10 @@ fn init_module_cache(
             return Ok(None);
         }
     };
+    let sockets = reader.sockets();
     tracing::info!(
         gpu_count = reader.gpu_count(),
-        sockets = ?reader.sockets(),
+        ?sockets,
         "NVML module reader initialised"
     );
     // The PCI NUMA node stands in for the ACPI socket number. On GB200 a
@@ -660,7 +661,7 @@ fn init_module_cache(
     // writes a module reading onto a socket row the CPU family produced, so a
     // socket the family does not know is reported once, here, rather than
     // silently dropped on every scrape.
-    for socket in reader.sockets() {
+    for socket in sockets {
         if !cpu_sockets.contains(&socket.to_string()) {
             tracing::warn!(
                 socket,
