@@ -231,8 +231,14 @@ class TestProbeScript:
     def _run(tmp_path: Path, tools: dict[str, str]) -> subprocess.CompletedProcess[str]:
         bindir = tmp_path / "bin"
         bindir.mkdir()
-        # The kernel branch would otherwise consult the test host's real clock state.
-        tools = {"python3": "echo 'fake python3: no adjtimex here' >&2; exit 1\n", **tools}
+        # Missing tools must not fall through to the test host's clock services.
+        tools = {
+            **{
+                name: f"echo '{name}: command not found' >&2; exit 127\n"
+                for name in ("timedatectl", "chronyc", "ntpq", "python3")
+            },
+            **tools,
+        }
         for name, body in tools.items():
             exe = bindir / name
             exe.write_text("#!/usr/bin/env bash\n" + body)
@@ -307,7 +313,7 @@ class TestProbeScript:
     @pytest.mark.parametrize(
         "tools",
         [
-            {"timedatectl": "exit 127\n", "chronyc": "exit 127\n", "ntpq": "exit 127\n"},
+            {},
             {"timedatectl": "echo no\n", "chronyc": "echo 'Leap status     : Not synchronised'\n", "ntpq": "exit 1\n"},
             {"timedatectl": "echo no\n", "chronyc": "exit 1\n", "ntpq": "printf '+10.0.0.2 x 2 u 1 64 377 0 0 0\\n'\n"},
         ],
