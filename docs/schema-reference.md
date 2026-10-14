@@ -153,7 +153,7 @@ Dynamo installation configuration.
 | `request_plane` | one of `'nats'`, `'tcp'`, `'http'` | `'tcp'` | Transport frontends use to send requests to workers. |
 | `event_plane` | one of `'nats'`, `'zmq'` \| None | `None` | Sets DYN_EVENT_PLANE for KV and worker events; unset follows the Dynamo image's default. |
 | `sidecar` | bool | `False` | Job-wide native sidecar mode; prefer `roles.<role>.sidecar: true`. |
-| `sidecar_port` | int | `50051` | Base loopback gRPC port between engine and sidecar; co-located workers get deterministic offsets. |
+| `sidecar_port` | int | `19000` | Base loopback gRPC port between engine and sidecar; co-located workers get deterministic offsets. |
 | `sidecar_binary` | str \| None | `None` | Standalone sidecar executable; unset runs `python3 -m dynamo.<framework>.sidecar`. |
 | `sidecar_startup_timeout` | int | `3600` | Seconds to wait for the native engine's gRPC endpoint. |
 | `sidecar_context_length` | int \| None | `None` | Context length the sidecar advertises (TRT-LLM); unset reads it from the engine. |

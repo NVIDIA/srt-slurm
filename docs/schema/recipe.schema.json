@@ -762,7 +762,7 @@
         "sidecar_port": {
           "type": "integer",
           "description": "Base loopback gRPC port between engine and sidecar; co-located workers get deterministic offsets.",
-          "default": 50051
+          "default": 19000
         },
         "sidecar_binary": {
           "anyOf": [
