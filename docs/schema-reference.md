@@ -154,7 +154,7 @@ Dynamo installation configuration.
 | `request_plane` | one of `'nats'`, `'tcp'`, `'http'` | `'tcp'` | Transport frontends use to send requests to workers. |
 | `event_plane` | one of `'nats'`, `'zmq'` \| None | `None` | Sets DYN_EVENT_PLANE for KV and worker events; unset follows the Dynamo image's default. |
 | `sidecar` | bool | `False` | Job-wide native sidecar mode; prefer `roles.<role>.sidecar: true`. |
-| `sidecar_port` | int | `50051` | Base loopback gRPC port between engine and sidecar; co-located workers get deterministic offsets. |
+| `sidecar_port` | int | `19000` | Base loopback gRPC port between engine and sidecar; co-located workers get deterministic offsets. |
 | `sidecar_binary` | str \| None | `None` | Standalone sidecar executable; unset runs `python3 -m dynamo.<framework>.sidecar`. |
 | `sidecar_startup_timeout` | int | `3600` | Seconds to wait for the native engine's gRPC endpoint. |
 | `sidecar_context_length` | int \| None | `None` | Context length the sidecar advertises (TRT-LLM); unset reads it from the engine. |
@@ -338,7 +338,7 @@ One entry of the top-level ``services:`` list.
 | `placement` | [ServicePlacementConfig](#serviceplacementconfig) \| None | `None` | Where the service runs. Defaults to the kind's placement (``head`` for generic services, ``infra`` for etcd/nats/mooncake-master, ``workers`` for the exporters). |
 | `nodes` | int \| None | `None` | Whole nodes this service owns: its pool. Pools add to the allocation next to the engine roles' nodes and are carved after them in declaration order, so a Ray cluster, a sandbox fleet and an engine role can each have their own nodes in one recipe. An owner is placed on its own pool (``placement.node: workers``); other services join it with ``placement.pool: <name>``. |
 | `start` | str \| None | `None` | ``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``). |
-| `readiness` | [ServiceReadinessConfig](#servicereadinessconfig) \| None | `None` | Optional TCP port gate; the job waits for it on every service node before continuing. |
+| `readiness` | [ServiceReadinessConfig](#servicereadinessconfig) \| None | `None` | Optional TCP, HTTP, log or marker-file gate; the job waits for it on every service node before continuing. |
 | `inherit_discovery_env` | bool | `True` | Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so the service can register with the job's Dynamo discovery plane. |
 | `critical` | bool \| None | `None` | When true a crash fails the run, like a worker dying. Default false for ``generic`` (a dead sidecar costs its own log, not the run) and true for ``mooncake-store``. Set true for anything in the live request path. |
 | `terminal` | bool | `False` | This service is the job's run: the job ends when every instance of every terminal service has exited, and the worst exit code becomes the job's. A recipe with a terminal service has no benchmark step (``benchmark.type`` stays ``manual``); a torchrun pool that trains to completion is the shape. |
@@ -533,6 +533,7 @@ Readiness gate: the launch blocks until the probe passes on every service node.
 | `tcp` | [TcpProbe](#tcpprobe) \| None | `None` | TCP connect probe. |
 | `http` | [HttpProbe](#httpprobe) \| None | `None` | HTTP GET probe. |
 | `log` | [LogProbe](#logprobe) \| None | `None` | Log-pattern probe against ``service_<name>.out``. |
+| `file` | [FileProbe](#fileprobe) \| None | `None` | Marker-file probe relative to the shared logs directory; removes the old marker before launch. |
 | `timeout_seconds` | int | `120` | How long to wait per node before failing the job. |
 | `interval_seconds` | int | `2` | Seconds between probe attempts. |
 
@@ -649,6 +650,14 @@ Ready when the service's log file contains a line matching the regular expressio
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `pattern` | str | required | Regular expression searched for in the service log. |
+
+### FileProbe
+
+Ready when a service-owned marker file exists in the run's shared logs directory.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `path` | str | required | Relative marker path under /logs; service placeholders such as {index} are expanded per instance. The previous marker is removed before launching that instance, so readiness requires a fresh file. |
 
 ### GpuPowerMetricConfig
 

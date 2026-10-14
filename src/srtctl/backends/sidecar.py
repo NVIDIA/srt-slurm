@@ -46,6 +46,12 @@ def build_sidecar_launch_command(
     """Supervise an engine and optional sidecar; spontaneous exits are failures.
 
     Headless followers pass sidecar=None and skip the local gRPC wait.
+
+    Readiness is a LISTEN socket on the port in ``/proc/net/tcp{,6}``, not a
+    connect: a loopback connect can be handed the destination port as its
+    source and connect to itself with nothing listening, and the TIME_WAIT
+    socket it leaves on the port makes the engine's bind fail. ``ss`` would
+    say the same, but not every engine image ships it.
     """
     if startup_timeout < 1:
         raise ValueError(f"sidecar_startup_timeout must be at least 1, got {startup_timeout}")
@@ -77,8 +83,7 @@ for _ in $(seq 1 {startup_timeout}); do
         echo "{engine_name} exited before native gRPC became ready" >&2
         exit 1
     fi
-    if (exec 3<>/dev/tcp/127.0.0.1/{grpc_port}) 2>/dev/null; then
-        exec 3>&-
+    if grep -qE '^ *[0-9]+: [0-9A-F]+:{grpc_port:04X} [0-9A-F]+:0000 0A ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
         port_ready=1
         break
     fi

@@ -122,7 +122,7 @@ command: |
         exit "${status}"
     }
     trap cleanup EXIT INT TERM
-    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --grpc --grpc-protocol openengine --host 127.0.0.1 --port 50051 --extra_llm_api_options /logs/trtllm_config_prefill.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 4 --moe_expert_parallel_size 4 --pipeline_parallel_size 1 &
+    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --grpc --grpc-protocol openengine --host 127.0.0.1 --port 19000 --extra_llm_api_options /logs/trtllm_config_prefill.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 4 --moe_expert_parallel_size 4 --pipeline_parallel_size 1 &
     ENGINE_PID=$!
     if [[ "${SLURM_PROCID:-0}" != "0" ]]; then
         set +e
@@ -138,18 +138,17 @@ command: |
             echo "TensorRT-LLM exited before native gRPC became ready" >&2
             exit 1
         fi
-        if (exec 3<>/dev/tcp/127.0.0.1/50051) 2>/dev/null; then
-            exec 3>&-
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A38 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
             port_ready=1
             break
         fi
         sleep 1
     done
     if [[ "${port_ready}" != 1 ]]; then
-        echo "Timed out waiting for TensorRT-LLM native gRPC on port 50051" >&2
+        echo "Timed out waiting for TensorRT-LLM native gRPC on port 19000" >&2
         exit 1
     fi
-    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode prefill --context-length 1048576 &
+    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode prefill --context-length 1048576 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
@@ -258,7 +257,7 @@ command: |
         exit "${status}"
     }
     trap cleanup EXIT INT TERM
-    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --grpc --grpc-protocol openengine --host 127.0.0.1 --port 50052 --extra_llm_api_options /logs/trtllm_config_decode.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 8 --moe_expert_parallel_size 1 --pipeline_parallel_size 1 &
+    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --grpc --grpc-protocol openengine --host 127.0.0.1 --port 19001 --extra_llm_api_options /logs/trtllm_config_decode.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 8 --moe_expert_parallel_size 1 --pipeline_parallel_size 1 &
     ENGINE_PID=$!
     if [[ "${SLURM_PROCID:-0}" != "0" ]]; then
         set +e
@@ -274,18 +273,17 @@ command: |
             echo "TensorRT-LLM exited before native gRPC became ready" >&2
             exit 1
         fi
-        if (exec 3<>/dev/tcp/127.0.0.1/50052) 2>/dev/null; then
-            exec 3>&-
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A39 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
             port_ready=1
             break
         fi
         sleep 1
     done
     if [[ "${port_ready}" != 1 ]]; then
-        echo "Timed out waiting for TensorRT-LLM native gRPC on port 50052" >&2
+        echo "Timed out waiting for TensorRT-LLM native gRPC on port 19001" >&2
         exit 1
     fi
-    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50052 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode decode --context-length 1048576 &
+    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19001 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode decode --context-length 1048576 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"

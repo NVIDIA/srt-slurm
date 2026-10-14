@@ -872,6 +872,17 @@ class TestDryRunExecutionExtensions:
 class TestDryRunServices:
     """services: command, env, source, and readiness must be visible before submitting."""
 
+    def test_service_file_readiness_is_shown(self, capsys):
+        config = _make_config(
+            {
+                "services": [
+                    {"name": "donor", "command": ["/bin/true"], "readiness": {"file": {"path": "donor_{index}.ready"}}}
+                ]
+            }
+        )
+        show_config_details(config)
+        assert "file /logs/donor_{index}.ready exists" in capsys.readouterr().out
+
     def test_service_command_env_and_readiness_shown(self, capsys):
         config = _make_config(
             {

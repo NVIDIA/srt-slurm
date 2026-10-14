@@ -762,7 +762,7 @@
         "sidecar_port": {
           "type": "integer",
           "description": "Base loopback gRPC port between engine and sidecar; co-located workers get deterministic offsets.",
-          "default": 50051
+          "default": 19000
         },
         "sidecar_binary": {
           "anyOf": [
@@ -885,6 +885,20 @@
         }
       },
       "description": "Where Dynamo comes from. Exactly one of ``git``, ``pypi``, or ``wheel``."
+    },
+    "FileProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Relative marker path under /logs; service placeholders such as {index} are expanded per instance. The previous marker is removed before launching that instance, so readiness requires a fresh file."
+        }
+      },
+      "description": "Ready when a service-owned marker file exists in the run's shared logs directory.",
+      "required": [
+        "path"
+      ]
     },
     "FrontendConfig": {
       "type": "object",
@@ -2872,7 +2886,7 @@
               "type": "null"
             }
           ],
-          "description": "Optional TCP port gate; the job waits for it on every service node before continuing.",
+          "description": "Optional TCP, HTTP, log or marker-file gate; the job waits for it on every service node before continuing.",
           "default": null
         },
         "inherit_discovery_env": {
@@ -3104,6 +3118,18 @@
             }
           ],
           "description": "Log-pattern probe against ``service_<name>.out``.",
+          "default": null
+        },
+        "file": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileProbe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Marker-file probe relative to the shared logs directory; removes the old marker before launch.",
           "default": null
         },
         "timeout_seconds": {

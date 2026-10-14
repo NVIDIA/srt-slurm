@@ -19,6 +19,7 @@ from srtctl.services import (
 from srtctl.services.config import (
     SERVICE_PLACEMENTS,
     SERVICE_STARTS,
+    FileProbe,
     HttpProbe,
     LogProbe,
     ServiceConfig,
@@ -38,6 +39,7 @@ from srtctl.services.registry import (
 __all__ = [
     "SERVICE_PLACEMENTS",
     "SERVICE_STARTS",
+    "FileProbe",
     "HttpProbe",
     "LogProbe",
     "ServiceConfig",
