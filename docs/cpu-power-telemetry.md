@@ -312,9 +312,6 @@ Differences from `cpu_power_exporter`:
   stay blank. The per-node `*.metadata.json` lists the field ids and unit.
   This bumped the samples schema to v3; v2 readers that select columns by
   name are unaffected.
-- **Module power from ACPI only.** Samples schema v5 appends `module_w` after
-  `dram_w`. This collector has no NVML path, so it fills `module_w` only where
-  firmware binds an ACPI `Module Power Socket N` meter.
 
 The energy report summarizes utilization per concurrency window as a mean and
 max of the samples inside the window, per socket and per node (and for the GPU
