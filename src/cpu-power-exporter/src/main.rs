@@ -20,8 +20,10 @@
 //! Alongside either back-end, NVML module power is exposed as
 //! `cpu_power_nvml_watts{type="module",socket,gpus,source="nvml"}`:
 //! one sample per Grace socket covering Grace, its GPUs, HBM, LPDDR5X and
-//! regulators, averaged over the socket's GPUs. Best-effort; the family is
-//! absent when `libnvidia-ml.so` or module power is unavailable.
+//! regulators, averaged over the socket's GPUs. It is pre-rendered by its own
+//! poller thread, like the ACPI cache, so no scrape waits on NVML.
+//! Best-effort; the family is absent when `libnvidia-ml.so` or module power
+//! is unavailable.
 //!
 //! Endpoints:
 //!   GET /metrics  — Prometheus text format
@@ -33,6 +35,7 @@ mod nvml;
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::collections::btree_map::{BTreeMap, Entry};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
@@ -57,7 +60,7 @@ use tokio::time::{timeout, Duration};
 /// (Grace's own reading, or a platform's generic "Total Power" rail);
 /// `cpu_rail`/`soc`/`dram` are component rails that must not be summed into
 /// a node's total power. A firmware `Module Power Socket N` meter is left
-/// unclassified: module power comes from NVML only (see `nvml.rs`), the one
+/// unclassified. Module power comes from NVML only (see `nvml.rs`), the one
 /// path verified on hardware.
 const OEM_KINDS: [(&str, &[&str]); 4] = [
     (
@@ -109,10 +112,11 @@ const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 const MAX_REQUEST_BYTES: usize = 8192;
 /// Backpressure, not a happy-path size: a scrape target sees ~1 request/s.
 const MAX_CONNECTIONS: usize = 64;
-/// How often the background thread re-reads ACPI sysfs sensors.
-/// Each read blocks ~150 ms waiting for firmware; 6 sensors × 150 ms = ~900 ms,
-/// so a 1 s interval keeps the cache fresh without falling behind.
-const ACPI_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the background threads re-read ACPI sysfs sensors and NVML
+/// module power. Each ACPI read blocks ~150 ms waiting for firmware;
+/// 6 sensors × 150 ms = ~900 ms, so a 1 s interval keeps the cache fresh
+/// without falling behind. NVML's field is itself a 1 s average.
+const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(clap::ValueEnum, Clone, Debug, Default)]
 enum SourceMode {
@@ -177,7 +181,7 @@ struct Candidate {
 /// The CPU power family resolved once at startup by `init_metrics_state`.
 #[derive(Clone)]
 enum MetricsState {
-    /// Pre-rendered Prometheus text, refreshed every `ACPI_POLL_INTERVAL` by a
+    /// Pre-rendered Prometheus text, refreshed every `POLL_INTERVAL` by a
     /// background OS thread.  Scrapes read from this cache and return instantly.
     Acpi(Arc<RwLock<String>>),
     Dcgm(Arc<Mutex<dcgm::DcgmReader>>),
@@ -188,20 +192,23 @@ enum MetricsState {
 #[derive(Clone)]
 struct Metrics {
     base: MetricsState,
-    module: Option<Arc<nvml::NvmlModuleReader>>,
+    /// Pre-rendered module series, refreshed every `POLL_INTERVAL` by the
+    /// `nvml-poller` thread; `None` when the host reports no module power.
+    module: Option<Arc<RwLock<String>>>,
 }
 
 impl Metrics {
     /// The `/metrics` body: the CPU family first, then the module series
-    /// when NVML is available.
+    /// when NVML is available. NVML is never called here. A stalled
+    /// `nvmlDeviceGetFieldValues` (a GPU in reset) must not stall a scrape
+    /// and lose that interval's CPU power with it.
     fn render(&self) -> String {
         let mut body = match &self.base {
             MetricsState::Acpi(cache) => cache.read().unwrap().clone(),
             MetricsState::Dcgm(reader) => build_metrics_dcgm(reader),
         };
         if let Some(module) = &self.module {
-            let readings = module.read();
-            body.push_str(&nvml::render_module_metrics(&readings));
+            body.push_str(&module.read().unwrap());
         }
         body
     }
@@ -518,7 +525,9 @@ async fn accept(listener: &TcpListener, backoff: &mut Duration) -> TcpStream {
     }
 }
 
-fn init_metrics_state(args: &Args) -> Result<MetricsState> {
+/// The CPU power family, plus the socket labels it will publish so the NVML
+/// module series can be checked against them.
+fn init_metrics_state(args: &Args) -> Result<(MetricsState, BTreeSet<String>)> {
     let want_dcgm = matches!(args.source, SourceMode::Dcgm | SourceMode::Auto);
     let want_acpi = matches!(args.source, SourceMode::Acpi | SourceMode::Auto);
 
@@ -550,7 +559,11 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
                     }
                     tracing::info!(%reason, "DCGM yielded no live data; falling back to ACPI");
                 } else {
-                    return Ok(MetricsState::Dcgm(Arc::new(Mutex::new(reader))));
+                    let cpu_sockets = reader.cpu_ids.iter().map(u32::to_string).collect();
+                    return Ok((
+                        MetricsState::Dcgm(Arc::new(Mutex::new(reader))),
+                        cpu_sockets,
+                    ));
                 }
             }
             Err(e) => {
@@ -584,38 +597,71 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
         let cache = Arc::new(RwLock::new(initial));
         let cache_bg = Arc::clone(&cache);
 
-        // Background OS thread: re-reads all sensors every ACPI_POLL_INTERVAL so
+        // Background OS thread: re-reads all sensors every POLL_INTERVAL so
         // HTTP scrapes serve cached data and return in <1 ms.
         std::thread::Builder::new()
             .name("acpi-poller".to_owned())
             .spawn(move || loop {
-                std::thread::sleep(ACPI_POLL_INTERVAL);
+                std::thread::sleep(POLL_INTERVAL);
                 let snapshot = build_metrics(sensors);
                 *cache_bg.write().unwrap() = snapshot;
             })
             .context("spawn acpi-poller thread")?;
 
-        return Ok(MetricsState::Acpi(cache));
+        let cpu_sockets = sensors
+            .iter()
+            .filter(|s| s.kind != "other")
+            .map(|s| s.socket.clone())
+            .collect();
+        return Ok((MetricsState::Acpi(cache), cpu_sockets));
     }
 
     unreachable!("one of want_dcgm or want_acpi must be true");
 }
 
-fn init_module_reader() -> Option<Arc<nvml::NvmlModuleReader>> {
-    match nvml::NvmlModuleReader::new(Path::new("/sys/bus/pci/devices")) {
-        Ok(reader) => {
-            tracing::info!(
-                gpu_count = reader.gpu_count(),
-                sockets = ?reader.sockets(),
-                "NVML module reader initialised"
-            );
-            Some(Arc::new(reader))
-        }
+/// Starts the NVML module series, or `None` when the host reports no module
+/// power. The reader is owned by its `nvml-poller` thread, which refreshes a
+/// pre-rendered cache every `POLL_INTERVAL`, so a stalled NVML call never
+/// reaches a scrape.
+fn init_module_cache(cpu_sockets: &BTreeSet<String>) -> Result<Option<Arc<RwLock<String>>>> {
+    let reader = match nvml::NvmlModuleReader::new(Path::new("/sys/bus/pci/devices")) {
+        Ok(reader) => reader,
         Err(e) => {
             tracing::info!(reason = %e, "NVML module power unavailable; module series not exported");
-            None
+            return Ok(None);
+        }
+    };
+    tracing::info!(
+        gpu_count = reader.gpu_count(),
+        sockets = ?reader.sockets(),
+        "NVML module reader initialised"
+    );
+    // The PCI NUMA node stands in for the ACPI socket number, verified on
+    // GB200 where NUMA 0 holds the GPUs of `Grace Power Socket 0`. The
+    // collector only writes a module reading onto a socket row the CPU family
+    // produced, so a socket the family does not know is reported once, here,
+    // rather than silently dropped on every scrape.
+    for socket in reader.sockets() {
+        if !cpu_sockets.contains(&socket.to_string()) {
+            tracing::warn!(
+                socket,
+                cpu_sockets = ?cpu_sockets,
+                "NVML module socket has no CPU power socket; its module reading will not be persisted"
+            );
         }
     }
+
+    let cache = Arc::new(RwLock::new(nvml::render_module_metrics(&reader.read())));
+    let cache_bg = Arc::clone(&cache);
+    std::thread::Builder::new()
+        .name("nvml-poller".to_owned())
+        .spawn(move || loop {
+            std::thread::sleep(POLL_INTERVAL);
+            let snapshot = nvml::render_module_metrics(&reader.read());
+            *cache_bg.write().unwrap() = snapshot;
+        })
+        .context("spawn nvml-poller thread")?;
+    Ok(Some(cache))
 }
 
 #[tokio::main]
@@ -626,9 +672,10 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
+    let (base, cpu_sockets) = init_metrics_state(&args)?;
     let metrics = Metrics {
-        base: init_metrics_state(&args)?,
-        module: init_module_reader(),
+        base,
+        module: init_module_cache(&cpu_sockets)?,
     };
 
     let addr = SocketAddr::new(args.bind, args.port);
