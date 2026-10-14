@@ -8,7 +8,7 @@
 # Mount an HF cache containing the pinned revision at /hf/hub; the recipe
 # uses the pinned snapshot offline in the engine and benchmark containers.
 # The short sa-bench sweep is an E2E smoke, not the source PR's AgentX workload.
-# The sidecar registers the HF model ID, so the served name must match it.
+# The sidecar registers the HF model ID; its cache ref must match the pinned revision.
 
 schema: 2
 name: glm5.2-nvfp4-trtllm-dynamo-sidecar-disagg

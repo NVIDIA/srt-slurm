@@ -393,10 +393,16 @@ class TRTLLMBackend(Backend):
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
         if sidecar_config is not None:
+            # The sidecar uses model-path as its Dynamo registration name. Keep the
+            # HF ID there while the native engine loads the pinned snapshot.
+            sidecar_model_arg = (
+                str(runtime.model_path) if runtime.is_hf_model and runtime.hf_snapshot_path else model_arg
+            )
             return self._build_sidecar_command(
                 process=process,
                 config=config,
                 model_arg=model_arg,
+                sidecar_model_arg=sidecar_model_arg,
                 container_config_path=container_config_path,
                 base_prefix=base_prefix,
                 sidecar_config=sidecar_config,
@@ -473,6 +479,7 @@ class TRTLLMBackend(Backend):
         process: "Process",
         config: dict[str, Any],
         model_arg: str,
+        sidecar_model_arg: str,
         container_config_path: Path,
         base_prefix: list[str],
         sidecar_config: "DynamoConfig",
@@ -520,7 +527,7 @@ class TRTLLMBackend(Backend):
                 "--grpc-endpoint",
                 f"127.0.0.1:{grpc_port}",
                 "--model-path",
-                model_arg,
+                sidecar_model_arg,
             ]
         )
         if process.endpoint_mode != "agg":

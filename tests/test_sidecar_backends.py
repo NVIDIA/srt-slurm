@@ -54,6 +54,7 @@ def _runtime(tmp_path: Path | None = None) -> MagicMock:
     runtime.model_path = Path("/models/example-model")
     runtime.worker_model_arg = "/model"
     runtime.is_hf_model = False
+    runtime.hf_snapshot_path = None
     runtime.gpu_type = "h100"
     runtime.log_dir = tmp_path or Path("/tmp")
     runtime.network_interface = None
@@ -698,11 +699,13 @@ def test_trtllm_sidecar_rejects_direct_frontend(tmp_path: Path) -> None:
         )
 
 
-def test_trtllm_sidecar_uses_pinned_snapshot_for_engine_and_tokenizer(tmp_path: Path) -> None:
+def test_trtllm_sidecar_registers_hf_id_while_engine_uses_pinned_snapshot(tmp_path: Path) -> None:
     snapshot = "/hf/hub/models--org--name/snapshots/" + "a" * 40
     runtime = _runtime(tmp_path)
     runtime.model_path = Path("org/name")
     runtime.worker_model_arg = snapshot
+    runtime.is_hf_model = True
+    runtime.hf_snapshot_path = snapshot
     backend = TRTLLMBackend(
         roles={"prefill": RoleConfig(args={"tensor_parallel_size": 4, "max_seq_len": 4096})},
         served_model_name="org/name",
@@ -711,5 +714,5 @@ def test_trtllm_sidecar_uses_pinned_snapshot_for_engine_and_tokenizer(tmp_path: 
     script = backend.build_worker_command(_process(mode="prefill"), [], runtime)[2]
 
     assert f"tensorrt_llm.commands.serve {snapshot} " in script
-    assert f"dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path {snapshot} " in script
+    assert "dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path org/name " in script
     assert "--served_model_name org/name" in script

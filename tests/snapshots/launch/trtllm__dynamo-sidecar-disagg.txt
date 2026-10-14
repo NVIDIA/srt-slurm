@@ -149,7 +149,7 @@ command: |
         echo "Timed out waiting for TensorRT-LLM native gRPC on port 50051" >&2
         exit 1
     fi
-    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --disaggregation-mode prefill --context-length 1048576 &
+    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50051 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode prefill --context-length 1048576 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
@@ -285,7 +285,7 @@ command: |
         echo "Timed out waiting for TensorRT-LLM native gRPC on port 50052" >&2
         exit 1
     fi
-    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50052 --model-path /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --disaggregation-mode decode --context-length 1048576 &
+    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:50052 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode decode --context-length 1048576 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
