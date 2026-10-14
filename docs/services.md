@@ -269,7 +269,7 @@ Service placeholders such as `{index}` are resolved for each instance. Use a dis
 marker for every instance. Absolute paths and `..` components are rejected. The marker
 belongs to the service: srt-slurm removes an old marker **before launching** its process,
 so a previous execution cannot satisfy readiness. The service should create its marker
-only after initialization completes. See [the file readiness example](../examples/features/file-readiness.yaml).
+only after initialization completes. See [the file readiness example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/file-readiness.yaml).
 
 The probe is re-run every `interval_seconds` until it passes. Between attempts the stage checks that
 the process is still alive, so a service that crashes fails the job at once with its exit code rather
