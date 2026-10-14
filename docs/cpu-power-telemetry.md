@@ -124,25 +124,31 @@ cpu_power_nvml_watts{type="module",socket="0",gpus="0,1",source="nvml"} 498.7200
 The reading is NVML field 185 (`NVML_FI_DEV_POWER_AVERAGE`, a 1 s average)
 at `NVML_POWER_SCOPE_MODULE`, the value `nvidia-smi` prints as
 `module.power.draw.average`. The instant field is not read, so the series
-never mixes averaging windows. NVIDIA defines the module meter as the total
-power of the superchip module, "including DRAM power and regulator loss. This
-also includes GPU and GPU HBM Power" ([Grace Performance Tuning Guide, Power
-and Thermals](https://docs.nvidia.com/grace-perf-tuning-guide/power-thermals.html)).
-On GB200 one Grace socket carries two GPUs, and each GPU reports the whole
-module, not its own share:
+never mixes averaging windows. NVIDIA's [Grace Performance Tuning Guide,
+Power and Thermals](https://docs.nvidia.com/grace-perf-tuning-guide/power-thermals.html)
+lists "Module Power" for the Grace Hopper and Grace Blackwell superchips as
+"Total power of the CG1 module, including DRAM power and regulator loss. This
+also includes GPU and GPU HBM Power", reported through `nvidia-smi` from
+release 570. CG1 names the one-GPU Grace Hopper module. The page does not
+say what the meter covers on a two-GPU GB200 module, so that part is
+measured below. On GB200 each GPU of a module reports the whole module, not
+its own share:
 
 ```
-module_w = Grace + shared parts (HBM, LPDDR5X, regulators) + GPU_a + GPU_b
+module_w = Grace + GPU_a + GPU_b + the rest of the module
 ```
 
 The exporter therefore publishes the mean of a socket's GPU readings, one
 sample per socket. GPUs whose readings differ by more than 5% of their mean
-are not reading one meter. The exporter logs a warning and skips that socket.
+are not reading one meter. The exporter warns once when that starts and
+skips the socket until they agree. A snapshot older than 3 s is withheld, so
+a stalled NVML call shows as a gap rather than a frozen value.
 
 Measured on a GB200 node (driver 580.126.20, kernel 6.8.0-1046-nvidia-64k)
-with `nvidia-smi --query-gpu=power.draw.average,module.power.draw.average`
-and the ACPI `Grace Power Socket 0` meter sampled together at 1 Hz, 30 to 35
-samples per row:
+with an FMA kernel drawing about 400 W per loaded GPU, sampling
+`nvidia-smi --query-gpu=power.draw.average,module.power.draw.average` and
+the ACPI `Grace Power Socket 0` meter together at 1 Hz, 30 to 35 samples per
+row:
 
 | Load         | GPU0 / GPU1 `power.draw` (W) | GPU0 / GPU1 `module.power.draw` (W) | Grace socket 0 (W) |
 | ------------ | ---------------------------- | ----------------------------------- | ------------------ |
@@ -150,17 +156,23 @@ samples per row:
 | GPU0 only    | 390 / 202                    | 731 / 725                           | 98                 |
 | GPU0 + GPU1  | 397 / 400                    | 938 / 933                           | 101                |
 
-Loading GPU0 alone moved the two chip readings 188 W apart while the two
-module readings stayed 6 W apart, the same offset as at idle. The residual
+With only GPU0 loaded, GPU1's own module reading rose 191 W while its chip
+reading did not move, and the gap between the two module readings stayed at
+6 W, the same as at idle. A meter reporting each GPU's share would have left
+GPU1's reading at idle. The two readings of one module differed by at most
+1.1% in a steady phase and 1.9% while load fell. The residual
 `module - Grace - GPU_a - GPU_b` held at 38 to 42 W per socket under every
-load. That residual is the HBM and regulator power that neither the Grace
-meter nor the GPU-scope reading counts.
+load. The page's regulator-loss and HBM terms are candidates for it, but the
+probe did not attribute it.
 
 GPUs are mapped to sockets by the NUMA node of their PCI device, taken as the
-ACPI socket number. On GB200, NUMA node 0 holds GPUs 0 and 1 and matches
-`Grace Power Socket 0`; GB300 is unverified. The collector writes `module_w`
-only onto a socket row the CPU family produced, so the exporter warns once at
-startup for a module socket with no CPU socket.
+ACPI socket number. On GB200 that was tested by loading the CPUs of one NUMA
+node at a time: NUMA node 1 (CPUs 72 to 143) raised `CPU Power Socket 1`
+from 41 W to 203 W and left socket 0 flat, and NUMA node 0 did the reverse.
+GPUs 0 and 1 sit on NUMA node 0, GPUs 2 and 3 on node 1. GB300 is
+unverified. The collector writes `module_w` only onto a socket row the CPU
+family produced, so the exporter warns once at startup for a module socket
+with no CPU socket.
 
 The series is best-effort. When NVML is unavailable the exporter omits it and
 `module_w` stays blank. NVML is the only source of `module_w`. A firmware
