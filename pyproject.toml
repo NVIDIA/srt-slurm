@@ -64,7 +64,8 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0",
     "ruff>=0.8.0",
-    "ty",  # Astral's fast type checker (replaces mypy)
+    # Pinned: ty is pre-1.0 and adds rules in patch releases; bump deliberately.
+    "ty==0.0.87",  # Astral's fast type checker (replaces mypy)
     "fastapi>=0.109.0",
     "httpx>=0.27.0",  # Required by FastAPI TestClient
     "uvicorn>=0.27.0",  # Required for integration test mock server
