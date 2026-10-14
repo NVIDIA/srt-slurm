@@ -8,7 +8,7 @@ selects, optionally clone and build a ``source`` once, then one ``srun`` per
 instance (one per node, or under ``placement.per: worker`` one per engine worker
 on each node, pinned to that worker's GPUs) with the kind's command and
 environment merged around the recipe's, an optional readiness probe (tcp, http,
-or log; or the kind's default ports), and a ``ManagedProcess`` for the shared
+log, or file; or the kind's default ports), and a ``ManagedProcess`` for the shared
 ``ProcessRegistry`` (which provides crash detection and teardown). The kind
 (``srtctl.services.registry.ServiceKind``) never launches anything itself.
 
@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import shlex
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -290,6 +291,17 @@ class ServiceStageMixin:
 
     # -- launch ------------------------------------------------------------------
 
+    @staticmethod
+    def _instance_readiness(service: ServiceConfig, ctx: ServiceLaunchContext) -> ServiceReadinessConfig | None:
+        """Resolve the service's probe and expand this instance's marker path."""
+        readiness = service.readiness or get_service_kind(service.type).readiness(service, ctx)
+        if readiness is not None and readiness.file is not None:
+            readiness = replace(
+                readiness,
+                file=replace(readiness.file, path=render_placeholders(readiness.file.path, ctx.template_vars())),
+            )
+        return readiness
+
     def _service_environment(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> dict[str, str]:
         kind = get_service_kind(service.type)
         template = ctx.template_vars()
@@ -317,6 +329,12 @@ class ServiceStageMixin:
             preamble_parts.append(render_placeholders(service.preamble, template).rstrip())
         step_name = service_step_name(service, ctx.node, instances, ctx.process)
         log_file = self.runtime.log_dir / f"{step_name}.out"
+
+        readiness = self._instance_readiness(service, ctx)
+        if readiness is not None and readiness.file is not None:
+            # Clear on the orchestrator before starting srun: clearing inside the
+            # service would race the first readiness poll against an old marker.
+            (log_file.parent / readiness.file.path).unlink(missing_ok=True)
 
         env = self._service_environment(service, ctx)
         if ctx.process is not None and len(ctx.process.gpu_indices) < self.runtime.gpus_per_node:
@@ -384,14 +402,11 @@ class ServiceStageMixin:
 
     def _wait_service_ready(self, proc: ManagedProcess, service: ServiceConfig, ctx: ServiceLaunchContext) -> None:
         """The recipe's ``readiness`` probe, else the kind's per-instance probe, else each default port in turn."""
-        if service.readiness is not None:
-            self._wait_ready(proc, service, service.readiness)
-            return
-        kind = get_service_kind(service.type)
-        instance_probe = kind.readiness(service, ctx)
+        instance_probe = self._instance_readiness(service, ctx)
         if instance_probe is not None:
             self._wait_ready(proc, service, instance_probe)
             return
+        kind = get_service_kind(service.type)
         for port in kind.default_readiness_ports:
             probe = ServiceReadinessConfig(tcp=TcpProbe(port=port), timeout_seconds=kind.default_readiness_timeout)
             self._wait_ready(proc, service, probe)

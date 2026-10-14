@@ -5,11 +5,12 @@
 
 The worker and frontend health checks in :mod:`srtctl.core.health` know what a
 Dynamo or SGLang endpoint looks like. A user-declared service does not have that
-luxury, so ``services[].readiness`` picks one of three generic probes:
+luxury, so ``services[].readiness`` picks one of four generic probes:
 
 - ``tcp``: a port accepts a connection,
 - ``http``: a URL returns an expected status,
 - ``log``: the process log matches a regular expression.
+- ``file``: a fresh marker file exists under the run's shared logs directory.
 
 :func:`wait_until_ready` runs one probe until it passes, the deadline expires,
 or the process dies, checking liveness between attempts so a crashed service
@@ -29,7 +30,7 @@ from typing import TYPE_CHECKING
 import requests
 
 if TYPE_CHECKING:
-    from srtctl.services.config import HttpProbe, LogProbe, TcpProbe
+    from srtctl.services.config import FileProbe, HttpProbe, LogProbe, TcpProbe
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +64,19 @@ def probe_log(log_file: Path | None, pattern: str) -> bool:
     return re.search(pattern, text, flags=re.MULTILINE) is not None
 
 
-def run_probe(probe: TcpProbe | HttpProbe | LogProbe, *, host: str, log_file: Path | None) -> bool:
+def probe_file(log_file: Path | None, path: str) -> bool:
+    """Read a marker beside the service log; shared storage makes it visible from every service node."""
+    if log_file is None:
+        return False
+    try:
+        return (log_file.parent / path).is_file()
+    except OSError:
+        return False
+
+
+def run_probe(probe: TcpProbe | HttpProbe | LogProbe | FileProbe, *, host: str, log_file: Path | None) -> bool:
     """Run one probe attempt against ``host`` (and ``log_file`` for log probes)."""
-    from srtctl.services.config import HttpProbe, LogProbe, TcpProbe
+    from srtctl.services.config import FileProbe, HttpProbe, LogProbe, TcpProbe
 
     if isinstance(probe, TcpProbe):
         return probe_tcp(host, probe.port)
@@ -73,11 +84,13 @@ def run_probe(probe: TcpProbe | HttpProbe | LogProbe, *, host: str, log_file: Pa
         return probe_http(host, probe.port, probe.path, probe.status)
     if isinstance(probe, LogProbe):
         return probe_log(log_file, probe.pattern)
+    if isinstance(probe, FileProbe):
+        return probe_file(log_file, probe.path)
     raise TypeError(f"unknown probe type {type(probe).__name__}")
 
 
 def wait_until_ready(
-    probe: TcpProbe | HttpProbe | LogProbe,
+    probe: TcpProbe | HttpProbe | LogProbe | FileProbe,
     *,
     host: str,
     log_file: Path | None,

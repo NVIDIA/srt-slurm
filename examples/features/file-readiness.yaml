@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Each service instance announces initialization through its own marker in /logs.
+# srt-slurm removes stale markers before launch and gates on fresh files before
+# starting the benchmark. The benchmark checks that both instances initialized.
+schema: 2
+name: file-readiness
+slurm:
+  time_limit: "00:10:00"
+model:
+  path: hf:Qwen/Qwen3-0.6B  # unused; this is a services-only job
+  container: python:3.12-slim
+  precision: bf16
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+frontend:
+  type: none
+services:
+  - name: initialized
+    type: generic
+    nodes: 2
+    start: before_workers
+    critical: true
+    inherit_discovery_env: false
+    command:
+      - python3
+      - -c
+      - "from pathlib import Path; import time; Path('/logs/service_{index}.ready').write_text('ready\\n'); time.sleep(3600)"
+    readiness:
+      file:
+        path: service_{index}.ready
+benchmark:
+  type: custom
+  command: test -f /logs/service_0.ready && test -f /logs/service_1.ready
+observability:
+  tachometer:
+    enabled: false

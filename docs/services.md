@@ -105,7 +105,7 @@ services:
 | `placement.per` | `node` | `worker`: one instance per engine worker on each placed node instead of one per node, attached to that worker (its `CUDA_VISIBLE_DEVICES`, the `{worker_*}` placeholders). See [Placement](#placement). |
 | `nodes` | none | Whole nodes this service owns: its pool, added to the allocation after the engine roles' nodes, in declaration order. Any number of services may own nodes, next to engine roles or without them. An owner is placed on its own pool (`placement.node: workers`). Not supported with `resources.het_jobs`. See [pools.md](pools.md). |
 | `start` | type default | `etcd`, `nats`: `infra`. `mooncake-master`, `mooncake-store`, `lmcache-server`: `before_workers`. `generic` and the exporters: `after_frontend`. |
-| `readiness` | type default | One probe per node: `port` / `tcp`, `http`, or `log`, plus `timeout_seconds` and `interval_seconds`. The typed kinds gate on their well-known ports when no probe is written. See [Start Order and Readiness](#start-order-and-readiness). Timing out terminates what this stage started and fails the job. |
+| `readiness` | type default | One probe per node: `port` / `tcp`, `http`, `log`, or `file`, plus `timeout_seconds` and `interval_seconds`. The typed kinds gate on their well-known ports when no probe is written. See [Start Order and Readiness](#start-order-and-readiness). Timing out terminates what this stage started and fails the job. |
 | `inherit_discovery_env` | `true` | Inject the same `ETCD_ENDPOINTS` / `NATS_SERVER` the Dynamo frontend gets. |
 | `critical` | type default | `generic`: `false`. `mooncake-store`, `lmcache-server`: `true`. |
 | `terminal` | `false` | This service is the job's run: the job ends when every instance of every terminal service has exited, with the worst exit code as the job's. The recipe has no benchmark step (`benchmark.type` stays `manual`); combining the two is refused. See [pools.md](pools.md#ending-the-job-with-a-pool). |
@@ -201,7 +201,7 @@ a sidecar in the Kubernetes sense. The instance runs in that worker's device vie
 `CUDA_VISIBLE_DEVICES`, the same pinning the worker's engine steps get) and sees `{worker_role}`,
 `{worker_index}`, `{worker_node_rank}`, `{worker_gpus}` and `{worker_gpu_count}`, plus `{worker_http_port}` when the worker serves an API and `{worker_proxy_port}` when the frontend reaches it through a proxy (`Process.proxy_port`). The kind decides which workers get an instance: every one by default; the `llm-d-sidecar` only the routable decode workers it fronts. Its step and log are
 `service_<name>_<role>_<index>_<node>`. Because the instances of one node share its network namespace,
-a per-worker service's `readiness` must be a log probe. The GPU Memory Service of
+a per-worker service's `readiness` must be a log or file probe. The GPU Memory Service of
 [shadow engine recovery](shadow-engine-recovery.md) is the built-in per-worker kind, and [SGLang fast engine recovery](sglang-weight-cache.md) runs SGLang's weight cache daemon as a plain `generic` per-worker service:
 
 ```yaml
@@ -228,7 +228,7 @@ declaration order:
 Within a phase, a service with `readiness` blocks until its probe passes on each of its nodes. The
 typed kinds gate on their well-known ports by default (etcd 2379, NATS 4222, the Mooncake master
 8700, 8701, and 8702, the exporters none); a `generic` service without a probe is considered started
-when its `srun` is launched. Three probes are available, and a `readiness` block names exactly one:
+when its `srun` is launched. Four probes are available, and a `readiness` block names exactly one:
 
 ```yaml
 readiness:
@@ -256,6 +256,20 @@ readiness:
   log:
     pattern: 'Uvicorn running on .*:\d+'   # a regex matched against service_<name>.out
 ```
+
+```yaml
+readiness:
+  file:
+    path: mooncake_donor_{index}.ready  # relative to the shared run logs directory
+```
+
+A file probe waits for a regular file under the run's shared logs directory. The service
+writes it through the `/logs` mount; the orchestrator checks the corresponding host path.
+Service placeholders such as `{index}` are resolved for each instance. Use a distinct
+marker for every instance. Absolute paths and `..` components are rejected. The marker
+belongs to the service: srt-slurm removes an old marker **before launching** its process,
+so a previous execution cannot satisfy readiness. The service should create its marker
+only after initialization completes. See [the file readiness example](../examples/features/file-readiness.yaml).
 
 The probe is re-run every `interval_seconds` until it passes. Between attempts the stage checks that
 the process is still alive, so a service that crashes fails the job at once with its exit code rather

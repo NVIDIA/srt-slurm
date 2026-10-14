@@ -20,6 +20,7 @@ from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Endpoint
 from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 from srtctl.services import (
+    FileProbe,
     HttpProbe,
     ServiceConfig,
     ServiceLaunchContext,
@@ -101,6 +102,53 @@ def _proc(returncode: int = 0) -> MagicMock:
     proc.returncode = returncode
     proc.poll.return_value = None
     return proc
+
+
+def test_file_readiness_clears_stale_markers_and_resolves_each_node(tmp_path: Path) -> None:
+    config = _load("""
+frontend:
+  type: sglang-router
+services:
+  - name: donor
+    command: [python3, -c, "write /logs/donor_{index}.ready"]
+    placement: {node: decode}
+    start: before_workers
+    critical: true
+    readiness:
+      file: {path: "donor_{index}.ready"}
+""")
+    runtime = _runtime(tmp_path)
+    markers = [tmp_path / f"donor_{index}.ready" for index in range(2)]
+    for marker in markers:
+        marker.write_text("stale\n")
+    launches: list[dict] = []
+    probes: list[FileProbe] = []
+
+    def launch(**kwargs):
+        index = len(launches)
+        assert not markers[index].exists()
+        if index == 0:
+            assert markers[1].read_text() == "stale\n"
+        else:
+            assert markers[0].read_text() == "registered\n"
+        assert f"/logs/donor_{index}.ready" in kwargs["command"][-1]
+        launches.append(kwargs)
+        markers[index].write_text("registered\n")
+        return _proc()
+
+    def ready(probe, **kwargs):
+        assert isinstance(probe, FileProbe)
+        marker = kwargs["log_file"].parent / probe.path
+        assert marker.read_text() == "registered\n"
+        probes.append(probe)
+        return True
+
+    orchestrator = SweepOrchestrator(config, runtime)
+    with patch(SRUN, side_effect=launch), patch(WAIT, side_effect=ready), patch(HOST_IP, return_value="10.0.0.1"):
+        procs = orchestrator.start_services("before_workers")
+    assert len(procs) == 2
+    assert [probe.path for probe in probes] == ["donor_0.ready", "donor_1.ready"]
+    assert config.services[0].readiness.file.path == "donor_{index}.ready"
 
 
 # --- schema -------------------------------------------------------------------
@@ -651,9 +699,11 @@ def test_otel_collector_launch_writes_dsight_input_and_survives_worker_shutdown(
 
 
 def test_otel_collector_missing_binary_fails_with_setup_hint(tmp_path):
-    with patch("srtctl.services.otel.resolve_host_binary", return_value=None):
-        with pytest.raises(RuntimeError, match="make setup ARCH"):
-            _orchestrator(_load(""), tmp_path).start_services("before_workers")
+    with (
+        patch("srtctl.services.otel.resolve_host_binary", return_value=None),
+        pytest.raises(RuntimeError, match="make setup ARCH"),
+    ):
+        _orchestrator(_load(""), tmp_path).start_services("before_workers")
 
 
 def test_explicit_otel_service_opt_out_removes_default_environment():
