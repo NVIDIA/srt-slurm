@@ -573,6 +573,10 @@ def load_gpu_samples_from(handle: TextIO, roles: dict[tuple[str, int], set[str]]
         watts = float(row["power_w"])
         per_device.setdefault((hostname, gpu_index), []).append((timestamp, watts))
         _collect_utilization(row, GPU_UTILIZATION_COLUMNS, timestamp, utilization.setdefault((hostname, gpu_index), {}))
+        # With a manifest, node and role totals count only the GPUs workers occupy; an idle
+        # GPU on an exclusive worker node keeps its per-device series so it stays visible.
+        if roles is not None and (hostname, gpu_index) not in roles:
+            continue
         node_totals.setdefault(hostname, {})
         node_totals[hostname][timestamp] = node_totals[hostname].get(timestamp, 0.0) + watts
         if roles is not None:

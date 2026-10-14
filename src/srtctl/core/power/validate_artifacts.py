@@ -36,6 +36,7 @@ from srtctl.core.power.contract import (
     is_finite_number,
     sha256_file,
 )
+from srtctl.core.power.identity import WorkerGpuIdentity, WorkerIdentityProof, is_gpu_uuid
 from srtctl.core.power.manifest import STATUS_COMPLETE, ArtifactError, ExpectedWindow, WindowValidation
 from srtctl.core.power.samples import ObservedDevice, SampleRow, derive_observed_devices, read_samples
 from srtctl.core.power.topology import (
@@ -55,6 +56,8 @@ _DISK_DERIVED_REASON_CODES = frozenset(
         Reason.SAMPLES_CSV_MALFORMED,
         Reason.DUPLICATE_SAMPLE_ROW,
         Reason.TIMESTAMP_NON_MONOTONIC,
+        Reason.WORKER_IDENTITY_INVALID,
+        Reason.WORKER_GPU_UUID_MISMATCH,
         Reason.UNEXPECTED_DEVICE,
         Reason.EXPECTED_DEVICE_MISSING,
         Reason.GPU_UUID_CHANGED,
@@ -152,6 +155,7 @@ def validate_power_artifacts(
     try:
         expected_devices = _expected_devices(manifest)
         expected_windows = _expected_windows(manifest)
+        worker_identity = _worker_identity(manifest)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         failures.append(f"manifest malformed: {exc!r}")
         return ArtifactReport(
@@ -165,7 +169,7 @@ def validate_power_artifacts(
     failures += _check_sample_lifecycle(manifest, rows)
 
     observed = derive_observed_devices(rows)
-    devices = validate_devices(expected_devices, observed)
+    devices = validate_devices(expected_devices, observed, worker_identity)
     failures += [f"{reason} (device identity/topology)" for reason in devices.reason_codes]
 
     artifact_errors: list[ArtifactError] = []
@@ -540,6 +544,57 @@ def _expected_windows(manifest: dict[str, Any]) -> list[ExpectedWindow]:
         )
         for entry in entries
     ]
+
+
+def _worker_identity(manifest: dict[str, Any]) -> WorkerIdentityProof | None:
+    """The persisted worker GPU identity record; absent on packages from before the probe existed."""
+    raw = manifest.get("worker_identity_proof")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"captured_at_unix", "workers", "error"}:
+        raise ValueError(f"worker_identity_proof has invalid fields: {raw!r}")
+    captured = raw["captured_at_unix"]
+    if not is_finite_number(captured) or captured <= 0:
+        raise ValueError(f"worker_identity_proof capture time is invalid: {captured!r}")
+    error = raw["error"]
+    if error is not None:
+        error = _text(error, "worker_identity_proof error")
+    if not isinstance(raw["workers"], list):
+        raise TypeError(f"worker_identity_proof workers is not a list: {raw['workers']!r}")
+    workers = []
+    for entry in raw["workers"]:
+        if not isinstance(entry, dict) or set(entry) != {"hostname", "assignment", "step_name", "step_id", "gpu_uuids"}:
+            raise ValueError(f"worker_identity_proof worker has invalid fields: {entry!r}")
+        assignment = entry["assignment"]
+        if not isinstance(assignment, dict):
+            raise TypeError(f"worker assignment is not an object: {assignment!r}")
+        uuids = entry["gpu_uuids"]
+        if (
+            not isinstance(uuids, list)
+            or not uuids
+            or len(set(uuids)) != len(uuids)
+            or not all(map(is_gpu_uuid, uuids))
+        ):
+            raise ValueError(f"worker gpu_uuids is not a non-empty list of distinct GPU UUIDs: {uuids!r}")
+        workers.append(
+            WorkerGpuIdentity(
+                hostname=_text(entry["hostname"], "hostname"),
+                assignment=DeviceAssignment(
+                    worker_role=_role(assignment["worker_role"]),
+                    worker_index=_whole(assignment["worker_index"], "worker_index", minimum=0),
+                    worker_process=_whole(assignment["worker_process"], "worker_process", minimum=0),
+                    het_group=(
+                        None
+                        if assignment.get("het_group") is None
+                        else _whole(assignment["het_group"], "het_group", minimum=0)
+                    ),
+                ),
+                step_name=_text(entry["step_name"], "step_name"),
+                step_id=_text(entry["step_id"], "step_id"),
+                gpu_uuids=tuple(uuids),
+            )
+        )
+    return WorkerIdentityProof(captured_at_unix=float(captured), workers=tuple(workers), error=error)
 
 
 def _expected_devices(manifest: dict[str, Any]) -> list[ExpectedDevice]:

@@ -204,17 +204,21 @@ For any `kind: custom` exporter:
 `schema_version,timestamp_unix,scrape_seq,hostname,gpu_index,gpu_uuid,power_w,gpu_util_pct,sm_active,temperature_c` (version 3),
 one row per observation, `(scrape_seq, hostname, gpu_index)` unique. Rows are
 never interpolated, averaged, or role-attributed — role and heterogeneous
-group live once in the manifest topology.
+group live once in the manifest topology. The collector retains all GPU samples,
+including idle GPUs on an exclusive worker node. GPU energy totals include only
+worker GPUs; CPU energy remains whole socket. A GPU on a node that hosts no
+worker is still `unexpected_device`.
 
-GPU temperature is optional Celsius from `gpu_metrics.temperature` (`DCGM_FI_DEV_GPU_TEMP`
-for DCGM, `gpu_junction_temperature` on AMD MI3xx) in the same
-exporter response as power; collection adds no request, process, or wait.
-Temperature must match the power reading's GPU index and UUID. Missing,
-duplicate, non-finite, instance-labelled, or DCGM blank/error values leave the temperature
-cell empty without invalidating power. Older v1/v2 files remain readable;
-v3 readers must be deployed before upgrading producers. Consumers must show
-missing temperatures as unavailable, never zero. The exporter must expose the
-temperature field; collection does not enable additional profiling counters.
+Idle GPUs on a worker node are excused only by `worker_identity_proof`: once the
+server is healthy, one bare-host step per worker node (DCGM exporters only) joins
+`scontrol listpids` with `nvidia-smi --query-compute-apps` to record the GPU UUIDs
+each worker step holds, since the plan's `CUDA_VISIBLE_DEVICES` numbering and the exporter's
+device index are otherwise joined on index alone. Those UUIDs must equal the
+exporter's at the planned indices; a disagreement is `worker_gpu_uuid_mismatch`
+and blocks publication even on a fully used node. When the probe cannot run
+(other exporter kinds, MPS, no Slurm step listing) the manifest records why, a fully
+used node publishes as before, and a partly used node stays `unexpected_device`
+with `worker_identity_invalid`.
 
 `manifest.json` records producer identity (version, git commit, exporter image
 and its SHA-256), the power metric and scope, the sample interval, expected and observed device sets, the

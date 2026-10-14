@@ -17,6 +17,7 @@ from srtctl.core.power.contract import (
     SCHEMA_VERSION,
     dedupe,
 )
+from srtctl.core.power.identity import WorkerIdentityProof
 from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.power.samples import ObservedDevice
 from srtctl.core.power.topology import ExpectedDevice
@@ -116,6 +117,7 @@ class PowerManifest:
     dcgm_exporter: DcgmExporterIdentity
     expected_devices: list[ExpectedDevice]
     expected_windows: list[ExpectedWindow]
+    worker_identity_proof: WorkerIdentityProof | None = None
     producer_git_commit: str | None = None
     mapping: PowerMetricMapping = DCGM_POWER_MAPPING
     status: str = STATUS_STARTING
@@ -174,6 +176,9 @@ class PowerManifest:
             "dcgm_exporter": self.dcgm_exporter.to_dict(),
             "expected_devices": [device.to_dict() for device in self.expected_devices],
             "observed_devices": [device.to_dict() for device in self.observed_devices],
+            "worker_identity_proof": (
+                None if self.worker_identity_proof is None else self.worker_identity_proof.to_dict()
+            ),
             "expected_windows": [window.to_dict() for window in self.expected_windows],
             "scrape_count": self.scrape_count,
             "sample_row_count": self.sample_row_count,

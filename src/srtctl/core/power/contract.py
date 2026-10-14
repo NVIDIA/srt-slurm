@@ -143,6 +143,8 @@ class Reason:
     GPU_INDEX_MISSING = "gpu_index_missing"
     GPU_UUID_MISSING = "gpu_uuid_missing"
     INVALID_POWER_VALUE = "invalid_power_value"
+    WORKER_IDENTITY_INVALID = "worker_identity_invalid"
+    WORKER_GPU_UUID_MISMATCH = "worker_gpu_uuid_mismatch"
     UNEXPECTED_DEVICE = "unexpected_device"
     EXPECTED_DEVICE_MISSING = "expected_device_missing"
     GPU_UUID_CHANGED = "gpu_uuid_changed"

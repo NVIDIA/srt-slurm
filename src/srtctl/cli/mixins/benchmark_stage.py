@@ -114,6 +114,10 @@ class BenchmarkStageMixin:
         """Backend worker processes."""
         raise NotImplementedError
 
+    def capture_power_worker_identity(self, registry: "ProcessRegistry") -> None:
+        """Record the GPUs each worker holds for power telemetry (TelemetryStageMixin)."""
+        raise NotImplementedError
+
     def _orchestrator_node(self) -> str:
         """Node the frontend/orchestrator runs on (honors frontend.placement.node)."""
         placement = self.config.frontend.placement.location
@@ -360,6 +364,8 @@ class BenchmarkStageMixin:
             return 1
 
         logger.info("Server is healthy")
+        if self.config.telemetry.enabled and self.config.telemetry.dcgm_exporter is not None:
+            self.capture_power_worker_identity(registry)
         write_server_ready_marker(self.runtime.log_dir)
 
         # Identity verification: compare recipe identity against runtime fingerprints

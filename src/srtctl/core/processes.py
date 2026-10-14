@@ -23,6 +23,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from srtctl.core.topology import Process
+
 logger = logging.getLogger(__name__)
 
 # Routers and frontends drain in-flight requests on SIGTERM; more than the default 10s, less than an engine.
@@ -106,6 +108,7 @@ class ManagedProcess:
     # supervisor's to handle (relaunch), so ``check_failures`` leaves it alone
     # until the supervisor gives up and clears the flag.
     supervised: bool = False
+    worker_assignments: tuple[Process, ...] = ()
     _stopped_via_step: bool = field(default=False, init=False, repr=False)
     _stop_deadline: float | None = field(default=None, init=False, repr=False)
     _stop_escalations: int = field(default=0, init=False, repr=False)
@@ -269,7 +272,7 @@ class ManagedProcess:
 NamedProcesses = dict[str, ManagedProcess]
 
 
-def list_step_ids(job_id: str | None = None) -> dict[str, str] | None:
+def list_step_ids(job_id: str | None = None, *, unique_names: set[str] | None = None) -> dict[str, str] | None:
     """``{step name: <job>.<step>}`` for the running steps of this job; None when Slurm cannot be asked."""
     job_id = job_id or os.environ.get("SLURM_JOB_ID") or os.environ.get("SLURM_JOBID")
     if not job_id or shutil.which("squeue") is None:
@@ -292,6 +295,9 @@ def list_step_ids(job_id: str | None = None) -> dict[str, str] | None:
     for line in result.stdout.splitlines():
         parts = line.split()
         if len(parts) >= 2:
+            if unique_names is not None and parts[1] in unique_names and parts[1] in steps:
+                logger.warning("Ambiguous Slurm step name %s", parts[1])
+                return None
             steps.setdefault(parts[1], parts[0])
     return steps
 
@@ -401,6 +407,7 @@ class ProcessRegistry:
                     shutdown_tier=proc.shutdown_tier,
                     signal_full=proc.signal_full,
                     fatal_log_patterns=proc.fatal_log_patterns,
+                    worker_assignments=proc.worker_assignments,
                 )
             self.add_process(proc)
 

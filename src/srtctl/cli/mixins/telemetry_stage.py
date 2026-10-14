@@ -8,7 +8,9 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,11 +20,12 @@ from srtctl.core.cpu_power_session import CpuPowerTelemetrySession
 from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
+from srtctl.core.power.identity import WORKER_PROBE_SCRIPTS, WorkerGpuIdentity, WorkerIdentityProof, parse_node_probe
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE, TACHOMETER_SCRAPE
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
-from srtctl.core.power.topology import build_expected_devices
-from srtctl.core.processes import ManagedProcess, ProcessRegistry
+from srtctl.core.power.topology import DeviceAssignment, build_expected_devices
+from srtctl.core.processes import ManagedProcess, ProcessRegistry, list_step_ids
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
 from srtctl.core.status import log_stream_interval, tachometer_outbox
@@ -247,6 +250,97 @@ class TelemetryStageMixin:
         else:
             logger.warning("Power collector did not reach readiness within %.1fs", telemetry.startup_timeout_seconds)
         return session
+
+    def capture_power_worker_identity(self, registry: ProcessRegistry) -> None:
+        """Record which GPU UUIDs each worker step holds, once the server is healthy.
+
+        Any failure is recorded instead of raised: the run still publishes on a
+        fully used node, and idle GPUs on a worker node stay ``unexpected_device``
+        (see ``validate_devices``).
+        """
+        session = getattr(self, "_power_session", None)
+        if session is None:
+            return
+        captured_at = time.time()
+        exporter = self.config.telemetry.dcgm_exporter
+        kind = None if exporter is None else exporter.kind
+        script = None if kind is None else WORKER_PROBE_SCRIPTS.get(kind)
+        if script is None:
+            session.record_worker_identity(
+                WorkerIdentityProof(captured_at_unix=captured_at, error=f"no worker GPU probe for exporter kind {kind}")
+            )
+            return
+        try:
+            workers = self.probe_worker_gpus(registry, session.power_dir, script)
+        except Exception as error:
+            logger.exception("Worker GPU identity could not be established")
+            reason = str(error) or type(error).__name__
+            session.record_worker_identity(WorkerIdentityProof(captured_at_unix=captured_at, error=reason))
+            return
+        session.record_worker_identity(WorkerIdentityProof(captured_at_unix=captured_at, workers=workers))
+
+    def probe_worker_gpus(
+        self, registry: ProcessRegistry, power_dir: Path, script: str
+    ) -> tuple[WorkerGpuIdentity, ...]:
+        """One bare-host probe per worker node, started together and joined back to the workers planned there."""
+        workers = [process for process in registry.get_all_processes().values() if process.worker_assignments]
+        if not workers:
+            raise ValueError("no worker steps are registered")
+        steps = list_step_ids(
+            self.runtime.job_id, unique_names={worker.step_name for worker in workers if worker.step_name}
+        )
+        if steps is None:
+            raise ValueError("worker step listing unavailable")
+        by_host: dict[str, list[tuple[ManagedProcess, Process]]] = {}
+        for managed in workers:
+            if not managed.is_running or managed.step_name not in steps:
+                raise ValueError(f"worker step {managed.name} is missing or stopped")
+            for process in managed.worker_assignments:
+                by_host.setdefault(process.node, []).append((managed, process))
+
+        probes: list[tuple[str, list[str], ManagedProcess, Path]] = []
+        for hostname, placements in sorted(by_host.items()):
+            step_ids = sorted({steps[managed.step_name or ""] for managed, _ in placements})
+            step_name = f"power_worker_identity_{hostname}"
+            log_path = power_dir / f"{step_name}.out"
+            child = start_srun_process(
+                command=["python3", "-c", script, *step_ids],
+                nodelist=[hostname],
+                output=str(log_path),
+                container_image=None,
+                het_group=self.runtime.nodes.het_group_for(hostname),
+                srun_options=self.runtime.srun_options,
+                use_bash_wrapper=False,
+                step_name=step_name,
+            )
+            probe = ManagedProcess(
+                name=step_name, popen=child, node=hostname, log_file=log_path, step_name=step_name, critical=False
+            )
+            registry.add_process(probe)
+            probes.append((hostname, step_ids, probe, log_path))
+
+        identities = []
+        for hostname, step_ids, probe, log_path in probes:
+            try:
+                exit_code = probe.popen.wait(timeout=30 + 10 * len(step_ids))
+            except subprocess.TimeoutExpired:
+                probe.terminate(timeout=5)
+                raise ValueError(f"worker GPU probe timed out on {hostname}") from None
+            if exit_code != 0:
+                raise ValueError(f"worker GPU probe exited {exit_code} on {hostname}")
+            held = parse_node_probe(log_path.read_text())
+            for managed, process in by_host[hostname]:
+                step_id = steps[managed.step_name or ""]
+                identities.append(
+                    WorkerGpuIdentity(
+                        hostname=hostname,
+                        assignment=DeviceAssignment.from_process(process),
+                        step_name=managed.step_name or "",
+                        step_id=step_id,
+                        gpu_uuids=held[step_id],
+                    )
+                )
+        return tuple(identities)
 
     def start_cpu_power_telemetry(self, registry: ProcessRegistry) -> CpuPowerCollector | None:
         """Launch cpu-power-exporter on each worker node and start the head-node collector.

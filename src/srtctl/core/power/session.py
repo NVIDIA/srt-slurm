@@ -37,6 +37,7 @@ from srtctl.core.power.contract import (
     sha256_file,
 )
 from srtctl.core.power.diagnostics import ScrapeDiagnostics
+from srtctl.core.power.identity import WorkerIdentityProof
 from srtctl.core.power.manifest import (
     STATUS_COMPLETE,
     STATUS_FAILED,
@@ -205,6 +206,12 @@ class PowerTelemetrySession:
         """Track an exporter the registry already owns."""
         with self._exporters_lock:
             self._exporters.append(process)
+
+    def record_worker_identity(self, proof: WorkerIdentityProof) -> None:
+        """Persist which GPU UUIDs the workers hold, or why that could not be established."""
+        with self._state_lock:
+            self._manifest.worker_identity_proof = proof
+        self._write_manifest()
 
     def record_reason(self, reason: str) -> None:
         """Record a provider-level failure without raising into the sweep."""
@@ -559,7 +566,7 @@ class PowerTelemetrySession:
         except OSError:
             self.record_reason(Reason.SAMPLES_DIGEST_UNAVAILABLE)
         observed = derive_observed_devices(rows)
-        devices = validate_devices(self._manifest.expected_devices, observed)
+        devices = validate_devices(self._manifest.expected_devices, observed, self._manifest.worker_identity_proof)
 
         with self._state_lock:
             reasons = [*self._reasons, *sample_reasons, *devices.reason_codes]
