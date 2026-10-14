@@ -117,7 +117,7 @@ def test_per_worker_service_rules() -> None:
     )
     _load(
         "services:\n  - name: w\n    command: [/bin/true]\n    placement: {node: agg, per: worker}\n"
-        "    readiness: {file: {path: 'worker_{worker_index}.ready'}}\n"
+        "    readiness: {file: {path: 'worker_{index}.ready'}}\n"
     )
 
 

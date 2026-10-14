@@ -151,6 +151,28 @@ services:
     assert config.services[0].readiness.file.path == "donor_{index}.ready"
 
 
+def test_file_readiness_rejects_a_directory_before_launch(tmp_path: Path) -> None:
+    config = _load("""
+frontend:
+  type: sglang-router
+services:
+  - name: donor
+    command: [/bin/true]
+    placement: {node: decode}
+    start: before_workers
+    readiness:
+      file: {path: "donor_{index}.ready"}
+""")
+    marker = tmp_path / "donor_0.ready"
+    marker.mkdir()
+    orchestrator = SweepOrchestrator(config, _runtime(tmp_path))
+    with patch(SRUN) as launch, patch(HOST_IP, return_value="10.0.0.1"):
+        with pytest.raises(RuntimeError, match=r"services\[donor\]\.readiness\.file\.path: .*path is a directory"):
+            orchestrator.start_services("before_workers")
+    launch.assert_not_called()
+    assert marker.is_dir()
+
+
 # --- schema -------------------------------------------------------------------
 
 
@@ -699,11 +721,9 @@ def test_otel_collector_launch_writes_dsight_input_and_survives_worker_shutdown(
 
 
 def test_otel_collector_missing_binary_fails_with_setup_hint(tmp_path):
-    with (
-        patch("srtctl.services.otel.resolve_host_binary", return_value=None),
-        pytest.raises(RuntimeError, match="make setup ARCH"),
-    ):
-        _orchestrator(_load(""), tmp_path).start_services("before_workers")
+    with patch("srtctl.services.otel.resolve_host_binary", return_value=None):
+        with pytest.raises(RuntimeError, match="make setup ARCH"):
+            _orchestrator(_load(""), tmp_path).start_services("before_workers")
 
 
 def test_explicit_otel_service_opt_out_removes_default_environment():

@@ -334,7 +334,15 @@ class ServiceStageMixin:
         if readiness is not None and readiness.file is not None:
             # Clear on the orchestrator before starting srun: clearing inside the
             # service would race the first readiness poll against an old marker.
-            (log_file.parent / readiness.file.path).unlink(missing_ok=True)
+            marker = log_file.parent / readiness.file.path
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError as exc:
+                reason = "path is a directory" if marker.is_dir() else str(exc)
+                raise RuntimeError(
+                    f"services[{service.name}].readiness.file.path: cannot remove marker {marker}: {reason}; "
+                    "use a dedicated marker file"
+                ) from None
 
         env = self._service_environment(service, ctx)
         if ctx.process is not None and len(ctx.process.gpu_indices) < self.runtime.gpus_per_node:

@@ -265,11 +265,18 @@ readiness:
 
 A file probe waits for a regular file under the run's shared logs directory. The service
 writes it through the `/logs` mount; the orchestrator checks the corresponding host path.
-Service placeholders such as `{index}` are resolved for each instance. Use a distinct
-marker for every instance. Absolute paths and `..` components are rejected. The marker
-belongs to the service: srt-slurm removes an old marker **before launching** its process,
+Service placeholders are resolved for each instance. Include `{index}` to give every
+instance of a service a distinct marker, including under `placement.per: worker`;
+`{worker_index}` alone can repeat across roles. Use a dedicated marker name such as
+`mooncake_donor_{index}.ready`, since the path is deleted before launch; do not point it
+at a log or another component's file. Absolute paths and `..` components are rejected.
+The marker belongs to the service: srt-slurm removes an old marker **before launching** its process,
 so a previous execution cannot satisfy readiness. The service should create its marker
 only after initialization completes. See [the file readiness example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/file-readiness.yaml).
+
+On NFS-backed logs directories, [attribute and lookup caching](https://man7.org/linux/man-pages/man5/nfs.5.html)
+can delay visibility of a marker created on another node. Allow for initialization and
+the mount's cache timeouts when setting `timeout_seconds`.
 
 The probe is re-run every `interval_seconds` until it passes. Between attempts the stage checks that
 the process is still alive, so a service that crashes fails the job at once with its exit code rather
