@@ -90,7 +90,6 @@ def test_acpi_reader_maps_grace_socket_total_and_component_rails(tmp_path: Path)
 
 
 def test_acpi_reader_ignores_the_firmware_module_meter(tmp_path: Path) -> None:
-    """Module power is NVML's; a bound ACPI module meter is neither a rail nor the socket's power."""
     _make_acpi_sensor(tmp_path, hwmon_id=0, socket_id=0, microwatts=150_000_000, domain="Grace Power Socket 0")
     _make_acpi_sensor(tmp_path, hwmon_id=1, socket_id=0, microwatts=600_000_000, domain="Module Power Socket 0")
     reader = AcpiPowerMeterReader(tmp_path)

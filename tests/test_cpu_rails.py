@@ -41,7 +41,6 @@ from srtctl.core.power.cpu_rails import (
         ("CPU Rail Output Power in uW socket 0", None),
         ("Total CPU Energy In uJ socket 0", None),
         ("Module Socket A", None),
-        # Module power is NVML's; the firmware module meter is not read.
         ("Module Power Socket 1", None),
         ("Chipthrot DDR Throttle (samples x1000) socket 0", None),
     ],
@@ -96,7 +95,7 @@ def test_legacy_rail_rank_prefers_total_then_dcgm_then_reference_rails():
 def test_normalize_kind_accepts_canonical_and_legacy_exporter_types():
     assert normalize_kind("total") == "total"
     assert normalize_kind("cpu_rail") == "cpu_rail"
-    assert normalize_kind("module") is None  # not an ACPI rail: NVML owns it
+    assert normalize_kind("module") is None
     assert normalize_kind("grace") == "total"
     assert normalize_kind("cpu") == "cpu_rail"
     assert normalize_kind("sysio") == "soc"

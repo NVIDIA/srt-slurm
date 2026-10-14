@@ -113,7 +113,6 @@ _UTILIZATION_COLUMN_BY_FIELD_ID = {field.field_id: field.column for field in CPU
 # pivots to one row per socket with the ACPI component rails as columns
 # (power_w is the socket "total" envelope, or the DCGM value). v3 wrote one
 # row per rail, which left readers to work out which rows were one socket.
-# No module_w here: this collector reads hwmon only and has no NVML path.
 SAMPLES_SCHEMA_VERSION = 4
 SAMPLES_HEADER_V2 = (
     "schema_version",
@@ -135,8 +134,8 @@ SAMPLES_HEADER = (
     "source",
     "sensor",  # the sensor that fed power_w (provenance only)
     "socket_id",
-    "power_w",  # ACPI: socket envelope; DCGM: field 1130 (CPU rail)
-    *COMPONENT_RAIL_COLUMN_NAMES,  # ACPI component rails; DCGM cpu_rail_w=1130 and soc_w=1132
+    "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130 (= the CPU rail; DCGM has no envelope field)
+    *COMPONENT_RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI: from hwmon; DCGM: cpu_rail_w=1130, soc_w=1132, dram_w blank
     "total_power_w",  # node aggregate: sum of power_w over sockets
     *UTILIZATION_COLUMNS,
 )

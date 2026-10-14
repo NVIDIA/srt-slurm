@@ -43,7 +43,10 @@ from srtctl.core.cpu_power import UTILIZATION_COLUMNS as CPU_UTILIZATION_COLUMNS
 from srtctl.core.power.contract import MAX_SAMPLE_GAP_SECONDS, UTILIZATION_METRICS
 from srtctl.core.power.cpu_rails import COMPONENT_RAIL_COLUMN_NAMES, DCGM_PRIMARY_FIELD_ID, legacy_rail_rank
 
-# DCGM field 1130 measures the CPU rail, not the ACPI socket envelope.
+# DCGM-mode CPU power is field 1130 = the ACPI "CPU Power Socket N" rail read
+# through DCGM, not the "Grace Power Socket N" envelope (DCGM has no field for
+# it). On the reference GB200 runs the rail is ~53 W/socket against a ~100 W
+# envelope, so a DCGM-mode CPU figure is not comparable with an ACPI-mode one.
 DCGM_CPU_RAIL_ONLY_WARNING = (
     f"CPU power source is DCGM field {DCGM_PRIMARY_FIELD_ID} = CPU rail only (not the socket envelope; "
     "roughly half of ACPI-mode CPU power): not comparable with ACPI-mode runs"
@@ -465,11 +468,7 @@ def load_cpu_samples(path: Path) -> CpuSamples:
 
 
 def _is_wide_cpu_csv(fieldnames: Sequence[str] | None) -> bool:
-    """Wide layout (one row per socket, rails as columns) vs. legacy long layout (one row per rail).
-
-    Every per-socket layout (host collector v4, scraper v2 and v3) carries the
-    component rail columns; `module_w` is v3-only, so it is not the marker.
-    """
+    """Wide layout (one row per socket, rails as columns) vs. legacy long layout (one row per rail)."""
     return fieldnames is not None and all(column in fieldnames for column in COMPONENT_RAIL_COLUMN_NAMES)
 
 

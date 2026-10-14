@@ -26,10 +26,15 @@ Rail kinds
     Component rails. Reference breakdowns only; they are *not* additive to
     ``total`` (real traces show total ~93-104 W vs cpu_rail+soc ~53-58 W).
 ``dcgm``
-``dcgm``
-    DCGM reads ACPI hwmon component rails: field 1130 is ``cpu_rail`` and
-    field 1132 is ``soc``. Field 1130 is the DCGM-mode primary ``power_w``;
-    DCGM has no socket envelope field.
+    Not an ACPI rail: the origin tag for DCGM-mode socket power. DCGM has no
+    CPU power backend of its own -- its sysmon module reads the same ACPI
+    hwmon channels by ``power1_oem_info`` label (NVIDIA/DCGM
+    ``modules/sysmon/DcgmSystemMonitor.cpp``), so each DCGM field *is* one
+    ACPI rail; see :data:`DCGM_FIELD_RAIL_KINDS`. Field 1130 is
+    ``CPU Power Socket N`` = ``cpu_rail``; no DCGM field reports the
+    ``Grace Power Socket N`` envelope (1131 is only its cap). DCGM-mode
+    ``power_w`` is therefore the CPU rail, roughly half the ACPI envelope,
+    and is not comparable with ACPI-mode ``power_w``.
 ``module``
     NVML superchip power for one socket, including Grace and its GPUs. It
     is a reference rail and never adds to ``total_power_w``. An ACPI
@@ -75,19 +80,14 @@ DCGM_POWER_FIELD_IDS: tuple[int, ...] = tuple(field.field_id for field in DCGM_P
 
 # Component rails, in wide-CSV column order.
 COMPONENT_RAIL_KINDS: tuple[str, ...] = ("cpu_rail", "soc", "dram")
-# Rails persisted beside the primary, in wide-CSV column order. None adds to
-# the socket's power: the components are parts of it, the module contains it.
 REFERENCE_RAIL_KINDS: tuple[str, ...] = (*COMPONENT_RAIL_KINDS, MODULE_KIND)
-# Every kind an ACPI channel can classify to. ``module`` is not one. It has
-# no ACPI source, so an exporter ``type="module"`` on the ACPI family is noise.
+# Every kind an ACPI channel can classify to.
 ACPI_RAIL_KINDS: frozenset[str] = frozenset((TOTAL_KIND, *COMPONENT_RAIL_KINDS))
 
 # Wide-CSV column name per reference rail. ``total`` has no column of its
 # own: it *is* ``power_w``.
 RAIL_COLUMNS: dict[str, str] = {kind: f"{kind}_w" for kind in REFERENCE_RAIL_KINDS}
 RAIL_COLUMN_NAMES: tuple[str, ...] = tuple(RAIL_COLUMNS[kind] for kind in REFERENCE_RAIL_KINDS)
-# The host collector reads hwmon directly and has no NVML path, so its CSV
-# carries the component columns only.
 COMPONENT_RAIL_COLUMN_NAMES: tuple[str, ...] = tuple(RAIL_COLUMNS[kind] for kind in COMPONENT_RAIL_KINDS)
 
 # Sensor-name suffix per kind (``CPU<socket>:<suffix>``). The host collector

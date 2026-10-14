@@ -191,7 +191,6 @@ struct Candidate {
     oem_info: Option<String>,
 }
 
-/// The CPU power family resolved once at startup by `init_metrics_state`.
 #[derive(Clone)]
 enum MetricsState {
     /// Pre-rendered Prometheus text, refreshed every `POLL_INTERVAL` by a
@@ -200,14 +199,11 @@ enum MetricsState {
     Dcgm(Arc<Mutex<dcgm::DcgmReader>>),
 }
 
-/// The module series as last rendered by the `nvml-poller` thread.
 struct ModuleSnapshot {
     rendered_at: Instant,
     body: String,
 }
 
-/// Live state shared across connection handlers: the CPU family plus the
-/// optional NVML module series.
 #[derive(Clone)]
 struct Metrics {
     base: MetricsState,
@@ -217,10 +213,8 @@ struct Metrics {
 }
 
 impl Metrics {
-    /// The `/metrics` body: the CPU family first, then the module series
-    /// when NVML is available and its snapshot is fresh. NVML is never called
-    /// here. A stalled `nvmlDeviceGetFieldValues` (a GPU in reset) must not
-    /// stall a scrape and lose that interval's CPU power with it.
+    /// NVML is never called here. A stalled `nvmlDeviceGetFieldValues` (a GPU
+    /// in reset) must not stall a scrape and lose that interval's CPU power with it.
     fn render(&self) -> String {
         let mut body = match &self.base {
             MetricsState::Acpi(cache) => cache.read().unwrap().clone(),
@@ -649,7 +643,6 @@ fn decide_acpi(
     }
 }
 
-/// The CPU power family and its socket labels, used to check the NVML series.
 fn init_metrics_state(args: &Args) -> Result<(MetricsState, BTreeSet<String>)> {
     let probe =
         |sensors: &[Sensor]| probe_acpi_live(sensors, ACPI_PROBE_RETRIES, ACPI_PROBE_RETRY_DELAY);
@@ -769,10 +762,6 @@ fn init_acpi_state(sensors: Vec<Sensor>) -> Result<(MetricsState, BTreeSet<Strin
     }
 }
 
-/// Starts the NVML module series, or `None` when the host reports no module
-/// power. The reader is owned by its `nvml-poller` thread, which refreshes a
-/// pre-rendered cache every `POLL_INTERVAL`, so a stalled NVML call never
-/// reaches a scrape.
 fn init_module_cache(
     cpu_sockets: &BTreeSet<String>,
 ) -> Result<Option<Arc<RwLock<ModuleSnapshot>>>> {
@@ -1376,7 +1365,6 @@ mod tests {
             classify_oem("CPU Rail Output Power in uW socket 0"),
             ("other", String::new())
         );
-        // Module power is NVML's; a firmware module meter stays unclassified.
         assert_eq!(
             classify_oem("Module Power Socket 1"),
             ("other", String::new())

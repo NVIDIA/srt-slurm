@@ -108,8 +108,6 @@ impl FieldValue {
         }
     }
 
-    /// The reading in watts; None unless NVML reported success and a
-    /// positive, finite value.
     fn watts(&self) -> Option<f64> {
         if self.nvml_return != NVML_SUCCESS {
             return None;
@@ -187,7 +185,6 @@ impl NvmlLib {
     }
 }
 
-/// A live NVML session: `nvmlInit_v2` on open, `nvmlShutdown` on drop.
 struct Session(NvmlLib);
 
 impl Session {
@@ -241,7 +238,6 @@ impl Drop for Session {
 
 // ── Error type ───────────────────────────────────────────────────────────────
 
-/// NVML module power is not available on this host.
 #[derive(Debug)]
 pub struct NvmlUnavailable(pub String);
 
@@ -263,7 +259,6 @@ fn check(ret: u32, context: &str) -> Result<(), NvmlUnavailable> {
 
 // ── Reader ───────────────────────────────────────────────────────────────────
 
-/// One superchip's module power, attributed to its Grace socket.
 #[derive(Debug, PartialEq)]
 pub struct ModuleReading {
     pub socket: u32,
@@ -277,14 +272,12 @@ struct Gpu {
     handle: Device,
 }
 
-/// One GPU's module reading, before the socket's GPUs are averaged.
 struct GpuSample {
     gpu: u32,
     socket: u32,
     watts: f64,
 }
 
-/// A socket whose GPUs' readings are too far apart to be one meter.
 #[derive(Debug, PartialEq)]
 struct Disagreement {
     socket: u32,
@@ -513,7 +506,6 @@ mod tests {
     #[test]
     fn group_by_socket_averages_each_module_once() {
         let sample = |gpu, socket, watts| GpuSample { gpu, socket, watts };
-        // Both GPUs of a socket read one meter, within its +/- 5 W accuracy.
         let samples = [
             sample(3, 1, 610.0),
             sample(0, 0, 500.0),
@@ -543,8 +535,6 @@ mod tests {
     #[test]
     fn group_by_socket_drops_a_socket_whose_gpus_disagree() {
         let sample = |gpu, socket, watts| GpuSample { gpu, socket, watts };
-        // Socket 0 reads like a per-GPU-share meter with one GPU loaded.
-        // That is not one meter, so the socket has no physical reading.
         let samples = [
             sample(1, 0, 540.0),
             sample(0, 0, 730.0),
@@ -610,7 +600,6 @@ mod tests {
             filled(NVML_SUCCESS, VALUE_DOUBLE, Value { dbl: 498_720.0 }).watts(),
             Some(498.72)
         );
-        // An unsupported average is no reading; there is no instant fallback.
         assert_eq!(
             filled(
                 NVML_ERROR_NOT_SUPPORTED,
@@ -626,7 +615,6 @@ mod tests {
         );
     }
 
-    /// Without libnvidia-ml this fails at load; with it, at the socket mapping.
     #[test]
     fn new_fails_softly_without_nvml_or_a_socket_mapping() {
         match NvmlModuleReader::new(Path::new("/nonexistent")) {
