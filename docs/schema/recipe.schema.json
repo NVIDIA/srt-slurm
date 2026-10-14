@@ -1470,7 +1470,7 @@
               "type": "null"
             }
           ],
-          "description": "Container path to an HF cache snapshot; keeps weights and tokenizer on one immutable revision.",
+          "description": "TRT-LLM container path to an HF cache snapshot; pins weights and benchmark tokenizer.",
           "default": null
         }
       },

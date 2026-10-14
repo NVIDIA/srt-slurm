@@ -40,7 +40,7 @@ TensorRT-LLM supports aggregate, prefill, and decode workers through OpenEngine 
 
 The [disaggregated TRT-LLM example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/dynamo-sidecar-disagg.yaml) places a prefill and decode worker with sidecars on separate nodes.
 
-For an `hf:` model, set `model.hf_snapshot_path` to the absolute path of its commit-specific snapshot inside the container, such as `/hf/hub/models--org--name/snapshots/<40-character-commit>`. Set `identity.model.revision` to the same commit and mount the full Hugging Face hub cache at `/hf/hub` so the snapshot's links to `blobs/` resolve. Workers, sidecars, and benchmark tokenizers then use that snapshot path; the served model name remains the configured model ID. An absent snapshot fails the launch instead of selecting a moving cache reference.
+For a TRT-LLM `hf:` model, set `model.hf_snapshot_path` to the absolute path of its commit-specific snapshot inside the container, such as `/hf/hub/models--org--name/snapshots/<40-character-commit>`. Set `identity.model.revision` to the same commit and mount the full Hugging Face hub cache at `/hf/hub` so the snapshot's links to `blobs/` resolve. The TRT-LLM workers, sidecars, and sa-bench tokenizer then use that snapshot path; the served model name remains the configured model ID. An absent snapshot fails the launch instead of selecting a moving cache reference.
 
 ## SGLang topology and launch requirements
 

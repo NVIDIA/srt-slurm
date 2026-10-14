@@ -102,7 +102,7 @@ class MooncakeRouterRunner(AIPerfBenchmarkRunner):
 
         # Tokenizer path: HF model ID or container mount path
         # For HF models, use the model ID directly so transformers downloads it
-        tokenizer_path = runtime.worker_model_arg
+        tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
         cmd = [
             "bash",

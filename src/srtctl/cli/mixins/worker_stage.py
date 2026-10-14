@@ -20,6 +20,7 @@ from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.processes import ManagedProcess, NamedProcesses, ProcessRegistry
+from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
 from srtctl.core.supervisor import EndpointKey, WorkerSupervisor
@@ -30,7 +31,6 @@ from srtctl.services.otel import lifecycle_otel_env
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
     from srtctl.core.topology import Endpoint, Process
 
@@ -447,9 +447,11 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(
-            f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}{suffix}.json", self.runtime.worker_model_arg
-        )
+        fingerprint_path = f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}{suffix}.json"
+        if isinstance(self.runtime, RuntimeContext) and self.runtime.hf_snapshot_path:
+            fp_cmd = generate_capture_script(fingerprint_path, self.runtime.worker_model_arg)
+        else:
+            fp_cmd = generate_capture_script(fingerprint_path)
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
@@ -675,9 +677,11 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(
-            f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}.json", self.runtime.worker_model_arg
-        )
+        fingerprint_path = f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}.json"
+        if isinstance(self.runtime, RuntimeContext) and self.runtime.hf_snapshot_path:
+            fp_cmd = generate_capture_script(fingerprint_path, self.runtime.worker_model_arg)
+        else:
+            fp_cmd = generate_capture_script(fingerprint_path)
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"

@@ -78,6 +78,7 @@ def test_pinned_hf_snapshot_is_visible_and_validated(capsys):
     snapshot = f"/hf/hub/models--org--name/snapshots/{revision}"
     overrides = {
         "model": {"path": "hf:org/name", "hf_snapshot_path": snapshot},
+        "engine": {"type": "trtllm"},
         "identity": {"model": {"revision": revision}},
     }
     config = _make_config(overrides)

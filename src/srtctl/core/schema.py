@@ -678,7 +678,7 @@ class ModelConfig:
     # Optional: stage the model from shared storage to this node-local dir
     # before workers start (e.g. "/raid/scratch/models"). None = use path directly.
     stage_dir: str | None = None
-    # Container path to an HF cache snapshot; keeps weights and tokenizer on one immutable revision.
+    # TRT-LLM container path to an HF cache snapshot; pins weights and benchmark tokenizer.
     hf_snapshot_path: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -2781,7 +2781,9 @@ class SrtConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
-        if self.model.hf_snapshot_path is not None:
+        if isinstance(self.model, ModelConfig) and self.model.hf_snapshot_path is not None:
+            if not isinstance(self.engine, TRTLLMBackend):
+                raise ValueError("model.hf_snapshot_path currently requires engine.type: trtllm")
             snapshot = Path(self.model.hf_snapshot_path)
             model_id = self.model.path.removeprefix("hf:")
             expected_repo_dir = "models--" + model_id.replace("/", "--")

@@ -73,7 +73,7 @@ Model configuration.
 | `container` | str | required | Container image (`.sqsh` path or registry URI), or a `containers` alias from srtslurm.yaml. |
 | `precision` | str | required | Weight precision (`fp4`, `fp8`, `fp16`, `bf16`). Recorded with results; engine flags set the actual dtype. |
 | `stage_dir` | str \| None | `None` | Optional: stage the model from shared storage to this node-local dir before workers start (e.g. "/raid/scratch/models"). None = use path directly. |
-| `hf_snapshot_path` | str \| None | `None` | Container path to an HF cache snapshot; keeps weights and tokenizer on one immutable revision. |
+| `hf_snapshot_path` | str \| None | `None` | TRT-LLM container path to an HF cache snapshot; pins weights and benchmark tokenizer. |
 
 ### ResourceConfig
 

@@ -17,9 +17,9 @@ slurm:
   time_limit: 00:45:00
 model:
   path: hf:nvidia/GLM-5.2-NVFP4
-  hf_snapshot_path: /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab
   container: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
   precision: fp4
+  hf_snapshot_path: /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab
 identity:
   model:
     repo: nvidia/GLM-5.2-NVFP4
@@ -86,7 +86,7 @@ roles:
         max_tokens_in_buffer: 1048576
         kv_transfer_timeout_ms: 600000
         kv_cache_bounce_size_mb: 1024
-      cuda_graph_config: null
+      cuda_graph_config:
       enable_attention_dp: true
       enable_chunked_prefill: true
       trust_remote_code: true
@@ -164,7 +164,7 @@ roles:
       cuda_graph_config:
         enable_padding: true
         batch_sizes:
-        - 1
+          - 1
       trust_remote_code: true
       kv_cache_config:
         enable_block_reuse: false
