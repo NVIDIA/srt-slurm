@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeGuard, cast
 
+from srtctl.core.power.cpu_rails import COMPONENT_RAIL_COLUMN_NAMES
 from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES as CPU_RAIL_COLUMN_NAMES
 
 SCHEMA_VERSION = 1
@@ -94,19 +95,7 @@ CPU_SAMPLES_HEADER_V1 = (
     "power_w",
     "total_power_w",
 )
-CPU_SAMPLES_HEADER_V2 = (
-    "schema_version",
-    "timestamp_unix",
-    "hostname",
-    "source",
-    "sensor",
-    "socket_id",
-    "power_w",
-    "cpu_rail_w",
-    "soc_w",
-    "dram_w",
-    "total_power_w",
-)
+CPU_SAMPLES_HEADER_V2 = (*CPU_SAMPLES_HEADER_V1[:-1], *COMPONENT_RAIL_COLUMN_NAMES, "total_power_w")
 CPU_SAMPLES_HEADER = (
     "schema_version",
     "timestamp_unix",
