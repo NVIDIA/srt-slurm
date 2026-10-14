@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from srtctl.backends.sglang import MooncakeKVStoreConfig
+    from srtctl.backends.trtllm import TRTLLMMooncakeKVStoreConfig
     from srtctl.backends.vllm import VLLMFailoverConfig, VLLMMooncakeKVStoreConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
@@ -66,7 +67,17 @@ class SrunConfig:
     kill_on_bad_exit: bool = False
 
 
-class RoleSettings(ABC):
+@dataclass(frozen=True)
+class ProcessGroup:
+    """One process-exporter group: every ``cmdline`` regexp must match the space-joined
+    argv, or ``comm`` lists 15-character kernel task names."""
+
+    name: str
+    cmdline: tuple[str, ...] = ()
+    comm: tuple[str, ...] = ()
+
+
+class RoleSettings(ABC):  # noqa: B024 - its members are declared for the type checker only
     """What an engine reads from one role of the recipe (``roles.<role>``).
 
     ``srtctl.core.schema.RoleConfig`` inherits this data contract. Keeping the
@@ -74,10 +85,23 @@ class RoleSettings(ABC):
     dataclasses supply the fields and defaults.
     """
 
-    env: Mapping[str, str]
-    args: Mapping[str, Any]
-    extra_args: Sequence[str]
-    kv_events: bool | Mapping[str, Any] | None
+    if TYPE_CHECKING:
+        # Read-only, as the frozen dataclass fields that implement them are; declared
+        # only for the type checker so nothing shadows those fields at runtime.
+        @property
+        def env(self) -> Mapping[str, str]: ...
+
+        @property
+        def args(self) -> Mapping[str, Any]: ...
+
+        @property
+        def extra_args(self) -> Sequence[str]: ...
+
+        @property
+        def kv_events(self) -> bool | Mapping[str, Any] | None: ...
+
+        @property
+        def mooncake_store_config(self) -> Mapping[str, Any]: ...
 
 
 class BoundRolesField(fields.Field):
@@ -105,6 +129,12 @@ def role_env(roles: Mapping[str, RoleSettings], mode: str) -> dict[str, str]:
     """``roles.<role>.env`` for a worker mode, as a fresh dict; empty when the role is absent."""
     role = role_for_mode(roles, mode)
     return dict(role.env) if role is not None else {}
+
+
+def role_mooncake_store_config(roles: Mapping[str, RoleSettings], mode: str) -> dict[str, Any]:
+    """``roles.<role>.mooncake_store_config`` for a worker mode, as a fresh dict; empty when the role is absent."""
+    role = role_for_mode(roles, mode)
+    return dict(role.mooncake_store_config) if role is not None else {}
 
 
 def role_kv_events(roles: Mapping[str, RoleSettings], mode: str, defaults: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -135,6 +165,9 @@ class Backend(ABC):
     #: Path a gRPC-mode worker serves Prometheus text at on ``Process.grpc_http_port``;
     #: ``None`` when the engine's gRPC server has no HTTP listener.
     grpc_metrics_path: ClassVar[str | None] = None
+    #: Environment that turns on the engine's own NVTX ranges; the automatic nsys
+    #: preset (``observability.nsys``) sets it on every worker it wraps.
+    nvtx_environment: ClassVar[Mapping[str, str]] = {}
 
     @property
     @abstractmethod
@@ -143,7 +176,9 @@ class Backend(ABC):
         raise NotImplementedError
 
     @property
-    def mooncake_kv_store(self) -> "MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | None":
+    def mooncake_kv_store(
+        self,
+    ) -> "MooncakeKVStoreConfig | VLLMMooncakeKVStoreConfig | TRTLLMMooncakeKVStoreConfig | None":
         """The recipe's Mooncake KV store block, or None when the engine has none.
 
         Set, it implies the mooncake-master service and the MOONCAKE_* worker
@@ -160,8 +195,16 @@ class Backend(ABC):
         """
         return None
 
-    # Bound recipe roles; concrete dataclasses own the field and its serialization.
-    roles: Mapping[str, RoleSettings]
+    #: process-exporter groups for this engine's processes, in match order (first match
+    #: wins): a child that retitles itself or a launcher that wraps a module precedes the
+    #: handler whose command line it would otherwise share.
+    process_exporter_groups: ClassVar[tuple[ProcessGroup, ...]] = ()
+
+    if TYPE_CHECKING:
+        # Bound recipe roles; concrete frozen dataclasses own the field and its serialization.
+        # Read-only like that field, and declared only for the type checker.
+        @property
+        def roles(self) -> Mapping[str, RoleSettings]: ...
 
     def get_srun_config(self) -> SrunConfig:
         """Get srun configuration for this backend.
@@ -246,7 +289,9 @@ class Backend(ABC):
         """
         return {}
 
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+    def get_mooncake_worker_env(
+        self, infra_node_ip: str, local_hostname: str, mode: WorkerMode | None = None
+    ) -> dict[str, str]:
         """MOONCAKE_* environment for a worker; empty when mooncake_kv_store is None.
 
         - MOONCAKE_LOCAL_HOSTNAME defaults to the worker's resolved IP, but the
@@ -260,6 +305,7 @@ class Backend(ABC):
             infra_node_ip: Resolved IP of the infra node where mooncake_master runs.
             local_hostname: Resolved IP of the worker's own node, for peer-to-peer
                 transfers. Defaults to the worker's primary network interface IP.
+            mode: The worker's mode, for engines whose client config differs by role.
         """
         store = self.mooncake_kv_store
         if store is None:
@@ -270,6 +316,17 @@ class Backend(ABC):
             "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
             "MOONCAKE_TE_META_DATA_SERVER": f"http://{infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata",
         }
+
+    def mooncake_store_configs(self, infra_node_ip: str, served_model_name: str) -> dict[str, dict[str, Any]]:
+        """Mooncake client configs to write into log_dir before workers start, by file name.
+
+        log_dir is mounted at /logs in every worker, where get_mooncake_worker_env
+        points MOONCAKE_CONFIG_PATH. Empty for an engine that reads its Mooncake
+        settings from the MOONCAKE_* environment instead (SGLang).
+        ``served_model_name`` is the name the workers serve, for engines that key the
+        pool by the model.
+        """
+        return {}
 
     def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
         """Shadow engine recovery environment for a worker; empty when failover is None."""

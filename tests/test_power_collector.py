@@ -1108,6 +1108,7 @@ class TestRequiredReadinessGate:
         config.telemetry.cpu_power_exporter = None
         config.frontend.type = "dynamo"
         config.profiling.enabled = False
+        config.reporting = None
         runtime = MagicMock()
         runtime.log_dir = tmp_path
         runtime.job_id = "12345"

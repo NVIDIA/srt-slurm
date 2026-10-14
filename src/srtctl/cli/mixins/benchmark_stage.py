@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from srtctl.backends.base import WorkerMode
+from srtctl.backends.sglang import SGLangBackend
 from srtctl.backends.trtllm import TRTLLMBackend
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
@@ -729,7 +730,8 @@ class BenchmarkStageMixin:
         Built-in AIPerf runners retain their existing physical-process metrics
         behavior, which is required by vLLM data-parallel layouts. Custom
         benchmarks use logical worker leaders so distributed SGLang follower
-        ranks are not advertised as separate engines.
+        ranks are not advertised as separate engines, except the followers of a
+        role that owns attention-DP ranks (see ``_process_owns_dp_ranks``).
         """
         urls: list[str] = []
         frontend = self.frontend
@@ -761,7 +763,8 @@ class BenchmarkStageMixin:
                 ]
             elif not dynamo_trtllm_metrics_disabled:
                 for process in self.backend_processes:
-                    if frontend.worker_endpoint_port(process, self.config, self.runtime) is None:
+                    routable = frontend.worker_endpoint_port(process, self.config, self.runtime) is not None
+                    if not routable and not self._process_owns_dp_ranks(process):
                         continue
                     # Routability does not imply metrics support. The frontend
                     # owns both the supported ranks/roles and the metrics port.
@@ -829,6 +832,16 @@ class BenchmarkStageMixin:
                 urls.append(f"http://{url_host(host)}:{cpu_power_exporter.port}/metrics")
 
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
+
+    def _process_owns_dp_ranks(self, process: "Process") -> bool:
+        """Whether a worker rank exports metrics for SGLang attention-DP ranks of its own.
+
+        A pure-TP follower serves no engine of its own. With ``dp-size`` > 1,
+        every physical process schedules distinct DP ranks and exports their
+        cache and load metrics, so scraping only the leader drops them.
+        """
+        backend = self.config.backend
+        return isinstance(backend, SGLangBackend) and backend.data_parallel_size(process.endpoint_mode) > 1
 
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""

@@ -165,6 +165,66 @@ class TestSABenchRunner:
         assert cmd[-2] == ""  # empty dataset path
         assert cmd[-1] == "false"  # per-request HTTP sessions by default
 
+    def test_build_command_custom_endpoint(self):
+        """build_command passes the API path through to bench.sh."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+
+        runner = SABenchRunner()
+        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+
+        cmd = runner.build_command(self._endpoint_config("/v1/chat/completions"), runtime)
+
+        assert cmd[-2:] == ["", "/v1/chat/completions"]
+
+    def test_build_command_cache_precedes_custom_endpoint(self):
+        """The cache and endpoint occupy distinct trailing bench.sh arguments."""
+        from dataclasses import replace
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import DATASET_CACHE_MOUNT, SABenchRunner
+
+        runner = SABenchRunner()
+        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+        config = self._endpoint_config("/v1/chat/completions")
+        config = replace(config, benchmark=replace(config.benchmark, dataset_cache_dir="/lustre/cache"))
+
+        cmd = runner.build_command(config, runtime)
+
+        assert cmd[-2:] == [DATASET_CACHE_MOUNT, "/v1/chat/completions"]
+
+    def _endpoint_config(self, endpoint):
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                isl=8192,
+                osl=1024,
+                concurrencies="2560",
+                endpoint=endpoint,
+            ),
+        )
+
+    @pytest.mark.parametrize("endpoint", ["/v1/completions", "/v1/chat/completions"])
+    def test_validate_config_accepts_both_api_paths(self, endpoint):
+        """The dynamo adapter serves both APIs, so neither needs extra config."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+
+        assert SABenchRunner().validate_config(self._endpoint_config(endpoint)) == []
+
+    def test_validate_config_rejects_relative_endpoint(self):
+        """bench.sh appends the path to the frontend URL, so it must be absolute."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+
+        errors = SABenchRunner().validate_config(self._endpoint_config("v1/chat/completions"))
+
+        assert any("absolute path" in error for error in errors)
+
     def test_build_command_enables_http_connection_reuse(self):
         """Explicit opt-in is appended without shifting existing arguments."""
         from unittest.mock import MagicMock
@@ -192,6 +252,84 @@ class TestSABenchRunner:
 
         assert cmd[-2] == "/data/bench.jsonl"
         assert cmd[-1] == "true"
+
+    def test_build_command_passes_container_cache_path(self):
+        """bench.sh receives the mount point, never the host path."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import DATASET_CACHE_MOUNT, SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                isl=1024,
+                osl=128,
+                concurrencies="4x8",
+                dataset_cache_dir="/lustre/shared/sa-bench-cache",
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        assert cmd[-1] == DATASET_CACHE_MOUNT
+        assert "/lustre/shared/sa-bench-cache" not in cmd
+
+    def test_get_container_mounts_adds_cache_dir(self, tmp_path):
+        """The host cache dir is created and mounted at the fixed container path."""
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import DATASET_CACHE_MOUNT, SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock(container_mounts={Path("/logs"): Path("/logs")})
+        host_cache = tmp_path / "sa-bench-cache"
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench", isl=1024, osl=128, concurrencies="4x8", dataset_cache_dir=str(host_cache)
+            ),
+        )
+
+        mounts = runner.get_container_mounts(config, runtime)
+
+        assert host_cache.is_dir()
+        assert mounts[host_cache.resolve()] == Path(DATASET_CACHE_MOUNT)
+        assert mounts[Path("/logs")] == Path("/logs")
+
+    def test_get_container_mounts_unchanged_without_cache_dir(self):
+        """Mounts are untouched when the feature is not configured."""
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock(container_mounts={Path("/logs"): Path("/logs")})
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="sa-bench", isl=1024, osl=128, concurrencies="4x8"),
+        )
+
+        assert runner.get_container_mounts(config, runtime) == {Path("/logs"): Path("/logs")}
+
+    def test_dataset_cache_dir_schema_default(self):
+        """The YAML field stays opt-in when omitted."""
+        from srtctl.core.schema import BenchmarkConfig
+
+        assert BenchmarkConfig().dataset_cache_dir is None
 
     def test_http_connection_reuse_schema_default_and_roundtrip(self):
         """The YAML field is typed and remains opt-in when omitted."""
@@ -242,6 +380,7 @@ class TestCustomBenchmarkRunner:
         environment=None,
         dynamo_sidecar=False,
         trtllm_config=None,
+        engine_args=None,
     ):
         from types import SimpleNamespace
 
@@ -277,6 +416,11 @@ class TestCustomBenchmarkRunner:
                     if role in mode_environments or mode in engine_sections
                 },
             )
+        elif engine_args is not None:
+            from srtctl.backends import SGLangBackend
+            from srtctl.core.schema import RoleConfig
+
+            backend = SGLangBackend(roles={role: RoleConfig(args=args) for role, args in engine_args.items()})
         else:
             backend = SimpleNamespace(
                 type=backend_type,
@@ -348,6 +492,54 @@ class TestCustomBenchmarkRunner:
         assert runner.build_command(config, runtime) == ["bash", "-lc", "python /bench/run.py --foo bar"]
         assert runner.get_container_image(config, runtime) == "nvcr.io/nvidia/python:3.11"
         assert runner.get_environment(config, runtime) == {"FOO": "bar"}
+
+    @staticmethod
+    def _two_node_disagg_processes():
+        from srtctl.core.topology import Process
+
+        # Decode nodes sort before prefill nodes, so a sorted URL list would reorder roles.
+        return [
+            Process("node-p0", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+            Process("node-p1", frozenset(range(4)), 7501, 0, "prefill", 0, node_rank=1),
+            Process("node-d0", frozenset(range(4)), 7504, 6100, "decode", 0, node_rank=0),
+            Process("node-d1", frozenset(range(4)), 7505, 0, "decode", 0, node_rank=1),
+        ]
+
+    def _custom_env(self, engine_args, **kwargs):
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+
+        stage = self._benchmark_stage("dynamo", self._two_node_disagg_processes(), engine_args=engine_args, **kwargs)
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            return stage._get_benchmark_env(CustomBenchmarkRunner())
+
+    @pytest.mark.parametrize("dp_key", ["dp-size", "dp_size", "data-parallel-size"])
+    def test_sglang_attention_dp_custom_metrics_scrape_followers_in_topology_order(self, dp_key):
+        env = self._custom_env({"prefill": {dp_key: 8}, "decode": {dp_key: 8}})
+
+        # Routing still targets logical leaders; only metrics include follower ranks.
+        assert env["SRT_PREFILL_ENDPOINTS"] == "ip-node-p0:7500"
+        assert env["SRT_DECODE_ENDPOINTS"] == "ip-node-d0:7504"
+        assert env["AIPERF_SERVER_METRICS_URLS"] == (
+            "http://ip-node-p0:7500/metrics,http://ip-node-p1:7501/metrics,"
+            "http://ip-node-d0:7504/metrics,http://ip-node-d1:7505/metrics"
+        )
+
+    def test_sglang_attention_dp_followers_are_scraped_per_role(self):
+        env = self._custom_env({"prefill": {"tp-size": 8}, "decode": {"dp-size": 8}})
+
+        assert env["AIPERF_SERVER_METRICS_URLS"] == (
+            "http://ip-node-p0:7500/metrics,http://ip-node-d0:7504/metrics,http://ip-node-d1:7505/metrics"
+        )
+
+    def test_sglang_pure_tp_custom_metrics_keep_logical_leaders(self):
+        env = self._custom_env({"prefill": {"tp-size": 8}, "decode": {"tp-size": 8}})
+
+        assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-p0:7500/metrics,http://ip-node-d0:7504/metrics"
 
     def test_disaggregated_worker_endpoints_use_logical_leaders(self):
         from unittest.mock import patch
@@ -1768,6 +1960,7 @@ class TestRunPostEval:
 
         from srtctl.cli.do_sweep import SweepOrchestrator
         from srtctl.core.runtime import Nodes, RuntimeContext
+        from srtctl.services.config import ServiceConfig
         from srtctl.core.schema import (
             BenchmarkConfig,
             FrontendConfig,
@@ -1786,6 +1979,7 @@ class TestRunPostEval:
             # These tests exercise the eval flow, not telemetry; opt out of the
             # default-on Tachometer so run() needs no scraper mocks.
             observability=ObservabilityConfig(tachometer=TachometerConfig(enabled=False)),
+            services=[ServiceConfig(name="otel-collector", type="otel-collector", enabled=False)],
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
             roles={"prefill": RoleConfig(nodes=1, workers=1), "decode": RoleConfig(nodes=2, workers=2)},
             benchmark=BenchmarkConfig(type="sa-bench", isl=1024, osl=1024, concurrencies="128x256x512"),

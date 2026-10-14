@@ -220,6 +220,22 @@ DIALECTS = (
             ("sglang:token_usage", MetricDefinition("KV cache utilization", "ratio")),
         ),
     ),
+    EngineDialect(
+        "vllm",
+        nvtx_prefixes=("gpu_model_runner: ", "ngram_proposer_gpu: "),
+        # Per-step scheduler stages; "schedule: allocate_slots" opens once per running
+        # request per step and would exhaust the per-report event limit.
+        nvtx_names=(
+            "schedule: get_num_common_prefix_blocks",
+            "schedule: make_cached_request_data",
+            "schedule: update_after_schedule",
+        ),
+        metrics=(
+            ("vllm:num_requests_running", MetricDefinition("Running requests", "requests")),
+            ("vllm:num_requests_waiting", MetricDefinition("Waiting requests", "requests")),
+            ("vllm:kv_cache_usage_perc", MetricDefinition("KV cache utilization", "ratio")),
+        ),
+    ),
 )
 
 _COMMON_NVTX = ("preprocess.", "route.", "router.", "tokenize", "detokenize", "kv_router.", "transport.", "compute_")

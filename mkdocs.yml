@@ -74,6 +74,7 @@ nav:
           - SGLang Router: sglang-router.md
           - vLLM Router: vllm-router.md
           - Shepherd Model Gateway: smg.md
+          - llm-d Router: llm-d.md
       - Benchmarks:
           - Benchmarks: benchmarks.md
           - Accuracy Benchmarks: accuracy.md

@@ -379,7 +379,10 @@ def _orchestrator(config: SrtConfig, tmp_path: Path) -> SweepOrchestrator:
 
 
 def test_gms_service_launches_one_pinned_instance_per_worker(tmp_path: Path) -> None:
-    orchestrator = _orchestrator(_load(), tmp_path)
+    # Isolate the GMS launch from the independent default lifecycle collector.
+    orchestrator = _orchestrator(
+        _load(services=[{"name": "otel-collector", "type": "otel-collector", "enabled": False}]), tmp_path
+    )
     with (
         patch(SRUN_SERVICE, return_value=_proc()) as srun,
         patch(WAIT_SERVICE, return_value=True) as wait,
@@ -438,7 +441,7 @@ def test_worker_stage_launches_only_engines(tmp_path: Path) -> None:
 
 
 def test_full_node_worker_pins_nothing(tmp_path: Path) -> None:
-    data = _data()
+    data = _data(services=[{"name": "otel-collector", "type": "otel-collector", "enabled": False}])
     data["roles"]["agg"] = {"nodes": 1, "workers": 1, "gpus": 8, "args": {"tensor-parallel-size": 8}}
     orchestrator = _orchestrator(_load_data(data), tmp_path)
     with (

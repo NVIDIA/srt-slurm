@@ -110,6 +110,36 @@ def test_cluster_bash_preamble_warns_when_bash_wrapper_disabled(caplog) -> None:
     assert any("default_bash_preamble" in record.message for record in caplog.records)
 
 
+def test_srun_output_is_opened_in_append_mode() -> None:
+    """Benchmark stage banners are appended into live worker logs.
+
+    With srun's default truncating open it would keep writing at its own offset
+    and overwrite them.
+    """
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["python3", "-m", "server"], output="/logs/node01_prefill_w0.out")
+
+    srun_cmd = mock_popen.call_args.args[0]
+    assert srun_cmd[srun_cmd.index("--open-mode") + 1] == "append"
+
+
+def test_srun_without_output_has_no_open_mode() -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["python3", "-m", "server"])
+
+    assert "--open-mode" not in mock_popen.call_args.args[0]
+
+
 def test_srun_options_use_equals_separator() -> None:
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
@@ -200,6 +230,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         frontend=SimpleNamespace(type="sglang"),
         dynamo=SimpleNamespace(install=False, sidecar=False, request_plane="nats", event_plane="zmq"),
         observability=ObservabilityConfig(),
+        services=[],
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
         topology=Topology(roles={}, gpus_per_node=4),
@@ -231,6 +262,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        dp_rank=None,
         trtllm_dist_init_port=29500,
         sidecar_grpc_port=50051,
     )
@@ -273,6 +305,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
             event_plane="zmq",
         ),
         observability=ObservabilityConfig(),
+        services=[],
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
         topology=Topology(roles={}, gpus_per_node=4),
@@ -303,6 +336,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        dp_rank=None,
         trtllm_dist_init_port=29500,
         sidecar_grpc_port=50051,
     )
@@ -853,6 +887,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         frontend=SimpleNamespace(type="sglang"),
         dynamo=SimpleNamespace(install=False, sidecar=False, request_plane="nats", event_plane=None),
         observability=ObservabilityConfig(),
+        services=[],
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         resources=ResourceConfig(),
         topology=Topology(roles={}, gpus_per_node=4),
@@ -883,6 +918,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
         het_group=None,
+        dp_rank=None,
         trtllm_dist_init_port=29500,
         sidecar_grpc_port=50051,
     )

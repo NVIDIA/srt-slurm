@@ -11,11 +11,12 @@ its assigned endpoints and construction of commands for those processes.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING
 
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints
-from srtctl.ports import SIDECAR_GRPC_PORTS
+from srtctl.ports import PROXY_PORTS, SIDECAR_GRPC_PORTS
 
 if TYPE_CHECKING:
     from srtctl.backends import BackendConfig
@@ -65,10 +66,26 @@ def worker_processes(
         )
 
     if not config.has_role_backends:
-        return expand(config.backend, endpoints)
-    processes: list[Process] = []
-    for role in ("prefill", "decode", "agg"):
-        selected = [endpoint for endpoint in endpoints if endpoint.mode == role]
-        if selected:
-            processes.extend(expand(config.backend_for_role(role), selected))
-    return processes
+        processes = expand(config.backend, endpoints)
+    else:
+        processes = []
+        for role in ("prefill", "decode", "agg"):
+            selected = [endpoint for endpoint in endpoints if endpoint.mode == role]
+            if selected:
+                processes.extend(expand(config.backend_for_role(role), selected))
+    return with_proxy_ports(config, processes, allocator)
+
+
+def with_proxy_ports(config: SrtConfig, processes: list[Process], allocator: NodePortAllocator) -> list[Process]:
+    """Allocate proxy ports for routable workers in the frontend's proxied modes."""
+    from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+    if config.frontend.type == FRONTEND_NONE:
+        return processes
+    proxied = get_frontend(config.frontend.type).proxied_worker_modes(config)
+    return [
+        replace(process, proxy_port=allocator.next(PROXY_PORTS, process.node))
+        if process.http_port > 0 and process.endpoint_mode in proxied
+        else process
+        for process in processes
+    ]

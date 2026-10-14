@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from rich.console import Console
 
+from srtctl.cli import submit
 from srtctl.cli.submit import show_config_details
 from srtctl.core.schema import SrtConfig
 
@@ -33,6 +35,13 @@ BASE_CONFIG = {
     },
     "benchmark": {"type": "manual"},
 }
+
+
+@pytest.fixture(autouse=True)
+def _no_local_cluster_config(tmp_path, monkeypatch):
+    # A developer's srtslurm.yaml in the repo root would add default_mounts rows whose
+    # long paths make rich truncate the cells these tests assert on.
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
 
 
 def _make_config(overrides: dict | None = None) -> SrtConfig:
@@ -84,6 +93,16 @@ def test_role_restart_policy_and_limits_are_visible(capsys):
 def test_default_restart_policy_keeps_dry_run_unchanged(capsys):
     show_config_details(_make_config())
     assert "restart=" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_dynamo_lifecycle_collector_visible_independently_of_observability(capsys, enabled):
+    show_config_details(_make_config({"observability": {"enabled": enabled}}))
+    output = " ".join(capsys.readouterr().out.split())
+    assert "otel-collector" in output
+    assert "Dynamo lifecycle tracing (independent of observability.enabled)" in output
+    assert "otel-collector.yaml" in output
+    assert "<host-native>" in output
 
 
 def test_role_engines_images_and_environments_are_visible(capsys):
@@ -760,6 +779,36 @@ class TestDryRunExecutionExtensions:
         assert "P2PHANDSHAKE" in output
         assert "100GB" in output
 
+    def test_trtllm_mooncake_role_configs_in_dry_run(self, capsys):
+        """Each TRT-LLM role using the mooncake-store connector shows its client config and path."""
+        connector = {"kv_connector_config": {"connector": "mooncake-store"}}
+        config = _make_config(
+            {
+                "engine": "trtllm",
+                "roles": {
+                    "prefill": {"args": connector},
+                    "decode": {"args": connector, "mooncake_store_config": {"global_segment_size": "16GiB"}},
+                },
+                "services": [
+                    {
+                        "name": "mooncake-master",
+                        "type": "mooncake-master",
+                        "options": {"store_config": {"global_segment_size": "8GiB"}},
+                    }
+                ],
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "MOONCAKE_CONFIG_PATH" in output
+        assert "store_config (prefill)" in output
+        assert "store_config (decode)" in output
+        assert '"capacity"' in output
+        assert "16GiB" in output
+        # model_key defaults to the served model name, unknown before the model is staged
+        # (the table wraps the placeholder, so match its start).
+        assert '"model_key": "<model' in output
+
     def test_vllm_process_local_mooncake_map_in_dry_run(self, capsys):
         config = _make_config(
             {
@@ -1105,8 +1154,17 @@ class TestInfmaxWorkspaceMount:
 
 
 @pytest.mark.parametrize("nsys, expected", [({}, "enabled"), ({"enabled": False}, "disabled")])
-@pytest.mark.parametrize("backend", ["trtllm", "sglang"])
-def test_observability_nsys_details(capsys, nsys, expected, backend):
+@pytest.mark.parametrize(
+    "backend, gate",
+    [
+        ("trtllm", "TLLM_LLMAPI_ENABLE_NVTX=1"),
+        ("sglang", "SGLANG_ENABLE_NVTX_SCHEDULER=1"),
+        ("vllm", "VLLM_NVTX_SCOPES_FOR_PROFILING=1; VLLM_WORKER_MULTIPROC_METHOD=spawn"),
+    ],
+)
+def test_observability_nsys_details(capsys, monkeypatch, nsys, expected, backend, gate):
+    # At 80 columns the folded NAME=value cell splits names across lines.
+    monkeypatch.setattr(submit, "console", Console(width=200))
     cfg = _make_config(
         {"observability": {"enabled": True, "nsys": nsys}, "frontend": {"type": "dynamo"}, "engine": backend}
     )
@@ -1124,10 +1182,12 @@ def test_observability_nsys_details(capsys, nsys, expected, backend):
             "1800s",
             "DYN_ENABLE_RUST_NVTX",
             "DYN_NVTX=1",
-            "TLLM_LLMAPI_ENABLE_NVTX" if backend == "trtllm" else "SGLANG_ENABLE_NVTX_SCHEDULER",
+            "nsys worker env",
+            gate,
         ):
             assert text in output
-        assert ("SGLANG_ENABLE_NVTX_SCHEDULER" in output) == (backend == "sglang")
+        for other in ("TLLM_LLMAPI_ENABLE_NVTX", "SGLANG_ENABLE_NVTX_SCHEDULER", "VLLM_NVTX_SCOPES_FOR_PROFILING"):
+            assert (other in output) == gate.startswith(other)
     else:
         assert "nsys targets" not in output
 

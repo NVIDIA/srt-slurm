@@ -111,6 +111,7 @@ One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
 | `engine` | str \| mapping | `None` | Engine type or mapping with engine options. Set on every role when no top-level `engine` is declared; the two forms cannot be mixed, and role engines do not inherit options from each other. |
 | `container` | str \| None | `None` | Optional role image; accepts cluster container aliases. Defaults to `model.container`. |
 | `kv_events` | bool \| dict[str, Any] \| None | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
+| `mooncake_store_config` | dict[str, Any] | `{}` | TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`, ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there. |
 | `sidecar` | bool \| None | `None` | Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree. |
 | `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
 | `restart` | [RestartPolicy](#restartpolicy) | `RestartPolicy()` | Relaunch exited workers in place: `never`, `on-failure`, `always`, or a mapping with `policy`, `max_restarts`, `backoff_seconds`, and `max_backoff_seconds`. |
@@ -121,7 +122,7 @@ Frontend/router configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate`` rewrites that to "sglang-router". |
+| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d" (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate`` rewrites that to "sglang-router". |
 | `enable_multiple_frontends` | bool | `True` | Scale with nginx + multiple routers. When ``True`` (default), srtctl stands up nginx and fans out to ``num_additional_frontends + 1`` router replicas. When ``False``, there is NO nginx proxy — the benchmark must target the single master router (or a worker) directly at ``http://localhost:<port>``. ``benchmark.command`` has no placeholder substitution, so write the URL out literally. |
 | `num_additional_frontends` | int | `9` | Additional routers beyond master (default: 9) |
 | `nginx_container` | str | `'nginx:1.27.4'` | Custom nginx container image (default: nginx:1.27.4) |
@@ -130,6 +131,7 @@ Frontend/router configuration.
 | `nginx_session_affinity_header` | str | `'X-Dynamo-Session-ID'` | Header hashed when affinity is on (default ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that carry the session id in that header instead. |
 | `nginx_keepalive_timeout` | str | `'600s'` | Idle timeout for client and upstream keepalive connections in the generated nginx.conf (default "600s"). nginx's own default is 75s, which closes a session's connection during the long recorded think-time of an agentic replay; the client's next write on that pooled socket then fails with "broken pipe" / "server disconnected" and nothing is logged server-side. |
 | `worker_selection` | dict[str, Any] \| None | `None` | Inline Dynamo worker-selection policy configuration. srtctl writes this mapping under the top-level ``worker_selection`` key in a generated router policy YAML and passes it to the Dynamo frontend via ``--router-policy-config``. |
+| `epp_config` | dict[str, Any] \| None | `None` | llm-d Endpoint Picker configuration (``EndpointPickerConfig``: ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``. srtctl writes it to a file with the ``file-discovery`` plugin and ``dataLayer.discovery`` added, so the EPP reads the job's workers from the endpoints file srtctl renders. Omitted, srtctl runs the scorers of llm-d's no-Kubernetes guide (in prefill and decode profiles for a prefill/decode job). |
 | `args` | dict[str, Any] \| None | `None` | CLI arguments passed to the frontend/router process |
 | `env` | dict[str, str] \| None | `None` | Environment variables for frontend processes |
 | `container_image` | str \| None | `None` | Optional router-specific image. Static routers use the model/backend image when omitted. |
@@ -193,11 +195,13 @@ Benchmark configuration.
 | `num_warmup_mult` | int \| None | `None` | Multiplier for warmup prompts = concurrency * mult (default: 2) |
 | `dataset_name` | str \| None | `None` | Custom dataset fields (sa-bench) |
 | `dataset_path` | str \| None | `None` | Container path to dataset file (mount via extra_mount) |
+| `dataset_cache_dir` | str \| None | `None` | Host dir where sa-bench caches generated "random" datasets so repeated sweeps skip the (minutes-long) tokenize/decode prompt build. Mounted into the benchmark container by SABenchRunner. |
 | `agentperf_client_dir` | str \| None | `None` | AgentPerf benchmark fields (agentperf-client trajectory replay) |
 | `agentperf_config` | str \| None | `None` | Container path to the client's workload YAML (endpoint/model/concurrency injected) |
 | `trace_file` | str \| None | `None` | Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type) |
 | `custom_tokenizer` | str \| None | `None` | Custom tokenizer class (e.g., "module.path.ClassName") |
 | `use_chat_template` | bool | `True` | Pass --use-chat-template to benchmark (default: true) |
+| `endpoint` | str \| None | `None` | SA-Bench API path (see benchmark_serving.py --endpoint). |
 | `reuse_http_connections` | bool | `False` | SA-Bench Dynamo adapter: reuse a benchmark-scoped HTTP connection pool. Opt-in to preserve the historical per-request ClientSession behavior. |
 | `command` | str \| None | `None` | Custom benchmark hook. ``command`` is passed to ``bash -lc`` verbatim; srtctl does NOT substitute placeholders like ``{nginx_url}`` or ``{slurm_job_id}``. Render any parameters when generating the recipe. See srtctl.benchmarks.custom.CustomBenchmarkRunner for details. |
 | `container_image` | str \| None | `None` | Image the benchmark client runs in (custom, agentperf); unset uses `model.container`. |
@@ -223,7 +227,7 @@ Benchmark configuration.
 | `mmlu` | MMLU accuracy evaluation benchmark. | `max_tokens`, `num_examples`, `num_threads`, `repeat` |
 | `mooncake-router` | Mooncake Router benchmark for testing KV-aware routing using aiperf. | `itl_threshold_ms`, `mooncake_workload`, `ttft_threshold_ms` |
 | `router` | Router performance benchmark. | `concurrency`, `isl`, `num_requests`, `osl`, `prefix_ratios` |
-| `sa-bench` | SA-Bench throughput and latency benchmark. | `custom_tokenizer`, `dataset_name`, `dataset_path`, `isl`, `num_prompts_mult`, `num_warmup_mult`, `osl`, `random_range_ratio`, `req_rate`, `reuse_http_connections`, `slow_down_sleep_time`, `slow_down_wait_time`, `use_chat_template` |
+| `sa-bench` | SA-Bench throughput and latency benchmark. | `custom_tokenizer`, `dataset_cache_dir`, `dataset_name`, `dataset_path`, `endpoint`, `isl`, `num_prompts_mult`, `num_warmup_mult`, `osl`, `random_range_ratio`, `req_rate`, `reuse_http_connections`, `slow_down_sleep_time`, `slow_down_wait_time`, `use_chat_template` |
 | `sglang-bench` | SGLang benchmark runner. | `isl`, `osl`, `req_rate` |
 | `trace-replay` | Trace replay benchmark using aiperf with a user-provided dataset. | `itl_threshold_ms`, `trace_file`, `ttft_threshold_ms` |
 
@@ -238,6 +242,7 @@ Profiling configuration.
 | `nsys_trace` | str | `'cuda,nvtx'` | Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected explicitly where software tracing is preferred over hardware tracing. |
 | `trace_fork_before_exec` | bool \| None | `None` | None preserves the existing Dynamo-specific default. Set explicitly for worker launchers that require or cannot tolerate child-process injection. |
 | `capture_range_end` | str | `'stop'` | Non-TRT-LLM behavior when cudaProfilerStop closes a capture range. |
+| `detailed_trace_annotation` | bool | `False` | Adds detailed nvtx marker flag for vLLM |
 | `nsys_library_paths` | list[str] \| None | `None` | Optional paths prepended to LD_LIBRARY_PATH for the Nsight wrapper and profiled worker, for containers that do not discover the host libcuda. |
 | `prefill` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` | Phase-specific profiling step configs (not used for nsys-time) |
 | `decode` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` | Step window for the decode role (disaggregated runs). |
@@ -267,13 +272,13 @@ Health check configuration.
 
 ### ObservabilityConfig
 
-Observability configuration for OTEL tracing.
+Optional analytics capture and external OTEL export.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `False` | Master analytics knob. Default: False. |
-| `enable_otel` | bool | `False` | If True, inject OTEL environment variables into all workers and frontends. Requires otel_endpoint to be set. Default: False. |
-| `otel_endpoint` | str \| None | `None` | OTEL collector endpoint (e.g. "http://10.0.0.1:4317"). Required when enable_otel is True. |
+| `enabled` | bool | `False` | Additional analytics (including nsys); does not gate Dynamo lifecycle tracing or Tachometer. Default: False. |
+| `enable_otel` | bool | `False` | Export traces to an explicit endpoint and enable JSONL logs. Not needed for default Dynamo lifecycle capture. Requires otel_endpoint to be set. Default: False. |
+| `otel_endpoint` | str \| None | `None` | Explicit OTEL trace endpoint (e.g. "http://10.0.0.1:4317"). Used with enable_otel; overrides Dynamo's local trace destination. |
 | `tachometer` | [TachometerConfig](#tachometerconfig) | `TachometerConfig()` | Native Tachometer capture configuration. Collects on every run, independent of ``enabled``, unless ``tachometer.enabled: false`` (see :class:`TachometerConfig`). |
 | `nsys` | [NsysObservabilityConfig](#nsysobservabilityconfig) | `NsysObservabilityConfig()` | Automatic Nsight Systems capture, enabled with the master switch. |
 
@@ -343,7 +348,7 @@ One entry of the top-level ``services:`` list.
 | `build_timeout_seconds` | int | `1800` | Kill ``build_command`` after this many seconds. |
 | `enabled` | bool | `True` | ``false`` drops the service, including an implicit one (``etcd`` / ``nats`` under the Dynamo frontend, the default exporters) declared here by name. |
 | `external` | str \| None | `None` | For discovery-plane kinds (``etcd``, ``nats``, ``mooncake-master``): use this already-running endpoint and launch nothing; the URL is what the job's processes are pointed at. |
-| `options` | dict[str, Any] | `{}` | Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` and ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind. |
+| `options` | dict[str, Any] | `{}` | Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` for vLLM and TRT-LLM, ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind. |
 | `metrics` | list[[ServiceMetricsConfig](#servicemetricsconfig)] | `[]` | Prometheus endpoints this service serves: one mapping or a list of ``{port, path, nodes, name}`` (``path`` defaults to ``/metrics``, ``nodes`` to ``all``). Tachometer scrapes each on every node the service runs on, or on its first node with ``nodes: first``, as endpoint ``<name>_<node>`` where ``name`` defaults to the service name. The exporter kinds declare theirs; write it for a generic service that publishes metrics, or on a ``ray`` service whose head serves a trainer's collector and router. |
 
 ### PostEvalConfig
@@ -480,8 +485,8 @@ Best-effort CPU power collection via the cpu-power-exporter binary.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `port` | int | `9405` | Port the exporter listens on and the head-node collector scrapes. |
-| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` \| ``acpi`` \| ``dcgm``). ``auto`` tries DCGM first and falls back to ACPI when libdcgm.so is absent or reports no CPU entities. Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only. |
+| `port` | int | `9405` | TCP port the per-node exporter listens on for ``/metrics``. |
+| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` \| ``acpi`` \| ``dcgm``). ``auto`` tries ACPI first (the only source with the socket envelope) and falls back to DCGM when no ACPI power_meter hwmon sensors exist or no socket-total sensor reads positive on two probes; DCGM watches fields 1130+1132 and falls back to 1130 alone if this libdcgm refuses the pair, and is accepted only if some socket reads a positive 1130. DCGM mode reports field 1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and the energy report flags such runs as "CPU rail only". Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only. |
 
 ### CpuPowerConfig
 
@@ -490,7 +495,7 @@ Host-side CPU power collection on every worker node.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `False` | Master switch for this leg. Default: False. |
-| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | ``auto`` tries ACPI then DCGM and is best-effort; naming ``acpi`` or ``dcgm`` explicitly makes that provider mandatory. |
+| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | ``auto`` uses ACPI when some socket-total sensor reads a positive value, else DCGM fields 1130+1132, else 1130 alone (either DCGM rung accepted only if some socket reads a positive 1130; SysIO alone cannot vouch), logging each step down; naming ``acpi`` or ``dcgm`` explicitly makes that provider mandatory (it still proves itself, but exits instead of stepping). |
 | `sample_interval_seconds` | float | `0.1` | Read period on each node, in seconds. |
 | `startup_timeout_seconds` | float | `30.0` | How long to wait for every node's collector to publish its ready marker before giving up on readiness. |
 | `required` | bool | `False` | Fail the job when the leg does not become ready or does not produce a valid publication. |

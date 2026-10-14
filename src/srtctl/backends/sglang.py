@@ -23,7 +23,15 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args, role_kv_events
+from srtctl.backends.base import (
+    Backend,
+    BoundRolesField,
+    ProcessGroup,
+    RoleSettings,
+    WorkerMode,
+    role_args,
+    role_kv_events,
+)
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DIST_INIT_PORTS,
@@ -121,6 +129,13 @@ class SGLangBackend(Backend):
     type: Literal["sglang"] = "sglang"
     # Accepted for compatibility; srtctl does not read it. Set `resources.gpu_type` instead.
     gpu_type: str | None = None
+    # The engine processes retitle themselves (setproctitle) and so never match dynamo\.sglang.
+    process_exporter_groups: ClassVar[tuple[ProcessGroup, ...]] = (
+        ProcessGroup("sglang_scheduler", cmdline=("sglang::scheduler",)),
+        ProcessGroup("sglang_dp_controller", cmdline=("sglang::data_parallel_controller",)),
+        ProcessGroup("sglang_detokenizer", cmdline=("sglang::detokenizer",)),
+        ProcessGroup("dynamo_sglang", cmdline=(r"dynamo\.sglang",)),
+    )
 
     # Mooncake KV store - launches mooncake_master on infra node and injects
     # MOONCAKE_MASTER env var on all workers automatically
@@ -133,6 +148,9 @@ class SGLangBackend(Backend):
     Schema: ClassVar[builtins.type[Schema]] = Schema
     # gRPC mode serves /metrics on its HTTP sidecar (Process.grpc_http_port) when --enable-metrics is set.
     grpc_metrics_path: ClassVar[str | None] = "/metrics"
+    # Scheduler-loop ranges, emitted from the spawned scheduler process; the
+    # batch-overlap operation ranges (SGLANG_ENABLE_NVTX_OPERATIONS) stay opt-in.
+    nvtx_environment: ClassVar[Mapping[str, str]] = {"SGLANG_ENABLE_NVTX_SCHEDULER": "1"}
 
     # =========================================================================
     # Backend Implementation
@@ -157,6 +175,11 @@ class SGLangBackend(Backend):
         """Check if gRPC mode is enabled for a worker mode."""
         config = self.get_config_for_mode(mode)
         return config.get("grpc-mode", False)
+
+    def data_parallel_size(self, mode: WorkerMode) -> int:
+        """``dp-size`` (upstream alias ``data-parallel-size``) for a worker mode; 1 when unset."""
+        config = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
+        return int(config.get("dp-size") or config.get("data-parallel-size") or 1)
 
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from the roles' engine args, or return default."""

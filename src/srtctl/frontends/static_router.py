@@ -224,6 +224,41 @@ class StaticRouterFrontend(Frontend):
         """Return extra direct readiness requirements, if any."""
         return []
 
+    def wait_for_workers(
+        self, workers: list[RouterWorker], config: Any, stop_event: threading.Event | None = None
+    ) -> None:
+        """Wait for HTTP ``/health`` or gRPC TCP connections; skip when health checks are disabled.
+
+        Raise on cancellation or exhaustion of the recipe's health-check budget.
+        """
+        if config.health_check is None:
+            return
+        health_check = config.health_check
+        timeout = float(health_check.max_attempts * health_check.interval_seconds)
+        health_urls = [
+            f"{worker.url.rstrip('/')}/health" for worker in workers if worker.url.startswith(("http://", "https://"))
+        ]
+        grpc_targets = [urlsplit(worker.url) for worker in workers if worker.url.startswith("grpc://")]
+        logger.info("Waiting for %d advertised backend endpoints before starting %s", len(workers), self.type)
+        deadline = time.monotonic() + timeout
+        ready = all(
+            wait_for_port(
+                str(target.hostname),
+                int(target.port or 0),
+                timeout=max(deadline - time.monotonic(), 0.0),
+                stop_event=stop_event,
+            )
+            for target in grpc_targets
+        ) and wait_for_http_endpoints(
+            health_urls,
+            poll_interval=float(health_check.interval_seconds),
+            timeout=max(deadline - time.monotonic(), 0.0),
+            report_every=60.0,
+            stop_event=stop_event,
+        )
+        if not ready:
+            raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
+
     def discovers_workers(self, backend: Any) -> bool:
         """Whether the router learns its workers by registration instead of from its command line.
 
@@ -283,35 +318,8 @@ class StaticRouterFrontend(Frontend):
             )
 
         workers = self.collect_workers(backend, backend_processes, runtime.network_interface)
-        if self.wait_for_workers_before_start and config.health_check is not None:
-            health_check = config.health_check
-            timeout = float(health_check.max_attempts * health_check.interval_seconds)
-            health_urls = [
-                f"{worker.url.rstrip('/')}/health"
-                for worker in workers
-                if worker.url.startswith(("http://", "https://"))
-            ]
-            # A gRPC worker serves no HTTP /health; its port accepting connections is the signal.
-            grpc_targets = [urlsplit(worker.url) for worker in workers if worker.url.startswith("grpc://")]
-            logger.info("Waiting for %d advertised backend endpoints before starting %s", len(workers), self.type)
-            deadline = time.monotonic() + timeout
-            ready = all(
-                wait_for_port(
-                    str(target.hostname),
-                    int(target.port or 0),
-                    timeout=max(deadline - time.monotonic(), 0.0),
-                    stop_event=stop_event,
-                )
-                for target in grpc_targets
-            ) and wait_for_http_endpoints(
-                health_urls,
-                poll_interval=float(health_check.interval_seconds),
-                timeout=max(deadline - time.monotonic(), 0.0),
-                report_every=60.0,
-                stop_event=stop_event,
-            )
-            if not ready:
-                raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
+        if self.wait_for_workers_before_start:
+            self.wait_for_workers(workers, config, stop_event)
 
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):

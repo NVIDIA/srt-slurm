@@ -26,27 +26,52 @@ Rail kinds
     Component rails. Reference breakdowns only; they are *not* additive to
     ``total`` (real traces show total ~93-104 W vs cpu_rail+soc ~53-58 W).
 ``dcgm``
-    Not an ACPI rail: DCGM field 1130 reports one already-aggregated value
-    per socket. Treated like ``total`` for ``power_w`` purposes. Whether it
-    equals the ACPI ``cpu_rail`` or the ``total`` envelope is unverified, so
-    DCGM rows leave every rail column blank.
+``dcgm``
+    DCGM reads ACPI hwmon component rails: field 1130 is ``cpu_rail`` and
+    field 1132 is ``soc``. Field 1130 is the DCGM-mode primary ``power_w``;
+    DCGM has no socket envelope field.
 ``module``
-    Superchip module power for one socket: Grace plus its GPUs, HBM, LPDDR5X
-    and regulators. Sourced from NVML only (``cpu_power_nvml_watts``); a
-    firmware ``Module Power Socket N`` label is not an ACPI rail kind and
-    stays unclassified. A superset of the socket's power that includes the
-    GPUs, so it never sums into ``total_power_w`` and never stands in as a
-    socket's power.
+    NVML superchip power for one socket, including Grace and its GPUs. It
+    is a reference rail and never adds to ``total_power_w``. An ACPI
+    ``Module Power Socket N`` label remains unclassified.
 """
 
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 TOTAL_KIND = "total"
 DCGM_KIND = "dcgm"
 MODULE_KIND = "module"
 OTHER_KIND = "other"
+
+
+# DCGM CPU-entity power fields and the ACPI rail each one reads. Verified
+# against NVIDIA/DCGM (DcgmSystemMonitor.cpp: label prefix -> file map;
+# DcgmModuleSysmon.cpp: field id -> getter). One record per field so the
+# name, the hwmon label and the rail kind cannot drift apart; producers only
+# ever name the field id, never the label.
+class DcgmPowerField(NamedTuple):
+    field_id: int
+    name: str
+    hwmon_label: str  # the ``power1_oem_info`` prefix DCGM's sysmon matches, with N = socket
+    kind: str  # the COMPONENT_RAIL_KINDS member that hwmon channel is
+
+
+DCGM_POWER_FIELDS: tuple[DcgmPowerField, ...] = (
+    DcgmPowerField(1130, "DCGM_FI_DEV_CPU_POWER_WATTS", "CPU Power Socket N", "cpu_rail"),
+    DcgmPowerField(1132, "DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT", "SysIO Power Socket N", "soc"),
+)
+# Deliberately NOT in the table: 1131 DCGM_FI_DEV_CPU_POWER_LIMIT_WATTS reads
+# ``power1_cap`` of "Grace Power Socket N" (the envelope's limit, not its
+# draw); 1133 DCGM_FI_DEV_MODULE_POWER_UTIL_CURRENT reads "Module Power
+# Socket N", whose scope on GB200/GB300 (Grace-only vs. Grace+Blackwell
+# superchip) is unverified on live hardware, so it is excluded until measured.
+DCGM_PRIMARY_FIELD_ID = 1130  # the value filed as DCGM-mode power_w
+DCGM_FIELD_BY_ID: dict[int, DcgmPowerField] = {field.field_id: field for field in DCGM_POWER_FIELDS}
+DCGM_FIELD_RAIL_KINDS: dict[int, str] = {field.field_id: field.kind for field in DCGM_POWER_FIELDS}
+DCGM_POWER_FIELD_IDS: tuple[int, ...] = tuple(field.field_id for field in DCGM_POWER_FIELDS)
 
 # Component rails, in wide-CSV column order.
 COMPONENT_RAIL_KINDS: tuple[str, ...] = ("cpu_rail", "soc", "dram")

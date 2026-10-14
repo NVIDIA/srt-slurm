@@ -2599,8 +2599,8 @@ class TestVLLMDataParallelMode:
                 "decode": RoleConfig(args={"tensor-parallel-size": 4}),
             }
         )
-        assert backend._is_dp_mode("prefill") is False
-        assert backend._is_dp_mode("decode") is False
+        assert backend.is_dp_mode("prefill") is False
+        assert backend.is_dp_mode("decode") is False
 
         # DP mode detected when data-parallel-size is set
         backend_dp = VLLMBackend(
@@ -2609,8 +2609,8 @@ class TestVLLMDataParallelMode:
                 "decode": RoleConfig(args={"data-parallel-size": 16, "enable-expert-parallel": True}),
             }
         )
-        assert backend_dp._is_dp_mode("prefill") is True
-        assert backend_dp._is_dp_mode("decode") is True
+        assert backend_dp.is_dp_mode("prefill") is True
+        assert backend_dp.is_dp_mode("decode") is True
         assert backend_dp._get_dp_size("prefill") == 16
 
     def test_dp_per_gpu_mode_creates_per_gpu_processes(self):
@@ -3209,7 +3209,7 @@ class TestVLLMDataParallelMode:
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
         runtime.frontend_port = 8000
-        profiling = MagicMock(is_nsys=True, is_nsys_time=False)
+        profiling = MagicMock(is_nsys=True, is_nsys_time=False, detailed_trace_annotation=False)
         profiling._get_phase_config.return_value = SimpleNamespace(
             start_step=10,
             stop_step=25,

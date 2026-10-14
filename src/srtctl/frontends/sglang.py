@@ -33,7 +33,7 @@ class SGLangRouterFrontend(StaticRouterFrontend):
     executable: ClassVar[tuple[str, ...]] = ("python", "-m", "sglang_router.launch_router")
     pd_flag: ClassVar[str] = "--pd-disaggregation"
     process_name: ClassVar[str] = "sglang_router"
-    log_label: ClassVar[str] = "router"
+    log_label: ClassVar[str | None] = "router"
     # Preserve the historical launch shape used by dry-run/topology callers
     # that construct the frontend before populating worker processes.
     allow_empty_workers: ClassVar[bool] = True

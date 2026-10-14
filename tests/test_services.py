@@ -112,11 +112,13 @@ def test_registered_kinds() -> None:
         "etcd",
         "generic",
         "gms",
+        "llm-d-sidecar",
         "lmcache-server",
         "mooncake-master",
         "mooncake-store",
         "nats",
         "node-exporter",
+        "otel-collector",
         "process-exporter",
         "ray",
     ]
@@ -245,7 +247,9 @@ def _orchestrator(config: SrtConfig, tmp_path: Path) -> SweepOrchestrator:
 
 
 def test_no_matching_services_is_a_noop(tmp_path: Path) -> None:
-    orchestrator = _orchestrator(_load("services:\n  - name: a\n    command: [/bin/true]\n"), tmp_path)
+    orchestrator = _orchestrator(
+        _load("frontend:\n  type: sglang-router\nservices:\n  - name: a\n    command: [/bin/true]\n"), tmp_path
+    )
     with patch(SRUN) as srun:
         assert orchestrator.start_services("before_workers") == []
     srun.assert_not_called()
@@ -455,6 +459,9 @@ MOONCAKE_ENGINE = """engine:
 
 STORES = """
 services:
+  - name: otel-collector
+    type: otel-collector
+    enabled: false
   - name: store-prefill
     type: mooncake-store
     placement:
@@ -559,7 +566,8 @@ def test_colocated_roles_with_same_port_rejected_before_launch(tmp_path: Path) -
 def test_workers_placement_deduplicates_shared_nodes(tmp_path: Path) -> None:
     config = _load(
         "services:\n  - name: store\n    type: mooncake-store\n    placement:\n      node: workers\n"
-        "    readiness:\n      port: 8800\n",
+        "    readiness:\n      port: 8800\n"
+        "  - name: otel-collector\n    type: otel-collector\n    enabled: false\n",
         head=MOONCAKE_HEAD,
         engine=MOONCAKE_ENGINE,
     )
@@ -582,6 +590,80 @@ def test_service_config_direct_construction() -> None:
         ServiceConfig(name="x", command=["python", ""])
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_dynamo_lifecycle_defaults_reach_frontend_and_workers(tmp_path, enabled):
+    from types import SimpleNamespace
+
+    from srtctl.frontends.dynamo import DynamoFrontend
+
+    head = DISAGG_HEAD.replace("observability:\n", f"observability:\n  enabled: {str(enabled).lower()}\n")
+    config = _load("", head=head)
+    orchestrator = _orchestrator(config, tmp_path)
+    runtime = orchestrator.runtime
+    topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+    with patch("srtctl.frontends.dynamo.start_srun_process", return_value=_proc()) as launch:
+        DynamoFrontend().start_frontends(topology, runtime, config, config.backend, [])
+    envs = [launch.call_args.kwargs["env_to_set"]]
+    for mode in ("prefill", "decode"):
+        envs.append(orchestrator._worker_environment_defaults(SimpleNamespace(endpoint_mode=mode, sys_port=8081)))
+    for env, component in zip(envs, ("frontend", "prefill", "decode"), strict=True):
+        assert env["DYN_LIFECYCLE_TRACE_ENABLED"] == "1"
+        assert env["OTEL_EXPORT_ENABLED"] == "1"
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://10.0.0.10:4317"
+        assert env["OTEL_SERVICE_NAME"] == f"dynamo-{component}"
+
+
+def test_direct_stack_does_not_receive_lifecycle_defaults(tmp_path):
+    from types import SimpleNamespace
+
+    config = _load("frontend:\n  type: sglang-router\n")
+    env = _orchestrator(config, tmp_path)._worker_environment_defaults(
+        SimpleNamespace(endpoint_mode="decode", sys_port=8081)
+    )
+    assert not any("OTEL" in key or "LIFECYCLE" in key for key in env)
+    assert "otel-collector" not in dict(_names(config))
+
+
+def test_otel_collector_launch_writes_dsight_input_and_survives_worker_shutdown(tmp_path):
+    config = _load("services:\n  - name: otel-collector\n    type: otel-collector\n    options:\n      port: 14317\n")
+    with (
+        patch("srtctl.services.otel.resolve_host_binary", return_value=Path("/srt/configs/otelcol-contrib")),
+        patch(SRUN, return_value=_proc()) as launch,
+        patch(HOST_IP, return_value="10.0.0.10"),
+        patch(WAIT, return_value=True) as wait,
+    ):
+        (proc,) = _orchestrator(config, tmp_path).start_services("before_workers")
+    assert proc.critical and proc.shutdown_tier == 1
+    assert launch.call_args.kwargs["container_image"] is None
+    assert launch.call_args.kwargs["command"] == [
+        "/srt/configs/otelcol-contrib",
+        "--config",
+        str(tmp_path / "otel-collector.yaml"),
+    ]
+    assert wait.call_args.args[0].port == 14317
+    collector = yaml.safe_load((tmp_path / "otel-collector.yaml").read_text())
+    assert collector["exporters"]["file/traces"]["path"] == str(tmp_path / "otel/traces.jsonl")
+    assert collector["exporters"]["file/traces"]["flush_interval"] == "1s"
+    assert collector["receivers"]["otlp"]["protocols"]["grpc"]["endpoint"] == "0.0.0.0:14317"
+    from srtctl.services.otel import lifecycle_otel_env
+
+    assert lifecycle_otel_env(config.services, "10.0.0.10", "decode")["OTEL_EXPORTER_OTLP_ENDPOINT"].endswith(":14317")
+
+
+def test_otel_collector_missing_binary_fails_with_setup_hint(tmp_path):
+    with patch("srtctl.services.otel.resolve_host_binary", return_value=None):
+        with pytest.raises(RuntimeError, match="make setup ARCH"):
+            _orchestrator(_load(""), tmp_path).start_services("before_workers")
+
+
+def test_explicit_otel_service_opt_out_removes_default_environment():
+    from srtctl.services.otel import lifecycle_otel_env
+
+    config = _load("services:\n  - name: otel-collector\n    type: otel-collector\n    enabled: false\n")
+    assert "otel-collector" not in dict(_names(config))
+    assert lifecycle_otel_env(config.services, "10.0.0.10", "frontend") == {}
+
+
 # --- implicit services ------------------------------------------------------------
 
 
@@ -598,12 +680,12 @@ def _names(config: SrtConfig) -> list[tuple[str, bool]]:
 
 def test_dynamo_frontend_implies_etcd_and_nats_on_the_infra_node(tmp_path: Path) -> None:
     config = _load("")  # frontend defaults to dynamo; request plane defaults to tcp
-    assert _names(config) == [("etcd", True)]
+    assert _names(config) == [("etcd", True), ("otel-collector", True)]
     assert uses_discovery_plane(config)
     # NATS is implied only when a plane rides on it.
     for extra in ("dynamo:\n  request_plane: nats\n", "dynamo:\n  event_plane: nats\n"):
         with_nats = _load(extra)
-        assert _names(with_nats) == [("etcd", True), ("nats", True)]
+        assert _names(with_nats) == [("etcd", True), ("otel-collector", True), ("nats", True)]
         reasons = {e.service.name: e.reason for e in effective_services(with_nats)}
         assert reasons["nats"].startswith("dynamo.")
 
@@ -652,7 +734,7 @@ def test_static_frontend_implies_no_discovery_plane(tmp_path: Path) -> None:
 
 def test_declared_etcd_takes_over_and_external_is_not_launched(tmp_path: Path) -> None:
     config = _load("services:\n  - name: etcd\n    type: etcd\n    external: http://etcd.shared:2379\n")
-    assert _names(config) == [("etcd", False)]
+    assert _names(config) == [("etcd", False), ("otel-collector", True)]
     orchestrator = _orchestrator(config, tmp_path)
     with (
         patch(SRUN, return_value=_proc()) as srun,
@@ -667,7 +749,7 @@ def test_declared_etcd_takes_over_and_external_is_not_launched(tmp_path: Path) -
 
 def test_enabled_false_drops_an_implicit_service() -> None:
     config = _load("services:\n  - name: nats\n    type: nats\n    enabled: false\n")
-    assert _names(config) == [("etcd", True)]
+    assert _names(config) == [("etcd", True), ("otel-collector", True)]
 
 
 def test_nats_max_payload_renders_a_config_file(tmp_path: Path) -> None:
@@ -695,7 +777,11 @@ def test_declared_infra_services_drive_placement_and_payload(tmp_path: Path) -> 
     )
     assert config.infra_dedicated_node is True
     assert config.nats_max_payload_mb == 24
-    assert [entry.service.effective_placement for entry in effective_services(config)] == ["dedicated", "dedicated"]
+    assert [entry.service.effective_placement for entry in effective_services(config)] == [
+        "dedicated",
+        "head",
+        "dedicated",
+    ]
 
 
 def test_declared_etcd_dedicated_must_agree_with_nats(tmp_path: Path) -> None:

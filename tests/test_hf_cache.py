@@ -666,6 +666,7 @@ resources:
             patch.object(orch, "run_benchmark", return_value=0),
             patch.object(orch, "run_postprocess"),
             patch("srtctl.cli.do_sweep.StatusReporter"),
+            patch("srtctl.cli.do_sweep.start_process_monitor"),
         ):
             orch.run()
             mock_clean.assert_not_called()

@@ -31,7 +31,7 @@ uv run ruff format src/srtctl/
 ## Per-run Performance Analysis
 
 For **every Slurm run you launch or analyze**, write and maintain
-`<run_dir>/perf-analysis.md` in the actual job output directory on the cluster.
+`<run_dir>/logs/perf-analysis.md` in the actual job's logs directory on the cluster.
 Read and follow [the report requirements](docs/perf-analysis.md).
 
 Include TTFT p50/p95/p99, ITL p50/p99, throughput and the applicable agentic

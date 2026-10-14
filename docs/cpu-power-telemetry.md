@@ -104,10 +104,66 @@ The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
   it) a `total`-kind rail per socket. Domain names vary by platform (e.g.
   "Grace Power Socket 0" vs. a generic "Total Power socket 0", some suffixed
   with "in uW"); the exporter classifies all known variants into these kinds.
-- **`dcgm`** — reads DCGM CPU entity power directly, one already-aggregated
-  value per socket.
-- **`auto`** (default) — tries DCGM first, falls back to ACPI when DCGM is
-  unavailable or reports no CPU entities.
+- **`dcgm`** — reads the DCGM CPU-entity power fields. DCGM has no CPU power
+  backend of its own: its sysmon module reads the same ACPI hwmon channels by
+  `power1_oem_info` label, so each field *is* one ACPI rail:
+
+  | DCGM field | hwmon label it reads | srtctl rail | CSV column |
+  | --- | --- | --- | --- |
+  | 1130 `DCGM_FI_DEV_CPU_POWER_WATTS` | `CPU Power Socket N` | `cpu_rail` | `power_w` **and** `cpu_rail_w` |
+  | 1132 `DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT` | `SysIO Power Socket N` | `soc` | `soc_w` |
+  | 1131 `DCGM_FI_DEV_CPU_POWER_LIMIT_WATTS` | `Grace Power Socket N` (**cap** only) | — | — |
+  | 1133 `DCGM_FI_DEV_MODULE_POWER_UTIL_CURRENT` | `Module Power Socket N` | — (unverified; excluded) | — |
+
+  No DCGM field reports the `Grace Power Socket N` envelope's draw. Field
+  1133 does read a usage file, but what "Module" spans on GB200/GB300
+  (Grace alone, or the Grace+Blackwell superchip) has not been measured on a
+  live node; it is excluded until `dcgmi dmon -e 1130,1131,1132,1133 -i
+  cpu:0` alongside `cat /sys/class/hwmon/*/device/power1_oem_info` settles
+  it. So
+  **DCGM-mode `power_w` is the CPU rail, roughly half of ACPI-mode `power_w`**
+  (about 53 W vs 100 W per socket on GB200 reference runs). The energy report
+  attaches a "CPU rail only" warning to DCGM-sourced runs; do not compare their
+  CPU figures with ACPI-mode runs as like-for-like. The exporter publishes one
+  `cpu_power_dcgm_watts{socket,field_id}` sample per field; the collector files
+  1130 as `power_w` (as it always has) and also as `cpu_rail_w`, and 1132 as
+  `soc_w`. Older exporter builds publish 1130 alone without a `field_id`
+  label; the collector treats those samples as 1130.
+  Source: NVIDIA/DCGM `modules/sysmon/DcgmSystemMonitor.cpp` (label → file
+  map) and `modules/sysmon/DcgmModuleSysmon.cpp` (field id → getter).
+- **`auto`** (default) — walks a fixed ladder at startup, most informative
+  source first, and each source must prove itself before it is used. Every
+  step down is logged at WARN in the exporter's `.out` file with the reason:
+
+  1. **ACPI, live** — `power_meter` hwmon sensors were discovered *and* at
+     least one **socket-total** channel (`Grace Power Socket N` / `Total
+     Power socket N`) reads a positive value. Discovery alone is not enough:
+     a node can expose channels that never report, and publishing them would
+     integrate to 0 J and pass for a measurement. Only the total counts
+     because it is what becomes `power_w`; a live component rail next to a
+     dead envelope would otherwise vouch for a socket whose power can never
+     be published. If no total reads positive, the probe is repeated once
+     after 1 s (hwmon averages can read 0 on the first poll after boot)
+     before ACPI is declared dead.
+  2. **DCGM, fields 1130 + 1132** — CPU rail and SysIO.
+  3. **DCGM, field 1130 alone** — when this libdcgm refuses 1132 for CPU
+     entities (older release, or a sysmon without SysIO). 1130 alone is the
+     floor every earlier exporter had; in `auto` DCGM is the last resort, so
+     failing here would mean no CPU power at all.
+
+     Either DCGM rung is accepted only if at least one CPU entity then
+     returns a positive field 1130 on a first read — that is the value filed
+     as `power_w`. SysIO alone does not make DCGM usable: a node where only
+     1132 reads would publish `soc_w` for the whole run with no `power_w`
+     and no socket rows. An all-`None` read usually means the embedded
+     daemon lacks hardware access (running without root while a system
+     dcgm-exporter holds the session).
+  4. **Exit non-zero** — no source could be established.
+
+  `--source acpi` and `--source dcgm` run only their own rungs (ACPI still
+  requires the liveness probe to pass; DCGM still tries 1130+1132 then 1130)
+  and exit non-zero instead of stepping down. The Python host collector
+  (`srtctl.core.cpu_power`) implements the same ladder.
 
 The exporter resolves this once at process startup and serves only one base
 metric family (`cpu_power_dcgm_watts` or `cpu_power_acpi_watts`) for its
@@ -188,13 +244,9 @@ per socket per scrape. Schema v3 has header:
 schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, cpu_rail_w, soc_w, dram_w, module_w, total_power_w
 ```
 
-- **`power_w`**: the socket's power. In ACPI mode it is the `total`-kind
-  envelope (`Grace Power Socket N`, or a generic `Total Power socket N`). In
-  DCGM mode it is the per-socket DCGM value. `sensor` names the reading that
-  fed it, such as `CPU0:cpuSidePowerUsageW` (ACPI) or `CPU0:cpuPowerUsageW`
-  (DCGM). A socket without that reading gets no row.
-- **`cpu_rail_w`, `soc_w`, `dram_w`**: ACPI component rails, blank in DCGM
-  mode. They are reference breakdowns, not parts of `power_w`. Real hardware
+- **`power_w`**: the socket primary reading. ACPI uses the `total` envelope; DCGM uses field 1130, the CPU rail. A socket without its primary reading gets no row.
+- **`cpu_rail_w`, `soc_w`, `dram_w`**: component rails, blank when absent. ACPI fills those its firmware exposes; DCGM fills `cpu_rail_w` (= `power_w`, field 1130) and `soc_w` (field 1132). Zero or non-finite readings are missing, never interpreted as idle power. Component rails never substitute for `power_w` or add to `total_power_w`.
+- **`total_power_w`**: the sum of `power_w` across the node's sockets, repeated on each socket row. ACPI totals measure the socket envelope; DCGM totals sum CPU rails and are not directly comparable. Hardware
   traces show the `total` rail at roughly 93-104W against `cpu_rail`+`soc`
   combined at roughly 53-58W for the same socket. `total` measures the whole
   Grace SoC power boundary, not literally `cpu_rail + soc`.
@@ -205,11 +257,6 @@ schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, cp
   inside it. It is blank when no module reading arrived. The row's `source`
   and `sensor` columns describe `power_w`. `module_w` always comes from
   `cpu_power_nvml_watts`.
-- **`total_power_w`**: the node total, the sum of `power_w` over the node's
-  sockets, repeated on every socket row of the scrape. Component rails and
-  `module_w` never enter it. Consumers (e.g.
-  `srtctl.analysis.power_energy_report.load_cpu_samples`) must skip a blank
-  `total_power_w` rather than treat it as `0`.
 
 v1 wrote one row per rail with no rail columns. v2 pivoted to one row per
 socket. v3 appended `module_w`. Readers accept all three.
@@ -230,7 +277,7 @@ import pandas as pd
 import numpy as np
 
 df = pd.read_csv("samples.csv")
-df = df[df["total_power_w"] != ""]  # skip scrapes with no total-kind channel
+df = df[df["total_power_w"] != ""]  # skip scrapes without a node total
 
 # total_power_w repeats across every socket row for the same (hostname, timestamp);
 # dedupe before integrating or sockets get double-counted.
@@ -275,8 +322,12 @@ are a separate, unrelated top-level config (`gpu_power_limits`) — not part of
 scraper design. Instead of an exporter plus a head-node poller, srtctl launches
 `python3 -m srtctl.core.cpu_power` directly on the bare host of every worker
 node. Each collector reads Linux ACPI `power_meter` hwmon channels (or DCGM CPU
-entity field 1130) itself, writes its own per-node CSV under
-`<storage_subdir>/nodes/`, and drops a ready marker. At teardown the head node
+entity fields 1130 and 1132) itself, writes its own per-node CSV under
+`<storage_subdir>/nodes/`, and drops a ready marker. Its `--source auto`
+walks the same ladder as the exporter (ACPI only if some sensor reads
+positive, then DCGM 1130+1132, then 1130 alone), logging each step down to
+the collector's `.out` file; the per-node `*.metadata.json` records which
+DCGM power fields were actually watched (`power_fields[].watched`). At teardown the head node
 (`CpuPowerTelemetrySession`, `src/srtctl/core/cpu_power_session.py`) merges the
 node CSVs into `<storage_subdir>/samples.csv` and writes `manifest.json`.
 
@@ -285,7 +336,7 @@ telemetry:
   enabled: true
   cpu_power:
     enabled: true              # presence alone is not enough; this flag turns the leg on
-    source: auto               # "auto" (ACPI then DCGM, best-effort) | "acpi" | "dcgm" (mandatory)
+    source: auto               # "auto" (live ACPI, then DCGM 1130+1132, then 1130) | "acpi" | "dcgm" (mandatory)
     sample_interval_seconds: 0.1
     startup_timeout_seconds: 30.0
     required: false            # true fails the job if the leg is not ready or not publishable
@@ -304,7 +355,7 @@ Differences from `cpu_power_exporter`:
   extra `timestamp_local` column, not in `power/cpu/`. The energy report
   (`python -m srtctl.analysis.power_energy_report <log_dir>`) discovers either
   location; when a run has both, pass `--cpu-samples <path>` to pick one.
-- **Per-socket utilization (DCGM source only).** Alongside power field 1130
+- **Per-socket utilization (DCGM source only).** Alongside the power fields
   the DCGM reader watches CPU entity fields 1100-1104 and appends five
   columns to every sample row: `cpu_util_total`, `cpu_util_user`,
   `cpu_util_nice`, `cpu_util_sys`, `cpu_util_irq`, reported by DCGM as a

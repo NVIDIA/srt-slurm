@@ -53,6 +53,7 @@ from srtctl.backends import (
     VLLMBackend,
 )
 from srtctl.backends.sglang import MooncakeKVStoreConfig
+from srtctl.backends.trtllm import TRTLLMMooncakeKVStoreConfig
 from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
 from srtctl.benchmarks import SHARED_BENCHMARK_FIELDS, get_runner_class, list_benchmarks
 from srtctl.core.config import LEGACY_TOP_LEVEL_KEYS
@@ -386,6 +387,7 @@ INTERNAL_TOP_LEVEL: frozenset[str] = frozenset(LEGACY_TOP_LEVEL_KEYS)
 INTERNAL_CLASSES: frozenset[type] = frozenset(
     {
         MooncakeKVStoreConfig,
+        TRTLLMMooncakeKVStoreConfig,
         VLLMMooncakeKVStoreConfig,
     }
 )

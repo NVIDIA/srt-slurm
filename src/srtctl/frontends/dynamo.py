@@ -30,6 +30,7 @@ from srtctl.services.implicit import (
     infra_placement,
     nats_implied_reasons,
 )
+from srtctl.services.otel import OTEL_SERVICE_NAME, lifecycle_otel_env
 
 if TYPE_CHECKING:
     from srtctl.backends.base import WorkerMode
@@ -131,11 +132,12 @@ class DynamoFrontend(DynamicFrontend):
         return process.sys_port
 
     def implied_services(self, config: Any) -> list[EffectiveService]:
-        """The discovery plane: etcd always, NATS only when a Dynamo plane rides on it.
+        """Discovery and lifecycle tracing, independent of the observability preset.
 
         The default request plane is tcp and KV events go over direct ZMQ, so a
-        plain Dynamo job runs etcd alone; a recipe declares a ``nats`` service to
-        force one anyway.
+        plain Dynamo job needs only etcd for discovery; a recipe declares a
+        ``nats`` service to force one anyway. The collector is independent of
+        the discovery planes and the observability preset.
         """
         placement = infra_placement(config)
         implied = [
@@ -143,7 +145,12 @@ class DynamoFrontend(DynamicFrontend):
                 ServiceConfig(name=ETCD_SERVICE_NAME, type="etcd", placement=placement),
                 implicit=True,
                 reason="frontend.type dynamo",
-            )
+            ),
+            EffectiveService(
+                ServiceConfig(name=OTEL_SERVICE_NAME, type="otel-collector"),
+                implicit=True,
+                reason="Dynamo lifecycle tracing (independent of observability.enabled)",
+            ),
         ]
         nats_reasons = nats_implied_reasons(config)
         if nats_reasons:
@@ -241,6 +248,7 @@ class DynamoFrontend(DynamicFrontend):
                 env_to_set["DYN_EVENT_PLANE"] = config.dynamo.event_plane
 
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
+            env_to_set.update(lifecycle_otel_env(config.services, runtime.head_node_ip, "frontend"))
             env_to_set.update(build_otel_env(config.observability, "frontend"))
             env_to_set.update(nsys_env)
 

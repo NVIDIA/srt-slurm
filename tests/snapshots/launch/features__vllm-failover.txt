@@ -1,6 +1,6 @@
 # examples/features/vllm-failover.yaml
 # exit_code: 0
-# srun calls: 15
+# srun calls: 16
 
 ## service_etcd
 nodelist: node-01
@@ -16,6 +16,15 @@ bash_preamble: |
     rm -rf /tmp/etcd && mkdir -p /tmp/etcd
 command: |
     /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_otel-collector
+nodelist: node-01
+output: <output>/logs/service_otel-collector.out
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: True
+command: |
+    configs/otelcol-contrib --config <output>/logs/otel-collector.yaml
 
 ## service_gms_agg_0_node-01
 nodelist: node-01
@@ -143,6 +152,7 @@ container_mounts:
 env_to_set:
     CUDA_VISIBLE_DEVICES: 0
     DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -155,6 +165,9 @@ env_to_set:
     FAILOVER_LOCK_PATH: /dev/shm/srtctl-4242/agg_0/failover.lock
     GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_0
     HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-agg
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
     VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
@@ -179,6 +192,7 @@ container_mounts:
 env_to_set:
     CUDA_VISIBLE_DEVICES: 0
     DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -191,6 +205,9 @@ env_to_set:
     FAILOVER_LOCK_PATH: /dev/shm/srtctl-4242/agg_0/failover.lock
     GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_0
     HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-agg
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
     VLLM_NIXL_SIDE_CHANNEL_PORT: 5401
@@ -215,6 +232,7 @@ container_mounts:
 env_to_set:
     CUDA_VISIBLE_DEVICES: 1
     DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -227,6 +245,9 @@ env_to_set:
     FAILOVER_LOCK_PATH: /dev/shm/srtctl-4242/agg_1/failover.lock
     GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_1
     HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-agg
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
     VLLM_NIXL_SIDE_CHANNEL_PORT: 5402
@@ -251,6 +272,7 @@ container_mounts:
 env_to_set:
     CUDA_VISIBLE_DEVICES: 1
     DYN_HEALTH_CHECK_ENABLED: false
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
@@ -263,6 +285,9 @@ env_to_set:
     FAILOVER_LOCK_PATH: /dev/shm/srtctl-4242/agg_1/failover.lock
     GMS_SOCKET_DIR: /dev/shm/srtctl-4242/agg_1
     HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-agg
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
     VLLM_NIXL_SIDE_CHANNEL_PORT: 5403
@@ -285,9 +310,13 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_REQUEST_PLANE: tcp
     DYN_SKIP_SGLANG_LOG_FORMATTING: 1
     ETCD_ENDPOINTS: http://127.0.0.1:2379
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-frontend
 mpi: pmix
 command: |
     python3 -m dynamo.frontend --http-port=8000 --router-mode round-robin

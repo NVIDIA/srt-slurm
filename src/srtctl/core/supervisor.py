@@ -190,7 +190,10 @@ class WorkerSupervisor:
                 policy = policy_for(mode)
                 if not policy.enabled:
                     continue
-                expected = {worker_step_name(mode, index, process.node, engine_id=engine) for process in processes}
+                expected = {
+                    worker_step_name(mode, index, process.node, engine_id=engine, dp_rank=process.dp_rank)
+                    for process in processes
+                }
                 mine = sorted(names & expected)
                 if not mine:
                     logger.warning("Worker supervisor: no registered steps found for %s", _label(key))

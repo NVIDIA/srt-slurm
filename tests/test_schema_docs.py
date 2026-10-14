@@ -58,9 +58,9 @@ def test_checked_in_schema_reference_is_current() -> None:
     Fix with: uv run srtctl schema-docs
     """
     assert DEFAULT_OUTPUT.exists(), f"{DEFAULT_OUTPUT} is missing; run `srtctl schema-docs`"
-    assert (
-        schema_reference_is_current()
-    ), f"{DEFAULT_OUTPUT.name} is stale relative to the code; run `srtctl schema-docs` and commit the result"
+    assert schema_reference_is_current(), (
+        f"{DEFAULT_OUTPUT.name} is stale relative to the code; run `srtctl schema-docs` and commit the result"
+    )
 
 
 def test_render_is_deterministic() -> None:
@@ -249,7 +249,7 @@ def test_required_field_renders_as_required() -> None:
 
 def test_docstring_attributes_become_descriptions() -> None:
     rows = {row.key: row for row in field_docs(ObservabilityConfig)}
-    assert "Master analytics knob" in rows["enabled"].description
+    assert "does not gate Dynamo lifecycle tracing" in rows["enabled"].description
 
 
 def test_field_comments_become_descriptions() -> None:
@@ -274,6 +274,13 @@ def test_engine_types_and_cluster_config_are_rendered() -> None:
     assert "<!-- GENERATED FILE" in text
 
 
+@pytest.fixture
+def wide_console(monkeypatch) -> None:
+    # main() builds its own rich Console; at 80 columns a long tmp_path wraps mid-phrase or mid-filename.
+    monkeypatch.setenv("COLUMNS", "500")
+
+
+@pytest.mark.usefixtures("wide_console")
 def test_cli_check_passes_on_a_fresh_docs_dir(tmp_path: Path, monkeypatch, capsys) -> None:
     write_generated(tmp_path)
     monkeypatch.setattr(sys, "argv", ["srtctl", "schema-docs", "--check", "--docs-dir", str(tmp_path)])
@@ -281,6 +288,7 @@ def test_cli_check_passes_on_a_fresh_docs_dir(tmp_path: Path, monkeypatch, capsy
     assert "up to date" in capsys.readouterr().out
 
 
+@pytest.mark.usefixtures("wide_console")
 def test_cli_check_fails_on_a_stale_file(tmp_path: Path, monkeypatch, capsys) -> None:
     write_generated(tmp_path)
     (tmp_path / "cli-reference.md").write_text("# stale\n")

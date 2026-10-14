@@ -4,6 +4,33 @@ The `observability:` preset (nsys, OTEL, Tachometer) and the `telemetry:` provid
 
 ## observability
 
+**Dynamo request-lifecycle OTel tracing is on by default**, including when
+`observability.enabled: false` or the entire block is omitted. It applies only to
+the Dynamo stack (`frontend.type: dynamo`). No `enable_otel`, `otel_endpoint`, or
+`DYN_LIFECYCLE_TRACE_ENABLED` recipe setting is needed.
+
+The implied `otel-collector` service starts on the head node before workers,
+receives OTLP/gRPC on port 4317, and saves `<log_dir>/otel/traces.jsonl` and
+`logs.jsonl`. Dynamo frontends and workers receive `DYN_LIFECYCLE_TRACE_ENABLED=1`,
+`OTEL_EXPORT_ENABLED=1`, the head-node OTLP endpoint, and a component service name.
+The collector stops after the serving processes so they can flush spans. This
+uses Dynamo's native `dynamo.request_lifecycle` instrumentation (Dynamo PR
+[#14101](https://github.com/ai-dynamo/dynamo/pull/14101)); the installed Dynamo build
+must include it. The default lifecycle mode is Dynamo's `core` mode.
+
+`make setup ARCH=<compute_arch>` installs the pinned, checksum-verified
+`otelcol-contrib` host binary. A missing binary fails startup with a setup hint.
+An air-gapped installation can set `services[name: otel-collector].options.binary`
+to a shared executable; `options.port` changes both its listener and the automatic
+endpoint. `srtctl dry-run` shows the implied collector regardless of the analytics
+level. [DSight](dsight.md) discovers the saved OTLP JSONL when building the report.
+
+Explicit recipe environment still wins. The existing `enable_otel: true` plus
+`otel_endpoint` redirects traces to that external endpoint, so those traces are
+not saved locally. To opt out of automatic collection, declare the
+`otel-collector` service with `enabled: false`; this also removes its default
+lifecycle/export environment. Neither option changes other stacks' defaults.
+
 Tachometer collection is **on by default for every run** (no configuration needed; `observability.tachometer.enabled: false` opts out). `observability.enabled` turns on the server metrics *content* (the TRT-LLM publish flag and engine statistics) and the trace surfaces:
 
 ```yaml
@@ -69,7 +96,7 @@ Every Tachometer field: [TachometerConfig](schema-reference.md#tachometerconfig)
 | `default_exporters` | bool | `true` | Imply the built-in DCGM + node + process exporters when no explicit blocks are set. The exporters are [services](services.md#implicit-services) (`dcgm-exporter`, `node-exporter`, `process-exporter`); declaring one under `services:` by that name overrides it, and `srtctl dry-run` lists them |
 | `dcgm_exporter` | object/null | built-in | Defaults to `nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04` on port 9401; an explicit block overrides |
 | `node_exporter` | object/null | built-in | Defaults to `quay.io#prometheus/node-exporter:v1.8.2` on port 9101 with the `cpu`, `infiniband`, `meminfo`, `processes`, `stat`, `vmstat`, `pressure` and `meminfo_numa` collectors on worker nodes. Includes major faults and page-reclaim counters; retains process-state and NUMA-node identity. An explicit block overrides |
-| `process_exporter` | object/null | built-in | Defaults to the **host-native** `configs/process-exporter` binary (ncabatoff/process-exporter 0.8.7, installed by `make setup` for the compute arch, like `configs/nats-server` and `configs/etcd`) on port 9256, launched with plain `srun` (no container) on every allocated node (the `process-exporter` service, `placement.node: all`). Reads the host `/proc` and publishes per-process-group CPU seconds by mode, thread count, per-thread-name CPU and count (`-threads=true`), context switches, RSS and open fds. The passthrough filter retains metric names and labels, including summary sum/count suffixes, and attaches hostname and run metadata to raw rows. Groups (frontend, `dynamo_trtllm` / `dynamo_sglang` / `dynamo_vllm` handlers, `trtllm_engine` children, the SGLang engine processes `sglang_scheduler` / `sglang_dp_controller` / `sglang_detokenizer` matched on their retitled command lines, launcher, client, infra daemons) come from `<log_dir>/process-exporter.yml`, written at launch. If the binary is missing the leg is skipped with a warning (submit warns too). An explicit block may set `binary` (absolute, or relative to the srtctl checkout) or instead a `container_image` with `binary` unset to run it containerized; the upstream `FROM scratch` image is not used by default because pyxis/enroot on some clusters cannot start shell-less images |
+| `process_exporter` | object/null | built-in | Defaults to the **host-native** `configs/process-exporter` binary (ncabatoff/process-exporter 0.8.7, installed by `make setup` for the compute arch, like `configs/nats-server` and `configs/etcd`) on port 9256, launched with plain `srun` (no container) on every allocated node (the `process-exporter` service, `placement.node: all`). Reads the host `/proc` and publishes per-process-group CPU seconds by mode, thread count, per-thread-name CPU and count (`-threads=true`), context switches, RSS and open fds. The passthrough filter retains metric names and labels, including summary sum/count suffixes, and attaches hostname and run metadata to raw rows. Groups come from `<log_dir>/process-exporter.yml`, written at launch: the Dynamo frontend, then the groups of every engine the recipe runs (each backend's `process_exporter_groups`: TRT-LLM's `trtllm_llmapi_launch` launcher, `trtllm_engine` children, `dynamo_trtllm` handler and `trtllm_serve`; SGLang's `sglang_scheduler` / `sglang_dp_controller` / `sglang_detokenizer` engine processes and `dynamo_sglang`; vLLM's `vllm_engine_core` / `vllm_worker` / `vllm_api_server` / `vllm_dp_coordinator` engine processes, `vllm_serve` and `dynamo_vllm`), then `vllm_router`, the benchmark clients and the infra daemons. SGLang and vLLM engine processes are matched on their retitled command lines (vLLM's default `VLLM::` title prefix). If the binary is missing the leg is skipped with a warning (submit warns too). An explicit block may set `binary` (absolute, or relative to the srtctl checkout) or instead a `container_image` with `binary` unset to run it containerized; the upstream `FROM scratch` image is not used by default because pyxis/enroot on some clusters cannot start shell-less images |
 
 Every exporter block ([TelemetryExporterConfig](schema-reference.md#telemetryexporterconfig)) accepts `container_image`, `port`, `command` and `binary`, and GPU exporters also `kind` (`dcgm` or `custom`), `gpu_labels` and `gpu_metrics`. `binary` selects host-native launch (the executable runs directly under `srun`, `container_image` is ignored and may be `""`); without it the exporter runs from `container_image`. One of the two must be set. `gpu_labels` and `gpu_metrics` matter only to GPU power telemetry (`telemetry.dcgm_exporter` and the cluster `default_gpu_exporter` it inherits from) and default to DCGM; see [GPU power telemetry](power-telemetry.md#gpu-exporter-labels-and-metrics).
 
@@ -109,8 +136,8 @@ Fields: [TelemetryConfig](schema-reference.md#telemetryconfig). `collect_interva
 
 `telemetry.cpu_power_exporter` is an independent, best-effort leg: its presence (not a separate `enabled` flag) turns CPU power collection on, and it can run with or without `dcgm_exporter` alongside it. On each worker node, srtctl launches a `cpu-power-exporter` process directly on the bare host (outside the model container, so it can read host power interfaces) and exposes it on `cpu_power_exporter.port`. It resolves the bundled Rust binary installed by `make setup` first, falling back to the ACPI-only Python stdlib exporter (`srtctl.core.cpu_power_exporter`) when that binary is absent. A head-node collector scrapes every worker's exporter on the shared `collect_interval_ms`/`request_timeout_seconds` cadence and writes per-sample rows plus a manifest under `<log_dir>/<storage_subdir>/cpu/` (`samples.csv`, `cpu_manifest.json`).
 
-Fields: [CpuPowerExporterConfig](schema-reference.md#cpupowerexporterconfig). `source: auto` tries DCGM first and falls back to ACPI; it has no effect on the Python fallback exporter, which is ACPI-only.
+Fields: [CpuPowerExporterConfig](schema-reference.md#cpupowerexporterconfig). `source: auto` uses ACPI when at least one discovered socket-total sensor reads a positive value (the envelope that becomes `power_w`; a 0 W reading from any channel is filed as missing, never as a sample), else DCGM fields 1130+1132 (CPU rail + SysIO), else 1130 alone if this libdcgm refuses 1132 — each step down logged at WARN. DCGM has no envelope field, so its `power_w` is ~half of ACPI's. The setting has no effect on the Python fallback exporter, which is ACPI-only. See [CPU power telemetry](cpu-power-telemetry.md) for the full ladder.
 
-`samples.csv` carries one row per socket per scrape (schema v3), with columns `schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, cpu_rail_w, soc_w, dram_w, module_w, total_power_w`. `power_w` is the socket's power: the ACPI `total` envelope, or the DCGM per-socket value. The ACPI component rails (`cpu_rail_w`, `soc_w`, `dram_w`) are reference breakdowns, not parts of `power_w`, and are blank in DCGM mode. `module_w` is superchip module power from NVML, the only source of that column. It covers Grace plus the GPUs, HBM, LPDDR5X and regulators, so it is a superset of `power_w`. `total_power_w` sums `power_w` over the node's sockets and never includes the component rails or `module_w`. See [cpu-power-telemetry.md](cpu-power-telemetry.md#output-format) for details.
+`samples.csv` carries one row per socket per scrape (schema v3), with columns `schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, cpu_rail_w, soc_w, dram_w, module_w, total_power_w`. ACPI `power_w` is the socket envelope; DCGM `power_w` is field 1130, the CPU rail. ACPI fills available component rails; DCGM fills `cpu_rail_w` (1130) and `soc_w` (1132). NVML supplies `module_w`, a superchip reference rail that includes the GPUs. `total_power_w` sums only `power_w` over sockets. See [CPU power telemetry](cpu-power-telemetry.md#output-format) for details.
 
 Because collection is always best-effort, there is no `required` knob for the CPU leg: a node that fails to expose its exporter (or fails to publish readings) simply produces gaps in `samples.csv`, and the run continues.

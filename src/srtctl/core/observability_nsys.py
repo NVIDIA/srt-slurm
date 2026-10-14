@@ -65,12 +65,8 @@ def wrap_observability_nsys(
         "SRT_NSYS_REPORT_EXPECTED": str(ranks),
         "SRT_NSYS_REPORT_STOP_TIMEOUT": str(settings.report_timeout_secs),
     }
-    if not frontend and config.backend_type == "trtllm":
-        environment.update(TLLM_LLMAPI_ENABLE_NVTX="1", TLLM_PROFILE_LOG_RANKS="all")
-    elif not frontend and config.backend_type == "sglang":
-        # SGLang's scheduler-loop ranges live in the spawned scheduler process and are
-        # off unless this gate is set; the batch-overlap operation ranges stay opt-in.
-        environment["SGLANG_ENABLE_NVTX_SCHEDULER"] = "1"
+    if not frontend:
+        environment.update(config.backend.nvtx_environment)
     if settings.nvtx_injection_path:
         environment["NVTX_INJECTION64_PATH"] = settings.nvtx_injection_path
     if settings.capture_window == "measured_workload":

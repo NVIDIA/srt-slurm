@@ -5,9 +5,11 @@
 
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import yaml
 from marshmallow import ValidationError
 
 from srtctl.backends import SGLangBackend, VLLMBackend
@@ -19,6 +21,8 @@ from srtctl.frontends.base import _FRONTENDS
 from srtctl.frontends.sglang import SGLangRouterFrontend
 from srtctl.frontends.vllm_router import VLLMRouterFrontend
 from srtctl.ports import HTTP_PORTS
+from srtctl.services.config import ServiceConfig
+from srtctl.services.exporters import PROCESS_EXPORTER_CONFIG_NAME, ProcessExporterService
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +58,15 @@ def recipe():
 
 def load(data):
     return SrtConfig.Schema().load(copy.deepcopy(data))
+
+
+def test_process_exporter_groups_cover_every_role_engine(tmp_path):
+    service = ServiceConfig(name="process-exporter", type="process-exporter")
+    ProcessExporterService().prepare(service, SimpleNamespace(log_dir=tmp_path), load(recipe()))
+    text = (tmp_path / PROCESS_EXPORTER_CONFIG_NAME).read_text()
+    names = [group["name"] for group in yaml.safe_load(text)["process_names"]]
+    assert {"vllm_engine_core", "dynamo_vllm", "sglang_scheduler", "dynamo_sglang"} <= set(names)
+    assert "dynamo_trtllm" not in names
 
 
 def test_independent_engine_arguments_environments_and_images():

@@ -484,6 +484,18 @@
           "description": "Container path to dataset file (mount via extra_mount)",
           "default": null
         },
+        "dataset_cache_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Host dir where sa-bench caches generated \"random\" datasets so repeated sweeps skip the (minutes-long) tokenize/decode prompt build. Mounted into the benchmark container by SABenchRunner.",
+          "default": null
+        },
         "agentperf_client_dir": {
           "anyOf": [
             {
@@ -536,6 +548,18 @@
           "type": "boolean",
           "description": "Pass --use-chat-template to benchmark (default: true)",
           "default": true
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SA-Bench API path (see benchmark_serving.py --endpoint).",
+          "default": null
         },
         "reuse_http_connections": {
           "type": "boolean",
@@ -633,7 +657,7 @@
             "acpi",
             "dcgm"
           ],
-          "description": "``auto`` tries ACPI then DCGM and is best-effort; naming ``acpi`` or ``dcgm`` explicitly makes that provider mandatory.",
+          "description": "``auto`` uses ACPI when some socket-total sensor reads a positive value, else DCGM fields 1130+1132, else 1130 alone (either DCGM rung accepted only if some socket reads a positive 1130; SysIO alone cannot vouch), logging each step down; naming ``acpi`` or ``dcgm`` explicitly makes that provider mandatory (it still proves itself, but exits instead of stepping).",
           "default": "auto"
         },
         "sample_interval_seconds": {
@@ -665,7 +689,7 @@
       "properties": {
         "port": {
           "type": "integer",
-          "description": "Port the exporter listens on and the head-node collector scrapes.",
+          "description": "TCP port the per-node exporter listens on for ``/metrics``.",
           "default": 9405
         },
         "source": {
@@ -674,7 +698,7 @@
             "acpi",
             "dcgm"
           ],
-          "description": "Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries DCGM first and falls back to ACPI when libdcgm.so is absent or reports no CPU entities. Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only.",
+          "description": "Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries ACPI first (the only source with the socket envelope) and falls back to DCGM when no ACPI power_meter hwmon sensors exist or no socket-total sensor reads positive on two probes; DCGM watches fields 1130+1132 and falls back to 1130 alone if this libdcgm refuses the pair, and is accepted only if some socket reads a positive 1130. DCGM mode reports field 1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and the energy report flags such runs as \"CPU rail only\". Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only.",
           "default": "auto"
         }
       },
@@ -868,7 +892,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "description": "Frontend type - \"dynamo\" (default); \"sglang-router\" (SGLang Model Gateway), \"vllm-router\", \"smg\" (Shepherd Model Gateway, any backend), \"atomesh\", and \"tilert-router\" (static routers); \"sglang\", \"vllm\", and \"trtllm_serve\" (direct: the single aggregate worker binds the public port, no router process); \"none\" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router \"sglang\"; ``srtctl migrate`` rewrites that to \"sglang-router\".",
+          "description": "Frontend type - \"dynamo\" (default); \"sglang-router\" (SGLang Model Gateway), \"vllm-router\", \"smg\" (Shepherd Model Gateway, any backend), \"llm-d\" (llm-d Endpoint Picker behind Envoy, vLLM), \"atomesh\", and \"tilert-router\" (static routers); \"sglang\", \"vllm\", and \"trtllm_serve\" (direct: the single aggregate worker binds the public port, no router process); \"none\" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router \"sglang\"; ``srtctl migrate`` rewrites that to \"sglang-router\".",
           "default": "dynamo"
         },
         "enable_multiple_frontends": {
@@ -916,6 +940,18 @@
             }
           ],
           "description": "Inline Dynamo worker-selection policy configuration. srtctl writes this mapping under the top-level ``worker_selection`` key in a generated router policy YAML and passes it to the Dynamo frontend via ``--router-policy-config``.",
+          "default": null
+        },
+        "epp_config": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "llm-d Endpoint Picker configuration (``EndpointPickerConfig``: ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``. srtctl writes it to a file with the ``file-discovery`` plugin and ``dataLayer.discovery`` added, so the EPP reads the job's workers from the endpoints file srtctl renders. Omitted, srtctl runs the scorers of llm-d's no-Kubernetes guide (in prefill and decode profiles for a prefill/decode job).",
           "default": null
         },
         "args": {
@@ -1509,12 +1545,12 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Master analytics knob. Default: False.",
+          "description": "Additional analytics (including nsys); does not gate Dynamo lifecycle tracing or Tachometer. Default: False.",
           "default": false
         },
         "enable_otel": {
           "type": "boolean",
-          "description": "If True, inject OTEL environment variables into all workers and frontends. Requires otel_endpoint to be set. Default: False.",
+          "description": "Export traces to an explicit endpoint and enable JSONL logs. Not needed for default Dynamo lifecycle capture. Requires otel_endpoint to be set. Default: False.",
           "default": false
         },
         "otel_endpoint": {
@@ -1526,7 +1562,7 @@
               "type": "null"
             }
           ],
-          "description": "OTEL collector endpoint (e.g. \"http://10.0.0.1:4317\"). Required when enable_otel is True.",
+          "description": "Explicit OTEL trace endpoint (e.g. \"http://10.0.0.1:4317\"). Used with enable_otel; overrides Dynamo's local trace destination.",
           "default": null
         },
         "tachometer": {
@@ -1538,7 +1574,7 @@
           "description": "Automatic Nsight Systems capture, enabled with the master switch."
         }
       },
-      "description": "Observability configuration for OTEL tracing."
+      "description": "Optional analytics capture and external OTEL export."
     },
     "OutputConfig": {
       "type": "object",
@@ -1638,6 +1674,11 @@
           "type": "string",
           "description": "Non-TRT-LLM behavior when cudaProfilerStop closes a capture range.",
           "default": "stop"
+        },
+        "detailed_trace_annotation": {
+          "type": "boolean",
+          "description": "Adds detailed nvtx marker flag for vLLM",
+          "default": false
         },
         "nsys_library_paths": {
           "anyOf": [
@@ -2521,6 +2562,11 @@
           "description": "`true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`.",
           "default": null
         },
+        "mooncake_store_config": {
+          "type": "object",
+          "description": "TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`, ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there.",
+          "default": {}
+        },
         "sidecar": {
           "anyOf": [
             {
@@ -2907,7 +2953,7 @@
         },
         "options": {
           "type": "object",
-          "description": "Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` and ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind.",
+          "description": "Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` for vLLM and TRT-LLM, ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind.",
           "default": {}
         },
         "metrics": {

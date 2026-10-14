@@ -722,6 +722,25 @@ class TestVllmNsysProfilerConfig:
             "max_iterations": 20,
         }
 
+    def test_detailed_trace_annotation_is_opt_in(self, monkeypatch):
+        """detailed_trace_annotation adds sq/sk roofline detail to vLLM's NVTX range names."""
+        from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
+
+        phase = ProfilingPhaseConfig(start_step=10, stop_step=30)
+
+        # Absent by default, so containers predating vLLM's
+        # ProfilerConfig.detailed_trace_annotation still parse the flag.
+        off = ProfilingConfig(type="nsys", decode=phase)
+        assert "detailed_trace_annotation" not in self._profiler_config(self._build_decode_cmd(off, monkeypatch))
+
+        on = ProfilingConfig(type="nsys", decode=phase, detailed_trace_annotation=True)
+        assert self._profiler_config(self._build_decode_cmd(on, monkeypatch)) == {
+            "profiler": "cuda",
+            "delay_iterations": 10,
+            "max_iterations": 20,
+            "detailed_trace_annotation": True,
+        }
+
     def test_nsys_time_does_not_inject_profiler_config(self, monkeypatch):
         """nsys-time drives capture by wall-clock --delay/--duration, not engine steps."""
         from srtctl.core.schema import ProfilingConfig

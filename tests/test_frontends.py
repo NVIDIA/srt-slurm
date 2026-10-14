@@ -69,6 +69,7 @@ class TestFrontendRegistry:
         assert list_frontend_types() == [
             "atomesh",
             "dynamo",
+            "llm-d",
             "none",
             "sglang",
             "sglang-router",
@@ -222,7 +223,7 @@ class TestFrontendRegistry:
         from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 
         with pytest.raises(
-            ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, none"
+            ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, llm-d, none"
         ):
             SrtConfig(
                 name="toy",
@@ -309,6 +310,7 @@ class TestFrontendProperties:
         implied = get_frontend("dynamo").implied_services(dynamo_config)
         assert [(entry.service.name, entry.service.type, entry.reason) for entry in implied] == [
             ("etcd", "etcd", "frontend.type dynamo"),
+            ("otel-collector", "otel-collector", "Dynamo lifecycle tracing (independent of observability.enabled)"),
             ("nats", "nats", "dynamo.request_plane nats"),
         ]
         for frontend_type in ("vllm", "sglang", "sglang-router", "trtllm_serve", "vllm-router"):
@@ -908,6 +910,7 @@ class TestNumaBind:
             log_dir=Path("/logs"),
             nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
             infra_node_ip="10.0.0.9",
+            head_node_ip="10.0.0.8",
             container_image=Path("/container.sqsh"),
             container_mounts={},
             environment={},
@@ -915,6 +918,7 @@ class TestNumaBind:
         config = SimpleNamespace(
             frontend=SimpleNamespace(args=None, env=None, worker_selection=None, numa_bind=True),
             observability=ObservabilityConfig(),
+            services=[],
             dynamo=SimpleNamespace(
                 install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None
             ),
@@ -943,6 +947,7 @@ def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
         log_dir=Path("/logs"),
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         infra_node_ip="10.0.0.9",
+        head_node_ip="10.0.0.8",
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},
@@ -950,6 +955,7 @@ def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
     config = SimpleNamespace(
         frontend=SimpleNamespace(args=None, env=None),
         observability=ObservabilityConfig(),
+        services=[],
         dynamo=SimpleNamespace(install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None),
         setup_script=None,
     )
@@ -969,6 +975,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         log_dir=Path("/logs"),
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         infra_node_ip="10.0.0.9",
+        head_node_ip="10.0.0.8",
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},
@@ -976,6 +983,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
     config = SimpleNamespace(
         frontend=SimpleNamespace(type="dynamo", args=None, env=None, worker_selection=None),
         observability=ObservabilityConfig(),
+        services=[],
         dynamo=SimpleNamespace(
             install=dynamo_install,
             get_install_commands=lambda: "echo install-dynamo",
@@ -1027,6 +1035,7 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
     runtime = SimpleNamespace(
         log_dir=tmp_path,
         infra_node_ip="10.0.0.9",
+        head_node_ip="10.0.0.8",
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         container_image=Path("/container.sqsh"),
         container_mounts={tmp_path: Path("/logs")},
@@ -1052,6 +1061,7 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
             type="dynamo", args={"router-mode": "kv"}, env=None, worker_selection=worker_selection
         ),
         observability=ObservabilityConfig(),
+        services=[],
         dynamo=SimpleNamespace(
             install=False,
             get_install_commands=lambda: "",
