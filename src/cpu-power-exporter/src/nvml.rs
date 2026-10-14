@@ -12,7 +12,7 @@
 //! All symbols are resolved at runtime so the binary starts on hosts without
 //! the NVIDIA driver; unavailability is a soft `NvmlUnavailable` error.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_void, CStr};
 use std::fmt::{self, Write as _};
 use std::fs;
@@ -26,9 +26,11 @@ use std::path::Path;
 const POWER_FIELD_AVERAGE: u32 = 185;
 
 /// Readings of one module may differ by this fraction of their mean before
-/// the socket is dropped. GB200 measured at most 1.3% under steady load and
-/// 1.9% through a load step. A meter reporting each GPU's own share would
-/// differ by the GPUs' power gap, 25% with one GPU of the pair loaded.
+/// the socket is dropped. GB200 measured at most 1.1% in steady phases and
+/// 1.9% while load fell, at about 400 W per loaded GPU. The guard rejects
+/// readings that are plainly not one meter, such as per-GPU shares under
+/// uneven load; it cannot tell shares apart under even load, so the meter
+/// semantics rest on the measurement in `docs/cpu-power-telemetry.md`.
 const MODULE_SPREAD_TOLERANCE: f64 = 0.05;
 
 /// NVML_POWER_SCOPE_MODULE. Scope 0 (NVML_POWER_SCOPE_GPU) is the GPU chip alone.
@@ -282,9 +284,20 @@ struct GpuSample {
     watts: f64,
 }
 
+/// A socket whose GPUs' readings are too far apart to be one meter.
+#[derive(Debug, PartialEq)]
+struct Disagreement {
+    socket: u32,
+    gpus: Vec<u32>,
+    watts: Vec<f64>,
+}
+
 pub struct NvmlModuleReader {
     session: Session,
     gpus: Vec<Gpu>,
+    /// Sockets dropped on the last read. A disagreement is warned about once
+    /// when it starts, not on every 1 s poll.
+    disagreeing: BTreeSet<u32>,
 }
 
 // SAFETY: NVML is thread-safe, and device handles stay valid until
@@ -299,7 +312,11 @@ impl NvmlModuleReader {
         if gpus.is_empty() {
             return Err(NvmlUnavailable("no GPU maps to a NUMA socket".into()));
         }
-        let reader = Self { session, gpus };
+        let mut reader = Self {
+            session,
+            gpus,
+            disagreeing: BTreeSet::new(),
+        };
         if reader.read().is_empty() {
             return Err(NvmlUnavailable("no GPU reports module power".into()));
         }
@@ -317,7 +334,7 @@ impl NvmlModuleReader {
         sockets
     }
 
-    pub fn read(&self) -> Vec<ModuleReading> {
+    pub fn read(&mut self) -> Vec<ModuleReading> {
         let mut samples = Vec::with_capacity(self.gpus.len());
         for gpu in &self.gpus {
             let mut value = FieldValue::request(POWER_FIELD_AVERAGE);
@@ -342,7 +359,23 @@ impl NvmlModuleReader {
                 ),
             }
         }
-        group_by_socket(&samples)
+        let (readings, disagreements) = group_by_socket(&samples);
+        for d in disagreements {
+            if self.disagreeing.insert(d.socket) {
+                tracing::warn!(
+                    socket = d.socket,
+                    gpus = ?d.gpus,
+                    watts = ?d.watts,
+                    "GPUs disagree on their module power; skipping socket until they agree"
+                );
+            }
+        }
+        for r in &readings {
+            if self.disagreeing.remove(&r.socket) {
+                tracing::info!(socket = r.socket, "GPUs agree on their module power again");
+            }
+        }
+        readings
     }
 }
 
@@ -385,37 +418,37 @@ fn socket_of_bus_id(pci_root: &Path, bus_id_legacy: &str) -> Option<u32> {
 /// One reading per socket. Every GPU on a superchip reports the same module
 /// meter, so the socket's reading is their mean; a sum would count the module
 /// once per GPU. GPUs that disagree by more than `MODULE_SPREAD_TOLERANCE`
-/// are not reading one meter, and their socket gets no reading.
-fn group_by_socket(samples: &[GpuSample]) -> Vec<ModuleReading> {
+/// are not reading one meter, and their socket is returned as a
+/// `Disagreement` instead of a reading.
+fn group_by_socket(samples: &[GpuSample]) -> (Vec<ModuleReading>, Vec<Disagreement>) {
     let mut by_socket: BTreeMap<u32, (Vec<u32>, Vec<f64>)> = BTreeMap::new();
     for sample in samples {
         let (gpus, watts) = by_socket.entry(sample.socket).or_default();
         gpus.push(sample.gpu);
         watts.push(sample.watts);
     }
-    by_socket
-        .into_iter()
-        .filter_map(|(socket, (mut gpus, watts))| {
-            let mean = watts.iter().sum::<f64>() / watts.len() as f64;
-            let spread = watts.iter().copied().fold(f64::MIN, f64::max)
-                - watts.iter().copied().fold(f64::MAX, f64::min);
-            if spread > MODULE_SPREAD_TOLERANCE * mean {
-                tracing::warn!(
-                    socket,
-                    ?gpus,
-                    ?watts,
-                    "GPUs disagree on their module power; skipping socket"
-                );
-                return None;
-            }
-            gpus.sort_unstable();
-            Some(ModuleReading {
+    let mut readings = Vec::new();
+    let mut disagreements = Vec::new();
+    for (socket, (mut gpus, watts)) in by_socket {
+        gpus.sort_unstable();
+        let mean = watts.iter().sum::<f64>() / watts.len() as f64;
+        let spread = watts.iter().copied().fold(f64::MIN, f64::max)
+            - watts.iter().copied().fold(f64::MAX, f64::min);
+        if spread > MODULE_SPREAD_TOLERANCE * mean {
+            disagreements.push(Disagreement {
+                socket,
+                gpus,
+                watts,
+            });
+        } else {
+            readings.push(ModuleReading {
                 socket,
                 gpus,
                 watts: mean,
-            })
-        })
-        .collect()
+            });
+        }
+    }
+    (readings, disagreements)
 }
 
 pub fn render_module_metrics(readings: &[ModuleReading]) -> String {
@@ -489,18 +522,21 @@ mod tests {
         ];
         assert_eq!(
             group_by_socket(&samples),
-            [
-                ModuleReading {
-                    socket: 0,
-                    gpus: vec![0, 1],
-                    watts: 499.0,
-                },
-                ModuleReading {
-                    socket: 1,
-                    gpus: vec![2, 3],
-                    watts: 610.0,
-                },
-            ]
+            (
+                vec![
+                    ModuleReading {
+                        socket: 0,
+                        gpus: vec![0, 1],
+                        watts: 499.0,
+                    },
+                    ModuleReading {
+                        socket: 1,
+                        gpus: vec![2, 3],
+                        watts: 610.0,
+                    },
+                ],
+                vec![]
+            )
         );
     }
 
@@ -510,18 +546,25 @@ mod tests {
         // Socket 0 reads like a per-GPU-share meter with one GPU loaded.
         // That is not one meter, so the socket has no physical reading.
         let samples = [
-            sample(0, 0, 730.0),
             sample(1, 0, 540.0),
+            sample(0, 0, 730.0),
             sample(2, 1, 536.0),
             sample(3, 1, 533.0),
         ];
         assert_eq!(
             group_by_socket(&samples),
-            [ModuleReading {
-                socket: 1,
-                gpus: vec![2, 3],
-                watts: 534.5,
-            }]
+            (
+                vec![ModuleReading {
+                    socket: 1,
+                    gpus: vec![2, 3],
+                    watts: 534.5,
+                }],
+                vec![Disagreement {
+                    socket: 0,
+                    gpus: vec![0, 1],
+                    watts: vec![540.0, 730.0],
+                }]
+            )
         );
     }
 

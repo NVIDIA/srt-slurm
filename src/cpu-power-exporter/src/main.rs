@@ -41,6 +41,7 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 use std::{fs, process};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -117,6 +118,10 @@ const MAX_CONNECTIONS: usize = 64;
 /// 6 sensors × 150 ms = ~900 ms, so a 1 s interval keeps the cache fresh
 /// without falling behind. NVML's field is itself a 1 s average.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// A module snapshot older than this is withheld from scrapes. A stalled
+/// NVML call then shows as a gap in the series, as a stalled scrape did,
+/// instead of a frozen value that an energy integral would count as real.
+const MODULE_STALE_AFTER: Duration = Duration::from_secs(3);
 
 #[derive(clap::ValueEnum, Clone, Debug, Default)]
 enum SourceMode {
@@ -187,28 +192,39 @@ enum MetricsState {
     Dcgm(Arc<Mutex<dcgm::DcgmReader>>),
 }
 
+/// The module series as last rendered by the `nvml-poller` thread.
+struct ModuleSnapshot {
+    rendered_at: Instant,
+    body: String,
+}
+
 /// Live state shared across connection handlers: the CPU family plus the
 /// optional NVML module series.
 #[derive(Clone)]
 struct Metrics {
     base: MetricsState,
-    /// Pre-rendered module series, refreshed every `POLL_INTERVAL` by the
-    /// `nvml-poller` thread; `None` when the host reports no module power.
-    module: Option<Arc<RwLock<String>>>,
+    /// Refreshed every `POLL_INTERVAL` by the `nvml-poller` thread; `None`
+    /// when the host reports no module power.
+    module: Option<Arc<RwLock<ModuleSnapshot>>>,
 }
 
 impl Metrics {
     /// The `/metrics` body: the CPU family first, then the module series
-    /// when NVML is available. NVML is never called here. A stalled
-    /// `nvmlDeviceGetFieldValues` (a GPU in reset) must not stall a scrape
-    /// and lose that interval's CPU power with it.
+    /// when NVML is available and its snapshot is fresh. NVML is never called
+    /// here. A stalled `nvmlDeviceGetFieldValues` (a GPU in reset) must not
+    /// stall a scrape and lose that interval's CPU power with it.
     fn render(&self) -> String {
         let mut body = match &self.base {
             MetricsState::Acpi(cache) => cache.read().unwrap().clone(),
             MetricsState::Dcgm(reader) => build_metrics_dcgm(reader),
         };
         if let Some(module) = &self.module {
-            body.push_str(&module.read().unwrap());
+            let snapshot = module.read().unwrap();
+            if snapshot.rendered_at.elapsed() <= MODULE_STALE_AFTER {
+                body.push_str(&snapshot.body);
+            } else {
+                tracing::debug!("module snapshot stale; omitting the series from this scrape");
+            }
         }
         body
     }
@@ -623,8 +639,10 @@ fn init_metrics_state(args: &Args) -> Result<(MetricsState, BTreeSet<String>)> {
 /// power. The reader is owned by its `nvml-poller` thread, which refreshes a
 /// pre-rendered cache every `POLL_INTERVAL`, so a stalled NVML call never
 /// reaches a scrape.
-fn init_module_cache(cpu_sockets: &BTreeSet<String>) -> Result<Option<Arc<RwLock<String>>>> {
-    let reader = match nvml::NvmlModuleReader::new(Path::new("/sys/bus/pci/devices")) {
+fn init_module_cache(
+    cpu_sockets: &BTreeSet<String>,
+) -> Result<Option<Arc<RwLock<ModuleSnapshot>>>> {
+    let mut reader = match nvml::NvmlModuleReader::new(Path::new("/sys/bus/pci/devices")) {
         Ok(reader) => reader,
         Err(e) => {
             tracing::info!(reason = %e, "NVML module power unavailable; module series not exported");
@@ -636,11 +654,12 @@ fn init_module_cache(cpu_sockets: &BTreeSet<String>) -> Result<Option<Arc<RwLock
         sockets = ?reader.sockets(),
         "NVML module reader initialised"
     );
-    // The PCI NUMA node stands in for the ACPI socket number, verified on
-    // GB200 where NUMA 0 holds the GPUs of `Grace Power Socket 0`. The
-    // collector only writes a module reading onto a socket row the CPU family
-    // produced, so a socket the family does not know is reported once, here,
-    // rather than silently dropped on every scrape.
+    // The PCI NUMA node stands in for the ACPI socket number. On GB200 a
+    // CPU-pinned load test showed NUMA node N feeding `CPU Power Socket N`
+    // (docs/cpu-power-telemetry.md); GB300 is untested. The collector only
+    // writes a module reading onto a socket row the CPU family produced, so a
+    // socket the family does not know is reported once, here, rather than
+    // silently dropped on every scrape.
     for socket in reader.sockets() {
         if !cpu_sockets.contains(&socket.to_string()) {
             tracing::warn!(
@@ -651,14 +670,18 @@ fn init_module_cache(cpu_sockets: &BTreeSet<String>) -> Result<Option<Arc<RwLock
         }
     }
 
-    let cache = Arc::new(RwLock::new(nvml::render_module_metrics(&reader.read())));
+    let snapshot = |reader: &mut nvml::NvmlModuleReader| ModuleSnapshot {
+        rendered_at: Instant::now(),
+        body: nvml::render_module_metrics(&reader.read()),
+    };
+    let cache = Arc::new(RwLock::new(snapshot(&mut reader)));
     let cache_bg = Arc::clone(&cache);
     std::thread::Builder::new()
         .name("nvml-poller".to_owned())
         .spawn(move || loop {
             std::thread::sleep(POLL_INTERVAL);
-            let snapshot = nvml::render_module_metrics(&reader.read());
-            *cache_bg.write().unwrap() = snapshot;
+            let fresh = snapshot(&mut reader);
+            *cache_bg.write().unwrap() = fresh;
         })
         .context("spawn nvml-poller thread")?;
     Ok(Some(cache))
