@@ -4,7 +4,10 @@
 //! Superchip module power via dynamic loading of libnvidia-ml.so.
 //!
 //! GPUs are grouped by the NUMA node of their PCI device, which is the Grace
-//! socket they share a module with.
+//! socket they share a module with. On GB200 every GPU of a module reports
+//! the same meter. Loading one GPU of a pair moved the chip readings 188 W
+//! apart and the module readings 6 W, so a socket's value is the mean of its
+//! GPUs' readings, and a wide spread means they are not one meter.
 //!
 //! All symbols are resolved at runtime so the binary starts on hosts without
 //! the NVIDIA driver; unavailability is a soft `NvmlUnavailable` error.
@@ -18,8 +21,15 @@ use std::path::Path;
 
 // ── Constants derived from nvml.h ────────────────────────────────────────────
 
-/// NVML_FI_DEV_POWER_AVERAGE then NVML_FI_DEV_POWER_INSTANT, in preference order.
-const POWER_FIELDS: [u32; 2] = [185, 186];
+/// NVML_FI_DEV_POWER_AVERAGE: power averaged over 1 s. The instant field
+/// (186) is deliberately not a fallback, so one series never mixes windows.
+const POWER_FIELD_AVERAGE: u32 = 185;
+
+/// Readings of one module may differ by this fraction of their mean before
+/// the socket is dropped. GB200 measured at most 1.3% under steady load and
+/// 1.9% through a load step. A meter reporting each GPU's own share would
+/// differ by the GPUs' power gap, 25% with one GPU of the pair loaded.
+const MODULE_SPREAD_TOLERANCE: f64 = 0.05;
 
 /// NVML_POWER_SCOPE_MODULE. Scope 0 (NVML_POWER_SCOPE_GPU) is the GPU chip alone.
 const SCOPE_MODULE: u32 = 1;
@@ -96,7 +106,9 @@ impl FieldValue {
         }
     }
 
-    fn milliwatts(&self) -> Option<f64> {
+    /// The reading in watts; None unless NVML reported success and a
+    /// positive, finite value.
+    fn watts(&self) -> Option<f64> {
         if self.nvml_return != NVML_SUCCESS {
             return None;
         }
@@ -112,15 +124,8 @@ impl FieldValue {
             }
         };
         // Zero is no reading, as in the DCGM path: a powered module never draws 0 W.
-        (mw.is_finite() && mw > 0.0).then_some(mw)
+        (mw.is_finite() && mw > 0.0).then_some(mw / 1000.0)
     }
-}
-
-fn module_watts(values: &[FieldValue]) -> Option<f64> {
-    values
-        .iter()
-        .find_map(FieldValue::milliwatts)
-        .map(|mw| mw / 1000.0)
 }
 
 // ── Loaded library ───────────────────────────────────────────────────────────
@@ -283,9 +288,9 @@ pub struct NvmlModuleReader {
 }
 
 // SAFETY: NVML is thread-safe, and device handles stay valid until
-// nvmlShutdown, which only `Session::drop` calls.
+// nvmlShutdown, which only `Session::drop` calls, so the reader may move to
+// its poller thread.
 unsafe impl Send for NvmlModuleReader {}
-unsafe impl Sync for NvmlModuleReader {}
 
 impl NvmlModuleReader {
     pub fn new(pci_root: &Path) -> Result<Self, NvmlUnavailable> {
@@ -315,10 +320,12 @@ impl NvmlModuleReader {
     pub fn read(&self) -> Vec<ModuleReading> {
         let mut samples = Vec::with_capacity(self.gpus.len());
         for gpu in &self.gpus {
-            let mut values = POWER_FIELDS.map(FieldValue::request);
-            let ret = self.session.field_values(gpu.handle, &mut values);
+            let mut value = FieldValue::request(POWER_FIELD_AVERAGE);
+            let ret = self
+                .session
+                .field_values(gpu.handle, std::slice::from_mut(&mut value));
             let watts = if ret == NVML_SUCCESS {
-                module_watts(&values)
+                value.watts()
             } else {
                 None
             };
@@ -376,32 +383,44 @@ fn socket_of_bus_id(pci_root: &Path, bus_id_legacy: &str) -> Option<u32> {
 }
 
 /// One reading per socket. Every GPU on a superchip reports the same module
-/// value, so the socket's reading is their mean; a sum would count the module
-/// once per GPU.
+/// meter, so the socket's reading is their mean; a sum would count the module
+/// once per GPU. GPUs that disagree by more than `MODULE_SPREAD_TOLERANCE`
+/// are not reading one meter, and their socket gets no reading.
 fn group_by_socket(samples: &[GpuSample]) -> Vec<ModuleReading> {
-    let mut by_socket: BTreeMap<u32, (Vec<u32>, f64)> = BTreeMap::new();
+    let mut by_socket: BTreeMap<u32, (Vec<u32>, Vec<f64>)> = BTreeMap::new();
     for sample in samples {
-        let (gpus, total) = by_socket.entry(sample.socket).or_default();
+        let (gpus, watts) = by_socket.entry(sample.socket).or_default();
         gpus.push(sample.gpu);
-        *total += sample.watts;
+        watts.push(sample.watts);
     }
     by_socket
         .into_iter()
-        .map(|(socket, (mut gpus, total))| {
+        .filter_map(|(socket, (mut gpus, watts))| {
+            let mean = watts.iter().sum::<f64>() / watts.len() as f64;
+            let spread = watts.iter().copied().fold(f64::MIN, f64::max)
+                - watts.iter().copied().fold(f64::MAX, f64::min);
+            if spread > MODULE_SPREAD_TOLERANCE * mean {
+                tracing::warn!(
+                    socket,
+                    ?gpus,
+                    ?watts,
+                    "GPUs disagree on their module power; skipping socket"
+                );
+                return None;
+            }
             gpus.sort_unstable();
-            let watts = total / gpus.len() as f64;
-            ModuleReading {
+            Some(ModuleReading {
                 socket,
                 gpus,
-                watts,
-            }
+                watts: mean,
+            })
         })
         .collect()
 }
 
 pub fn render_module_metrics(readings: &[ModuleReading]) -> String {
     let mut out = String::from(
-        "# HELP cpu_power_nvml_watts Superchip module power per Grace socket via NVML (W): \
+        "# HELP cpu_power_nvml_watts Superchip module power per Grace socket via NVML (W, 1 s average): \
          Grace, its GPUs, HBM, LPDDR5X and regulators.\n\
          # TYPE cpu_power_nvml_watts gauge\n",
     );
@@ -423,7 +442,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    const HEADER: &str = "# HELP cpu_power_nvml_watts Superchip module power per Grace socket via NVML (W): Grace, its GPUs, HBM, LPDDR5X and regulators.\n# TYPE cpu_power_nvml_watts gauge\n";
+    const HEADER: &str = "# HELP cpu_power_nvml_watts Superchip module power per Grace socket via NVML (W, 1 s average): Grace, its GPUs, HBM, LPDDR5X and regulators.\n# TYPE cpu_power_nvml_watts gauge\n";
 
     const NVML_ERROR_NOT_SUPPORTED: u32 = 3;
 
@@ -461,10 +480,11 @@ mod tests {
     #[test]
     fn group_by_socket_averages_each_module_once() {
         let sample = |gpu, socket, watts| GpuSample { gpu, socket, watts };
+        // Both GPUs of a socket read one meter, within its +/- 5 W accuracy.
         let samples = [
-            sample(3, 1, 600.0),
+            sample(3, 1, 610.0),
             sample(0, 0, 500.0),
-            sample(2, 1, 620.0),
+            sample(2, 1, 610.0),
             sample(1, 0, 498.0),
         ];
         assert_eq!(
@@ -481,6 +501,27 @@ mod tests {
                     watts: 610.0,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn group_by_socket_drops_a_socket_whose_gpus_disagree() {
+        let sample = |gpu, socket, watts| GpuSample { gpu, socket, watts };
+        // Socket 0 reads like a per-GPU-share meter with one GPU loaded.
+        // That is not one meter, so the socket has no physical reading.
+        let samples = [
+            sample(0, 0, 730.0),
+            sample(1, 0, 540.0),
+            sample(2, 1, 536.0),
+            sample(3, 1, 533.0),
+        ];
+        assert_eq!(
+            group_by_socket(&samples),
+            [ModuleReading {
+                socket: 1,
+                gpus: vec![2, 3],
+                watts: 534.5,
+            }]
         );
     }
 
@@ -510,28 +551,35 @@ mod tests {
     }
 
     #[test]
-    fn module_watts_prefers_the_average_and_falls_back_to_instant() {
+    fn watts_requires_nvml_success_and_a_positive_reading() {
         let filled = |nvml_return, value_type, value| FieldValue {
             nvml_return,
             value_type,
             value,
-            ..FieldValue::request(0)
+            ..FieldValue::request(POWER_FIELD_AVERAGE)
         };
-        let not_supported = || {
+
+        assert_eq!(
+            filled(NVML_SUCCESS, VALUE_UNSIGNED_INT, Value { uint: 498_720 }).watts(),
+            Some(498.72)
+        );
+        assert_eq!(
+            filled(NVML_SUCCESS, VALUE_DOUBLE, Value { dbl: 498_720.0 }).watts(),
+            Some(498.72)
+        );
+        // An unsupported average is no reading; there is no instant fallback.
+        assert_eq!(
             filled(
                 NVML_ERROR_NOT_SUPPORTED,
                 VALUE_UNSIGNED_INT,
-                Value { uint: 999_999 },
+                Value { uint: 999_999 }
             )
-        };
-        let uint = |mw| filled(NVML_SUCCESS, VALUE_UNSIGNED_INT, Value { uint: mw });
-
-        assert_eq!(module_watts(&[uint(498_720), uint(510_000)]), Some(498.72));
-        assert_eq!(module_watts(&[not_supported(), uint(510_000)]), Some(510.0));
-        assert_eq!(module_watts(&[not_supported(), not_supported()]), None);
+            .watts(),
+            None
+        );
         assert_eq!(
-            module_watts(&[filled(NVML_SUCCESS, VALUE_DOUBLE, Value { dbl: 498_720.0 })]),
-            Some(498.72)
+            filled(NVML_SUCCESS, VALUE_UNSIGNED_INT, Value { uint: 0 }).watts(),
+            None
         );
     }
 
