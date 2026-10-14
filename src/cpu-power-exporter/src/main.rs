@@ -56,9 +56,10 @@ use tokio::time::{timeout, Duration};
 /// lists both spellings. `total` is the complete CPU-side socket envelope
 /// (Grace's own reading, or a platform's generic "Total Power" rail);
 /// `cpu_rail`/`soc`/`dram` are component rails that must not be summed into
-/// a node's total power. `module` is the whole superchip, Grace plus its
-/// GPUs, so it overlaps both CPU and GPU readings.
-const OEM_KINDS: [(&str, &[&str]); 5] = [
+/// a node's total power. A firmware `Module Power Socket N` meter is left
+/// unclassified: module power comes from NVML only (see `nvml.rs`), the one
+/// path verified on hardware.
+const OEM_KINDS: [(&str, &[&str]); 4] = [
     (
         "total",
         &[
@@ -98,7 +99,6 @@ const OEM_KINDS: [(&str, &[&str]); 5] = [
             "dram input power in uw socket ",
         ],
     ),
-    ("module", &["module power socket "]),
 ];
 
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -849,9 +849,10 @@ mod tests {
             classify_oem("CPU Rail Output Power in uW socket 0"),
             ("other", String::new())
         );
+        // Module power is NVML's; a firmware module meter stays unclassified.
         assert_eq!(
             classify_oem("Module Power Socket 1"),
-            ("module", "1".into())
+            ("other", String::new())
         );
     }
 

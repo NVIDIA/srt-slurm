@@ -32,10 +32,11 @@ Rail kinds
     DCGM rows leave every rail column blank.
 ``module``
     Superchip module power for one socket: Grace plus its GPUs, HBM, LPDDR5X
-    and regulators. Sourced from NVML (``cpu_power_nvml_watts``) or a
-    firmware-bound ACPI ``Module Power Socket N`` meter. A superset of the
-    socket's power that includes the GPUs, so it never sums into
-    ``total_power_w`` and never stands in as a socket's power.
+    and regulators. Sourced from NVML only (``cpu_power_nvml_watts``); a
+    firmware ``Module Power Socket N`` label is not an ACPI rail kind and
+    stays unclassified. A superset of the socket's power that includes the
+    GPUs, so it never sums into ``total_power_w`` and never stands in as a
+    socket's power.
 """
 
 from __future__ import annotations
@@ -52,13 +53,17 @@ COMPONENT_RAIL_KINDS: tuple[str, ...] = ("cpu_rail", "soc", "dram")
 # Rails persisted beside the primary, in wide-CSV column order. None adds to
 # the socket's power: the components are parts of it, the module contains it.
 REFERENCE_RAIL_KINDS: tuple[str, ...] = (*COMPONENT_RAIL_KINDS, MODULE_KIND)
-# Every kind an ACPI channel can classify to.
-ACPI_RAIL_KINDS: frozenset[str] = frozenset((TOTAL_KIND, *REFERENCE_RAIL_KINDS))
+# Every kind an ACPI channel can classify to. ``module`` is not one. It has
+# no ACPI source, so an exporter ``type="module"`` on the ACPI family is noise.
+ACPI_RAIL_KINDS: frozenset[str] = frozenset((TOTAL_KIND, *COMPONENT_RAIL_KINDS))
 
 # Wide-CSV column name per reference rail. ``total`` has no column of its
 # own: it *is* ``power_w``.
 RAIL_COLUMNS: dict[str, str] = {kind: f"{kind}_w" for kind in REFERENCE_RAIL_KINDS}
 RAIL_COLUMN_NAMES: tuple[str, ...] = tuple(RAIL_COLUMNS[kind] for kind in REFERENCE_RAIL_KINDS)
+# The host collector reads hwmon directly and has no NVML path, so its CSV
+# carries the component columns only.
+COMPONENT_RAIL_COLUMN_NAMES: tuple[str, ...] = tuple(RAIL_COLUMNS[kind] for kind in COMPONENT_RAIL_KINDS)
 
 # Sensor-name suffix per kind (``CPU<socket>:<suffix>``). The host collector
 # has always written these; the scraper wrote raw OEM labels before v2.
@@ -77,9 +82,8 @@ LEGACY_TYPE_ALIASES: dict[str, str] = {"grace": TOTAL_KIND, "cpu": "cpu_rail", "
 
 # Firmware OEM label -> rail kind. Ordered: the first match wins, so the
 # specific Grace forms precede the generic ones and "CPU Power Socket N"
-# (a Grace *component* rail) is matched after every "total" form. The
-# ``module`` form overlaps none of the others and sits last, in the same
-# order as ``OEM_KINDS`` in the Rust exporter.
+# (a Grace *component* rail) is matched after every "total" form. Mirrors
+# ``OEM_KINDS`` in the Rust exporter.
 ACPI_LABEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (TOTAL_KIND, re.compile(r"\bGrace\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     (TOTAL_KIND, re.compile(r"\bTotal(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
@@ -88,7 +92,6 @@ ACPI_LABEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("dram", re.compile(r"\bDRAM(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     ("cpu_rail", re.compile(r"\bCPU(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     ("soc", re.compile(r"\bSysIO\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
-    (MODULE_KIND, re.compile(r"\bModule\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
 )
 
 

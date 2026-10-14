@@ -11,10 +11,9 @@ already-aggregated value per socket, so ACPI is the more informative source
 when both exist.
 
 In either mode the exporter may also serve ``cpu_power_nvml_watts``, the
-superchip module power. It rides on the socket row of whichever base family
-won, and a firmware-bound ACPI module meter takes precedence for its socket.
-A body with only NVML readings has no socket power and yields an empty
-scrape.
+superchip module power. It is the only source of the ``module`` rail and
+rides on the socket row of whichever base family won. A body with only NVML
+readings has no socket power and yields an empty scrape.
 
 Rail vocabulary comes from :mod:`srtctl.core.power.cpu_rails`; nothing here
 knows a firmware label by name.
@@ -86,11 +85,11 @@ def parse_cpu_scrape(text: str) -> ParsedCpuScrape:
     module_readings = _parse_nvml(families)
     acpi_readings = _parse_acpi(families)
     if acpi_readings:
-        return _scrape("acpi", _with_module(acpi_readings, module_readings))
+        return _scrape("acpi", acpi_readings + module_readings)
 
     dcgm_readings = _parse_dcgm(families)
     if dcgm_readings:
-        return _scrape("dcgm", _with_module(dcgm_readings, module_readings))
+        return _scrape("dcgm", dcgm_readings + module_readings)
 
     return ParsedCpuScrape()
 
@@ -173,12 +172,6 @@ def _parse_nvml(families) -> list[CpuReading]:
                 )
             )
     return readings
-
-
-def _with_module(base: list[CpuReading], nvml: list[CpuReading]) -> list[CpuReading]:
-    """A firmware-bound ACPI module meter wins; NVML fills only the sockets without one."""
-    metered = {reading.socket_id for reading in base if reading.kind == MODULE_KIND}
-    return base + [reading for reading in nvml if reading.socket_id not in metered]
 
 
 def _parse_socket(raw: str | None) -> int | None:

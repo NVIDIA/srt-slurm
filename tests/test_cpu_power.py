@@ -27,7 +27,7 @@ from srtctl.core.cpu_power import (
 )
 from srtctl.core.cpu_power_exporter import _build_metrics, _find_power_meter_sensors
 from srtctl.core.cpu_power_session import CpuPowerSessionSettings, CpuPowerTelemetrySession
-from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES
+from srtctl.core.power.cpu_rails import COMPONENT_RAIL_COLUMN_NAMES
 from srtctl.core.power.cpu_sample import CpuSample, RailReading
 
 
@@ -89,7 +89,8 @@ def test_acpi_reader_maps_grace_socket_total_and_component_rails(tmp_path: Path)
     }
 
 
-def test_acpi_reader_keeps_the_module_meter_out_of_the_socket_total(tmp_path: Path) -> None:
+def test_acpi_reader_ignores_the_firmware_module_meter(tmp_path: Path) -> None:
+    """Module power is NVML's; a bound ACPI module meter is neither a rail nor the socket's power."""
     _make_acpi_sensor(tmp_path, hwmon_id=0, socket_id=0, microwatts=150_000_000, domain="Grace Power Socket 0")
     _make_acpi_sensor(tmp_path, hwmon_id=1, socket_id=0, microwatts=600_000_000, domain="Module Power Socket 0")
     reader = AcpiPowerMeterReader(tmp_path)
@@ -97,9 +98,9 @@ def test_acpi_reader_keeps_the_module_meter_out_of_the_socket_total(tmp_path: Pa
     readings = reader.read_watts()
     (sample,) = reader.socket_samples(readings)
 
-    assert readings["CPU0:modulePowerUsageW"] == 600.0
+    assert set(readings) == {"CPU0:cpuSidePowerUsageW"}
     assert sample.power_w == 150.0
-    assert sample.rails == {"module": 600.0}
+    assert sample.rails == {}
     assert reader.aggregate_watts(readings) == 150.0
 
 
@@ -421,14 +422,13 @@ def _fake_value(entity_id: int, field_id: int, dbl: float) -> object:
 
 
 def test_samples_header_pins_wide_socket_layout() -> None:
-    """v5: one row per socket; rails then module_w as columns between power_w and total_power_w."""
-    assert SAMPLES_SCHEMA_VERSION == 5
+    """v4: one row per socket; rails as columns between power_w and total_power_w."""
+    assert SAMPLES_SCHEMA_VERSION == 4
     expected = (
         *SAMPLES_HEADER_V2[:8],  # ... through power_w
         "cpu_rail_w",
         "soc_w",
         "dram_w",
-        "module_w",
         "total_power_w",
         *UTILIZATION_COLUMNS,
     )
@@ -453,7 +453,6 @@ class _FakeReader(cpu_power.CpuPowerReader):
         return [
             RailReading(0, "total", "CPU0:cpuSidePowerUsageW", 100.0),
             RailReading(0, "cpu_rail", "CPU0:cpuRailPowerUsageW", 60.0),
-            RailReading(0, "module", "CPU0:modulePowerUsageW", 600.0),
             RailReading(1, "total", "CPU1:cpuSidePowerUsageW", 110.0),
         ]
 
@@ -490,19 +489,19 @@ def test_collect_writes_socket_utilization_columns(monkeypatch: pytest.MonkeyPat
         rows = list(csv.DictReader(handle))
     assert list(rows[0].keys()) == list(SAMPLES_HEADER)
     assert [row["socket_id"] for row in rows] == ["0", "1"]
-    assert rows[0]["schema_version"] == "5"
+    assert rows[0]["schema_version"] == "4"
     assert [row["power_w"] for row in rows] == ["100.0", "110.0"]
     assert [row["total_power_w"] for row in rows] == ["210.0", "210.0"]
     assert rows[0]["cpu_rail_w"] == "60.0"
     assert rows[0]["soc_w"] == "" and rows[0]["dram_w"] == ""
-    assert rows[0]["module_w"] == "600.0"
-    assert all(rows[1][column] == "" for column in RAIL_COLUMN_NAMES)
+    assert "module_w" not in rows[0]
+    assert all(rows[1][column] == "" for column in COMPONENT_RAIL_COLUMN_NAMES)
     assert rows[0]["cpu_util_total"] == "0.5"
     assert rows[0]["cpu_util_sys"] == "0.1"
     assert rows[0]["cpu_util_user"] == ""
     assert all(rows[1][column] == "" for column in UTILIZATION_COLUMNS)
     metadata = json.loads(csv_path.with_name("node-a.metadata.json").read_text())
-    assert metadata["schema_version"] == 5
+    assert metadata["schema_version"] == 4
 
 
 def test_collect_leaves_utilization_blank_without_a_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -532,7 +531,7 @@ def _write_node_csv(path: Path, hostname: str, timestamp: float, watts: float) -
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(SAMPLES_HEADER)
-        rail_blanks = ("",) * len(RAIL_COLUMN_NAMES)
+        rail_blanks = ("",) * len(COMPONENT_RAIL_COLUMN_NAMES)
         util_blanks = ("",) * len(UTILIZATION_COLUMNS)
         writer.writerow(
             (

@@ -115,7 +115,7 @@ CPU_SAMPLES_HEADER = (
     "sensor",  # the sensor that fed power_w (provenance only)
     "socket_id",
     "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130
-    *CPU_RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w (ACPI only); module_w (either source)
+    *CPU_RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w (ACPI only); module_w (NVML only)
     "total_power_w",  # node aggregate: sum of power_w over sockets
 )
 # NOTE: in ACPI mode, power_w / total_power_w carry only "total"-kind channels

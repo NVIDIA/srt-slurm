@@ -218,11 +218,12 @@ def test_nvml_family_ignores_non_module_types_and_invalid_samples():
     assert all(reading.source == "dcgm" for reading in scrape.readings)
 
 
-def test_acpi_module_meter_wins_over_nvml_for_the_same_socket():
+def test_acpi_module_sample_is_ignored_and_nvml_is_the_only_module_source():
     acpi_module = (
         'cpu_power_acpi_watts{type="module",socket="0",oem_info="Module Power Socket 0",source="acpi"} 505.0\n'
     )
 
     scrape = parse_cpu_scrape(_acpi_body() + acpi_module + _nvml_body(MODULE_SOCKET_0))
 
-    assert scrape.sockets[0].rails["module"] == 505.0
+    assert scrape.sockets[0].rails["module"] == 498.72
+    assert all(r.source == "nvml" for r in scrape.readings if r.kind == "module")

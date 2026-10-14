@@ -8,6 +8,7 @@ import pytest
 from srtctl.core.power import cpu_rails
 from srtctl.core.power.cpu_rails import (
     ACPI_RAIL_KINDS,
+    COMPONENT_RAIL_COLUMN_NAMES,
     COMPONENT_RAIL_KINDS,
     RAIL_COLUMN_NAMES,
     REFERENCE_RAIL_KINDS,
@@ -40,6 +41,8 @@ from srtctl.core.power.cpu_rails import (
         ("CPU Rail Output Power in uW socket 0", None),
         ("Total CPU Energy In uJ socket 0", None),
         ("Module Socket A", None),
+        # Module power is NVML's; the firmware module meter is not read.
+        ("Module Power Socket 1", None),
         ("Chipthrot DDR Throttle (samples x1000) socket 0", None),
     ],
 )
@@ -51,11 +54,6 @@ def test_grace_cpu_power_is_a_component_rail_not_the_total():
     """'CPU Power Socket N' is the Grace CPU rail; only 'Grace Power' is the envelope."""
     assert classify_acpi_label("CPU Power Socket 0") == ("cpu_rail", 0)
     assert classify_acpi_label("Grace Power Socket 0") == ("total", 0)
-
-
-def test_module_power_label_classifies_as_the_module_rail():
-    assert classify_acpi_label("Module Power Socket 1") == ("module", 1)
-    assert classify_acpi_label("module power socket 0") == ("module", 0)
 
 
 def test_sensor_name_and_classify_sensor_round_trip():
@@ -98,7 +96,7 @@ def test_legacy_rail_rank_prefers_total_then_dcgm_then_reference_rails():
 def test_normalize_kind_accepts_canonical_and_legacy_exporter_types():
     assert normalize_kind("total") == "total"
     assert normalize_kind("cpu_rail") == "cpu_rail"
-    assert normalize_kind("module") == "module"
+    assert normalize_kind("module") is None  # not an ACPI rail: NVML owns it
     assert normalize_kind("grace") == "total"
     assert normalize_kind("cpu") == "cpu_rail"
     assert normalize_kind("sysio") == "soc"
@@ -111,8 +109,9 @@ def test_rail_columns_follow_component_kind_order():
     assert COMPONENT_RAIL_KINDS == ("cpu_rail", "soc", "dram")
     assert REFERENCE_RAIL_KINDS == ("cpu_rail", "soc", "dram", "module")
     assert RAIL_COLUMN_NAMES == ("cpu_rail_w", "soc_w", "dram_w", "module_w")
-    assert frozenset({"total", "cpu_rail", "soc", "dram", "module"}) == ACPI_RAIL_KINDS
+    assert COMPONENT_RAIL_COLUMN_NAMES == ("cpu_rail_w", "soc_w", "dram_w")
+    assert frozenset({"total", "cpu_rail", "soc", "dram"}) == ACPI_RAIL_KINDS
 
 
 def test_every_acpi_kind_has_a_sensor_suffix():
-    assert set(SENSOR_SUFFIXES) == ACPI_RAIL_KINDS | {cpu_rails.DCGM_KIND}
+    assert set(SENSOR_SUFFIXES) == ACPI_RAIL_KINDS | {cpu_rails.DCGM_KIND, cpu_rails.MODULE_KIND}
