@@ -121,13 +121,50 @@ In both modes the exporter also serves superchip module power from NVML:
 cpu_power_nvml_watts{type="module",socket="0",gpus="0,1",source="nvml"} 498.720000
 ```
 
-Module power covers the whole superchip: Grace plus its GPUs, HBM, LPDDR5X
-and regulators. Both GPUs of a superchip report the same module value, so the
-exporter averages them and publishes at most one sample per socket. The
-series is best-effort. When NVML is unavailable the exporter omits it and
-`module_w` stays blank. Firmware that binds an ACPI `Module Power Socket N`
-meter publishes it as `cpu_power_acpi_watts{type="module"}`. It feeds the same
-rail and takes precedence over NVML for that socket. A scrape that carries
+The reading is NVML field 185 (`NVML_FI_DEV_POWER_AVERAGE`, a 1 s average)
+at `NVML_POWER_SCOPE_MODULE`, the value `nvidia-smi` prints as
+`module.power.draw.average`. The instant field is not read, so the series
+never mixes averaging windows. NVIDIA defines the module meter as the total
+power of the superchip module, "including DRAM power and regulator loss. This
+also includes GPU and GPU HBM Power" ([Grace Performance Tuning Guide, Power
+and Thermals](https://docs.nvidia.com/grace-perf-tuning-guide/power-thermals.html)).
+On GB200 one Grace socket carries two GPUs, and each GPU reports the whole
+module, not its own share:
+
+```
+module_w = Grace + shared parts (HBM, LPDDR5X, regulators) + GPU_a + GPU_b
+```
+
+The exporter therefore publishes the mean of a socket's GPU readings, one
+sample per socket. GPUs whose readings differ by more than 5% of their mean
+are not reading one meter. The exporter logs a warning and skips that socket.
+
+Measured on a GB200 node (driver 580.126.20, kernel 6.8.0-1046-nvidia-64k)
+with `nvidia-smi --query-gpu=power.draw.average,module.power.draw.average`
+and the ACPI `Grace Power Socket 0` meter sampled together at 1 Hz, 30 to 35
+samples per row:
+
+| Load         | GPU0 / GPU1 `power.draw` (W) | GPU0 / GPU1 `module.power.draw` (W) | Grace socket 0 (W) |
+| ------------ | ---------------------------- | ----------------------------------- | ------------------ |
+| idle         | 204 / 198                    | 539 / 534                           | 96                 |
+| GPU0 only    | 390 / 202                    | 731 / 725                           | 98                 |
+| GPU0 + GPU1  | 397 / 400                    | 938 / 933                           | 101                |
+
+Loading GPU0 alone moved the two chip readings 188 W apart while the two
+module readings stayed 6 W apart, the same offset as at idle. The residual
+`module - Grace - GPU_a - GPU_b` held at 38 to 42 W per socket under every
+load. That residual is the HBM and regulator power that neither the Grace
+meter nor the GPU-scope reading counts.
+
+GPUs are mapped to sockets by the NUMA node of their PCI device, taken as the
+ACPI socket number. On GB200, NUMA node 0 holds GPUs 0 and 1 and matches
+`Grace Power Socket 0`; GB300 is unverified. The collector writes `module_w`
+only onto a socket row the CPU family produced, so the exporter warns once at
+startup for a module socket with no CPU socket.
+
+The series is best-effort. When NVML is unavailable the exporter omits it and
+`module_w` stays blank. NVML is the only source of `module_w`. A firmware
+`Module Power Socket N` ACPI meter stays unclassified. A scrape that carries
 only the NVML series has no socket power and writes no rows.
 
 ## Output Format
@@ -149,11 +186,13 @@ schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, cp
   traces show the `total` rail at roughly 93-104W against `cpu_rail`+`soc`
   combined at roughly 53-58W for the same socket. `total` measures the whole
   Grace SoC power boundary, not literally `cpu_rail + soc`.
-- **`module_w`**: superchip module power, a superset of `power_w`. It covers
-  Grace plus the GPUs, HBM, LPDDR5X and regulators, and is never summed into
-  `total_power_w`. Consumers that want the whole superchip use `module_w` and
-  must not add GPU power on top, because the GPUs are already inside it. It
-  is blank when no module reading arrived.
+- **`module_w`**: superchip module power from NVML, a superset of `power_w`.
+  It covers Grace plus the GPUs, HBM, LPDDR5X and regulators, and is never
+  summed into `total_power_w`. Consumers that want the whole superchip use
+  `module_w` and must not add GPU power on top, because the GPUs are already
+  inside it. It is blank when no module reading arrived. The row's `source`
+  and `sensor` columns describe `power_w`. `module_w` always comes from
+  `cpu_power_nvml_watts`.
 - **`total_power_w`**: the node total, the sum of `power_w` over the node's
   sockets, repeated on every socket row of the scrape. Component rails and
   `module_w` never enter it. Consumers (e.g.
