@@ -52,7 +52,12 @@ SENTINEL="${LOCK_DIR}/.srtctl_dynamo_wheel_install.${WHEEL_ID}.complete"
         unset PIP_EXTRA_INDEX_URL
         pip install --extra-index-url https://pypi.nvidia.com/ aiconfigurator-core
         python3 -m pip install --ignore-installed PyYAML==6.0.3
-        pip install --no-cache-dir /dynamo_wheels/*.whl
+        # Dynamo depends on aisimulate: PyPI serves a placeholder source package,
+        # while NVIDIA's index hosts the real wheels. Resolve dependencies against
+        # that index too, and fail directly if no compatible aisimulate wheel exists.
+        python3 -m pip install --no-cache-dir \
+            --extra-index-url https://pypi.nvidia.com/ \
+            --only-binary=aisimulate /dynamo_wheels/*.whl
 
         # Drop sentinels from previous wheel sets so this directory records the
         # one build actually installed rather than accumulating every past id.
