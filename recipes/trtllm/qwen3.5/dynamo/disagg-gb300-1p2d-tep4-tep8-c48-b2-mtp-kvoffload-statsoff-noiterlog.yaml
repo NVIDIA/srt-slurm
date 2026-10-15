@@ -256,9 +256,5 @@ benchmark:
       --trace-idle-gap-cap-seconds 300
   placement:
     node: last_decode
-container_mounts:
-  /scratch: /scratch
-  /lustre: /lustre
-  /raid/scratch: /raid/scratch
 dynamo:
   install: false
