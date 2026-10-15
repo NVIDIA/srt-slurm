@@ -33,8 +33,6 @@ engine:
   type: trtllm
   served_model_name: Kimi-K3
   publish_metrics: true
-  # Bind each worker's memory to its GPU's NUMA node.
-  numa_memory_bind: local
 roles:
   prefill:
     nodes: 6
