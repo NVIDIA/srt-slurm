@@ -195,9 +195,9 @@ module_w = Grace + GPU_a + GPU_b + the rest of the module
 ```
 
 The exporter therefore publishes the mean of a socket's GPU readings, one
-sample per socket. GPUs whose readings differ by more than 5% of their mean
-are not reading one meter. The exporter warns once when that starts and
-skips the socket until they agree, then logs recovery at INFO.
+sample per socket. To avoid hiding disagreement in that mean, it withholds
+a socket when its GPU readings differ by more than 5% of their mean. It
+warns once when that starts and logs recovery at INFO when they agree again.
 
 NVML initialization and reads run in a background thread, so blocked NVML
 calls do not delay the HTTP server. The module series is omitted until a
@@ -239,8 +239,8 @@ with no CPU socket.
 The series is best-effort. When NVML is unavailable the exporter logs the
 reason at INFO and omits the series; `module_w` stays blank. NVML is the only
 source of `module_w`. A firmware `Module Power Socket N` ACPI meter stays
-unclassified. A scrape that carries
-only the NVML series has no socket power and writes no rows.
+unclassified. A scrape that carries only the NVML series has no socket power
+and writes no rows.
 
 ## Output Format
 

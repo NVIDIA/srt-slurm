@@ -3,11 +3,9 @@
 
 //! Superchip module power via dynamic loading of libnvidia-ml.so.
 //!
-//! GPUs are grouped by the NUMA node of their PCI device, which is the Grace
-//! socket they share a module with. On GB200 every GPU of a module reports
-//! the same meter. Loading one GPU of a pair moved the chip readings 188 W
-//! apart and the module readings 6 W, so a socket's value is the mean of its
-//! GPUs' readings, and a wide spread means they are not one meter.
+//! GB200 GPUs in one socket report the same whole-module meter. The meter
+//! scope and PCI NUMA-to-socket mapping were measured on GB200 only; see
+//! `docs/cpu-power-telemetry.md` for the evidence. GB300 is unverified.
 //!
 //! All symbols are resolved at runtime so the binary starts on hosts without
 //! the NVIDIA driver; unavailability is a soft `NvmlUnavailable` error.
@@ -25,18 +23,14 @@ use std::path::Path;
 /// (186) is deliberately not a fallback, so one series never mixes windows.
 const POWER_FIELD_AVERAGE: u32 = 185;
 
-/// Readings of one module may differ by this fraction of their mean before
-/// the socket is dropped. GB200 measured at most 1.1% in steady phases and
-/// 1.9% while load fell, at about 400 W per loaded GPU. The guard rejects
-/// readings that are plainly not one meter, such as per-GPU shares under
-/// uneven load; it cannot tell shares apart under even load, so the meter
-/// semantics rest on the measurement in `docs/cpu-power-telemetry.md`.
+/// Allows the <2% spread measured on GB200. Agreement under equal GPU load
+/// cannot establish the meter's scope; that rests on the unequal-load
+/// measurement in `docs/cpu-power-telemetry.md`.
 const MODULE_SPREAD_TOLERANCE: f64 = 0.05;
 
 /// NVML_POWER_SCOPE_MODULE. Scope 0 (NVML_POWER_SCOPE_GPU) is the GPU chip alone.
 const SCOPE_MODULE: u32 = 1;
 
-/// NVML_SUCCESS: success return code.
 const NVML_SUCCESS: u32 = 0;
 
 /// nvmlValueType_t members that can carry a power reading.
@@ -65,7 +59,6 @@ struct FieldValue {
 /// nvmlValue_t, reduced to the members a power field can use. The omitted
 /// signed members are no wider than 8 bytes, so the layout is unchanged.
 #[repr(C)]
-#[derive(Clone, Copy)]
 union Value {
     dbl: f64,
     uint: u32,
@@ -96,9 +89,9 @@ type FnDeviceGetFieldValues =
     unsafe extern "C" fn(device: Device, values_count: i32, values: *mut FieldValue) -> u32;
 
 impl FieldValue {
-    fn request(field_id: u32) -> Self {
+    fn module_power_average() -> Self {
         Self {
-            field_id,
+            field_id: POWER_FIELD_AVERAGE,
             scope_id: SCOPE_MODULE,
             _timestamp: 0,
             _latency_usec: 0,
@@ -288,8 +281,7 @@ struct Disagreement {
 pub struct NvmlModuleReader {
     session: Session,
     gpus: Vec<Gpu>,
-    /// Sockets dropped on the last read. A disagreement is warned about once
-    /// when it starts, not on every 1 s poll.
+    /// Warned sockets stay here until a valid reading confirms recovery.
     disagreeing: BTreeSet<u32>,
 }
 
@@ -325,7 +317,7 @@ impl NvmlModuleReader {
     pub fn read(&mut self) -> Vec<ModuleReading> {
         let mut samples = Vec::with_capacity(self.gpus.len());
         for gpu in &self.gpus {
-            let mut value = FieldValue::request(POWER_FIELD_AVERAGE);
+            let mut value = FieldValue::module_power_average();
             let ret = self
                 .session
                 .field_values(gpu.handle, std::slice::from_mut(&mut value));
@@ -358,19 +350,22 @@ fn report_disagreements(
     readings: &[ModuleReading],
     disagreements: &[Disagreement],
 ) {
-    for d in disagreements {
-        if active.insert(d.socket) {
+    for disagreement in disagreements {
+        if active.insert(disagreement.socket) {
             tracing::warn!(
-                socket = d.socket,
-                gpus = ?d.gpus,
-                watts = ?d.watts,
+                socket = disagreement.socket,
+                gpus = ?disagreement.gpus,
+                watts = ?disagreement.watts,
                 "GPUs disagree on their module power; skipping socket until they agree"
             );
         }
     }
-    for r in readings {
-        if active.remove(&r.socket) {
-            tracing::info!(socket = r.socket, "GPUs agree on their module power again");
+    for reading in readings {
+        if active.remove(&reading.socket) {
+            tracing::info!(
+                socket = reading.socket,
+                "GPUs agree on their module power again"
+            );
         }
     }
 }
@@ -411,11 +406,7 @@ fn socket_of_bus_id(pci_root: &Path, bus_id_legacy: &str) -> Option<u32> {
     fs::read_to_string(numa_node).ok()?.trim().parse().ok()
 }
 
-/// One reading per socket. Every GPU on a superchip reports the same module
-/// meter, so the socket's reading is their mean; a sum would count the module
-/// once per GPU. GPUs that disagree by more than `MODULE_SPREAD_TOLERANCE`
-/// are not reading one meter, and their socket is returned as a
-/// `Disagreement` instead of a reading.
+/// Average the shared meter: summing would count the module once per GPU.
 fn group_by_socket(samples: &[GpuSample]) -> (Vec<ModuleReading>, Vec<Disagreement>) {
     let mut by_socket: BTreeMap<u32, (Vec<u32>, Vec<f64>)> = BTreeMap::new();
     for sample in samples {
@@ -629,7 +620,7 @@ mod tests {
             nvml_return,
             value_type,
             value,
-            ..FieldValue::request(POWER_FIELD_AVERAGE)
+            ..FieldValue::module_power_average()
         };
 
         assert_eq!(

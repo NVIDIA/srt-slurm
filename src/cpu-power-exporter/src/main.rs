@@ -23,13 +23,9 @@
 //!   fallback covers hosts where sysfs is hidden from this process but a
 //!   privileged nv-hostengine is reachable.)
 //!
-//! Alongside either back-end, NVML module power is exposed as
-//! `cpu_power_nvml_watts{type="module",socket,gpus,source="nvml"}`:
-//! one sample per Grace socket covering Grace, its GPUs and the rest of the
-//! module, averaged over the socket's GPUs. It is pre-rendered by its own
-//! poller thread, like the ACPI cache, so no scrape waits on NVML.
-//! Best-effort; the family is absent when `libnvidia-ml.so` or module power
-//! is unavailable.
+//! Alongside either back-end, optional `cpu_power_nvml_watts` reports one
+//! superchip module reading per Grace socket. Its background poller prevents
+//! NVML stalls from blocking CPU scrapes. See `nvml` for the meter's scope.
 //!
 //! Endpoints:
 //!   GET /metrics  — Prometheus text format
@@ -122,14 +118,11 @@ const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 const MAX_REQUEST_BYTES: usize = 8192;
 /// Backpressure, not a happy-path size: a scrape target sees ~1 request/s.
 const MAX_CONNECTIONS: usize = 64;
-/// How often the background threads re-read ACPI sysfs sensors and NVML
-/// module power. Each ACPI read blocks ~150 ms waiting for firmware;
-/// 6 sensors × 150 ms = ~900 ms, so a 1 s interval keeps the cache fresh
-/// without falling behind. NVML's field is itself a 1 s average.
+/// Sensor reads can block on firmware, so this delay adds to the read time;
+/// it does not define a fixed sampling period.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// A module snapshot older than this is withheld from scrapes. A stalled
-/// NVML call then shows as a gap in the series, as a stalled scrape did,
-/// instead of a frozen value that an energy integral would count as real.
+/// Withhold stalled NVML readings so energy integration sees a gap instead
+/// of counting the last value indefinitely.
 const MODULE_STALE_AFTER: Duration = Duration::from_secs(3);
 
 #[derive(clap::ValueEnum, Clone, Debug, Default)]
@@ -196,8 +189,7 @@ struct Candidate {
 
 #[derive(Clone)]
 enum MetricsState {
-    /// Pre-rendered Prometheus text, refreshed every `POLL_INTERVAL` by a
-    /// background OS thread.  Scrapes read from this cache and return instantly.
+    /// Cached exposition keeps blocking ACPI reads out of scrapes.
     Acpi(Arc<RwLock<String>>),
     Dcgm(Arc<Mutex<dcgm::DcgmReader>>),
 }
@@ -794,8 +786,7 @@ fn init_acpi_state(sensors: Vec<Sensor>) -> Result<(MetricsState, BTreeSet<Strin
         let cache = Arc::new(RwLock::new(initial));
         let cache_bg = Arc::clone(&cache);
 
-        // Background OS thread: re-reads all sensors every POLL_INTERVAL so
-        // HTTP scrapes serve cached data and return in <1 ms.
+        // Keep blocking firmware reads off the HTTP request path.
         std::thread::Builder::new()
             .name("acpi-poller".to_owned())
             .spawn(move || loop {
@@ -814,7 +805,7 @@ fn init_acpi_state(sensors: Vec<Sensor>) -> Result<(MetricsState, BTreeSet<Strin
     }
 }
 
-fn init_module_cache(cpu_sockets: BTreeSet<String>) -> Result<Arc<RwLock<ModuleState>>> {
+fn start_module_poller(cpu_sockets: BTreeSet<String>) -> Result<Arc<RwLock<ModuleState>>> {
     let cache = Arc::new(RwLock::new(ModuleState::Pending(Instant::now())));
     let cache_bg = Arc::clone(&cache);
     std::thread::Builder::new()
@@ -875,7 +866,7 @@ async fn main() -> Result<()> {
     let (base, cpu_sockets) = init_metrics_state(&args)?;
     let metrics = Metrics {
         base,
-        module: init_module_cache(cpu_sockets)?,
+        module: start_module_poller(cpu_sockets)?,
     };
 
     let addr = SocketAddr::new(args.bind, args.port);
