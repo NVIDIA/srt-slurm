@@ -1,11 +1,12 @@
 # Dynamo counterpart of ../trtllm-serve/disagg-gb300-1p1d-dep1-tep2-c45-b4-mtp-kvoffload-statsoff-noiterlog.yaml
-# Requires the requested Dynamo nightly and the original TRT-LLM rc24 image.
+# Installs Dynamo from /dynamo_wheels into the TRT-LLM rc24 image.
 # Publish metrics and iteration logs; route conversations with session affinity.
 # Native server process-pool and orchestrator options do not apply to Dynamo.
 # The original full-run walltime, warmup and measured traffic are retained.
 # P/D share a node via roles.decode.nodes; native decode-first startup is omitted.
 schema: 2
 name: disagg-gb300-1p1d-dep1-tep2-c40-b4-mtp-kvoffload-statsoff-noiterlog-dynamo
+setup_script: install_dynamo_wheel.sh
 extra_mount:
   - /lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels
   - /lustre:/lustre
@@ -261,6 +262,4 @@ container_mounts:
   /lustre: /lustre
   /raid/scratch: /raid/scratch
 dynamo:
-  install: true
-  source:
-    wheel: 1.6.0.dev20261010
+  install: false
