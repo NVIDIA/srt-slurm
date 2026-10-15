@@ -41,6 +41,9 @@ roles:
     workers: 16
     gpus: 1
     env:
+      # Advertise session-affine KV routing for the prefill worker set only.
+      DYN_ROUTER_MODE: kv
+      DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ENGINE_CONV_AFFINITY_DP_RANK_SOURCE: engine
       TLLM_LOG_LEVEL: INFO
@@ -138,8 +141,7 @@ roles:
     env:
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ENGINE_CONV_AFFINITY_DP_RANK_SOURCE: engine
-      DYN_ROUTER_MODE: kv
-      DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
+      DYN_ROUTER_MODE: least-loaded
       TLLM_LOG_LEVEL: INFO
       TRTLLM_SERVER_DISABLE_GC: '1'
       TRTLLM_WORKER_DISABLE_GC: '1'
@@ -223,8 +225,8 @@ frontend:
   placement:
     node: dedicated
   args:
-    router-mode: kv
-    router-session-affinity-ttl-secs: '14400'
+    # Decode uses least-loaded; prefill advertises its own session-affine routing.
+    router-mode: least-loaded
   env:
     ETCD_LEASE_TTL: '120'
     DYN_ROUTER_ACTIVE_REQUEST_EXPIRY_SECS: '3600'
