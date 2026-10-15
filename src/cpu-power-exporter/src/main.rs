@@ -25,8 +25,8 @@
 //!
 //! Alongside either back-end, NVML module power is exposed as
 //! `cpu_power_nvml_watts{type="module",socket,gpus,source="nvml"}`:
-//! one sample per Grace socket covering Grace, its GPUs, HBM, LPDDR5X and
-//! regulators, averaged over the socket's GPUs. It is pre-rendered by its own
+//! one sample per Grace socket covering Grace, its GPUs and the rest of the
+//! module, averaged over the socket's GPUs. It is pre-rendered by its own
 //! poller thread, like the ACPI cache, so no scrape waits on NVML.
 //! Best-effort; the family is absent when `libnvidia-ml.so` or module power
 //! is unavailable.
@@ -37,6 +37,9 @@
 
 mod dcgm;
 mod nvml;
+
+#[cfg(test)]
+mod test_support;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -200,16 +203,67 @@ enum MetricsState {
 }
 
 struct ModuleSnapshot {
-    rendered_at: Instant,
+    read_started_at: Instant,
     body: String,
+}
+
+enum ModuleState {
+    Pending(Instant),
+    Unavailable,
+    Missing,
+    Ready(ModuleSnapshot),
+}
+
+#[derive(Debug, PartialEq)]
+enum ModuleStatus {
+    Pending,
+    Unavailable,
+    NotReady,
+    Missing,
+    Stale,
+    Fresh,
+}
+
+impl ModuleState {
+    fn status(&self, now: Instant) -> ModuleStatus {
+        match self {
+            Self::Pending(started) if now.duration_since(*started) <= MODULE_STALE_AFTER => {
+                ModuleStatus::Pending
+            }
+            Self::Pending(_) => ModuleStatus::NotReady,
+            Self::Unavailable => ModuleStatus::Unavailable,
+            Self::Missing => ModuleStatus::Missing,
+            Self::Ready(snapshot)
+                if now.duration_since(snapshot.read_started_at) <= MODULE_STALE_AFTER =>
+            {
+                ModuleStatus::Fresh
+            }
+            Self::Ready(_) => ModuleStatus::Stale,
+        }
+    }
+}
+
+fn report_module_status(warned: &mut bool, status: ModuleStatus) {
+    match status {
+        ModuleStatus::NotReady | ModuleStatus::Missing | ModuleStatus::Stale if !*warned => {
+            *warned = true;
+            tracing::warn!(
+                ?status,
+                "NVML module power missing or stale; omitting module series"
+            );
+        }
+        ModuleStatus::Fresh if *warned => {
+            *warned = false;
+            tracing::info!("NVML module power recovered");
+        }
+        _ => {}
+    }
 }
 
 #[derive(Clone)]
 struct Metrics {
     base: MetricsState,
-    /// Refreshed every `POLL_INTERVAL` by the `nvml-poller` thread; `None`
-    /// when the host reports no module power.
-    module: Option<Arc<RwLock<ModuleSnapshot>>>,
+    module: Arc<RwLock<ModuleState>>,
 }
 
 impl Metrics {
@@ -220,12 +274,10 @@ impl Metrics {
             MetricsState::Acpi(cache) => cache.read().unwrap().clone(),
             MetricsState::Dcgm(reader) => build_metrics_dcgm(reader),
         };
-        if let Some(module) = &self.module {
-            let snapshot = module.read().unwrap();
-            if snapshot.rendered_at.elapsed() <= MODULE_STALE_AFTER {
+        let module = self.module.read().unwrap();
+        if module.status(Instant::now()) == ModuleStatus::Fresh {
+            if let ModuleState::Ready(snapshot) = &*module {
                 body.push_str(&snapshot.body);
-            } else {
-                tracing::debug!("module snapshot stale; omitting the series from this scrape");
             }
         }
         body
@@ -762,53 +814,54 @@ fn init_acpi_state(sensors: Vec<Sensor>) -> Result<(MetricsState, BTreeSet<Strin
     }
 }
 
-fn init_module_cache(
-    cpu_sockets: &BTreeSet<String>,
-) -> Result<Option<Arc<RwLock<ModuleSnapshot>>>> {
-    let mut reader = match nvml::NvmlModuleReader::new(Path::new("/sys/bus/pci/devices")) {
-        Ok(reader) => reader,
-        Err(e) => {
-            tracing::info!(reason = %e, "NVML module power unavailable; module series not exported");
-            return Ok(None);
-        }
-    };
-    let sockets = reader.sockets();
-    tracing::info!(
-        gpu_count = reader.gpu_count(),
-        ?sockets,
-        "NVML module reader initialised"
-    );
-    // The PCI NUMA node stands in for the ACPI socket number. On GB200 a
-    // CPU-pinned load test showed NUMA node N feeding `CPU Power Socket N`
-    // (docs/cpu-power-telemetry.md); GB300 is untested. The collector only
-    // writes a module reading onto a socket row the CPU family produced, so a
-    // socket the family does not know is reported once, here, rather than
-    // silently dropped on every scrape.
-    for socket in sockets {
-        if !cpu_sockets.contains(&socket.to_string()) {
-            tracing::warn!(
-                socket,
-                cpu_sockets = ?cpu_sockets,
-                "NVML module socket has no CPU power socket; its module reading will not be persisted"
-            );
-        }
-    }
-
-    let snapshot = |reader: &mut nvml::NvmlModuleReader| ModuleSnapshot {
-        rendered_at: Instant::now(),
-        body: nvml::render_module_metrics(&reader.read()),
-    };
-    let cache = Arc::new(RwLock::new(snapshot(&mut reader)));
+fn init_module_cache(cpu_sockets: BTreeSet<String>) -> Result<Arc<RwLock<ModuleState>>> {
+    let cache = Arc::new(RwLock::new(ModuleState::Pending(Instant::now())));
     let cache_bg = Arc::clone(&cache);
     std::thread::Builder::new()
         .name("nvml-poller".to_owned())
-        .spawn(move || loop {
-            std::thread::sleep(POLL_INTERVAL);
-            let fresh = snapshot(&mut reader);
-            *cache_bg.write().unwrap() = fresh;
+        .spawn(move || {
+            let mut reader = match nvml::NvmlModuleReader::new(Path::new("/sys/bus/pci/devices")) {
+                Ok(reader) => reader,
+                Err(e) => {
+                    *cache_bg.write().unwrap() = ModuleState::Unavailable;
+                    tracing::info!(reason = %e, "NVML module power unavailable; module series not exported");
+                    return;
+                }
+            };
+            let sockets = reader.sockets();
+            tracing::info!(
+                gpu_count = reader.gpu_count(),
+                ?sockets,
+                "NVML module reader initialised"
+            );
+            // PCI NUMA IDs match ACPI sockets on the measured GB200 host;
+            // GB300 is unverified.
+            for socket in sockets {
+                if !cpu_sockets.contains(&socket.to_string()) {
+                    tracing::warn!(
+                        socket,
+                        cpu_sockets = ?cpu_sockets,
+                        "NVML module socket has no CPU power socket; its module reading will not be persisted"
+                    );
+                }
+            }
+            loop {
+                let read_started_at = Instant::now();
+                let readings = reader.read();
+                let fresh = if readings.is_empty() {
+                    ModuleState::Missing
+                } else {
+                    ModuleState::Ready(ModuleSnapshot {
+                        read_started_at,
+                        body: nvml::render_module_metrics(&readings),
+                    })
+                };
+                *cache_bg.write().unwrap() = fresh;
+                std::thread::sleep(POLL_INTERVAL);
+            }
         })
         .context("spawn nvml-poller thread")?;
-    Ok(Some(cache))
+    Ok(cache)
 }
 
 #[tokio::main]
@@ -822,7 +875,7 @@ async fn main() -> Result<()> {
     let (base, cpu_sockets) = init_metrics_state(&args)?;
     let metrics = Metrics {
         base,
-        module: init_module_cache(&cpu_sockets)?,
+        module: init_module_cache(cpu_sockets)?,
     };
 
     let addr = SocketAddr::new(args.bind, args.port);
@@ -836,9 +889,16 @@ async fn main() -> Result<()> {
     let mut sigterm = unix_signal(SignalKind::terminate())?;
     let mut conns = JoinSet::new();
     let mut backoff = Duration::ZERO;
+    let mut module_tick = tokio::time::interval(POLL_INTERVAL);
+    module_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut module_warned = false;
     loop {
         let at_capacity = conns.len() >= MAX_CONNECTIONS;
         tokio::select! {
+            _ = module_tick.tick() => {
+                let status = metrics.module.read().unwrap().status(Instant::now());
+                report_module_status(&mut module_warned, status);
+            }
             // Reaping stays inside the select! so a signal is honoured while
             // the exporter is sitting at its connection limit.
             Some(_) = conns.join_next(), if at_capacity => {}
@@ -874,7 +934,94 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::capture_logs;
     use tempfile::TempDir;
+
+    #[test]
+    fn module_render_withholds_missing_and_stale_samples_then_recovers() {
+        let cpu = "cpu_power_acpi_watts{socket=\"0\",type=\"total\"} 88.000000\n";
+        let module = Arc::new(RwLock::new(ModuleState::Pending(Instant::now())));
+        let metrics = Metrics {
+            base: MetricsState::Acpi(Arc::new(RwLock::new(cpu.to_owned()))),
+            module: Arc::clone(&module),
+        };
+        let sample = || {
+            nvml::render_module_metrics(&[nvml::ModuleReading {
+                socket: 0,
+                gpus: vec![0, 1],
+                watts: 600.0,
+            }])
+        };
+        assert_eq!(metrics.render(), cpu);
+        for missing in [ModuleState::Unavailable, ModuleState::Missing] {
+            *module.write().unwrap() = missing;
+            assert_eq!(metrics.render(), cpu);
+        }
+        *module.write().unwrap() = ModuleState::Ready(ModuleSnapshot {
+            read_started_at: Instant::now(),
+            body: sample(),
+        });
+        let fresh = metrics.render();
+        assert!(fresh.starts_with(cpu));
+        assert!(fresh.contains(
+            "cpu_power_nvml_watts{type=\"module\",socket=\"0\",gpus=\"0,1\",source=\"nvml\"} 600.000000\n"
+        ));
+        *module.write().unwrap() = ModuleState::Ready(ModuleSnapshot {
+            read_started_at: Instant::now() - Duration::from_secs(4),
+            body: sample(),
+        });
+        assert_eq!(metrics.render(), cpu);
+        *module.write().unwrap() = ModuleState::Ready(ModuleSnapshot {
+            read_started_at: Instant::now(),
+            body: sample(),
+        });
+        assert_eq!(metrics.render(), fresh);
+    }
+
+    #[test]
+    fn module_warnings_wait_for_startup_and_repeat_only_after_recovery() {
+        let start = Instant::now();
+        let pending = ModuleState::Pending(start);
+        let stale = ModuleState::Ready(ModuleSnapshot {
+            read_started_at: start,
+            body: "module sample".to_owned(),
+        });
+        let fresh = ModuleState::Ready(ModuleSnapshot {
+            read_started_at: start + Duration::from_secs(6),
+            body: "new module sample".to_owned(),
+        });
+        let recovered = ModuleState::Ready(ModuleSnapshot {
+            read_started_at: start + Duration::from_secs(12),
+            body: "recovered module sample".to_owned(),
+        });
+        let logs = capture_logs(|| {
+            let mut warned = false;
+            for (state, at) in [
+                (&ModuleState::Unavailable, start),
+                (&pending, start),
+                (&pending, start + Duration::from_secs(3)),
+                (&pending, start + Duration::from_secs(4)),
+                (&pending, start + Duration::from_secs(5)),
+                (&ModuleState::Missing, start + Duration::from_secs(5)),
+                (&stale, start + Duration::from_secs(5)),
+                (&fresh, start + Duration::from_secs(6)),
+                (&fresh, start + Duration::from_secs(7)),
+                (&fresh, start + Duration::from_secs(10)),
+                (&fresh, start + Duration::from_secs(11)),
+                (&recovered, start + Duration::from_secs(12)),
+                (&ModuleState::Missing, start + Duration::from_secs(13)),
+                (&ModuleState::Unavailable, start + Duration::from_secs(14)),
+            ] {
+                report_module_status(&mut warned, state.status(at));
+            }
+        });
+        assert_eq!(logs.matches("WARN").count(), 3, "{logs}");
+        assert_eq!(logs.matches("INFO").count(), 2, "{logs}");
+        assert!(logs.contains("status=NotReady"), "{logs}");
+        assert!(logs.contains("status=Stale"), "{logs}");
+        assert!(logs.contains("status=Missing"), "{logs}");
+        assert!(logs.contains("NVML module power recovered"), "{logs}");
+    }
 
     #[test]
     fn dcgm_metrics_carry_field_id_and_keep_1130_first_per_socket() {
@@ -1424,7 +1571,7 @@ mod tests {
         let sensors: &'static [Sensor] = Vec::leak(discover_sensors(dir.path()).unwrap());
         let metrics = Metrics {
             base: MetricsState::Acpi(Arc::new(RwLock::new(build_metrics(sensors)))),
-            module: None,
+            module: Arc::new(RwLock::new(ModuleState::Unavailable)),
         };
 
         let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))

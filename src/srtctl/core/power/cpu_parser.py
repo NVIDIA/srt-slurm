@@ -193,7 +193,7 @@ def _parse_nvml(families) -> list[CpuReading]:
             if socket_id is None:
                 continue
             value = sample.value
-            if not math.isfinite(value) or value < 0:
+            if not math.isfinite(value) or value <= 0:
                 continue
             readings.append(
                 CpuReading(

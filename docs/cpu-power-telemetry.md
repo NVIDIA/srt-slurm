@@ -197,8 +197,14 @@ module_w = Grace + GPU_a + GPU_b + the rest of the module
 The exporter therefore publishes the mean of a socket's GPU readings, one
 sample per socket. GPUs whose readings differ by more than 5% of their mean
 are not reading one meter. The exporter warns once when that starts and
-skips the socket until they agree. A snapshot older than 3 s is withheld, so
-a stalled NVML call shows as a gap rather than a frozen value.
+skips the socket until they agree, then logs recovery at INFO.
+
+NVML initialization and reads run in a background thread, so blocked NVML
+calls do not delay the HTTP server. The module series is omitted until a
+reading is ready; snapshots older than 3 s are withheld. An independent
+timer warns once if initialization takes longer than 3 s or readings become
+missing or stale, and logs recovery at INFO when fresh readings return.
+These messages do not depend on scrapes.
 
 Measured on a GB200 node (driver 580.126.20, kernel 6.8.0-1046-nvidia-64k)
 with an FMA kernel drawing about 400 W per loaded GPU, sampling
@@ -230,9 +236,10 @@ unverified. The collector writes `module_w` only onto a socket row the CPU
 family produced, so the exporter warns once at startup for a module socket
 with no CPU socket.
 
-The series is best-effort. When NVML is unavailable the exporter omits it and
-`module_w` stays blank. NVML is the only source of `module_w`. A firmware
-`Module Power Socket N` ACPI meter stays unclassified. A scrape that carries
+The series is best-effort. When NVML is unavailable the exporter logs the
+reason at INFO and omits the series; `module_w` stays blank. NVML is the only
+source of `module_w`. A firmware `Module Power Socket N` ACPI meter stays
+unclassified. A scrape that carries
 only the NVML series has no socket power and writes no rows.
 
 ## Output Format
@@ -251,7 +258,7 @@ schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w, cp
   combined at roughly 53-58W for the same socket. `total` measures the whole
   Grace SoC power boundary, not literally `cpu_rail + soc`.
 - **`module_w`**: superchip module power from NVML, a superset of `power_w`.
-  It covers Grace plus the GPUs, HBM, LPDDR5X and regulators, and is never
+  It covers Grace, its GPUs and the rest of the module, and is never
   summed into `total_power_w`. Consumers that want the whole superchip use
   `module_w` and must not add GPU power on top, because the GPUs are already
   inside it. It is blank when no module reading arrived. The row's `source`

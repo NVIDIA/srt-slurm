@@ -290,6 +290,7 @@ def test_nvml_family_ignores_non_module_types_and_invalid_samples():
         '{type="module",socket="",source="nvml"} 330.0',
         '{type="module",socket="-1",source="nvml"} 340.0',
         '{type="module",socket="1",source="nvml"} -1.0',
+        '{type="module",socket="0",source="nvml"} 0.0',
     )
 
     scrape = parse_cpu_scrape(body)

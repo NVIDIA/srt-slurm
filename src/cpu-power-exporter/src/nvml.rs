@@ -293,11 +293,6 @@ pub struct NvmlModuleReader {
     disagreeing: BTreeSet<u32>,
 }
 
-// SAFETY: NVML is thread-safe, and device handles stay valid until
-// nvmlShutdown, which only `Session::drop` calls, so the reader may move to
-// its poller thread.
-unsafe impl Send for NvmlModuleReader {}
-
 impl NvmlModuleReader {
     pub fn new(pci_root: &Path) -> Result<Self, NvmlUnavailable> {
         let session = Session::open()?;
@@ -353,22 +348,30 @@ impl NvmlModuleReader {
             }
         }
         let (readings, disagreements) = group_by_socket(&samples);
-        for d in disagreements {
-            if self.disagreeing.insert(d.socket) {
-                tracing::warn!(
-                    socket = d.socket,
-                    gpus = ?d.gpus,
-                    watts = ?d.watts,
-                    "GPUs disagree on their module power; skipping socket until they agree"
-                );
-            }
-        }
-        for r in &readings {
-            if self.disagreeing.remove(&r.socket) {
-                tracing::info!(socket = r.socket, "GPUs agree on their module power again");
-            }
-        }
+        report_disagreements(&mut self.disagreeing, &readings, &disagreements);
         readings
+    }
+}
+
+fn report_disagreements(
+    active: &mut BTreeSet<u32>,
+    readings: &[ModuleReading],
+    disagreements: &[Disagreement],
+) {
+    for d in disagreements {
+        if active.insert(d.socket) {
+            tracing::warn!(
+                socket = d.socket,
+                gpus = ?d.gpus,
+                watts = ?d.watts,
+                "GPUs disagree on their module power; skipping socket until they agree"
+            );
+        }
+    }
+    for r in readings {
+        if active.remove(&r.socket) {
+            tracing::info!(socket = r.socket, "GPUs agree on their module power again");
+        }
     }
 }
 
@@ -447,7 +450,7 @@ fn group_by_socket(samples: &[GpuSample]) -> (Vec<ModuleReading>, Vec<Disagreeme
 pub fn render_module_metrics(readings: &[ModuleReading]) -> String {
     let mut out = String::from(
         "# HELP cpu_power_nvml_watts Superchip module power per Grace socket via NVML (W, 1 s average): \
-         Grace, its GPUs, HBM, LPDDR5X and regulators.\n\
+         Grace, its GPUs and the rest of the module.\n\
          # TYPE cpu_power_nvml_watts gauge\n",
     );
     for r in readings {
@@ -466,9 +469,46 @@ pub fn render_module_metrics(readings: &[ModuleReading]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::capture_logs;
     use tempfile::TempDir;
 
-    const HEADER: &str = "# HELP cpu_power_nvml_watts Superchip module power per Grace socket via NVML (W, 1 s average): Grace, its GPUs, HBM, LPDDR5X and regulators.\n# TYPE cpu_power_nvml_watts gauge\n";
+    #[test]
+    fn disagreement_warns_once_and_recovers_only_on_a_valid_socket_reading() {
+        let disagreements = [Disagreement {
+            socket: 0,
+            gpus: vec![0, 1],
+            watts: vec![500.0, 700.0],
+        }];
+        let readings = [ModuleReading {
+            socket: 0,
+            gpus: vec![0, 1],
+            watts: 600.0,
+        }];
+        let logs = capture_logs(|| {
+            let mut active = BTreeSet::new();
+            report_disagreements(&mut active, &[], &disagreements);
+            report_disagreements(&mut active, &[], &disagreements);
+            report_disagreements(&mut active, &[], &[]);
+            report_disagreements(&mut active, &readings, &[]);
+            report_disagreements(&mut active, &readings, &[]);
+            report_disagreements(&mut active, &[], &disagreements);
+        });
+        assert_eq!(
+            logs.matches("GPUs disagree on their module power").count(),
+            2,
+            "{logs}"
+        );
+        assert_eq!(
+            logs.matches("GPUs agree on their module power again")
+                .count(),
+            1,
+            "{logs}"
+        );
+        assert_eq!(logs.matches("WARN").count(), 2, "{logs}");
+        assert_eq!(logs.matches("INFO").count(), 1, "{logs}");
+    }
+
+    const HEADER: &str = "# HELP cpu_power_nvml_watts Superchip module power per Grace socket via NVML (W, 1 s average): Grace, its GPUs and the rest of the module.\n# TYPE cpu_power_nvml_watts gauge\n";
 
     const NVML_ERROR_NOT_SUPPORTED: u32 = 3;
 
