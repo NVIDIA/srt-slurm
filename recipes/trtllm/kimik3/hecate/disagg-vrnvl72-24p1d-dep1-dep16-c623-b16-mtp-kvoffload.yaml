@@ -1,0 +1,244 @@
+schema: 2
+name: disagg-vrnvl72-24p1d-dep1-dep16-c623-b16-mtp-kvoffload
+model:
+  path: /lustre/share/coreai_dlalgo_ci/artifacts/model/nvidia_kimi-k3-nvfp4/hf/hf-1ec10fa_orig
+  container: /lustre/share/coreai_comparch_trtllm/lizhiz/rubin_k3/a4b28d25fc/trtllm.sqsh
+  precision: fp4
+identity:
+  model:
+    repo: moonshotai/Kimi-K3
+  container:
+    image: /lustre/share/coreai_comparch_trtllm/lizhiz/rubin_k3/a4b28d25fc/trtllm.sqsh
+  frameworks:
+    tensorrt_llm: 1.3.0rc25
+slurm:
+  time_limit: 04:00:00
+health_check:
+  max_attempts: 540
+  interval_seconds: 10
+resources:
+  gpu_type: vrnvl72
+  gpus_per_node: 4
+engine:
+  type: trtllm
+roles:
+  prefill:
+    nodes: 6
+    workers: 24
+    gpus: 1
+    env:
+      TLLM_LOG_LEVEL: INFO
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      MIMALLOC_ARENA_RESERVE: '0'
+      OMP_NUM_THREADS: '1'
+      HF_HUB_TRUST_REMOTE_CODE: '1'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      KIMI_K3_MLA_MAX_POSITIONS: '1048576'
+      KIMI_K3_ATTN_RES_TOPOLOGY: '1'
+      TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
+      TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
+      WORKER_CPU_AFFINITY: numa
+      TLLM_K3_MLA_GEN_BACKEND: cute-dsl
+      KIMI_K3_FP8_WEIGHT_READ_MOE_MLP: '1'
+      TLLM_KIMI_K3_BF16_KV_LAYERS: 91,92
+      TLLM_KIMI_K3_FP8_KV_LAYERS: 91,92
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '2.62'
+      CUDA_SCALE_LAUNCH_QUEUES: 4x
+      TLLM_V2_CTX_COST_KV_OFFSET: '0'
+      TLLM_V2_CTX_COST_KV_DEPTH_THRESHOLD: '0'
+      TLLM_V2_CTX_COST_PER_CHUNK_DEPTH_TOKENS: '0'
+      TLLM_V2_CTX_DEMOTE_UNCACHED_TOKENS: '0'
+      TLLM_V2_CTX_DEMOTE_MAX_ITERS: '0'
+      TLLM_MOE_ASYNC_INPUT_QUANT: '0'
+      TLLM_ROUTING_DISABLE_COOP_LAUNCH: '1'
+      TRTLLM_CTX_ONLY_BENCHMARK: '1'
+      TRTLLM_DWDP_PREFETCH_GATHER: '1'
+      TRTLLM_DWDP_GATHER_KERNEL: tma
+      TLLM_AUTOTUNER_MULTIPROCESS: '0'
+      TLLM_FMHA_LIBS: -flashinfer_trtllm_gen
+      UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+    args:
+      attention_dp_config:
+        kv_cache_routing_conversation_affinity: true
+        kv_cache_routing_new_conv_placement: least_queued
+      cache_transceiver_config:
+        backend: NIXL
+        kv_cache_bounce_size_mb: 0
+        kv_transfer_timeout_ms: 600000
+        transceiver_runtime: PYTHON
+      cuda_graph_config: null
+      disable_overlap_scheduler: true
+      dwdp_config:
+        contention_opt: false
+        dwdp_size: 24
+        num_experts_per_worker: 45
+        num_groups: 1
+        num_prefetch_experts: 37
+      enable_attention_dp: true
+      enable_chunked_prefill: true
+      kv_cache_config:
+        block_reuse_config:
+          max_num_turns: 5
+          policy: per_conversation
+        dtype: nvfp4
+        enable_block_reuse: true
+        free_gpu_memory_fraction: 0.7
+        host_cache_size: 171798691840
+        mamba_ssm_cache_dtype: bfloat16
+        mamba_state_config:
+          additional_snapshot_offsets_from_end:
+          - 0
+        pool_ratio:
+        - 0.13
+        - 0.02
+        - 0.4
+        - 0.45
+        tokens_per_block: 128
+        use_kv_cache_manager_v2: true
+      max_batch_size: 16
+      max_num_tokens: 16384
+      max_seq_len: 996672
+      moe_config:
+        backend: CUTEDSL
+        max_num_tokens: 16384
+        use_low_precision_moe_combine: true
+      moe_expert_parallel_size: 1
+      num_serve_frontends: 8
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      stream_interval: 10
+      tensor_parallel_size: 1
+      trust_remote_code: true
+      return_perf_metrics: false
+    extra_args:
+    - --server_role
+    - CONTEXT
+  decode:
+    nodes: 4
+    workers: 1
+    gpus: 16
+    env:
+      TLLM_LOG_LEVEL: INFO
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      MIMALLOC_ARENA_RESERVE: '0'
+      OMP_NUM_THREADS: '1'
+      HF_HUB_TRUST_REMOTE_CODE: '1'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      KIMI_K3_MLA_MAX_POSITIONS: '1048576'
+      KIMI_K3_ATTN_RES_TOPOLOGY: '1'
+      TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
+      TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
+      WORKER_CPU_AFFINITY: numa
+      TLLM_K3_MLA_GEN_BACKEND: cute-dsl
+      KIMI_K3_FP8_WEIGHT_READ_MOE_MLP: '1'
+      TLLM_KIMI_K3_BF16_KV_LAYERS: 91,92
+      TLLM_KIMI_K3_FP8_KV_LAYERS: 91,92
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '2.62'
+      TRTLLM_FP4_MLA_SPLIT_KV: '8'
+      UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+    args:
+      cache_transceiver_config:
+        backend: NIXL
+        kv_cache_bounce_size_mb: 0
+        kv_transfer_timeout_ms: 600000
+        transceiver_runtime: PYTHON
+      cuda_graph_config:
+        batch_sizes:
+        - 1
+        - 2
+        - 4
+        - 8
+        - 16
+        enable_padding: true
+      enable_attention_dp: true
+      kv_cache_config:
+        avg_seq_len: 149442
+        block_reuse_config:
+          max_num_turns: 5
+          policy: per_conversation
+        dtype: nvfp4
+        enable_block_reuse: false
+        free_gpu_memory_fraction: 0.9
+        host_cache_size: 68719476736
+        mamba_ssm_cache_dtype: bfloat16
+        mamba_state_config:
+          additional_snapshot_offsets_from_end:
+          - 0
+        tokens_per_block: 128
+        use_kv_cache_manager_v2: true
+      max_batch_size: 16
+      max_num_tokens: 96
+      max_seq_len: 997696
+      moe_config:
+        backend: MEGAMOE_CUTEDSL
+        use_low_precision_moe_combine: true
+      moe_expert_parallel_size: 16
+      num_postprocess_workers: 4
+      num_serve_frontends: 8
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      speculative_config:
+        block_size: 5
+        decoding_type: DSpark
+        max_draft_len: 5
+        speculative_model: /lustre/share/coreai_dlalgo_ci/artifacts/model/inferact_kimi-k3-dspark/hf/hf-cf6b824_orig
+      stream_interval: 100
+      tensor_parallel_size: 16
+      trust_remote_code: true
+      enable_iter_perf_stats: true
+      return_perf_metrics: false
+frontend:
+  type: trtllm_serve
+  enable_multiple_frontends: false
+  ctx_router:
+    type: conversation
+  gen_router:
+    type: load_balancing
+  env:
+    TRTLLM_SERVER_DISABLE_GC: '1'
+    TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
+  server_config_extra:
+    gen_strip_message_history: true
+    gen_tokids_ctxbytes: true
+    num_workers: 4
+    server_keep_alive_timeout: 3600
+    backend: pytorch
+  placement:
+    node: first_decode
+  args:
+    server_start_timeout: 7200
+    request_timeout: 7200
+benchmark:
+  type: custom
+  placement:
+    node: last_decode
+  env:
+    AIPERF_REF: git+https://github.com/SemiAnalysisAI/agentx-harness.git@754356e9a39acc6cc6afb242d123bb57c3fb6f75
+    AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/coreai_comparch_infbench/taizhongw/hf_cache/aiperf_mmap
+    AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
+    AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
+  command: |
+    set -euo pipefail
+    AIPERF_VENV="${TMPDIR:-/tmp}/agentx-aiperf-${SLURM_JOB_ID:-$$}"
+    if [ ! -x "$AIPERF_VENV/bin/aiperf" ]; then
+      python3 -m venv "$AIPERF_VENV"
+      "$AIPERF_VENV/bin/pip" install -q --upgrade pip
+      "$AIPERF_VENV/bin/pip" install -q "aiperf @ $AIPERF_REF" "datasets>=4.7.0" "huggingface_hub[cli]>=0.25.0"
+    fi
+    mkdir -p /logs/agentic/concurrency_623
+    "$AIPERF_VENV/bin/aiperf" profile --scenario inferencex-agentx-mvp \
+      --url http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT --endpoint /v1/chat/completions --endpoint-type chat --streaming \
+      -m /model --tokenizer-trust-remote-code \
+      --public-dataset semianalysis_cc_traces_weka_062126 \
+      --max-context-length 996579 \
+      --trajectory-start-min-ratio 0.25 --trajectory-start-max-ratio 0.75 \
+      --trace-idle-gap-cap-seconds 300 --warmup-requests-per-lane 3 \
+      --num-dataset-entries 393 --slice-duration 1.0 --stats-interval 30 \
+      --use-server-token-count --no-gpu-telemetry --random-seed 42 \
+      --failed-request-threshold 0.1 \
+      --benchmark-duration 3600 --concurrency 623 \
+      --output-artifact-dir /logs/agentic/concurrency_623 --ui simple
