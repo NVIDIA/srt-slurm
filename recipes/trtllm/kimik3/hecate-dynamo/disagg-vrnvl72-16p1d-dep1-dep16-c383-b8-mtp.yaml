@@ -232,6 +232,8 @@ benchmark:
   placement:
     node: dedicated
   env:
+    # Emit realtime performance summaries with --ui simple every two minutes.
+    AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
     AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
     AIPERF_REF: /lustre/fsw/coreai_comparch_inferencex/rihuo/agentx-harness
     AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/aiperf_mmap
@@ -258,7 +260,7 @@ benchmark:
       --max-context-length 996579 \
       --trajectory-start-min-ratio 0.25 --trajectory-start-max-ratio 0.75 \
       --trace-idle-gap-cap-seconds 300 --warmup-requests-per-lane 3 \
-      --num-dataset-entries 393 --slice-duration 1.0 --stats-interval 30 \
+      --num-dataset-entries 393 --slice-duration 1.0 --stats-interval 120 \
       --use-server-token-count --no-gpu-telemetry --random-seed 42 \
       --failed-request-threshold 0.1 \
       "${SERVER_METRICS_ARGS[@]}" --server-metrics-formats json csv parquet jsonl \
