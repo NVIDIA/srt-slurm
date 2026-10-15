@@ -86,7 +86,7 @@ cpu-power-exporter-download:
 	@set -eu; \
 	case "$(ARCH)" in \
 		x86_64)  asset="cpu-power-exporter-x86_64-unknown-linux-musl"; file_pattern="x86-64" ;; \
-		aarch64) asset="cpu-power-exporter-aarch64-unknown-linux-musl"; file_pattern="aarch64" ;; \
+		aarch64) asset="cpu-power-exporter-aarch64-unknown-linux-gnu"; file_pattern="aarch64" ;; \
 		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
 	esac; \
 	marker=bin/.cpu-power-exporter.release; \

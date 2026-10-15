@@ -182,7 +182,7 @@ jobs:
           - platform: linux/amd64
             asset: cpu-power-exporter-x86_64-unknown-linux-musl
           - platform: linux/arm64
-            asset: cpu-power-exporter-aarch64-unknown-linux-musl
+            asset: cpu-power-exporter-aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
         with:
