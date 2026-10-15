@@ -126,10 +126,11 @@ def test_role_engines_images_and_environments_are_visible(capsys):
 def test_trtllm_local_numa_example_is_visible(capsys):
     recipe = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-agg-numa-local.yaml"
     config = SrtConfig.from_yaml(recipe)
-    assert config.backend.numa_cpu_bind is True
+    assert config.backend.numa_cpu_bind is False
     assert config.backend.numa_memory_bind == "local"
     show_config_details(config)
     output = capsys.readouterr().out
+    assert "GPU-local CPU binding" not in output
     assert "strict GPU-local memory binding" in output
     assert "--bind-memory" in output
 

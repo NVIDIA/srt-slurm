@@ -33,8 +33,7 @@ engine:
   type: trtllm
   served_model_name: Kimi-K3
   publish_metrics: true
-  # Pin each worker's CPUs and memory to its GPU's NUMA node; local requires numa_cpu_bind.
-  numa_cpu_bind: true
+  # Bind each worker's memory to its GPU's NUMA node.
   numa_memory_bind: local
 roles:
   prefill:
@@ -78,7 +77,7 @@ roles:
       UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
     args:
       enable_iter_perf_stats: true
-      iter_perf_stats_interval: 20
+      iter_perf_stats_interval: 40
       backend: pytorch
       attention_dp_config:
         kv_cache_routing_conversation_affinity: true
@@ -99,7 +98,7 @@ roles:
       enable_attention_dp: true
       enable_chunked_prefill: true
       kv_cache_config:
-        iteration_stats_interval: 20
+        iteration_stats_interval: 40
         block_reuse_config:
           max_num_turns: 5
           policy: per_conversation
@@ -163,7 +162,7 @@ roles:
       UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
     args:
       enable_iter_perf_stats: true
-      iter_perf_stats_interval: 20
+      iter_perf_stats_interval: 40
       backend: pytorch
       cache_transceiver_config:
         backend: NIXL
@@ -186,7 +185,7 @@ roles:
         enable_padding: true
       enable_attention_dp: false
       kv_cache_config:
-        iteration_stats_interval: 20
+        iteration_stats_interval: 40
         avg_seq_len: 149442
         block_reuse_config:
           max_num_turns: 5

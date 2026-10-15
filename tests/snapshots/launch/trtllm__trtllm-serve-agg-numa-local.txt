@@ -18,7 +18,6 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     MASTER_ADDR: 127.0.0.1
     MASTER_PORT: 29500
-    TLLM_NUMA_AWARE_WORKER_AFFINITY: 0
     TRTLLM_EPLB_SHM_NAME: <random>
 srun_options:
     kill-on-bad-exit: 1
@@ -32,7 +31,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    bash /configs/numa_cpu_bind.sh --bind-memory trtllm-llmapi-launch trtllm-serve /model --host 0.0.0.0 --port 8000 --tensor_parallel_size 1 --config /logs/trtllm_config_agg.yaml --served_model_name Qwen/Qwen3-0.6B
+    bash /configs/numa_cpu_bind.sh --bind-memory --memory-only trtllm-llmapi-launch trtllm-serve /model --host 0.0.0.0 --port 8000 --tensor_parallel_size 1 --config /logs/trtllm_config_agg.yaml --served_model_name Qwen/Qwen3-0.6B
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

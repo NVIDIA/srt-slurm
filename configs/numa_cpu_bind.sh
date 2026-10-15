@@ -9,6 +9,7 @@ set -euo pipefail
 # TRT-LLM's own internal affinity logic only pins the leader thread, leaving
 # the rest to land cross-socket.
 # With --bind-memory, also restrict allocations to the GPU's NUMA node.
+# With --memory-only, apply that memory policy without changing CPU affinity.
 # Local memory exhaustion can fail allocations; existing/shared pages are not migrated.
 #
 # CPU range is discovered at runtime from the physical GPU this task owns,
@@ -22,10 +23,15 @@ set -euo pipefail
 : "${SLURM_LOCALID:?SLURM_LOCALID is required}"
 
 bind_memory=false
-if [[ "${1:-}" == "--bind-memory" ]]; then
+bind_cpus=true
+while [[ "${1:-}" == --* ]]; do
+    case "$1" in
+        --bind-memory) bind_memory=true ;;
+        --memory-only) bind_memory=true; bind_cpus=false ;;
+        *) break ;;
+    esac
     shift
-    bind_memory=true
-fi
+done
 
 if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     IFS=',' read -ra visible_gpus <<< "${CUDA_VISIBLE_DEVICES}"
@@ -55,6 +61,11 @@ if [[ ! "${numa_node}" =~ ^[0-9]+$ ]]; then
     fi
     echo "numa_cpu_bind.sh: GPU ${physical_gpu} (${sysfs_addr}) reports no NUMA affinity (numa_node=${numa_node}); running without CPU binding" >&2
     exec "$@"
+fi
+
+if [[ "${bind_cpus}" == false ]]; then
+    echo "numa_cpu_bind.sh: memory_policy=bind:${numa_node}" >&2
+    exec numactl --membind="${numa_node}" "$@"
 fi
 
 cpu_list="$(cat "/sys/devices/system/node/node${numa_node}/cpulist" 2>/dev/null || true)"

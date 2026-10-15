@@ -3301,7 +3301,7 @@
               "type": "null"
             }
           ],
-          "description": "Worker memory policy. None (default) uses `numactl -m 0,1` only for gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type). True uses nodes 0,1 for any GPU type or mode; False leaves the policy unchanged. CPU binding does not change these policies. \"local\" requires numa_cpu_bind=True and strictly binds memory to the task GPU's NUMA node. Local mode fails startup if GPU NUMA affinity is unknown. Local memory exhaustion can fail allocations; existing/shared pages are not migrated.",
+          "description": "Worker memory policy. None (default) uses `numactl -m 0,1` only for gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type). True uses nodes 0,1 for any GPU type or mode; False leaves the policy unchanged. CPU binding does not change these policies. \"local\" strictly binds memory to the task GPU's NUMA node, independently of CPU binding. Local mode fails startup if GPU NUMA affinity is unknown. Local memory exhaustion can fail allocations; existing/shared pages are not migrated.",
           "default": null
         },
         "numa_cpu_bind": {

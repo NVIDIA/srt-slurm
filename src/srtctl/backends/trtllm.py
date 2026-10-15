@@ -324,8 +324,8 @@ class TRTLLMBackend(Backend):
     # Worker memory policy. None (default) uses `numactl -m 0,1` only for
     # gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type).
     # True uses nodes 0,1 for any GPU type or mode; False leaves the policy
-    # unchanged. CPU binding does not change these policies. "local" requires
-    # numa_cpu_bind=True and strictly binds memory to the task GPU's NUMA node.
+    # unchanged. CPU binding does not change these policies. "local" strictly
+    # binds memory to the task GPU's NUMA node, independently of CPU binding.
     # Local mode fails startup if GPU NUMA affinity is unknown. Local memory
     # exhaustion can fail allocations; existing/shared pages are not migrated.
     numa_memory_bind: bool | Literal["local"] | None = None
@@ -355,10 +355,6 @@ class TRTLLMBackend(Backend):
         ProcessGroup("dynamo_trtllm", cmdline=(r"dynamo\.trtllm",)),
         ProcessGroup("trtllm_serve", cmdline=("trtllm-serve",)),
     )
-
-    def __post_init__(self) -> None:
-        if self.numa_memory_bind == "local" and not self.numa_cpu_bind:
-            raise ValueError("numa_memory_bind: local requires numa_cpu_bind: true")
 
     @property
     def dynamo_metrics_flags(self) -> tuple[str, ...]:
@@ -557,21 +553,23 @@ class TRTLLMBackend(Backend):
         # the allocation is uniform and any rank could lead.
         return [replace(p, trtllm_dist_init_port=allocator.next(TRTLLM_DIST_INIT_PORTS)) for p in processes]
 
-    def _wrap_with_numa_cpu_bind(self, cmd: list[str], *, bind_memory: bool) -> list[str]:
-        """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which taskset-binds per task.
+    def _wrap_with_numa_bind(self, cmd: list[str], *, bind_memory: bool) -> list[str]:
+        """Wrap ``cmd`` with per-task GPU-local CPU and/or memory binding.
 
-        Applies to all worker modes (prefill/decode/agg) when numa_cpu_bind
-        is enabled. The CPU list depends on which physical GPU the task owns
+        Applies to all worker modes (prefill/decode/agg) when CPU binding or
+        local memory binding is enabled. Placement depends on which GPU the task owns
         (resolved from CUDA_VISIBLE_DEVICES and SLURM_LOCALID) and srun sets
         SLURM_LOCALID per-task at launch time — since the same argv is
         replicated across all ranks of the endpoint's srun (MPI-style
         launch), the lookup must happen in a script at runtime rather than
         being baked into the static command list.
         """
-        if not self.numa_cpu_bind:
+        if not self.numa_cpu_bind and not bind_memory:
             return cmd
-        memory_args = ["--bind-memory"] if bind_memory else []
-        return ["bash", "/configs/numa_cpu_bind.sh", *memory_args, *cmd]
+        args = ["--bind-memory"] if bind_memory else []
+        if not self.numa_cpu_bind:
+            args.append("--memory-only")
+        return ["bash", "/configs/numa_cpu_bind.sh", *args, *cmd]
 
     def build_worker_command(
         self,
@@ -665,7 +663,7 @@ class TRTLLMBackend(Backend):
             if self.served_model_name:
                 cmd.extend(["--served_model_name", self.served_model_name])
             cmd.extend(self.get_extra_args_for_mode(mode))
-            return self._wrap_with_numa_cpu_bind(cmd, bind_memory=bind_local_memory)
+            return self._wrap_with_numa_bind(cmd, bind_memory=bind_local_memory)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
@@ -694,7 +692,7 @@ class TRTLLMBackend(Backend):
 
         cmd.extend(self.dynamo_metrics_flags)
 
-        return self._wrap_with_numa_cpu_bind(cmd, bind_memory=bind_local_memory)
+        return self._wrap_with_numa_bind(cmd, bind_memory=bind_local_memory)
 
     def _build_sidecar_command(
         self,
@@ -709,7 +707,7 @@ class TRTLLMBackend(Backend):
     ) -> list[str]:
         """Build a lifecycle-coupled TensorRT-LLM native-gRPC and sidecar launch."""
         grpc_port = sidecar_grpc_port(process)
-        engine = self._wrap_with_numa_cpu_bind(
+        engine = self._wrap_with_numa_bind(
             base_prefix
             + [
                 "python3",

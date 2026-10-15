@@ -14,20 +14,23 @@ import pytest
 from srtctl.backends import TRTLLMBackend
 
 
+@pytest.mark.parametrize("cpu_bind", [False, True])
 @pytest.mark.parametrize("memory_bind", [None, False, True, "local"])
-def test_memory_policy_round_trip(memory_bind) -> None:
+def test_memory_policy_round_trip(memory_bind, cpu_bind) -> None:
     schema = TRTLLMBackend.Schema()
-    settings = {"numa_cpu_bind": True, "numa_memory_bind": memory_bind}
+    settings = {"numa_cpu_bind": cpu_bind, "numa_memory_bind": memory_bind}
     backend = schema.load(settings)
     assert backend.numa_memory_bind == memory_bind
     assert schema.dump(backend)["numa_memory_bind"] == memory_bind
 
 
-def test_local_memory_requires_cpu_binding() -> None:
-    with pytest.raises(ValueError, match="numa_memory_bind: local requires numa_cpu_bind: true"):
-        TRTLLMBackend.Schema().load({"numa_memory_bind": "local"})
+def test_local_memory_without_cpu_binding() -> None:
+    backend = TRTLLMBackend.Schema().load({"numa_memory_bind": "local"})
+    assert backend.numa_cpu_bind is False
+    assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in backend.get_environment_for_mode("agg")
 
 
+@pytest.mark.parametrize("cpu_bind", [False, True])
 @pytest.mark.parametrize(
     ("node", "bind_memory", "expected_memory", "expected_cpus", "expected_exit"),
     [
@@ -46,11 +49,19 @@ def test_local_memory_requires_cpu_binding() -> None:
 def test_worker_inherits_resolved_numa_policy(
     tmp_path: Path,
     node: str,
+    cpu_bind: bool,
     bind_memory: bool,
     expected_memory: str | None,
     expected_cpus: str | None,
     expected_exit: int,
 ) -> None:
+    if not cpu_bind:
+        if not bind_memory:
+            pytest.skip("Memory-only mode requires local memory binding")
+        expected_cpus = None
+        if node in ("empty-cpus", "missing-cpus"):
+            expected_exit = 0
+            expected_memory = "bind:1"
     # Execute each wrapper in order: a later numactl would overwrite the
     # observed policy, as it does in a real launch. No host NUMA calls run.
     mock = (
@@ -119,7 +130,13 @@ else:
     env.pop("TEST_MEMORY_POLICY", None)
     env.pop("TEST_CPU_MASK", None)
     result = subprocess.run(
-        ["bash", str(script), *(["--bind-memory"] if bind_memory else []), *worker],
+        [
+            "bash",
+            str(script),
+            *(["--bind-memory"] if bind_memory else []),
+            *(["--memory-only"] if not cpu_bind else []),
+            *worker,
+        ],
         env=env,
         capture_output=True,
         text=True,

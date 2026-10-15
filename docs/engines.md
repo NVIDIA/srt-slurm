@@ -88,22 +88,21 @@ The v1 spelling of this (`backend.type` plus the engine-wide keys under `backend
 
 ### TRT-LLM CPU and memory placement
 
-To place worker CPUs and memory on the NUMA node associated with each task's GPU:
+To bind worker memory to the NUMA node associated with each task's GPU:
 
 ```yaml
 engine:
   type: trtllm
-  numa_cpu_bind: true
   numa_memory_bind: local
 ```
 
 The launcher resolves the GPU through `CUDA_VISIBLE_DEVICES` and
-`SLURM_LOCALID`, applies its CPU mask, and sets `numactl --membind=<node>`
+`SLURM_LOCALID` and sets `numactl --membind=<node>`
 before starting the worker. Allocations governed by this policy cannot fall
 back to another node. Insufficient local memory can cause allocation failure
 or OOM, even when another node has free memory. Existing or shared pages are
-not migrated. The container must provide `numactl`. Local mode requires
-`numa_cpu_bind: true`. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
+not migrated. The container must provide `numactl`. CPU affinity is unchanged
+unless `numa_cpu_bind: true` is also set. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
 cluster GPU visibility variables are not supported by this wrapper.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
