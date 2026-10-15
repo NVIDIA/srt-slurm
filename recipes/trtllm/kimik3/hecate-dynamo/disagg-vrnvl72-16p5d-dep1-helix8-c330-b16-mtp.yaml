@@ -29,6 +29,13 @@ extra_mount:
 setup_script: install_dynamo_wheel.sh
 dynamo:
   install: false
+host_setup:
+  commands:
+  - sudo -n nvidia-smi -lmc 4752,4752
+  teardown:
+  - sudo -n nvidia-smi -rmc
+  nodes: workers
+  ignore_failure: false
 engine:
   type: trtllm
   served_model_name: Kimi-K3
