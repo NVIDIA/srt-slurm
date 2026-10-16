@@ -193,6 +193,35 @@ def test_atom_rejects_recipe_overrides_of_managed_arguments(key: str) -> None:
         _build(backend, process)
 
 
+@pytest.mark.parametrize(
+    ("args", "tp"),
+    [
+        ({}, "4"),
+        ({"pipeline-parallel-size": 4}, "1"),
+        ({"pipeline_parallel_size": 2}, "2"),
+        ({"pipeline-parallel-size": 2, "prefill-context-parallel-size": 2}, "1"),
+        ({"decode-context-parallel-size": 4}, "4"),
+    ],
+)
+def test_atom_tensor_parallel_size_leaves_out_pipeline_and_prefill_context_stages(args: dict, tp: str) -> None:
+    """ATOM runs tp x pp x pcp GPUs, so a 4-GPU PP4 worker gets -tp 1; DCP reuses the TP GPUs."""
+    backend = AtomBackend(roles={"agg": RoleConfig(args=args)})
+    process = Process("node0", frozenset(range(4)), 7500, 6100, "agg", 0)
+
+    command = _build(backend, process)
+
+    assert command[command.index("-tp") + 1] == tp
+
+
+def test_atom_rejects_pipeline_parallelism_that_does_not_divide_the_worker_gpus() -> None:
+    """Fail before launch instead of letting ATOM size a world the worker's GPUs cannot hold."""
+    backend = AtomBackend(roles={"agg": RoleConfig(args={"pipeline-parallel-size": 3})})
+    process = Process("node0", frozenset(range(4)), 7500, 6100, "agg", 0)
+
+    with pytest.raises(ValueError, match="does not divide"):
+        _build(backend, process)
+
+
 @pytest.mark.parametrize(("protocol", "extra"), [(None, {}), ("tcp", {"protocol": "tcp"})])
 def test_atom_pd_worker_emits_mooncake_kv_transfer_config(protocol: str | None, extra: dict) -> None:
     backend = AtomBackend(mooncake_protocol=protocol)
