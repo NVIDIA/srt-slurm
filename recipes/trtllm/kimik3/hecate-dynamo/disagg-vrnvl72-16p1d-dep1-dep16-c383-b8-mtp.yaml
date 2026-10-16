@@ -53,8 +53,8 @@ roles:
     workers: 16
     gpus: 1
     env:
-      # Advertise session-affine KV routing for the prefill worker set only.
-      DYN_ROUTER_MODE: kv
+      # Place new sessions by request count; keep later turns on their assigned worker.
+      DYN_ROUTER_MODE: least-loaded
       DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ENGINE_CONV_AFFINITY_DP_RANK_SOURCE: engine
