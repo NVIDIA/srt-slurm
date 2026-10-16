@@ -4,12 +4,14 @@
 set -euo pipefail
 
 # Optional stricter NUMA CPU affinity for TRT-LLM workers (see
-# backends/trtllm.py numa_cpu_bind). Binds via `taskset -c` *before* exec so
+# backends/trtllm.py numa_cpu_bind). Binds via `numactl --physcpubind` *before* exec so
 # secondary threads spawned by Python/UCX/MPI/TRT-LLM inherit the mask too —
 # TRT-LLM's own internal affinity logic only pins the leader thread, leaving
 # the rest to land cross-socket.
 # With --bind-memory, also restrict allocations to the GPU's NUMA node.
 # With --memory-only, apply that memory policy without changing CPU affinity.
+# If SRTCTL_UCX_NET_DEVICES_NUMA_<node> is set for the GPU's NUMA node,
+# export it as UCX_NET_DEVICES for this task. MPI_UCX_NET_DEVICES is unchanged.
 # Local memory exhaustion can fail allocations; existing/shared pages are not migrated.
 #
 # CPU range is discovered at runtime from the physical GPU this task owns,
@@ -63,6 +65,12 @@ if [[ ! "${numa_node}" =~ ^[0-9]+$ ]]; then
     exec "$@"
 fi
 
+ucx_devices_var="SRTCTL_UCX_NET_DEVICES_NUMA_${numa_node}"
+if [[ -n "${!ucx_devices_var:-}" ]]; then
+    export UCX_NET_DEVICES="${!ucx_devices_var}"
+    echo "numa_cpu_bind.sh: SLURM_LOCALID=${SLURM_LOCALID} gpu=${physical_gpu} numa_node=${numa_node} UCX_NET_DEVICES=${UCX_NET_DEVICES}" >&2
+fi
+
 if [[ "${bind_cpus}" == false ]]; then
     echo "numa_cpu_bind.sh: memory_policy=bind:${numa_node}" >&2
     exec numactl --membind="${numa_node}" "$@"
@@ -77,6 +85,6 @@ fi
 echo "numa_cpu_bind.sh: SLURM_LOCALID=${SLURM_LOCALID} gpu=${physical_gpu} (${sysfs_addr}) numa_node=${numa_node} bound to cpus=${cpu_list}" >&2
 if [[ "${bind_memory}" == true ]]; then
     echo "numa_cpu_bind.sh: memory_policy=bind:${numa_node}" >&2
-    exec numactl --membind="${numa_node}" taskset -c "${cpu_list}" "$@"
+    exec numactl --physcpubind="${cpu_list}" --membind="${numa_node}" "$@"
 fi
-exec taskset -c "${cpu_list}" "$@"
+exec numactl --physcpubind="${cpu_list}" "$@"

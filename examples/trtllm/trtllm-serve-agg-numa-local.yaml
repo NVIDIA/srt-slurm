@@ -31,6 +31,11 @@ roles:
     nodes: 1
     workers: 1
     gpus: 1
+    # Optional NIC mapping for clusters with RDMA devices on multiple NUMA nodes:
+    # env:
+    #   SRTCTL_UCX_NET_DEVICES_NUMA_0: mlx5_0:1,mlx5_1:1
+    #   SRTCTL_UCX_NET_DEVICES_NUMA_1: mlx5_6:1,mlx5_7:1
+    #   UCX_TLS: rc,ud,cuda_ipc,cuda_copy,sm,self
     args:
       backend: "pytorch"
       tensor_parallel_size: 1

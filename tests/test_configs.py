@@ -4407,7 +4407,7 @@ class TestHuggingFaceModelSupport:
         env = backend.get_environment_for_mode("decode")
         assert env.get("TLLM_NUMA_AWARE_WORKER_AFFINITY") == ("0" if cpu_bind else None)
 
-    def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_taskset(self):
+    def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_numactl(self):
         """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
         from pathlib import Path
         from unittest.mock import patch
@@ -4431,7 +4431,7 @@ class TestHuggingFaceModelSupport:
         prefill_env = backend.get_environment_for_mode("prefill")
         assert prefill_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
 
-    def test_trtllm_numa_cpu_bind_wraps_agg_command_with_taskset(self):
+    def test_trtllm_numa_cpu_bind_wraps_agg_command_with_numactl(self):
         """numa_cpu_bind=True wraps aggregated-mode commands too."""
         from pathlib import Path
         from unittest.mock import patch

@@ -31,6 +31,7 @@ def test_local_memory_without_cpu_binding() -> None:
 
 
 @pytest.mark.parametrize("cpu_bind", [False, True])
+@pytest.mark.parametrize("ucx_mapping", [False, True])
 @pytest.mark.parametrize(
     ("node", "bind_memory", "expected_memory", "expected_cpus", "expected_exit"),
     [
@@ -50,6 +51,7 @@ def test_worker_inherits_resolved_numa_policy(
     tmp_path: Path,
     node: str,
     cpu_bind: bool,
+    ucx_mapping: bool,
     bind_memory: bool,
     expected_memory: str | None,
     expected_cpus: str | None,
@@ -91,15 +93,17 @@ elif name == "cat":
             sys.exit(0)
         print({"0": "0-3", "1": "4-7"}[node])
 elif name == "numactl":
-    assert args[0].startswith("--membind=")
     if os.environ["TEST_NUMA_NODE"] == "denied":
         sys.exit(42)
-    os.environ["TEST_MEMORY_POLICY"] = "bind:" + args.pop(0).split("=", 1)[1]
+    while args and args[0].startswith("--"):
+        option = args.pop(0)
+        if option.startswith("--physcpubind="):
+            os.environ["TEST_CPU_MASK"] = option.split("=", 1)[1]
+        elif option.startswith("--membind="):
+            os.environ["TEST_MEMORY_POLICY"] = "bind:" + option.split("=", 1)[1]
+        else:
+            raise AssertionError(option)
     os.execvp(args[0], args)
-elif name == "taskset":
-    assert args[0] == "-c"
-    os.environ["TEST_CPU_MASK"] = args[1]
-    os.execvp(args[2], args[2:])
 else:
     raise AssertionError(name)
 """
@@ -116,7 +120,8 @@ else:
         "-c",
         (
             "import json, os, sys; print(json.dumps(["
-            "os.getenv('TEST_MEMORY_POLICY'), os.getenv('TEST_CPU_MASK'), sys.argv[1:]]))"
+            "os.getenv('TEST_MEMORY_POLICY'), os.getenv('TEST_CPU_MASK'), sys.argv[1:], "
+            "os.getenv('UCX_NET_DEVICES'), os.getenv('MPI_UCX_NET_DEVICES')]))"
         ),
         *arguments,
     ]
@@ -126,7 +131,16 @@ else:
         "SLURM_LOCALID": "1",
         "CUDA_VISIBLE_DEVICES": "2,3",
         "TEST_NUMA_NODE": node,
+        "UCX_NET_DEVICES": "original:1",
+        "MPI_UCX_NET_DEVICES": "mpi:1",
     }
+    # A caller-provided default remains effective when this NUMA node has no mapping.
+    for key in list(env):
+        if key.startswith("SRTCTL_UCX_NET_DEVICES_NUMA_"):
+            del env[key]
+    if ucx_mapping:
+        env["SRTCTL_UCX_NET_DEVICES_NUMA_0"] = "mlx5_0:1,mlx5_1:1"
+        env["SRTCTL_UCX_NET_DEVICES_NUMA_1"] = "mlx5_6:1,mlx5_7:1"
     env.pop("TEST_MEMORY_POLICY", None)
     env.pop("TEST_CPU_MASK", None)
     result = subprocess.run(
@@ -150,4 +164,6 @@ else:
             expected_error = "cannot bind CPUs" if node in ("empty-cpus", "missing-cpus") else "cannot bind memory"
             assert expected_error in result.stderr
     else:
-        assert json.loads(result.stdout) == [expected_memory, expected_cpus, arguments]
+        resolved_node = "1" if node in ("empty-cpus", "missing-cpus") else node
+        expected_ucx = env.get(f"SRTCTL_UCX_NET_DEVICES_NUMA_{resolved_node}", "original:1")
+        assert json.loads(result.stdout) == [expected_memory, expected_cpus, arguments, expected_ucx, "mpi:1"]

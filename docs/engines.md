@@ -102,7 +102,10 @@ before starting the worker. Allocations governed by this policy cannot fall
 back to another node. Insufficient local memory can cause allocation failure
 or OOM, even when another node has free memory. Existing or shared pages are
 not migrated. The container must provide `numactl`. CPU affinity is unchanged
-unless `numa_cpu_bind: true` is also set. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
+unless `numa_cpu_bind: true` is also set, which applies
+`numactl --physcpubind=<cpu_list>` using the GPU-local NUMA node's CPU list.
+CPU binding also requires `numactl` when no memory policy is requested.
+The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
 cluster GPU visibility variables are not supported by this wrapper.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
@@ -116,6 +119,32 @@ its CPU list is missing or empty, or the memory policy cannot be applied.
 Without local mode, unknown GPU NUMA affinity skips CPU binding and retains
 the selected memory policy. When profiling in local mode, the outer `nsys`
 process also inherits the strict memory policy.
+
+For per-task UCX NIC placement, set `SRTCTL_UCX_NET_DEVICES_NUMA_<node>` in
+the role's `env`. The same NUMA wrapper exports the matching value as
+`UCX_NET_DEVICES` before starting the worker. It selects by the task GPU's
+NUMA node, including when colocated endpoints restart `SLURM_LOCALID` at zero.
+Unmapped nodes retain the existing `UCX_NET_DEVICES` setting; the wrapper does
+not modify `MPI_UCX_NET_DEVICES`. This requires CPU or local memory binding
+to enable the wrapper. For example:
+
+```yaml
+engine:
+  type: trtllm
+  numa_cpu_bind: true
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      SRTCTL_UCX_NET_DEVICES_NUMA_0: mlx5_0:1,mlx5_1:1
+      SRTCTL_UCX_NET_DEVICES_NUMA_1: mlx5_6:1,mlx5_7:1
+      UCX_TLS: rc,ud,cuda_ipc,cuda_copy,sm,self
+```
+
+Use the device-to-NUMA mapping for the target cluster. RDMA device names
+require an RDMA transport such as `rc` in `UCX_TLS`.
 
 See [the local-binding example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/trtllm-serve-agg-numa-local.yaml).
 

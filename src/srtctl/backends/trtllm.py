@@ -337,8 +337,8 @@ class TRTLLMBackend(Backend):
     # can still land cross-socket. When true, srtctl instead:
     #   1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own
     #      internal NUMA thread-pinning, which fights with the OS-level mask)
-    #   2. wraps the worker command (prefill/decode/agg) in `taskset -c
-    #      <cpu_list>`, applied *before* exec so every spawned thread
+    #   2. wraps the worker command (prefill/decode/agg) in
+    #      `numactl --physcpubind=<cpu_list>`, applied *before* exec so every spawned thread
     #      inherits the mask. The CPU list is discovered at runtime
     #      (configs/numa_cpu_bind.sh) from the physical GPU this task owns,
     #      not a static SLURM_LOCALID table — a static table assumes
