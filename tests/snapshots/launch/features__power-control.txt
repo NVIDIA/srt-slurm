@@ -293,10 +293,10 @@ nodelist: node-01
 output: <output>/logs/power_control/prefill/node_agent_node-01.out
 container_image: trtllm
 container_mounts:
-    /lustre/share/dynamo/components/src/dynamo/power: /opt/dynamo/venv/lib/python3.12/site-packages/dynamo/power:ro
-    /lustre/share/nvidia-epd/src/epd: /opt/dynamo/venv/lib/python3.12/site-packages/epd:ro
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /lustre/share/dynamo/components/src/dynamo/power: /opt/dynamo/venv/lib/python3.12/site-packages/dynamo/power:ro
+    /lustre/share/nvidia-epd/src/epd: /opt/dynamo/venv/lib/python3.12/site-packages/epd:ro
     <model>: /model
     <output>/logs: /logs
 env_to_set:
@@ -332,10 +332,10 @@ nodelist: node-02
 output: <output>/logs/power_control/decode/node_agent_node-02.out
 container_image: trtllm
 container_mounts:
-    /lustre/share/dynamo/components/src/dynamo/power: /opt/dynamo/venv/lib/python3.12/site-packages/dynamo/power:ro
-    /lustre/share/nvidia-epd/src/epd: /opt/dynamo/venv/lib/python3.12/site-packages/epd:ro
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /lustre/share/dynamo/components/src/dynamo/power: /opt/dynamo/venv/lib/python3.12/site-packages/dynamo/power:ro
+    /lustre/share/nvidia-epd/src/epd: /opt/dynamo/venv/lib/python3.12/site-packages/epd:ro
     <model>: /model
     <output>/logs: /logs
 env_to_set:
@@ -355,10 +355,10 @@ nodelist: node-03
 output: <output>/logs/power_control/decode/node_agent_node-03.out
 container_image: trtllm
 container_mounts:
-    /lustre/share/dynamo/components/src/dynamo/power: /opt/dynamo/venv/lib/python3.12/site-packages/dynamo/power:ro
-    /lustre/share/nvidia-epd/src/epd: /opt/dynamo/venv/lib/python3.12/site-packages/epd:ro
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    /lustre/share/dynamo/components/src/dynamo/power: /opt/dynamo/venv/lib/python3.12/site-packages/dynamo/power:ro
+    /lustre/share/nvidia-epd/src/epd: /opt/dynamo/venv/lib/python3.12/site-packages/epd:ro
     <model>: /model
     <output>/logs: /logs
 env_to_set:
