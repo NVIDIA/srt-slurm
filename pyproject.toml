@@ -24,6 +24,9 @@ dependencies = [
     "matplotlib>=3.7.0",
     "pyarrow>=25.0.0",
     "tomli>=2.0",
+    # The power_control host applier runs with this interpreter and verifies every cap
+    # through read-only NVML (pynvml); pure Python, dlopens the node's libnvidia-ml at runtime.
+    "nvidia-ml-py>=12.535",
 ]
 
 [project.scripts]

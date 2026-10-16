@@ -1,0 +1,99 @@
+# EPD GPU power control over a Dynamo + TRT-LLM disaggregated job.
+#
+# Once the workers are healthy, srtctl groups their GPUs into pools (here one per role)
+# and, per pool and node, starts a `dynamo.power.node_agent` container next to the worker
+# (the pool's first node also runs the EPD controller) plus a `dynamo.power.applier` on the
+# bare host, which applies the controller's per-GPU caps with `sudo nvidia-smi -pl <W> -i <N>`
+# and restores the hardware defaults at teardown. The applier needs a passwordless sudoers
+# rule for that command. `budget_w_per_gpu` must sit below the hardware maximum for `nupd`
+# to bind; `fom` is the objective EPD protects and has no default.
+#
+#   srtctl dry-run -f examples/features/power-control.yaml   # pools, overlay mounts, sudo note
+#   srtctl apply   -f examples/features/power-control.yaml
+#
+# Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
+# docs/config-reference.md#power_control explains every field and the process map.
+
+schema: 2
+name: "qwen3-0.6b-trtllm-power-control"
+
+slurm:
+  time_limit: "01:00:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "trtllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+dynamo:
+  install: false
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine:
+  type: trtllm
+  served_model_name: "Qwen/Qwen3-0.6B"
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 4
+    env:
+      PYTHONUNBUFFERED: "1"
+      TLLM_LOG_LEVEL: "INFO"
+    args:
+      backend: "pytorch"
+      tensor_parallel_size: 4
+      max_batch_size: 8
+      max_num_tokens: 8192
+      max_seq_len: 4096
+      trust_remote_code: true
+      disable_overlap_scheduler: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.5
+      cache_transceiver_config:
+        backend: "UCX"
+  decode:
+    nodes: 2
+    workers: 1
+    gpus: 8
+    env:
+      PYTHONUNBUFFERED: "1"
+      TLLM_LOG_LEVEL: "INFO"
+    args:
+      backend: "pytorch"
+      tensor_parallel_size: 8
+      max_batch_size: 64
+      max_num_tokens: 4096
+      max_seq_len: 4096
+      trust_remote_code: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.5
+      cache_transceiver_config:
+        backend: "UCX"
+
+power_control:
+  enabled: true
+  mode: nupd
+  pools: per-role                 # one controller for prefill, one for decode
+  budget_w_per_gpu: 1500          # below the hardware maximum, so NUPD's redistribution binds
+  fom: tokens_per_gpu             # a preset; prom:<metric>:... and python:<module>:<Class> also work
+  interval_s: 30
+  perf_threshold: 0.03
+  ubpc_buffer: {prefill: 2.0, decode: 1.1}
+  applier: sudo-smi
+  epd_source: /lustre/share/nvidia-epd/src/epd
+  dynamo_power_source: /lustre/share/dynamo/components/src/dynamo/power
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  concurrencies: [64]

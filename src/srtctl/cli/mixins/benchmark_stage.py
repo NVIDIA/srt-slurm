@@ -118,6 +118,10 @@ class BenchmarkStageMixin:
         """Record the GPUs each worker holds for power telemetry (TelemetryStageMixin)."""
         raise NotImplementedError
 
+    def start_power_control(self, registry: "ProcessRegistry") -> list["ManagedProcess"]:
+        """Launch the EPD node_agents and appliers once the workers serve (PowerControlStageMixin)."""
+        raise NotImplementedError
+
     def _orchestrator_node(self) -> str:
         """Node the frontend/orchestrator runs on (honors frontend.placement.node)."""
         placement = self.config.frontend.placement.location
@@ -366,6 +370,9 @@ class BenchmarkStageMixin:
         logger.info("Server is healthy")
         if self.config.telemetry.enabled and self.config.telemetry.dcgm_exporter is not None:
             self.capture_power_worker_identity(registry)
+        # EPD power control starts once the workers serve and before any load reaches them.
+        if self.config.power_control.enabled:
+            self.start_power_control(registry)
         write_server_ready_marker(self.runtime.log_dir)
 
         # Identity verification: compare recipe identity against runtime fingerprints

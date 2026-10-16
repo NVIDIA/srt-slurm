@@ -2059,6 +2059,344 @@ class TelemetryConfig:
         return worst_case + 2.0
 
 
+# ============================================================================
+# GPU power control (EPD)
+# ============================================================================
+
+# Figure-of-merit presets the node_agent knows; anything else is a `prom:` or `python:` spec.
+POWER_FOM_PRESETS: tuple[str, ...] = (
+    "output_tokens",
+    "tokens_per_gpu",
+    "per_user_speed_p25",
+    "tokens_per_joule",
+    "ctx_tokens",
+    "gen_tokens",
+    "inv_ttft_p50",
+)
+POWER_FOM_FORMS = (
+    "a preset name (" + ", ".join(POWER_FOM_PRESETS) + "), "
+    "prom:<metric>[:<label>=<value>,...]:<counter|gauge>:<sum|avg>, or python:<module>:<Class>"
+)
+# UBPC caps a node at measured draw x buffer: prefill bursts must not be clipped (2.0); decode draw is steady (1.1).
+DEFAULT_UBPC_BUFFERS: dict[str, float] = {"prefill": 2.0, "decode": 1.1, "agg": 1.1}
+
+
+def _default_ubpc_buffers() -> dict[str, float]:
+    """A fresh copy of the per-role UBPC defaults (prefill 2.0, decode 1.1, agg 1.1)."""
+    return dict(DEFAULT_UBPC_BUFFERS)
+
+
+# site-packages of the worker image's Dynamo venv (the mount target of `epd_source` and `dynamo_power_source`).
+DEFAULT_POWER_SITE_PACKAGES = "/opt/dynamo/venv/lib/python3.12/site-packages"
+
+
+def validate_power_fom(spec: str, *, where: str) -> None:
+    """Reject a FoM spec the node_agent would not parse.
+
+    Accepted forms: a preset name, ``prom:<metric>[:<label>=<value>,...]:<counter|gauge>:<sum|avg>``
+    (scraped from every metrics URL the stage passes) and ``python:<module>:<Class>`` (an object
+    exposing ``get_perf() -> float``). The signal contract itself (higher is better, a per-interval
+    rate, pool-wide, ``0.0`` meaning no signal) is checked by the node_agent when it starts.
+    """
+    if spec in POWER_FOM_PRESETS:
+        return
+    parts = spec.split(":")
+    if parts[0] == "prom":
+        if len(parts) not in (4, 5) or not parts[1]:
+            raise ValidationError(f"{where}: {spec!r} is not a valid prom: FoM; expected {POWER_FOM_FORMS}")
+        if len(parts) == 5 and not all(
+            "=" in label and label.split("=", 1)[0] and label.split("=", 1)[1] for label in parts[2].split(",")
+        ):
+            raise ValidationError(f"{where}: {spec!r} has a malformed label filter; expected <label>=<value>[,...]")
+        if parts[-2] not in ("counter", "gauge") or parts[-1] not in ("sum", "avg"):
+            raise ValidationError(f"{where}: {spec!r} must end with :<counter|gauge>:<sum|avg>")
+        return
+    if parts[0] == "python":
+        module, class_name = (parts[1], parts[2]) if len(parts) == 3 else ("", "")
+        if not module or not all(part.isidentifier() for part in module.split(".")) or not class_name.isidentifier():
+            raise ValidationError(f"{where}: {spec!r} is not a valid python: FoM; expected python:<module>:<Class>")
+        return
+    raise ValidationError(f"{where}: unknown FoM {spec!r}; expected {POWER_FOM_FORMS}")
+
+
+def _pool_name_is_safe(name: str) -> bool:
+    """Pool names become directory names and Slurm step names."""
+    return bool(name) and all(char.isalnum() or char in "-_." for char in name)
+
+
+@dataclasses.dataclass(frozen=True)
+class PowerPoolSpec:
+    """One EPD controller's pool, resolved against the recipe's roles.
+
+    ``ubpc_buffer`` is ``None`` when the pool left it to its roles: the stage resolves
+    it with :meth:`PowerControlConfig.ubpc_buffer_for` once it knows which roles the
+    pool's GPUs run.
+    """
+
+    name: str
+    roles: tuple[str, ...]
+    nodes: tuple[str, ...]
+    budget_w_per_gpu: int
+    fom: str
+    ubpc_buffer: float | None
+
+
+@dataclass(frozen=True)
+class PowerPoolConfig:
+    """One entry of an explicit `power_control.pools` list.
+
+    A pool is a set of worker roles or a set of nodes; the knobs left unset come from
+    the `power_control` block. The `name` is the pool's EPD log directory
+    (`<log_dir>/power_control/<name>/`) and the `--pool-name` of its node_agents.
+    """
+
+    # Pool name: its log directory and the node_agents' `--pool-name`; letters, digits, `-`, `_`, `.`.
+    name: str
+    # Worker roles in this pool (`prefill`, `decode`, `agg`); a role may be in one pool only. Set `roles` or `nodes`.
+    roles: list[str] = field(default_factory=list)
+    # Node hostnames in this pool (for allocations with a reservation); a node may be in one pool only.
+    nodes: list[str] = field(default_factory=list)
+    # Per-GPU budget in watts for this pool; defaults to `power_control.budget_w_per_gpu`.
+    budget_w_per_gpu: int | None = None
+    # FoM of this pool's controller; defaults to `power_control.fom`.
+    fom: str | None = None
+    # UBPC buffer of this pool; defaults to the `power_control.ubpc_buffer` value of the roles it runs.
+    ubpc_buffer: float | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not _pool_name_is_safe(self.name):
+            raise ValidationError(
+                f"power_control.pools[].name {self.name!r} must be letters, digits, '-', '_' or '.' "
+                "(it names a directory and a Slurm step)"
+            )
+        where = f"power_control.pools[{self.name}]"
+        if bool(self.roles) == bool(self.nodes):
+            raise ValidationError(f"{where}: set exactly one of roles or nodes")
+        for role in self.roles:
+            if role not in ROLE_NAMES:
+                raise ValidationError(f"{where}.roles: unknown role {role!r} (expected one of {', '.join(ROLE_NAMES)})")
+        if len(set(self.roles)) != len(self.roles) or len(set(self.nodes)) != len(self.nodes):
+            raise ValidationError(f"{where}: roles and nodes must not repeat")
+        if self.budget_w_per_gpu is not None and self.budget_w_per_gpu < 1:
+            raise ValidationError(f"{where}.budget_w_per_gpu must be a positive number of watts")
+        if self.ubpc_buffer is not None and not _is_finite_positive(self.ubpc_buffer):
+            raise ValidationError(f"{where}.ubpc_buffer must be a positive number")
+        if self.fom is not None:
+            validate_power_fom(self.fom, where=f"{where}.fom")
+
+
+@dataclass(frozen=True)
+class PowerControlConfig:
+    """Closed-loop GPU power control with EPD (NUPD and UBPC) over the job's workers.
+
+    Once the workers are healthy, the orchestrator groups their GPUs into pools and, per
+    pool, launches one `dynamo.power.node_agent` container per node (the pool's first node
+    also runs the EPD controller, which writes `power_decision.json`) and one
+    `dynamo.power.applier` on each node's bare host, which applies that file with
+    `sudo nvidia-smi -pl <W> -i <N>` or `dcgmi`. See docs/config-reference.md#power_control
+    for the process map, the FoM forms, teardown and the sudoers requirement.
+    """
+
+    # Launch EPD power control for this job.
+    enabled: bool = False
+    # `nupd` redistributes a fixed budget by measured draw, `ubpc` lowers caps toward draw x buffer, `both` runs both.
+    mode: Literal["nupd", "ubpc", "both"] = "nupd"
+    # `shared`: one controller over every role; `per-role`: one controller per role; or an explicit list of pools.
+    pools: Literal["shared", "per-role"] | list[PowerPoolConfig] = "shared"
+    # Per-GPU power budget in watts. Required when enabled unless every explicit pool sets its own.
+    budget_w_per_gpu: int | None = None
+    # The figure of merit EPD protects. Required when enabled (no default: the objective is yours): a preset name,
+    # `prom:<metric>[:<label>=<value>,...]:<counter|gauge>:<sum|avg>` over the metrics URLs, or `python:<module>:<Class>`.
+    fom: str | None = None
+    # Control cadence in seconds (5-10 is the practical floor: caps must settle before the next read).
+    interval_s: int = 30
+    # Relative FoM drop versus the best seen that reverts a move; 0.03-0.05 suits serving load.
+    perf_threshold: float = 0.03
+    # UBPC caps a node at measured draw x buffer: one value for every pool, or a value per role (a pool spanning
+    # several roles takes the largest of its roles' values). Default: prefill 2.0, decode 1.1, agg 1.1.
+    ubpc_buffer: float | dict[str, float] = field(default_factory=_default_ubpc_buffers)
+    # Floor below which EPD sets no cap, in watts (about 1.1 x the pool's peak draw); unset lets EPD decide.
+    min_tgp_w: int | None = None
+    # Ceiling for every cap, in watts; unset lets EPD read the hardware maximum from NVML.
+    max_tgp_w: int | None = None
+    # `adaptive` waits for a steady workload before the first applied move; `fixed` counts warm-up cycles.
+    warmup_policy: Literal["adaptive", "fixed"] = "adaptive"
+    # How the host applier sets caps: `sudo-smi` (`sudo nvidia-smi -pl <W> -i <N>`, needs a sudoers rule) or
+    # `dcgmi` (a DCGM group of the node's GPUs plus `dcgmi config --set -P <W>` via the node's hostengine).
+    applier: Literal["sudo-smi", "dcgmi"] = "sudo-smi"
+    # Host path of the EPD package (`.../nvidia-epd/src/epd`), bind-mounted read-only at `<site_packages>/epd`
+    # in every node_agent container. Required when enabled.
+    epd_source: str | None = None
+    # Host path of Dynamo's `.../dynamo/power` package: bind-mounted read-only at `<site_packages>/dynamo/power`
+    # in the node_agent containers, and put on the host applier's PYTHONPATH. Optional dev overlay.
+    dynamo_power_source: str | None = None
+    # `site-packages` of the worker image's Dynamo venv: the mount target of the two overlays.
+    site_packages: str = DEFAULT_POWER_SITE_PACKAGES
+    # A decision file older than this many seconds makes the applier fall back to the uniform budget.
+    stale_after_s: int = 90
+    # How often the applier polls the decision file, in seconds.
+    poll_s: int = 5
+    # A node_agent or applier exiting fails the run (the crash monitor tears the job down).
+    critical: bool = True
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.interval_s < 1:
+            raise ValidationError("power_control.interval_s must be at least 1 second")
+        if not (math.isfinite(self.perf_threshold) and 0 < self.perf_threshold < 1):
+            raise ValidationError("power_control.perf_threshold must be a fraction between 0 and 1 (exclusive)")
+        if self.stale_after_s < 1 or self.poll_s < 1:
+            raise ValidationError("power_control.stale_after_s and power_control.poll_s must be at least 1 second")
+        watts = (
+            ("budget_w_per_gpu", self.budget_w_per_gpu),
+            ("min_tgp_w", self.min_tgp_w),
+            ("max_tgp_w", self.max_tgp_w),
+        )
+        for name, value in watts:
+            if value is not None and value < 1:
+                raise ValidationError(f"power_control.{name} must be a positive number of watts")
+        if self.min_tgp_w is not None and self.max_tgp_w is not None and self.min_tgp_w > self.max_tgp_w:
+            raise ValidationError("power_control.min_tgp_w must not exceed power_control.max_tgp_w")
+        explicit = self.pools if isinstance(self.pools, list) else []
+        if self.mode == "nupd" and self.max_tgp_w is not None:
+            # EPD's NUPD init returns None (and start() fails, after the model loaded) when the
+            # per-GPU budget is not below the cap ceiling and UBPC is off: nothing to redistribute.
+            budgets = [
+                ("power_control.budget_w_per_gpu", self.budget_w_per_gpu),
+                *((f"power_control.pools[{pool.name}].budget_w_per_gpu", pool.budget_w_per_gpu) for pool in explicit),
+            ]
+            for where, budget in budgets:
+                if budget is not None and budget >= self.max_tgp_w:
+                    raise ValidationError(
+                        f"{where} ({budget} W) must be below power_control.max_tgp_w ({self.max_tgp_w} W) in mode "
+                        "nupd: NUPD only redistributes a budget that binds below the cap ceiling (EPD refuses to "
+                        "start otherwise); lower the budget, raise max_tgp_w, or use mode: ubpc / both"
+                    )
+        buffers = self.ubpc_buffer.values() if isinstance(self.ubpc_buffer, Mapping) else (self.ubpc_buffer,)
+        if isinstance(self.ubpc_buffer, Mapping):
+            for role in self.ubpc_buffer:
+                if role not in ROLE_NAMES:
+                    raise ValidationError(
+                        f"power_control.ubpc_buffer: unknown role {role!r} (expected {', '.join(ROLE_NAMES)})"
+                    )
+        if not all(_is_finite_positive(value) for value in buffers):
+            raise ValidationError("power_control.ubpc_buffer values must be positive numbers")
+        if not self.site_packages.startswith("/"):
+            raise ValidationError("power_control.site_packages must be an absolute path inside the worker image")
+        if self.fom is not None:
+            validate_power_fom(self.fom, where="power_control.fom")
+        if isinstance(self.pools, list):
+            self._validate_explicit_pools(explicit)
+        if not self.enabled:
+            return
+        if self.fom is None and (not explicit or any(pool.fom is None for pool in explicit)):
+            raise ValidationError(
+                "power_control.fom is required when power_control.enabled (set it on the block or on every "
+                f"pools[] entry); the objective EPD protects is yours to choose: {POWER_FOM_FORMS}"
+            )
+        if self.budget_w_per_gpu is None and (not explicit or any(pool.budget_w_per_gpu is None for pool in explicit)):
+            raise ValidationError(
+                "power_control.budget_w_per_gpu is required when power_control.enabled (set it on the block or on "
+                "every pools[] entry): the per-GPU allowance the node_agents and appliers enforce"
+            )
+        if self.epd_source is None:
+            raise ValidationError(
+                "power_control.epd_source is required when power_control.enabled: the host path of the EPD package "
+                "that is bind-mounted into every node_agent container"
+            )
+        if self.dynamo_power_source is not None and self.dynamo_power_source_root is None:
+            raise ValidationError(
+                "power_control.dynamo_power_source must be a `.../dynamo/power` directory: the host applier "
+                "imports dynamo.power from its grandparent directory"
+            )
+
+    @staticmethod
+    def _validate_explicit_pools(pools: list[PowerPoolConfig]) -> None:
+        if not pools:
+            raise ValidationError("power_control.pools must be 'shared', 'per-role', or a non-empty list of pools")
+        names = [pool.name for pool in pools]
+        if len(set(names)) != len(names):
+            raise ValidationError(f"power_control.pools: pool names must be unique, got {names}")
+        claimed_roles: dict[str, str] = {}
+        claimed_nodes: dict[str, str] = {}
+        for pool in pools:
+            for role in pool.roles:
+                if role in claimed_roles:
+                    raise ValidationError(
+                        f"power_control.pools: role {role!r} is in pools {claimed_roles[role]!r} and {pool.name!r}"
+                    )
+                claimed_roles[role] = pool.name
+            for node in pool.nodes:
+                if node in claimed_nodes:
+                    raise ValidationError(
+                        f"power_control.pools: node {node!r} is in pools {claimed_nodes[node]!r} and {pool.name!r}"
+                    )
+                claimed_nodes[node] = pool.name
+
+    @property
+    def dynamo_power_source_root(self) -> str | None:
+        """The directory the host applier imports ``dynamo.power`` from: the grandparent of a ``dynamo/power`` path."""
+        if self.dynamo_power_source is None:
+            return None
+        source = PurePosixPath(os.path.expandvars(self.dynamo_power_source))
+        if source.parts[-2:] != ("dynamo", "power"):
+            return None
+        return str(source.parent.parent)
+
+    def ubpc_buffer_for(self, roles: Sequence[str]) -> float:
+        """The UBPC buffer of a pool whose GPUs run ``roles``.
+
+        A single configured value applies to every pool. With a per-role mapping, a pool
+        takes the largest value among its roles, so a prefill burst in a shared pool is
+        not clipped by the decode-sized buffer.
+        """
+        if not isinstance(self.ubpc_buffer, Mapping):
+            return self.ubpc_buffer
+        buffers = {**DEFAULT_UBPC_BUFFERS, **self.ubpc_buffer}
+        return max(buffers[role] for role in roles) if roles else max(buffers.values())
+
+    def resolve_pools(self, roles_present: Sequence[str]) -> list[PowerPoolSpec]:
+        """The pools this block defines over the roles the recipe runs, with budget and FoM filled in.
+
+        ``shared`` and ``per-role`` are shorthands for the two most common explicit lists.
+        Raises ``ValidationError`` for an explicit pool naming a role the recipe does not run.
+        """
+        roles = tuple(dict.fromkeys(roles_present))
+        if self.pools == "shared":
+            entries = [PowerPoolConfig(name="shared", roles=list(roles))]
+        elif self.pools == "per-role":
+            entries = [PowerPoolConfig(name=role, roles=[role]) for role in roles]
+        else:
+            entries = list(self.pools)
+        specs: list[PowerPoolSpec] = []
+        for entry in entries:
+            missing = [role for role in entry.roles if role not in roles]
+            if missing:
+                raise ValidationError(
+                    f"power_control.pools[{entry.name}].roles: the recipe runs no {', '.join(missing)} workers"
+                )
+            budget = entry.budget_w_per_gpu if entry.budget_w_per_gpu is not None else self.budget_w_per_gpu
+            fom = entry.fom if entry.fom is not None else self.fom
+            if budget is None or fom is None:
+                raise ValidationError(f"power_control.pools[{entry.name}]: budget_w_per_gpu and fom are required")
+            specs.append(
+                PowerPoolSpec(
+                    name=entry.name,
+                    roles=tuple(entry.roles),
+                    nodes=tuple(entry.nodes),
+                    budget_w_per_gpu=budget,
+                    fom=fom,
+                    ubpc_buffer=entry.ubpc_buffer,
+                )
+            )
+        if not specs:
+            raise ValidationError("power_control: the recipe runs no worker role to control")
+        return specs
+
+
 def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[str, str]:
     """Build OTEL environment variables for a component.
 
@@ -2769,6 +3107,8 @@ class SrtConfig:
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     # GPU (DCGM) and CPU power sampling over the benchmark measurement windows.
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    # Closed-loop GPU power control with EPD: a node_agent container and a host applier per worker node, per pool.
+    power_control: PowerControlConfig = field(default_factory=PowerControlConfig)
 
     # Environment variables for every worker; applied after `roles.<role>.env`, so a key set in both
     # takes this value. Values may use `{node}` and `{node_id}`.
@@ -2840,6 +3180,7 @@ class SrtConfig:
         self._validate_profiling()
         self._validate_observability()
         self._validate_telemetry()
+        self._validate_power_control()
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_colocated_decode()
@@ -3138,6 +3479,32 @@ class SrtConfig:
                 "teardown will still run after the job, which is only what you want "
                 "if something outside this recipe set the node state"
             )
+
+    def _validate_power_control(self) -> None:
+        """Pools must resolve against the recipe's roles, no node may belong to two pools, and the FoM needs a source.
+
+        EPD's unit of control is the GPUs on one node that belong to one pool, so a layout that
+        puts two pools on one node (per-role pools over colocated decode workers) is refused at
+        load time; the orchestrator refuses it again at job start and at launch from the actual
+        GPU map. The node_agents scrape the FoM from the frontend's ``/metrics`` and the workers'
+        system ports, which only a frontend exposes: ``frontend.type: none`` leaves no source.
+        """
+        power = self.power_control
+        if not power.enabled:
+            return
+        if self.frontend.type == "none":
+            raise ValidationError(
+                "power_control needs a metrics source for the FoM (the frontend's /metrics and the workers' "
+                "system ports); frontend.type: none serves none, so EPD would have nothing to protect"
+            )
+        specs = power.resolve_pools([role for role, _ in self.active_role_backends()])
+        if self.topology.colocated_decode:
+            pool_of_role = {role: spec.name for spec in specs for role in spec.roles}
+            if pool_of_role.get("prefill") != pool_of_role.get("decode"):
+                raise ValidationError(
+                    "power_control: roles.decode.nodes: colocate puts prefill and decode on the same nodes, so both "
+                    "must be in one pool (pools: shared); a node belongs to exactly one EPD pool"
+                )
 
     def _validate_vllm_discovery_connector(self) -> None:
         """A discovery connector (vLLM MoRI-IO) needs the router that runs its registration endpoint.

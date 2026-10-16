@@ -30,6 +30,7 @@ from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
     PostProcessStageMixin,
+    PowerControlStageMixin,
     ServiceStageMixin,
     TelemetryStageMixin,
     WorkerStageMixin,
@@ -64,6 +65,7 @@ class SweepOrchestrator(
     WorkerStageMixin,
     FrontendStageMixin,
     TelemetryStageMixin,
+    PowerControlStageMixin,
     ServiceStageMixin,
     BenchmarkStageMixin,
     PostProcessStageMixin,
@@ -811,6 +813,11 @@ class SweepOrchestrator(
             log_streamer.start()
 
         try:
+            # Stage 0a: a power_control layout the stage could not launch (a node in
+            # two pools, an idle node named by a pool, an empty pool) fails here, in
+            # seconds, instead of after the model loaded. No-op unless enabled.
+            self.validate_power_control_layout()
+
             # Stage 0: Bare-host node setup (GPU clocks, kernel modules). Runs
             # before anything containerized so workers see the prepared node.
             self._run_host_setup()
@@ -923,6 +930,10 @@ class SweepOrchestrator(
 
         finally:
             logger.info("Cleanup")
+            # Lift the EPD caps while the workers are still up: node_agents first (EPD writes
+            # its summary), then the appliers (which restore the hardware defaults), then a
+            # final per-node reset. Never raises.
+            self.stop_power_control()
             # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
             exit_code = self.finalize_cpu_power_telemetry(exit_code, interrupted=stop_event.is_set())

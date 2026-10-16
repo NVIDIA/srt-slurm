@@ -999,9 +999,9 @@ class TestPublication:
 
         report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
         assert report.ok is False
-        assert any("publication_valid is True, recomputed False" in failure for failure in report.failures), (
-            report.failures
-        )
+        assert any(
+            "publication_valid is True, recomputed False" in failure for failure in report.failures
+        ), report.failures
 
     def test_no_clock_sync_failures_is_a_noop(self, tmp_path, exporters):
         session = _session(tmp_path, _endpoints(("node-a", exporters(_body("a")).url)))
@@ -1172,6 +1172,7 @@ class TestRequiredReadinessGate:
         config.telemetry.cpu_power_exporter = None
         config.frontend.type = "dynamo"
         config.profiling.enabled = False
+        config.power_control.enabled = False
         config.reporting = None
         runtime = MagicMock()
         runtime.log_dir = tmp_path

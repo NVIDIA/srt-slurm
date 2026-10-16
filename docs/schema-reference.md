@@ -25,6 +25,7 @@ Top-level keys of a recipe YAML.
 | `health_check` | [HealthCheckConfig](#healthcheckconfig) | `HealthCheckConfig()` | How long to poll the frontend for ready workers before failing the run. |
 | `observability` | [ObservabilityConfig](#observabilityconfig) | `ObservabilityConfig()` | Engine metrics and traces, Tachometer collection, and automatic Nsight tracing. |
 | `telemetry` | [TelemetryConfig](#telemetryconfig) | `TelemetryConfig()` | GPU (DCGM) and CPU power sampling over the benchmark measurement windows. |
+| `power_control` | [PowerControlConfig](#powercontrolconfig) | `PowerControlConfig()` | Closed-loop GPU power control with EPD: a node_agent container and a host applier per worker node, per pool. |
 | `environment` | dict[str, str] | `{}` | Environment variables for every worker; applied after `roles.<role>.env`, so a key set in both takes this value. Values may use `{node}` and `{node_id}`. |
 | `container_mounts` | dict[[FormattablePath](#formattablepath), [FormattablePath](#formattablepath)] | `{}` | Host path -> container path mounts for every container; both sides are FormattablePaths. |
 | `extra_mount` | tuple[str, ...] \| None | `None` | Extra mounts as `host:container[:ro]` strings; `$VARS` expand, `{placeholders}` do not. |
@@ -301,6 +302,31 @@ DCGM power telemetry for benchmark measurement windows.
 | `cpu_power_exporter` | [CpuPowerExporterConfig](#cpupowerexporterconfig) \| None | `None` | Head-node scrape of a per-node CPU power exporter. Setting the block enables it. |
 | `cpu_power` | [CpuPowerConfig](#cpupowerconfig) | `CpuPowerConfig()` | In-job CPU power collector on each node, independent of `cpu_power_exporter`. |
 
+### PowerControlConfig
+
+Closed-loop GPU power control with EPD (NUPD and UBPC) over the job's workers.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `False` | Launch EPD power control for this job. |
+| `mode` | one of `'nupd'`, `'ubpc'`, `'both'` | `'nupd'` | `nupd` redistributes a fixed budget by measured draw, `ubpc` lowers caps toward draw x buffer, `both` runs both. |
+| `pools` | one of `'shared'`, `'per-role'` \| list[[PowerPoolConfig](#powerpoolconfig)] | `'shared'` | `shared`: one controller over every role; `per-role`: one controller per role; or an explicit list of pools. |
+| `budget_w_per_gpu` | int \| None | `None` | Per-GPU power budget in watts. Required when enabled unless every explicit pool sets its own. |
+| `fom` | str \| None | `None` | The figure of merit EPD protects. Required when enabled (no default: the objective is yours): a preset name, `prom:<metric>[:<label>=<value>,...]:<counter\|gauge>:<sum\|avg>` over the metrics URLs, or `python:<module>:<Class>`. |
+| `interval_s` | int | `30` | Control cadence in seconds (5-10 is the practical floor: caps must settle before the next read). |
+| `perf_threshold` | float | `0.03` | Relative FoM drop versus the best seen that reverts a move; 0.03-0.05 suits serving load. |
+| `ubpc_buffer` | float \| dict[str, float] | `_default_ubpc_buffers()` | UBPC caps a node at measured draw x buffer: one value for every pool, or a value per role (a pool spanning several roles takes the largest of its roles' values). Default: prefill 2.0, decode 1.1, agg 1.1. |
+| `min_tgp_w` | int \| None | `None` | Floor below which EPD sets no cap, in watts (about 1.1 x the pool's peak draw); unset lets EPD decide. |
+| `max_tgp_w` | int \| None | `None` | Ceiling for every cap, in watts; unset lets EPD read the hardware maximum from NVML. |
+| `warmup_policy` | one of `'adaptive'`, `'fixed'` | `'adaptive'` | `adaptive` waits for a steady workload before the first applied move; `fixed` counts warm-up cycles. |
+| `applier` | one of `'sudo-smi'`, `'dcgmi'` | `'sudo-smi'` | How the host applier sets caps: `sudo-smi` (`sudo nvidia-smi -pl <W> -i <N>`, needs a sudoers rule) or `dcgmi` (a DCGM group of the node's GPUs plus `dcgmi config --set -P <W>` via the node's hostengine). |
+| `epd_source` | str \| None | `None` | Host path of the EPD package (`.../nvidia-epd/src/epd`), bind-mounted read-only at `<site_packages>/epd` in every node_agent container. Required when enabled. |
+| `dynamo_power_source` | str \| None | `None` | Host path of Dynamo's `.../dynamo/power` package: bind-mounted read-only at `<site_packages>/dynamo/power` in the node_agent containers, and put on the host applier's PYTHONPATH. Optional dev overlay. |
+| `site_packages` | str | `'/opt/dynamo/venv/lib/python3.12/site-packages'` | `site-packages` of the worker image's Dynamo venv: the mount target of the two overlays. |
+| `stale_after_s` | int | `90` | A decision file older than this many seconds makes the applier fall back to the uniform budget. |
+| `poll_s` | int | `5` | How often the applier polls the decision file, in seconds. |
+| `critical` | bool | `True` | A node_agent or applier exiting fails the run (the crash monitor tears the job down). |
+
 ### FormattablePath
 
 A path that may contain placeholders requiring formatting.
@@ -501,6 +527,19 @@ Host-side CPU power collection on every worker node.
 | `startup_timeout_seconds` | float | `30.0` | How long to wait for every node's collector to publish its ready marker before giving up on readiness. |
 | `required` | bool | `False` | Fail the job when the leg does not become ready or does not produce a valid publication. |
 | `storage_subdir` | str | `'cpu_power'` | Directory below the run log directory that holds the CPU samples and manifest. Must differ from ``telemetry.storage_subdir``. |
+
+### PowerPoolConfig
+
+One entry of an explicit `power_control.pools` list.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | str | required | Pool name: its log directory and the node_agents' `--pool-name`; letters, digits, `-`, `_`, `.`. |
+| `roles` | list[str] | `[]` | Worker roles in this pool (`prefill`, `decode`, `agg`); a role may be in one pool only. Set `roles` or `nodes`. |
+| `nodes` | list[str] | `[]` | Node hostnames in this pool (for allocations with a reservation); a node may be in one pool only. |
+| `budget_w_per_gpu` | int \| None | `None` | Per-GPU budget in watts for this pool; defaults to `power_control.budget_w_per_gpu`. |
+| `fom` | str \| None | `None` | FoM of this pool's controller; defaults to `power_control.fom`. |
+| `ubpc_buffer` | float \| None | `None` | UBPC buffer of this pool; defaults to the `power_control.ubpc_buffer` value of the roles it runs. |
 
 ### SourceConfig
 

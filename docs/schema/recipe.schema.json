@@ -1655,6 +1655,243 @@
       },
       "description": "How the post-benchmark (or eval-only) accuracy evaluation is dispatched."
     },
+    "PowerControlConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Launch EPD power control for this job.",
+          "default": false
+        },
+        "mode": {
+          "enum": [
+            "nupd",
+            "ubpc",
+            "both"
+          ],
+          "description": "`nupd` redistributes a fixed budget by measured draw, `ubpc` lowers caps toward draw x buffer, `both` runs both.",
+          "default": "nupd"
+        },
+        "pools": {
+          "anyOf": [
+            {
+              "enum": [
+                "shared",
+                "per-role"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PowerPoolConfig"
+              }
+            }
+          ],
+          "description": "`shared`: one controller over every role; `per-role`: one controller per role; or an explicit list of pools.",
+          "default": "shared"
+        },
+        "budget_w_per_gpu": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Per-GPU power budget in watts. Required when enabled unless every explicit pool sets its own.",
+          "default": null
+        },
+        "fom": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The figure of merit EPD protects. Required when enabled (no default: the objective is yours): a preset name, `prom:<metric>[:<label>=<value>,...]:<counter|gauge>:<sum|avg>` over the metrics URLs, or `python:<module>:<Class>`.",
+          "default": null
+        },
+        "interval_s": {
+          "type": "integer",
+          "description": "Control cadence in seconds (5-10 is the practical floor: caps must settle before the next read).",
+          "default": 30
+        },
+        "perf_threshold": {
+          "type": "number",
+          "description": "Relative FoM drop versus the best seen that reverts a move; 0.03-0.05 suits serving load.",
+          "default": 0.03
+        },
+        "ubpc_buffer": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            }
+          ],
+          "description": "UBPC caps a node at measured draw x buffer: one value for every pool, or a value per role (a pool spanning several roles takes the largest of its roles' values). Default: prefill 2.0, decode 1.1, agg 1.1."
+        },
+        "min_tgp_w": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Floor below which EPD sets no cap, in watts (about 1.1 x the pool's peak draw); unset lets EPD decide.",
+          "default": null
+        },
+        "max_tgp_w": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Ceiling for every cap, in watts; unset lets EPD read the hardware maximum from NVML.",
+          "default": null
+        },
+        "warmup_policy": {
+          "enum": [
+            "adaptive",
+            "fixed"
+          ],
+          "description": "`adaptive` waits for a steady workload before the first applied move; `fixed` counts warm-up cycles.",
+          "default": "adaptive"
+        },
+        "applier": {
+          "enum": [
+            "sudo-smi",
+            "dcgmi"
+          ],
+          "description": "How the host applier sets caps: `sudo-smi` (`sudo nvidia-smi -pl <W> -i <N>`, needs a sudoers rule) or `dcgmi` (a DCGM group of the node's GPUs plus `dcgmi config --set -P <W>` via the node's hostengine).",
+          "default": "sudo-smi"
+        },
+        "epd_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Host path of the EPD package (`.../nvidia-epd/src/epd`), bind-mounted read-only at `<site_packages>/epd` in every node_agent container. Required when enabled.",
+          "default": null
+        },
+        "dynamo_power_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Host path of Dynamo's `.../dynamo/power` package: bind-mounted read-only at `<site_packages>/dynamo/power` in the node_agent containers, and put on the host applier's PYTHONPATH. Optional dev overlay.",
+          "default": null
+        },
+        "site_packages": {
+          "type": "string",
+          "description": "`site-packages` of the worker image's Dynamo venv: the mount target of the two overlays.",
+          "default": "/opt/dynamo/venv/lib/python3.12/site-packages"
+        },
+        "stale_after_s": {
+          "type": "integer",
+          "description": "A decision file older than this many seconds makes the applier fall back to the uniform budget.",
+          "default": 90
+        },
+        "poll_s": {
+          "type": "integer",
+          "description": "How often the applier polls the decision file, in seconds.",
+          "default": 5
+        },
+        "critical": {
+          "type": "boolean",
+          "description": "A node_agent or applier exiting fails the run (the crash monitor tears the job down).",
+          "default": true
+        }
+      },
+      "description": "Closed-loop GPU power control with EPD (NUPD and UBPC) over the job's workers."
+    },
+    "PowerPoolConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Pool name: its log directory and the node_agents' `--pool-name`; letters, digits, `-`, `_`, `.`."
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Worker roles in this pool (`prefill`, `decode`, `agg`); a role may be in one pool only. Set `roles` or `nodes`.",
+          "default": []
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Node hostnames in this pool (for allocations with a reservation); a node may be in one pool only.",
+          "default": []
+        },
+        "budget_w_per_gpu": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Per-GPU budget in watts for this pool; defaults to `power_control.budget_w_per_gpu`.",
+          "default": null
+        },
+        "fom": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "FoM of this pool's controller; defaults to `power_control.fom`.",
+          "default": null
+        },
+        "ubpc_buffer": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "UBPC buffer of this pool; defaults to the `power_control.ubpc_buffer` value of the roles it runs.",
+          "default": null
+        }
+      },
+      "description": "One entry of an explicit `power_control.pools` list.",
+      "required": [
+        "name"
+      ]
+    },
     "ProfilingConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -1946,6 +2183,10 @@
           "$ref": "#/$defs/TelemetryConfig",
           "description": "GPU (DCGM) and CPU power sampling over the benchmark measurement windows."
         },
+        "power_control": {
+          "$ref": "#/$defs/PowerControlConfig",
+          "description": "Closed-loop GPU power control with EPD: a node_agent container and a host applier per worker node, per pool."
+        },
         "environment": {
           "type": "object",
           "additionalProperties": {
@@ -2165,6 +2406,10 @@
         "telemetry": {
           "$ref": "#/$defs/TelemetryConfig",
           "description": "GPU (DCGM) and CPU power sampling over the benchmark measurement windows."
+        },
+        "power_control": {
+          "$ref": "#/$defs/PowerControlConfig",
+          "description": "Closed-loop GPU power control with EPD: a node_agent container and a host applier per worker node, per pool."
         },
         "environment": {
           "type": "object",

@@ -11,6 +11,7 @@ import logging
 import shlex
 import threading
 from collections import defaultdict
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,25 @@ logger = logging.getLogger(__name__)
 
 # Engines shut down on SIGTERM (deregister, free GPUs, flush); give them longer than the default 10s.
 WORKER_TERMINATE_TIMEOUT_SECONDS = 30.0
+
+
+class _NodeTemplateVars(dict):
+    """``str.format_map`` mapping that leaves unknown ``{placeholders}`` as written."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+def render_node_environment(environment: Mapping[str, str], *, node: str, node_id: int) -> dict[str, str]:
+    """Expand ``{node}`` and ``{node_id}`` in every value of ``environment``; other placeholders stay unchanged.
+
+    The templating every worker's ``environment:`` gets (schema.py documents it on the
+    recipe field). Any other per-node step launched from the recipe environment, such as
+    the power node_agents, applies the same expansion so a value like ``/cache/{node_id}``
+    never reaches a container verbatim.
+    """
+    template_vars = _NodeTemplateVars({"node": node, "node_id": node_id})
+    return {key: value.format_map(template_vars) for key, value in environment.items()}
 
 
 def worker_step_name(
@@ -386,24 +406,14 @@ class WorkerStageMixin:
         env_to_set.update(build_otel_env(self.config.observability, mode))
         env_to_set.update(nsys_env)
 
-        # Add mode-specific environment variables from backend
-        # Support simple {node} and {node_id} templating
-        # Unknown placeholders are left unchanged (no error thrown)
+        # Add mode-specific environment variables from the backend, then the recipe's
+        # environment, both with {node} / {node_id} templating (unknown placeholders
+        # are left unchanged, no error thrown).
         node_id = self.runtime.nodes.worker.index(process.node)
-        template_vars = {"node": process.node, "node_id": node_id}
-
-        class SafeDict(dict):
-            def __missing__(self, key: str) -> str:
-                return "{" + key + "}"  # Leave unknown placeholders unchanged
-
-        for key, value in self._get_worker_environment_for_mode(mode).items():
-            formatted_value = value.format_map(SafeDict(template_vars))
-            env_to_set[key] = formatted_value
-
-        # Add config environment variables with same templating support
-        for key, value in self.runtime.environment.items():
-            formatted_value = value.format_map(SafeDict(template_vars))
-            env_to_set[key] = formatted_value
+        env_to_set.update(
+            render_node_environment(self._get_worker_environment_for_mode(mode), node=process.node, node_id=node_id)
+        )
+        env_to_set.update(render_node_environment(self.runtime.environment, node=process.node, node_id=node_id))
 
         env_to_set.update(self._visible_device_environment(process))
 

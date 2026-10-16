@@ -113,6 +113,77 @@ def test_default_restart_policy_keeps_dry_run_unchanged(capsys):
     assert "restart=" not in capsys.readouterr().out
 
 
+def test_power_control_pools_mounts_and_sudo_note_are_visible(capsys):
+    """power_control launches containers with extra mounts and a host process that needs sudo."""
+    config = _make_config(
+        {
+            "power_control": {
+                "enabled": True,
+                "pools": "per-role",
+                "budget_w_per_gpu": 1500,
+                "fom": "tokens_per_gpu",
+                "epd_source": "/lustre/share/nvidia-epd/src/epd",
+                "dynamo_power_source": "/lustre/share/dynamo/components/src/dynamo/power",
+            }
+        }
+    )
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Power Control (EPD)" in output
+    assert "prefill" in output and "decode" in output
+    assert "1500" in output and "tokens_per_gpu" in output
+    assert "mode=nupd applier=sudo-smi" in output
+    assert "/lustre/share/nvidia-epd/src/epd -> /opt/dynamo/venv/lib/python3.12/site-packages/epd" in output
+    assert "dynamo/power (read-only, node_agents) and the host applier's PYTHONPATH" in output
+    assert "passwordless sudoers" in output
+
+
+def test_power_control_hidden_when_disabled(capsys):
+    show_config_details(_make_config())
+    assert "Power Control" not in capsys.readouterr().out
+
+
+_POWER_CONTROL = {
+    "enabled": True,
+    "budget_w_per_gpu": 1500,
+    "fom": "tokens_per_gpu",
+    "epd_source": "/lustre/share/nvidia-epd/src/epd",
+}
+
+
+def test_power_control_warns_when_the_interpreter_cannot_import_pynvml(capsys):
+    """The host applier verifies caps through NVML with the srtctl interpreter; without pynvml every row is unverified."""
+    config = _make_config({"power_control": _POWER_CONTROL})
+    with patch.object(submit, "_interpreter_has_module", return_value=False) as has_module:
+        show_config_details(config)
+    has_module.assert_called_once_with("pynvml")
+    output = " ".join(capsys.readouterr().out.split())
+    assert "cannot import pynvml (nvidia-ml-py)" in output
+    assert "`unverified`" in output
+
+    with patch.object(submit, "_interpreter_has_module", return_value=True):
+        show_config_details(config)
+    assert "cannot import pynvml" not in " ".join(capsys.readouterr().out.split())
+
+    with patch.object(submit, "_interpreter_has_module", return_value=False) as has_module:
+        show_config_details(_make_config())
+    has_module.assert_not_called()
+
+
+def test_power_control_reminds_that_nupd_binds_only_below_the_hardware_maximum(capsys):
+    with patch.object(submit, "_interpreter_has_module", return_value=True):
+        show_config_details(_make_config({"power_control": {**_POWER_CONTROL, "mode": "nupd"}}))
+        output = " ".join(capsys.readouterr().out.split())
+        assert "mode nupd binds only while budget_w_per_gpu is below the hardware maximum" in output
+        assert "set max_tgp_w" in output
+
+        # With max_tgp_w set the loader already checked the budget against it; nothing to remind.
+        show_config_details(_make_config({"power_control": {**_POWER_CONTROL, "mode": "nupd", "max_tgp_w": 1600}}))
+        assert "binds only while" not in " ".join(capsys.readouterr().out.split())
+        show_config_details(_make_config({"power_control": {**_POWER_CONTROL, "mode": "ubpc"}}))
+        assert "binds only while" not in " ".join(capsys.readouterr().out.split())
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_dynamo_lifecycle_collector_visible_independently_of_observability(capsys, enabled):
     show_config_details(_make_config({"observability": {"enabled": enabled}}))

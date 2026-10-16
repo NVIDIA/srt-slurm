@@ -1,0 +1,417 @@
+# examples/features/power-control.yaml
+# exit_code: 0
+# srun calls: 26
+
+## service_etcd
+nodelist: node-01
+output: <output>/logs/service_etcd.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/etcd && mkdir -p /tmp/etcd
+command: |
+    /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_otel-collector
+nodelist: node-01
+output: <output>/logs/service_otel-collector.out
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: True
+command: |
+    configs/otelcol-contrib --config <output>/logs/otel-collector.yaml
+
+## prefill_0_node-01
+nodes: 1
+ntasks: 4
+nodelist: node-01
+output: <output>/logs/node-01_prefill_w0.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7500
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    MASTER_ADDR: 127.0.0.1
+    MASTER_PORT: 29500
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-prefill
+    PYTHONUNBUFFERED: 1
+    TLLM_LOG_LEVEL: INFO
+    TRTLLM_EPLB_SHM_NAME: <random>
+srun_options:
+    kill-on-bad-exit: 1
+    ntasks-per-node: 4
+mpi: pmix
+oversubscribe: True
+cpu_bind: verbose,none
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    numactl -m 0,1 trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name Qwen/Qwen3-0.6B --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane tcp --publish-metrics
+
+## decode_0_node-02
+nodes: 2
+ntasks: 8
+nodelist: node-02 node-02 node-02 node-02 node-03 node-03 node-03 node-03
+output: <output>/logs/node-02_decode_w0.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7501
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    MASTER_ADDR: 127.0.0.1
+    MASTER_PORT: 29501
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-decode
+    PYTHONUNBUFFERED: 1
+    TLLM_LOG_LEVEL: INFO
+    TRTLLM_EPLB_SHM_NAME: <random>
+srun_options:
+    distribution: arbitrary
+    kill-on-bad-exit: 1
+    ntasks-per-node: 4
+mpi: pmix
+oversubscribe: True
+cpu_bind: verbose,none
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    numactl -m 0,1 trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name Qwen/Qwen3-0.6B --disaggregation-mode decode --extra-engine-args /logs/trtllm_config_decode.yaml --request-plane tcp --publish-metrics
+
+## frontend_0
+nodelist: node-01
+output: <output>/logs/node-01_frontend_0.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-frontend
+mpi: pmix
+command: |
+    python3 -m dynamo.frontend --http-port=8000 --router-mode kv
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_dcgm-exporter_node-04.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-05
+nodelist: node-05
+output: <output>/logs/service_dcgm-exporter_node-05.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_node-exporter_node-04.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-05
+nodelist: node-05
+output: <output>/logs/service_node-exporter_node-05.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## power_applier_node-01
+nodelist: node-01
+output: <output>/logs/power_control/prefill/applier_node-01.out
+env_to_set:
+    PYTHONPATH: /lustre/share/dynamo/components/src
+command: |
+    <python> -m dynamo.power.applier --decision-file <output>/logs/power_control/prefill/epd/actuation/power_decision.json --node node-01 --gpu-indices 0,1,2,3 --mode sudo-smi --budget-w-per-gpu 1500 --stale-after-s 90 --poll-s 5 --restore-default-on-exit --trace-csv <output>/logs/power_control/prefill/applier_node-01.csv
+
+## power_node_agent_prefill_node-01
+nodelist: node-01
+output: <output>/logs/power_control/prefill/node_agent_node-01.out
+container_image: trtllm
+container_mounts:
+    /lustre/share/dynamo/components/src/dynamo/power: /opt/dynamo/venv/lib/python3.12/site-packages/dynamo/power:ro
+    /lustre/share/nvidia-epd/src/epd: /opt/dynamo/venv/lib/python3.12/site-packages/epd:ro
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    EPD_ACTUATOR: file
+    EPD_LOG_DIR: /logs/power_control/prefill
+    EPD_NODELIST: node-01
+    EPD_NUM_NODES: 1
+    EPD_RUN_TRACE: 1
+    EPD_SUMMARY_STDOUT: 1
+    GPUS_PER_NODE: 4
+    LOG_DIR: /logs/power_control/prefill
+command: |
+    python3 -m dynamo.power.node_agent --pool-name prefill --rank 0 --nodelist node-01 --log-dir /logs/power_control/prefill --gpu-indices 0,1,2,3 --mode nupd --budget-w-per-gpu 1500 --fom tokens_per_gpu --interval-s 30 --perf-threshold 0.03 --ubpc-buffer 2.0 --warmup-policy adaptive --metrics-url frontend=http://127.0.0.1:8000/metrics,worker=http://127.0.0.1:7500/metrics --gpus-per-node 4 --pool-gpu-count 4
+
+## power_applier_node-02
+nodelist: node-02
+output: <output>/logs/power_control/decode/applier_node-02.out
+env_to_set:
+    PYTHONPATH: /lustre/share/dynamo/components/src
+command: |
+    <python> -m dynamo.power.applier --decision-file <output>/logs/power_control/decode/epd/actuation/power_decision.json --node node-02 --gpu-indices 0,1,2,3 --mode sudo-smi --budget-w-per-gpu 1500 --stale-after-s 90 --poll-s 5 --restore-default-on-exit --trace-csv <output>/logs/power_control/decode/applier_node-02.csv
+
+## power_applier_node-03
+nodelist: node-03
+output: <output>/logs/power_control/decode/applier_node-03.out
+env_to_set:
+    PYTHONPATH: /lustre/share/dynamo/components/src
+command: |
+    <python> -m dynamo.power.applier --decision-file <output>/logs/power_control/decode/epd/actuation/power_decision.json --node node-03 --gpu-indices 0,1,2,3 --mode sudo-smi --budget-w-per-gpu 1500 --stale-after-s 90 --poll-s 5 --restore-default-on-exit --trace-csv <output>/logs/power_control/decode/applier_node-03.csv
+
+## power_node_agent_decode_node-02
+nodelist: node-02
+output: <output>/logs/power_control/decode/node_agent_node-02.out
+container_image: trtllm
+container_mounts:
+    /lustre/share/dynamo/components/src/dynamo/power: /opt/dynamo/venv/lib/python3.12/site-packages/dynamo/power:ro
+    /lustre/share/nvidia-epd/src/epd: /opt/dynamo/venv/lib/python3.12/site-packages/epd:ro
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    EPD_ACTUATOR: file
+    EPD_LOG_DIR: /logs/power_control/decode
+    EPD_NODELIST: node-02,node-03
+    EPD_NUM_NODES: 2
+    EPD_RUN_TRACE: 1
+    EPD_SUMMARY_STDOUT: 1
+    GPUS_PER_NODE: 4
+    LOG_DIR: /logs/power_control/decode
+command: |
+    python3 -m dynamo.power.node_agent --pool-name decode --rank 0 --nodelist node-02,node-03 --log-dir /logs/power_control/decode --gpu-indices 0,1,2,3 --mode nupd --budget-w-per-gpu 1500 --fom tokens_per_gpu --interval-s 30 --perf-threshold 0.03 --ubpc-buffer 1.1 --warmup-policy adaptive --metrics-url frontend=http://127.0.0.1:8000/metrics,worker=http://127.0.0.1:7501/metrics --gpus-per-node 4 --pool-gpu-count 8
+
+## power_node_agent_decode_node-03
+nodelist: node-03
+output: <output>/logs/power_control/decode/node_agent_node-03.out
+container_image: trtllm
+container_mounts:
+    /lustre/share/dynamo/components/src/dynamo/power: /opt/dynamo/venv/lib/python3.12/site-packages/dynamo/power:ro
+    /lustre/share/nvidia-epd/src/epd: /opt/dynamo/venv/lib/python3.12/site-packages/epd:ro
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    EPD_ACTUATOR: file
+    EPD_LOG_DIR: /logs/power_control/decode
+    EPD_NODELIST: node-02,node-03
+    EPD_NUM_NODES: 2
+    EPD_RUN_TRACE: 1
+    EPD_SUMMARY_STDOUT: 1
+    GPUS_PER_NODE: 4
+    LOG_DIR: /logs/power_control/decode
+command: |
+    python3 -m dynamo.power.node_agent --pool-name decode --rank 1 --nodelist node-02,node-03 --log-dir /logs/power_control/decode --gpu-indices 0,1,2,3 --mode nupd --budget-w-per-gpu 1500 --fom tokens_per_gpu --interval-s 30 --perf-threshold 0.03 --ubpc-buffer 1.1 --warmup-policy adaptive --metrics-url frontend=http://127.0.0.1:8000/metrics,worker=http://127.0.0.1:7501/metrics --gpus-per-node 4 --pool-gpu-count 8
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: trtllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    SRTCTL_FRONTEND_TYPE: dynamo
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+command: |
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 1024 1024 64 inf /model Qwen/Qwen3-0.6B true 12 4 8 0.8 10 2 '' true random '' false
+
+## power_reset_node-01
+nodelist: node-01
+output: <output>/logs/power_control/prefill/power_reset_node-01.out
+command: |
+    bash -c 'rc=0; for i in 0 1 2 3; do d=$(nvidia-smi -i "$i" --query-gpu=power.default_limit --format=csv,noheader,nounits) && sudo -n nvidia-smi -pl "${d%%.*}" -i "$i" || rc=1; done; exit $rc'
+
+## power_reset_node-02
+nodelist: node-02
+output: <output>/logs/power_control/decode/power_reset_node-02.out
+command: |
+    bash -c 'rc=0; for i in 0 1 2 3; do d=$(nvidia-smi -i "$i" --query-gpu=power.default_limit --format=csv,noheader,nounits) && sudo -n nvidia-smi -pl "${d%%.*}" -i "$i" || rc=1; done; exit $rc'
+
+## power_reset_node-03
+nodelist: node-03
+output: <output>/logs/power_control/decode/power_reset_node-03.out
+command: |
+    bash -c 'rc=0; for i in 0 1 2 3; do d=$(nvidia-smi -i "$i" --query-gpu=power.default_limit --format=csv,noheader,nounits) && sudo -n nvidia-smi -pl "${d%%.*}" -i "$i" || rc=1; done; exit $rc'

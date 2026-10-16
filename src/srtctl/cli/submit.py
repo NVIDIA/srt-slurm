@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import contextlib
+import importlib.util
 import json
 import logging
 import os
@@ -256,6 +257,11 @@ def _metrics_suffix(service) -> str:
         for endpoint in endpoints
     ]
     return " metrics=" + ",".join(parts)
+
+
+def _interpreter_has_module(name: str) -> bool:
+    """Whether this interpreter, which the sweep's bare-host steps also run with, can import ``name``."""
+    return importlib.util.find_spec(name) is not None
 
 
 def show_config_details(config: SrtConfig) -> None:
@@ -537,6 +543,63 @@ def show_config_details(config: SrtConfig) -> None:
             console.print(
                 "[yellow]NOTE:[/] no host_setup.teardown configured — any node state set here "
                 "outlives this allocation and is inherited by the next job on these nodes."
+            )
+
+    # --- power control (EPD node_agents in the worker image, appliers on the bare host) ---
+    power = config.power_control
+    if power.enabled:
+        pools = power.resolve_pools([role for role, _ in config.active_role_backends()])
+        power_table = Table(title="Power Control (EPD)", show_lines=False, pad_edge=False)
+        power_table.add_column("Pool", style="cyan")
+        power_table.add_column("Members", style="white")
+        power_table.add_column("Budget W/GPU", style="white")
+        power_table.add_column("FoM", style="white")
+        power_table.add_column("UBPC buffer", style="dim")
+        for pool in pools:
+            members = f"roles {', '.join(pool.roles)}" if pool.roles else f"nodes {', '.join(pool.nodes)}"
+            if pool.ubpc_buffer is not None:
+                buffer = f"{pool.ubpc_buffer:g}"
+            elif pool.roles:
+                buffer = f"{power.ubpc_buffer_for(pool.roles):g}"
+            else:
+                buffer = "per role"
+            power_table.add_row(pool.name, members, str(pool.budget_w_per_gpu), pool.fom, buffer)
+        console.print(Panel(power_table, border_style="red"))
+        console.print(
+            f"[dim]power_control:[/] mode={power.mode} applier={power.applier} interval_s={power.interval_s} "
+            f"perf_threshold={power.perf_threshold} warmup_policy={power.warmup_policy} "
+            f"critical={str(power.critical).lower()} [dim]see docs/config-reference.md#power_control[/]"
+        )
+        console.print(
+            f"    [yellow]epd_source:[/] {power.epd_source} -> {power.site_packages}/epd (read-only, node_agents)",
+            crop=False,
+        )
+        if power.dynamo_power_source:
+            console.print(
+                f"    [yellow]dynamo_power_source:[/] {power.dynamo_power_source} -> "
+                f"{power.site_packages}/dynamo/power (read-only, node_agents) and the host applier's PYTHONPATH",
+                crop=False,
+            )
+        if power.applier == "sudo-smi":
+            console.print(
+                "[yellow]NOTE:[/] the applier runs on each node's bare host as you and needs a passwordless sudoers "
+                "rule for `nvidia-smi -pl <W> -i <N>` (check with `srun --jobid <job> --overlap -w <node> sudo -n -l`). "
+                "It restores the hardware default limits on exit, and the job runs a final per-node reset."
+            )
+        if power.mode == "nupd" and power.max_tgp_w is None:
+            console.print(
+                "[yellow]NOTE:[/] mode nupd binds only while budget_w_per_gpu is below the hardware maximum "
+                "(with the recipe's clock locks in place; GB300 1400 W, VR 2300 W): set max_tgp_w to that "
+                "maximum and the recipe loader checks the budget against it before the job starts.",
+                crop=False,
+            )
+        if not _interpreter_has_module("pynvml"):
+            console.print(
+                f"[yellow]WARNING:[/] {sys.executable} cannot import pynvml (nvidia-ml-py): the host applier runs "
+                "with this interpreter and verifies every cap through read-only NVML, so each trace row would be "
+                "`unverified` and EPD's own run_trace.csv the only enforcement evidence. Run `uv sync` in the srtctl "
+                "checkout (nvidia-ml-py is a declared dependency) before submitting.",
+                crop=False,
             )
 
     # --- post_eval (RUN_EVAL / EVAL_ONLY dispatch) ---

@@ -182,6 +182,9 @@ def render_launch_plan(recipe: Path) -> str:
         body = _normalize(
             body,
             {
+                # Host steps that run the orchestrator's interpreter (the power applier): the
+                # venv's python vs python3 depends on how the suite was invoked, not on the recipe.
+                sys.executable: "<python>",
                 str(model_dir): "<model>",
                 str(container_file): "<container>",
                 str(output_dir): "<output>",
