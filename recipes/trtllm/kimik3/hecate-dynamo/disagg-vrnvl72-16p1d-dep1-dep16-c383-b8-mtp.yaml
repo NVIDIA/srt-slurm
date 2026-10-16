@@ -251,8 +251,8 @@ benchmark:
   env:
     # Emit realtime performance summaries with --ui simple every 30 seconds.
     AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
-    # Keep individual session affinity without grouping sibling subagents.
-    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'false'
+    # Send Dynamo session IDs and parent-session IDs for subagents.
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
     AIPERF_REF: /lustre/fsw/coreai_comparch_inferencex/rihuo/agentx-harness
     AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/aiperf_mmap
     AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
@@ -272,7 +272,6 @@ benchmark:
     fi
     mkdir -p /logs/agentic/concurrency_383
     "$AIPERF_VENV/bin/aiperf" profile --scenario inferencex-agentx-mvp \
-      --session-header X-Dynamo-Session-ID \
       --url http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT --endpoint /v1/chat/completions --endpoint-type chat --streaming \
       -m Kimi-K3 --tokenizer /model --tokenizer-trust-remote-code \
       --public-dataset semianalysis_cc_traces_weka_062126 \
