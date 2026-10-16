@@ -40,8 +40,6 @@ engine:
   type: trtllm
   served_model_name: Kimi-K3
   publish_metrics: true
-  numa_cpu_bind: true
-  numa_memory_bind: local
 roles:
   prefill:
     nodes: 4
