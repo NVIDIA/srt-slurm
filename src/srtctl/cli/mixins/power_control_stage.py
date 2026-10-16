@@ -18,8 +18,8 @@ healthy and before any load, the stage:
    ``dynamo/power`` bind-mounted read-only over the image's site-packages). A group that
    covers the whole node sees every GPU; a group that is only part of the node (a TEP6
    tail) gets ``NVIDIA_VISIBLE_DEVICES`` = its indices, because EPD's NVML monitor senses
-   every GPU it can see. ``--gpu-indices`` are host NVML indices (the node_agent verifies the
-   visible minors are exactly the group), ``--gpus-per-node`` the node's physical GPU count
+   every GPU it can see. ``--gpu-indices`` are host NVML indices (the node_agent verifies that
+   it sees exactly as many GPUs as the group has), ``--gpus-per-node`` the node's physical GPU count
    and ``--pool-gpu-count`` the pool's exact GPU total (per-GPU FoM normalisation). Its
    ``--metrics-url`` list names the frontend listeners (``frontend=<url>``) and the pool
    ranks that run a Dynamo system server (``worker=<url>``: every rank of a per-node launch,
@@ -506,7 +506,7 @@ class PowerControlStageMixin:
         if len(group.gpu_indices) < self.runtime.gpus_per_node:
             # EPD's NVML monitor senses every GPU it can see (no index or UUID filter), so a
             # group that is only part of the node (a TEP6 tail) gets a container that sees
-            # exactly those GPUs; the node_agent checks that the visible minors are the group.
+            # exactly those GPUs; the node_agent checks that it sees exactly the group's GPU count.
             env["NVIDIA_VISIBLE_DEVICES"] = group.gpu_list
         step_name = f"power_node_agent_{pool.name}_{group.node}"
         log_file = self._pool_dir(pool) / f"node_agent_{group.node}.out"
