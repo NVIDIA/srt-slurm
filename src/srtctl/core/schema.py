@@ -1976,6 +1976,9 @@ class CpuPowerConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+CpuPowerExporterSource = Literal["auto", "acpi", "dcgm", "rapl"]
+
+
 @dataclass(frozen=True)
 class CpuPowerExporterConfig:
     """Best-effort CPU power collection via the cpu-power-exporter binary.
@@ -1989,7 +1992,8 @@ class CpuPowerExporterConfig:
     Attributes:
         port: TCP port the per-node exporter listens on for ``/metrics``.
         source: Power reading back-end passed through to the bundled Rust
-            binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``).
+            binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm`` |
+            ``rapl``).
             ``auto`` tries ACPI first (the only source with the socket
             envelope) and falls back to DCGM when no ACPI power_meter hwmon
             sensors exist or no socket-total sensor reads positive on two
@@ -1997,14 +2001,16 @@ class CpuPowerExporterConfig:
             if this libdcgm refuses the pair, and is accepted only if some
             socket reads a positive 1130. DCGM mode reports field 1130 = the
             CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and
-            the energy report flags such runs as "CPU rail only". Has no
-            effect when the Python stdlib fallback exporter is used instead of
+            the energy report flags such runs as "CPU rail only". ``rapl``
+            reads the x86 RAPL package energy counters (AMD EPYC, Intel Xeon),
+            whose ``energy_uj`` files are root-only unless a cluster admin
+            grants read access; ``auto`` never selects it. Has no effect when the Python stdlib fallback exporter is used instead of
             the binary -- that fallback is ACPI-only.
     """
 
     # Port the exporter listens on and the head-node collector scrapes.
     port: int = 9405
-    source: Literal["auto", "acpi", "dcgm"] = "auto"
+    source: CpuPowerExporterSource = "auto"
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -3816,8 +3822,9 @@ class SrtConfig:
             return
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.cpu_power_exporter.port must be in 1..65535")
-        if exporter.source not in ("auto", "acpi", "dcgm"):
-            raise ValidationError('telemetry.cpu_power_exporter.source must be one of: "auto", "acpi", "dcgm"')
+        sources = get_args(CpuPowerExporterSource)
+        if exporter.source not in sources:
+            raise ValidationError(f"telemetry.cpu_power_exporter.source must be one of: {', '.join(sources)}")
 
         neighbours = [("telemetry.dcgm_exporter", self.telemetry.dcgm_exporter)]
         if self.observability.tachometer_enabled:
