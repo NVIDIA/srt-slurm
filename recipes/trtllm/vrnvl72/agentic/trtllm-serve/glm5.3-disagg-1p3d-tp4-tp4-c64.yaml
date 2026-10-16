@@ -26,6 +26,8 @@ environment:
   PIP_EXTRA_INDEX_URL: https://pypi.nvidia.com
 frontend:
   type: trtllm_serve
+  placement:
+    node: dedicated
   enable_multiple_frontends: false
   ctx_router:
     type: conversation
@@ -283,6 +285,9 @@ extra_mount:
 - /home/rihuo/:/home/rihuo/
 benchmark:
   type: custom
+  placement:
+    node: dedicated
+  colocate_with_frontend: true
   command: |
     set -euo pipefail
     export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"

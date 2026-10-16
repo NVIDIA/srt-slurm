@@ -26,6 +26,8 @@ environment:
   PIP_EXTRA_INDEX_URL: https://pypi.nvidia.com
 frontend:
   type: trtllm_serve
+  placement:
+    node: dedicated
   enable_multiple_frontends: false
   ctx_router:
     type: load_balancing
@@ -324,7 +326,7 @@ services:
   type: generic
   placement:
     node: decode
-  start: before_workers
+  start: after_frontend
   critical: true
   srun_options:
     mpi: none
@@ -346,8 +348,7 @@ services:
   - -c
   - |
     set -euo pipefail
-    sizes=(768GiB 768GiB 768GiB 768GiB 768GiB 768GiB 768GiB 768GiB)
-    exec trtllm-serve mooncake_donor --config /logs/mooncake_store_config_prefill.json --segment_size "${sizes[{index}]}" --ready_file /logs/mooncake_donor_{index}.ready
+    exec trtllm-serve mooncake_donor --config /logs/mooncake_store_config_prefill.json --segment_size 768GiB --ready_file /logs/mooncake_donor_{index}.ready
   readiness:
     file:
       path: mooncake_donor_{index}.ready
@@ -356,6 +357,9 @@ extra_mount:
 - /home/rihuo/:/home/rihuo/
 benchmark:
   type: custom
+  placement:
+    node: dedicated
+  colocate_with_frontend: true
   command: |
     set -euo pipefail
     export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"

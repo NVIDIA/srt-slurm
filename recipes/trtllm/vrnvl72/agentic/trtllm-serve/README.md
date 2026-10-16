@@ -29,6 +29,38 @@ MTP prefill support and Mooncake connector.
 | [pareto07](glm5.3-disagg-3p1d-tp4-dep16-c576.yaml) | 3 / 4 | 1 / 16 | 28 | 576 | nvfp4 |
 | [pareto08](glm5.3-disagg-3p1d-tp4-dep8-c560.yaml) | 3 / 4 | 1 / 8 | 20 | 560 | nvfp4 |
 
+## Upstream configuration comparison
+
+Compared all eight points with `agentx/glm_5.2/verarubin/e2e_pareto` at
+benchmark-recipe revision `578962ec04a2c370c55e8f22458831337b8b15f6`.
+The upstream recipe directory is unchanged from the original conversion
+revision above. After translating BTK sweep fields into TRT-LLM YAML, the
+following match for every point:
+
+- Worker counts, GPU allocation, TP/PP/EP sizes and concurrency.
+- Engine arguments, including cache sizes and dtype, MTP, scheduler, graph,
+  attention and transfer settings; the Mooncake client block is rendered
+  separately through `MOONCAKE_CONFIG_PATH`.
+- Original kernel environment values and forced acceptance, after resolving
+  offline, FlashInfer, UCX device and acceptance placeholders.
+- Native context/generation routers, tool parser, postprocessing workers and
+  frontend server configuration.
+- AgentX dataset, duration, seed, context limit, streaming, token counts,
+  trajectory ratios, warmup, idle-gap cap and statistics cadence.
+- Mooncake prefill segment sizes, transport/client settings, master lease,
+  eviction ratio and allocation strategy.
+
+Deployment differences are explicit: GLM-5.3 model/image paths and model name;
+local AIPerf installation and mounted caches; RapLab NIC/MPI/NCCL and pip
+settings; GPU-local NUMA CPU/memory binding; iteration statistics and worker
+metrics export; a shared dedicated frontend/client node; donors starting
+`after_frontend` with uniform maximum segment sizes; no HBM clock setup;
+and removal of the Dynamo-specific benchmark session-ID variable. Existing
+srt-slurm executor/unbuffered environment additions and service readiness,
+ports and output paths remain part of the conversion. The recipes therefore
+preserve upstream inference/workload settings with these deployment overrides,
+rather than being literal copies of the BTK files.
+
 ## Cluster configuration
 
 The recipes use model path `/home/rihuo/GLM-5.3-NVFP4` and image
@@ -60,6 +92,11 @@ routing, `--tool_parser`, postprocessing workers and frontend performance
 settings remain in place; Dynamo installation, transport and `DYN_*` variables
 are omitted.
 
+The frontend and benchmark client share one dedicated node in every recipe.
+Both use `placement.node: dedicated`, with
+`benchmark.colocate_with_frontend: true`. This adds one node beyond the worker
+allocation and keeps client/frontend memory use off the decode nodes.
+
 ## Mooncake
 
 Points 01–04 retain a 240 GiB private host cache per prefill rank and have no
@@ -67,25 +104,26 @@ Mooncake service. Points 05–08 retain a GPU-only prefill cache manager, a shar
 Mooncake store, and connector-free decode workers. The master runs on the first
 prefill node; one `trtllm-serve mooncake_donor` runs per decode node.
 
-| Source point / recipe | Segment per prefill rank | Donor segment per decode node, in placement order |
+| Source point / recipe | Segment per prefill rank | Donor segment per decode node |
 | --- | --- | --- |
 | [pareto05](glm5.3-disagg-3p1d-tp4-dep32-c560.yaml) | 224 GiB | 768 GiB on each of eight nodes |
-| [pareto06](glm5.3-disagg-3p1d-tp4-dep16-c640.yaml) | 256 GiB | 900, 1050, 1050, 1050 GiB |
-| [pareto07](glm5.3-disagg-3p1d-tp4-dep16-c576.yaml) | 256 GiB | 900, 1050, 1050, 1050 GiB |
-| [pareto08](glm5.3-disagg-3p1d-tp4-dep8-c560.yaml) | 260 GiB | 960, 1100 GiB |
+| [pareto06](glm5.3-disagg-3p1d-tp4-dep16-c640.yaml) | 256 GiB | 1050 GiB on each of four nodes |
+| [pareto07](glm5.3-disagg-3p1d-tp4-dep16-c576.yaml) | 256 GiB | 1050 GiB on each of four nodes |
+| [pareto08](glm5.3-disagg-3p1d-tp4-dep8-c560.yaml) | 260 GiB | 1100 GiB on each of two nodes |
 
 srt-slurm renders the prefill client JSON and injects `MOONCAKE_CONFIG_PATH`.
 Only prefill selects `kv_connector_config`; no worker uses `role: capacity`,
 which the pinned tekit revision does not implement. The donors read the same
-JSON for the master and transport, then apply their explicit per-node sizes.
+JSON for the master and transport, then apply one uniform segment size to every decode node.
 Tekit writes `/logs/mooncake_donor_<index>.ready` after segment registration.
-The `readiness.file` probes wait for these markers before workers start;
+The `readiness.file` probes wait for these markers before benchmarking;
 srt-slurm removes an old marker before launching each donor.
 
 Prefill workers and donors use the same Mooncake transport environment as
 the RapLab recipes: `MC_ENABLE_PARALLEL_REG_MR=0`, `MC_MS_AUTO_DISC=0`,
 `MC_ENABLE_DEST_DEVICE_AFFINITY=1` and the eight-NIC `MC_TE_FILTERS` allowlist.
-Donors retain their native per-node sizes and start before workers; their
+Donors use the recipe's largest original segment size on every decode node
+and `start: after_frontend`; their
 environment contains transport and logging settings.
 
 The master command uses this Mooncake build's `--rpc_port` spelling, random
