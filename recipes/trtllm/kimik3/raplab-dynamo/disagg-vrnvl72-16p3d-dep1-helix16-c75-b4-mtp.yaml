@@ -31,10 +31,16 @@ setup_script: install_dynamo_wheel.sh
 dynamo:
   install: false
 environment:
+  DYN_LIFECYCLE_TRACE_ENABLED: '0'
+  OTEL_EXPORT_ENABLED: '0'
   # The image's /etc/environment points pip at urm.nvidia.com, which RapLab cannot resolve.
   PIP_CONFIG_FILE: /dev/null
   PIP_INDEX_URL: https://pypi.org/simple
   PIP_EXTRA_INDEX_URL: https://pypi.nvidia.com
+services:
+  - name: otel-collector
+    type: otel-collector
+    enabled: false
 engine:
   numa_cpu_bind: true
   numa_memory_bind: local

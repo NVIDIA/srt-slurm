@@ -36,6 +36,13 @@ host_setup:
   - sudo -n nvidia-smi -rmc
   nodes: workers
   ignore_failure: false
+environment:
+  DYN_LIFECYCLE_TRACE_ENABLED: '0'
+  OTEL_EXPORT_ENABLED: '0'
+services:
+  - name: otel-collector
+    type: otel-collector
+    enabled: false
 engine:
   type: trtllm
   served_model_name: Kimi-K3
