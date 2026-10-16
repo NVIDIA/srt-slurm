@@ -37,6 +37,8 @@ host_setup:
   nodes: workers
   ignore_failure: false
 environment:
+  DYN_REQUEST_PLANE_CODEC: msgpack
+  DYN_TOKEN_IDS_AS_BYTES: '1'
   DYN_LIFECYCLE_TRACE_ENABLED: '0'
   OTEL_EXPORT_ENABLED: '0'
 services:
