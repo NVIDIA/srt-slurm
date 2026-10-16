@@ -7,7 +7,10 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from srtctl.core.ip_utils import get_node_ip
+from srtctl.core.slurm import get_hostname_ip
 
 
 def test_get_node_ip_ignores_srun_step_created_output(tmp_path, monkeypatch):
@@ -58,3 +61,34 @@ def test_runtime_resolves_control_plane_ips_on_cluster_interface(tmp_path):
     assert resolve.call_args_list[0].args == ("node-a", "fabric0")
     assert resolve.call_args_list[1].args == ("node-b", "fabric0")
     assert (runtime.head_node_ip, runtime.infra_node_ip) == ("10.0.0.1", "10.0.0.2")
+
+
+def test_get_hostname_ip_uses_local_ip_when_srun_fails_on_this_node(monkeypatch):
+    """After get_node_ip fails, a local hostname must use get_local_ip, not 127.0.1.1."""
+    monkeypatch.setattr("srtctl.core.slurm.get_slurm_job_id", lambda: "36486")
+    monkeypatch.setattr("srtctl.core.slurm.get_node_ip", lambda *args, **kwargs: None)
+    monkeypatch.setattr("srtctl.core.slurm.get_local_ip", lambda iface=None: "10.3.10.70")
+    monkeypatch.setattr("socket.gethostname", lambda: "im-gb300-r03-c014")
+    monkeypatch.setattr("socket.getfqdn", lambda: "im-gb300-r03-c014.gb300.internal")
+    monkeypatch.setattr("socket.gethostbyname", lambda host: "127.0.1.1")
+    monkeypatch.delenv("SLURMD_NODENAME", raising=False)
+    monkeypatch.delenv("HOSTNAME", raising=False)
+
+    ip = get_hostname_ip("im-gb300-r03-c014.gb300.internal", network_interface="")
+
+    assert ip == "10.3.10.70"
+
+
+def test_get_hostname_ip_refuses_loopback_when_srun_and_dns_fail(monkeypatch):
+    """A remote name that only resolves to 127.0.1.1 must fail, not become --master-addr."""
+    monkeypatch.setattr("srtctl.core.slurm.get_slurm_job_id", lambda: "36486")
+    monkeypatch.setattr("srtctl.core.slurm.get_node_ip", lambda *args, **kwargs: None)
+    monkeypatch.setattr("srtctl.core.slurm.get_local_ip", lambda iface=None: "10.3.10.70")
+    monkeypatch.setattr("socket.gethostname", lambda: "im-gb300-r03-c014")
+    monkeypatch.setattr("socket.getfqdn", lambda: "im-gb300-r03-c014.gb300.internal")
+    monkeypatch.setattr("socket.gethostbyname", lambda host: "127.0.1.1")
+    monkeypatch.delenv("SLURMD_NODENAME", raising=False)
+    monkeypatch.delenv("HOSTNAME", raising=False)
+
+    with pytest.raises(RuntimeError, match="refusing loopback"):
+        get_hostname_ip("im-gb300-r03-c015")
