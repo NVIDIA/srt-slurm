@@ -451,3 +451,60 @@ def test_trtllm_aggregate_runs_complete_sa_bench_lifecycle_without_router(tmp_pa
     assert not (output_dir / "logs" / "service_nats.out").exists()
     assert not (output_dir / "logs" / "ser.yaml").exists()
     assert not any((output_dir / "logs").glob("*_frontend_*.out"))
+
+
+@pytest.mark.parametrize("readiness_fails", [False, True])
+def test_worker_services_overlap_loading_and_gate_benchmark(tmp_path: Path, readiness_fails: bool) -> None:
+    """Donors launch before workers, but their readiness cannot block model loading."""
+    config = deepcopy(MINIMAL_CONFIG)
+    config["engine"] = "sglang"
+    config["frontend"] = {"type": "sglang-router", "enable_multiple_frontends": False}
+    config["observability"] = {"tachometer": {"enabled": False}}
+    config["services"] = [
+        {
+            "name": "donor",
+            "command": ["sleep", "600"],
+            "start": "with_workers",
+            "critical": True,
+            "readiness": {"file": {"path": "donor.ready"}},
+        }
+    ]
+    path = tmp_path / "parallel-donor.yaml"
+    path.write_text(yaml.safe_dump(config))
+    events = []
+    original_frontend = SweepOrchestrator.start_frontend
+
+    def frontend_ready(self, *args, **kwargs):
+        result = original_frontend(self, *args, **kwargs)
+        events.append("frontend-ready")
+        return result
+
+    def wait_donor(self, proc, service, ctx):
+        assert service.name == "donor"
+        assert "frontend-ready" in events
+        events.append("donor-readiness")
+        if readiness_fails:
+            raise RuntimeError("donor registration failed")
+
+    options = MockOptions(
+        child_duration_s=0.0,
+        phase_pause_s=0.0,
+        on_srun=lambda call: events.append(
+            call.get("step_name") or ("benchmark" if str(call.get("output", "")).endswith("benchmark.out") else "other")
+        ),
+    )
+    with (
+        patch.object(SweepOrchestrator, "start_frontend", frontend_ready),
+        patch.object(SweepOrchestrator, "_wait_service_ready", wait_donor),
+    ):
+        code = run_mock_sweep(config_path=path, output_dir=tmp_path / "output", job_id="42424", options=options)
+    donor = events.index("service_donor")
+    worker = next(i for i, event in enumerate(events) if event.startswith("agg_"))
+    ready = events.index("donor-readiness")
+    assert donor < worker < events.index("frontend-ready") < ready
+    if readiness_fails:
+        assert code != 0
+        assert "benchmark" not in events
+    else:
+        assert code == 0
+        assert ready < events.index("benchmark")

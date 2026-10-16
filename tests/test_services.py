@@ -1091,3 +1091,31 @@ def test_declared_lmcache_server_replaces_the_implied_one_under_any_name() -> No
         "services:\n  - name: lmcache-server\n    type: lmcache-server\n    enabled: false\n", engine=engine
     )
     assert _lmcache_entries(disabled) == []
+
+
+def test_worker_service_readiness_failure_terminates_entire_fleet(tmp_path: Path) -> None:
+    config = _load("""
+services:
+  - name: donor
+    command: [sleep, '600']
+    placement: {node: decode}
+    start: with_workers
+    critical: true
+    readiness:
+      file: {path: 'donor_{index}.ready'}
+""")
+    orchestrator = _orchestrator(config, tmp_path)
+    with (
+        patch(SRUN, side_effect=[_proc(), _proc()]) as srun,
+        patch(HOST_IP, return_value="10.0.0.10"),
+        patch.object(orchestrator, "_wait_service_ready") as wait,
+    ):
+        procs = orchestrator.start_services("with_workers")
+        assert len(procs) == srun.call_count == 2
+        wait.assert_not_called()
+        wait.side_effect = RuntimeError("registration failed")
+        with patch.object(type(procs[0]), "terminate") as terminate:
+            with pytest.raises(RuntimeError, match="registration failed"):
+                orchestrator.wait_worker_services_ready()
+            assert terminate.call_count == 2
+        assert not orchestrator._pending_service_readiness

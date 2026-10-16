@@ -66,7 +66,7 @@ services:
       node: head                 # head | infra | dedicated | prefill | decode | agg | workers | compute | all
       pool: train                # or: ride on the nodes another service owns (replaces node)
     nodes: 2                     # own whole nodes: a pool added to the allocation next to the roles' nodes
-    start: after_frontend        # infra | before_workers | after_frontend
+    start: after_frontend        # infra | before_workers | with_workers | after_frontend
     readiness:                   # optional probe, checked on every service node; typed kinds have default ports
       port: 9000                 # or tcp: {port} / http: {port, path, status} / log: {pattern}
       timeout_seconds: 120
@@ -216,16 +216,21 @@ services:
 
 ## Start Order and Readiness
 
-Services launch in three phases; within a phase, implied services first, then declared ones in
+Services launch in four phases; within a phase, implied services first, then declared ones in
 declaration order:
 
 - `infra`: the discovery plane (etcd, NATS). Nothing else should need this phase.
 - `before_workers`: after the discovery plane, before any worker. The Mooncake master, standalone
   stores, anything workers connect to at startup.
+- `with_workers`: launch just before workers without waiting for service readiness. All
+  instances start before worker loading; their probes and fleet readiness checks run after
+  frontend startup, before telemetry and benchmarking. Use this for Mooncake donors whose
+  registration can overlap model loading. Services that workers need to become healthy
+  must use `before_workers`. These services stop with the workers.
 - `after_frontend`: once workers and the frontend are healthy, before the scraper. The exporters,
   sidecars that register into a running job.
 
-Within a phase, a service with `readiness` blocks until its probe passes on each of its nodes. The
+Except for `with_workers`, a service with `readiness` blocks until its probe passes on each of its nodes. The
 typed kinds gate on their well-known ports by default (etcd 2379, NATS 4222, the Mooncake master
 8700, 8701, and 8702, the exporters none); a `generic` service without a probe is considered started
 when its `srun` is launched. Four probes are available, and a `readiness` block names exactly one:

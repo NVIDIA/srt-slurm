@@ -2,6 +2,19 @@
 # exit_code: 0
 # srun calls: 12
 
+## service_log-browser
+nodelist: node-01
+output: <output>/logs/service_log-browser.out
+container_image: sglang
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+command: |
+    python3 -m http.server 9911 --directory /logs
+
 ## agg_0_node-01
 nodelist: node-01
 output: <output>/logs/node-01_agg_w0.out
@@ -149,19 +162,6 @@ srun_export_env:
 use_bash_wrapper: False
 command: |
     /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
-
-## service_log-browser
-nodelist: node-01
-output: <output>/logs/service_log-browser.out
-container_image: sglang
-container_mounts:
-    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
-    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
-    <model>: /model
-    <output>/logs: /logs
-use_bash_wrapper: True
-command: |
-    python3 -m http.server 9911 --directory /logs
 
 ## tachometer
 nodelist: node-01

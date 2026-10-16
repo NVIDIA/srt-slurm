@@ -2862,7 +2862,7 @@
               "type": "null"
             }
           ],
-          "description": "``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``).",
+          "description": "``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``), ``with_workers`` (launch before workers, wait for readiness after frontend startup), or ``infra``.",
           "default": null
         },
         "readiness": {
@@ -2874,7 +2874,7 @@
               "type": "null"
             }
           ],
-          "description": "Optional TCP, HTTP, log or marker-file gate; the job waits for it on every service node before continuing.",
+          "description": "Optional TCP, HTTP, log or marker-file gate; the job waits for it on every service node before continuing. With ``start: with_workers``, this gate runs after frontend startup and before benchmarking.",
           "default": null
         },
         "inherit_discovery_env": {

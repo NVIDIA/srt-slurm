@@ -54,7 +54,7 @@ Deployment differences are explicit: GLM-5.3 model/image paths and model name;
 local AIPerf installation and mounted caches; RapLab NIC/MPI/NCCL and pip
 settings; GPU-local NUMA CPU/memory binding; iteration statistics and worker
 metrics export; a shared dedicated frontend/client node; donors starting
-`after_frontend` with uniform maximum segment sizes; no HBM clock setup;
+`with_workers` with uniform maximum segment sizes; no HBM clock setup;
 removal of `TRTLLM_SERVE_ENABLE_MSGSPEC`;
 and removal of the Dynamo-specific benchmark session-ID variable. Existing
 srt-slurm executor/unbuffered environment additions and service readiness,
@@ -124,8 +124,10 @@ Prefill workers and donors use the same Mooncake transport environment as
 the RapLab recipes: `MC_ENABLE_PARALLEL_REG_MR=0`, `MC_MS_AUTO_DISC=0`,
 `MC_ENABLE_DEST_DEVICE_AFFINITY=1` and the eight-NIC `MC_TE_FILTERS` allowlist.
 Donors use the recipe's largest original segment size on every decode node
-and `start: after_frontend`; their
-environment contains transport and logging settings.
+and `start: with_workers`; their
+environment contains transport and logging settings. Donors launch just before
+workers without blocking model loading. Their marker-file readiness gates run
+after frontend startup, before benchmarking.
 
 The master command uses this Mooncake build's `--rpc_port` spelling, random
 allocation, a 60-second lease TTL and a 0.02 eviction ratio. The RPC/metrics

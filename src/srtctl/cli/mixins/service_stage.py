@@ -28,6 +28,7 @@ through ``scancel --signal`` and they get to flush state before exit.
 
 Phases, in run order: ``start_services("infra")`` (the discovery plane),
 ``start_services("before_workers")`` (after infra, before any worker),
+``start_services("with_workers")`` (launch before workers, defer readiness),
 ``start_services("after_frontend")`` (once workers and the frontend are
 healthy). See ``docs/services.md``.
 """
@@ -37,7 +38,8 @@ from __future__ import annotations
 import logging
 import shlex
 import subprocess
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -64,7 +66,13 @@ SERVICE_TERMINATE_TIMEOUT_SECONDS = 30.0
 _DISCOVERY_KINDS = frozenset({"etcd", "nats"})
 # Cleanup stops lower tiers first: sidecars with the workers, then what workers
 # register with (the Mooncake master, stores), then the discovery plane.
-_SHUTDOWN_TIER = {"after_frontend": 0, "before_workers": 1, "infra": 2}
+_SHUTDOWN_TIER = {"with_workers": 0, "after_frontend": 0, "before_workers": 1, "infra": 2}
+
+
+@dataclass(frozen=True)
+class _PendingServiceReadiness:
+    service: ServiceConfig
+    instances: tuple[tuple[ManagedProcess, ServiceLaunchContext], ...]
 
 
 def render_placeholders(value: str, replacements: dict[str, str]) -> str:
@@ -100,6 +108,28 @@ class ServiceStageMixin:
     runtime: RuntimeContext
     endpoints: list[Endpoint]
     backend_processes: list[Process]
+
+    @cached_property
+    def _pending_service_readiness(self) -> list[_PendingServiceReadiness]:
+        """Service fleets whose readiness overlaps worker startup."""
+        return []
+
+    def wait_worker_services_ready(self) -> None:
+        """Gate benchmarking on every service launched with the workers."""
+        pending = list(self._pending_service_readiness)
+        self._pending_service_readiness.clear()
+        try:
+            for fleet in pending:
+                for proc, ctx in fleet.instances:
+                    self._wait_service_ready(proc, fleet.service, ctx)
+                kind = get_service_kind(fleet.service.type)
+                kind.wait_fleet_ready(fleet.service, self.runtime, [proc for proc, _ in fleet.instances])
+                logger.info("Service %s ready: %d instance(s)", fleet.service.name, len(fleet.instances))
+        except BaseException:
+            for fleet in pending:
+                for proc, _ in fleet.instances:
+                    proc.terminate()
+            raise
 
     # -- node resolution ---------------------------------------------------------
 
@@ -427,6 +457,8 @@ class ServiceStageMixin:
         A readiness gate that fails terminates every process this call started
         and raises. The started processes are also returned. A service with
         ``external`` set launches nothing; its address is injected instead.
+        ``with_workers`` registers processes immediately and defers readiness
+        to ``wait_worker_services_ready`` after frontend startup.
         """
         effective = [entry for entry in effective_services(self.config) if not entry.service.external]
         phase = [entry for entry in effective if entry.service.effective_start == start]
@@ -470,6 +502,7 @@ class ServiceStageMixin:
                     )
                     continue
                 instances: list[ManagedProcess] = []
+                deferred: list[tuple[ManagedProcess, ServiceLaunchContext]] = []
                 for index, (node, process) in enumerate(placed):
                     ctx = ServiceLaunchContext(
                         runtime=self.runtime,
@@ -488,10 +521,17 @@ class ServiceStageMixin:
                     instances.append(proc)
                     if registry is not None:
                         registry.add_process(proc)
-                    self._wait_service_ready(proc, service, ctx)
+                    if start == "with_workers":
+                        deferred.append((proc, ctx))
+                    else:
+                        self._wait_service_ready(proc, service, ctx)
                     if service.terminal:
                         # The manual loop in BenchmarkStageMixin ends the job when these exit.
                         self.terminal_processes.setdefault(service.name, []).append(proc)
+                if start == "with_workers":
+                    self._pending_service_readiness.append(_PendingServiceReadiness(service, tuple(deferred)))
+                    logger.info("Service %s launched with workers: %d instance(s)", service.name, len(instances))
+                    continue
                 kind.wait_fleet_ready(service, self.runtime, instances)
                 logger.info("Service %s ready: %d instance(s) on %d node(s)", service.name, len(placed), len(nodes))
         except BaseException:

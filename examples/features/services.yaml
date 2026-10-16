@@ -58,7 +58,8 @@ services:
       - /logs
     placement:
       node: head          # head | infra | prefill | decode | agg | workers
-    # start: after_frontend (default). Use before_workers for something workers need.
+    # Start alongside worker loading; gate readiness before benchmarking.
+    start: with_workers
     readiness:
       http:               # or `port: 9911` (tcp), or `log: {pattern: ...}` against the service log
         port: 9911

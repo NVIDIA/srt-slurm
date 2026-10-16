@@ -784,6 +784,9 @@ class SweepOrchestrator(
             if self.runtime.staged_model_path is not None:
                 self._stage_model()
 
+            # Start parallel services without waiting for registration/readiness.
+            self.start_services("with_workers", registry)
+
             # Stage 2: Workers
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
             worker_procs = self.start_all_workers()
@@ -795,6 +798,9 @@ class SweepOrchestrator(
             frontend_procs = self.start_frontend(registry, stop_event)
             for proc in frontend_procs:
                 registry.add_process(proc)
+
+            # Parallel services must be ready before telemetry and benchmarking.
+            self.wait_worker_services_ready()
 
             # Stage 3b: sidecar services (start: after_frontend, the default),
             # once workers and the frontend are healthy and before telemetry.

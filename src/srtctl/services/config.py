@@ -45,8 +45,9 @@ SERVICE_PERS: tuple[str, ...] = ("node", "worker")
 
 # When a service starts relative to the rest of the job. ``infra`` is the discovery
 # plane (etcd, NATS) that everything else may depend on; ``before_workers`` runs after
-# it and before any worker; ``after_frontend`` once workers and the frontend are healthy.
-SERVICE_STARTS: tuple[str, ...] = ("infra", "before_workers", "after_frontend")
+# it and before any worker; ``with_workers`` overlaps service readiness with worker
+# startup; ``after_frontend`` once workers and the frontend are healthy.
+SERVICE_STARTS: tuple[str, ...] = ("infra", "before_workers", "with_workers", "after_frontend")
 
 # services[].source is the shared git-at-an-immutable-ref shape.
 ServiceSourceConfig = SourceConfig
@@ -321,9 +322,11 @@ class ServiceConfig:
             (``head`` for generic services, ``infra`` for etcd/nats/mooncake-master,
             ``workers`` for the exporters).
         start: ``after_frontend`` (default for ``generic``) or
-            ``before_workers`` (default for ``mooncake-store``).
+            ``before_workers`` (default for ``mooncake-store``), ``with_workers``
+            (launch before workers, wait for readiness after frontend startup), or ``infra``.
         readiness: Optional TCP, HTTP, log or marker-file gate; the job waits for it on every
-            service node before continuing.
+            service node before continuing. With ``start: with_workers``, this gate
+            runs after frontend startup and before benchmarking.
         inherit_discovery_env: Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so
             the service can register with the job's Dynamo discovery plane.
         critical: When true a crash fails the run, like a worker dying. Default
