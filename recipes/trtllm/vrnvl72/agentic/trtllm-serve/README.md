@@ -55,6 +55,7 @@ local AIPerf installation and mounted caches; RapLab NIC/MPI/NCCL and pip
 settings; GPU-local NUMA CPU/memory binding; iteration statistics and worker
 metrics export; a shared dedicated frontend/client node; donors starting
 `after_frontend` with uniform maximum segment sizes; no HBM clock setup;
+removal of `TRTLLM_SERVE_ENABLE_MSGSPEC`;
 and removal of the Dynamo-specific benchmark session-ID variable. Existing
 srt-slurm executor/unbuffered environment additions and service readiness,
 ports and output paths remain part of the conversion. The recipes therefore
