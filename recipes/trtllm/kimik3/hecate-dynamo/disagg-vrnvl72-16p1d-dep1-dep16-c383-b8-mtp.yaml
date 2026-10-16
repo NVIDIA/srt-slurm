@@ -91,6 +91,9 @@ roles:
       TLLM_FMHA_LIBS: -flashinfer_trtllm_gen
       UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
     args:
+      # Match native --server_role CONTEXT inside the TRT-LLM MPI workers.
+      env_overrides:
+        TRTLLM_DISAGG_ROLE: context
       enable_iter_perf_stats: true
       iter_perf_stats_interval: 40
       backend: pytorch
