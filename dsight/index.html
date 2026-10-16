@@ -1,0 +1,3242 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/dsight/">
+      
+      
+        <link rel="prev" href="../dcgm-4.7-runtime-support/">
+      
+      
+        <link rel="next" href="../dsight-data-flow/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>DSight Trace Explorer - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#dsight-offline-inference-trace-explorer" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              DSight Trace Explorer
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../installation/" class="md-tabs__link">
+          
+  
+  
+  Get Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Write a Recipe
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Run and Operate
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../observability/" class="md-tabs__link">
+          
+  
+  
+  Analyze
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../schema-reference/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Internals
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Get Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write a Recipe
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Write a Recipe
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recipe Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../topology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topology and Placement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../frontends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Frontends and Dynamo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../smg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Shepherd Model Gateway
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../llm-d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    llm-d Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5" id="__nav_3_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runtime-env/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Paths, Mounts, and Environment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_7" id="__nav_3_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Services
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_10" id="__nav_3_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workloads
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Workloads
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sidecars/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native Sidecars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tilert/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TileRT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tokenspeed/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TokenSpeed
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../shadow-engine-recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Shadow Engine Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-weight-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Fast Engine Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../miles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miles RL Post-Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run and Operate
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Run and Operate
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Analyze
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Analyze
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability and Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../perf-analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-run Performance Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_4" id="__nav_5_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Power
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Power
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5_5" id="__nav_5_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    DSight
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DSight Trace Explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#agent-skills" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent skills
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#generate-on-a-cluster-login-node" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generate on a cluster login node
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inputs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#using-the-timeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Using the timeline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timing-definitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timing definitions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#session-zoom-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session zoom example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agent-cli-and-python-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent, CLI and Python access
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine-extension-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Engine extension boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#development-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Development checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight-data-flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Flow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight-log-metrics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Log Metrics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dsight-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Internals
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Internals
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#agent-skills" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent skills
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#generate-on-a-cluster-login-node" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generate on a cluster login node
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inputs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#using-the-timeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Using the timeline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timing-definitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timing definitions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#session-zoom-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session zoom example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agent-cli-and-python-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent, CLI and Python access
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine-extension-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Engine extension boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#development-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Development checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/dsight.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="dsight-offline-inference-trace-explorer">DSight: offline inference trace explorer<a class="headerlink" href="#dsight-offline-inference-trace-explorer" title="Permanent link">&para;</a></h1>
+<p>DSight aligns client requests, Dynamo lifecycle spans, worker metrics, hardware
+samples, and existing Nsight exports on one timeline.</p>
+<p>See the <a href="../dsight-data-flow/">data-flow guide</a> for diagrams connecting each source
+file to its UI view, request-identity joins, and the limits of each source.
+The <a href="../dsight-storage/">storage and query reference</a> documents the SQLite schema,
+indexed query semantics, static detail format and browser API.</p>
+<h2 id="agent-skills">Agent skills<a class="headerlink" href="#agent-skills" title="Permanent link">&para;</a></h2>
+<p>Before using DSight, agents must read this guide and load the applicable skills
+below by reading their <code>SKILL.md</code> files. This applies when building or querying
+reports, analyzing existing results, preparing dashboard views, or changing
+DSight code. The skills are maintained in this repository; no global installation
+is required.</p>
+<table>
+<thead>
+<tr>
+<th>Skill</th>
+<th>When to load it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/NVIDIA/srt-slurm/blob/main/.agents/skills/dsight-query/SKILL.md">dsight-query</a></td>
+<td>Query an existing report, inspect source coverage, compare runs, or gather evidence for a dashboard view. Prefer the normalized SQLite cache through the read-only CLI, Python or MCP interface.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/NVIDIA/srt-slurm/blob/main/src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md">slurm-job-sizing</a></td>
+<td>Prepare or submit Slurm jobs: prefer short, parallel hypothesis tests for debugging; size full runs from history and phase timing distributions while preserving non-preemptible resources.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="generate-on-a-cluster-login-node">Generate on a cluster login node<a class="headerlink" href="#generate-on-a-cluster-login-node" title="Permanent link">&para;</a></h2>
+<p>Run these commands manually on the login node after the run's artifacts have
+been preserved. Use a Bash shell with <code>uv</code> on <code>PATH</code>, Python 3.10 or newer, and
+a writable srt-slurm checkout that includes DSight. The run directory must be
+readable and the report's parent directory writable from that node.</p>
+<p>Replace the quoted placeholders with your paths. Absolute paths work from any
+checkout; relative paths resolve from your current working directory.</p>
+<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span><span class="s2">"&lt;path_to_srt_slurm_checkout&gt;"</span>
+uv<span class="w"> </span>run<span class="w"> </span>--no-dev<span class="w"> </span>srtctl<span class="w"> </span>dsight<span class="w"> </span>build<span class="w"> </span><span class="s2">"&lt;path_to_run_directory&gt;"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;"</span>
+
+<span class="c1"># Skip OTel processing, even when trace files exist:</span>
+uv<span class="w"> </span>run<span class="w"> </span>--no-dev<span class="w"> </span>srtctl<span class="w"> </span>dsight<span class="w"> </span>build<span class="w"> </span><span class="s2">"&lt;path_to_run_directory&gt;"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;"</span><span class="w"> </span>--no-otel
+
+<span class="c1"># Optional existing profiles and a known timezone for iteration/batch logs:</span>
+uv<span class="w"> </span>run<span class="w"> </span>--no-dev<span class="w"> </span>srtctl<span class="w"> </span>dsight<span class="w"> </span>build<span class="w"> </span><span class="s2">"&lt;path_to_run_directory&gt;"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--nsys-sqlite<span class="w"> </span><span class="s2">"&lt;path_to_nsys_sqlite_exports&gt;"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--iteration-timezone<span class="w"> </span><span class="s2">"&lt;iteration_log_timezone&gt;"</span>
+</code></pre></div>
+<p><code>uv run --no-dev</code> prepares the checkout's Python environment without development
+dependencies; its first invocation needs access to the required packages or a
+populated package cache. Choose the timezone recorded by the iteration logs,
+using an IANA timezone name; it is independent of the login node's timezone.
+The optional flags can be combined with <code>--no-otel</code>.</p>
+<p>Generation is CPU-only and requires no Slurm allocation, running deployment,
+GPU, container, or browser. It can also run on another machine with access to
+the same artifacts. Large captures can require substantial CPU, memory, and
+filesystem reads; follow your site's login-node resource limits and use a CPU
+job when needed.</p>
+<p>Publish the complete report directory on a static HTTP host and open <code>index.html</code>.
+For local viewing, serve it with Python (no database service is needed):</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>http.server<span class="w"> </span><span class="m">8000</span><span class="w"> </span>--bind<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--directory<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;"</span>
+<span class="c1"># Open http://127.0.0.1:8000/index.html</span>
+</code></pre></div>
+<p>The HTML embeds the request catalog and UI assets. Metric samples and Nsight
+detail load from adjacent compressed files as needed. This works without internet
+access; a modern browser with <code>DecompressionStream</code> support is required. Copying
+only the HTML omits its detail files. Direct <code>file://</code> viewing requires the larger
+embedded format: add <code>--single-file</code> to the build command.</p>
+<p>Generation is <strong>CLI-only</strong>: DSight has no submission,
+benchmark, cleanup, or upload hook. It does not enable profiling, change recipes,
+launch GPU jobs, or export <code>.nsys-rep</code> files. <code>dashboard</code> is an alias for <code>dsight</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Output</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>index.html</code></td>
+<td>UI assets, request/lifecycle catalog, source metadata and detail indexes</td>
+</tr>
+<tr>
+<td><code>detail/*.json.gz</code></td>
+<td>Content-addressed exact metric/NVTX/CPU shards, fetched on demand</td>
+</tr>
+<tr>
+<td><code>trace-data.sqlite</code></td>
+<td>Indexed normalized evidence for local CLI and MCP queries; not downloaded by the browser</td>
+</tr>
+<tr>
+<td><code>manifest.json</code></td>
+<td>Schema, counts, warnings, source inventory and output hashes</td>
+</tr>
+</tbody>
+</table>
+<p><code>--single-file</code> instead writes the legacy embedded <code>index.html</code> and
+<code>trace-data.json.gz</code>. Both formats retain the same normalized evidence. Directory
+queries prefer SQLite; explicit legacy JSON/gzip paths remain supported.</p>
+<p>A rebuild stages the complete output before replacing an earlier DSight
+directory. Import/render failures preserve the previous generation. Existing
+directories that are not DSight outputs are rejected. Use preserved inputs:
+the importer checks registered source files for changes during generation.
+The HTML and all detail files form one generation. Publish them together. Detail
+URLs contain content hashes; a missing file reports an error rather than an empty
+measurement. HTTPS/localhost viewers also verify decoded content hashes. Existing
+open pages may need a reload after their directory is rebuilt.</p>
+<h2 id="inputs">Inputs<a class="headerlink" href="#inputs" title="Permanent link">&para;</a></h2>
+<p>Pass a run directory containing <code>logs/</code>, or the log directory itself. Multiple
+client exports require <code>--client "&lt;path_to_client_export&gt;"</code>; DSight does not silently
+mix concurrency sweeps or duplicated exports.</p>
+<p>Each source is optional. Views and controls appear only for usable observations:
+no OTel means no request breakdown; no matching NVTX/CPU samples means no Nsight
+section; no metrics means no metric selector.
+Missing CPU samples never become an empty hotspot table. An empty time selection
+keeps available controls and reports that no observations overlap the window.</p>
+<p>Client-only, metrics-only, Nsight-only, OTel-only and timestamped-batch-only
+captures are supported. Without a client export (or with an empty export), the
+window is the union of recorded source timestamps. DSight does not synthesize
+client requests or TTFT. Unjoined server spans remain available through
+<code>queryServerSpans()</code> and evidence export, without separate timeline rows.
+OTel-only captures retain source coverage and query access; their timeline shows
+an empty-state message. A nonempty client export
+whose rows all fail the requested phase filter remains an error. Missing explicitly
+supplied paths, malformed inputs and captures without a positive recorded time
+range remain errors, rather than silently appearing complete.</p>
+<p>OTel is imported automatically when available. Use <code>--no-otel</code>
+to skip reading OTel files entirely. A request without supported, correlated
+OTel activity has no lifecycle expansion button or stage rows.
+This also applies to untraced requests in a partially traced run.
+Client request bars and their measured TTFT remain available, along with any
+independent worker logs, metrics, and Nsight exports. Empty request paths and
+identity bridges are omitted.</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Discovery / selection</th>
+<th>Contribution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AgentX / AIPerf</td>
+<td><code>profile_export.jsonl</code>, <code>agentic/*/[aiperf_artifacts/]profile_export.jsonl</code>, <code>artifacts/*/profile_export.jsonl</code></td>
+<td>Client timing, tokens and recorded session/agent identities</td>
+</tr>
+<tr>
+<td>Native AgentPerf</td>
+<td><code>requests.jsonl</code>, <code>agentperf/requests.jsonl</code>, <code>agentperf/*/requests.jsonl</code></td>
+<td>HTTP identity; companion phase-analysis JSONL supplies fully decoded timing where present</td>
+</tr>
+<tr>
+<td>AgentPerf manifest</td>
+<td><code>phase_manifest.jsonl</code> beside the export</td>
+<td>Measured request starts in <code>[settling_end, actual_phase_end)</code></td>
+</tr>
+<tr>
+<td>Frontend logs</td>
+<td><code>*_frontend_*.out</code></td>
+<td>Explicit client header → Dynamo UUID bridge from text or original JSON records</td>
+</tr>
+<tr>
+<td>Dynamo OTel</td>
+<td><code>otel/traces.jsonl</code> or <code>otel/*/traces.jsonl</code>, OTLP JSON resource/scope spans</td>
+<td>Original timestamps, parents, trace/request/process identities and route attributes</td>
+</tr>
+<tr>
+<td>Worker logs</td>
+<td><code>*_{prefill,decode,agg}_w*[_e&lt;k&gt;].out</code></td>
+<td>Engine ID maps when recorded, Dynamo request/process bindings, iterations or periodic batch snapshots; log-derived metrics and scheduler settings</td>
+</tr>
+<tr>
+<td>Tachometer</td>
+<td><code>tachometer/local</code>, or <code>--metrics &lt;capture-leaf-or-file&gt;</code></td>
+<td>All captured metric families, with source labels and samples within the client trace interval</td>
+</tr>
+<tr>
+<td>Nsight SQLite</td>
+<td><code>--nsys-sqlite &lt;directory-or-file&gt;</code></td>
+<td>Selected NVTX ranges and available frontend CPU samples, aligned by session UTC anchor</td>
+</tr>
+</tbody>
+</table>
+<p><code>--phase profiling</code> excludes explicit AIPerf warmup rows; <code>--phase all</code> includes
+them. Missing phase metadata is reported as unclassified. AgentPerf's manifest
+selects measured requests; without it, the measurement window is not inferred.
+Phase-analysis records join the request log on phase, request ID, user,
+conversation and conversation index. Timing and HTTP-identity references remain
+separate. Missing analysis records are labeled as liveness-log timing. AgentPerf
+streams explicitly marked <code>has_output=false</code> are unsuccessful even when HTTP
+<code>success=true</code>. If a phase-analysis record omits cache usage, the exactly matched
+request-log value is retained with its own source reference; an explicit null
+remains unknown. AgentPerf sessions group phase/user/conversation; agent nesting
+is not inferred. Prompts,
+response text and SSE payloads are excluded from the normalized dataset.</p>
+<p>Worker IDs can span multiple hosts, as in a two-node SGLang decode worker.
+The worker catalog retains all observed hosts; log samples, process bindings,
+and configuration references remain scoped to their recorded host and source.</p>
+<p>For metrics, <code>final.parquet</code> supersedes compacted Parquet shards. An Arrow tail
+is also read, with identical samples deduplicated within complete series
+identities. The upload mirror is excluded. Absolute <code>timestamp_ns</code> is required
+for alignment. The catalog includes every captured family, including families
+with no samples in the client trace interval. Presentation categories reuse the
+Tachometer taxonomy: <strong>Frontend, Router, Workers, GPU, Host</strong>, with subgroups
+such as engine scheduling, KV cache, and host memory. Unknown families remain
+selectable with their raw names and stored values.</p>
+<p>Worker logs can also supply metrics without Tachometer. The shared
+<code>LogMetricGenerator</code> interface normalizes these into the same series/catalog used
+by the metric UI. The Dynamo–TokenSpeed implementation supplies active decode
+batch size, configured batch limit, active KV pages and usable page pool size.
+The SGLang implementation supplies batch snapshots and per-request cache/timing
+events. Default second-resolution logs, optional fractional timestamps and rank
+prefixes, and batches with or without counters are supported. Batch and request
+events logged at the same timestamp remain separate in raw queries;
+the chart displays their median with an event-count label.
+See <a href="../dsight-log-metrics/">metric sources, schema and log generators</a> for exact
+names, units, evidence and extension rules. Local log timestamps require
+<code>--iteration-timezone</code>; missing configuration stays unknown.</p>
+<p>Known counters display captured cumulative values. Histogram lines show recorded
+bucket observation counts, with bucket bounds retained in their identities;
+attached histogram sum/count fields do not manufacture additional series.
+No rate or quantile is inferred. Conflicting values at an identical source and
+timestamp remain in the query evidence and are marked as chart gaps.</p>
+<p>Nsight worker filenames follow
+<code>&lt;host&gt;_&lt;role&gt;_w&lt;index&gt;_profile_rank&lt;rank&gt;.sqlite</code> for MPI ranks and
+<code>&lt;host&gt;_&lt;role&gt;_w&lt;index&gt;_profile_gpu&lt;devices&gt;.sqlite</code> for per-process workers
+(including TokenSpeed, SGLang and vLLM captures); the role is <code>prefill</code>, <code>decode</code>, or <code>agg</code> as in the worker logs,
+and a failover shadow engine's <code>_e&lt;k&gt;</code> suffix is retained as the report's
+engine. Frontend names follow <code>&lt;host&gt;_frontend_&lt;index&gt;.sqlite</code>. A <code>_window&lt;n&gt;</code>
+suffix is accepted. Unknown
+names remain unmapped. Imported NVTX categories are the frontend
+<code>preprocess.*</code>/<code>route.*</code>/<code>transport.*</code> ranges, TRT-LLM executor and scheduling
+ranges, SGLang <code>scheduler.*</code> stages, vLLM per-step <code>schedule: *</code> and
+<code>gpu_model_runner: *</code> stages, and TokenSpeed forward/graph-replay,
+input preparation, sampling, cache and commit annotations. OS PID/TID, GPU device
+sets and distributed ranks stay separate; a GPU-set filename does not imply rank 0.
+The default
+NVTX limit is 250,000 events per report; <code>--max-profile-events</code> changes it.
+Truncation and the imported time range are explicit. Operator ranges and CUDA kernels remain in the source
+report; a CUDA table's presence is reported separately from imported data.</p>
+<h2 id="using-the-timeline">Using the timeline<a class="headerlink" href="#using-the-timeline" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Drag in the overview <strong>or Client sessions &amp; agents</strong>, or enter From/To.
+  All tracks follow the same time range.</li>
+<li>In <strong>Request &amp; execution path</strong>, click <strong>Fit Session</strong> to zoom out to every
+  recorded request in the selected request's session, including its main agent
+  and subagents. The range uses the session's full recorded start/end, independent
+  of the current time window or search filter, with the same padding as
+  <strong>Fit request</strong>. Selection, expansions and pinned metrics are preserved;
+  <strong>Previous time range</strong> (↶) returns to the previous zoom. This works without
+  OTel. It covers the imported requests, not unrecorded session activity.</li>
+<li>Expand session → agent → request. An expanded agent shows every request
+  matching the current time range and search, in chronological order.
+  For requests with OTel activity, <strong>Expand
+  lifecycle</strong> reveals <strong>Progress milestones</strong>: cumulative rows ending at
+  chronological recorded boundaries. The breakdown ends at <strong>Client complete</strong>.
+  <strong>Fit TTFT</strong> selects the client TTFT window and expands the lifecycle only when
+  available.</li>
+<li>Click a milestone for boundaries and source references. Click <strong>Inspect Nsight</strong>
+  on a recorded request-path card to open that worker's report directly, keeping
+  the shared time range. Cards without a usable report are disabled and say
+  <strong>No Nsight report</strong>. The metric selector at the top right searches all captured
+  families by name and title, grouped by component and subgroup. The selected
+  metric appears as one chart across its sources, using the same offline uPlot
+  library as the Tachometer dashboard. Click a legend entry to hide or show its line. Every
+  recorded series remains available in the legend; <strong>Labels</strong> exposes its full
+  identity. Hover values include the actual sample timestamp. Chart dragging
+  changes the shared time range; saved views preserve line visibility per metric.</li>
+<li>Click <strong>Pin</strong> beside the metric selector to keep that chart in the Metrics
+  section while browsing other metrics. Pinned charts stack in the order you pin
+  them, followed by the current unpinned metric. Selecting an already pinned
+  metric uses its existing panel. Use <strong>Move up</strong> (↑) and <strong>Move down</strong> (↓) on a
+  pinned card to reorder it; the controls are disabled at the first and last
+  positions. Saved views and selection exports preserve your chosen order.
+  <strong>Unpin</strong> on a card or beside the selector
+  removes its pin; the selected metric stays visible. Each chart keeps its own
+  legend choices, and all charts follow the shared time range.</li>
+<li><strong>Inspect phase in Nsight</strong> follows the recorded worker. Select a rank or
+  compare frontend + request workers. Router DP rank is retained as evidence;
+  it is not assumed to map to a global process rank.</li>
+<li><strong>Request &amp; execution path</strong> contains <strong>Request</strong>, <strong>Nsight</strong>, and <strong>Agent API</strong>
+  tabs. Request and Nsight appear only when their data is available; Agent API
+  remains available for queries and exports. Saved links targeting a removed or
+  unavailable tab open the first available tab.</li>
+<li><strong>Agent API</strong> exposes recorded batch observations through <code>queryIterations()</code>.
+  TokenSpeed periodic snapshots retain running/queued requests and cache pages;
+  absent iteration counters or device timers remain unknown. Supply the log's
+  timezone to align timestamps that have no offset.</li>
+<li><strong>Copy view link</strong> saves range, request, expansions, pinned metrics and line
+  visibility in the URL fragment. <strong>Export selection</strong> saves evidence JSON with
+  the same view state, including bounded pages of independent server activity
+  and batch observations with total counts for pagination.</li>
+</ul>
+<p>Sessions are paginated; details expand on demand. A broad Nsight selection shows
+512 precomputed density bins per report, labeled with their time resolution.
+These count overlapping intervals and do not represent CPU utilization. When
+the candidate shards contain at most 20,000 rows, the timeline loads exact ranges
+and available CPU samples. Larger selections retain the overview until zoomed in;
+exact paginated queries remain available at any range.</p>
+<p>Browser API v3.1 supports <code>await traceExplorer.queryNsys(...)</code>,
+<code>await traceExplorer.queryCpu(...)</code> and <code>await traceExplorer.inspectNsys(...)</code>.
+Use <code>await traceExplorer.whenDetailsReady()</code> after changing a view to wait for its
+Nsight tracks, and <code>whenMetricsReady()</code> for charts. Legacy embedded reports also
+accept these awaited calls. <code>exportSelection()</code> awaits exact evidence queries.</p>
+<p>Static shards contain at most 8,192 rows or approximately 512 KiB of decoded JSON.
+Time bounds include intervals beginning before the viewport, so long crossing
+ranges are retained. Metric loads include neighboring samples and all records at
+the latest preceding setting timestamp. The shared LRU cache budgets 32 MiB of
+decoded JSON bytes; this is a cache budget, not a total JavaScript heap limit.
+Pan/zoom cancels stale view fetches. A requested wide exact query can still read
+many shards, especially with a name filter; use local SQLite for broad analysis.</p>
+<p>SQLite keeps the existing normalized values, source references, relative-second
+timestamps, clock notes and partial-import warnings. It indexes NVTX ranges by
+profile, duration class and start time, and metric/CPU samples by series/profile
+and time. Requests and lifecycle metadata still load as a catalog; ingestion
+still normalizes a run in memory. Neither delivery format removes the importer's
+explicit event limit or upgrades incomplete source coverage.</p>
+<h2 id="timing-definitions">Timing definitions<a class="headerlink" href="#timing-definitions" title="Permanent link">&para;</a></h2>
+<p>Cumulative blocks measure <strong>elapsed time between milestones</strong>, not the inclusive
+duration of a similarly named span. For example, “First frontend SSE ready” can
+cover waiting after decode response-stream creation. It is not automatically
+queue time, KV transfer, or first-token compute.</p>
+<table>
+<thead>
+<tr>
+<th>Measurement</th>
+<th>Source</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TTFT / output reception</td>
+<td>AIPerf or AgentPerf</td>
+<td>Client start → first-token boundary → client end</td>
+</tr>
+<tr>
+<td>Preprocessing</td>
+<td><code>request.preprocessing</code> OTel</td>
+<td>Frontend preparation/tokenization</td>
+</tr>
+<tr>
+<td>Worker selection</td>
+<td><code>kv_router.select_worker</code> OTel</td>
+<td>Phase association explicitly marked as inferred from the next same-parent route</td>
+</tr>
+<tr>
+<td>Ingress / transport setup</td>
+<td><code>worker.admission</code> OTel</td>
+<td>Envelope decoding and response transport setup; not engine scheduler admission</td>
+</tr>
+<tr>
+<td>Backend stream creation</td>
+<td><code>request.dispatch</code> OTel</td>
+<td>Runtime <code>segment.generate</code>; the Python path creates a response stream without proving engine submission or first-token completion</td>
+</tr>
+<tr>
+<td>Worker operation</td>
+<td><code>worker.operation.*</code> OTel</td>
+<td>Inclusive parent of dispatch and response pumping, including backend waits</td>
+</tr>
+<tr>
+<td>Response pump</td>
+<td><code>response.streaming.&lt;role&gt;</code> OTel</td>
+<td>Begins before awaiting the first item; includes initial wait, generation and publishing</td>
+</tr>
+<tr>
+<td>Frontend response stream</td>
+<td><code>response.streaming</code> OTel</td>
+<td>First final SSE event available → completion/drop; concurrent with worker generation</td>
+</tr>
+<tr>
+<td>Worker binding</td>
+<td>Dynamo structured worker logs</td>
+<td>Recorded request UUID, host, role and process epoch; distinct from engine-local IDs</td>
+</tr>
+<tr>
+<td>Engine bridge</td>
+<td><code>Engine ID map</code> log</td>
+<td>UUID → worker/process-local client ID → disaggregated ID; post-submission observation</td>
+</tr>
+<tr>
+<td>Iteration context</td>
+<td>TRT-LLM log</td>
+<td>Shared batches, host-loop time, delayed device time; one-second timestamps</td>
+</tr>
+<tr>
+<td>Batch snapshot</td>
+<td>TokenSpeed log</td>
+<td>Periodic scheduler state, millisecond timestamp precision and attention TP rank; not a forward iteration</td>
+</tr>
+<tr>
+<td>NVTX / CPU</td>
+<td>Nsight SQLite</td>
+<td>Shared process/rank activity; overlap does not prove request ownership</td>
+</tr>
+</tbody>
+</table>
+<p>Definitions follow the lifecycle instrumentation introduced in
+<a href="https://github.com/ai-dynamo/dynamo/pull/14101">Dynamo #14101</a>. Multiple attempts,
+repeated milestones, non-monotonic clocks, or milestones outside client TTFT
+suppress the derived server partition; client timing and raw spans remain.
+Chronological ordering accommodates concurrent prefill/decode setup; it does not
+assert causality. Missing first-token timing leaves an unsplit neutral request bar,
+with raw server activity still available. Conflicting worker bindings remain in
+evidence and are excluded from definite paths. A unique recorded host/role can
+link activity to a worker when an explicit process binding is unavailable; this
+weaker basis is labeled. Collector directory names are never worker identities.
+No cross-host clock correction is invented. Engine queue/compute/KV timing needs
+additional recorded per-request evidence.</p>
+<p>Iteration counters and previous-device timers can lag the forward pass under
+overlap scheduling. Original counters are preserved; no universal shift or
+per-request assignment of shared batch time is applied.</p>
+<h2 id="session-zoom-example">Session zoom example<a class="headerlink" href="#session-zoom-example" title="Permanent link">&para;</a></h2>
+<p>Build the small client-only capture in <a href="https://github.com/NVIDIA/srt-slurm/blob/main/examples/dsight/fit-session">examples/dsight/fit-session</a>:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--no-dev<span class="w"> </span>srtctl<span class="w"> </span>dsight<span class="w"> </span>build<span class="w"> </span>examples/dsight/fit-session<span class="w"> </span>--output<span class="w"> </span>/tmp/dsight-fit-session
+</code></pre></div>
+<p>Open <code>/tmp/dsight-fit-session/index.html</code>, select <code>child-turn</code>, then click
+<strong>Fit request</strong> followed by <strong>Fit Session</strong>. The latter includes <code>parent-turn</code>
+and <code>sibling-turn</code>, from 1 to 9 seconds plus padding, while keeping <code>child-turn</code>
+selected. The unrelated sessions at either end are outside the fitted range.</p>
+<h2 id="agent-cli-and-python-access">Agent, CLI and Python access<a class="headerlink" href="#agent-cli-and-python-access" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--no-dev<span class="w"> </span>srtctl<span class="w"> </span>dsight<span class="w"> </span>query<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;"</span><span class="w"> </span>summary
+uv<span class="w"> </span>run<span class="w"> </span>--no-dev<span class="w"> </span>srtctl<span class="w"> </span>dsight<span class="w"> </span>query<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;"</span><span class="w"> </span>requests<span class="w"> </span>--from<span class="w"> </span><span class="m">29</span><span class="w"> </span>--to<span class="w"> </span><span class="m">34</span><span class="w"> </span>--worker<span class="w"> </span>decode-0<span class="w"> </span>--limit<span class="w"> </span><span class="m">20</span>
+uv<span class="w"> </span>run<span class="w"> </span>--no-dev<span class="w"> </span>srtctl<span class="w"> </span>dsight<span class="w"> </span>query<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;"</span><span class="w"> </span>lifecycle<span class="w"> </span>--request<span class="w"> </span><span class="s2">"&lt;client_request_id&gt;"</span>
+uv<span class="w"> </span>run<span class="w"> </span>--no-dev<span class="w"> </span>srtctl<span class="w"> </span>dsight<span class="w"> </span>query<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;"</span><span class="w"> </span>nsys<span class="w"> </span>--from<span class="w"> </span><span class="m">32</span><span class="w"> </span>--to<span class="w"> </span><span class="m">33</span><span class="w"> </span>--worker<span class="w"> </span>decode-0<span class="w"> </span>--rank<span class="w"> </span><span class="m">0</span>
+uv<span class="w"> </span>run<span class="w"> </span>--no-dev<span class="w"> </span>srtctl<span class="w"> </span>dsight<span class="w"> </span>query<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;"</span><span class="w"> </span>iterations<span class="w"> </span>--from<span class="w"> </span><span class="m">32</span><span class="w"> </span>--to<span class="w"> </span><span class="m">33</span><span class="w"> </span>--worker<span class="w"> </span>decode-0<span class="w"> </span>--rank<span class="w"> </span><span class="m">0</span>
+</code></pre></div>
+<p>Times are seconds relative to the exact string <code>meta.origin_ns</code>. List queries
+return total, offset, limit, range and items. Limits are at most 1,000; metric
+<code>--points</code> includes up to 1,000 points per series with a truncation flag. Kinds:
+<code>summary</code>, <code>requests</code>, <code>request</code>, <code>lifecycle</code>, <code>metrics</code>, <code>profiles</code>, <code>nsys</code>,
+<code>cpu</code>, <code>iterations</code>, <code>server_spans</code>, <code>sources</code>. Rank filters follow the recorded
+<code>rank_kind</code>: TRT-LLM global rank (with local rank retained separately), TokenSpeed
+attention TP rank, or the Nsight report's recorded distributed rank. Prefer
+<code>--profile</code> for captures that only identify a GPU set.</p>
+<p>Lifecycle queries return <code>available: false</code> and empty <code>stages</code>, <code>activities</code>,
+<code>milestones</code>, and <code>rows</code> when no supported OTel activity is joined. No fallback
+breakdown is synthesized from client timing. The browser's <code>getLifecycle()</code>
+returns the same model; <code>expandRequest()</code> keeps these requests unexpanded.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">srtctl.dsight.query</span><span class="w"> </span><span class="kn">import</span> <span class="n">TraceDataset</span>
+
+<span class="n">trace</span> <span class="o">=</span> <span class="n">TraceDataset</span><span class="o">.</span><span class="n">from_path</span><span class="p">(</span><span class="s2">"&lt;path_to_report_directory&gt;"</span><span class="p">)</span>
+<span class="n">rows</span> <span class="o">=</span> <span class="n">trace</span><span class="o">.</span><span class="n">query</span><span class="p">(</span><span class="s2">"requests"</span><span class="p">,</span> <span class="n">start</span><span class="o">=</span><span class="mi">29</span><span class="p">,</span> <span class="n">end</span><span class="o">=</span><span class="mi">34</span><span class="p">,</span> <span class="n">min_ttft_ms</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">limit</span><span class="o">=</span><span class="mi">20</span><span class="p">)</span>
+<span class="n">detail</span> <span class="o">=</span> <span class="n">trace</span><span class="o">.</span><span class="n">query</span><span class="p">(</span><span class="s2">"lifecycle"</span><span class="p">,</span> <span class="n">request_id</span><span class="o">=</span><span class="n">rows</span><span class="p">[</span><span class="s2">"items"</span><span class="p">][</span><span class="mi">0</span><span class="p">][</span><span class="s2">"id"</span><span class="p">])</span>
+</code></pre></div>
+<p><code>srtctl-mcp</code> exposes the read-only <strong><code>query_trace</code></strong> tool with the same filters
+and pagination. Its dataset path is local to the MCP server. It never builds
+a dashboard or starts a job. The browser uses the same normalized lifecycle
+model and controls the visible selection:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">x</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">window</span><span class="p">.</span><span class="nx">traceExplorer</span><span class="p">;</span>
+<span class="nx">x</span><span class="p">.</span><span class="nx">selectRange</span><span class="p">(</span><span class="mf">29</span><span class="p">,</span><span class="w"> </span><span class="mf">34</span><span class="p">);</span>
+<span class="nx">x</span><span class="p">.</span><span class="nx">selectRequest</span><span class="p">(</span><span class="s2">"&lt;client-request-id&gt;"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="nx">expand</span><span class="o">:</span><span class="w"> </span><span class="kc">true</span><span class="p">});</span>
+<span class="nx">x</span><span class="p">.</span><span class="nx">getLifecycle</span><span class="p">(</span><span class="s2">"&lt;client-request-id&gt;"</span><span class="p">);</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">x</span><span class="p">.</span><span class="nx">inspectNsys</span><span class="p">({</span><span class="nx">worker</span><span class="o">:</span><span class="w"> </span><span class="s2">"decode-0"</span><span class="p">,</span><span class="w"> </span><span class="nx">rank</span><span class="o">:</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="kr">from</span><span class="o">:</span><span class="w"> </span><span class="mf">32</span><span class="p">,</span><span class="w"> </span><span class="nx">to</span><span class="o">:</span><span class="w"> </span><span class="mf">33</span><span class="p">});</span>
+<span class="nx">x</span><span class="p">.</span><span class="nx">listMetricFamilies</span><span class="p">();</span><span class="w"> </span><span class="c1">// Synchronous catalog, including coverage and categories.</span>
+<span class="nx">x</span><span class="p">.</span><span class="nx">listMetricSeries</span><span class="p">();</span><span class="w"> </span><span class="c1">// Synchronous source identities without point decoding.</span>
+<span class="nx">x</span><span class="p">.</span><span class="nx">setState</span><span class="p">({</span><span class="nx">pinnedMetrics</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"trtllm_num_requests_running"</span><span class="p">]});</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">x</span><span class="p">.</span><span class="nx">queryMetrics</span><span class="p">({</span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="s2">"trtllm_num_requests_running"</span><span class="p">,</span><span class="w"> </span><span class="nx">worker</span><span class="o">:</span><span class="w"> </span><span class="s2">"decode-0"</span><span class="p">});</span>
+<span class="nx">x</span><span class="p">.</span><span class="nx">queryIterations</span><span class="p">({</span><span class="nx">worker</span><span class="o">:</span><span class="w"> </span><span class="s2">"decode-0"</span><span class="p">,</span><span class="w"> </span><span class="nx">rank</span><span class="o">:</span><span class="w"> </span><span class="mf">0</span><span class="p">});</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">x</span><span class="p">.</span><span class="nx">exportSelection</span><span class="p">();</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">x</span><span class="p">.</span><span class="nx">whenMetricsReady</span><span class="p">();</span><span class="w"> </span><span class="c1">// Wait for all visible metric charts after a UI action.</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">x</span><span class="p">.</span><span class="nx">whenDetailsReady</span><span class="p">();</span><span class="w"> </span><span class="c1">// Wait for the current Nsight detail rendering.</span>
+</code></pre></div>
+<p>Browser API version 3.1 makes <code>queryNsys()</code>, <code>inspectNsys()</code> and <code>queryCpu()</code>
+awaitable for progressive reports, alongside <code>queryMetrics()</code> and
+<code>exportSelection()</code>. Await these methods even when a family or window was
+previously viewed. Exports capture the selected view and range before loading
+samples, so changing the view during loading does not mix selections. Range,
+request, lifecycle, catalog and batch query methods remain synchronous.
+<code>pinnedMetrics</code> in <code>getState()</code> / <code>setState()</code> is an ordered array of metric family
+names. Restoring it removes duplicates and unknown names; an empty array clears
+all pins. State updates that omit it preserve the current pins.</p>
+<p>Agent workflow: inspect coverage → find slow requests in a bounded window →
+inspect lifecycle/source evidence → compare worker metrics and shared execution
+context → save a view for human review. Verify an optimization hypothesis
+against a specific source before claiming a cause.</p>
+<h2 id="engine-extension-boundary">Engine extension boundary<a class="headerlink" href="#engine-extension-boundary" title="Permanent link">&para;</a></h2>
+<p>The <a href="../dsight-data-flow/#what-the-shared-engine-interface-contributes">data-flow guide</a>
+maps each source through the shared readers to its UI view.</p>
+<p>The normalized <code>srtctl-trace/1</code> contract adds <code>worker_bindings</code>, independent
+<code>server_spans</code>, source capabilities, observation kinds/rank scopes, metric
+metadata and Nsight thread identities. Existing request, lifecycle, metric and
+profile collections retain their roles. CLI, Python, MCP and the browser consume
+the same records; <code>summary.capabilities</code> / <code>traceExplorer.describe().available</code>
+report usable sources. Empty collections are valid. Unknown values stay null.</p>
+<p>The implementation separates these responsibilities:</p>
+<ul>
+<li><code>sources.py</code> parses shared filenames and discovers OTel captures;
+  <code>identities.py</code> decodes common Dynamo identities from text and JSON logs.
+  Both are independent of the backend engine.</li>
+<li><code>engines.py</code> contains frozen <code>EngineDialect</code> descriptors for TRT-LLM, TokenSpeed,
+  SGLang and vLLM. Each can provide any subset of NVTX names/prefixes, a single-line
+  log decoder and exact metric definitions. Log decoders return typed identity, iteration and snapshot observations.
+  Decoding has no clocks, joins, filesystem access or UI state.</li>
+<li><code>log_metrics/base.py</code> defines the <code>LogMetricGenerator</code> abstract base class and immutable
+  metric definitions/events. <code>log_metrics/tokenspeed.py</code> implements its
+  Dynamo–TokenSpeed dialect, and <code>log_metrics/sglang.py</code> implements SGLang batch
+  snapshots and completed-request statistics. <code>log_metrics/reader.py</code> normalizes all registered
+  generators into the shared metric schema and joins limits in their exact scope.</li>
+<li>Source readers and <code>Importer</code> own UTC alignment, bounded imports, provenance,
+  identity joins and auditing. <code>window.py</code> derives a source-only time envelope;
+  <code>capabilities.py</code> determines which views have usable evidence.</li>
+<li>The viewer selects controls from capabilities and metric metadata. It has no
+  engine-name switches and never assumes every engine records TRT-LLM timers.</li>
+</ul>
+<p>To add another engine, first preserve representative source fixtures. Add its
+vocabulary to an <code>EngineDialect</code>, documenting metric units and observation/rank
+semantics. Reuse common identity and source readers. Add fixture tests for missing
+sources, unknown IDs and timing precision; use the optional-source browser matrix
+below. Introduce a new common observation kind only when existing kinds cannot
+represent the evidence. Do not infer IDs/ranks/timings to satisfy a shape.
+SGLang batch and request logs contribute metric observations, not GPU execution
+intervals or a client-request identity join. There is no vLLM-specific vocabulary.</p>
+<h2 id="development-checks">Development checks<a class="headerlink" href="#development-checks" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/test_dsight.py<span class="w"> </span>tests/test_dsight_agentperf.py<span class="w"> </span>tests/test_dsight_engines.py<span class="w"> </span>tests/test_dsight_log_metrics.py
+uv<span class="w"> </span>run<span class="w"> </span>ty<span class="w"> </span>check<span class="w"> </span>src/srtctl/dsight
+node<span class="w"> </span>--check<span class="w"> </span>src/srtctl/dsight/assets/explorer.js
+</code></pre></div>
+<p>The optional browser checks use an already-running isolated Chrome DevTools
+port, a generated traced artifact, and no GPU:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--with<span class="w"> </span>websockets<span class="w"> </span>python<span class="w"> </span>tests/dsight_browser_check.py<span class="w"> </span><span class="s2">"&lt;path_to_report_directory&gt;/index.html"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">9338</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"&lt;path_to_browser_check_output&gt;"</span><span class="w"> </span>--request<span class="w"> </span><span class="s2">"&lt;joined_client_request_id&gt;"</span>
+</code></pre></div>
+<p>Check missing, empty, unjoined, disabled, and mixed OTel inputs with synthetic
+source files (uses the same isolated Chrome port):</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--with<span class="w"> </span>websockets<span class="w"> </span>python<span class="w"> </span>tests/dsight_optional_otel_check.py<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">9338</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"&lt;path_to_browser_check_output&gt;"</span>
+</code></pre></div>
+<p>Check the complete optional-source matrix (TokenSpeed overlap, independently
+missing OTel/Nsight/metrics, and each source alone), restored view links including
+removed inspector tabs, and available API examples:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--with<span class="w"> </span>websockets<span class="w"> </span>python<span class="w"> </span>tests/dsight_sources_browser_check.py<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">9338</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"&lt;fresh_path_to_browser_check_output&gt;"</span>
+</code></pre></div>
+<p>Check session zoom, subagents, filtered views, range history and missing sources:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--with<span class="w"> </span>websockets<span class="w"> </span>python<span class="w"> </span>tests/dsight_fit_session_check.py<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">9338</span><span class="w"> </span>--out<span class="w"> </span><span class="s2">"&lt;fresh_path_to_browser_check_output&gt;"</span>
+</code></pre></div>
+<p>For very large SQLite sorts, set <code>SQLITE_TMPDIR</code> to a writable temporary directory
+with sufficient capacity. This affects temporary sorting only; exports are opened
+read-only. Plan memory/disk headroom for the normalized dataset and staged output.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
