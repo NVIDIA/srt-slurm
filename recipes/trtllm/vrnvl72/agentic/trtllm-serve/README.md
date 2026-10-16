@@ -13,8 +13,8 @@ attention or `dep<N>` for attention data parallelism with expert parallel size
 
 The conversion uses benchmark-recipe revision
 `b7810e6a799a04e60270443724c8d12daa35c6b7`, tekit revision
-`7890925ea10e613cd787c82a406a8fdc088eabc8`, and AIPerf revision
-`b7b16cf851885567988a643282266bce74e34437`. Use an image built from that tekit
+`7890925ea10e613cd787c82a406a8fdc088eabc8`, and the local AIPerf
+checkout at `/home/rihuo/agentx-harness`. Use an image built from that tekit
 revision: the recipes depend on its Rubin kernels, Python NIXL transceiver,
 MTP prefill support and Mooncake connector.
 
@@ -31,32 +31,34 @@ MTP prefill support and Mooncake connector.
 
 ## Cluster configuration
 
-Resolve the recipe aliases in your `srtslurm.yaml`, for example:
+The recipes use model path `/home/rihuo/GLM-5.3-NVFP4` and image
+`/home/_shared/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh`.
+Configure cluster settings in `srtslurm.yaml`, for example:
 
 ```yaml
-model_paths:
-  glm5.3: /models/GLM-5.3-NVFP4
-containers:
-  trtllm-glm5.3-rubin: /images/trtllm-7890925e.sqsh
 gpus_per_node: 4
 use_segment_sbatch_directive: true
 ```
 
 Set your account, partition, fabric interface, Hugging Face cache mounts and
 other cluster paths there. The original cluster-path placeholders are replaced
-by these aliases and node-local `/tmp/flashinfer-cache` and
-`/tmp/aiperf-mmap-cache` directories. The tokenizer uses the mounted `/model`.
-The source's `UCX_TLS=all`, `UCX_NET_DEVICES=all` and offline worker settings
-are retained. The whole allocation must fit within one NVL72 domain;
+by the explicit recipe paths and the mounted `/home/rihuo/aiperf_mmap` cache directory.
+The tokenizer uses the mounted `/model`. Worker environments match the shared
+RapLab settings: explicit UCX/MPI NIC lists, MPI transports, NCCL HCA mapping,
+UCX diagnostics and offline worker settings. The top-level pip environment
+uses PyPI and NVIDIA indexes with `PIP_CONFIG_FILE=/dev/null`. The whole allocation must fit within one NVL72 domain;
 `resources.het_jobs: false` preserves the source's single-segment allocation.
-
-The host setup locks HBM clocks to 4752 MHz and resets them on cleanup. This
-requires the site's passwordless `sudo` permission for `nvidia-smi`. The worker
-NUMA memory policy remains `numactl -m 0,1`.
 
 ```bash
 srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/trtllm-serve/glm5.3-disagg-3p1d-tp4-dep8-c560.yaml
 ```
+
+All recipes use `engine.numa_cpu_bind: true` and `engine.numa_memory_bind: local`
+to bind worker CPUs and memory to the GPU NUMA node through native `numactl`.
+Both roles enable iteration statistics at 40-iteration intervals. Native
+routing, `--tool_parser`, postprocessing workers and frontend performance
+settings remain in place; Dynamo installation, transport and `DYN_*` variables
+are omitted.
 
 ## Mooncake
 
@@ -80,6 +82,12 @@ Tekit writes `/logs/mooncake_donor_<index>.ready` after segment registration.
 The `readiness.file` probes wait for these markers before workers start;
 srt-slurm removes an old marker before launching each donor.
 
+Prefill workers and donors use the same Mooncake transport environment as
+the RapLab recipes: `MC_ENABLE_PARALLEL_REG_MR=0`, `MC_MS_AUTO_DISC=0`,
+`MC_ENABLE_DEST_DEVICE_AFFINITY=1` and the eight-NIC `MC_TE_FILTERS` allowlist.
+Donors retain their native per-node sizes and start before workers; their
+environment contains transport and logging settings.
+
 The master command uses this Mooncake build's `--rpc_port` spelling, random
 allocation, a 60-second lease TTL and a 0.02 eviction ratio. The RPC/metrics
 ports become srt-slurm's 8700/8702. Internal host/disk caches are distinct from
@@ -87,9 +95,10 @@ the Mooncake pool and staging buffers; budget all of them together.
 
 ## AgentX workload
 
-Each recipe's `benchmark.command` creates a temporary virtual environment,
-installs AIPerf at commit `b7b16cf851885567988a643282266bce74e34437`, and invokes
-`aiperf profile` directly against the runtime-discovered frontend. Installation
+Each recipe mounts `/home/rihuo/:/home/rihuo/`. Its `benchmark.command` creates
+a temporary virtual environment, installs AIPerf from
+`/home/rihuo/agentx-harness`, and invokes
+`aiperf profile` directly against the runtime-discovered frontend. Dependency installation
 and public trace loading require network access from the benchmark container.
 The temporary client environment is removed when the command exits.
 
@@ -99,6 +108,10 @@ streaming, server token counts, 10 warmup requests per lane, 1800-second warmup
 grace, 3600-second measurement and 300-second idle-gap cap. Conversation-aware
 Dynamo routing, unsafe override and GPU telemetry remain disabled. Session
 headers and AIPerf's `--failed-request-threshold 0.1` setting are retained.
+
+AIPerf receives every logical worker's `/prometheus/metrics` URL through
+`AIPERF_SERVER_METRICS_URLS` and exports JSON, CSV, Parquet and JSONL.
+`return_perf_metrics: true` remains enabled for the native workers.
 
 Forced MTP acceptance is retained from the GLM-5.2 source `acceptance_length.json`:
 depth 7 uses `3.91 - 1 = 2.91` accepted draft tokens and depth 5 uses

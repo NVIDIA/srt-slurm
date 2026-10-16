@@ -337,9 +337,9 @@ class TRTLLMBackend(Backend):
     # can still land cross-socket. When true, srtctl instead:
     #   1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own
     #      internal NUMA thread-pinning, which fights with the OS-level mask)
-    #   2. wraps the worker command (prefill/decode/agg) in `taskset -c
-    #      <cpu_list>`, applied *before* exec so every spawned thread
-    #      inherits the mask. The CPU list is discovered at runtime
+    #   2. wraps the worker command (prefill/decode/agg) in
+    #      `numactl --cpunodebind=<numa_node>`, applied *before* exec so every spawned thread
+    #      inherits the mask. The NUMA node is discovered at runtime
     #      (configs/numa_cpu_bind.sh) from the physical GPU this task owns,
     #      not a static SLURM_LOCALID table — a static table assumes
     #      SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two
@@ -558,10 +558,10 @@ class TRTLLMBackend(Backend):
         return [replace(p, trtllm_dist_init_port=allocator.next(TRTLLM_DIST_INIT_PORTS)) for p in processes]
 
     def _wrap_with_numa_cpu_bind(self, cmd: list[str], *, bind_memory: bool) -> list[str]:
-        """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which taskset-binds per task.
+        """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which numactl-binds per task.
 
         Applies to all worker modes (prefill/decode/agg) when numa_cpu_bind
-        is enabled. The CPU list depends on which physical GPU the task owns
+        is enabled. The NUMA node depends on which physical GPU the task owns
         (resolved from CUDA_VISIBLE_DEVICES and SLURM_LOCALID) and srun sets
         SLURM_LOCALID per-task at launch time — since the same argv is
         replicated across all ranks of the endpoint's srun (MPI-style

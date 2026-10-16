@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # Optional stricter NUMA CPU affinity for TRT-LLM workers (see
-# backends/trtllm.py numa_cpu_bind). Binds via `taskset -c` *before* exec so
+# backends/trtllm.py numa_cpu_bind). Binds via `numactl --cpunodebind` *before* exec so
 # secondary threads spawned by Python/UCX/MPI/TRT-LLM inherit the mask too —
 # TRT-LLM's own internal affinity logic only pins the leader thread, leaving
 # the rest to land cross-socket.
@@ -66,6 +66,6 @@ fi
 echo "numa_cpu_bind.sh: SLURM_LOCALID=${SLURM_LOCALID} gpu=${physical_gpu} (${sysfs_addr}) numa_node=${numa_node} bound to cpus=${cpu_list}" >&2
 if [[ "${bind_memory}" == true ]]; then
     echo "numa_cpu_bind.sh: memory_policy=bind:${numa_node}" >&2
-    exec numactl --membind="${numa_node}" taskset -c "${cpu_list}" "$@"
+    exec numactl --cpunodebind="${numa_node}" --membind="${numa_node}" -- "$@"
 fi
-exec taskset -c "${cpu_list}" "$@"
+exec numactl --cpunodebind="${numa_node}" -- "$@"

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # GLM-5.3 Vera Rubin pareto02; adapted from the GLM-5.2 BTK e2e_pareto recipe.
-# Dynamo 1.6.0.dev20261013 on tekit 7890925ea10e613cd787c82a406a8fdc088eabc8 and the pinned AgentX client.
+# Dynamo 1.6.0.dev20261013 on tekit 7890925ea10e613cd787c82a406a8fdc088eabc8 and the local AgentX client.
 # Resolve model/container aliases and cluster mounts in srtslurm.yaml; see README.md.
 # MTP forced acceptance follows acceptance_length.json: AL(depth) - 1.
 
@@ -275,13 +275,8 @@ roles:
       return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
-host_setup:
-  commands:
-  - sudo -n nvidia-smi -lmc 4752,4752
-  teardown:
-  - sudo -n nvidia-smi -rmc
-  nodes: workers
-  ignore_failure: false
+extra_mount:
+- /home/rihuo/:/home/rihuo/
 benchmark:
   type: custom
   placement:
@@ -293,7 +288,7 @@ benchmark:
     trap 'rm -rf "$aiperf_venv"' EXIT
     python3 -m venv "$aiperf_venv"
     "$aiperf_venv/bin/python" -m pip install \
-      "git+https://github.com/SemiAnalysisAI/aiperf.git@b7b16cf851885567988a643282266bce74e34437"
+      "/home/rihuo/agentx-harness"
     IFS=',' read -r -a worker_metrics_urls <<< "${AIPERF_SERVER_METRICS_URLS:?Worker metrics URLs were not provided}"
     ulimit -n 600000 2>/dev/null || ulimit -n 65536 2>/dev/null || true
     "$aiperf_venv/bin/aiperf" profile \

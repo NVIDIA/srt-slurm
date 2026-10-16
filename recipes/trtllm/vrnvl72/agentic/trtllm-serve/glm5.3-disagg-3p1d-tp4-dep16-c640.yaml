@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # GLM-5.3 Vera Rubin pareto06; adapted from the GLM-5.2 BTK e2e_pareto recipe.
-# Requires tekit 7890925ea10e613cd787c82a406a8fdc088eabc8 and the pinned AgentX client.
-# Resolve model/container aliases and cluster mounts in srtslurm.yaml; see README.md.
+# Requires tekit 7890925ea10e613cd787c82a406a8fdc088eabc8 and the local AgentX client.
+# Configure cluster mounts in srtslurm.yaml; see README.md.
 # MTP forced acceptance follows acceptance_length.json: AL(depth) - 1.
 
 schema: 2
@@ -11,13 +11,19 @@ name: glm5.3-disagg-3p1d-tp4-dep16-c640
 slurm:
   time_limit: 03:00:00
 model:
-  path: glm5.3
-  container: trtllm-glm5.3-rubin
+  path: /home/rihuo/GLM-5.3-NVFP4
+  container: /home/_shared/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh
   precision: nvfp4
 resources:
   gpu_type: vrnvl72
   gpus_per_node: 4
   het_jobs: false
+environment:
+  TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
+  TRTLLM_SERVER_DISABLE_GC: '1'
+  PIP_CONFIG_FILE: /dev/null
+  PIP_INDEX_URL: https://pypi.org/simple
+  PIP_EXTRA_INDEX_URL: https://pypi.nvidia.com
 frontend:
   type: trtllm_serve
   enable_multiple_frontends: false
@@ -35,16 +41,21 @@ frontend:
 engine:
   type: trtllm
   served_model_name: GLM-5.3
-  numa_memory_bind: true
+  numa_memory_bind: local
+  numa_cpu_bind: true
 roles:
   prefill:
     nodes: 3
     workers: 3
     gpus: 4
     env:
+      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1016
+      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1016
+      MC_ENABLE_PARALLEL_REG_MR: '0'
+      MC_MS_AUTO_DISC: '0'
+      MC_TE_FILTERS: mlx5_0,mlx5_1,mlx5_2,mlx5_5,mlx5_6,mlx5_7,mlx5_8,mlx5_11
+      MC_ENABLE_DEST_DEVICE_AFFINITY: '1'
       CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
-      FLASHINFER_CACHE_DIR: /tmp/flashinfer-cache
-      FLASHINFER_WORKSPACE_BASE: /tmp/flashinfer-cache
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HF_HUB_OFFLINE: '1'
       MIMALLOC_PURGE_DELAY: '0'
@@ -71,13 +82,21 @@ roles:
       TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
       TRTLLM_WORKER_DISABLE_GC: '1'
       UCX_CUDA_IPC_ENABLE_MNNVL: y
-      UCX_NET_DEVICES: all
+      UCX_LOG_LEVEL: info
+      UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
+      UCX_PROTO_INFO: y
+      MPI_UCX_TLS: rc,ud,sm,self
+      MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
+      NCCL_IB_HCA: =mlx5_0::0:0,mlx5_1::1:0,mlx5_2::2:0,mlx5_5::3:0,mlx5_6::0:1,mlx5_7::1:1,mlx5_8::2:1,mlx5_11::3:1
+      NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE: '0'
       UCX_RNDV_SCHEME: put_zcopy
       UCX_TLS: all
       PYTHONUNBUFFERED: '1'
       TLLM_EXECUTOR_BATCH_RESP_IN_AWAIT: '1'
       TLLM_EXECUTOR_USE_FILE_SOCKET: '1'
     args:
+      enable_iter_perf_stats: true
+      iter_perf_stats_interval: 40
       backend: pytorch
       cache_transceiver_config:
         backend: NIXL
@@ -92,6 +111,7 @@ roles:
       disable_overlap_scheduler: false
       enable_attention_dp: true
       kv_cache_config:
+        iteration_stats_interval: 40
         enable_block_reuse: true
         host_cache_size: 0
         dtype: nvfp4
@@ -132,10 +152,10 @@ roles:
     nodes: 4
     workers: 1
     gpus: 16
-    env: &id001
+    env:
+      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1016
+      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1016
       CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
-      FLASHINFER_CACHE_DIR: /tmp/flashinfer-cache
-      FLASHINFER_WORKSPACE_BASE: /tmp/flashinfer-cache
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HF_HUB_OFFLINE: '1'
       MIMALLOC_PURGE_DELAY: '0'
@@ -196,13 +216,21 @@ roles:
       TRTLLM_VERIFY_HEAD_FUSED_ACCEPT: '1'
       TRTLLM_WORKER_DISABLE_GC: '1'
       UCX_CUDA_IPC_ENABLE_MNNVL: y
-      UCX_NET_DEVICES: all
+      UCX_LOG_LEVEL: info
+      UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
+      UCX_PROTO_INFO: y
+      MPI_UCX_TLS: rc,ud,sm,self
+      MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
+      NCCL_IB_HCA: =mlx5_0::0:0,mlx5_1::1:0,mlx5_2::2:0,mlx5_5::3:0,mlx5_6::0:1,mlx5_7::1:1,mlx5_8::2:1,mlx5_11::3:1
+      NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE: '0'
       UCX_RNDV_SCHEME: put_zcopy
       UCX_TLS: all
       PYTHONUNBUFFERED: '1'
       TLLM_EXECUTOR_BATCH_RESP_IN_AWAIT: '1'
       TLLM_EXECUTOR_USE_FILE_SOCKET: '1'
     args:
+      enable_iter_perf_stats: true
+      iter_perf_stats_interval: 40
       backend: pytorch
       cache_transceiver_config:
         backend: NIXL
@@ -230,6 +258,7 @@ roles:
         max_draft_len: 5
       enable_attention_dp: true
       kv_cache_config:
+        iteration_stats_interval: 40
         enable_block_reuse: false
         host_cache_size: 0
         dtype: nvfp4
@@ -278,6 +307,7 @@ services:
     GLOG_v: '0'
   options:
     store_config:
+      device_name: mlx5_0,mlx5_1,mlx5_2,mlx5_5,mlx5_6,mlx5_7,mlx5_8,mlx5_11
       metadata_server: P2PHANDSHAKE
       protocol: rdma
       global_segment_size: 256GiB
@@ -303,7 +333,13 @@ services:
   critical: true
   srun_options:
     mpi: none
-  env: *id001
+  env:
+    MC_ENABLE_PARALLEL_REG_MR: '0'
+    MC_MS_AUTO_DISC: '0'
+    MC_TE_FILTERS: mlx5_0,mlx5_1,mlx5_2,mlx5_5,mlx5_6,mlx5_7,mlx5_8,mlx5_11
+    MC_ENABLE_DEST_DEVICE_AFFINITY: '1'
+    TLLM_LOG_LEVEL: INFO
+    PYTHONUNBUFFERED: '1'
   preamble: |-
     for name in $(compgen -e); do
       case "$name" in
@@ -321,13 +357,8 @@ services:
     file:
       path: mooncake_donor_{index}.ready
     timeout_seconds: 300
-host_setup:
-  commands:
-  - sudo -n nvidia-smi -lmc 4752,4752
-  teardown:
-  - sudo -n nvidia-smi -rmc
-  nodes: workers
-  ignore_failure: false
+extra_mount:
+- /home/rihuo/:/home/rihuo/
 benchmark:
   type: custom
   command: |
@@ -337,10 +368,13 @@ benchmark:
     trap 'rm -rf "$aiperf_venv"' EXIT
     python3 -m venv "$aiperf_venv"
     "$aiperf_venv/bin/python" -m pip install \
-      "git+https://github.com/SemiAnalysisAI/aiperf.git@b7b16cf851885567988a643282266bce74e34437"
+      "/home/rihuo/agentx-harness"
+    IFS=',' read -r -a worker_metrics_urls <<< "${AIPERF_SERVER_METRICS_URLS:?Worker metrics URLs were not provided}"
     ulimit -n 600000 2>/dev/null || ulimit -n 65536 2>/dev/null || true
     "$aiperf_venv/bin/aiperf" profile \
         --scenario inferencex-agentx-mvp \
+        --server-metrics "${worker_metrics_urls[@]}" \
+        --server-metrics-formats json csv parquet jsonl \
         --url "http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT" \
         --endpoint /v1/chat/completions \
         --endpoint-type chat \
@@ -373,8 +407,7 @@ benchmark:
     AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
     AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
     CONC: '640'
-    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
     AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID: 'true'
-    AIPERF_DATASET_MMAP_CACHE_DIR: /tmp/aiperf-mmap-cache
+    AIPERF_DATASET_MMAP_CACHE_DIR: /home/rihuo/aiperf_mmap
     HF_HUB_DISABLE_PROGRESS_BARS: '1'
     TQDM_DISABLE: '1'

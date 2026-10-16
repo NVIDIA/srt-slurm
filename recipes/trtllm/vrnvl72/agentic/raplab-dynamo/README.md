@@ -60,8 +60,7 @@ srt-slurm supplies etcd discovery, TCP request transport and ZMQ events. These
 recipes do not require a NATS service.
 Keep the site's account, partition, network interface, cache mounts and other
 cluster settings in `srtslurm.yaml`. As with the native recipes, the full
-allocation must fit within one NVL72 domain. These RapLab recipes omit the
-`sudo nvidia-smi` host clock setup and teardown.
+allocation must fit within one NVL72 domain.
 
 Their top-level `environment` sets `PIP_CONFIG_FILE=/dev/null`,
 `PIP_INDEX_URL=https://pypi.org/simple` and
@@ -154,8 +153,8 @@ master shuts down afterward. This requires srt-slurm's
 See the [native Mooncake notes](../trtllm-serve/README.md#mooncake) for prefill
 segment sizes and other inherited pool settings.
 
-Each benchmark still installs AIPerf commit
-`b7b16cf851885567988a643282266bce74e34437` in a temporary environment and invokes
+Each recipe mounts `/home/rihuo/:/home/rihuo/`. The benchmark installs AIPerf
+from `/home/rihuo/agentx-harness` in a temporary environment and invokes
 `aiperf profile` directly against the discovered frontend. The AgentX scenario,
 dataset, concurrency, session headers, warmup and 3,600-second measurement are
 unchanged. Results remain under `/logs/agentic/aiperf_results`.

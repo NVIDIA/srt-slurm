@@ -40,6 +40,7 @@ def test_local_memory_requires_cpu_binding() -> None:
         ("missing-cpus", True, None, None, 2),
         ("denied", True, None, None, 42),
         ("1", False, None, "4-7", 0),
+        ("denied", False, None, None, 42),
         ("-1", False, None, None, 0),
     ],
 )
@@ -80,15 +81,16 @@ elif name == "cat":
             sys.exit(0)
         print({"0": "0-3", "1": "4-7"}[node])
 elif name == "numactl":
-    assert args[0].startswith("--membind=")
+    assert args.pop(0) == "--cpunodebind=" + ("1" if os.environ["TEST_NUMA_NODE"] == "denied" else os.environ["TEST_NUMA_NODE"])
     if os.environ["TEST_NUMA_NODE"] == "denied":
         sys.exit(42)
-    os.environ["TEST_MEMORY_POLICY"] = "bind:" + args.pop(0).split("=", 1)[1]
+    os.environ["TEST_CPU_MASK"] = {"0": "0-3", "1": "4-7"}[os.environ["TEST_NUMA_NODE"]]
+    if args[0].startswith("--membind="):
+        os.environ["TEST_MEMORY_POLICY"] = "bind:" + args.pop(0).split("=", 1)[1]
+    assert args.pop(0) == "--"
     os.execvp(args[0], args)
 elif name == "taskset":
-    assert args[0] == "-c"
-    os.environ["TEST_CPU_MASK"] = args[1]
-    os.execvp(args[2], args[2:])
+    raise AssertionError("CPU binding must use native numactl")
 else:
     raise AssertionError(name)
 """

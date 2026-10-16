@@ -7,7 +7,7 @@ prefill/decode workers behind `dynamo.frontend`, with Dynamo pinned to
 Filenames and point names match the native recipes.
 
 The conversion keeps the worker counts, GPU allocations, TRT-LLM engine tuning,
-kernel environment, MTP acceptance controls, host clock setup, prefill Mooncake capacity
+kernel environment, MTP acceptance controls, prefill Mooncake capacity
 and inline AIPerf command. The native recipes remain in their original directory.
 
 All recipes set `engine.numa_memory_bind: local` and `engine.numa_cpu_bind: true`
@@ -60,8 +60,7 @@ srt-slurm supplies etcd discovery, TCP request transport and ZMQ events. These
 recipes do not require a NATS service.
 Keep the site's account, partition, network interface, cache mounts and other
 cluster settings in `srtslurm.yaml`. As with the native recipes, the full
-allocation must fit within one NVL72 domain, and the host clock setup requires
-the site's passwordless `sudo` permission.
+allocation must fit within one NVL72 domain.
 
 ```bash
 srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560.yaml
@@ -139,8 +138,8 @@ master shuts down afterward. This requires srt-slurm's
 See the [native Mooncake notes](../trtllm-serve/README.md#mooncake) for prefill
 segment sizes and other inherited pool settings.
 
-Each benchmark still installs AIPerf commit
-`b7b16cf851885567988a643282266bce74e34437` in a temporary environment and invokes
+Each recipe mounts `/home/rihuo/:/home/rihuo/`. The benchmark installs AIPerf
+from `/home/rihuo/agentx-harness` in a temporary environment and invokes
 `aiperf profile` directly against the discovered frontend. The AgentX scenario,
 dataset, concurrency, session headers, warmup and 3,600-second measurement are
 unchanged. Results remain under `/logs/agentic/aiperf_results`.
