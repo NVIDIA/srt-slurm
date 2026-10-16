@@ -61,8 +61,8 @@ roles:
       MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_11:1
       MPI_UCX_RNDV_THRESH: inf
       OMPI_MCA_coll: ^ucc,hcoll
-      # Advertise session-affine KV routing for the prefill worker set only.
-      DYN_ROUTER_MODE: kv
+      # Place new sessions by request count; keep later turns on their assigned worker.
+      DYN_ROUTER_MODE: least-loaded
       DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ENGINE_CONV_AFFINITY_DP_RANK_SOURCE: engine
