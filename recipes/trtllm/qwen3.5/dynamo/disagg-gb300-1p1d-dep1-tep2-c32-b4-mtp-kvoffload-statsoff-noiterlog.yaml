@@ -204,8 +204,7 @@ frontend:
   enable_multiple_frontends: false
   env:
     ETCD_LEASE_TTL: "120"
-    DYN_TOKENIZER_CACHE: "1"
-    DYN_TOKENIZER_CACHE_BYTES: "8000000000"
+    DYN_TOKENIZER_CACHE: "0"
     DYN_TOKENIZER: "fastokens"
   args:
     router-mode: kv
