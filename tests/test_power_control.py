@@ -873,6 +873,27 @@ class TestOrchestrator:
             assert 'sudo -n nvidia-smi -pl "${d%%.*}" -i "$i" || rc=1; done; exit $rc' in call["command"][2]
             assert call["nodelist"][0] in call["step_name"]
 
+    def test_stop_demotes_the_steps_from_critical_before_signalling_them(self, tmp_path):
+        """stop_power_control runs before the orchestrator stops its process monitor (do_sweep's finally
+        block sets stop_event afterwards), so a node_agent exiting 143 on our SIGTERM must not be read as a
+        critical failure that starts a second, concurrent cleanup (hecate job 774072)."""
+        orch = SweepOrchestrator(config=_config(), runtime=_runtime(tmp_path))
+        registry = ProcessRegistry(job_id="12345")
+
+        with (
+            patch(
+                "srtctl.cli.mixins.power_control_stage.start_srun_process",
+                side_effect=lambda **kwargs: _running(kwargs["step_name"], []),
+            ),
+            patch("srtctl.cli.mixins.power_control_stage.get_hostname_ip", side_effect=_node_ip),
+        ):
+            orch.start_power_control(registry)
+            assert all(proc.critical for proc in registry.get_all_processes().values())
+            orch.stop_power_control()
+
+        assert not any(proc.critical for proc in (*orch._power_node_agents, *orch._power_appliers))
+        assert not registry.check_failures()
+
     def test_stop_resets_even_when_the_steps_already_exited(self, tmp_path):
         orch = SweepOrchestrator(config=_config(), runtime=_runtime(tmp_path))
         exited = MagicMock()

@@ -647,9 +647,19 @@ class PowerControlStageMixin:
 
     @staticmethod
     def _stop_power_steps(processes: Sequence[ManagedProcess], step_ids: dict[str, str] | None, kind: str) -> None:
-        """SIGTERM a group of steps together, then wait for each (the registry's group-shutdown shape)."""
+        """SIGTERM a group of steps together, then wait for each (the registry's group-shutdown shape).
+
+        The steps are demoted from ``critical`` first: ``stop_power_control`` runs from the
+        orchestrator's ``finally`` block before ``stop_event`` is set, so the process monitor is
+        still polling ``check_failures`` while these steps exit with 143 on our SIGTERM. Without
+        the demotion a fast exit (a snapshot-only node_agent) is logged as "Critical process
+        failure detected!" and the monitor starts a second, concurrent ``registry.cleanup``
+        (seen on hecate job 774072; the sweep still completed). An exit we asked for is not a
+        failure.
+        """
         running = [process for process in processes if process.is_running]
         for process in running:
+            process.critical = False
             process.request_stop(step_ids)
         for process in running:
             process.await_stop()
