@@ -373,7 +373,6 @@ benchmark:
         --trajectory-start-min-ratio 0.25 \
         --trajectory-start-max-ratio 0.75 \
         --use-server-token-count \
-        --dynamo-session-timeout-seconds 3600 \
         --no-gpu-telemetry \
         --tokenizer-trust-remote-code \
         --slice-duration 1.0 \
