@@ -195,7 +195,6 @@ roles:
       trust_remote_code: true
 frontend:
   type: dynamo
-  numa_bind: true
   enable_multiple_frontends: false
   env:
     DYN_LOG: warn
