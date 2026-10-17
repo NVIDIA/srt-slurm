@@ -26,7 +26,7 @@ resources:
 engine:
   type: trtllm
   served_model_name: Qwen3.5-397B-A17B-NVFP4-V2
-  publish_events_and_metrics: true
+  publish_metrics: true
 roles:
   prefill:
     nodes: 1
@@ -199,11 +199,7 @@ frontend:
   enable_multiple_frontends: false
   env:
     DYN_LOG: warn
-    DYN_ROUTER_USE_KV_EVENTS: '0'
     ETCD_LEASE_TTL: "120"
-    DYN_TOKENIZER_CACHE: '1'
-    DYN_TOKENIZER_CACHE_BYTES: '8000000000'
-    DYN_TOKENIZER: "fastokens"
   args:
     router-mode: kv
     router-session-affinity-ttl-secs: '14400'
@@ -257,7 +253,7 @@ benchmark:
 setup_script: install_dynamo_wheel.sh
 extra_mount:
 - /scratch/:/scratch/
-- /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels_old:/dynamo_wheels
+- /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels:/dynamo_wheels
 dynamo:
   install: false
 services:
