@@ -26,7 +26,7 @@ resources:
 engine:
   type: trtllm
   served_model_name: Qwen3.5-397B-A17B-NVFP4-V2
-  publish_metrics: false
+  publish_metrics: true
 roles:
   prefill:
     nodes: 1
