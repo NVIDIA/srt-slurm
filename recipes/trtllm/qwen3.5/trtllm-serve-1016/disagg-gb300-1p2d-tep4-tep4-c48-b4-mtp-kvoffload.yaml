@@ -204,11 +204,12 @@ frontend:
   server_config_extra:
     gen_strip_message_history: true
     gen_tokids_ctxbytes: true
-    return_perf_metrics: true
+    # Diagnostic: bypass orchestrator perf-event filtering that can delay SSE content.
+    # Leave perf_metrics_output_dir unset; it independently enables that filtering.
+    return_perf_metrics: false
     num_workers: 4
     server_keep_alive_timeout: 3600
     perf_metrics_max_requests: 100000
-    perf_metrics_output_dir: /logs/perf_metrics/orch
   args:
     server_start_timeout: 7200
     request_timeout: 7200
