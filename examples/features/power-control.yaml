@@ -88,6 +88,7 @@ power_control:
   interval_s: 30
   perf_threshold: 0.03
   ubpc_buffer: {prefill: 2.0, decode: 1.1}
+  # allocation: need              # split each budget by need (mean draw x buffer), not by draw: prefill keeps its bursts
   applier: sudo-smi
   epd_source: /lustre/share/nvidia-epd/src/epd
   dynamo_power_source: /lustre/share/dynamo/components/src/dynamo/power

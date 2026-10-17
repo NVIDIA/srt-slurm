@@ -2217,6 +2217,10 @@ class PowerControlConfig:
     # UBPC caps a node at measured draw x buffer: one value for every pool, or a value per role (a pool spanning
     # several roles takes the largest of its roles' values). Default: prefill 2.0, decode 1.1, agg 1.1.
     ubpc_buffer: float | dict[str, float] = field(default_factory=_default_ubpc_buffers)
+    # How NUPD splits a pool's budget across its nodes: `draw` is EPD's historical cap law (caps proportional to
+    # mean draw); `need` ranks nodes by the cap they need, mean draw x their ubpc_buffer, so a bursty prefill node
+    # (buffer 2.0) keeps its burst headroom inside a binding budget.
+    allocation: Literal["draw", "need"] = "draw"
     # Floor below which EPD sets no cap, in watts (about 1.1 x the pool's peak draw); unset lets EPD decide.
     min_tgp_w: int | None = None
     # Ceiling for every cap, in watts; unset lets EPD read the hardware maximum from NVML.

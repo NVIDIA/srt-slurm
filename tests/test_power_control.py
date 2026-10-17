@@ -165,9 +165,12 @@ class TestPools:
         assert decode.nodes == ("node2", "node3", "node4", "node5")
         assert all(group.gpu_indices == frozenset({0, 1, 2, 3}) for pool in pools for group in pool.groups)
         assert (prefill.gpu_count, decode.gpu_count) == (8, 16)
-        # Rank 0 is the pool's first node; the buffer comes from the role.
+        # Rank 0 is the pool's first node; the buffer comes from the role, pool-wide and per group alike.
         assert prefill.groups[0].node == "node0"
         assert (prefill.ubpc_buffer, decode.ubpc_buffer) == (2.0, 1.1)
+        assert all(group.ubpc_buffer == pool.ubpc_buffer for pool in pools for group in pool.groups)
+        assert prefill.node_buffers == "node0=2,node1=2"
+        assert decode.node_buffers == "node2=1.1,node3=1.1,node4=1.1,node5=1.1"
 
     def test_shared_pool_spans_both_roles(self):
         (pool,) = compute_power_pools(_power(pools="shared"), _processes())
@@ -175,8 +178,11 @@ class TestPools:
         assert pool.name == "shared"
         assert pool.nodes == ("node0", "node1", "node2", "node3", "node4", "node5")
         assert pool.roles == ("prefill", "decode")
-        # A shared pool takes the largest buffer of its roles so prefill bursts are not clipped.
+        # A shared pool takes the largest buffer of its roles so prefill bursts are not clipped,
+        # while each group keeps the buffer of the role it runs.
         assert pool.ubpc_buffer == 2.0
+        assert [group.ubpc_buffer for group in pool.groups] == [2.0, 2.0, 1.1, 1.1, 1.1, 1.1]
+        assert pool.node_buffers == "node0=2,node1=2,node2=1.1,node3=1.1,node4=1.1,node5=1.1"
 
     def test_tep6_packing_makes_one_group_per_shared_node(self):
         """5 TEP6 workers on 8 four-GPU nodes: adjacent workers share a node (4+2 / 2+4), the last node idles 2 GPUs."""
@@ -203,6 +209,8 @@ class TestPools:
         (pool,) = compute_power_pools(_power(pools="shared"), processes)
         assert pool.groups[0].gpu_indices == frozenset({0, 1, 2, 3})
         assert pool.groups[0].roles == ("prefill", "decode")
+        # A node running both roles takes the larger buffer, like the pool.
+        assert pool.groups[0].ubpc_buffer == 2.0
 
     def test_explicit_role_pools_carry_their_own_knobs(self):
         power = _power(
@@ -221,6 +229,8 @@ class TestPools:
         assert (ctx.spec.budget_w_per_gpu, ctx.spec.fom, ctx.ubpc_buffer) == (1800, "ctx_tokens", 2.0)
         assert (gen.spec.budget_w_per_gpu, gen.spec.fom, gen.ubpc_buffer) == (1300, "gen_tokens", 1.05)
         assert gen.nodes == ("node2", "node3", "node4", "node5")
+        assert {group.ubpc_buffer for group in ctx.groups} == {2.0}
+        assert {group.ubpc_buffer for group in gen.groups} == {1.05}
 
     def test_explicit_node_pools_take_the_buffer_of_the_roles_they_run(self):
         power = _power(
@@ -291,6 +301,10 @@ class TestCommands:
             "1400",
             "--warmup-policy",
             "fixed",
+            "--allocation",
+            "draw",
+            "--node-buffers",
+            "node0=2,node1=2",
             "--metrics-url",
             "http://10.0.0.0:8000/metrics,http://10.0.0.1:7500/metrics",
             "--gpus-per-node",
@@ -312,6 +326,65 @@ class TestCommands:
         assert "--min-tgp-w" not in command
         assert "--max-tgp-w" not in command
         assert command[command.index("--rank") + 1] == "0"
+
+    @pytest.mark.parametrize("allocation", ["draw", "need"])
+    def test_allocation_defaults_to_draw_and_follows_the_warmup_policy(self, allocation):
+        """`draw` is EPD's historical law (caps by mean draw); `need` ranks nodes by mean draw x their buffer."""
+        power = _power() if allocation == "draw" else _power(allocation="need")
+        (pool,) = compute_power_pools(power, _processes())
+
+        command = build_node_agent_command(power, pool, pool.groups[0], 0, ["http://f:8000/metrics"], Path("/l"), 4)
+
+        assert power.allocation == allocation
+        warmup = command.index("--warmup-policy")
+        assert command[warmup : warmup + 6] == [
+            "--warmup-policy",
+            "adaptive",
+            "--allocation",
+            allocation,
+            "--node-buffers",
+            "node0=2,node1=2,node2=1.1,node3=1.1,node4=1.1,node5=1.1",
+        ]
+
+    def test_shared_pool_node_buffers_hold_prefill_at_2_and_decode_at_1_1(self):
+        """One shared controller: `--ubpc-buffer` is the pool-wide maximum, `--node-buffers` each node's role value."""
+        power = _power(pools="shared")
+        (pool,) = compute_power_pools(power, _processes())
+
+        command = build_node_agent_command(power, pool, pool.groups[3], 3, ["http://f:8000/metrics"], Path("/l"), 4)
+
+        assert command[command.index("--ubpc-buffer") + 1] == "2.0"
+        assert command[command.index("--node-buffers") + 1] == "node0=2,node1=2,node2=1.1,node3=1.1,node4=1.1,node5=1.1"
+
+    def test_an_explicit_pool_buffer_applies_to_every_node_of_the_pool(self):
+        """A pool's own `ubpc_buffer` replaces the role values: every `--node-buffers` entry equals it."""
+        power = _power(
+            ubpc_buffer={"decode": 1.05},
+            pools=[
+                PowerPoolConfig(name="ctx", roles=["prefill"], ubpc_buffer=1.5),
+                PowerPoolConfig(name="gen", roles=["decode"]),
+            ],
+        )
+        ctx, gen = compute_power_pools(power, _processes())
+        urls = ["http://f:8000/metrics"]
+
+        ctx_command = build_node_agent_command(power, ctx, ctx.groups[1], 1, urls, Path("/l"), 4)
+        gen_command = build_node_agent_command(power, gen, gen.groups[0], 0, urls, Path("/l"), 4)
+
+        assert ctx_command[ctx_command.index("--ubpc-buffer") + 1] == "1.5"
+        assert ctx_command[ctx_command.index("--node-buffers") + 1] == "node0=1.5,node1=1.5"
+        # The pool that inherits still takes the block's per-role value.
+        assert gen_command[gen_command.index("--node-buffers") + 1] == "node2=1.05,node3=1.05,node4=1.05,node5=1.05"
+
+    @pytest.mark.parametrize("buffer, rendered", [(1.2, "1.2"), (2.0, "2")])
+    def test_a_single_block_buffer_is_every_node_s_buffer(self, buffer, rendered):
+        power = _power(pools="per-role", ubpc_buffer=buffer)
+        prefill, decode = compute_power_pools(power, _processes())
+
+        command = build_node_agent_command(power, decode, decode.groups[0], 0, ["http://f:8000/metrics"], Path("/l"), 4)
+
+        assert prefill.node_buffers == f"node0={rendered},node1={rendered}"
+        assert command[command.index("--node-buffers") + 1] == ",".join(f"node{i}={rendered}" for i in range(2, 6))
 
     def test_node_agent_needs_at_least_one_metrics_url(self):
         power = _power()
@@ -452,6 +525,7 @@ class TestSchema:
         assert power.enabled is False
         assert (power.mode, power.pools, power.applier) == ("nupd", "shared", "sudo-smi")
         assert power.ubpc_buffer == {"prefill": 2.0, "decode": 1.1, "agg": 1.1}
+        assert power.allocation == "draw", "EPD's historical cap law unless the recipe asks for `need`"
         assert power.site_packages == SITE_PACKAGES
 
     def test_loads_the_documented_block(self):
@@ -463,6 +537,7 @@ class TestSchema:
                 "interval_s": 10,
                 "perf_threshold": 0.05,
                 "ubpc_buffer": {"prefill": 2.0, "decode": 1.1},
+                "allocation": "need",
                 "min_tgp_w": 900,
                 "warmup_policy": "adaptive",
                 "applier": "dcgmi",
@@ -472,6 +547,7 @@ class TestSchema:
         )
         power = config.power_control
         assert (power.mode, power.pools, power.applier, power.critical) == ("ubpc", "per-role", "dcgmi", False)
+        assert power.allocation == "need"
         assert power.dynamo_power_source_root == "/lustre/share/dynamo/components/src"
         assert [spec.name for spec in power.resolve_pools(["prefill", "decode"])] == ["prefill", "decode"]
 
@@ -491,7 +567,13 @@ class TestSchema:
 
     @pytest.mark.parametrize(
         "field, value",
-        [("mode", "fast"), ("pools", "everything"), ("applier", "ipmi"), ("warmup_policy", "never")],
+        [
+            ("mode", "fast"),
+            ("pools", "everything"),
+            ("applier", "ipmi"),
+            ("warmup_policy", "never"),
+            ("allocation", "greedy"),
+        ],
     )
     def test_enums_are_enforced(self, field, value):
         with pytest.raises(ValidationError):
@@ -657,6 +739,8 @@ class TestOrchestrator:
             if process.endpoint_mode == "prefill"
         ]
         assert command[command.index("--pool-gpu-count") + 1] == "8"
+        assert command[command.index("--allocation") + 1] == "draw"
+        assert command[command.index("--node-buffers") + 1] == "node0=2,node1=2"
         assert "NVIDIA_VISIBLE_DEVICES" not in agent["env_to_set"], "a whole-node group sees every GPU"
         assert agent["env_to_set"]["EPD_NODELIST"] == "node0,node1"
         assert agent["env_to_set"]["LOG_DIR"] == "/logs/power_control/prefill"

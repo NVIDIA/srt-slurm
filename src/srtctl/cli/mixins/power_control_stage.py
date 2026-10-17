@@ -20,7 +20,11 @@ healthy and before any load, the stage:
    tail) gets ``NVIDIA_VISIBLE_DEVICES`` = its indices, because EPD's NVML monitor senses
    every GPU it can see. ``--gpu-indices`` are host NVML indices (the node_agent verifies that
    it sees exactly as many GPUs as the group has), ``--gpus-per-node`` the node's physical GPU count
-   and ``--pool-gpu-count`` the pool's exact GPU total (per-GPU FoM normalisation). Its
+   and ``--pool-gpu-count`` the pool's exact GPU total (per-GPU FoM normalisation).
+   ``--allocation`` (``power_control.allocation``) selects the law NUPD splits the pool's
+   budget with, and ``--node-buffers`` lists every group's UBPC buffer as ``<node>=<buffer>``
+   (its roles' value, or the pool's explicit one), so one shared controller holds prefill
+   nodes at 2.0 and decode nodes at 1.1 (EPD's ``NUPD_ALLOCATION`` / ``EPD_NODE_BUFFERS``). Its
    ``--metrics-url`` list names the frontend listeners (``frontend=<url>``) and the pool
    ranks that run a Dynamo system server (``worker=<url>``: every rank of a per-node launch,
    only the MPI leader of a TRT-LLM step), each node's IP resolved once. ``min_tgp_w`` is
@@ -106,13 +110,15 @@ class GpuGroup:
 
     One node_agent senses exactly these GPU indices and the applier caps exactly them,
     so idle GPUs on a partially used node neither drag the node's measured draw down
-    nor get a cap.
+    nor get a cap. ``ubpc_buffer`` is this group's own burst allowance (the pool's
+    explicit value, else the one its roles imply): the group's ``--node-buffers`` entry.
     """
 
     pool: str
     node: str
     gpu_indices: frozenset[int]
     roles: tuple[str, ...]
+    ubpc_buffer: float
     het_group: int | None
     processes: tuple[Process, ...]
 
@@ -127,7 +133,8 @@ class PowerPool:
     """One EPD controller: a pool spec resolved onto the GPU groups of the allocation.
 
     The first group is the controller's node (rank 0). ``ubpc_buffer`` is the spec's own
-    value or the one its roles imply.
+    value or the largest its roles imply (``--ubpc-buffer``); each group carries its own
+    (``node_buffers``).
     """
 
     spec: PowerPoolSpec
@@ -142,6 +149,11 @@ class PowerPool:
     def nodes(self) -> tuple[str, ...]:
         """The pool's roster, in allocation order: ``--nodelist`` and ``EPD_NODELIST``."""
         return tuple(group.node for group in self.groups)
+
+    @property
+    def node_buffers(self) -> str:
+        """``--node-buffers`` value: ``<node>=<buffer>`` per group in roster order (EPD's ``EPD_NODE_BUFFERS``)."""
+        return ",".join(f"{group.node}={group.ubpc_buffer:g}" for group in self.groups)
 
     @property
     def gpu_count(self) -> int:
@@ -162,8 +174,10 @@ def compute_power_pools(power: PowerControlConfig, processes: Sequence[Process])
 
     A process contributes its ``gpu_indices`` (``Endpoint.gpus_on_node`` for its rank) to
     the group of its node; two workers of one pool on one node (TEP6 packing) make one
-    group. Raises ``ValueError`` when a node would belong to two pools, when an explicit
-    node pool names a node that runs no worker, or when a pool ends up with no GPU.
+    group. Each group carries the UBPC buffer of the roles it runs (a pool's explicit
+    ``ubpc_buffer`` wins) for ``--node-buffers``. Raises ``ValueError`` when a node would
+    belong to two pools, when an explicit node pool names a node that runs no worker, or
+    when a pool ends up with no GPU.
     """
     specs = power.resolve_pools([process.endpoint_mode for process in processes])
     owner: dict[str, str] = {}
@@ -190,12 +204,14 @@ def compute_power_pools(power: PowerControlConfig, processes: Sequence[Process])
                     "on node lines)"
                 )
             owner[node] = spec.name
+            roles = tuple(dict.fromkeys(process.endpoint_mode for process in node_processes))
             groups.append(
                 GpuGroup(
                     pool=spec.name,
                     node=node,
                     gpu_indices=frozenset().union(*(process.gpu_indices for process in node_processes)),
-                    roles=tuple(dict.fromkeys(process.endpoint_mode for process in node_processes)),
+                    roles=roles,
+                    ubpc_buffer=spec.ubpc_buffer if spec.ubpc_buffer is not None else power.ubpc_buffer_for(roles),
                     het_group=node_processes[0].het_group,
                     processes=tuple(node_processes),
                 )
@@ -253,6 +269,10 @@ def build_node_agent_command(
         [
             "--warmup-policy",
             power.warmup_policy,
+            "--allocation",
+            power.allocation,
+            "--node-buffers",
+            pool.node_buffers,
             "--metrics-url",
             ",".join(metrics_urls),
             "--gpus-per-node",
@@ -616,14 +636,17 @@ class PowerControlStageMixin:
                 *(f"worker={url}" for url in self._pool_worker_metrics_urls(pool, node_ips)),
             ]
             logger.info(
-                "Power pool %s: mode=%s nodes=%s gpus=%d budget=%d W/GPU fom=%s ubpc_buffer=%s log_dir=%s",
+                "Power pool %s: mode=%s allocation=%s nodes=%s gpus=%d budget=%d W/GPU fom=%s ubpc_buffer=%s "
+                "node_buffers=%s log_dir=%s",
                 pool.name,
                 power.mode,
+                power.allocation,
                 ",".join(pool.nodes),
                 pool.gpu_count,
                 pool.spec.budget_w_per_gpu,
                 pool.spec.fom,
                 pool.ubpc_buffer,
+                pool.node_buffers,
                 pool_dir,
             )
             # Appliers first: they idle until the controller's first decision lands.
