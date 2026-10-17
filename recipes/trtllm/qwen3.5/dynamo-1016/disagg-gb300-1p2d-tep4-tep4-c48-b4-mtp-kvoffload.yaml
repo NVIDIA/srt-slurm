@@ -198,6 +198,7 @@ frontend:
   type: dynamo
   enable_multiple_frontends: false
   env:
+    DYN_LOG: warn
     ETCD_LEASE_TTL: "120"
     DYN_TOKENIZER_CACHE: '1'
     DYN_TOKENIZER_CACHE_BYTES: '8000000000'
