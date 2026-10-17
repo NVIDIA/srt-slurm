@@ -309,7 +309,7 @@ env_to_set:
     GPUS_PER_NODE: 4
     LOG_DIR: /logs/power_control/prefill
 command: |
-    python3 -m dynamo.power.node_agent --pool-name prefill --rank 0 --nodelist node-01 --log-dir /logs/power_control/prefill --gpu-indices 0,1,2,3 --mode nupd --budget-w-per-gpu 1500 --fom tokens_per_gpu --interval-s 30 --perf-threshold 0.03 --ubpc-buffer 2.0 --warmup-policy adaptive --metrics-url frontend=http://127.0.0.1:8000/metrics,worker=http://127.0.0.1:7500/metrics --gpus-per-node 4 --pool-gpu-count 4
+    python3 -m dynamo.power.node_agent --pool-name prefill --rank 0 --nodelist node-01 --log-dir /logs/power_control/prefill --gpu-indices 0,1,2,3 --mode nupd --budget-w-per-gpu 1500 --fom tokens_per_gpu --interval-s 30 --perf-threshold 0.03 --ubpc-buffer 2.0 --warmup-policy adaptive --allocation draw --node-buffers node-01=2 --metrics-url frontend=http://127.0.0.1:8000/metrics,worker=http://127.0.0.1:7500/metrics --gpus-per-node 4 --pool-gpu-count 4
 
 ## power_applier_node-02
 nodelist: node-02
@@ -348,7 +348,7 @@ env_to_set:
     GPUS_PER_NODE: 4
     LOG_DIR: /logs/power_control/decode
 command: |
-    python3 -m dynamo.power.node_agent --pool-name decode --rank 0 --nodelist node-02,node-03 --log-dir /logs/power_control/decode --gpu-indices 0,1,2,3 --mode nupd --budget-w-per-gpu 1500 --fom tokens_per_gpu --interval-s 30 --perf-threshold 0.03 --ubpc-buffer 1.1 --warmup-policy adaptive --metrics-url frontend=http://127.0.0.1:8000/metrics,worker=http://127.0.0.1:7501/metrics --gpus-per-node 4 --pool-gpu-count 8
+    python3 -m dynamo.power.node_agent --pool-name decode --rank 0 --nodelist node-02,node-03 --log-dir /logs/power_control/decode --gpu-indices 0,1,2,3 --mode nupd --budget-w-per-gpu 1500 --fom tokens_per_gpu --interval-s 30 --perf-threshold 0.03 --ubpc-buffer 1.1 --warmup-policy adaptive --allocation draw --node-buffers node-02=1.1,node-03=1.1 --metrics-url frontend=http://127.0.0.1:8000/metrics,worker=http://127.0.0.1:7501/metrics --gpus-per-node 4 --pool-gpu-count 8
 
 ## power_node_agent_decode_node-03
 nodelist: node-03
@@ -371,7 +371,7 @@ env_to_set:
     GPUS_PER_NODE: 4
     LOG_DIR: /logs/power_control/decode
 command: |
-    python3 -m dynamo.power.node_agent --pool-name decode --rank 1 --nodelist node-02,node-03 --log-dir /logs/power_control/decode --gpu-indices 0,1,2,3 --mode nupd --budget-w-per-gpu 1500 --fom tokens_per_gpu --interval-s 30 --perf-threshold 0.03 --ubpc-buffer 1.1 --warmup-policy adaptive --metrics-url frontend=http://127.0.0.1:8000/metrics,worker=http://127.0.0.1:7501/metrics --gpus-per-node 4 --pool-gpu-count 8
+    python3 -m dynamo.power.node_agent --pool-name decode --rank 1 --nodelist node-02,node-03 --log-dir /logs/power_control/decode --gpu-indices 0,1,2,3 --mode nupd --budget-w-per-gpu 1500 --fom tokens_per_gpu --interval-s 30 --perf-threshold 0.03 --ubpc-buffer 1.1 --warmup-policy adaptive --allocation draw --node-buffers node-02=1.1,node-03=1.1 --metrics-url frontend=http://127.0.0.1:8000/metrics,worker=http://127.0.0.1:7501/metrics --gpus-per-node 4 --pool-gpu-count 8
 
 ## tachometer
 nodelist: node-01
