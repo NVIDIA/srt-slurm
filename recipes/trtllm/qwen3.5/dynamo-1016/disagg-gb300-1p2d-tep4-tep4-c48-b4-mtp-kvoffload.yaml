@@ -2,7 +2,7 @@
 # Uses the local model/image and Dynamo-aware AIPerf from ../dynamo; installs Dynamo from the mounted /dynamo_wheels directory.
 # Retains source topology, engine tuning and full-run benchmark traffic.
 # Native server process-pool/perf-output options and decode-first startup are omitted.
-# Engine return_perf_metrics is disabled; Dynamo publishes worker metrics.
+# Engine return_perf_metrics and Dynamo publish_metrics are disabled.
 schema: 2
 name: disagg-gb300-1p2d-tep4-tep4-c48-b4-mtp-kvoffload-dynamo
 model:
@@ -26,7 +26,7 @@ resources:
 engine:
   type: trtllm
   served_model_name: Qwen3.5-397B-A17B-NVFP4-V2
-  publish_metrics: true
+  publish_metrics: false
 roles:
   prefill:
     nodes: 1
