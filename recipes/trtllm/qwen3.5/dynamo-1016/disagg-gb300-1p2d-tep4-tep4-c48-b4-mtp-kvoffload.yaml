@@ -50,6 +50,8 @@ roles:
       TRTLLM_WORKER_DISABLE_GC: '1'
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
       DYN_ENGINE_CONV_AFFINITY: '1'
+      DYN_ROUTER_MODE: kv
+      DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
     args:
       attention_dp_config:
         kv_cache_routing_conversation_affinity: true
@@ -142,7 +144,7 @@ roles:
       TRTLLM_SERVER_DISABLE_GC: '1'
       TRTLLM_WORKER_DISABLE_GC: '1'
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
-      DYN_ENGINE_CONV_AFFINITY: '1'
+      DYN_ROUTER_MODE: least-loaded
     args:
       cache_transceiver_config:
         backend: NIXL
@@ -199,7 +201,11 @@ frontend:
   enable_multiple_frontends: false
   env:
     DYN_LOG: warn
+    DYN_TOKEN_IDS_AS_BYTES: '1'
     ETCD_LEASE_TTL: "120"
+    DYN_TOKENIZER_CACHE: '1'
+    DYN_TOKENIZER_CACHE_BYTES: '8000000000'
+    DYN_TOKENIZER: "fastokens"
   args:
     router-mode: kv
     router-session-affinity-ttl-secs: '14400'
