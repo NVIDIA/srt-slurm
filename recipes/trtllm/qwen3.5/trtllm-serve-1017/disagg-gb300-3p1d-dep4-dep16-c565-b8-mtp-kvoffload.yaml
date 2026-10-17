@@ -1,6 +1,6 @@
 # Imported from AgentX-gb300-20261017/recipes/disagg-gb300-3p1d-dep4-dep16-c565-b8-mtp-kvoffload-dynamo.yaml
 # Upstream commit: 6459217aab65a8cb58974fda3362e477d4bbb175
-# Uses the trtllm-serve-1016 runtime and benchmark configuration pattern.
+# Synced with the local source; retains native serving and local image/cache paths.
 schema: 2
 name: disagg-gb300-3p1d-dep4-dep16-c565-b8-mtp-kvoffload
 model:
@@ -97,6 +97,7 @@ roles:
         - cuda_core
       pipeline_parallel_size: 1
       print_iter_log: true
+      # Native worker Prometheus metrics replace Dynamo's publish_metrics.
       return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: MAX_UTILIZATION
@@ -121,8 +122,6 @@ roles:
         enable_piecewise_cuda_graph: true
       trust_remote_code: true
       num_serve_frontends: 8
-      perf_metrics_max_requests: 100000
-      perf_metrics_output_dir: /logs/perf_metrics/ctx
   decode:
     nodes: 4
     workers: 1
@@ -185,6 +184,7 @@ roles:
         - cuda_core
       pipeline_parallel_size: 1
       print_iter_log: true
+      # Native worker Prometheus metrics replace Dynamo's publish_metrics.
       return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
@@ -196,8 +196,6 @@ roles:
       trust_remote_code: true
       num_postprocess_workers: 4
       num_serve_frontends: 4
-      perf_metrics_max_requests: 100000
-      perf_metrics_output_dir: /logs/perf_metrics/gen
 frontend:
   type: trtllm_serve
   enable_multiple_frontends: false
@@ -206,11 +204,9 @@ frontend:
   server_config_extra:
     gen_strip_message_history: true
     gen_tokids_ctxbytes: true
-    return_perf_metrics: true
+    return_perf_metrics: false
     num_workers: 4
     server_keep_alive_timeout: 3600
-    perf_metrics_max_requests: 100000
-    perf_metrics_output_dir: /logs/perf_metrics/orch
   args:
     server_start_timeout: 7200
     request_timeout: 7200

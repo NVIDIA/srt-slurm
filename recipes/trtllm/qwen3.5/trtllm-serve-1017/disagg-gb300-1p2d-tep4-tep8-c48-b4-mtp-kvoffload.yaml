@@ -1,6 +1,6 @@
 # Imported from AgentX-gb300-20261017/recipes/disagg-gb300-1p2d-tep4-tep8-c48-b4-mtp-kvoffload.yaml
 # Upstream commit: 6459217aab65a8cb58974fda3362e477d4bbb175
-# Uses the trtllm-serve-1016 runtime and benchmark configuration pattern.
+# Synced with the local source; retains native serving and local image/cache paths.
 schema: 2
 name: disagg-gb300-1p2d-tep4-tep8-c48-b4-mtp-kvoffload
 model:
@@ -123,8 +123,6 @@ roles:
         enable_piecewise_cuda_graph: true
       trust_remote_code: true
       num_serve_frontends: 8
-      perf_metrics_max_requests: 100000
-      perf_metrics_output_dir: /logs/perf_metrics/ctx
   decode:
     nodes: 4
     workers: 2
@@ -197,8 +195,6 @@ roles:
       trust_remote_code: true
       num_postprocess_workers: 4
       num_serve_frontends: 4
-      perf_metrics_max_requests: 100000
-      perf_metrics_output_dir: /logs/perf_metrics/gen
 frontend:
   type: trtllm_serve
   enable_multiple_frontends: false
@@ -207,11 +203,9 @@ frontend:
   server_config_extra:
     gen_strip_message_history: true
     gen_tokids_ctxbytes: true
-    return_perf_metrics: true
+    return_perf_metrics: false
     num_workers: 4
     server_keep_alive_timeout: 3600
-    perf_metrics_max_requests: 100000
-    perf_metrics_output_dir: /logs/perf_metrics/orch
   args:
     server_start_timeout: 7200
     request_timeout: 7200
@@ -221,50 +215,56 @@ environment:
   TRTLLM_SERVER_DISABLE_GC: '1'
 benchmark:
   type: custom
-  env:
-    AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
-    AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID: 'true'
-    AIPERF_REQUIRED_SERVER_METRIC_PREFIX: trtllm_kv_cache_utilization
-    AIPERF_REF: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/agentx-harness
-    HF_HUB_CACHE: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
-    HF_HOME: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
-  command: |
-    set -euo pipefail
-    # Install AIPerf and preserve the conversation decoding fix.
-    python3 -m pip install --upgrade "$AIPERF_REF" "datasets==5.0.0" "huggingface-hub==1.14.0" "pydantic==2.13.4"
-    export HF_HUB_TRUST_REMOTE_CODE=1
-    export AIPERF_DATASET_MMAP_CACHE_DIR=/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/aiperf_mmap_cache
-    mkdir -p /logs/agentic/concurrency_48
-    : "${AIPERF_SERVER_METRICS_URLS:?Worker metrics URLs must be provided by srtctl}"
-    IFS=',' read -r -a SERVER_METRICS_URLS <<< "$AIPERF_SERVER_METRICS_URLS"
-    aiperf profile \
-      --server-metrics "${SERVER_METRICS_URLS[@]}" \
-      --server-metrics-formats json csv parquet jsonl \
-      --scenario inferencex-agentx-mvp \
-      -m Qwen3.5-397B-A17B-NVFP4-V2 --tokenizer /model \
-      --tokenizer-trust-remote-code \
-      --url http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT \
-      --endpoint /v1/chat/completions \
-      --endpoint-type chat \
-      --streaming \
-      --public-dataset semianalysis_cc_traces_weka_062126_256k \
-      --trajectory-start-min-ratio 0.25 \
-      --trajectory-start-max-ratio 0.75 \
-      --failed-request-threshold 0.10 \
-      --use-server-token-count \
-      --no-gpu-telemetry \
-      --random-seed 42 \
-      --benchmark-duration 3600 \
-      --concurrency 48 \
-      --artifact-dir /logs/agentic/concurrency_48 \
-      --warmup-requests-per-lane 10 \
-      --warmup-grace-period 1800 \
-      --num-dataset-entries 393 \
-      --slice-duration 1.0 \
-      --stats-interval 30 \
-      --trace-idle-gap-cap-seconds 300
   placement:
     node: last_decode
+  env:
+    HF_HOME: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
+    HF_HUB_CACHE: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
+    AIPERF_DATASET_MMAP_CACHE_DIR: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/aiperf_mmap_cache/agentx-harness-1.0.11
+    AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID: 'true'
+    AGENTX_HARNESS_SPEC: agentx-harness==1.0.11
+    AIPERF_REQUIRED_SERVER_METRIC_PREFIX: trtllm_kv_cache_utilization
+    CONC: '48'
+    SERVED_MODEL_NAME: Qwen3.5-397B-A17B-NVFP4-V2
+    AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
+  command: |
+    set -euo pipefail
+    : "${AIPERF_SERVER_METRICS_URLS:?Worker metrics URLs must be provided by srtctl}"
+    OUT=/logs/agentic/concurrency_${CONC}
+    mkdir -p "$OUT" "$AIPERF_DATASET_MMAP_CACHE_DIR"
+    # Isolated client runtime, as InferenceX infx/bench/agentic/venv.py builds it (uv venv, py3.11, pinned PyPI release).
+    RT=/tmp/agentx-rt-${SLURM_JOB_ID:-$$}
+    python3 -m pip install --quiet uv
+    python3 -m uv venv --python 3.11 "$RT/venv" || python3 -m uv venv --python python3 "$RT/venv"
+    python3 -m uv pip install --quiet --python "$RT/venv/bin/python" --no-config "$AGENTX_HARNESS_SPEC" "datasets>=4.7.0"
+    "$RT/venv/bin/python" -m pip --version >/dev/null 2>&1 || true
+    "$RT/venv/bin/agentx" --version | tee "$OUT/agentx_version.txt"
+    "$RT/venv/bin/hf" download --repo-type dataset semianalysisai/cc-traces-weka-062126-256k > "$OUT/hf_download.log" 2>&1
+    # Worker Prometheus endpoints injected by srtctl (return_perf_metrics: true on both roles).
+    echo "${AIPERF_SERVER_METRICS_URLS:-<unset>}" | tr ',' '\n' | tee "$OUT/server_metrics_urls.txt"
+    for u in $(echo "${AIPERF_SERVER_METRICS_URLS:-}" | tr ',' ' '); do
+      n=$(curl -sf "$u" | grep -c '^trtllm_kv_cache_utilization' || true)
+      echo "$u trtllm_kv_cache_utilization_lines=$n"
+    done | tee "$OUT/metrics_probe.txt"
+    ARGV=("$RT/venv/bin/agentx" profile --url "http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT"
+          --model "$SERVED_MODEL_NAME" --tokenizer /model --concurrency "$CONC" --benchmark-duration 3600
+          --tokenizer-trust-remote-code)
+    if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
+      ARGV+=(--server-metrics $(echo "$AIPERF_SERVER_METRICS_URLS" | tr ',' ' ') --server-metrics-formats json csv parquet jsonl)
+    fi
+    ARGV+=(--output-artifact-dir "$OUT/aiperf_artifacts" --public-dataset semianalysis_cc_traces_weka_062126_256k)
+    printf '%q ' "${ARGV[@]}" > "$OUT/benchmark_command.txt"; echo >> "$OUT/benchmark_command.txt"
+    set +e
+    "${ARGV[@]}" 2>&1 | tee "$OUT/benchmark.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    # InferenceX gate (AIPERF_REQUIRED_SERVER_METRIC_PREFIX=trtllm_kv_cache_utilization): metric present in the export.
+    if grep -q "\"$AIPERF_REQUIRED_SERVER_METRIC_PREFIX" "$OUT/aiperf_artifacts/server_metrics_export.json" 2>/dev/null; then
+      echo "server metrics: trtllm_kv_cache_utilization PRESENT" | tee "$OUT/server_metrics_check.txt"
+    else
+      echo "server metrics: trtllm_kv_cache_utilization MISSING" | tee "$OUT/server_metrics_check.txt"
+    fi
+    exit $rc
 extra_mount:
 - /scratch/:/scratch/
 observability:

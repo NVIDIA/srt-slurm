@@ -1,6 +1,6 @@
-# Imported from AgentX-gb300-20261017/recipes/disagg-gb300-3p1d-dep4-dep16-c565-b8-mtp-kvoffload-dynamo.yaml
+# Dynamo counterpart of ../trtllm-serve-1017/disagg-gb300-3p1d-dep4-dep16-c565-b8-mtp-kvoffload.yaml
 # Upstream commit: 6459217aab65a8cb58974fda3362e477d4bbb175
-# Uses the dynamo-1016 runtime and benchmark configuration pattern.
+# Uses the dynamo-1016 benchmark client and mounts; retains 1017 engine and workload settings.
 # Native server process-pool and performance-output options are omitted.
 schema: 2
 name: disagg-gb300-3p1d-dep4-dep16-c565-b8-mtp-kvoffload-dynamo
@@ -16,6 +16,10 @@ identity:
   frameworks:
     tensorrt_llm: 1.3.0a0.dev202610151219
     dynamo: 1.6.0.dev20261010
+slurm:
+  time_limit: 04:00:00
+  account: coreai_comparch_inferencex
+  partition: batch
 health_check:
   max_attempts: 540
   interval_seconds: 10
@@ -97,7 +101,7 @@ roles:
         - cuda_core
       pipeline_parallel_size: 1
       print_iter_log: true
-      return_perf_metrics: true
+      return_perf_metrics: false
       scheduler_config:
         capacity_scheduler_policy: MAX_UTILIZATION
       tensor_parallel_size: 4
@@ -183,7 +187,7 @@ roles:
         - cuda_core
       pipeline_parallel_size: 1
       print_iter_log: true
-      return_perf_metrics: true
+      return_perf_metrics: false
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
       speculative_config:
@@ -203,16 +207,18 @@ frontend:
   args:
     router-mode: kv
     router-session-affinity-ttl-secs: '14400'
+environment:
+  TRTLLM_SERVER_DISABLE_GC: '1'
 benchmark:
   type: custom
   env:
     AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
-    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
-    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: '0'
     AIPERF_REQUIRED_SERVER_METRIC_PREFIX: trtllm_kv_cache_utilization
     AIPERF_REF: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/agentx-harness
     HF_HUB_CACHE: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
     HF_HOME: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
+    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: '0'
   command: |
     set -euo pipefail
     # Install the Dynamo-aware AIPerf client and preserve the conversation decoding fix.
