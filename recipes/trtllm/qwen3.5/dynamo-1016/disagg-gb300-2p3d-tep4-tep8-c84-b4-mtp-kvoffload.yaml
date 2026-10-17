@@ -2,7 +2,7 @@
 # Uses the local model/image and Dynamo-aware AIPerf from ../dynamo; installs Dynamo from the mounted /dynamo_wheels directory.
 # Retains source topology, engine tuning and full-run benchmark traffic.
 # Native server process-pool/perf-output options and decode-first startup are omitted.
-# Engine return_perf_metrics is disabled; Dynamo publishes worker metrics.
+# Engine return_perf_metrics is enabled; Dynamo also publishes worker metrics.
 schema: 2
 name: disagg-gb300-2p3d-tep4-tep8-c84-b4-mtp-kvoffload-dynamo
 model:
@@ -98,7 +98,7 @@ roles:
         - cuda_core
       pipeline_parallel_size: 1
       print_iter_log: true
-      return_perf_metrics: false
+      return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: MAX_UTILIZATION
       tensor_parallel_size: 4
@@ -185,7 +185,7 @@ roles:
         - cuda_core
       pipeline_parallel_size: 1
       print_iter_log: true
-      return_perf_metrics: false
+      return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
       speculative_config:
