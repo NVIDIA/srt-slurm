@@ -207,6 +207,7 @@ benchmark:
   type: custom
   client_placement: last_decode
   env:
+    AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
     AIPERF_REF: file:///scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/laliao/build/aiperf/wheel/aiperf-0.12.0-py3-none-any.whl
     HF_HUB_CACHE: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/shixiangx//hf_cache
     HF_HOME: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/shixiangx//hf_cache

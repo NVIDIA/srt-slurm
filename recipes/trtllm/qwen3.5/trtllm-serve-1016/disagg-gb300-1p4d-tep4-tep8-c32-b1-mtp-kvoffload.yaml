@@ -219,6 +219,7 @@ environment:
 benchmark:
   type: custom
   env:
+    AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
     AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID: 'true'
     AIPERF_REQUIRED_SERVER_METRIC_PREFIX: 'trtllm_kv_cache_utilization'
     AIPERF_REF: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/agentx-harness

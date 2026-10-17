@@ -208,6 +208,7 @@ frontend:
 benchmark:
   type: custom
   env:
+    AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
     AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
     AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: '0'
     AIPERF_REQUIRED_SERVER_METRIC_PREFIX: 'trtllm_kv_cache_utilization'
