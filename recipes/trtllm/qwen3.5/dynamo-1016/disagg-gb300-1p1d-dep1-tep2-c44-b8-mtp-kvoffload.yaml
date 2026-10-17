@@ -260,5 +260,9 @@ extra_mount:
 - /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels:/dynamo_wheels
 dynamo:
   install: false
+services:
+- name: otel-collector
+  type: otel-collector
+  enabled: false
 observability:
   enable_otel: false
