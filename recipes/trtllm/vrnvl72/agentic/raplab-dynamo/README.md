@@ -1,10 +1,11 @@
 # GLM-5.3 AgentX Pareto recipes with Dynamo on Vera Rubin
 
-These eight recipes are Dynamo counterparts of
+These eight baseline recipes are Dynamo counterparts of
 [`../trtllm-serve`](../trtllm-serve/README.md). They launch `dynamo.trtllm`
 prefill/decode workers behind `dynamo.frontend`, with Dynamo installed from
 the local wheels in `/home/rihuo/dynamo_wheels`.
 Filenames and point names match the native recipes.
+An additional [EGM variant](#egm-over-nvlink) uses Mooncake Store over NVLink.
 
 The conversion keeps the worker counts, GPU allocations, TRT-LLM engine tuning,
 kernel environment, MTP acceptance controls, prefill Mooncake capacity
@@ -180,3 +181,67 @@ worker. See the [custom benchmark endpoint variables](../../../../../docs/benchm
 
 For every actual cluster run, write `<run_dir>/logs/perf-analysis.md` following
 [`docs/perf-analysis.md`](../../../../../docs/perf-analysis.md).
+
+## EGM over NVLink
+
+[`glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml`](glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml)
+is an experimental variant of the DEP8 c560 recipe. It requires an ARM64 CUDA 13
+Mooncake wheel built from commit
+[`db195f7f7cad61a0a3c3141b8ecf6ca399a54fca`](https://github.com/kvcache-ai/Mooncake/commit/db195f7f7cad61a0a3c3141b8ecf6ca399a54fca)
+or a descendant containing the merged EGM stack, with `WITH_STORE=ON`,
+`USE_CUDA=ON` and `USE_MNNVL=ON`. The image's published `0.3.13` wheel lacks
+this feature. The upstream changes are
+[EGM Store pooling](https://github.com/kvcache-ai/Mooncake/pull/3335) and
+[direct remote GPU reads](https://github.com/kvcache-ai/Mooncake/pull/3431).
+
+Place exactly one matching wheel in `/home/rihuo/mooncake_egm_wheels/`, which is
+already covered by the recipe's home-directory mount. To change the directory,
+update `SRT_MOONCAKE_EGM_WHEEL_DIR` in the recipe's global environment and all
+three Mooncake service environments. Alternatively, use an image that already
+contains a compatible build. `setup_mooncake_egm.sh` keeps the existing Dynamo
+wheel installation, installs the supplied Mooncake wheel without replacing the
+image's other dependencies, and checks the native EGM API. Each master/provider
+container runs its own Mooncake setup. The master launches through
+`python3 -m mooncake.cli`, using the binary from the installed wheel.
+
+The cache path changes as follows:
+
+- Prefill ranks use `protocol: nvlink`, zero ordinary Store capacity and
+  `stage_through_host: false`, passing GPU KV addresses directly to Store.
+  Their `64MiB` local buffer satisfies this TRT-LLM connector's positive-size
+  validation; it is not a host staging pool for the direct GPU transfers.
+- One EGM provider per prefill node contributes `1040GiB`, replacing the four
+  ordinary `260GiB` rank pools. Each decode-node provider contributes `1100GiB`.
+  Total nominal capacity remains `3 × 1040 + 2 × 1100 = 5320GiB`, subject to
+  native allocation alignment. Providers call the dictionary setup API with
+  `enable_egm_store_pool=true`, `egm_numa_nodes=auto`, and a zero local buffer.
+- Providers expose all four GPUs so automatic discovery includes both host
+  NUMA nodes. They start before clients and stop after clients; the master
+  remains available until providers finish cleanup.
+- Mooncake uses explicit classic NVLink transport. Its RDMA device filters and
+  destination affinity settings are removed. The existing NIXL handoff between
+  prefill and decode, model tuning, concurrency, benchmark duration, metrics and
+  disabled OTEL settings are retained.
+
+The allocation requests six exclusive nodes, all allocatable memory and
+`--segment=6`. The six-node count includes the shared frontend/client node.
+Participating GPUs must have supported HOST_NUMA/Fabric allocation, accessible
+IMEX channels, and membership in one NVLink fabric domain. A Slurm segment is an
+allocation constraint; it does not replace checking fabric membership/health.
+Unset `MC_USE_NVLINK_IPC` before launching: even its value `0` selects IPC rather
+than Fabric mode. Setup rejects that setting and unsupported Store builds;
+provider allocation errors are fatal, without an RDMA fallback.
+
+The two-hour allocation follows the job-sizing fallback for the retained
+60-minute load point, existing warmup, startup and drain; there is no comparable
+EGM serving history yet. Validate the resolved launch before submitting:
+
+```bash
+srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/raplab-dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml
+```
+
+Compare TTFT percentiles, cache hits and async-load diagnostics with the RDMA
+baseline at the same workload. Provider ready files and logs record the NVLink
+configuration and allocated EGM capacity. This experiment changes both the
+transport and host staging, so any improvement needs that context. Local schema,
+mock and unit checks do not establish hardware compatibility or performance.
