@@ -16,6 +16,8 @@ resources:
   gpu_type: vrnvl72
   gpus_per_node: 4
   het_jobs: false
+environment:
+  MC_ENABLE_PARALLEL_REG_MR: '0'
 host_setup:
   commands:
   - sudo -n nvidia-smi -lmc 4752,4752
@@ -307,6 +309,7 @@ services:
   srun_options:
     mpi: none
   env:
+    MC_ENABLE_PARALLEL_REG_MR: '0'
     TLLM_LOG_LEVEL: INFO
     PYTHONUNBUFFERED: '1'
   preamble: |-

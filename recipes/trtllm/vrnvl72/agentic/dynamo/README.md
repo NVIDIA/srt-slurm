@@ -137,9 +137,11 @@ first decode node:
 Decode workers remain connector-free; prefill workers receive
 `MOONCAKE_CONFIG_PATH` and use the
 shared store. The donor remains a separate capacity process even though the
-inference workers now use Dynamo. The donor's explicit environment contains
-only `TLLM_LOG_LEVEL=INFO` and `PYTHONUNBUFFERED=1` for logging; inference tuning
-stays in the worker environments. Store settings come from the config and CLI.
+inference workers now use Dynamo. All recipes set `MC_ENABLE_PARALLEL_REG_MR=0`
+in the shared worker environment and explicitly in each donor's environment,
+so the setting reaches prefill, decode and donor processes. Donor logging uses
+`TLLM_LOG_LEVEL=INFO` and `PYTHONUNBUFFERED=1`; inference tuning stays in the
+worker environments. Store settings come from the config and CLI.
 
 The master starts before workers. Donors use `start: with_workers`, starting
 alongside the workers so donor registration can overlap model loading. Donors publish
