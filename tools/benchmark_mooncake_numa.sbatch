@@ -7,7 +7,7 @@
 #SBATCH --account=root
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=16G
+#SBATCH --mem=0
 #SBATCH --exclusive
 #SBATCH --no-requeue
 #SBATCH --time=00:25:00
@@ -16,6 +16,9 @@
 
 set -euo pipefail
 
+# Enroot extracts the image before the container wrapper starts. Bound its
+# host-side decompression parallelism independently of the full CPU allocation.
+export ENROOT_MAX_PROCESSORS=${ENROOT_MAX_PROCESSORS:-8}
 export MC_NUMA_IMAGE=${MC_NUMA_IMAGE:-/home/_shared/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh}
 export MC_NUMA_CLUSTER=${MC_NUMA_CLUSTER:-raplab}
 export MC_NUMA_ALLOW_CROSS_RAIL=${MC_NUMA_ALLOW_CROSS_RAIL:-0}
@@ -143,10 +146,10 @@ esac
 exec python3 -m tools.benchmark_mooncake_numa "$role" --run-dir "$run_dir"
 WRAPPER
 
-printf 'Cluster=%s nodes=%s segment-size=%s CPUs/task=%s affinity-OFF-opt-in=%s image=%s\n' \
+printf 'Cluster=%s nodes=%s segment-size=%s CPUs/task=%s ENROOT_MAX_PROCESSORS=%s affinity-OFF-opt-in=%s image=%s\n' \
     "$MC_NUMA_CLUSTER" "$SLURM_JOB_NODELIST" "${SLURM_JOB_SEGMENT_SIZE:-unset}" \
-    "$MC_NUMA_CPUS_PER_TASK" "$MC_NUMA_ALLOW_CROSS_RAIL" "$MC_NUMA_IMAGE"
-srun --overlap --exact --mpi=none --cpu-bind=none --kill-on-bad-exit=1 \
+    "$MC_NUMA_CPUS_PER_TASK" "$ENROOT_MAX_PROCESSORS" "$MC_NUMA_ALLOW_CROSS_RAIL" "$MC_NUMA_IMAGE"
+srun --overlap --exact --mpi=none --cpu-bind=none --kill-on-bad-exit=1 --export=ALL \
     --nodes=2 --ntasks=2 --ntasks-per-node=1 --cpus-per-task="$MC_NUMA_CPUS_PER_TASK" \
     --container-image="$MC_NUMA_IMAGE" --container-mounts="$RUN_DIR:/bench-run" \
     --container-workdir=/bench-run --container-remap-root --container-writable \

@@ -47,7 +47,7 @@ def launch(
         "import json, os, sys\n"
         "with open(os.environ['SRUN_CAPTURE'], 'a') as output:\n"
         "    output.write(json.dumps({'argv': sys.argv[1:], 'env': "
-        "{k: v for k, v in os.environ.items() if k.startswith('MC_NUMA_')}}) + '\\n')\n"
+        "{k: v for k, v in os.environ.items() if k.startswith('MC_NUMA_') or k == 'ENROOT_MAX_PROCESSORS'}}) + '\\n')\n"
         "raise SystemExit(int(os.environ['FAKE_SRUN_RC']))\n",
     )
     executable(fake_bin / "scontrol", "#!/bin/bash\nprintf 'JobState=RUNNING\\n'\n")
@@ -55,7 +55,11 @@ def launch(
         fake_bin / "timeout",
         '#!/bin/bash\nwhile [[ $1 == -* ]]; do shift; done\nshift\nexec "$@"\n',
     )
-    env = {key: value for key, value in os.environ.items() if not key.startswith("MC_NUMA_")}
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("MC_NUMA_") and key != "ENROOT_MAX_PROCESSORS"
+    }
     env.update(
         PATH=f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
         SLURM_SUBMIT_DIR=str(tmp_path),
@@ -81,7 +85,7 @@ def test_shell_syntax_and_allocation_contract() -> None:
     assert "#SBATCH --account=root" in directives
     assert "#SBATCH --nodes=2" in directives
     assert "#SBATCH --exclusive" in directives
-    assert "#SBATCH --mem=16G" in directives
+    assert "#SBATCH --mem=0" in directives
     assert "#SBATCH --time=00:25:00" in directives
     assert "#SBATCH --signal=B:USR1@180" in directives
     assert not any("--partition" in line or "--nodelist" in line or "--gres" in line for line in directives)
@@ -104,6 +108,7 @@ def test_one_persistent_step_uses_actual_full_node_cpus(tmp_path: Path, cpu_spec
         "--cpu-bind=none",
         "--mpi=none",
         "--kill-on-bad-exit=1",
+        "--export=ALL",
         "--container-remap-root",
         "--container-writable",
         "--container-workdir=/bench-run",
@@ -120,6 +125,23 @@ def test_one_persistent_step_uses_actual_full_node_cpus(tmp_path: Path, cpu_spec
     assert env["MC_NUMA_BATCH_SIZE"] == "512"
     assert len(list((run_dir / "tools").glob("*.py"))) == 4
     assert (run_dir / "logs/perf-analysis.md").exists()
+
+
+@pytest.mark.parametrize("configured,expected", [(None, "8"), ("4", "4")])
+def test_container_extraction_concurrency_is_exported_to_host_srun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, configured: str | None, expected: str
+) -> None:
+    # An unrelated invoking shell must not accidentally supply this test's default.
+    monkeypatch.setenv("ENROOT_MAX_PROCESSORS", "999")
+    overrides = {} if configured is None else {"ENROOT_MAX_PROCESSORS": configured}
+
+    result, _, capture = launch(tmp_path, overrides=overrides)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = [json.loads(line) for line in capture.read_text().splitlines()]
+    assert len(calls) == 1
+    assert calls[0]["env"]["ENROOT_MAX_PROCESSORS"] == expected
+    assert any("ENROOT_MAX_PROCESSORS" in line and expected in line for line in result.stdout.splitlines())
 
 
 def test_heterogeneous_nodes_fail_before_launch(tmp_path: Path) -> None:

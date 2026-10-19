@@ -24,6 +24,7 @@ On Hecate, explicitly opt into the ON/OFF comparison:
 
 ```bash
 MC_NUMA_CLUSTER=hecate MC_NUMA_ALLOW_CROSS_RAIL=1 \
+MC_NUMA_IMAGE=/lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh \
   sbatch -A root -p batch-xdr --segment=2 tools/benchmark_mooncake_numa.sbatch
 ```
 
@@ -39,6 +40,8 @@ existing allocation cannot repair the allocation's placement. See the
 
 The default image for RapLab is
 `/home/_shared/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh`.
+The Hecate command explicitly selects the corresponding image under
+`/lustre/fsw/coreai_comparch_inferencex/rihuo/` using `MC_NUMA_IMAGE`.
 If it is unavailable or does not match the target architecture, set
 `MC_NUMA_IMAGE` to a suitable image containing Mooncake 0.3.13 before submitting.
 The cluster label does not change the image, network configuration or resources.
@@ -105,14 +108,23 @@ All settings are inherited by both container tasks.
 | `MC_NUMA_BUDGET` | `1320` | Positive controller body budget, at most 1320 seconds |
 | `MC_NUMA_OUTPUT_ROOT` | `$SLURM_SUBMIT_DIR/outputs` | Parent directory of the new run directory |
 | `MC_NUMA_TOOL_DIR` | `$SLURM_SUBMIT_DIR/tools` | Source directory containing the four captured Python helpers |
+| `ENROOT_MAX_PROCESSORS` | `8` | Host-side Enroot extraction workers; exported before container creation and independent of benchmark CPU binding |
 
 The default reader batch is 1,027,080,192 B (about 0.957 GiB); two working
-batches contain about 1.913 GiB of cache payload. The allocation reserves
-16 GiB/node by default, allowing a 4 GiB donor pool, registered reader buffers
-and process overhead. For larger pools or batches, users must request a higher
-Slurm `--mem` limit with room for registered buffers and process overhead. The
-launcher does not check available-memory or cgroup headroom before allocation;
-allocation and NUMA-residency failures are reported by the workload.
+batches contain about 1.913 GiB of cache payload. The allocation uses
+`--exclusive --mem=0` to request complete nodes and all allocatable memory on
+each node. Slurm's `--exclusive` alone still allocates only the requested or
+default memory; see the [Slurm allocation options](https://slurm.schedmd.com/sbatch.html#OPT_exclusive).
+This provides room for image extraction, the 4 GiB donor pool, registered reader
+buffers and process overhead without a fixed memory cap. Passing `--mem=SIZE`
+to `sbatch` overrides this default if a smaller allocation is desired.
+
+The launcher also limits Enroot extraction to eight workers instead of scaling
+decompression parallelism to the full CPU allocation. This setting is applied
+on the host before Pyxis starts the container; setting it inside
+`launch-node.sh` would be too late. See [Enroot create configuration](https://github.com/NVIDIA/enroot/blob/main/doc/cmd/create.md).
+The launcher does not check available-memory or cgroup headroom before
+allocation; allocation and NUMA-residency failures are reported by the workload.
 
 The [slurm-job-sizing skill](../src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md)
 sets a 25-minute allocation, a 22-minute controller budget and three-minute
