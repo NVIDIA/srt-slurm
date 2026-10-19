@@ -53,6 +53,8 @@ roles:
     workers: 1
     gpus: 4
     env:
+      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1016
+      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1016
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_TOOL_CALL_PARSER: glm47
       CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
@@ -143,6 +145,8 @@ roles:
     workers: 1
     gpus: 16
     env:
+      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1016
+      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1016
       DYN_TOOL_CALL_PARSER: glm47
       DYN_ROUTER_MODE: least-loaded
       CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'

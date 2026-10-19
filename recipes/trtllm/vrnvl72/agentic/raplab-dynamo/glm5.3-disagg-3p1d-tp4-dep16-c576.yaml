@@ -47,6 +47,8 @@ roles:
     workers: 3
     gpus: 4
     env:
+      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1016
+      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1016
       MC_ENABLE_PARALLEL_REG_MR: '0'
       MC_MS_AUTO_DISC: '0'
       MC_TE_FILTERS: 'mlx5_0,mlx5_1,mlx5_2,mlx5_5,mlx5_6,mlx5_7,mlx5_8,mlx5_11'
@@ -147,6 +149,8 @@ roles:
     workers: 1
     gpus: 16
     env:
+      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1016
+      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1016
       DYN_TOOL_CALL_PARSER: glm47
       DYN_ROUTER_MODE: least-loaded
       CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
