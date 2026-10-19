@@ -26,6 +26,7 @@ host_setup:
   nodes: workers
   ignore_failure: false
 setup_script: install_dynamo_wheel.sh
+reuse_container: true
 dynamo:
   install: false
   request_plane: tcp

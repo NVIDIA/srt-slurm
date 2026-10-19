@@ -2357,6 +2357,10 @@ def _serialize_node_install(install_cmd: str) -> str:
     hash-pinned source install nests on the /configs cache lock inside a
     subshell. Distinct FDs keep the two node-local and cross-node locks
     independent and refactor-proof even if that inner subshell is removed.
+
+    With ``reuse_container: true``, worker and frontend steps using the same
+    image and root-remap mode also share this lock and sentinel, so later steps
+    skip an installation that another step already completed on the node.
     """
     # Resolve the env dir at runtime; fall back to $HOME (also container-private)
     # if python3 is somehow unavailable before the install runs.
@@ -2776,6 +2780,9 @@ class SrtConfig:
     ] = field(default_factory=dict)
     # Extra mounts as `host:container[:ro]` strings; `$VARS` expand, `{placeholders}` do not.
     extra_mount: tuple[str, ...] | None = None
+    # Reuse a named Pyxis container per image and root-remap mode on each node of this job,
+    # avoiding repeated root filesystem extraction into host RAM. Off by default.
+    reuse_container: bool = False
     # Extra srun options (`key: value` -> `--key=value`; empty value -> `--key`) for every job step.
     srun_options: dict[str, str] = field(default_factory=dict)
     # Extra `#SBATCH --key=value` lines (empty value -> `--key`); wins over the cluster defaults.

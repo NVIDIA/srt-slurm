@@ -17,6 +17,7 @@ import functools
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -43,8 +44,8 @@ from srtctl.core.processes import (
 )
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
-from srtctl.core.schema import SrtConfig
-from srtctl.core.slurm import get_slurm_job_id, start_srun_process
+from srtctl.core.schema import SrtConfig, installs_dynamo
+from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_slurm_job_id, resolve_container_name, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
 from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
@@ -163,6 +164,15 @@ class SweepOrchestrator(
     def _print_connection_info(self) -> None:
         """Print srun commands for connecting to nodes."""
         container_args = f"--container-image={self.runtime.container_image}"
+        name = resolve_container_name(
+            self.runtime.container_image,
+            reuse_container=self.runtime.reuse_container,
+            srun_options=self.runtime.srun_options,
+            srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
+            job_id=str(self.runtime.job_id),
+        )
+        if name:
+            container_args += f" --container-name={shlex.quote(name)}"
         mounts_str = ",".join(f"{src}:{dst}" for src, dst in self.runtime.container_mounts.items())
         if mounts_str:
             container_args += f" --container-mounts={mounts_str}"
@@ -470,6 +480,7 @@ class SweepOrchestrator(
                 output=str(log),
                 container_image=str(self.runtime.container_image),
                 container_mounts=self.runtime.container_mounts,
+                reuse_container=self.runtime.reuse_container,
                 het_group=self.runtime.nodes.het_group_for(node),
             )
             procs.append((node, proc, log))
@@ -569,6 +580,7 @@ class SweepOrchestrator(
                 output=str(download_log),
                 container_image=str(self.runtime.container_image),
                 container_mounts=self.runtime.container_mounts,
+                reuse_container=self.runtime.reuse_container,
                 env_to_set=hf_env,
                 use_bash_wrapper=False,  # command is already bash -c
                 het_group=self.runtime.nodes.het_group_for(download_node),
@@ -695,6 +707,7 @@ class SweepOrchestrator(
             output=str(eval_log),
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
+            reuse_container=self.runtime.reuse_container,
             env_to_set=env_to_set,
             srun_options=self.runtime.srun_options,
             het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),

@@ -146,6 +146,7 @@ def test_every_dynamo_frontend_is_wrapped_and_gets_shutdown_budget(tmp_path, ena
         infra_node_ip="10.0.0.9",
         head_node_ip="10.0.0.8",
         container_image=Path("/container.sqsh"),
+        reuse_container=False,
         container_mounts={},
         environment={},
     )

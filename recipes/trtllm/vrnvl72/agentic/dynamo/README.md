@@ -41,13 +41,22 @@ dynamo:
   install: false
   request_plane: tcp
   event_plane: zmq
-setup_script: configs/install_dynamo_wheel.sh
+setup_script: install_dynamo_wheel.sh
+reuse_container: true
 extra_mount:
 - /lustre:/lustre
 - /lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels
 ```
 
 Provide compatible `ai-dynamo` and `ai-dynamo-runtime` wheels in that directory.
+
+All eight recipes enable `reuse_container: true` to reduce duplicate image
+extractions on each node. Workers and colocated services using the same image
+and root-remapping mode share a job-scoped Pyxis root filesystem. This flag
+defaults to `false` elsewhere. Filesystem changes, including wheel installations,
+are shared, so setup scripts must be idempotent and serialize concurrent package
+installs. Model, host KV cache and Mooncake pool memory remain separate costs.
+See [container filesystem memory](../../../../../docs/slurm-faq.md#host-memory-used-by-container-filesystems).
 
 Every recipe specifies the model and custom TRT-LLM image paths directly:
 

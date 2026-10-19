@@ -81,6 +81,38 @@ def _write_config(tmp_path: Path) -> Path:
     return cfg
 
 
+@pytest.mark.parametrize("reuse", [False, True])
+def test_container_reuse_reaches_every_containerized_stage(tmp_path: Path, monkeypatch, reuse: bool) -> None:
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
+    config = deepcopy(MINIMAL_CONFIG)
+    if reuse:
+        config["reuse_container"] = True
+    config["dynamo"] = {"install": False}
+    config["observability"] = {"tachometer": {"enabled": False}}
+    config["services"] = [{"name": "donor", "command": ["sleep", "600"], "start": "before_workers"}]
+    path = tmp_path / "container-reuse.yaml"
+    path.write_text(yaml.safe_dump(config))
+    launches = []
+
+    assert (
+        run_mock_sweep(
+            config_path=path,
+            output_dir=tmp_path / "output",
+            job_id="42042",
+            options=MockOptions(child_duration_s=0, phase_pause_s=0, on_srun=launches.append),
+        )
+        == 0
+    )
+
+    containerized = [call for call in launches if call.get("container_image")]
+    assert containerized
+    assert all(call.get("reuse_container", False) is reuse for call in containerized)
+    assert any(call.get("step_name", "").startswith("agg_") for call in containerized)
+    assert any(call.get("step_name") == "service_donor" for call in containerized)
+    assert any("frontend" in str(call.get("output", "")) for call in containerized)
+    assert any(str(call.get("output", "")).endswith("benchmark.out") for call in containerized)
+
+
 @pytest.mark.parametrize("critical", [True, False])
 def test_mock_worker_restart_preserves_role_launch_settings_and_records_exhaustion(
     tmp_path: Path, critical: bool

@@ -480,6 +480,7 @@ class WorkerStageMixin:
                 if mode in self.config.role_containers
                 else str(self.runtime.container_image)
             ),
+            reuse_container=self.runtime.reuse_container,
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
             env_to_unset=env_to_unset,
@@ -729,6 +730,7 @@ class WorkerStageMixin:
                 if mode in self.config.role_containers
                 else str(self.runtime.container_image)
             ),
+            reuse_container=self.runtime.reuse_container,
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
             bash_preamble=bash_preamble,

@@ -3,6 +3,7 @@
 
 """Tests for SLURM command construction."""
 
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -24,13 +25,128 @@ from srtctl.core.schema import (
     RoleConfig,
     Topology,
 )
-from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
+from srtctl.core.slurm import get_slurm_het_nodelists, shared_container_name, start_srun_process
 
 
 def _built_bash_command(mock_popen: MagicMock) -> str:
     srun_cmd = mock_popen.call_args.args[0]
     assert srun_cmd[-3:-1] == ["bash", "-c"]
     return srun_cmd[-1]
+
+
+def _container_names(command: list[str]) -> list[str]:
+    names = []
+    for index, argument in enumerate(command):
+        if argument == "--container-name":
+            names.append(command[index + 1])
+        elif argument.startswith("--container-name="):
+            names.append(argument.partition("=")[2])
+    return names
+
+
+@pytest.mark.parametrize(
+    ("container_image", "options"),
+    [
+        ("/images/model.sqsh", {}),
+        ("/images/model.sqsh", {"reuse_container": False}),
+        (None, {"reuse_container": True}),
+    ],
+)
+def test_srun_keeps_unnamed_containers_unless_reuse_is_enabled(container_image, options) -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as popen,
+    ):
+        start_srun_process(["true"], container_image=container_image, **options)
+    assert _container_names(popen.call_args.args[0]) == []
+
+
+def test_srun_reuses_one_rootfs_per_image_and_job(monkeypatch) -> None:
+    monkeypatch.delenv("ENROOT_REMAP_ROOT", raising=False)
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345") as job_id,
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as popen,
+    ):
+        for image in ("/images/model.sqsh", "/images/model.sqsh", "/images/client.sqsh"):
+            start_srun_process(["true"], container_image=image, reuse_container=True)
+        job_id.return_value = "67890"
+        start_srun_process(["true"], container_image="/images/model.sqsh", reuse_container=True)
+
+    names = [_container_names(call.args[0]) for call in popen.call_args_list]
+    assert all(len(value) == 1 for value in names)
+    first, repeated, other_image, other_job = (value[0] for value in names)
+    assert first == repeated
+    assert len({first, other_image, other_job}) == 3
+    assert re.fullmatch(r"srtctl_[0-9a-f]{12}_12345", first)
+    assert other_job.endswith("_67890")
+
+
+@pytest.mark.parametrize(
+    ("ambient", "task_export", "inside_container", "srun_options", "remapped"),
+    [
+        (None, None, None, {}, False),
+        ("yes", None, None, {}, True),
+        ("0", None, None, {}, False),
+        ("yes", "no", None, {}, False),
+        (None, "yes", None, {}, True),
+        (None, None, "yes", {}, False),
+        ("no", None, None, {"container-remap-root": ""}, True),
+        ("yes", "yes", None, {"no-container-remap-root": ""}, False),
+    ],
+)
+def test_srun_container_reuse_separates_effective_root_modes(
+    monkeypatch, ambient, task_export, inside_container, srun_options, remapped
+) -> None:
+    if ambient is None:
+        monkeypatch.delenv("ENROOT_REMAP_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("ENROOT_REMAP_ROOT", ambient)
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as popen,
+    ):
+        start_srun_process(
+            ["true"],
+            container_image="/images/model.sqsh",
+            reuse_container=True,
+            srun_export_env={"ENROOT_REMAP_ROOT": task_export} if task_export is not None else None,
+            env_to_set={"ENROOT_REMAP_ROOT": inside_container} if inside_container is not None else None,
+            srun_options=srun_options,
+        )
+    assert _container_names(popen.call_args.args[0]) == [
+        shared_container_name("/images/model.sqsh", remap_root=remapped, job_id="12345")
+    ]
+    assert shared_container_name("/images/model.sqsh", remap_root=True, job_id="12345") != shared_container_name(
+        "/images/model.sqsh", remap_root=False, job_id="12345"
+    )
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+@pytest.mark.parametrize(
+    ("explicit_name", "option_name", "expected"),
+    [("custom", None, "custom"), (None, "custom-option", "custom-option"), ("custom", "other", "custom")],
+)
+def test_explicit_container_names_take_precedence_without_duplicates(
+    reuse, explicit_name, option_name, expected
+) -> None:
+    options = {"container-name": option_name} if option_name is not None else {}
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as popen,
+    ):
+        start_srun_process(
+            ["true"],
+            container_image="/images/model.sqsh",
+            reuse_container=reuse,
+            container_name=explicit_name,
+            srun_options=options,
+        )
+    assert _container_names(popen.call_args.args[0]) == [expected]
+    assert options == ({"container-name": option_name} if option_name is not None else {})
 
 
 def test_start_srun_exports_env_before_preamble() -> None:
@@ -249,6 +365,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         gpus_per_node=8,
         visible_devices_env="CUDA_VISIBLE_DEVICES",
         environment={},
+        reuse_container=False,
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
@@ -323,6 +440,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         nodes=SimpleNamespace(infra="infra-node", worker=["node-a"]),
         gpus_per_node=8,
         environment={},
+        reuse_container=False,
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
@@ -905,6 +1023,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         nodes=SimpleNamespace(infra="infra-node", worker=["node-a", "node-b"]),
         gpus_per_node=8,
         environment={},
+        reuse_container=False,
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),

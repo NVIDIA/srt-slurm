@@ -403,6 +403,9 @@ class RuntimeContext:
     # Container mounts: host_path -> container_path
     container_mounts: dict[Path, Path] = field(default_factory=dict)
 
+    # Opt-in reuse of a job-scoped named Pyxis container for each image/remap mode.
+    reuse_container: bool = False
+
     # Additional srun options
     srun_options: dict[str, str] = field(default_factory=dict)
 
@@ -591,6 +594,7 @@ class RuntimeContext:
             network_interface=network_interface,
             visible_devices_env=visible_devices_env,
             container_mounts={},
+            reuse_container=config.reuse_container,
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
@@ -619,6 +623,7 @@ class RuntimeContext:
             network_interface=network_interface,
             visible_devices_env=visible_devices_env,
             container_mounts=container_mounts,
+            reuse_container=config.reuse_container,
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
