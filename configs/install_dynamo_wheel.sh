@@ -52,7 +52,7 @@ SENTINEL="${LOCK_DIR}/.srtctl_dynamo_wheel_install.${WHEEL_ID}.complete"
         unset PIP_EXTRA_INDEX_URL
         pip install --extra-index-url https://pypi.nvidia.com/ aiconfigurator-core
         python3 -m pip install --ignore-installed PyYAML==6.0.3
-        pip install --no-cache-dir /dynamo_wheels/*.whl
+        python3 -m pip install --no-cache-dir --extra-index-url https://pypi.nvidia.com/ /dynamo_wheels/*.whl
 
         # Drop sentinels from previous wheel sets so this directory records the
         # one build actually installed rather than accumulating every past id.
