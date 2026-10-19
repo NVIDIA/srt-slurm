@@ -57,6 +57,11 @@ gpus_per_node: 4
 use_segment_sbatch_directive: true
 ```
 
+Every recipe uses `host_setup` on worker nodes to lock GPU memory clocks to
+4752 MHz with `sudo -n nvidia-smi -lmc 4752,4752` and reset them during teardown
+with `sudo -n nvidia-smi -rmc`. Setup failures abort the run
+(`ignore_failure: false`).
+
 The image must support the Rubin kernels, MTP prefill, Python NIXL transceiver
 and Mooncake donor, with their required dependencies. Installing the
 base Dynamo packages leaves this custom TRT-LLM build in place; do not install

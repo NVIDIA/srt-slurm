@@ -16,6 +16,13 @@ resources:
   gpu_type: vrnvl72
   gpus_per_node: 4
   het_jobs: false
+host_setup:
+  commands:
+  - sudo -n nvidia-smi -lmc 4752,4752
+  teardown:
+  - sudo -n nvidia-smi -rmc
+  nodes: workers
+  ignore_failure: false
 setup_script: install_dynamo_wheel.sh
 dynamo:
   install: false
