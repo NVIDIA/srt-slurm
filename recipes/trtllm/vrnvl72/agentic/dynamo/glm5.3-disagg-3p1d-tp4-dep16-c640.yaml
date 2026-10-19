@@ -307,7 +307,7 @@ services:
   type: generic
   placement:
     node: decode
-  start: after_frontend
+  start: with_workers
   critical: true
   srun_options:
     mpi: none

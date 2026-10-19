@@ -141,9 +141,8 @@ inference workers now use Dynamo. The donor's explicit environment contains
 only `TLLM_LOG_LEVEL=INFO` and `PYTHONUNBUFFERED=1` for logging; inference tuning
 stays in the worker environments. Store settings come from the config and CLI.
 
-The master starts before workers. Donors use `start: after_frontend`: Dynamo's
-worker and frontend launches return before model readiness, allowing donor
-registration to overlap worker loading. Donors publish
+The master starts before workers. Donors use `start: with_workers`, starting
+alongside the workers so donor registration can overlap model loading. Donors publish
 `/logs/mooncake_donor_{index}.ready`; the `readiness.file` gate waits for them
 before benchmarking. Donors now share the workers' shutdown tier, while the
 master shuts down afterward. This requires srt-slurm's
