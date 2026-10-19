@@ -21,6 +21,8 @@ environment:
   PIP_CONFIG_FILE: /dev/null
   PIP_INDEX_URL: https://pypi.org/simple
   PIP_EXTRA_INDEX_URL: https://pypi.nvidia.com
+observability:
+  enable_otel: false
 setup_script: install_dynamo_wheel.sh
 dynamo:
   install: false
@@ -37,7 +39,6 @@ frontend:
     DYN_TOKENIZER: fastokens
     DYN_TCP_REQUEST_TIMEOUT: '30'
     DYN_ROUTER_USE_KV_EVENTS: '0'
-    OTEL_EXPORT_ENABLED: 'false'
   args:
     router-mode: kv
     router-session-affinity-ttl-secs: '14400'
@@ -274,6 +275,10 @@ roles:
       return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
+services:
+- name: otel-collector
+  type: otel-collector
+  enabled: false
 extra_mount:
 - /home/rihuo/:/home/rihuo/
 - /home/rihuo/dynamo_wheels:/dynamo_wheels

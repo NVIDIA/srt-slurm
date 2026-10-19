@@ -21,6 +21,8 @@ environment:
   PIP_CONFIG_FILE: /dev/null
   PIP_INDEX_URL: https://pypi.org/simple
   PIP_EXTRA_INDEX_URL: https://pypi.nvidia.com
+observability:
+  enable_otel: false
 setup_script: install_dynamo_wheel.sh
 dynamo:
   install: false
@@ -279,6 +281,9 @@ roles:
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
 services:
+- name: otel-collector
+  type: otel-collector
+  enabled: false
 - name: mooncake-master
   type: mooncake-master
   placement:
