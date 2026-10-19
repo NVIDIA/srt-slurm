@@ -24,11 +24,21 @@ On Hecate, explicitly opt into the ON/OFF comparison:
 
 ```bash
 MC_NUMA_CLUSTER=hecate MC_NUMA_ALLOW_CROSS_RAIL=1 \
-  sbatch -p batch-xdr tools/benchmark_mooncake_numa.sbatch
+  sbatch -A root -p batch-xdr --segment=2 tools/benchmark_mooncake_numa.sbatch
 ```
 
-This command leaves node selection to Slurm. The default image is
-`/home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh`.
+`--segment=2` requests the two-node allocation in one Hecate topology segment
+for rack-local placement, while leaving both node names to Slurm. This follows
+the repository's segment convention: segment size equals the allocation's node
+count. The physical rack boundary follows the site's configured topology.
+The launcher records `SLURM_JOB_SEGMENT_SIZE` in `logs/controller.log`; the
+initial job and node snapshots preserve the allocation for verification.
+Pass `--segment` to `sbatch` when submitting; adding it to `srun` inside an
+existing allocation cannot repair the allocation's placement. See the
+[Slurm segment option](https://slurm.schedmd.com/sbatch.html#OPT_segment).
+
+The default image for RapLab is
+`/home/_shared/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh`.
 If it is unavailable or does not match the target architecture, set
 `MC_NUMA_IMAGE` to a suitable image containing Mooncake 0.3.13 before submitting.
 The cluster label does not change the image, network configuration or resources.

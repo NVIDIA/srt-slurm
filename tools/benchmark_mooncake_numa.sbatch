@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Submit from the repository root; select the partition with sbatch -p.
+# Hecate: add --segment=2 to sbatch for one two-node topology segment.
 #SBATCH --job-name=mooncake-numa
 #SBATCH --account=root
 #SBATCH --nodes=2
@@ -15,7 +16,7 @@
 
 set -euo pipefail
 
-export MC_NUMA_IMAGE=${MC_NUMA_IMAGE:-/home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh}
+export MC_NUMA_IMAGE=${MC_NUMA_IMAGE:-/home/_shared/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh}
 export MC_NUMA_CLUSTER=${MC_NUMA_CLUSTER:-raplab}
 export MC_NUMA_ALLOW_CROSS_RAIL=${MC_NUMA_ALLOW_CROSS_RAIL:-0}
 export MC_NUMA_ROUNDS=${MC_NUMA_ROUNDS:-3}
@@ -142,8 +143,9 @@ esac
 exec python3 -m tools.benchmark_mooncake_numa "$role" --run-dir "$run_dir"
 WRAPPER
 
-printf 'Cluster=%s nodes=%s CPUs/task=%s affinity-OFF-opt-in=%s image=%s\n' \
-    "$MC_NUMA_CLUSTER" "$SLURM_JOB_NODELIST" "$MC_NUMA_CPUS_PER_TASK" "$MC_NUMA_ALLOW_CROSS_RAIL" "$MC_NUMA_IMAGE"
+printf 'Cluster=%s nodes=%s segment-size=%s CPUs/task=%s affinity-OFF-opt-in=%s image=%s\n' \
+    "$MC_NUMA_CLUSTER" "$SLURM_JOB_NODELIST" "${SLURM_JOB_SEGMENT_SIZE:-unset}" \
+    "$MC_NUMA_CPUS_PER_TASK" "$MC_NUMA_ALLOW_CROSS_RAIL" "$MC_NUMA_IMAGE"
 srun --overlap --exact --mpi=none --cpu-bind=none --kill-on-bad-exit=1 \
     --nodes=2 --ntasks=2 --ntasks-per-node=1 --cpus-per-task="$MC_NUMA_CPUS_PER_TASK" \
     --container-image="$MC_NUMA_IMAGE" --container-mounts="$RUN_DIR:/bench-run" \
