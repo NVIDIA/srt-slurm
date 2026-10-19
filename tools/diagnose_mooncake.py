@@ -18,10 +18,12 @@ import importlib.metadata
 import json
 import mmap
 import os
+import platform
 import re
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import traceback
@@ -189,34 +191,280 @@ def setup_store(master: str, gib: int = 0, local_bytes: int = 0) -> tuple[Any, d
     return store, installed, time.monotonic() - started
 
 
+def inventory_command(argv: list[str], timeout: float) -> dict[str, Any]:
+    """Run one read-only probe with bounded retained output and no shell."""
+    started = time.monotonic()
+    record: dict[str, Any] = {"argv": argv, "returncode": None, "status": "error"}
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        try:
+            result = subprocess.run(argv, stdout=stdout, stderr=stderr, timeout=timeout, check=False)
+            record.update(returncode=result.returncode, status="ok" if result.returncode == 0 else "error")
+        except subprocess.TimeoutExpired as exc:
+            record.update(status="timeout", error=str(exc))
+        except OSError as exc:
+            record.update(status="missing" if isinstance(exc, FileNotFoundError) else "error", error=str(exc))
+        for name, stream in (("stdout", stdout), ("stderr", stderr)):
+            size = stream.tell()
+            stream.seek(max(0, size - 65536))
+            record[name] = stream.read(65536).decode(errors="replace")
+            record[f"{name}_truncated"] = size > 65536
+    record["duration_s"] = time.monotonic() - started
+    return record
+
+
 def inventory(args: argparse.Namespace) -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        result = subprocess.run(["dmesg"], capture_output=True, text=True, timeout=5, check=False)
-        kernel = {
-            "returncode": result.returncode,
-            "stderr": result.stderr,
-            "messages": [
-                line
-                for line in result.stdout.splitlines()
-                if re.search(r"oom|killed process|out of memory|mlx5|infiniband|rdma|NETDEV|link", line, re.IGNORECASE)
-            ][-300:],
+    errors: dict[str, str] = {}
+
+    def read(path: Path) -> str | None:
+        try:
+            return path.read_text()[:65536].strip()
+        except OSError as exc:
+            errors[str(path)] = str(exc)
+            return None
+
+    def fields(base: Path, names: tuple[str, ...]) -> dict[str, str | None]:
+        return {name: read(base / name) for name in names}
+
+    def device(base: Path) -> dict[str, Any]:
+        target = base / "device"
+        return {
+            "pci_address": target.resolve().name if target.exists() else None,
+            "driver": (target / "driver").resolve().name if (target / "driver").exists() else None,
+            **(fields(target, ("numa_node", "vendor", "device")) if target.exists() else {}),
         }
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        kernel = {"unavailable": str(exc)}
+
+    commands = {
+        "uname": ["uname", "-a"],
+        "lscpu": ["lscpu"],
+        "numactl": ["numactl", "--hardware"],
+        "free": ["free", "-b"],
+        "ip_address": ["ip", "-br", "address"],
+        "ip_route": ["ip", "route"],
+        "rdma_link": ["rdma", "link"],
+        "ibstat": ["ibstat"],
+        "ibv_devinfo": ["ibv_devinfo"],
+        "lspci": ["lspci", "-nn"],
+        "dmesg": ["dmesg"],
+        "nvidia_gpu": [
+            "nvidia-smi",
+            "--query-gpu=index,name,memory.total,pci.bus_id,driver_version",
+            "--format=csv,nounits",
+        ],
+        "nvidia_ecc": ["nvidia-smi", "-q", "-d", "ECC"],
+    }
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        results = dict(
+            zip(
+                commands,
+                executor.map(
+                    lambda argv: inventory_command(argv, getattr(args, "commands_timeout", 3.0)), commands.values()
+                ),
+                strict=True,
+            )
+        )
+    kernel = {key: value for key, value in results["dmesg"].items() if key != "stdout"}
+    kernel["messages"] = [
+        line
+        for line in results["dmesg"]["stdout"].splitlines()
+        if re.search(
+            r"oom|killed process|out of memory|mlx5|infiniband|rdma|NETDEV|link|hardware error|EDAC|AER",
+            line,
+            re.IGNORECASE,
+        )
+    ][-300:]
+    cpuinfo = (read(Path("/proc/cpuinfo")) or "") + "\n" + results["lscpu"]["stdout"]
+    try:
+        affinity = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError) as exc:
+        affinity = None
+        errors["sched_getaffinity"] = str(exc)
+    adapters = {}
+    for base in sorted(Path("/sys/class/infiniband").glob("*")):
+        ports = {}
+        for port in sorted((base / "ports").glob("*")):
+            ports[port.name] = {
+                **fields(port, ("state", "phys_state", "rate", "link_layer", "active_mtu")),
+                "gids": {path.name: read(path) for path in sorted((port / "gids").glob("*"))},
+            }
+        adapters[base.name] = {
+            **device(base),
+            **fields(base, ("fw_ver", "node_guid", "sys_image_guid")),
+            "ports": ports,
+        }
+    try:
+        ip = host_ip()
+    except OSError as exc:
+        ip = None
+        errors["host_ip"] = str(exc)
     args.output.write_text(
         json.dumps(
             {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "scope": getattr(args, "scope", "container"),
                 "host": socket.gethostname(),
-                "ip": host_ip(),
+                "slurm_node": os.environ.get("SLURMD_NODENAME"),
+                "ip": ip,
                 "versions": versions(),
                 "health": health(),
                 "kernel": kernel,
+                "platform": {
+                    "kernel": platform.release(),
+                    "machine": platform.machine(),
+                    "python": platform.python_version(),
+                    "os_release": read(Path("/etc/os-release")),
+                },
+                "cpu": {
+                    "logical_count": os.cpu_count(),
+                    "affinity": affinity,
+                    "limits": read(Path("/proc/self/limits")),
+                    "model_names": sorted(
+                        {
+                            line.split(":", 1)[1].strip()
+                            for line in cpuinfo.splitlines()
+                            if ":" in line
+                            and line.split(":", 1)[0].strip() in ("model name", "Model name", "Hardware", "Processor")
+                        }
+                    ),
+                },
+                "numa": {
+                    base.name: fields(base, ("cpulist", "distance", "meminfo"))
+                    for base in sorted(Path("/sys/devices/system/node").glob("node[0-9]*"))
+                },
+                "interfaces": {
+                    base.name: {
+                        **device(base),
+                        **fields(base, ("operstate", "carrier", "mtu", "address", "speed")),
+                        "statistics": {path.name: read(path) for path in sorted((base / "statistics").glob("*"))},
+                    }
+                    for base in sorted(Path("/sys/class/net").glob("*"))
+                },
+                "infiniband": adapters,
+                "commands": results,
+                "collection_errors": errors,
             },
             indent=2,
         )
         + "\n"
     )
+
+
+def inventory_summary(run_dir: Path) -> list[str]:
+    """Summarize native-host snapshots separately from container OS evidence."""
+
+    def network_counters(row: dict[str, Any]) -> dict[str, int]:
+        values = dict(row.get("health", {}).get("ib_counters", {}))
+        for interface, data in row.get("interfaces", {}).items():
+            for name, value in data.get("statistics", {}).items():
+                if isinstance(value, str) and value.isdigit():
+                    values[f"net/{interface}/{name}"] = int(value)
+        return values
+
+    grouped: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+    container_sources = []
+    malformed = []
+    for path in sorted(run_dir.rglob("*inventory-*.json")):
+        try:
+            row = json.loads(path.read_text())
+            if row.get("scope") == "host":
+                grouped.setdefault(row.get("slurm_node") or row["host"], []).append((path, row))
+            else:
+                container_sources.append(str(path.relative_to(run_dir)))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            malformed.append(f"{path.relative_to(run_dir)}: {exc}")
+    lines = [
+        "",
+        "## Node inventory",
+        "",
+        "Host OS evidence comes from native host-scope snapshots; container OS evidence is listed separately. "
+        "Historical nonzero counters are not attributed to this run. Unavailable probes do not establish a clean node. "
+        "Negative counter deltas indicate a counter reset/decrease and are not evidence of improvement.",
+        "",
+    ]
+    if not grouped:
+        lines.append("Host inventory unavailable; host OS/kernel and node counter changes cannot be established.")
+    for host, snapshots in sorted(grouped.items()):
+        snapshots.sort(key=lambda item: (item[0].parent != run_dir / "logs", item[1].get("timestamp", "")))
+        first_path, first = snapshots[0]
+        last_path, last = snapshots[-1]
+        counters = network_counters(first)
+        final = network_counters(last)
+
+        def relevant(name: str) -> bool:
+            return any(
+                word in name.lower() for word in ("err", "discard", "link_downed", "constraint", "timeout", "recovery")
+            )
+
+        comparable = {name for name in counters.keys() & final.keys() if relevant(name)}
+        delta = {name: final[name] - counters[name] for name in sorted(comparable) if final[name] != counters[name]}
+        historical = sum(value != 0 for name, value in counters.items() if relevant(name))
+        platform_info = last.get("platform", {})
+        os_name = next(
+            (
+                line.partition("=")[2].strip('"')
+                for line in (platform_info.get("os_release") or "").splitlines()
+                if line.startswith("PRETTY_NAME=")
+            ),
+            "N/A",
+        )
+        ports = {
+            f"{hca}/{port}": values.get("state")
+            for hca, adapter in last.get("infiniband", {}).items()
+            for port, values in adapter.get("ports", {}).items()
+        }
+        net_states = {name: data.get("operstate") for name, data in last.get("interfaces", {}).items()}
+        commands = last.get("commands", {})
+        unavailable = sum(row.get("status") != "ok" for row in commands.values())
+        kernel_known = first.get("kernel", {}).get("status") == last.get("kernel", {}).get("status") == "ok"
+        previous_messages = set(first.get("kernel", {}).get("messages", []))
+        oom = (
+            [
+                message
+                for message in last.get("kernel", {}).get("messages", [])
+                if message not in previous_messages
+                and re.search(r"oom|killed process|out of memory", message, re.IGNORECASE)
+            ]
+            if kernel_known
+            else None
+        )
+        baseline = first_path.parent == run_dir / "logs"
+        lines.extend(
+            [
+                f"Node `{host}`: OS={os_name}; kernel={platform_info.get('kernel', 'N/A')}; "
+                f"CPU={last.get('cpu', {}).get('model_names') or 'N/A'}; "
+                f"MemTotal={last.get('health', {}).get('meminfo_kib', {}).get('MemTotal', 'N/A')} KiB.",
+                f"IB port states: {ports or 'unavailable'}. Command errors/missing/timeouts={unavailable}/{len(commands)}; "
+                f"sysfs/proc collection errors={len(last.get('collection_errors', {}))}.",
+                f"Network interface states: {net_states or 'unavailable'}.",
+                f"Preflight baseline={'present' if baseline else 'missing'}; snapshots={len(snapshots)}; "
+                f"nonzero link/error counter changes={delta if baseline and len(snapshots) > 1 and comparable else 'N/A'}; "
+                f"comparable counters={len(comparable)}; historical nonzero counters={historical}. "
+                f"New OOM kernel messages={oom if baseline and len(snapshots) > 1 and oom is not None else 'N/A'} "
+                "(only retained kernel log windows are compared).",
+                "Sources: " + ", ".join(f"`{path.relative_to(run_dir)}`" for path, _ in snapshots) + ".",
+                "",
+            ]
+        )
+        if baseline:
+            for path, row in snapshots[1:]:
+                current = network_counters(row)
+                changes = {
+                    name: current[name] - value
+                    for name, value in counters.items()
+                    if relevant(name) and name in current and current[name] != value
+                }
+                if changes:
+                    lines.append(
+                        f"Post snapshot `{path.relative_to(run_dir)}` counter changes from preflight: {changes}."
+                    )
+    lines.append(
+        "Container inventory sources: "
+        + (", ".join(f"`{source}`" for source in container_sources) or "unavailable")
+        + "."
+    )
+    if malformed:
+        lines.append("Unreadable inventory: " + "; ".join(malformed))
+    return lines
 
 
 def donor(args: argparse.Namespace) -> None:
@@ -567,6 +815,7 @@ def report(args: argparse.Namespace) -> None:
                         native_counts[pattern] += 1
         details.append(f"Native error text counts from `{case}/*.err`: {dict(native_counts)}.")
     text.extend(details)
+    text.extend(inventory_summary(args.run_dir))
     exceptional = [record for record in records if record["event"] in ("fatal", "worker_error", "malformed_record")]
     probes = [item for record in records if record["event"] == "health" for item in record.get("probes", [])]
     external_probes = [record for record in records if record["event"] == "external_health" and "tcp_ok" in record]
@@ -619,6 +868,8 @@ def main() -> None:
             continue
         child.add_argument("--output", type=Path, required=True)
         if command == "inventory":
+            child.add_argument("--scope", choices=("host", "container"), default="container")
+            child.add_argument("--commands-timeout", type=float, default=3.0)
             continue
         child.add_argument("--master", required=True)
         if command == "donor":

@@ -32,6 +32,22 @@ external TCP reachability of the actual handshake listener, master metrics, and
 Slurm step exit status. Readers finish before the donor is stopped. All stop
 requests are timestamped so teardown errors can be separated from traffic errors.
 
+Every allocated node also gets an inventory before traffic and after each case.
+`host-inventory-<node>.json` is collected directly by a native Slurm step, and
+`inventory-<node>.json` records the container view. The two views distinguish
+the host OS, kernel and drivers from the image's userspace. They capture:
+
+- OS/kernel versions, CPU model and affinity, process limits, NUMA layout and memory.
+- NIC addresses/routes, link state/speed, MTU, PCI/NUMA placement, RDMA devices,
+  firmware, GIDs and port counters.
+- GPU/driver details when accessible, and recent relevant kernel messages for
+  OOM, PCIe, RDMA and link errors.
+- Each collector command's exit status, stderr, timeout or missing-tool result.
+
+`slurm-nodes.txt` saves Slurm's node configuration and state at each snapshot.
+The performance report summarizes host inventories and changes from the initial
+counter baseline; existing cumulative errors are kept separate from new errors.
+
 Outputs are saved under:
 
 ```text

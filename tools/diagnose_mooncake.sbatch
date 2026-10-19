@@ -49,6 +49,15 @@ run_step() {
     # Background callers' $! must own srun, not a shell waiting for srun.
     if (( BASH_SUBSHELL > 0 )); then exec "${command[@]}" "$@"; else "${command[@]}" "$@"; fi
 }
+run_host_step() {
+    local node_list=$1 node_count=$2
+    shift 2
+    # No container flags: collect the node OS, driver and kernel view directly.
+    local -a command=(srun --overlap --exact --mpi=none --cpu-bind=none
+        --nodes="$node_count" --ntasks="$node_count" --ntasks-per-node=1
+        --cpus-per-task=4 --nodelist="$node_list" --chdir="$RUN_DIR")
+    if (( BASH_SUBSHELL > 0 )); then exec "${command[@]}" "$@"; else "${command[@]}" "$@"; fi
+}
 step_gone() {
     local step=$1 listing
     listing=$(timeout 2s squeue --steps --noheader -j "$SLURM_JOB_ID" --format=%i) || return 2
@@ -178,19 +187,36 @@ for donor_node in vr-r42-cn05 vr-r42-cn02; do
     done
 done
 inventory_snapshot() {
-    local rel=$1 rc=0
-    aux_step=$RUN_DIR/$rel/inventory.step
-    run_step "$SLURM_JOB_NODELIST" "${#ALL_NODES[@]}" --time=00:02:00 \
-        --output="$RUN_DIR/$rel/inventory-%N.out" --error="$RUN_DIR/$rel/inventory-%N.err" \
-        bash -c "$STEP_WRAPPER" _ "$rel/inventory.step" bash -c \
-        'exec python3 /diag-run/diagnose_mooncake.py inventory --output "/diag-run/$1/inventory-${SLURMD_NODENAME}.json"' _ "$rel" &
-    aux_pid=$!
-    wait "$aux_pid" || rc=$?
-    if ! stop_step "$aux_pid" "$aux_step" "$RUN_DIR/$rel/inventory.exit"; then exit 1; fi
-    aux_pid= aux_step=
+    local rel=$1 rc=0 scope scope_rc
+    if ! timeout 8s scontrol show node "$SLURM_JOB_NODELIST" > "$RUN_DIR/$rel/slurm-nodes.txt" 2>&1; then
+        event "slurm_node_inventory_unavailable path=$rel"
+        rc=1
+    fi
+    for scope in host container; do
+        aux_step=$RUN_DIR/$rel/inventory-$scope.step
+        event "inventory_begin scope=$scope path=$rel"
+        if [[ $scope == host ]]; then
+            run_host_step "$SLURM_JOB_NODELIST" "${#ALL_NODES[@]}" --time=00:02:00 \
+                --output="$RUN_DIR/$rel/host-inventory-%N.out" --error="$RUN_DIR/$rel/host-inventory-%N.err" \
+                bash -c 'if [[ $SLURM_PROCID == 0 ]]; then printf "%s\n" "$SLURM_STEP_ID" > "$1/$2/inventory-host.step"; fi; exec python3 "$1/diagnose_mooncake.py" inventory --scope host --output "$1/$2/host-inventory-${SLURMD_NODENAME}.json"' \
+                _ "$RUN_DIR" "$rel" &
+        else
+            run_step "$SLURM_JOB_NODELIST" "${#ALL_NODES[@]}" --time=00:02:00 \
+                --output="$RUN_DIR/$rel/inventory-%N.out" --error="$RUN_DIR/$rel/inventory-%N.err" \
+                bash -c "$STEP_WRAPPER" _ "$rel/inventory-container.step" bash -c \
+                'exec python3 /diag-run/diagnose_mooncake.py inventory --scope container --output "/diag-run/$1/inventory-${SLURMD_NODENAME}.json"' _ "$rel" &
+        fi
+        aux_pid=$!
+        scope_rc=0
+        wait "$aux_pid" || scope_rc=$?
+        if ! stop_step "$aux_pid" "$aux_step" "$RUN_DIR/$rel/inventory-$scope.exit"; then exit 1; fi
+        aux_pid= aux_step=
+        (( scope_rc == 0 )) || rc=$scope_rc
+        event "inventory_end scope=$scope path=$rel exit=$scope_rc"
+    done
     return "$rc"
 }
-inventory_snapshot logs
+inventory_snapshot logs || overall_rc=1
 python3 - "$RUN_DIR/metadata.json" "$IMAGE" "$READER_LIST" "$CASE_SECONDS" "$BATCH_SIZE" "$CLIENT_WORKERS" <<'PY'
 import json, os, sys
 path, image, readers, seconds, batch, workers = sys.argv[1:]

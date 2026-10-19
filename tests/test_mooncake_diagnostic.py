@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import subprocess
 import threading
 from pathlib import Path
 
@@ -146,3 +147,69 @@ def test_buffer_allocation_failure_releases_other_worker(tmp_path: Path, monkeyp
 
     assert calls == 2
     assert store.closed
+
+
+@pytest.mark.parametrize("failure,expected", [("permission", "error"), ("missing", "missing"), ("timeout", "timeout")])
+def test_inventory_command_preserves_collection_failures(
+    monkeypatch: pytest.MonkeyPatch, failure: str, expected: str
+) -> None:
+    def run(argv, *, stdout, stderr, timeout, check):
+        stderr.write(b"Operation not permitted\n")
+        if failure == "missing":
+            raise FileNotFoundError("probe not installed")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, timeout)
+        return subprocess.CompletedProcess(argv, 1)
+
+    monkeypatch.setattr(diagnostic.subprocess, "run", run)
+    result = diagnostic.inventory_command(["read-only-probe"], 0.1)
+
+    assert result["status"] == expected
+    assert result["returncode"] != 0
+    assert "Operation not permitted" in result["stderr"]
+
+
+def test_inventory_command_bounds_retained_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(argv, *, stdout, stderr, timeout, check):
+        stdout.write(b"x" * 70_000)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(diagnostic.subprocess, "run", run)
+    result = diagnostic.inventory_command(["read-only-probe"], 0.1)
+
+    assert result["status"] == "ok"
+    assert result["stdout_truncated"] is True
+    assert len(result["stdout"]) == 65_536
+
+
+def test_inventory_report_uses_host_baseline_and_keeps_container_separate(tmp_path: Path) -> None:
+    logs = tmp_path / "logs"
+    after = logs / "cn05-512GiB"
+    after.mkdir(parents=True)
+    counter = "mlx5_0/ports/1/counters/port_rcv_errors"
+
+    def snapshot(scope: str, stamp: str, count: int) -> dict:
+        return {
+            "scope": scope,
+            "timestamp": stamp,
+            "host": "container-hostname" if scope == "container" else "actual-node",
+            "slurm_node": "vr-r42-cn05",
+            "health": {"ib_counters": {counter: count}},
+            "platform": {"os_release": f'PRETTY_NAME="{scope}-OS"', "kernel": "test-kernel"},
+            "commands": {"dmesg": {"status": "error"}},
+            "kernel": {"status": "error", "stderr": "Operation not permitted", "messages": []},
+        }
+
+    (logs / "host-inventory-cn05.json").write_text(json.dumps(snapshot("host", "2026-10-19T06:00:00Z", 10)))
+    (after / "host-inventory-cn05.json").write_text(json.dumps(snapshot("host", "2026-10-19T06:01:00Z", 13)))
+    (after / "inventory-cn05.json").write_text(json.dumps(snapshot("container", "2026-10-19T06:01:00Z", 999)))
+
+    diagnostic.report(argparse.Namespace(run_dir=tmp_path))
+    report = (logs / "perf-analysis.md").read_text()
+
+    assert "host-OS" in report and "container-OS" not in report
+    assert f"'{counter}': 3" in report
+    assert "999" not in report
+    assert "host-inventory-cn05.json" in report and "inventory-cn05.json" in report
+    assert "vr-r42-cn05" in report
+    assert "Unavailable probes do not establish a clean node" in report
