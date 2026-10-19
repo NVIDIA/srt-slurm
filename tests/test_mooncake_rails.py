@@ -163,9 +163,21 @@ def test_worker_preflight_checks_real_binding_and_gid_instead_of_current_cpu_mas
 class FakeRailAgents:
     """Honor the real filesystem protocol without starting perftest or Slurm."""
 
-    def __init__(self, run_dir: Path, nics: list[str], *, fail_case: str = "", stalled: str = "", startup: str = ""):
+    def __init__(
+        self,
+        run_dir: Path,
+        nics: list[str],
+        *,
+        fail_case: str = "",
+        stalled: str = "",
+        startup: str = "",
+        ping_failure: str = "",
+        drop_ping: bool = False,
+    ):
         self.run_dir = run_dir
         self.fail_case, self.stalled, self.startup = fail_case, stalled, startup
+        self.ping_failure = ping_failure
+        self.drop_ping = drop_ping
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.commands: list[tuple[str, dict[str, Any]]] = []
@@ -217,6 +229,17 @@ class FakeRailAgents:
 
     def handle(self, node: str, command_id: str, command: dict[str, Any]) -> None:
         self.commands.append((node, command))
+        if command["action"] == "ping":
+            if node == self.ping_failure and self.drop_ping:
+                return
+            self.result(
+                node,
+                command_id,
+                {"status": "error", "error": "synthetic mailbox failure"}
+                if node == self.ping_failure
+                else {"status": "pong", "published_utc": "2026-10-19T00:00:00Z"},
+            )
+            return
         if command["action"] in ("stop", "shutdown"):
             pending = self.active.pop(node, None)
             if pending:
@@ -280,6 +303,42 @@ def test_controller_collects_real_mailbox_results_and_reports_failed_pairs(tmp_p
     report = (tmp_path / "logs/perf-analysis.md").read_text()
     assert "NOT RUN=0" in report and "## READ matrix" in report and "## WRITE matrix" in report
     assert (tmp_path / "logs/summary.csv").exists()
+    checks = json.loads((tmp_path / "logs/mailbox-checks.json").read_text())
+    assert {check["node"] for check in checks} == {"reader", "donor"}
+    assert all(check["ack"]["status"] == "pong" and check["round_trip_s"] >= 0 for check in checks)
+    assert len({check["command_id"] for check in checks}) == 2
+
+
+def test_controller_reads_an_ack_despite_a_cached_negative_exists_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ack = tmp_path / "logs/agents/donor.results/000001.json"
+    payload = {"status": "ready", "port": 18515}
+    worker.atomic_json(ack, payload)
+    exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda path: False if path == ack else exists(path))
+    test = controller.RailController(tmp_path, "reader", "donor", ["mlx5_0"], budget=20)
+
+    assert not ack.exists()
+    assert test.wait_json(ack, time.monotonic() + 0.2) == payload
+
+
+@pytest.mark.parametrize("missing_ack", [False, True])
+def test_controller_mailbox_ping_failure_prevents_perftest_and_preserves_report(
+    tmp_path: Path, missing_ack: bool
+) -> None:
+    with FakeRailAgents(tmp_path, ["mlx5_0", "mlx5_1"], ping_failure="donor", drop_ping=missing_ack) as agents:
+        test = controller.RailController(tmp_path, "reader", "donor", ["mlx5_0", "mlx5_1"], case_timeout=0.3, budget=20)
+        assert test.run() == 1
+
+    assert not test.results
+    assert {node for node, command in agents.commands if command["action"] == "ping"} == {"reader", "donor"}
+    assert not any(command["action"] == "start" for _, command in agents.commands)
+    report = (tmp_path / "logs/perf-analysis.md").read_text()
+    assert "PASS=0" in report and "NOT RUN=8" in report
+    assert ("waiting for" if missing_ack else "synthetic mailbox failure") in report
+    checks = json.loads((tmp_path / "logs/mailbox-checks.json").read_text())
+    assert checks[-1]["node"] == "donor" and checks[-1]["error"]
 
 
 @pytest.mark.parametrize("failure", ["startup", "stalled"])
@@ -336,13 +395,19 @@ def test_controller_rejects_a_stale_run_before_reusing_results(tmp_path: Path) -
     assert not (tmp_path / "logs/perf-analysis.md").exists()
 
 
-def test_worker_can_stop_an_active_server_while_listener_readiness_is_pending(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("listener_ready", [False, True])
+def test_worker_publishes_readiness_and_stops_its_child_without_tcp_probes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, listener_ready: bool
 ) -> None:
     # The real supervisor owns a harmless local child; no TCP listener or RDMA
     # process is started. A pending readiness check must not block stop commands.
     monkeypatch.setattr(worker, "build_command", lambda *args: ["/bin/sleep", "60"])
-    monkeypatch.setattr(worker, "listener_owned", lambda *args: False)
+    monkeypatch.setattr(worker, "listener_owned", lambda *args: listener_ready)
+
+    def forbidden_probe(*args: object, **kwargs: object) -> None:
+        pytest.fail("Worker readiness must not connect to the single-client perftest listener")
+
+    monkeypatch.setattr(worker.socket, "create_connection", forbidden_probe)
     agent = worker.Worker(tmp_path, "synthetic-node", {})
     errors = []
 
@@ -358,6 +423,7 @@ def test_worker_can_stop_an_active_server_while_listener_readiness_is_pending(
             time.sleep(0.005)
         assert path.exists(), f"Agent did not respond to {path.name}"
 
+    worker.atomic_json(agent.commands / "000000.json", {"action": "ping"})
     worker.atomic_json(
         agent.commands / "000001.json",
         {"action": "start", "case_id": "pending-listener", "op": "read", "role": "server", "port": 18515},
@@ -365,12 +431,20 @@ def test_worker_can_stop_an_active_server_while_listener_readiness_is_pending(
     thread = threading.Thread(target=run_agent, daemon=True)
     thread.start()
     try:
+        wait_for(agent.results / "000000.json")
+        pong = json.loads((agent.results / "000000.json").read_text())
+        assert pong["status"] == "pong" and pong["published_utc"]
         deadline = time.monotonic() + 2
         while agent.child is None and time.monotonic() < deadline:
             time.sleep(0.005)
         assert agent.child is not None
         process = agent.child["process"]
         assert process.poll() is None
+        if listener_ready:
+            wait_for(agent.results / "000001.json")
+            readiness = json.loads((agent.results / "000001.json").read_text())
+            assert readiness["status"] == "ready"
+            assert readiness["pid"] == process.pid and readiness["port"] == 18515
         worker.atomic_json(agent.commands / "000002.json", {"action": "stop"})
         wait_for(agent.results / "000002.json")
 
@@ -380,7 +454,9 @@ def test_worker_can_stop_an_active_server_while_listener_readiness_is_pending(
         assert completed["status"] == "completed" and completed["returncode"] != 0
         assert completed["reason"] == "stop"
         assert process.poll() is not None and agent.child is None
-        assert json.loads((agent.results / "000001.json").read_text())["status"] == "error"
+        assert json.loads((agent.results / "000001.json").read_text())["status"] == (
+            "ready" if listener_ready else "error"
+        )
         worker.atomic_json(agent.commands / "000003.json", {"action": "shutdown"})
         thread.join(timeout=2)
         assert not thread.is_alive()

@@ -42,6 +42,16 @@ version probe returning 0 or 1 only when it prints a valid version line; the
 actual RDMA tests still require successful exits and positive measured bandwidth.
 Inventory also saves OS/kernel information, current affinity, actual NUMA-bind
 checks and visible process cgroup limits; ancestor cgroup limits are not surveyed.
+The worker also captures `findmnt` output for the shared run directory when the
+command is available, to help identify filesystem visibility problems.
+
+Before any perftest process starts, the controller requires a ping/reply round
+trip with each agent and records its duration in `logs/mailbox-checks.json`.
+Replies are discovered through directory scans, matching command discovery,
+instead of repeatedly checking a filename before it exists. This avoids
+priming negative filename lookups; shared filesystems can still delay visibility.
+A failed round trip stops the run as a coordination failure. It cannot establish
+whether an RDMA NIC pair works.
 
 The job runs 128 directed cases: eight reader NICs times eight donor NICs,
 for RDMA reads and writes. The selected NICs are `mlx5_0`, `mlx5_1`, `mlx5_2`,
@@ -75,6 +85,7 @@ outputs/mooncake-rails-<job_id>/
   logs/perf-analysis.md
   logs/summary.csv
   logs/results.jsonl
+  logs/mailbox-checks.json
   logs/cases/<operation>-<reader_nic>-<donor_nic>.<server|client>.log
   logs/agents/<node>.inventory.json
   logs/agents/<node>.install.log
@@ -87,6 +98,10 @@ may arise from bootstrap TCP, NUMA permissions, memory registration or tool
 configuration as well as the RDMA fabric; use the retained per-case commands
 and raw output to distinguish them. CPU frequency warnings alone do not
 invalidate an otherwise completed measurement.
+
+If a child cannot be reaped after bounded TERM/KILL waits, its agent reports a
+teardown error. The controller retains that attempted case as INCOMPLETE and
+stops before starting another case; it never counts that attempt as NOT RUN.
 
 All 64 NIC pairs must pass for each operation before this run supports complete
 cross-rail connectivity on these two nodes. Other worker/donor nodes require

@@ -277,6 +277,8 @@ class Worker:
             return None
         process = self.child["process"]
         if process.poll() is None:
+            if self.child.get("teardown_failed"):
+                return self.child["teardown_failed"]
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGTERM)
             try:
@@ -284,13 +286,29 @@ class Worker:
             except subprocess.TimeoutExpired:
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=2)
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    failure = {
+                        "status": "teardown_error",
+                        "error": "Child exit unconfirmed after SIGTERM and SIGKILL; refusing another child",
+                        "reason": reason,
+                        **{key: self.child[key] for key in ("command_id", "case_id", "pid", "log_path")},
+                    }
+                    self.child["teardown_failed"] = failure
+                    if self.child["pending_ready"]:
+                        atomic_json(self.results / f"{self.child['command_id']}.json", failure)
+                    return failure
         return self.finish(reason)
 
     def handle(self, command_id: str, command: dict[str, Any]) -> dict[str, Any] | None:
         action = command["action"]
+        if action == "ping":
+            return {"status": "pong", "published_utc": time.strftime("%FT%TZ", time.gmtime())}
         if action in ("stop", "shutdown"):
             completed = self.stop_child(action)
+            if self.child is not None:
+                return {"status": "teardown_error", "error": completed}
             self.stopping = action == "shutdown"
             return {"status": "stopped", "completed": completed}
         if action != "start" or self.child is not None:
@@ -336,10 +354,14 @@ class Worker:
         seen = set()
         try:
             while not self.stopping:
-                if self.child is not None and time.monotonic() >= self.child["deadline"]:
+                if (
+                    self.child is not None
+                    and not self.child.get("teardown_failed")
+                    and time.monotonic() >= self.child["deadline"]
+                ):
                     self.stop_child("deadline")
                 self.finish()
-                if self.child is not None and self.child["pending_ready"]:
+                if self.child is not None and self.child["pending_ready"] and not self.child.get("teardown_failed"):
                     child = self.child
                     if listener_owned(child["pid"], child["port"]):
                         child["pending_ready"] = False
@@ -374,6 +396,9 @@ def main() -> None:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.node) or args.node in (".", ".."):
         parser.error("Invalid node name")
     info = inventory(args.node)
+    info["run_filesystem"] = capture(
+        ["findmnt", "--json", "--target", str(args.run_dir), "--output", "TARGET,SOURCE,FSTYPE,OPTIONS"]
+    )
     atomic_json(args.run_dir / "logs/agents" / f"{args.node}.inventory.json", info)
     if not info["ready"]:
         raise SystemExit(1)

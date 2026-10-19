@@ -27,6 +27,21 @@ def atomic_json(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
+def read_mailbox_json(path: Path) -> dict[str, Any] | None:
+    """Discover new replies by listing, as agents do for incoming commands.
+
+    Repeated stat calls on an absent name can retain a negative lookup on a
+    shared filesystem. Do not prime that lookup before the writer publishes it.
+    """
+    try:
+        with os.scandir(path.parent) as entries:
+            if not any(entry.name == path.name for entry in entries):
+                return None
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+
+
 def parse_bandwidth(text: str, size: int = PAGE_BYTES) -> float | None:
     """Read the average Gbit/s column, including legitimate zero peak values."""
     lines = text.splitlines()
@@ -162,6 +177,8 @@ def write_report(
             "CPU/memory allowances and collection errors. Per-case output is under `logs/cases/`.",
             "`logs/agents/*.install.log` records container-only apt setup or preinstalled-tool detection. "
             "Setup failure is a preflight failure, not an RDMA connectivity result.",
+            "`logs/mailbox-checks.json` records controller/agent round-trip checks before perftest starts. "
+            "A missing acknowledgment is a coordination failure, not evidence of failed RDMA connectivity.",
             "Compare same-name and cross-name pairs. A complete passing matrix supports cross-rail reachability "
             "for these two nodes, NICs, port/GID settings and this test window only. Other nodes need their own test.",
             "Different-socket numbers across nodes are valid; these tests keep NIC-to-memory access local "
@@ -226,8 +243,9 @@ class RailController:
         while time.monotonic() < min(deadline, self.deadline):
             if self.interrupted:
                 raise InterruptedError("controller interrupted")
-            if path.exists():
-                return json.loads(path.read_text())
+            value = read_mailbox_json(path)
+            if value is not None:
+                return value
             time.sleep(0.05)
         raise TimeoutError(f"waiting for {path.relative_to(self.run_dir)}")
 
@@ -238,6 +256,29 @@ class RailController:
         atomic_json(base / f"{node}.commands" / f"{command_id}.json", command)
         return command_id, base / f"{node}.results"
 
+    def check_mailboxes(self) -> None:
+        """Require a round trip before launching any perftest processes."""
+        checks = []
+        try:
+            for node in (self.reader, self.donor):
+                started = time.monotonic()
+                command_id, directory = self.send(node, {"action": "ping"})
+                check: dict[str, Any] = {"node": node, "command_id": command_id}
+                checks.append(check)
+                try:
+                    ack = self.wait_json(directory / f"{command_id}.json", started + self.case_timeout)
+                    check["ack"] = ack
+                    if ack.get("status") != "pong":
+                        raise RuntimeError(f"mailbox round trip failed for {node}: {ack}")
+                except (TimeoutError, RuntimeError, InterruptedError) as exc:
+                    check["error"] = str(exc)
+                    raise RuntimeError(f"mailbox preflight for {node}: {exc}") from exc
+                finally:
+                    check["round_trip_s"] = round(time.monotonic() - started, 6)
+                print(f"{node}: mailbox round trip {check['round_trip_s']:.3f} s", flush=True)
+        finally:
+            atomic_json(self.run_dir / "logs/mailbox-checks.json", checks)
+
     def stop(self, nodes: tuple[str, ...]) -> None:
         pending = [self.send(node, {"action": "stop"}) for node in nodes]
         # Agents also enforce their own child timeouts. Stop acknowledgments
@@ -245,10 +286,12 @@ class RailController:
         deadline = time.monotonic() + 8
         for command_id, directory in pending:
             path = directory / f"{command_id}.json"
-            while not path.exists() and time.monotonic() < deadline:
+            ack = read_mailbox_json(path)
+            while ack is None and time.monotonic() < deadline:
                 time.sleep(0.05)
-            if not path.exists() or json.loads(path.read_text()).get("status") != "stopped":
-                raise RuntimeError("node-agent teardown unconfirmed; refusing another case")
+                ack = read_mailbox_json(path)
+            if ack is None or ack.get("status") != "stopped":
+                raise RuntimeError(f"node-agent teardown unconfirmed; refusing another case: {path.name}: {ack}")
 
     def read_output(self, result: dict[str, Any] | None) -> str:
         if not result or not result.get("log_path"):
@@ -257,7 +300,10 @@ class RailController:
         # Worker paths are relative to the shared run directory, never host paths.
         if path.is_absolute() or ".." in path.parts:
             raise ValueError("invalid worker log path")
-        return (self.run_dir / path).read_text(errors="replace") if (self.run_dir / path).exists() else ""
+        try:
+            return (self.run_dir / path).read_text(errors="replace")
+        except FileNotFoundError:
+            return ""
 
     def run_case(self, case: dict[str, Any], donor_ip: str) -> dict[str, Any]:
         started = time.monotonic()
@@ -273,6 +319,8 @@ class RailController:
         server: dict[str, Any] | None = None
         client: dict[str, Any] | None = None
         reason = ""
+        teardown_error = ""
+        phase = "server_startup"
         server_id = client_id = ""
         server_dir = client_dir = self.run_dir
         try:
@@ -288,6 +336,8 @@ class RailController:
             ready = self.wait_json(server_dir / f"{server_id}.json", deadline)
             if ready.get("status") != "ready":
                 raise RuntimeError(f"server startup: {ready}")
+            server = ready
+            phase = "client_startup"
             client_id, client_dir = self.send(
                 self.reader,
                 {
@@ -302,27 +352,36 @@ class RailController:
             ack = self.wait_json(client_dir / f"{client_id}.json", deadline)
             if ack.get("status") != "started":
                 raise RuntimeError(f"client startup: {ack}")
+            client = ack
+            phase = "transfer"
             client = self.wait_json(client_dir / f"{client_id}.done.json", deadline)
             server = self.wait_json(server_dir / f"{server_id}.done.json", deadline)
+            phase = "completed"
         except (TimeoutError, RuntimeError, InterruptedError) as exc:
             reason = str(exc)
         finally:
-            self.stop((self.reader, self.donor))
+            try:
+                self.stop((self.reader, self.donor))
+            except (TimeoutError, RuntimeError, InterruptedError) as exc:
+                teardown_error = str(exc)
         # Stopping a timed-out process produces final exit status and keeps its
         # output available instead of treating absent output as a successful cell.
         for command_id, directory, role in ((server_id, server_dir, "server"), (client_id, client_dir, "client")):
             path = directory / f"{command_id}.done.json"
-            if command_id and path.exists():
+            completed = read_mailbox_json(path) if command_id else None
+            if completed is not None:
                 if role == "server":
-                    server = json.loads(path.read_text())
+                    server = completed
                 else:
-                    client = json.loads(path.read_text())
+                    client = completed
         server_text, client_text = self.read_output(server), self.read_output(client)
         server_rc = server.get("returncode") if server else None
         client_rc = client.get("returncode") if client else None
         status = classify_case(server_rc, client_rc, server_text, client_text)
         if reason:
             status = "INCOMPLETE" if self.interrupted or time.monotonic() >= self.deadline else "FAIL"
+        if teardown_error:
+            status = "INCOMPLETE"
         return {
             **case,
             "status": status,
@@ -331,6 +390,9 @@ class RailController:
             "client_rc": client_rc,
             "elapsed_s": round(time.monotonic() - started, 3),
             "reason": reason,
+            "teardown_error": teardown_error,
+            "phase": phase,
+            "command_ids": {"server": server_id, "client": client_id},
             "server": server,
             "client": client,
         }
@@ -353,6 +415,7 @@ class RailController:
                     if int(inventory["nics"][nic]["numa_node"]) < 0:
                         raise RuntimeError(f"{node}/{nic} has unknown NUMA locality")
                 inventories[role] = inventory
+            self.check_mailboxes()
             self.planned = make_cases(self.nics, inventories)
             atomic_json(self.run_dir / "plan.json", self.planned)
             with (logs / "results.jsonl").open("a", buffering=1) as output:
@@ -365,6 +428,9 @@ class RailController:
                     self.results.append(row)
                     output.write(json.dumps(row) + "\n")
                     print(f"{case['case_id']}: {row['status']} {row['average_gbit_s']} Gbit/s", flush=True)
+                    if row.get("teardown_error"):
+                        reason = row["teardown_error"]
+                        break
                 else:
                     reason = "matrix completed"
             rc = int(len(self.results) != len(self.planned) or any(row["status"] != "PASS" for row in self.results))
