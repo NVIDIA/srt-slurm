@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Submit from the repository root: sbatch tools/diagnose_mooncake.sbatch
 # Requires the adjacent diagnose_mooncake.py on the shared filesystem.
-#SBATCH --job-name=mooncake-cn04-diag
+#SBATCH --job-name=mooncake-rdma-diag
 #SBATCH --account=root
 #SBATCH --partition=batch-r42
-#SBATCH --nodelist=vr-r42-cn[01-13,15-18]
-#SBATCH --nodes=17
+#SBATCH --nodelist=vr-r42-cn[01-03,05-13,15-18]
+#SBATCH --nodes=16
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=0
@@ -145,7 +145,7 @@ mkdir -p "$LOG_DIR"
 cat > "$LOG_DIR/perf-analysis.md" <<'REPORT'
 # Mooncake host-memory/RDMA diagnostic: pending or incomplete
 
-Goal: compare cn04 and cn02 with 512-GiB and 1100-GiB registered host memory.
+Goal: compare cn05 and cn02 with 512-GiB and 1100-GiB registered host memory.
 TTFT p50/p95/p99, ITL p50/p99, token throughput and agentic Pareto/SLO metrics
 are N/A: no model or inference trajectories. Get/put latency, GiB/s, errors,
 registration and memory/network health come from the saved case artifacts.
@@ -163,15 +163,15 @@ mapfile -t ALL_NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
 MASTER_NODE=${ALL_NODES[0]}
 READER_NODES=()
 for node in "${ALL_NODES[@]}"; do
-    if [[ $node != vr-r42-cn04 && $node != vr-r42-cn02 ]]; then READER_NODES+=("$node"); fi
+    if [[ $node != vr-r42-cn05 && $node != vr-r42-cn02 ]]; then READER_NODES+=("$node"); fi
 done
-[[ " ${ALL_NODES[*]} " == *" vr-r42-cn04 "* && " ${ALL_NODES[*]} " == *" vr-r42-cn02 "* ]]
+[[ " ${ALL_NODES[*]} " == *" vr-r42-cn05 "* && " ${ALL_NODES[*]} " == *" vr-r42-cn02 "* ]]
 (( ${#READER_NODES[@]} > 0 ))
 printf -v READER_LIST '%s,' "${READER_NODES[@]}"
 READER_LIST=${READER_LIST%,}
 event "begin nodes=$SLURM_JOB_NODELIST account=root partition=batch-r42 image=$IMAGE"
 scontrol show job "$SLURM_JOB_ID" > "$LOG_DIR/slurm-job-initial.txt"
-for donor_node in vr-r42-cn04 vr-r42-cn02; do
+for donor_node in vr-r42-cn05 vr-r42-cn02; do
     for gib in 512 1100; do
         mkdir -p "$LOG_DIR/$donor_node-${gib}GiB"
         printf 'Not started; see events.log for early failure or budget exclusion.\n' > "$LOG_DIR/$donor_node-${gib}GiB/incomplete.txt"
@@ -202,7 +202,7 @@ with open(path, "w") as handle:
                "sizing_skill": "src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md"}, handle, indent=2)
 PY
 
-for donor_node in vr-r42-cn04 vr-r42-cn02; do
+for donor_node in vr-r42-cn05 vr-r42-cn02; do
     for gib in 512 1100; do
         case_name=${donor_node}-${gib}GiB
         case_rel=logs/$case_name

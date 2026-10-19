@@ -1,4 +1,4 @@
-# Diagnose cn04 Mooncake memory transfers
+# Diagnose Mooncake memory transfers on available nodes
 
 Submit from the repository root on the cluster:
 
@@ -10,7 +10,7 @@ Keep `tools/diagnose_mooncake.py` beside the batch script. The job copies both
 files into its run directory before launching container steps.
 
 The defaults request account `root`, partition `batch-r42`, exclusive access to
-`vr-r42-cn[01-13,15-18]` (17 nodes, including cn04), and 25 minutes. The job waits
+`vr-r42-cn[01-03,05-13,15-18]` (16 nodes; cn04 excluded), and 25 minutes. The job waits
 for the requested nodes to become available. This tests host memory and RDMA;
 it does not request GPUs or load GLM-5.3. Each step has 64 CPUs for Mooncake's
 multi-NIC progress threads. The container defaults to:
@@ -19,8 +19,8 @@ multi-NIC progress threads. The container defaults to:
 /home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh
 ```
 
-Four fresh master/donor cases compare cn04 and cn02, each with 512 GiB and
-1100 GiB of donated memory. The other 15 nodes are readers in every case. Each
+Four fresh master/donor cases compare cn05 and cn02, each with 512 GiB and
+1100 GiB of donated memory. The other 14 nodes are readers in every case. Each
 reader uses two threads and batches of 512 objects of 2,006,016 bytes, matching
 the observed cache-page size and batch configuration. Clients have no storage
 segments, so keys must be allocated on the case's donor. The script uses the
@@ -63,5 +63,5 @@ Keep the total workload within the allocation's walltime. For a smaller first
 check, retain both donor candidates and the original prefill nodes:
 
 ```bash
-sbatch --nodes=5 --nodelist=vr-r42-cn[02-04,17-18] tools/diagnose_mooncake.sbatch
+sbatch --nodes=5 --nodelist=vr-r42-cn[02-03,05,17-18] tools/diagnose_mooncake.sbatch
 ```
