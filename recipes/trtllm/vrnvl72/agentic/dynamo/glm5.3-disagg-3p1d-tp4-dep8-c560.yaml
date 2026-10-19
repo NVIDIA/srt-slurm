@@ -325,7 +325,7 @@ services:
   type: generic
   placement:
     node: decode
-  start: with_workers
+  start: before_workers
   critical: true
   srun_options:
     mpi: none

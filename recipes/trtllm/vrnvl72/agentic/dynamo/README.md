@@ -9,6 +9,13 @@ The conversion keeps the worker counts, GPU allocations, TRT-LLM engine tuning,
 kernel environment, MTP acceptance controls, prefill Mooncake capacity
 and inline AIPerf command. The native recipes remain in their original directory.
 
+TRT-LLM engine settings, per-role arguments and TRT-LLM environment tuning match
+the corresponding RapLab Dynamo recipes. Hecate relies on its default
+`NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE=0` and retains its Lustre paths,
+cache and wheel locations, host setup and network configuration, including
+`UCX_NET_DEVICES=all`. Mooncake device affinity remains enabled only in the DEP8
+recipe.
+
 All recipes set `engine.numa_memory_bind: local` and `engine.numa_cpu_bind: true`
 to bind worker memory and CPUs to the task GPU's NUMA node.
 
@@ -143,11 +150,10 @@ so the setting reaches prefill, decode and donor processes. Donor logging uses
 `TLLM_LOG_LEVEL=INFO` and `PYTHONUNBUFFERED=1`; inference tuning stays in the
 worker environments. Store settings come from the config and CLI.
 
-The master starts before workers. Donors use `start: with_workers`, starting
-alongside the workers so donor registration can overlap model loading. Donors publish
-`/logs/mooncake_donor_{index}.ready`; the `readiness.file` gate waits for them
-before benchmarking. Donors now share the workers' shutdown tier, while the
-master shuts down afterward. This requires srt-slurm's
+The master and donors start before workers. Donors use `start: before_workers`
+and publish `/logs/mooncake_donor_{index}.ready`; the `readiness.file` gate waits
+for these files before worker launch. Workers shut down before the donors and
+master. This requires srt-slurm's
 [file-readiness support](https://github.com/NVIDIA/srt-slurm/pull/608).
 See the [native Mooncake notes](../trtllm-serve/README.md#mooncake) for prefill
 segment sizes and other inherited pool settings.
