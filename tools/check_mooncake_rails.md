@@ -6,9 +6,9 @@ Submit from the repository root on the cluster:
 sbatch tools/check_mooncake_rails.sbatch
 ```
 
-Keep `check_mooncake_rails.py` and `mooncake_rail_worker.py` beside the batch
-script. No SSH is used. This standalone diagnostic does not modify the serving
-recipe or install packages.
+Keep `check_mooncake_rails.py`, `mooncake_rail_worker.py`, and
+`setup_mooncake_rails.sh` beside the batch script. No SSH is used. Package
+installation runs inside the container; no host package installation is performed.
 
 Defaults are account `root`, partition `batch-r42`, nodes `vr-r42-cn03` and
 `vr-r42-cn05`, exclusive allocation, 352 logical CPUs per node, 16 GiB per node,
@@ -24,12 +24,19 @@ The container defaults to:
 /home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh
 ```
 
-Both nodes must have `ib_read_bw`, `ib_write_bw`, and `numactl` in the image's
-PATH. Preflight records paths, version/help output and NUMA/NIC inventory.
-Missing tools, unavailable CPU/memory nodes or invalid NIC state produce a
-clear preflight failure and report. Their availability in the serving image has
-not been confirmed; use `MC_RAIL_IMAGE` for a compatible image with perftest if
-needed. No automatic installation is attempted.
+Each node starts a writable container with `--container-remap-root` and
+`--container-writable`. If tools are missing, its setup script runs
+`apt-get update` and `apt-get install -y --no-install-recommends perftest numactl`
+inside that container, without sudo. It then executes the worker in the same
+container so the installed tools remain available. Already installed tools are
+reused. The source SquashFS image and host OS are not modified; package changes
+belong to the temporary container filesystem.
+
+Setup has a four-minute timeout and saves `logs/agents/<node>.install.log`.
+APT repositories must be reachable from the container. Setup failure is published
+as a failed inventory so the controller stops with a report rather than waiting
+for the full test budget. Preflight then records tool paths, versions/help and
+NUMA/NIC inventory; invalid binding or NIC state remains a clear preflight failure.
 Inventory also saves OS/kernel information, current affinity, actual NUMA-bind
 checks and visible process cgroup limits; ancestor cgroup limits are not surveyed.
 
@@ -49,7 +56,9 @@ the child process's listening socket through procfs without opening a probe
 connection, because perftest accepts only one client connection.
 
 The default traffic duration totals about 11 minutes, plus process setup and
-cleanup. Per-case timeouts and a 22-minute controller budget bound unhealthy
+cleanup. The existing 22-minute controller budget includes container apt setup
+(up to four minutes, concurrently on the two nodes). Inventory waits up to six
+minutes for container startup, apt setup and collection. Per-case timeouts bound unhealthy
 tests; any remaining cases are explicitly NOT RUN. Three minutes remain for
 cleanup and reporting, following the repository's
 [job-sizing skill](../src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md).
@@ -65,6 +74,7 @@ outputs/mooncake-rails-<job_id>/
   logs/results.jsonl
   logs/cases/<operation>-<reader_nic>-<donor_nic>.<server|client>.log
   logs/agents/<node>.inventory.json
+  logs/agents/<node>.install.log
 ```
 
 A matrix PASS requires successful exits at both endpoints and a finite positive

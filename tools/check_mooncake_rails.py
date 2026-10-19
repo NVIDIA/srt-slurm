@@ -160,6 +160,8 @@ def write_report(
             "commands, exit codes and paths to raw output; `logs/summary.csv` is the flat comparison table.",
             "`logs/agents/*.inventory.json` records installed tools/versions, NIC NUMA/GID/link information, "
             "CPU/memory allowances and collection errors. Per-case output is under `logs/cases/`.",
+            "`logs/agents/*.install.log` records container-only apt setup or preinstalled-tool detection. "
+            "Setup failure is a preflight failure, not an RDMA connectivity result.",
             "Compare same-name and cross-name pairs. A complete passing matrix supports cross-rail reachability "
             "for these two nodes, NICs, port/GID settings and this test window only. Other nodes need their own test.",
             "Different-socket numbers across nodes are valid; these tests keep NIC-to-memory access local "
@@ -173,6 +175,7 @@ def write_report(
             "",
             "The `slurm-job-sizing` skill (`src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md`) limits the "
             "allocation to 25 minutes, with a 22-minute controller budget and time reserved for cleanup/reporting. "
+            "The controller budget includes up to four minutes of container apt setup. "
             "The default 128 five-second tests require about 11 minutes of configured traffic plus setup; "
             "timeouts can leave explicit unrun cases. No DSight/dashboard is needed: raw perftest completion "
             "results and the two matrices directly answer the connectivity hypothesis.",
@@ -213,6 +216,7 @@ class RailController:
             "duration": duration,
             "case_timeout": case_timeout,
             "budget": budget,
+            "inventory_timeout": inventory_timeout,
             "image": os.environ.get("MC_RAIL_IMAGE"),
             "start_utc": time.strftime("%FT%TZ", time.gmtime()),
             "planned_cases": len(nics) ** 2 * 2,
@@ -387,6 +391,7 @@ def main() -> int:
     parser.add_argument("--duration", type=int, default=5)
     parser.add_argument("--case-timeout", type=float, default=15)
     parser.add_argument("--budget", type=float, default=1320)
+    parser.add_argument("--inventory-timeout", type=float, default=60)
     args = parser.parse_args()
     nics = args.nics.split(",")
     if len(set(nics)) != len(nics) or not all(re.fullmatch(r"[A-Za-z0-9_]+", nic) for nic in nics):
@@ -401,6 +406,7 @@ def main() -> int:
         args.duration,
         args.case_timeout,
         args.budget,
+        args.inventory_timeout,
     )
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1):
         signal.signal(sig, lambda *_: setattr(controller, "interrupted", True))

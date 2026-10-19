@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Submit from the repository root: sbatch tools/check_mooncake_rails.sbatch
-# Keep check_mooncake_rails.py and mooncake_rail_worker.py beside this script.
+# Keep the two Python helpers and setup_mooncake_rails.sh beside this script.
 #SBATCH --job-name=mooncake-rails
 #SBATCH --account=root
 #SBATCH --partition=batch-r42
@@ -85,6 +85,7 @@ exec > >(tee -a "$LOG_DIR/controller.log") 2>&1
 SOURCE_DIR=${MC_RAIL_TOOL_DIR:-${SLURM_SUBMIT_DIR}/tools}
 cp "$SOURCE_DIR/check_mooncake_rails.py" "$RUN_DIR/"
 cp "$SOURCE_DIR/mooncake_rail_worker.py" "$RUN_DIR/"
+cp "$SOURCE_DIR/setup_mooncake_rails.sh" "$RUN_DIR/"
 cp "${BASH_SOURCE[0]}" "$RUN_DIR/check_mooncake_rails.sbatch"
 timeout 5s scontrol show job "$SLURM_JOB_ID" > "$LOG_DIR/slurm-job-initial.txt"
 timeout 5s scontrol show node "$SLURM_JOB_NODELIST" > "$LOG_DIR/slurm-nodes.txt"
@@ -103,16 +104,18 @@ printf 'Reader=%s donor=%s NICs=%s image=%s\n' "$READER" "$DONOR" "$MC_RAIL_NICS
 
 # Persistent agents avoid 256 container launches and repeated Slurm teardown.
 # The shared filesystem carries only commands/results; RDMA carries payloads.
+# Package installation executes inside each writable container, never on the node.
 srun --overlap --exact --mpi=none --cpu-bind=none --kill-on-bad-exit=1 \
     --nodes=2 --ntasks=2 --ntasks-per-node=1 --cpus-per-task=352 \
     --container-image="$MC_RAIL_IMAGE" --container-mounts="$RUN_DIR:/rail-run" \
-    --container-workdir=/rail-run \
+    --container-workdir=/rail-run --container-remap-root --container-writable \
     --output="$LOG_DIR/agents/%N.out" --error="$LOG_DIR/agents/%N.err" \
-    bash -c 'exec python3 /rail-run/mooncake_rail_worker.py --run-dir /rail-run --node "$SLURMD_NODENAME"' &
+    bash -c 'exec bash /rail-run/setup_mooncake_rails.sh /rail-run "$SLURMD_NODENAME"' &
 AGENTS_PID=$!
 python3 "$RUN_DIR/check_mooncake_rails.py" --run-dir "$RUN_DIR" \
     --reader "$READER" --donor "$DONOR" --nics "$MC_RAIL_NICS" \
-    --duration "${MC_RAIL_DURATION:-5}" --case-timeout "${MC_RAIL_CASE_TIMEOUT:-15}" --budget 1320 &
+    --duration "${MC_RAIL_DURATION:-5}" --case-timeout "${MC_RAIL_CASE_TIMEOUT:-15}" \
+    --inventory-timeout 360 --budget 1320 &
 CONTROLLER_PID=$!
 rc=0
 wait "$CONTROLLER_PID" || rc=$?
