@@ -376,7 +376,8 @@ def inventory_summary(run_dir: Path) -> list[str]:
         "",
         "## Node inventory",
         "",
-        "Host OS evidence comes from native host-scope snapshots; container OS evidence is listed separately. "
+        "Native Slurm execution-context snapshots and test-container snapshots are listed separately. "
+        "The native Slurm context may itself run in a Kubernetes pod; its OS release need not be the bare-metal root OS. "
         "Historical nonzero counters are not attributed to this run. Unavailable probes do not establish a clean node. "
         "Negative counter deltas indicate a counter reset/decrease and are not evidence of improvement.",
         "",
@@ -392,7 +393,8 @@ def inventory_summary(run_dir: Path) -> list[str]:
 
         def relevant(name: str) -> bool:
             return any(
-                word in name.lower() for word in ("err", "discard", "link_downed", "constraint", "timeout", "recovery")
+                word in name.lower()
+                for word in ("err", "drop", "discard", "link_downed", "constraint", "timeout", "recovery")
             )
 
         comparable = {name for name in counters.keys() & final.keys() if relevant(name)}
@@ -428,11 +430,16 @@ def inventory_summary(run_dir: Path) -> list[str]:
             else None
         )
         baseline = first_path.parent == run_dir / "logs"
+        membership = last.get("health", {}).get("cgroup", {}).get("membership", "")
+        execution_context = "Kubernetes Slurm worker context" if "kubepods" in membership else "native Slurm context"
+        ib_counter_count = len(last.get("health", {}).get("ib_counters", {}))
         lines.extend(
             [
                 f"Node `{host}`: OS={os_name}; kernel={platform_info.get('kernel', 'N/A')}; "
                 f"CPU={last.get('cpu', {}).get('model_names') or 'N/A'}; "
                 f"MemTotal={last.get('health', {}).get('meminfo_kib', {}).get('MemTotal', 'N/A')} KiB.",
+                f"Execution context: {execution_context}; readable raw IB counters={ib_counter_count}. "
+                "An empty IB counter set does not establish zero NIC errors.",
                 f"IB port states: {ports or 'unavailable'}. Command errors/missing/timeouts={unavailable}/{len(commands)}; "
                 f"sysfs/proc collection errors={len(last.get('collection_errors', {}))}.",
                 f"Network interface states: {net_states or 'unavailable'}.",
@@ -616,6 +623,11 @@ def client(args: argparse.Namespace) -> None:
                     return False
                 replicas = replica_samples(store, keys)
                 log.emit("replicas", worker=worker_id, replicas=replicas)
+                # Under RDMA/P2PHANDSHAKE the memory replica advertises the
+                # actual TE listener. Native stderr may not yet have reached
+                # the shared file when the donor wrote its readiness JSON.
+                with lock:
+                    endpoints.update(replica["endpoint"] for replica in replicas)
                 if barrier.wait(timeout=30) == 0:
                     deadline[0] = time.monotonic() + args.seconds
                 barrier.wait(timeout=30)

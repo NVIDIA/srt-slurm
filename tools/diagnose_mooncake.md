@@ -35,7 +35,9 @@ requests are timestamped so teardown errors can be separated from traffic errors
 Every allocated node also gets an inventory before traffic and after each case.
 `host-inventory-<node>.json` is collected directly by a native Slurm step, and
 `inventory-<node>.json` records the container view. The two views distinguish
-the host OS, kernel and drivers from the image's userspace. They capture:
+the native Slurm environment, kernel and drivers from the image's userspace.
+The native Slurm environment can itself run in a Kubernetes worker pod, so its
+OS release does not establish the bare-metal root filesystem's OS. They capture:
 
 - OS/kernel versions, CPU model and affinity, process limits, NUMA layout and memory.
 - NIC addresses/routes, link state/speed, MTU, PCI/NUMA placement, RDMA devices,

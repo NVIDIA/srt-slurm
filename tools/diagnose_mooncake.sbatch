@@ -27,7 +27,9 @@ CASE_SECONDS=${MC_DIAG_SECONDS:-120}
 BATCH_SIZE=${MC_DIAG_BATCH_SIZE:-512}
 CLIENT_WORKERS=${MC_DIAG_CLIENT_WORKERS:-2}
 BODY_DEADLINE=$((SECONDS + 22 * 60))
-CASE_BUDGET=$((CASE_SECONDS + 330))
+# Job 5429's cn05 cases took about five minutes including inventory. Allow six
+# minutes at the default traffic duration; the 22/25-minute hard limits remain.
+CASE_BUDGET=$((CASE_SECONDS + 240))
 master_pid= donor_pid= client_pid= sampler_pid= aux_pid= aux_step=
 case_dir=$LOG_DIR
 overall_rc=0 finalized=0
@@ -68,21 +70,31 @@ stop_step() {
     [[ -n $pid ]] || return 0
     [[ ! -s $step_file ]] || read -r step < "$step_file" || true
     if [[ $step =~ ^[0-9]+$ ]]; then
-        event "stop_step pid=$pid step=$SLURM_JOB_ID.$step"
-        timeout 3s scancel --full --signal=TERM "$SLURM_JOB_ID.$step" || true
-        deadline=$((SECONDS + 8))
-        while (( SECONDS < deadline )); do
-            if step_gone "$step"; then confirmed=1; break; fi
-            sleep 1
-        done
-        if (( confirmed == 0 )); then
-            event "kill_step step=$SLURM_JOB_ID.$step"
-            timeout 3s scancel --full --signal=KILL "$SLURM_JOB_ID.$step" || true
-            deadline=$((SECONDS + 8))
+        if step_gone "$step"; then
+            confirmed=1
+            event "step_already_gone pid=$pid step=$SLURM_JOB_ID.$step"
+        else
+            event "stop_step pid=$pid step=$SLURM_JOB_ID.$step"
+            timeout 3s scancel --full --signal=TERM "$SLURM_JOB_ID.$step" || true
+            # Job 5429 closed its 512-GiB store in 6s, but the step stayed
+            # visible for another 9s. Include container/Slurm cleanup time.
+            deadline=$((SECONDS + 30))
             while (( SECONDS < deadline )); do
                 if step_gone "$step"; then confirmed=1; break; fi
                 sleep 1
             done
+            # Refresh at the grace boundary before escalating a finished step.
+            if (( confirmed == 0 )) && step_gone "$step"; then confirmed=1; fi
+            if (( confirmed == 0 )); then
+                event "kill_step step=$SLURM_JOB_ID.$step"
+                timeout 3s scancel --full --signal=KILL "$SLURM_JOB_ID.$step" || true
+                deadline=$((SECONDS + 15))
+                while (( SECONDS < deadline )); do
+                    if step_gone "$step"; then confirmed=1; break; fi
+                    sleep 1
+                done
+                if (( confirmed == 0 )) && step_gone "$step"; then confirmed=1; fi
+            fi
         fi
     else
         event "missing_step_identity pid=$pid file=$step_file"
