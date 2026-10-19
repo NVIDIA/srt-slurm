@@ -159,6 +159,11 @@ from `/home/rihuo/agentx-harness` in a temporary environment and invokes
 dataset, concurrency, session headers, warmup and 3,600-second measurement are
 unchanged. Results remain under `/logs/agentic/aiperf_results`.
 
+All eight benchmarks set `AIPERF_UI_REALTIME_METRICS_ENABLED=true` so AIPerf
+prints real-time stats to the benchmark log without an interactive terminal.
+The existing `--stats-interval 30` emits updates every 30 seconds when measured
+request results or server metrics change.
+
 The benchmark client passes the runtime-provided `AIPERF_SERVER_METRICS_URLS`
 list to `aiperf profile --server-metrics`, collecting each logical prefill and
 decode worker's `/metrics` endpoint on its `DYN_SYSTEM_PORT`. Worker metrics
