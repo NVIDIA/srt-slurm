@@ -2,24 +2,23 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # GLM-5.3 Vera Rubin pareto05; adapted from the GLM-5.2 BTK e2e_pareto recipe.
-# Dynamo 1.6.0.dev20261013 on tekit 7890925ea10e613cd787c82a406a8fdc088eabc8 and the local AgentX client.
-# Resolve model/container aliases and cluster mounts in srtslurm.yaml; see README.md.
+# Dynamo from local wheels on the GLM-5.3 Rubin image and the local AgentX client.
+# Model and image paths are explicit; configure cluster mounts in srtslurm.yaml.
 # MTP forced acceptance follows acceptance_length.json: AL(depth) - 1.
 
 schema: 2
 name: glm5.3-disagg-3p1d-tp4-dep32-c560
 model:
-  path: glm5.3
-  container: trtllm-glm5.3-rubin
+  path: /lustre/fsw/coreai_comparch_inferencex/rihuo/GLM-5.3-NVFP4
+  container: /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh
   precision: nvfp4
 resources:
   gpu_type: vrnvl72
   gpus_per_node: 4
   het_jobs: false
+setup_script: install_dynamo_wheel.sh
 dynamo:
-  install: true
-  source:
-    wheel: 1.6.0.dev20261013
+  install: false
   request_plane: tcp
   event_plane: zmq
 frontend:
@@ -44,8 +43,8 @@ roles:
       DYN_TOOL_CALL_PARSER: glm47
       DYN_ROUTER_MODE: least-loaded
       CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
-      FLASHINFER_CACHE_DIR: /tmp/flashinfer-cache
-      FLASHINFER_WORKSPACE_BASE: /tmp/flashinfer-cache
+      FLASHINFER_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/flashinfer-cache
+      FLASHINFER_WORKSPACE_BASE: /lustre/fsw/coreai_comparch_inferencex/rihuo/flashinfer-cache
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HF_HUB_OFFLINE: '1'
       MIMALLOC_PURGE_DELAY: '0'
@@ -135,8 +134,8 @@ roles:
       DYN_TOOL_CALL_PARSER: glm47
       DYN_ROUTER_MODE: least-loaded
       CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
-      FLASHINFER_CACHE_DIR: /tmp/flashinfer-cache
-      FLASHINFER_WORKSPACE_BASE: /tmp/flashinfer-cache
+      FLASHINFER_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/flashinfer-cache
+      FLASHINFER_WORKSPACE_BASE: /lustre/fsw/coreai_comparch_inferencex/rihuo/flashinfer-cache
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HF_HUB_OFFLINE: '1'
       MIMALLOC_PURGE_DELAY: '0'
@@ -320,7 +319,8 @@ services:
       path: mooncake_donor_{index}.ready
     timeout_seconds: 300
 extra_mount:
-- /home/rihuo/:/home/rihuo/
+- /lustre:/lustre
+- /lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels
 benchmark:
   type: custom
   placement:
@@ -332,7 +332,7 @@ benchmark:
     trap 'rm -rf "$aiperf_venv"' EXIT
     python3 -m venv "$aiperf_venv"
     "$aiperf_venv/bin/python" -m pip install \
-      "/home/rihuo/agentx-harness"
+      "/lustre/fsw/coreai_comparch_inferencex/rihuo/agentx-harness"
     IFS=',' read -r -a worker_metrics_urls <<< "${AIPERF_SERVER_METRICS_URLS:?Worker metrics URLs were not provided}"
     ulimit -n 600000 2>/dev/null || ulimit -n 65536 2>/dev/null || true
     "$aiperf_venv/bin/aiperf" profile \
@@ -372,6 +372,6 @@ benchmark:
     CONC: '560'
     AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
     AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID: 'true'
-    AIPERF_DATASET_MMAP_CACHE_DIR: /tmp/aiperf-mmap-cache
+    AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/aiperf_mmap
     HF_HUB_DISABLE_PROGRESS_BARS: '1'
     TQDM_DISABLE: '1'

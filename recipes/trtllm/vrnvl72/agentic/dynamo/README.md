@@ -2,8 +2,7 @@
 
 These eight recipes are Dynamo counterparts of
 [`../trtllm-serve`](../trtllm-serve/README.md). They launch `dynamo.trtllm`
-prefill/decode workers behind `dynamo.frontend`, with Dynamo pinned to
-[`1.6.0.dev20261013`](https://pypi.org/project/ai-dynamo/1.6.0.dev20261013/).
+prefill/decode workers behind `dynamo.frontend`, using locally supplied Dynamo wheels.
 Filenames and point names match the native recipes.
 
 The conversion keeps the worker counts, GPU allocations, TRT-LLM engine tuning,
@@ -26,33 +25,40 @@ to bind worker memory and CPUs to the task GPU's NUMA node.
 
 ## Dynamo installation and cluster settings
 
-Every recipe stages and installs the matching `ai-dynamo` and `ai-dynamo-runtime`
-nightly wheels through srt-slurm's existing installer:
+Every recipe mounts the local Dynamo wheel directory at `/dynamo_wheels` and
+installs its wheels through `configs/install_dynamo_wheel.sh`. The built-in
+Dynamo installer is disabled:
 
 ```yaml
 dynamo:
-  install: true
-  source:
-    wheel: 1.6.0.dev20261013
+  install: false
   request_plane: tcp
   event_plane: zmq
+setup_script: configs/install_dynamo_wheel.sh
+extra_mount:
+- /lustre:/lustre
+- /lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels
 ```
 
-Keep the custom TRT-LLM image used by the native recipes. Resolve these aliases
-in `srtslurm.yaml`:
+Provide compatible `ai-dynamo` and `ai-dynamo-runtime` wheels in that directory.
+
+Every recipe specifies the model and custom TRT-LLM image paths directly:
 
 ```yaml
-model_paths:
-  glm5.3: /models/GLM-5.3-NVFP4
-containers:
-  trtllm-glm5.3-rubin: /images/trtllm-7890925e.sqsh
+model:
+  path: /lustre/fsw/coreai_comparch_inferencex/rihuo/GLM-5.3-NVFP4
+  container: /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh
+```
+
+Keep GPU and segment settings in `srtslurm.yaml`:
+
+```yaml
 gpus_per_node: 4
 use_segment_sbatch_directive: true
 ```
 
-The image must contain tekit revision
-`7890925ea10e613cd787c82a406a8fdc088eabc8` and its dependencies for the Rubin
-kernels, MTP prefill, Python NIXL transceiver and Mooncake donor. Installing the
+The image must support the Rubin kernels, MTP prefill, Python NIXL transceiver
+and Mooncake donor, with their required dependencies. Installing the
 base Dynamo packages leaves this custom TRT-LLM build in place; do not install
 `ai-dynamo[trtllm]`, which pins a different TRT-LLM release.
 
@@ -79,7 +85,7 @@ policy for the decode tier. The existing AIPerf session-ID headers are retained.
 
 These frontends use an etcd lease TTL of 120 seconds, the `fastokens` tokenizer,
 an 8,000,000,000-byte tokenizer cache budget, and a 30-second TCP request timeout.
-`DYN_ROUTER_USE_KV_EVENTS=0` is this Dynamo version's supported switch for routing
+The local Dynamo wheels must support `DYN_ROUTER_USE_KV_EVENTS=0` for routing
 without worker KV events. `OTEL_EXPORT_ENABLED=false` overrides srt-slurm's
 frontend tracing environment. Default temperature, cache enablement, JSONL and
 unset admission thresholds are omitted, as is the TCP request-plane setting
@@ -103,9 +109,11 @@ is retained from the native recipes; the native frontend's `server_config_extra`
 replaced by Dynamo's frontend configuration. `num_postprocess_workers` is
 removed because this Dynamo version strips that setting and owns postprocessing.
 
-These options were checked against the published `ai-dynamo` wheel's
+These options were originally checked against the published `ai-dynamo`
+`1.6.0.dev20261013` wheel's
 `dynamo/common/configuration/groups/router_args.py`, `runtime_args.py`, and
-`dynamo/trtllm/workers/llm_worker.py` at the pinned version.
+`dynamo/trtllm/workers/llm_worker.py`. The locally supplied wheels must retain
+support for these options.
 
 ## Mooncake and workload
 
@@ -138,11 +146,18 @@ master shuts down afterward. This requires srt-slurm's
 See the [native Mooncake notes](../trtllm-serve/README.md#mooncake) for prefill
 segment sizes and other inherited pool settings.
 
-Each recipe mounts `/home/rihuo/:/home/rihuo/`. The benchmark installs AIPerf
-from `/home/rihuo/agentx-harness` in a temporary environment and invokes
+Each recipe mounts `/lustre:/lustre`. The benchmark installs AIPerf
+from `/lustre/fsw/coreai_comparch_inferencex/rihuo/agentx-harness` in a temporary environment and invokes
 `aiperf profile` directly against the discovered frontend. The AgentX scenario,
 dataset, concurrency, session headers, warmup and 3,600-second measurement are
 unchanged. Results remain under `/logs/agentic/aiperf_results`.
+
+Prefill and decode workers set both `FLASHINFER_CACHE_DIR` and
+`FLASHINFER_WORKSPACE_BASE` to
+`/lustre/fsw/coreai_comparch_inferencex/rihuo/flashinfer-cache`. The benchmark
+sets `AIPERF_DATASET_MMAP_CACHE_DIR` to
+`/lustre/fsw/coreai_comparch_inferencex/rihuo/aiperf_mmap`, keeping both caches
+on the mounted Lustre filesystem.
 
 The benchmark client passes the runtime-provided `AIPERF_SERVER_METRICS_URLS`
 list to `aiperf profile --server-metrics`, collecting each logical prefill and
