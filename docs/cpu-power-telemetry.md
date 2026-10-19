@@ -238,7 +238,8 @@ with no CPU socket.
 
 The series is best-effort. When NVML is unavailable the exporter logs the
 reason at INFO and omits the series; `module_w` stays blank. The aarch64
-release binary links glibc so it can load `libnvidia-ml`; a static musl build
+release binary links glibc so it can load `libnvidia-ml`, built against a
+glibc 2.17 floor so it runs on any aarch64 glibc; a static musl build
 reports `Dynamic loading not supported` and never serves the series. NVML is
 the only source of `module_w`. A firmware `Module Power Socket N` ACPI meter
 stays unclassified. A scrape that carries only the NVML series has no socket
