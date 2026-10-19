@@ -37,6 +37,9 @@ APT repositories must be reachable from the container. Setup failure is publishe
 as a failed inventory so the controller stops with a report rather than waiting
 for the full test budget. Preflight then records tool paths, versions/help and
 NUMA/NIC inventory; invalid binding or NIC state remains a clear preflight failure.
+Ubuntu perftest 6.20 exits 1 after printing `Version: 6.20`. Setup accepts a
+version probe returning 0 or 1 only when it prints a valid version line; the
+actual RDMA tests still require successful exits and positive measured bandwidth.
 Inventory also saves OS/kernel information, current affinity, actual NUMA-bind
 checks and visible process cgroup limits; ancestor cgroup limits are not surveyed.
 

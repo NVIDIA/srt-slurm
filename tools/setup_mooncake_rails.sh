@@ -49,8 +49,22 @@ else
     fi
 fi
 
-if ! (command -v ib_read_bw && command -v ib_write_bw && command -v numactl &&
-    ib_read_bw --version && ib_write_bw --version) >> "$install_log" 2>&1; then
-    fail_setup 'Container perftest tools are missing or cannot execute after setup'
-fi
+for tool in ib_read_bw ib_write_bw numactl; do
+    if ! command -v "$tool" >> "$install_log"; then
+        fail_setup "Container tool is missing after setup: $tool"
+    fi
+done
+# Ubuntu perftest 6.20 prints its version, then exits 1 through return_error.
+# https://github.com/linux-rdma/perftest/blob/24.01.0-0.38/src/read_bw.c#L69-L74
+# Accept that informational exit only with a real version line; loader failures
+# and actual RDMA benchmark failures must still fail their respective checks.
+for tool in ib_read_bw ib_write_bw; do
+    version_rc=0
+    version_output=$(timeout 10s "$tool" --version 2>&1) || version_rc=$?
+    printf '%s --version: exit %s\n%s\n' "$tool" "$version_rc" "$version_output" >> "$install_log"
+    if [[ $version_rc -ne 0 && $version_rc -ne 1 ]] ||
+        [[ ! $version_output =~ (^|$'\n')Version:[[:blank:]]+[0-9]+([.][0-9]+)*([[:blank:]]|$) ]]; then
+        fail_setup "$tool version check failed (exit $version_rc): ${version_output:0:400}"
+    fi
+done
 exec python3 "$run_dir/mooncake_rail_worker.py" --run-dir "$run_dir" --node "$node"

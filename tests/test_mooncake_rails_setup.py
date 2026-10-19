@@ -28,7 +28,7 @@ def setup_environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     (run_dir / "mooncake_rail_worker.py").write_text("# Worker execution is intercepted by the fake python3.\n")
     # PATH contains only these harmless utilities and our explicit fakes. An
     # installed host perftest or package manager cannot accidentally be used.
-    for name in ("bash", "mkdir", "tee", "date", "cat", "sleep", "env", "chmod", "rm", "touch"):
+    for name in ("bash", "mkdir", "tee", "date", "cat", "sleep", "env", "chmod", "rm", "touch", "grep"):
         resolved = shutil.which(name)
         assert resolved, name
         (binaries / name).symlink_to(resolved)
@@ -39,6 +39,17 @@ def setup_environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
         path.chmod(0o755)
 
     executable("id", "printf '0\\n'\n")
+    executable(
+        "fake-perftest",
+        r"""
+if [[ ${MC_TEST_LOADER_FAIL:-0} == 1 ]]; then
+    printf 'error while loading shared libraries: libibverbs.so.1: cannot open shared object file\n' >&2
+    exit 127
+fi
+printf '%s\n' "${MC_TEST_VERSION_TEXT:-Version: 6.20}"
+exit "${MC_TEST_VERSION_RC:-1}"
+""",
+    )
     executable(
         "timeout",
         'while [[ $1 == --* ]]; do shift; done\nif [[ $1 == -k ]]; then shift 2; fi\nshift\nexec "$@"\n',
@@ -53,10 +64,12 @@ if [[ ${MC_TEST_APT_FAIL:-0} == 1 ]]; then
 fi
 while [[ $1 == -o ]]; do shift 2; done
 if [[ $1 == install ]]; then
-    for name in ib_read_bw ib_write_bw numactl; do
-        printf '#!/bin/bash\nexit 0\n' > "$MC_TEST_BIN/$name"
+    for name in ib_read_bw ib_write_bw; do
+        cat "$MC_TEST_PERFTEST_SOURCE" > "$MC_TEST_BIN/$name"
         chmod +x "$MC_TEST_BIN/$name"
     done
+    printf '#!/bin/bash\nexit 0\n' > "$MC_TEST_BIN/numactl"
+    chmod +x "$MC_TEST_BIN/numactl"
 fi
 """,
     )
@@ -76,19 +89,26 @@ printf '%s\n' "$@" > "$MC_TEST_WORKER_ARGS"
         "MC_TEST_APT_LOG": str(tmp_path / "apt.log"),
         "MC_TEST_WORKER_ARGS": str(tmp_path / "worker.args"),
         "MC_TEST_PYTHON": sys.executable,
+        "MC_TEST_PERFTEST_SOURCE": str(binaries / "fake-perftest"),
     }
     return run_dir, binaries, environment
 
 
 @pytest.mark.parametrize("preinstalled", [True, False])
+@pytest.mark.parametrize("version_rc", [0, 1])
 def test_setup_skips_installed_tools_or_installs_then_executes_worker(
-    setup_environment: tuple[Path, Path, dict[str, str]], preinstalled: bool
+    setup_environment: tuple[Path, Path, dict[str, str]], preinstalled: bool, version_rc: int
 ) -> None:
     run_dir, binaries, environment = setup_environment
+    environment["MC_TEST_VERSION_RC"] = str(version_rc)
     if preinstalled:
         for name in ("ib_read_bw", "ib_write_bw", "numactl"):
             path = binaries / name
-            path.write_text("#!/bin/bash\nexit 0\n")
+            path.write_text(
+                "#!/bin/bash\nexit 0\n"
+                if name == "numactl"
+                else Path(environment["MC_TEST_PERFTEST_SOURCE"]).read_text()
+            )
             path.chmod(0o755)
 
     result = subprocess.run(
@@ -103,6 +123,7 @@ def test_setup_skips_installed_tools_or_installs_then_executes_worker(
     assert result.returncode == 0, result.stdout + result.stderr
     args = Path(environment["MC_TEST_WORKER_ARGS"]).read_text().splitlines()
     assert args == [str(run_dir / "mooncake_rail_worker.py"), "--run-dir", str(run_dir), "--node", "synthetic-node"]
+    assert "Version: 6.20" in (run_dir / "logs/agents/synthetic-node.install.log").read_text()
     apt_log = Path(environment["MC_TEST_APT_LOG"])
     if preinstalled:
         assert not apt_log.exists()
@@ -145,6 +166,38 @@ def test_setup_apt_failure_publishes_failed_inventory_and_preserves_the_error(
     assert "synthetic apt repository failure" in setup_log.read_text()
     calls = Path(environment["MC_TEST_APT_LOG"]).read_text().splitlines()
     assert len(calls) == 1 and calls[0].split()[-1] == "update"
+
+
+@pytest.mark.parametrize("failure", ["loader", "malformed_version"])
+def test_setup_rejects_a_loader_failure_or_unanchored_version_line(
+    setup_environment: tuple[Path, Path, dict[str, str]], failure: str
+) -> None:
+    run_dir, _, environment = setup_environment
+    if failure == "loader":
+        environment["MC_TEST_LOADER_FAIL"] = "1"
+        expected = "error while loading shared libraries: libibverbs.so.1"
+    else:
+        expected = "diagnostic mentions Version: 6.20 but no version result"
+        environment["MC_TEST_VERSION_TEXT"] = expected
+        environment["MC_TEST_VERSION_RC"] = "1"
+
+    result = subprocess.run(
+        ["/bin/bash", str(SETUP), str(run_dir), "synthetic-node"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not Path(environment["MC_TEST_WORKER_ARGS"]).exists()
+    inventory = json.loads((run_dir / "logs/agents/synthetic-node.inventory.json").read_text())
+    assert inventory["ready"] is False and inventory["errors"]
+    log_path = Path(inventory["setup_log"])
+    if not log_path.is_absolute():
+        log_path = run_dir / log_path
+    assert expected in log_path.read_text()
 
 
 def test_batch_runs_package_setup_only_inside_the_writable_root_remapped_container() -> None:
