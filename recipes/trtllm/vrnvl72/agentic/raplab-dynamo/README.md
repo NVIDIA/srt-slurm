@@ -2,8 +2,8 @@
 
 These eight recipes are Dynamo counterparts of
 [`../trtllm-serve`](../trtllm-serve/README.md). They launch `dynamo.trtllm`
-prefill/decode workers behind `dynamo.frontend`, with Dynamo pinned to
-[`1.6.0.dev20261013`](https://pypi.org/project/ai-dynamo/1.6.0.dev20261013/).
+prefill/decode workers behind `dynamo.frontend`, with Dynamo installed from
+the local wheels in `/home/rihuo/dynamo_wheels`.
 Filenames and point names match the native recipes.
 
 The conversion keeps the worker counts, GPU allocations, TRT-LLM engine tuning,
@@ -26,34 +26,38 @@ to bind worker memory and CPUs to the task GPU's NUMA node.
 
 ## Dynamo installation and cluster settings
 
-Every recipe stages and installs the matching `ai-dynamo` and `ai-dynamo-runtime`
-nightly wheels through srt-slurm's existing installer:
+Every recipe mounts `/home/rihuo/dynamo_wheels` at `/dynamo_wheels` and runs
+[`configs/install_dynamo_wheel.sh`](../../../../../configs/install_dynamo_wheel.sh)
+before starting workers and the frontend. The script installs the local wheels
+and their dependencies. The built-in Dynamo installer is disabled so it does
+not replace those wheels:
 
 ```yaml
+setup_script: install_dynamo_wheel.sh
 dynamo:
-  install: true
-  source:
-    wheel: 1.6.0.dev20261013
+  install: false
   request_plane: tcp
   event_plane: zmq
 ```
 
-Keep the custom TRT-LLM image used by the native recipes. Resolve these aliases
-in `srtslurm.yaml`:
+The recipes use these model and image paths directly:
 
 ```yaml
-model_paths:
-  glm5.3: /models/GLM-5.3-NVFP4
-containers:
-  trtllm-glm5.3-rubin: /images/trtllm-7890925e.sqsh
+model:
+  path: /home/rihuo/GLM-5.3-NVFP4
+  container: /home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh
+```
+
+Set the cluster GPU count and allocation policy in `srtslurm.yaml`:
+
+```yaml
 gpus_per_node: 4
 use_segment_sbatch_directive: true
 ```
 
-The image must contain tekit revision
-`7890925ea10e613cd787c82a406a8fdc088eabc8` and its dependencies for the Rubin
-kernels, MTP prefill, Python NIXL transceiver and Mooncake donor. Installing the
-base Dynamo packages leaves this custom TRT-LLM build in place; do not install
+The image must support the Rubin kernels, MTP prefill, Python NIXL transceiver
+and Mooncake donor. Installing the base Dynamo packages leaves this custom
+TRT-LLM build in place; do not install
 `ai-dynamo[trtllm]`, which pins a different TRT-LLM release.
 
 srt-slurm supplies etcd discovery, TCP request transport and ZMQ events. These
@@ -108,9 +112,10 @@ is retained from the native recipes; the native frontend's `server_config_extra`
 replaced by Dynamo's frontend configuration. `num_postprocess_workers` is
 removed because this Dynamo version strips that setting and owns postprocessing.
 
-These options were checked against the published `ai-dynamo` wheel's
+These options were originally checked against the published `ai-dynamo` wheel's
 `dynamo/common/configuration/groups/router_args.py`, `runtime_args.py`, and
-`dynamo/trtllm/workers/llm_worker.py` at the pinned version.
+`dynamo/trtllm/workers/llm_worker.py` at `1.6.0.dev20261013`. Local wheels must
+support these options.
 
 ## Mooncake and workload
 

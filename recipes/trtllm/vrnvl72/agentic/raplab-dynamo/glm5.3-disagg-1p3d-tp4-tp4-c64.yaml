@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # GLM-5.3 Vera Rubin pareto04; adapted from the GLM-5.2 BTK e2e_pareto recipe.
-# Dynamo 1.6.0.dev20261013 on tekit 7890925ea10e613cd787c82a406a8fdc088eabc8 and the local AgentX client.
-# Resolve model/container aliases and cluster mounts in srtslurm.yaml; see README.md.
+# Dynamo from local wheels on the GLM-5.3 Rubin image and the local AgentX client.
+# Model, image and wheel paths are explicit; configure cluster settings in srtslurm.yaml.
 # MTP forced acceptance follows acceptance_length.json: AL(depth) - 1.
 
 schema: 2
 name: glm5.3-disagg-1p3d-tp4-tp4-c64
 model:
-  path: glm5.3
-  container: trtllm-glm5.3-rubin
+  path: /home/rihuo/GLM-5.3-NVFP4
+  container: /home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh
   precision: nvfp4
 resources:
   gpu_type: vrnvl72
@@ -21,10 +21,9 @@ environment:
   PIP_CONFIG_FILE: /dev/null
   PIP_INDEX_URL: https://pypi.org/simple
   PIP_EXTRA_INDEX_URL: https://pypi.nvidia.com
+setup_script: install_dynamo_wheel.sh
 dynamo:
-  install: true
-  source:
-    wheel: 1.6.0.dev20261013
+  install: false
   request_plane: tcp
   event_plane: zmq
 frontend:
@@ -277,6 +276,7 @@ roles:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
 extra_mount:
 - /home/rihuo/:/home/rihuo/
+- /home/rihuo/dynamo_wheels:/dynamo_wheels
 benchmark:
   type: custom
   placement:
