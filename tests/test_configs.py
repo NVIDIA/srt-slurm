@@ -4362,12 +4362,14 @@ class TestHuggingFaceModelSupport:
             (False, "gb200", "decode", None, "dynamo"),
             ("local", "gb200", "decode", "local", "dynamo"),
             ("local", "h100", "agg", "local", "trtllm_serve"),
+            ("preferred", "gb300", "decode", "preferred", "trtllm_serve"),
+            ("preferred", "h100", "agg", "preferred", "dynamo"),
         ],
     )
     def test_trtllm_numa_cpu_bind_selects_memory_policy(
         self, memory_bind, gpu_type, mode, expected_policy, frontend_type
     ):
-        """CPU binding preserves old policies; only local mode binds in the wrapper."""
+        """CPU binding preserves old policies; only local and preferred modes set memory in the wrapper."""
         from pathlib import Path
         from unittest.mock import patch
 
@@ -4394,6 +4396,8 @@ class TestHuggingFaceModelSupport:
         prefix = ["bash", "/configs/numa_cpu_bind.sh"]
         if expected_policy == "local":
             prefix.append("--bind-memory")
+        elif expected_policy == "preferred":
+            prefix.append("--prefer-memory")
         prefix.extend(["nsys", "profile"])
         if expected_policy == "0,1":
             prefix.extend(["numactl", "-m", "0,1"])
@@ -4401,8 +4405,9 @@ class TestHuggingFaceModelSupport:
         assert cmd[: len(prefix)] == prefix
         assert ("numactl" in cmd) is (expected_policy == "0,1")
 
+        # Only preferred mode keeps TRT-LLM's NUMA-aware worker affinity on.
         env = backend.get_environment_for_mode("decode")
-        assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+        assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == ("1" if expected_policy == "preferred" else "0")
 
     def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_taskset(self):
         """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
@@ -4475,6 +4480,24 @@ class TestHuggingFaceModelSupport:
         decode_env = backend.get_environment_for_mode("decode")
         assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in decode_env
         assert "NUMA_CPU_BIND_RANGES" not in decode_env
+
+    @pytest.mark.parametrize(("memory_bind", "default", "override"), [("preferred", "1", "0"), ("local", "0", "1")])
+    def test_trtllm_numa_cpu_bind_keeps_role_worker_affinity(self, memory_bind, default, override):
+        """An explicit role-env TLLM_NUMA_AWARE_WORKER_AFFINITY wins over the memory policy's default."""
+        from srtctl.backends import TRTLLMBackend
+
+        backend = TRTLLMBackend(
+            roles={
+                "prefill": RoleConfig(env={"TLLM_NUMA_AWARE_WORKER_AFFINITY": override}),
+                "decode": RoleConfig(),
+            },
+            numa_cpu_bind=True,
+            numa_memory_bind=memory_bind,
+        )
+
+        assert backend.numa_worker_affinity == default
+        assert backend.get_environment_for_mode("prefill")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == override
+        assert backend.get_environment_for_mode("decode")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == default
 
 
 class TestInfmaxWorkspaceMount:

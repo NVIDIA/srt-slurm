@@ -9,6 +9,8 @@ set -euo pipefail
 # TRT-LLM's own internal affinity logic only pins the leader thread, leaving
 # the rest to land cross-socket.
 # With --bind-memory, also restrict allocations to the GPU's NUMA node.
+# With --prefer-memory, run under `numactl --cpunodebind=<node> --preferred=<node>`
+# instead: the same CPUs, with allocations falling back to other nodes when <node> is full.
 # Local memory exhaustion can fail allocations; existing/shared pages are not migrated.
 #
 # CPU range is discovered at runtime from the physical GPU this task owns,
@@ -21,11 +23,11 @@ set -euo pipefail
 # set, else LOCALID itself for a full-node endpoint) sidesteps that.
 : "${SLURM_LOCALID:?SLURM_LOCALID is required}"
 
-bind_memory=false
-if [[ "${1:-}" == "--bind-memory" ]]; then
-    shift
-    bind_memory=true
-fi
+memory_policy=none
+case "${1:-}" in
+    --bind-memory) memory_policy=bind; shift ;;
+    --prefer-memory) memory_policy=preferred; shift ;;
+esac
 
 if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     IFS=',' read -ra visible_gpus <<< "${CUDA_VISIBLE_DEVICES}"
@@ -49,8 +51,8 @@ sysfs_addr="$(printf '%04x:%s' "0x${domain}" "${rest}" | tr '[:upper:]' '[:lower
 numa_node="$(cat "/sys/bus/pci/devices/${sysfs_addr}/numa_node" 2>/dev/null || echo -1)"
 
 if [[ ! "${numa_node}" =~ ^[0-9]+$ ]]; then
-    if [[ "${bind_memory}" == true ]]; then
-        echo "numa_cpu_bind.sh: cannot bind memory: GPU ${physical_gpu} (${sysfs_addr}) has no valid NUMA node (${numa_node})" >&2
+    if [[ "${memory_policy}" != none ]]; then
+        echo "numa_cpu_bind.sh: cannot apply memory policy ${memory_policy}: GPU ${physical_gpu} (${sysfs_addr}) has no valid NUMA node (${numa_node})" >&2
         exit 2
     fi
     echo "numa_cpu_bind.sh: GPU ${physical_gpu} (${sysfs_addr}) reports no NUMA affinity (numa_node=${numa_node}); running without CPU binding" >&2
@@ -64,8 +66,14 @@ if [[ -z "${cpu_list}" ]]; then
 fi
 
 echo "numa_cpu_bind.sh: SLURM_LOCALID=${SLURM_LOCALID} gpu=${physical_gpu} (${sysfs_addr}) numa_node=${numa_node} bound to cpus=${cpu_list}" >&2
-if [[ "${bind_memory}" == true ]]; then
-    echo "numa_cpu_bind.sh: memory_policy=bind:${numa_node}" >&2
-    exec numactl --membind="${numa_node}" taskset -c "${cpu_list}" "$@"
-fi
+case "${memory_policy}" in
+    bind)
+        echo "numa_cpu_bind.sh: memory_policy=bind:${numa_node}" >&2
+        exec numactl --membind="${numa_node}" taskset -c "${cpu_list}" "$@"
+        ;;
+    preferred)
+        echo "numa_cpu_bind.sh: memory_policy=preferred:${numa_node}" >&2
+        exec numactl --cpunodebind="${numa_node}" --preferred="${numa_node}" "$@"
+        ;;
+esac
 exec taskset -c "${cpu_list}" "$@"

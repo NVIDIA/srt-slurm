@@ -132,6 +132,19 @@ def test_trtllm_local_numa_example_is_visible(capsys):
     output = capsys.readouterr().out
     assert "strict GPU-local memory binding" in output
     assert "--bind-memory" in output
+    assert "TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0" in " ".join(output.split())
+
+
+def test_trtllm_preferred_numa_keeps_worker_affinity_visible(capsys):
+    recipe = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-agg-numa-local.yaml"
+    data = yaml.safe_load(recipe.read_text())
+    data["engine"]["numa_memory_bind"] = "preferred"
+    config = SrtConfig.Schema().load(data)
+    assert config.backend.get_environment_for_mode("agg")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "1"
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert "--prefer-memory" in output
+    assert "TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 1" in output
 
 
 class TestDryRunDynamoMetrics:

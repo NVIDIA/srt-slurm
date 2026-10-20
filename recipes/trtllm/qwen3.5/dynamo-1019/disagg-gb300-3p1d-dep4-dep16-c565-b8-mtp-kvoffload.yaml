@@ -1,0 +1,391 @@
+# Dynamo counterpart of ../trtllm-serve-1019/disagg-gb300-3p1d-dep4-dep16-c565-b8-mtp-kvoffload.yaml
+# Pareto point cq1h c565: 3x CTX DEP4 + 1x GEN DEP16 b8, concurrency 565; trtllm-serve job 1121075.
+# Same image (q35repro-09607ea47b), topology, NUMA binding, engine args, worker env and AgentX traffic;
+# dynamo.trtllm workers and the Dynamo frontend (1.6.0.dev20261010 from the mounted /dynamo_wheels).
+# Dropped trtllm-serve-only settings: frontend process pools (num_serve_frontends, num_postprocess_workers),
+# per-conversation frontend affinity and incremental tokenization (Dynamo's tokenizer prefix cache replaces it),
+# ctx/gen routers (Dynamo KV router with session affinity) and server_config_extra.
+# Engine return_perf_metrics is off; Dynamo publish_metrics is on. Not yet measured under Dynamo.
+schema: 2
+name: disagg-gb300-3p1d-dep4-dep16-c565-b8-mtp-kvoffload-dynamo
+model:
+  path: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/shixiangx/models/Qwen3.5-397B-A17B-NVFP4-V2
+  container: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xiaomingc/qwen35_e2e/images/nvidia+tensorrt-llm+release+1.3.0a0.dev202610151219+q35repro-09607ea47b.sqsh
+  precision: fp4
+identity:
+  model:
+    repo: Qwen3.5-397B-A17B-NVFP4-V2
+  container:
+    image: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xiaomingc/qwen35_e2e/images/nvidia+tensorrt-llm+release+1.3.0a0.dev202610151219+q35repro-09607ea47b.sqsh
+  frameworks:
+    tensorrt_llm: 1.3.0a0.dev202610151219
+    dynamo: 1.6.0.dev20261010
+slurm:
+  time_limit: 04:00:00
+  account: coreai_comparch_inferencex
+  partition: batch
+health_check:
+  max_attempts: 540
+  interval_seconds: 10
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+engine:
+  type: trtllm
+  served_model_name: Qwen3.5-397B-A17B-NVFP4-V2
+  publish_metrics: true
+  numa_cpu_bind: true
+  numa_memory_bind: preferred
+roles:
+  prefill:
+    nodes: 3
+    workers: 3
+    gpus: 4
+    env:
+      CUDA_CACHE_PATH: /tmp/cuda_cache_qwen35
+      CUDA_SCALE_LAUNCH_QUEUES: 4x
+      CUTE_DSL_CACHE_DIR: /tmp/cute_dsl_cache_qwen35
+      ENROOT_ALLOW_DEV: 'yes'
+      FLASHINFER_WORKSPACE_BASE: /tmp/fi_ws_qwen35
+      MIMALLOC_ARENA_RESERVE: '0'
+      MIMALLOC_PURGE_DELAY: ''
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      OMP_NUM_THREADS: '1'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TLLM_LOG_LEVEL: INFO
+      TLLM_PROFILE_LOG_RANKS: all
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '3.80'
+      TORCHINDUCTOR_CACHE_DIR: /tmp/inductor_qwen35
+      TRITON_CACHE_DIR: /tmp/triton_cache_qwen35
+      TRTLLM_CTX_SCHED_SRPT: '1'
+      TRTLLM_CTX_SCHED_SRPT_AGE_CAP: '2048'
+      TRTLLM_CTX_SCHED_SRPT_AGE_S: '8'
+      TRTLLM_ENABLE_PDL: '1'
+      TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
+      TRTLLM_MAMBA_INFORWARD_SNAPSHOT: '1'
+      TRTLLM_PINNED_WEIGHT_STAGING: '1'
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_SKIP_KV_CACHE_ESTIMATION: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      UCX_CUDA_COPY_MAX_POLL: inf
+      UCX_CUDA_IPC_MAX_POLL: inf
+      UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
+      XDG_CACHE_HOME: /tmp/xdg_cache_qwen35
+      DYN_ENGINE_CONV_AFFINITY: '1'
+    args:
+      attention_dp_config:
+        kv_cache_routing_conversation_affinity: true
+      cache_transceiver_config:
+        backend: NIXL
+        kv_transfer_sender_future_timeout_ms: 20
+        kv_transfer_timeout_ms: 600000
+        transceiver_runtime: PYTHON
+      cuda_graph_config: null
+      disable_overlap_scheduler: false
+      enable_attention_dp: true
+      enable_chunked_prefill: true
+      enable_iter_perf_stats: true
+      enable_iter_req_stats: false
+      iter_perf_stats_interval: 40
+      kv_cache_config:
+        block_reuse_config:
+          max_num_turns: 3
+          policy: per_conversation
+        dtype: fp8
+        enable_block_reuse: true
+        event_buffer_max_size: 0
+        free_gpu_memory_fraction: 0.8
+        host_cache_size: 137438953472
+        iteration_stats_interval: 40
+        mamba_state_config:
+          additional_snapshot_offsets_from_end:
+          - 2
+          periodic_snapshot_interval: 0
+        pool_ratio:
+        - 0.8
+        - 0.2
+        tokens_per_block: 64
+        use_kv_cache_manager_v2: true
+      max_batch_size: 64
+      max_num_tokens: 8192
+      max_seq_len: 262144
+      moe_config:
+        backend: CUTEDSL
+      moe_expert_parallel_size: 4
+      nvfp4_gemm_config:
+        allowed_backends:
+        - cutlass
+        - cublaslt
+        - cutedsl
+        - cuda_core
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      return_perf_metrics: false
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+      tensor_parallel_size: 4
+      torch_compile_config:
+        capture_num_tokens:
+        - 1
+        - 2
+        - 4
+        - 8
+        - 16
+        - 32
+        - 64
+        - 128
+        - 256
+        - 512
+        - 1024
+        - 2048
+        - 4096
+        - 8192
+        enable_fullgraph: true
+        enable_piecewise_cuda_graph: true
+      trust_remote_code: true
+  decode:
+    nodes: 4
+    workers: 1
+    gpus: 16
+    env:
+      CUDA_CACHE_PATH: /tmp/cuda_cache_qwen35
+      CUTE_DSL_CACHE_DIR: /tmp/cute_dsl_cache_qwen35
+      ENROOT_ALLOW_DEV: 'yes'
+      FLASHINFER_WORKSPACE_BASE: /tmp/fi_ws_qwen35
+      MIMALLOC_ARENA_RESERVE: '0'
+      MIMALLOC_PURGE_DELAY: ''
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      OMP_NUM_THREADS: '1'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TLLM_LOG_LEVEL: INFO
+      TLLM_PROFILE_LOG_RANKS: all
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '3.80'
+      TORCHINDUCTOR_CACHE_DIR: /tmp/inductor_qwen35
+      TRITON_CACHE_DIR: /tmp/triton_cache_qwen35
+      TRTLLM_DISAGG_GEN_EMIT_FIRST_STEP: '1'
+      TRTLLM_DISAGG_GEN_IDLE_POLL_SKIP: '1'
+      TRTLLM_ENABLE_PDL: '1'
+      TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
+      TRTLLM_OVERLAP_LOOP_ON_EXECUTION_STREAM: '1'
+      TRTLLM_PINNED_WEIGHT_STAGING: '1'
+      TRTLLM_Q35_AR2: slm
+      TRTLLM_Q35_AR_FP8_OUT: '1'
+      TRTLLM_Q35_AR_NORM_FUSE: '1'
+      TRTLLM_Q35_AR_NO_NCCL_SYMM: '1'
+      TRTLLM_Q35_ATTN_CP: '1'
+      TRTLLM_Q35_ATTN_CP_BALANCED_SPLIT: '1'
+      TRTLLM_Q35_ATTN_CP_DRAFT_EARLY: '1'
+      TRTLLM_Q35_ATTN_CP_FUSED: '1'
+      TRTLLM_Q35_ATTN_CP_FUSED_MAX_BATCH: '32'
+      TRTLLM_Q35_ATTN_CP_FUSED_MAX_BATCH_Q1: '32'
+      TRTLLM_Q35_ATTN_CP_MAX_BATCH: '64'
+      TRTLLM_Q35_ATTN_FOLD: '1'
+      TRTLLM_Q35_ATTN_FUSED_DECODE: '1'
+      TRTLLM_Q35_ATTN_KV_APPEND: '1'
+      TRTLLM_Q35_ATTN_SEGMENTS: '16'
+      TRTLLM_Q35_ATTN_SEG_FUSE_GATE: '1'
+      TRTLLM_Q35_ATTN_SEG_MAX_BATCH: '2'
+      TRTLLM_Q35_AUTOTUNE_DUMP: '1'
+      TRTLLM_Q35_CACHED_STREAM_EVENTS: '1'
+      TRTLLM_Q35_CP_EXCHANGE_KB: '1024'
+      TRTLLM_Q35_CP_GROUP_GRID: '2'
+      TRTLLM_Q35_CP_MERGE_GRID: '8'
+      TRTLLM_Q35_CP_MERGE_MAX_ROWS: '2048'
+      TRTLLM_Q35_DRAFT_BOOKKEEPING: '1'
+      TRTLLM_Q35_DRAFT_FP8_HEAD: '1'
+      TRTLLM_Q35_DRAFT_SLICES: '1'
+      TRTLLM_Q35_DRAFT_TAIL: '1'
+      TRTLLM_Q35_EMBED_GATHER: '1'
+      TRTLLM_Q35_FAST_COUNT_BCAST: '1'
+      TRTLLM_Q35_FIN_FOLD: '1'
+      TRTLLM_Q35_FUSED_ACCEPT: '1'
+      TRTLLM_Q35_FUSED_AR: all
+      TRTLLM_Q35_FUSED_AR_MAX_ROWS: '256'
+      TRTLLM_Q35_FUSED_AR_TWOSHOT_ROWS: '64'
+      TRTLLM_Q35_FUSED_STEP0: '1'
+      TRTLLM_Q35_GDN_ARANGE_CACHE: '1'
+      TRTLLM_Q35_GDN_BA_LATE_JOIN: '1'
+      TRTLLM_Q35_GDN_CONV_BARRIER: '1'
+      TRTLLM_Q35_GDN_CONV_HOIST: '1'
+      TRTLLM_Q35_GDN_CONV_PDL: '1'
+      TRTLLM_Q35_GDN_CORE: '1'
+      TRTLLM_Q35_GDN_CORE_LARGE: '1'
+      TRTLLM_Q35_GDN_CORE_MIN_BATCH: '5'
+      TRTLLM_Q35_GDN_FUSE: '4'
+      TRTLLM_Q35_GDN_FUSE_MAX_BATCH: '64'
+      TRTLLM_Q35_GDN_FUSE_OPTS: w4_s_p_t2_x2
+      TRTLLM_Q35_GDN_NORM_PDL: '1'
+      TRTLLM_Q35_GDN_PROMOTE_FUSED: '1'
+      TRTLLM_Q35_GDN_REPLAY_PARTITION_MIN_BATCH: '65'
+      TRTLLM_Q35_GDN_REPLAY_TILE: '1'
+      TRTLLM_Q35_GEMM_AR: '1'
+      TRTLLM_Q35_GEMM_AR_MIN_ROWS: '1'
+      TRTLLM_Q35_HANG_CHECKPOINT_MIN_S: '1'
+      TRTLLM_Q35_LEAN_ITER_LOG: '16'
+      TRTLLM_Q35_LL_ARGMAX_EXCHANGE: '1'
+      TRTLLM_Q35_LL_EXCHANGE_MAX_ROWS: '512'
+      TRTLLM_Q35_LOWM_BF16: '1'
+      TRTLLM_Q35_LOWM_FP8: '1'
+      TRTLLM_Q35_LOWM_GDN_BA: '1'
+      TRTLLM_Q35_LOWM_SE: '1'
+      TRTLLM_Q35_MNNVL_PRESIZE: '1'
+      TRTLLM_Q35_MOEGEMM_PIN: 512x64:7=8/70,14=8/70,21=8/70,28=8/70|512x128:3=8/59,5=8/59,6=8/70,7=8/70,8=8/48,9=8/48,10=8/70,11=8/70,12=8/70,13=8/70,14=8/48,15=8/70,16=8/4,18=8/4,20=8/4,21=8/4,22=8/4,24=8/48,26=8/4,28=8/4,30=8/4,32=8/4,35=8/4,42=8/48,49=8/4,56=8/2,63=8/70,70=16/20,77=16/20,84=8/48,91=16/20,98=16/20,105=16/20,112=8/70,126=16/20,140=16/20,154=16/20,168=16/20,182=16/20,196=16/20,210=16/20,224=16/20|256x256:7=8/55,14=8/66,28=8/66|256x128:7=8/59,14=8/44,28=8/66
+      TRTLLM_Q35_MOE_FRONT_BIG: '1'
+      TRTLLM_Q35_MOE_FRONT_BIG_MS: 35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224
+      TRTLLM_Q35_MOE_FRONT_FUSED: '1'
+      TRTLLM_Q35_MOE_PREROUTE: '1'
+      TRTLLM_Q35_MOE_PREROUTE_LOWM: '1'
+      TRTLLM_Q35_MOE_ROUTER_GEMM: '1'
+      TRTLLM_Q35_MTP_FC_CUTE_AR: '1'
+      TRTLLM_Q35_MTP_FUSED_INPUT: '1'
+      TRTLLM_Q35_MTP_MOE_QUANT: nvfp4
+      TRTLLM_Q35_PDL_EARLY_TRIGGER: '1'
+      TRTLLM_Q35_POSITIONS_HOIST: '1'
+      TRTLLM_Q35_REPLICATED_EMBED: '1'
+      TRTLLM_Q35_SAMPLER_EVENT_RING: '1'
+      TRTLLM_Q35_SAMPLER_HOST_RING: '1'
+      TRTLLM_Q35_SAMPLER_ZEROCOPY: '1'
+      TRTLLM_Q35_SAMPLING_PARAMS_CACHE: '1'
+      TRTLLM_Q35_SAMPLING_SCAN_CACHE: '1'
+      TRTLLM_Q35_SE_AUX: gate
+      TRTLLM_Q35_SHARDED_TARGET_SAMPLING: '1'
+      TRTLLM_Q35_SKIP_MROPE_COS_SIN: '1'
+      TRTLLM_Q35_SPEC_PREPARE_CACHE: '1'
+      TRTLLM_Q35_STEADY_MAMBA_INDICES: '1'
+      TRTLLM_Q35_STEADY_PREPARE: '1'
+      TRTLLM_Q35_STEADY_PREPARE_ATTN: '1'
+      TRTLLM_Q35_STEADY_PREPARE_SKIP_BLOCKS: '1'
+      TRTLLM_Q35_STEADY_PREPARE_STATIC: '1'
+      TRTLLM_Q35_STEADY_PREPARE_ZEROCOPY: '1'
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_SPEC_SAMPLER_FUSED_STORE: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      UCX_CUDA_COPY_MAX_POLL: inf
+      UCX_CUDA_IPC_MAX_POLL: inf
+      UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
+      XDG_CACHE_HOME: /tmp/xdg_cache_qwen35
+      DYN_ENGINE_CONV_AFFINITY: '1'
+    args:
+      cache_transceiver_config:
+        backend: NIXL
+        kv_transfer_sender_future_timeout_ms: 20
+        kv_transfer_timeout_ms: 600000
+        transceiver_runtime: PYTHON
+      cuda_graph_config:
+        batch_sizes:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        enable_padding: true
+      enable_attention_dp: true
+      enable_iter_perf_stats: true
+      enable_iter_req_stats: false
+      enable_lm_head_tp_in_adp: true
+      iter_perf_stats_interval: 40
+      kv_cache_config:
+        avg_seq_len: 102150
+        dtype: fp8
+        enable_block_reuse: false
+        event_buffer_max_size: 0
+        free_gpu_memory_fraction: 0.85
+        host_cache_size: 137438953472
+        iteration_stats_interval: 40
+        tokens_per_block: 64
+        use_kv_cache_manager_v2: true
+      max_batch_size: 8
+      max_num_tokens: 56
+      max_seq_len: 262148
+      moe_config:
+        backend: CUTEDSL
+        use_low_precision_moe_combine: true
+      moe_expert_parallel_size: 16
+      nvfp4_gemm_config:
+        allowed_backends:
+        - cutlass
+        - cublaslt
+        - cutedsl
+        - cuda_core
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      return_perf_metrics: false
+      scheduler_config:
+        capacity_scheduler_policy: GUARANTEED_NO_EVICT
+      speculative_config:
+        decoding_type: MTP
+        max_draft_len: 6
+      stream_interval: 20
+      tensor_parallel_size: 16
+      trust_remote_code: true
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  env:
+    ETCD_LEASE_TTL: '120'
+    DYN_TOKENIZER_CACHE: '1'
+    DYN_TOKENIZER_CACHE_BYTES: '8000000000'
+    DYN_TOKENIZER: fastokens
+    DYN_TOKEN_IDS_AS_BYTES: '1'
+  args:
+    router-mode: kv
+    router-session-affinity-ttl-secs: '14400'
+benchmark:
+  type: custom
+  env:
+    AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
+    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: '0'
+    AIPERF_REQUIRED_SERVER_METRIC_PREFIX: trtllm_kv_cache_utilization
+    AIPERF_REF: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/agentx-harness
+    HF_HUB_CACHE: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
+    HF_HOME: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
+  command: |
+    set -euo pipefail
+    # Install the Dynamo-aware AIPerf client and preserve the conversation decoding fix.
+    python3 -m pip install --upgrade "$AIPERF_REF" "datasets==5.0.0" "huggingface-hub==1.14.0" "pydantic==2.13.4"
+    export HF_HUB_TRUST_REMOTE_CODE=1
+    export AIPERF_DATASET_MMAP_CACHE_DIR=/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/aiperf_mmap_cache
+    mkdir -p /logs/agentic/concurrency_565
+    : "${AIPERF_SERVER_METRICS_URLS:?Worker metrics URLs must be provided by srtctl}"
+    IFS=',' read -r -a SERVER_METRICS_URLS <<< "$AIPERF_SERVER_METRICS_URLS"
+    aiperf profile \
+      --server-metrics "${SERVER_METRICS_URLS[@]}" \
+      --server-metrics-formats json csv parquet jsonl \
+      --scenario inferencex-agentx-mvp \
+      -m Qwen3.5-397B-A17B-NVFP4-V2 --tokenizer /model \
+      --tokenizer-trust-remote-code \
+      --url http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT \
+      --endpoint /v1/chat/completions \
+      --endpoint-type chat \
+      --streaming \
+      --public-dataset semianalysis_cc_traces_weka_062126_256k \
+      --max-context-length 1048576 \
+      --trajectory-start-min-ratio 0.25 \
+      --trajectory-start-max-ratio 0.75 \
+      --failed-request-threshold 0.10 \
+      --use-server-token-count \
+      --no-gpu-telemetry \
+      --random-seed 42 \
+      --benchmark-duration 3600 \
+      --concurrency 565 \
+      --artifact-dir /logs/agentic/concurrency_565 \
+      --warmup-requests-per-lane 10 \
+      --warmup-grace-period 1800 \
+      --num-dataset-entries 393 \
+      --slice-duration 1.0 \
+      --stats-interval 30 \
+      --trace-idle-gap-cap-seconds 300
+  placement:
+    node: last_decode
+setup_script: install_dynamo_wheel.sh
+extra_mount:
+- /scratch/:/scratch/
+- /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels:/dynamo_wheels
+dynamo:
+  install: false
+observability:
+  enable_otel: false

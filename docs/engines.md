@@ -106,6 +106,16 @@ not migrated. The container must provide `numactl`. Local mode requires
 `numa_cpu_bind: true`. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
 cluster GPU visibility variables are not supported by this wrapper.
 
+`numa_memory_bind: preferred` (also requires `numa_cpu_bind: true`) starts the
+worker under `numactl --cpunodebind=<node> --preferred=<node>`: the same CPUs,
+with allocations falling back to other nodes when the GPU's node is full. It
+also leaves TRT-LLM's own NUMA-aware worker affinity on
+(`TLLM_NUMA_AWARE_WORKER_AFFINITY=1`), so the worker pins itself to the GPU's
+CPUs. Every other mode with `numa_cpu_bind: true` sets it to `0`, because the
+wrapper's `taskset` mask already pins every thread. A
+`TLLM_NUMA_AWARE_WORKER_AFFINITY` in `roles.<role>.env` overrides either
+default.
+
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
 `numa_memory_bind: true` uses `numactl -m 0,1` for any GPU type or worker mode.
 When omitted or null, this two-node policy applies only to `gb200`, `gb300`,
