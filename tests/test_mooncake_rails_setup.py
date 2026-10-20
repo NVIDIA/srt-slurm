@@ -39,6 +39,8 @@ def setup_environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
         path.chmod(0o755)
 
     executable("id", "printf '0\\n'\n")
+    for name in ("ibstat", "ibv_devinfo", "iblinkinfo"):
+        executable(name, "exit 0\n")
     executable(
         "fake-perftest",
         r"""
@@ -64,12 +66,23 @@ if [[ ${MC_TEST_APT_FAIL:-0} == 1 ]]; then
 fi
 while [[ $1 == -o ]]; do shift 2; done
 if [[ $1 == install ]]; then
-    for name in ib_read_bw ib_write_bw; do
-        cat "$MC_TEST_PERFTEST_SOURCE" > "$MC_TEST_BIN/$name"
-        chmod +x "$MC_TEST_BIN/$name"
-    done
-    printf '#!/bin/bash\nexit 0\n' > "$MC_TEST_BIN/numactl"
-    chmod +x "$MC_TEST_BIN/numactl"
+    if [[ $* == *ibverbs-utils* ]]; then
+        if [[ ${MC_TEST_OPTIONAL_APT_FAIL:-0} == 1 ]]; then
+            printf 'synthetic optional topology package failure\n' >&2
+            exit 42
+        fi
+        for name in ibstat ibv_devinfo iblinkinfo; do
+            printf '#!/bin/bash\nexit 0\n' > "$MC_TEST_BIN/$name"
+            chmod +x "$MC_TEST_BIN/$name"
+        done
+    else
+        for name in ib_read_bw ib_write_bw; do
+            cat "$MC_TEST_PERFTEST_SOURCE" > "$MC_TEST_BIN/$name"
+            chmod +x "$MC_TEST_BIN/$name"
+        done
+        printf '#!/bin/bash\nexit 0\n' > "$MC_TEST_BIN/numactl"
+        chmod +x "$MC_TEST_BIN/numactl"
+    fi
 fi
 """,
     )
@@ -198,6 +211,46 @@ def test_setup_rejects_a_loader_failure_or_unanchored_version_line(
     if not log_path.is_absolute():
         log_path = run_dir / log_path
     assert expected in log_path.read_text()
+
+
+@pytest.mark.parametrize("required_preinstalled", [True, False])
+@pytest.mark.parametrize("optional_failure", [True, False])
+def test_optional_topology_install_is_best_effort_and_reuses_required_apt_update(
+    setup_environment: tuple[Path, Path, dict[str, str]], required_preinstalled: bool, optional_failure: bool
+) -> None:
+    run_dir, binaries, environment = setup_environment
+    for name in ("ibstat", "ibv_devinfo", "iblinkinfo"):
+        (binaries / name).unlink()
+    if required_preinstalled:
+        for name in ("ib_read_bw", "ib_write_bw", "numactl"):
+            path = binaries / name
+            path.write_text(
+                "#!/bin/bash\nexit 0\n"
+                if name == "numactl"
+                else Path(environment["MC_TEST_PERFTEST_SOURCE"]).read_text()
+            )
+            path.chmod(0o755)
+    environment["MC_TEST_OPTIONAL_APT_FAIL"] = str(int(optional_failure))
+
+    result = subprocess.run(
+        ["/bin/bash", str(SETUP), str(run_dir), "synthetic-node"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert Path(environment["MC_TEST_WORKER_ARGS"]).exists()
+    assert not (run_dir / "logs/agents/synthetic-node.inventory.json").exists()
+    calls = Path(environment["MC_TEST_APT_LOG"]).read_text().splitlines()
+    assert sum(line.endswith(" update") for line in calls) == 1
+    assert len(calls) == (2 if required_preinstalled else 3)
+    assert calls[-1].endswith("install -y --no-install-recommends ibverbs-utils infiniband-diags")
+    setup_log = (run_dir / "logs/agents/synthetic-node.install.log").read_text()
+    assert f"Optional topology package setup exit code: {42 if optional_failure else 0}" in setup_log
+    assert (binaries / "iblinkinfo").exists() == (not optional_failure)
 
 
 def test_batch_runs_package_setup_only_inside_the_writable_root_remapped_container() -> None:

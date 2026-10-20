@@ -16,8 +16,10 @@ cache and wheel locations, host setup and network configuration, including
 `UCX_NET_DEVICES=all`. Mooncake device affinity remains enabled only in the DEP8
 recipe.
 
-All recipes set `engine.numa_memory_bind: local` and `engine.numa_cpu_bind: true`
-to bind worker memory and CPUs to the task GPU's NUMA node.
+Seven recipes set `engine.numa_memory_bind: local` and `engine.numa_cpu_bind: true`
+to bind worker memory and CPUs to the task GPU's NUMA node. The DEP8 recipe omits
+these overrides while investigating host OOMs; it uses the default memory binding
+across NUMA nodes 0 and 1 without srt-slurm's GPU-local CPU-binding wrapper.
 
 | Recipe | Prefill workers / GPUs each | Decode workers / GPUs each | Concurrency | Prefill affinity | Decode affinity |
 | --- | --- | --- | --- | --- | --- |

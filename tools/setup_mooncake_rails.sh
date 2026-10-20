@@ -6,6 +6,7 @@ set -euo pipefail
 run_dir=${1:?Shared run directory is required}
 node=${2:?Slurm node name is required}
 install_log=$run_dir/logs/agents/$node.install.log
+apt_updated=0
 mkdir -p "$run_dir/logs/agents"
 
 fail_setup() {
@@ -47,6 +48,7 @@ else
     ' > "$install_log" 2>&1; then
         fail_setup 'apt installation inside the container failed or exceeded 240 seconds'
     fi
+    apt_updated=1
 fi
 
 for tool in ib_read_bw ib_write_bw numactl; do
@@ -67,4 +69,28 @@ for tool in ib_read_bw ib_write_bw; do
         fail_setup "$tool version check failed (exit $version_rc): ${version_output:0:400}"
     fi
 done
+
+# Topology evidence helps explain a blocked NIC matrix, but management tools
+# and UMAD permissions are not required to exercise RDMA. Keep this best-effort
+# setup separate from the required perftest checks above and inside the same
+# writable container. Never install packages on the host.
+if ! command -v ibstat >/dev/null || ! command -v ibv_devinfo >/dev/null || ! command -v iblinkinfo >/dev/null; then
+    if [[ $(id -u) == 0 ]] && command -v apt-get >/dev/null; then
+        printf '\nInstalling optional topology tools inside the container.\n' >> "$install_log"
+        optional_rc=0
+        timeout --signal=TERM --kill-after=5s 60s bash -c '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            if [[ $1 != 1 ]]; then
+                apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update
+            fi
+            apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 \
+                install -y --no-install-recommends ibverbs-utils infiniband-diags
+        ' -- "$apt_updated" >> "$install_log" 2>&1 || optional_rc=$?
+        printf 'Optional topology package setup exit code: %s; missing tools remain nonfatal.\n' \
+            "$optional_rc" >> "$install_log"
+    else
+        printf '\nOptional topology tools unavailable; container apt/root access is absent. Continuing.\n' >> "$install_log"
+    fi
+fi
 exec python3 "$run_dir/mooncake_rail_worker.py" --run-dir "$run_dir" --node "$node"

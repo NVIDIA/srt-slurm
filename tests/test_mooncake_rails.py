@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import threading
 import time
@@ -144,7 +145,7 @@ def test_worker_preflight_checks_real_binding_and_gid_instead_of_current_cpu_mas
                 return content
         return None
 
-    def capture(argv: list[str]) -> dict[str, Any]:
+    def capture(argv: list[str], **kwargs: Any) -> dict[str, Any]:
         failed = failure == "numa_permission" and "--cpunodebind=1" in argv
         return {"argv": argv, "returncode": int(failed), "stdout": "", "stderr": "EPERM" if failed else ""}
 
@@ -307,6 +308,55 @@ def test_controller_collects_real_mailbox_results_and_reports_failed_pairs(tmp_p
     assert {check["node"] for check in checks} == {"reader", "donor"}
     assert all(check["ack"]["status"] == "pong" and check["round_trip_s"] >= 0 for check in checks)
     assert len({check["command_id"] for check in checks}) == 2
+
+
+def test_report_preserves_pair_failures_and_converts_decimal_bandwidth_units(tmp_path: Path) -> None:
+    nics = ["mlx5_0", "mlx5_1"]
+    inventory = {role: {"nics": {nic: {"numa_node": 0} for nic in nics}} for role in ("reader", "donor")}
+    planned = controller.make_cases(nics, inventory)
+    results = [
+        {**planned[0], "status": "PASS", "average_gbit_s": 320.0},
+        {**planned[1], "status": "FAIL", "average_gbit_s": 999.0},
+    ]
+    controller.write_report(
+        tmp_path,
+        {"nics": nics, "duration": 3, "budget": 1620, "cluster": "hecate", "segment_size": "2"},
+        results,
+        planned,
+        "synthetic incomplete run",
+    )
+
+    report = (tmp_path / "logs/perf-analysis.md").read_text()
+    assert "READ: 1/4 NIC pairs passed" in report
+    assert "WRITE: 0/4 NIC pairs passed" in report
+    assert "Full reachability is not established" in report
+    assert "All-to-all reachability is supported" not in report
+    assert "median 320.00 Gbit/s (40.00 GB/s)" in report
+    assert "median 999.00" not in report
+    assert "does not prove one physical fabric plane" in report
+    assert "1620-second controller budget" in report
+    assert "NOT RUN=6" in report
+    with (tmp_path / "logs/summary.csv").open() as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["average_gbit_s"] == "320.0"
+    assert rows[0]["average_gb_s"] == "40.0"
+    assert rows[1]["status"] == "FAIL"
+
+
+def test_report_records_nic_link_evidence_and_limits_complete_connectivity_claims(tmp_path: Path) -> None:
+    nics = ["mlx5_0"]
+    nic = {"numa_node": 1, "rate": "800 Gb/sec", "lid": "0x123", "sm_lid": "1", "node_guid": "abcd"}
+    for node in ("reader", "donor"):
+        worker.atomic_json(tmp_path / f"logs/agents/{node}.inventory.json", {"nics": {"mlx5_0": nic}})
+    planned = controller.make_cases(nics, {role: {"nics": {"mlx5_0": nic}} for role in ("reader", "donor")})
+    rows = [{**case, "status": "PASS", "average_gbit_s": 640.0} for case in planned]
+    controller.write_report(tmp_path, {"reader": "reader", "donor": "donor", "nics": nics}, rows, planned, "done")
+
+    report = (tmp_path / "logs/perf-analysis.md").read_text()
+    assert report.count("All-to-all reachability is supported") == 2
+    assert "| reader (reader) | mlx5_0 | 1 | 800 Gb/sec | 0x123 | 1 | N/A | abcd |" in report
+    assert "interconnected planes" in report and "optional_diagnostics" in report
+    assert "not directly comparable to an aggregate multi-NIC Mooncake GET result" in report
 
 
 def test_controller_reads_an_ack_despite_a_cached_negative_exists_result(

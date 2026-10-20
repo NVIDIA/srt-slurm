@@ -1,5 +1,56 @@
 # Check Mooncake cross-rail connectivity
 
+For Hecate, submit from the repository root:
+
+```bash
+sbatch tools/check_hecate_rails.sbatch
+```
+
+This requests account `root`, partition `batch-xdr`, two scheduler-selected
+exclusive nodes, all allocatable host memory (`--mem=0`), and `--segment=2` so
+the allocation stays within one Slurm topology segment. There is no fixed
+nodelist and no GPU request. The segment constraint records the scheduler's
+placement decision; it does not independently identify a physical tray.
+The Hecate image defaults to:
+
+```text
+/lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh
+```
+
+The Hecate wrapper runs the same 128-case READ/WRITE matrix described below,
+using three seconds per case, an eight-second case timeout, a 27-minute
+controller budget and a 30-minute allocation. This keeps blocked cross-rail
+pairs from consuming the whole allocation before other pairs are checked.
+Container extraction uses at most eight workers by default
+(`ENROOT_MAX_PROCESSORS=8`), independently of the test's full CPU allocation.
+`submitted.sbatch` preserves the Hecate wrapper alongside the common launcher.
+
+The result answers whether every one of the eight selected NICs can exchange
+RDMA data with every selected NIC on the other node, and records each pair's
+average speed. Compare the matrices and NIC/subnet inventory for separate
+connectivity groups. All 64 pairs passing supports all-to-all reachability on
+these two nodes; it does not prove that the physical network has one plane,
+because interconnected planes can also provide that reachability. Failures
+must be distinguished from setup, TCP bootstrap and NUMA-binding errors.
+
+For a matched RapLab comparison, use the same transfer settings and container
+build, changing only the image's filesystem path and allocation placement:
+
+```bash
+MC_RAIL_CLUSTER=raplab \
+MC_RAIL_IMAGE=/home/_shared/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh \
+MC_RAIL_DURATION=3 MC_RAIL_CASE_TIMEOUT=8 MC_RAIL_BUDGET=1620 \
+  sbatch --time=00:30:00 tools/check_mooncake_rails.sbatch
+```
+
+Compare `logs/summary.csv` and the READ/WRITE matrices in
+`logs/perf-analysis.md`, including failures and unrun cells. CSV speeds include
+Gbit/s and decimal GB/s (Gbit/s divided by eight); the report also summarizes
+same-name and cross-name pair medians. Each case uses one NIC at each end, so
+this does not measure eight-rail aggregate bandwidth.
+
+## Common launcher and RapLab defaults
+
 Submit from the repository root on the cluster:
 
 ```bash
@@ -11,9 +62,10 @@ Keep `check_mooncake_rails.py`, `mooncake_rail_worker.py`, and
 installation runs inside the container; no host package installation is performed.
 
 Defaults are account `root`, partition `batch-r42`, nodes `vr-r42-cn03` and
-`vr-r42-cn05`, exclusive allocation, 352 logical CPUs per node, 16 GiB per node,
-and 25 minutes. The CPUs cover both sockets so the agent can bind each test
-to the selected NIC's NUMA node. No GPUs or model are requested. Two persistent
+`vr-r42-cn05`, exclusive allocation, all allocatable host memory, and 25 minutes.
+The launcher discovers the full CPU count from `SLURM_JOB_CPUS_PER_NODE` and
+requires two homogeneous nodes. The CPUs cover both sockets so the agent can
+bind each test to the selected NIC's NUMA node. No GPUs or model are requested. Two persistent
 container agents avoid repeatedly creating Slurm steps for every NIC pair.
 Requeue is disabled and existing run directories are rejected, so old mailbox
 results cannot be mistaken for a new measurement.
@@ -45,6 +97,16 @@ checks and visible process cgroup limits; ancestor cgroup limits are not surveye
 The worker also captures `findmnt` output for the shared run directory when the
 command is available, to help identify filesystem visibility problems.
 
+Setup separately attempts to install `ibverbs-utils` and `infiniband-diags`
+inside the container, with a one-minute timeout. These tools are optional;
+missing packages or management permissions do not fail the RDMA tests.
+The inventory's `optional_diagnostics` section saves bounded `ibstat`,
+`ibv_devinfo`, `rdma link` and per-NIC `iblinkinfo` results. The latter query
+examines only the local port and first-hop switch, avoiding a full fabric scan.
+NIC sysfs evidence includes advertised link rate, LID, GUID, GID and PKey
+information. Successful topology output can help identify switch/subnet groups;
+missing output remains an explicit evidence gap.
+
 Before any perftest process starts, the controller requires a ping/reply round
 trip with each agent and records its duration in `logs/mailbox-checks.json`.
 Replies are discovered through directory scans, matching command discovery,
@@ -70,9 +132,10 @@ connection, because perftest accepts only one client connection.
 
 The default traffic duration totals about 11 minutes, plus process setup and
 cleanup. The existing 22-minute controller budget includes container apt setup
-(up to four minutes, concurrently on the two nodes). Inventory waits up to six
-minutes for container startup, apt setup and collection. Per-case timeouts bound unhealthy
-tests; any remaining cases are explicitly NOT RUN. Three minutes remain for
+(up to four minutes, plus one minute for optional tools, concurrently on the
+two nodes). Inventory waits up to seven minutes for container startup, apt
+setup and collection. Per-case timeouts bound unhealthy tests; any remaining
+cases are explicitly NOT RUN. Three minutes remain for
 cleanup and reporting, following the repository's
 [job-sizing skill](../src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md).
 
@@ -126,5 +189,8 @@ MC_RAIL_IMAGE=/path/to/image-with-perftest.sqsh sbatch tools/check_mooncake_rail
 
 Optional overrides: `MC_RAIL_READER`, `MC_RAIL_DONOR`, `MC_RAIL_NICS`,
 `MC_RAIL_IMAGE`, `MC_RAIL_OUTPUT_ROOT`, `MC_RAIL_TOOL_DIR`,
-`MC_RAIL_DURATION`, and `MC_RAIL_CASE_TIMEOUT`. The whole-job time budget
-remains fixed. The selected reader/donor must belong to the two-node allocation.
+`MC_RAIL_DURATION`, `MC_RAIL_CASE_TIMEOUT`, `MC_RAIL_BUDGET`,
+`MC_RAIL_INVENTORY_TIMEOUT`, `MC_RAIL_CLUSTER`, and `ENROOT_MAX_PROCESSORS`.
+Keep the controller budget below the submitted walltime with three minutes reserved for cleanup; increase
+the walltime and controller budget together if extending traffic. The selected
+reader/donor must belong to the two-node allocation.

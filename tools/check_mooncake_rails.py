@@ -12,6 +12,7 @@ import math
 import os
 import re
 import signal
+import statistics
 import time
 from pathlib import Path
 from typing import Any
@@ -110,15 +111,20 @@ def write_report(
         "donor_numa",
         "status",
         "average_gbit_s",
+        "average_gb_s",
         "server_rc",
         "client_rc",
         "elapsed_s",
         "reason",
+        "phase",
     ]
     with (logs / "summary.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(results)
+        writer.writerows(
+            {**row, "average_gb_s": row["average_gbit_s"] / 8 if row.get("average_gbit_s") is not None else None}
+            for row in results
+        )
     counts = {status: sum(row["status"] == status for row in results) for status in ("PASS", "FAIL", "INCOMPLETE")}
     not_run = max(0, len(planned) - len(results))
     lines = [
@@ -130,6 +136,7 @@ def write_report(
         f"Reader: `{metadata.get('reader', 'N/A')}`; donor: `{metadata.get('donor', 'N/A')}`; "
         f"job: `{metadata.get('job_id', 'N/A')}`.",
         f"Image: `{metadata.get('image', 'N/A')}`.",
+        f"Cluster: `{metadata.get('cluster', 'N/A')}`; Slurm segment size: `{metadata.get('segment_size', 'N/A')}`.",
         f"Bytes per operation: {PAGE_BYTES}; {metadata.get('duration', 'N/A')} s per test, "
         "one-second measurement margins, two QPs, read depth 16/QP, port 1, GID index 0.",
         "",
@@ -142,6 +149,45 @@ def write_report(
     ]
     nics = metadata.get("nics", [])
     by_case = {row["case_id"]: row for row in results}
+    lines.extend(
+        [
+            "## Connectivity and speed findings",
+            "",
+            "The reader is the perftest client. WRITE payload travels reader to donor; READ payload travels "
+            "donor to reader. These are sequential single-pair tests, with CPU and host memory local to each NIC.",
+            "",
+        ]
+    )
+    for op in ("read", "write"):
+        expected = [f"{op}-{reader}-{donor}" for reader in nics for donor in nics]
+        passed = [by_case[case] for case in expected if by_case.get(case, {}).get("status") == "PASS"]
+        lines.append(f"- {op.upper()}: {len(passed)}/{len(expected)} NIC pairs passed.")
+        if expected and len(passed) == len(expected):
+            lines.append("  All-to-all reachability is supported for this operation on the tested endpoints.")
+        else:
+            lines.append("  Full reachability is not established; inspect failed, incomplete and NOT RUN cells.")
+        for label, rows in (
+            ("All passing pairs", passed),
+            ("Same-name passing pairs", [row for row in passed if row["reader_nic"] == row["donor_nic"]]),
+            ("Cross-name passing pairs", [row for row in passed if row["reader_nic"] != row["donor_nic"]]),
+        ):
+            speeds = [row["average_gbit_s"] for row in rows if row.get("average_gbit_s") is not None]
+            if speeds:
+                median = statistics.median(speeds)
+                lines.append(
+                    f"  {label}: median {median:.2f} Gbit/s ({median / 8:.2f} GB/s), "
+                    f"range {min(speeds):.2f}-{max(speeds):.2f} Gbit/s."
+                )
+    lines.extend(
+        [
+            "",
+            "A complete passing matrix does not prove one physical fabric plane: interconnected planes can "
+            "also provide all-to-all reachability. Disconnected blocks are consistent with separate reachability "
+            "groups only after TCP/bootstrap, GID/PKey, permissions and registration errors are excluded. "
+            "Use the first-hop switch evidence and fabric topology documentation to establish physical plane count.",
+            "",
+        ]
+    )
     for op in ("read", "write"):
         lines.extend(
             [
@@ -169,12 +215,44 @@ def write_report(
         lines.append("")
     lines.extend(
         [
+            "## NIC and fabric evidence",
+            "",
+            "The table is read from each node's inventory. Missing optional management data is N/A, "
+            "not a failed bandwidth test. First-hop switch output and its command/exit status are retained "
+            "in `optional_diagnostics` in each inventory; a permission or UMAD failure leaves plane count unresolved.",
+            "",
+            "| Endpoint | NIC | NUMA | Link rate | LID | SM LID | GID | Node GUID |",
+            "| --- | --- | ---: | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for role in ("reader", "donor"):
+        node = metadata.get(role)
+        if not node:
+            continue
+        path = logs / "agents" / f"{node}.inventory.json"
+        try:
+            inventory = json.loads(path.read_text())
+        except (OSError, ValueError):
+            lines.append(f"| {role} | N/A | N/A | N/A | N/A | N/A | N/A | N/A |")
+            continue
+        for nic in nics:
+            values = inventory.get("nics", {}).get(nic, {})
+            fields_for_nic = [values.get(key) for key in ("numa_node", "rate", "lid", "sm_lid", "gid", "node_guid")]
+            cells = [str(value).replace("|", "\\|") if value is not None else "N/A" for value in fields_for_nic]
+            lines.append("| " + " | ".join([f"{role} ({node})", nic, *cells]) + " |")
+    lines.append("")
+    lines.extend(
+        [
             "## Sources and interpretation",
             "",
             "`metadata.json` records configuration and time budget; `logs/results.jsonl` records case outcomes, "
-            "commands, exit codes and paths to raw output; `logs/summary.csv` is the flat comparison table.",
+            "commands, exit codes and paths to raw output; `logs/summary.csv` is the flat comparison table, "
+            "including average_gbit_s and average_gb_s (decimal GB/s = Gbit/s / 8).",
             "`logs/agents/*.inventory.json` records installed tools/versions, NIC NUMA/GID/link information, "
             "CPU/memory allowances and collection errors. Per-case output is under `logs/cases/`.",
+            "Compare RapLab and Hecate only with matching operations, transfer size, QPs, duration, read depth, "
+            "NUMA placement and perftest versions; compare negotiated NIC rates as well. A single-NIC perftest "
+            "result is not directly comparable to an aggregate multi-NIC Mooncake GET result.",
             "`logs/agents/*.install.log` records container-only apt setup or preinstalled-tool detection. "
             "Setup failure is a preflight failure, not an RDMA connectivity result.",
             "`logs/mailbox-checks.json` records controller/agent round-trip checks before perftest starts. "
@@ -190,10 +268,10 @@ def write_report(
             "TTFT p50/p95/p99 (ms), ITL p50/p99 (ms/token), input/output/total token throughput (tokens/s), "
             "and agentic Pareto/SLO metrics: N/A because this diagnostic has no inference requests.",
             "",
-            "The `slurm-job-sizing` skill (`src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md`) limits the "
-            "allocation to 25 minutes, with a 22-minute controller budget and time reserved for cleanup/reporting. "
-            "The controller budget includes up to four minutes of container apt setup. "
-            "The default 128 five-second tests require about 11 minutes of configured traffic plus setup; "
+            "The `slurm-job-sizing` skill (`src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md`) sizes this short "
+            f"diagnostic with a {metadata.get('budget', 'N/A')}-second controller budget and a cleanup reserve. "
+            "The controller budget includes container setup and optional topology collection. "
+            f"The planned matrix has {len(planned)} tests of {metadata.get('duration', 'N/A')} seconds each; "
             "timeouts can leave explicit unrun cases. No DSight/dashboard is needed: raw perftest completion "
             "results and the two matrices directly answer the connectivity hypothesis.",
         ]
@@ -235,6 +313,8 @@ class RailController:
             "budget": budget,
             "inventory_timeout": inventory_timeout,
             "image": os.environ.get("MC_RAIL_IMAGE"),
+            "cluster": os.environ.get("MC_RAIL_CLUSTER", os.environ.get("SLURM_CLUSTER_NAME", "unknown")),
+            "segment_size": os.environ.get("SLURM_JOB_SEGMENT_SIZE"),
             "start_utc": time.strftime("%FT%TZ", time.gmtime()),
             "planned_cases": len(nics) ** 2 * 2,
         }

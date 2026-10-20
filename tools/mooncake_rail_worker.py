@@ -37,17 +37,53 @@ def read_text(path: Path) -> str | None:
         return None
 
 
-def capture(argv: list[str]) -> dict[str, Any]:
+def capture(argv: list[str], timeout: float = 3) -> dict[str, Any]:
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=3, check=False)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
         return {
             "argv": argv,
             "returncode": result.returncode,
-            "stdout": result.stdout[-8192:],
-            "stderr": result.stderr[-8192:],
+            "stdout": result.stdout[:65536],
+            "stderr": result.stderr[:8192],
+            "stdout_truncated": len(result.stdout) > 65536,
+            "stderr_truncated": len(result.stderr) > 8192,
         }
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"argv": argv, "error": str(exc)}
+
+
+def sysfs_table(directory: Path) -> dict[str, str | None]:
+    """Read optional port tables without requiring management-device access."""
+    try:
+        paths = sorted(directory.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return {}
+    return {path.name: read_text(path) for path in paths if path.name.isdigit()}
+
+
+def optional_diagnostics(nics: list[str]) -> dict[str, Any]:
+    """Bound management queries to the selected ports and their first-hop switches."""
+
+    def run(name: str, arguments: list[str], timeout: float = 3) -> dict[str, Any]:
+        executable = shutil.which(name)
+        if not executable:
+            return {"argv": [name, *arguments], "unavailable": f"Optional tool missing: {name}"}
+        return capture([executable, *arguments], timeout=timeout)
+
+    return {
+        "scope": "Optional read-only queries; iblinkinfo scans only the local port and one hop, not the full fabric",
+        "ibstat": run("ibstat", []),
+        "rdma_link": run("rdma", ["-j", "link", "show"]),
+        "ibv_devinfo": {nic: run("ibv_devinfo", ["-d", nic, "-i", "1"]) for nic in nics},
+        # -D 0 selects the self port; --hops limits discovery. Management
+        # permissions or /dev/infiniband/umad* may be unavailable in a container.
+        # Such errors are evidence gaps, never failed RDMA preflight checks.
+        # https://github.com/linux-rdma/rdma-core/blob/master/infiniband-diags/man/iblinkinfo.8.in.rst
+        "iblinkinfo": {
+            nic: run("iblinkinfo", ["-C", nic, "-P", "1", "-D", "0", "--hops", "1", "--all", "--line"], 5)
+            for nic in nics
+        },
+    }
 
 
 def cpu_list(value: str) -> set[int]:
@@ -81,7 +117,17 @@ def cgroup_evidence() -> dict[str, Any]:
         except ValueError:
             continue
         result["path"] = str(base)
-        for name in ("cpu.max", "cpu.stat", "cpuset.cpus.effective", "cpuset.mems.effective"):
+        for name in (
+            "cpu.max",
+            "cpu.stat",
+            "cpuset.cpus.effective",
+            "cpuset.mems.effective",
+            "memory.current",
+            "memory.max",
+            "memory.high",
+            "memory.peak",
+            "memory.events",
+        ):
             result[name] = read_text(base / name)
         return result
     result["unavailable"] = "No matching visible cgroup v2 mount/membership"
@@ -111,10 +157,31 @@ def inventory(node: str) -> dict[str, Any]:
         values = {
             "sysfs_port": str(port),
             "state": read_text(port / "state"),
+            "phys_state": read_text(port / "phys_state"),
             "link_layer": read_text(port / "link_layer"),
             "numa_node": int(numa) if numa is not None and numa.isdigit() else -1,
             "gid": read_text(port / "gids/0"),
+            "gids": sysfs_table(port / "gids"),
+            "pkeys": sysfs_table(port / "pkeys"),
+            "rate": read_text(port / "rate"),
+            "lid": read_text(port / "lid"),
+            "sm_lid": read_text(port / "sm_lid"),
+            "sm_sl": read_text(port / "sm_sl"),
+            "active_mtu": read_text(port / "active_mtu"),
+            "node_guid": read_text(base / "node_guid"),
+            "sys_image_guid": read_text(base / "sys_image_guid"),
+            "node_description": read_text(base / "node_desc"),
+            "firmware_version": read_text(base / "fw_ver"),
+            "pci_device": os.path.realpath(base / "device"),
+            "pci_link": {
+                name: read_text(base / "device" / name)
+                for name in ("current_link_speed", "current_link_width", "max_link_speed", "max_link_width")
+            },
         }
+        # Keep GID 0 visible even when directory enumeration is unavailable.
+        values["gids"].setdefault("0", values["gid"])
+        with contextlib.suppress(ipaddress.AddressValueError):
+            values["gid_prefix"] = ":".join(ipaddress.IPv6Address(values["gid"]).exploded.split(":")[:4])
         nics[name] = values
         if not (values["state"] or "").startswith("4:"):
             errors.append(f"{name}: port 1 is not ACTIVE: {values['state']}")
@@ -163,7 +230,13 @@ def inventory(node: str) -> dict[str, Any]:
         "numa_policy": numa_policy,
         "numa_bind_checks": bind_checks,
         "platform": {"uname": platform.uname()._asdict(), "os_release": read_text(Path("/etc/os-release"))},
+        "host_hardware": {
+            "lscpu": capture(["lscpu", "--json"]),
+            "numactl_hardware": capture([tools["numactl"]["path"], "--hardware"]) if tools["numactl"]["path"] else None,
+            "meminfo": read_text(Path("/proc/meminfo")),
+        },
         "cgroup": cgroup_evidence(),
+        "optional_diagnostics": optional_diagnostics(list(nics)),
         "errors": errors,
         "ready": not errors,
     }
