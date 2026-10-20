@@ -97,14 +97,27 @@ engine:
   numa_memory_bind: local
 ```
 
-The launcher resolves the GPU through `CUDA_VISIBLE_DEVICES` and
-`SLURM_LOCALID`, applies its CPU mask, and sets `numactl --membind=<node>`
-before starting the worker. Allocations governed by this policy cannot fall
-back to another node. Insufficient local memory can cause allocation failure
-or OOM, even when another node has free memory. Existing or shared pages are
-not migrated. The container must provide `numactl`. Local mode requires
-`numa_cpu_bind: true`. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
-cluster GPU visibility variables are not supported by this wrapper.
+With `numa_cpu_bind: true`, the launcher resolves the GPU through
+`CUDA_VISIBLE_DEVICES` and `SLURM_LOCALID`, then starts the worker under
+`numactl --cpunodebind=<node>` for every memory policy. The worker and its
+child threads inherit the CPU affinity from launch. The container must provide
+`numactl`. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate cluster GPU
+visibility variables are not supported by this wrapper.
+
+`numa_memory_bind: local` adds `--membind=<node>` to bind memory strictly to
+the GPU's NUMA node. Allocations governed by this policy cannot fall back to
+another node. Insufficient local memory can cause allocation failure or OOM,
+even when another node has free memory. Existing or shared pages are not
+migrated. Local mode requires `numa_cpu_bind: true`.
+
+`numa_memory_bind: preferred` also requires `numa_cpu_bind: true` and starts
+the worker under `numactl --cpunodebind=<node> --preferred=<node>`.
+Allocations prefer the GPU's NUMA node and can fall back to other nodes when
+it is full. TRT-LLM's own NUMA-aware worker affinity defaults to enabled
+(`TLLM_NUMA_AWARE_WORKER_AFFINITY=1`) in this mode. Every other mode with
+`numa_cpu_bind: true` defaults to `TLLM_NUMA_AWARE_WORKER_AFFINITY=0`.
+Setting `TLLM_NUMA_AWARE_WORKER_AFFINITY` in `roles.<role>.env` overrides
+either default.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
 `numa_memory_bind: true` uses `numactl -m 0,1` for any GPU type or worker mode.
@@ -112,13 +125,16 @@ When omitted or null, this two-node policy applies only to `gb200`, `gb300`,
 and `vrnvl72` prefill and decode workers. Enabling CPU binding does not change
 these memory policies.
 
-In local mode, the launcher fails if the GPU's NUMA affinity cannot be resolved,
-its CPU list is missing or empty, or the memory policy cannot be applied.
-Without local mode, unknown GPU NUMA affinity skips CPU binding and retains
-the selected memory policy. When profiling in local mode, the outer `nsys`
-process also inherits the strict memory policy.
+In local and preferred modes, the launcher fails if the GPU's NUMA affinity
+cannot be resolved, its CPU list is missing or empty, or the memory policy
+cannot be applied. For the boolean and default memory policies, unknown GPU
+NUMA affinity skips CPU binding and retains the selected memory policy. When
+profiling, the outer `nsys` process inherits CPU binding. Local and preferred
+memory policies also apply to `nsys`; the legacy two-node memory policy applies
+only to the worker launched inside it.
 
-See [the local-binding example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/trtllm-serve-agg-numa-local.yaml).
+See the [local-binding example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/trtllm-serve-agg-numa-local.yaml)
+and [preferred-memory example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/trtllm-serve-agg-numa-preferred.yaml).
 
 ### vLLM DP launch mode
 

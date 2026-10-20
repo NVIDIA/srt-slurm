@@ -296,11 +296,19 @@ def show_config_details(config: SrtConfig) -> None:
                 )
             )
 
-    from srtctl.backends.trtllm import TRTLLMBackend
+    from srtctl.backends.trtllm import NUMA_WRAPPER_MEMORY_POLICIES, TRTLLMBackend
 
     if isinstance(config.backend, TRTLLMBackend):
-        if config.backend.numa_memory_bind == "local":
-            console.print("TRT-LLM NUMA: GPU-local CPU binding and strict GPU-local memory binding (--bind-memory)")
+        numa_policy = config.backend.numa_memory_bind
+        if config.backend.numa_cpu_bind:
+            description = "GPU-local CPU binding (numactl --cpunodebind=<node>)"
+            if isinstance(numa_policy, str):
+                policy = NUMA_WRAPPER_MEMORY_POLICIES[numa_policy]
+                description += f" and {policy.description} ({policy.flag})"
+            console.print(
+                f"TRT-LLM NUMA: {description}; "
+                f"TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to {config.backend.numa_worker_affinity}"
+            )
         # Engine-yaml statistics keys srtctl defaults at config load
         # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
         # expand_observability). Shown for both frontends so a run that expects

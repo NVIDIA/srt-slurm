@@ -147,9 +147,35 @@ def test_trtllm_local_numa_example_is_visible(capsys):
     assert config.backend.numa_cpu_bind is True
     assert config.backend.numa_memory_bind == "local"
     show_config_details(config)
-    output = capsys.readouterr().out
+    output = " ".join(capsys.readouterr().out.split())
     assert "strict GPU-local memory binding" in output
     assert "--bind-memory" in output
+    assert "numactl --cpunodebind=<node>" in output
+    assert "TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0" in output
+
+
+def test_trtllm_preferred_numa_keeps_worker_affinity_visible(capsys):
+    recipe = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-agg-numa-preferred.yaml"
+    config = SrtConfig.from_yaml(recipe)
+    assert config.backend.numa_cpu_bind is True
+    assert config.backend.numa_memory_bind == "preferred"
+    assert config.backend.get_environment_for_mode("agg")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "1"
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert "--prefer-memory" in output
+    assert "numactl --cpunodebind=<node>" in output
+    assert "TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 1" in output
+
+
+def test_trtllm_cpu_only_numa_binding_is_visible(capsys):
+    config = _make_config({"engine": {"type": "trtllm", "numa_cpu_bind": True, "numa_memory_bind": False}})
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert "GPU-local CPU binding" in output
+    assert "numactl --cpunodebind=<node>" in output
+    assert "TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0" in output
+    assert "--bind-memory" not in output
+    assert "--prefer-memory" not in output
 
 
 class TestDryRunDynamoMetrics:
