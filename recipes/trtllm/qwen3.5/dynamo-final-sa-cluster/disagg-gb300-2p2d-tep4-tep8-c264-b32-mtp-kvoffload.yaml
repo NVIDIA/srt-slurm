@@ -436,5 +436,9 @@ extra_mount:
 - /data/home/rihuo/dynamo_wheels:/dynamo_wheels
 dynamo:
   install: false
+services:
+- name: otel-collector
+  type: otel-collector
+  enabled: false
 observability:
   enable_otel: false
