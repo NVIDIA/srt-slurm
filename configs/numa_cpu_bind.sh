@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 
-# Set initial NUMA CPU affinity for TRT-LLM workers (see
+# Set NUMA CPU affinity for TRT-LLM workers (see
 # backends/trtllm.py numa_cpu_bind) via `numactl --cpunodebind` before exec.
 # The backend defaults TRT-LLM's worker affinity to 0 to preserve this mask
 # through worker initialization. Explicit recipe environment values can override

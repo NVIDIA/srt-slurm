@@ -171,7 +171,7 @@ def test_trtllm_cpu_only_numa_binding_is_visible(capsys):
     config = _make_config({"engine": {"type": "trtllm", "numa_cpu_bind": True, "numa_memory_bind": False}})
     show_config_details(config)
     output = " ".join(capsys.readouterr().out.split())
-    assert "Initial GPU-local CPU affinity" in output
+    assert "GPU-local CPU affinity" in output
     assert "numactl --cpunodebind=<node>" in output
     assert "prefill: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output
     assert "decode: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output
@@ -233,9 +233,9 @@ def test_trtllm_numa_role_engines_are_visible(capsys, prefill_cpu_bind):
     )
     show_config_details(config)
     output = " ".join(capsys.readouterr().out.split())
-    assert ("TRT-LLM NUMA (prefill): Initial GPU-local CPU affinity" in output) is prefill_cpu_bind
+    assert ("TRT-LLM NUMA (prefill): GPU-local CPU affinity" in output) is prefill_cpu_bind
     assert ("--bind-memory" in output) is prefill_cpu_bind
-    assert "TRT-LLM NUMA (decode): Initial GPU-local CPU affinity" in output
+    assert "TRT-LLM NUMA (decode): GPU-local CPU affinity" in output
     assert "--prefer-memory" in output
     assert ("prefill: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output) is prefill_cpu_bind
     assert "decode: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output

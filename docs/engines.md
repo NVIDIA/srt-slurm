@@ -88,7 +88,7 @@ The v1 spelling of this (`backend.type` plus the engine-wide keys under `backend
 
 ### TRT-LLM CPU and memory placement
 
-To set initial worker CPU affinity and a GPU-local memory policy:
+To set worker CPU affinity and a GPU-local memory policy:
 
 ```yaml
 engine:
@@ -99,8 +99,8 @@ engine:
 
 With `numa_cpu_bind: true`, the launcher resolves the GPU through
 `CUDA_VISIBLE_DEVICES` and `SLURM_LOCALID`, then starts the worker under
-`numactl --cpunodebind=<node>` for every memory policy. This sets CPU affinity
-at launch; TRT-LLM can change it during worker initialization. The container
+`numactl --cpunodebind=<node>` for every memory policy. By default, TRT-LLM
+retains this mask through worker initialization. The container
 must provide `numactl`. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
 cluster GPU visibility variables are not supported by this wrapper.
 

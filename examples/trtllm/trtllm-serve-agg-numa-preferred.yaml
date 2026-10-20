@@ -1,4 +1,4 @@
-# TRT-LLM aggregate worker with initial GPU-local CPU affinity and preferred local memory.
+# TRT-LLM aggregate worker with GPU-local CPU affinity and preferred local memory.
 # Requires GPU NUMA affinity and numactl; memory may fall back to other nodes.
 # Aliases resolve through srtslurm.yaml; see examples/README.md.
 

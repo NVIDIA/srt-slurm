@@ -3319,7 +3319,7 @@
         },
         "numa_cpu_bind": {
           "type": "boolean",
-          "description": "Set initial worker CPU affinity with `numactl --cpunodebind=<node>` before exec so child processes and threads inherit it. Requires numactl. configs/numa_cpu_bind.sh resolves the NUMA node from the task's physical GPU via CUDA_VISIBLE_DEVICES and SLURM_LOCALID, including colocated workers. Defaults TLLM_NUMA_AWARE_WORKER_AFFINITY to 0 for every memory policy so TRT-LLM preserves the launch CPU mask. Explicit roles.<role>.env values override this default; top-level environment overrides both. Enabling native worker affinity explicitly may change the CPU mask after launch. Set numa_memory_bind to \"local\" for strict memory binding, or \"preferred\" for GPU-local memory with fallback.",
+          "description": "Set worker CPU affinity with `numactl --cpunodebind=<node>` before exec so child processes and threads inherit it. Requires numactl. configs/numa_cpu_bind.sh resolves the NUMA node from the task's physical GPU via CUDA_VISIBLE_DEVICES and SLURM_LOCALID, including colocated workers. Defaults TLLM_NUMA_AWARE_WORKER_AFFINITY to 0 for every memory policy so TRT-LLM preserves the launch CPU mask. Explicit roles.<role>.env values override this default; top-level environment overrides both. Enabling native worker affinity explicitly may change the CPU mask after launch. Set numa_memory_bind to \"local\" for strict memory binding, or \"preferred\" for GPU-local memory with fallback.",
           "default": false
         }
       },

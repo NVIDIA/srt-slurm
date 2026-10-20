@@ -305,7 +305,7 @@ def show_config_details(config: SrtConfig) -> None:
             continue
         mode = cast(WorkerMode, role)
         if backend.numa_cpu_bind:
-            description = "Initial GPU-local CPU affinity (numactl --cpunodebind=<node>)"
+            description = "GPU-local CPU affinity (numactl --cpunodebind=<node>)"
             if policy := backend.numa_wrapper_policy:
                 description += f" and {policy.description} ({policy.flag})"
             console.print(f"TRT-LLM NUMA ({mode}): {description}")

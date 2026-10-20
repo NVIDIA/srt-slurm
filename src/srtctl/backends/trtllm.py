@@ -352,7 +352,7 @@ class TRTLLMBackend(Backend):
     # GPU's NUMA node and fall back to other nodes when it is full.
     numa_memory_bind: bool | Literal["local", "preferred"] | None = None
 
-    # Set initial worker CPU affinity with `numactl --cpunodebind=<node>` before
+    # Set worker CPU affinity with `numactl --cpunodebind=<node>` before
     # exec so child processes and threads inherit it. Requires numactl.
     # configs/numa_cpu_bind.sh resolves the NUMA node from the task's physical
     # GPU via CUDA_VISIBLE_DEVICES and SLURM_LOCALID, including colocated workers.
