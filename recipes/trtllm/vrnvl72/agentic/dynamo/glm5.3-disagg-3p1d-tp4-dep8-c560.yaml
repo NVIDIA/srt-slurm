@@ -27,6 +27,8 @@ host_setup:
   ignore_failure: false
 setup_script: install_dynamo_wheel.sh
 reuse_container: true
+observability:
+  enable_otel: false
 dynamo:
   install: false
   request_plane: tcp
@@ -288,6 +290,18 @@ roles:
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
 services:
+- name: otel-collector
+  type: otel-collector
+  enabled: false
+- name: node-exporter
+  type: node-exporter
+  enabled: false
+- name: process-exporter
+  type: process-exporter
+  enabled: false
+- name: dcgm-exporter
+  type: dcgm-exporter
+  enabled: false
 - name: mooncake-master
   type: mooncake-master
   placement:

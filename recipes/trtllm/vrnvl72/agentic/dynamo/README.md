@@ -107,8 +107,10 @@ policy for the decode tier. The existing AIPerf session-ID headers are retained.
 These frontends use an etcd lease TTL of 120 seconds, the `fastokens` tokenizer,
 an 8,000,000,000-byte tokenizer cache budget, and a 30-second TCP request timeout.
 The local Dynamo wheels must support `DYN_ROUTER_USE_KV_EVENTS=0` for routing
-without worker KV events. `OTEL_EXPORT_ENABLED=false` overrides srt-slurm's
-frontend tracing environment. Default temperature, cache enablement, JSONL and
+without worker KV events. All eight recipes set `observability.enable_otel: false`
+and disable the `otel-collector` service, suppressing the default lifecycle collector
+and tracing environment. The `node-exporter`, `process-exporter` and `dcgm-exporter`
+services are also disabled for now. Default temperature, cache enablement, JSONL and
 unset admission thresholds are omitted, as is the TCP request-plane setting
 that srt-slurm already injects.
 
