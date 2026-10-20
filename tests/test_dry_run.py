@@ -151,7 +151,7 @@ def test_trtllm_local_numa_example_is_visible(capsys):
     assert "strict GPU-local memory binding" in output
     assert "--bind-memory" in output
     assert "numactl --cpunodebind=<node>" in output
-    assert "TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0" in output
+    assert "agg: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output
 
 
 def test_trtllm_preferred_numa_keeps_worker_affinity_visible(capsys):
@@ -159,12 +159,12 @@ def test_trtllm_preferred_numa_keeps_worker_affinity_visible(capsys):
     config = SrtConfig.from_yaml(recipe)
     assert config.backend.numa_cpu_bind is True
     assert config.backend.numa_memory_bind == "preferred"
-    assert config.backend.get_environment_for_mode("agg")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "1"
+    assert config.backend.get_environment_for_mode("agg")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
     show_config_details(config)
     output = " ".join(capsys.readouterr().out.split())
     assert "--prefer-memory" in output
     assert "numactl --cpunodebind=<node>" in output
-    assert "TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 1" in output
+    assert "agg: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output
 
 
 def test_trtllm_cpu_only_numa_binding_is_visible(capsys):
@@ -173,9 +173,73 @@ def test_trtllm_cpu_only_numa_binding_is_visible(capsys):
     output = " ".join(capsys.readouterr().out.split())
     assert "GPU-local CPU binding" in output
     assert "numactl --cpunodebind=<node>" in output
-    assert "TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0" in output
+    assert "prefill: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output
+    assert "decode: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output
     assert "--bind-memory" not in output
     assert "--prefer-memory" not in output
+
+
+@pytest.mark.parametrize(
+    ("role_env", "global_env", "prefill_affinity", "decode_affinity"),
+    [
+        ({}, {}, "0", "0"),
+        ({"TLLM_NUMA_AWARE_WORKER_AFFINITY": "1"}, {}, "1", "0"),
+        (
+            {"TLLM_NUMA_AWARE_WORKER_AFFINITY": "1"},
+            {"TLLM_NUMA_AWARE_WORKER_AFFINITY": "0"},
+            "0",
+            "0",
+        ),
+        (
+            {"TLLM_NUMA_AWARE_WORKER_AFFINITY": "0"},
+            {"TLLM_NUMA_AWARE_WORKER_AFFINITY": "1"},
+            "1",
+            "1",
+        ),
+    ],
+)
+def test_trtllm_numa_effective_worker_affinity_is_visible(
+    capsys, role_env, global_env, prefill_affinity, decode_affinity
+):
+    config = _make_config(
+        {
+            "engine": {"type": "trtllm", "numa_cpu_bind": True, "numa_memory_bind": "preferred"},
+            "roles": {"prefill": {"env": role_env}},
+            "environment": global_env,
+        }
+    )
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert f"prefill: TLLM_NUMA_AWARE_WORKER_AFFINITY={prefill_affinity} (effective)" in output
+    assert f"decode: TLLM_NUMA_AWARE_WORKER_AFFINITY={decode_affinity} (effective)" in output
+    assert "defaults to" not in output
+
+
+@pytest.mark.parametrize("prefill_cpu_bind", [False, True])
+def test_trtllm_numa_role_engines_are_visible(capsys, prefill_cpu_bind):
+    config = _make_config(
+        {
+            "frontend": {"type": "trtllm_serve", "enable_multiple_frontends": False},
+            "roles": {
+                "prefill": {
+                    "engine": {
+                        "type": "trtllm",
+                        "numa_cpu_bind": prefill_cpu_bind,
+                        "numa_memory_bind": "local" if prefill_cpu_bind else False,
+                    }
+                },
+                "decode": {"engine": {"type": "trtllm", "numa_cpu_bind": True, "numa_memory_bind": "preferred"}},
+            },
+        }
+    )
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert ("TRT-LLM NUMA (prefill): GPU-local CPU binding" in output) is prefill_cpu_bind
+    assert ("--bind-memory" in output) is prefill_cpu_bind
+    assert ("prefill: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output) is prefill_cpu_bind
+    assert "TRT-LLM NUMA (decode): GPU-local CPU binding" in output
+    assert "--prefer-memory" in output
+    assert "decode: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output
 
 
 class TestDryRunDynamoMetrics:

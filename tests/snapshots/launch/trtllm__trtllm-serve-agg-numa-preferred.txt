@@ -18,7 +18,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     MASTER_ADDR: 127.0.0.1
     MASTER_PORT: 29500
-    TLLM_NUMA_AWARE_WORKER_AFFINITY: 1
+    TLLM_NUMA_AWARE_WORKER_AFFINITY: 0
     TRTLLM_EPLB_SHM_NAME: <random>
 srun_options:
     kill-on-bad-exit: 1

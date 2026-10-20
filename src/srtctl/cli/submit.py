@@ -27,7 +27,7 @@ import tempfile
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from rich.console import Console
@@ -38,6 +38,7 @@ from rich.table import Table
 from rich.text import Text
 
 from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
+from srtctl.backends.base import WorkerMode
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -296,34 +297,34 @@ def show_config_details(config: SrtConfig) -> None:
                 )
             )
 
-    from srtctl.backends.trtllm import NUMA_WRAPPER_MEMORY_POLICIES, TRTLLMBackend
+    from srtctl.backends.trtllm import TRTLLMBackend
 
-    if isinstance(config.backend, TRTLLMBackend):
-        numa_policy = config.backend.numa_memory_bind
-        if config.backend.numa_cpu_bind:
+    trtllm_statistics = []
+    for role, backend in config.active_role_backends():
+        if not isinstance(backend, TRTLLMBackend):
+            continue
+        mode = cast(WorkerMode, role)
+        if backend.numa_cpu_bind:
             description = "GPU-local CPU binding (numactl --cpunodebind=<node>)"
-            if isinstance(numa_policy, str):
-                policy = NUMA_WRAPPER_MEMORY_POLICIES[numa_policy]
+            if policy := backend.numa_wrapper_policy:
                 description += f" and {policy.description} ({policy.flag})"
-            console.print(
-                f"TRT-LLM NUMA: {description}; "
-                f"TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to {config.backend.numa_worker_affinity}"
-            )
+            console.print(f"TRT-LLM NUMA ({mode}): {description}")
+            environment = {**backend.get_environment_for_mode(mode), **config.environment}
+            affinity = environment["TLLM_NUMA_AWARE_WORKER_AFFINITY"]
+            console.print(f"{mode}: TLLM_NUMA_AWARE_WORKER_AFFINITY={affinity} (effective)")
         # Engine-yaml statistics keys srtctl defaults at config load
         # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
         # expand_observability). Shown for both frontends so a run that expects
         # the iteration-level trtllm_* gauges can see before submitting that
         # enable_iter_perf_stats is off.
-        modes = ("prefill", "decode") if config.topology.is_disaggregated else ("agg",)
-        rows = []
-        for mode in modes:
-            section = config.backend.get_config_for_mode(mode)
-            rows.append(
-                f"{mode}: enable_iter_perf_stats={_engine_bool(section.get('enable_iter_perf_stats'))}, "
-                f"return_perf_metrics={_engine_bool(section.get('return_perf_metrics'))}"
-            )
-        rows.append("(engine yaml; the iteration-level trtllm_* gauges need enable_iter_perf_stats: true)")
-        console.print(Panel("\n".join(rows), title="TRT-LLM Engine Statistics", border_style="cyan"))
+        section = backend.get_config_for_mode(mode)
+        trtllm_statistics.append(
+            f"{mode}: enable_iter_perf_stats={_engine_bool(section.get('enable_iter_perf_stats'))}, "
+            f"return_perf_metrics={_engine_bool(section.get('return_perf_metrics'))}"
+        )
+    if trtllm_statistics:
+        trtllm_statistics.append("(engine yaml; the iteration-level trtllm_* gauges need enable_iter_perf_stats: true)")
+        console.print(Panel("\n".join(trtllm_statistics), title="TRT-LLM Engine Statistics", border_style="cyan"))
 
     if config.frontend.type == "vllm":
         from srtctl.backends.vllm import find_vllm_orchestration_recipe_flags

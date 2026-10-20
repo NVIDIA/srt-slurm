@@ -113,11 +113,14 @@ migrated. Local mode requires `numa_cpu_bind: true`.
 `numa_memory_bind: preferred` also requires `numa_cpu_bind: true` and starts
 the worker under `numactl --cpunodebind=<node> --preferred=<node>`.
 Allocations prefer the GPU's NUMA node and can fall back to other nodes when
-it is full. TRT-LLM's own NUMA-aware worker affinity defaults to enabled
-(`TLLM_NUMA_AWARE_WORKER_AFFINITY=1`) in this mode. Every other mode with
-`numa_cpu_bind: true` defaults to `TLLM_NUMA_AWARE_WORKER_AFFINITY=0`.
-Setting `TLLM_NUMA_AWARE_WORKER_AFFINITY` in `roles.<role>.env` overrides
-either default.
+it is full.
+
+Every memory policy with `numa_cpu_bind: true` defaults to
+`TLLM_NUMA_AWARE_WORKER_AFFINITY=0`, so TRT-LLM preserves the wrapper's CPU
+affinity. Setting this variable in `roles.<role>.env` overrides the default.
+A top-level `environment:` value takes precedence over both the role value
+and the default. Opting into TRT-LLM's native affinity lets TRT-LLM replace
+the wrapper's CPU mask. Dry-run output shows the effective value per role.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
 `numa_memory_bind: true` uses `numactl -m 0,1` for any GPU type or worker mode.

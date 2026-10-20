@@ -236,22 +236,18 @@ class NumaWrapperPolicy(NamedTuple):
     Attributes:
         flag: Wrapper flag that selects the memory policy.
         description: Policy description in dry-run output.
-        worker_affinity: Default ``TLLM_NUMA_AWARE_WORKER_AFFINITY`` for the worker.
     """
 
     flag: str
     description: str
-    worker_affinity: str
 
 
 # numa_memory_bind values whose memory policy configs/numa_cpu_bind.sh applies.
-# Preferred memory keeps TRT-LLM's native worker affinity enabled; an explicit
-# role environment can override either policy's default.
 NUMA_WRAPPER_MEMORY_POLICIES: dict[str, NumaWrapperPolicy] = {
-    "local": NumaWrapperPolicy("--bind-memory", "strict GPU-local memory binding (numactl --membind=<node>)", "0"),
-    "preferred": NumaWrapperPolicy("--prefer-memory", "preferred GPU-local memory (numactl --preferred=<node>)", "1"),
+    "local": NumaWrapperPolicy("--bind-memory", "strict GPU-local memory binding (numactl --membind=<node>)"),
+    "preferred": NumaWrapperPolicy("--prefer-memory", "preferred GPU-local memory (numactl --preferred=<node>)"),
 }
-# TLLM_NUMA_AWARE_WORKER_AFFINITY default under numa_cpu_bind without a wrapper memory policy.
+# TLLM_NUMA_AWARE_WORKER_AFFINITY default under every numa_cpu_bind memory policy.
 NUMA_CPU_BIND_WORKER_AFFINITY = "0"
 
 
@@ -354,18 +350,19 @@ class TRTLLMBackend(Backend):
     # Local mode fails startup if GPU NUMA affinity is unknown. Local memory
     # exhaustion can fail allocations; existing/shared pages are not migrated.
     # "preferred" also requires numa_cpu_bind=True and launches the worker under
-    # `numactl --cpunodebind=<node> --preferred=<node>`: same CPU mask, but memory
-    # falls back to other nodes when the GPU's node is full, and TRT-LLM's own
-    # NUMA-aware worker affinity stays on (TLLM_NUMA_AWARE_WORKER_AFFINITY=1).
+    # `numactl --cpunodebind=<node> --preferred=<node>`: allocations prefer the
+    # GPU's NUMA node and fall back to other nodes when it is full.
     numa_memory_bind: bool | Literal["local", "preferred"] | None = None
 
     # Bind worker CPUs with `numactl --cpunodebind=<node>` before exec so child
     # processes and threads inherit GPU-local CPU affinity. Requires numactl.
     # configs/numa_cpu_bind.sh resolves the NUMA node from the task's physical
     # GPU via CUDA_VISIBLE_DEVICES and SLURM_LOCALID, including colocated workers.
-    # TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0, or 1 with preferred memory;
-    # an explicit roles.<role>.env value wins. Set numa_memory_bind="local" for
-    # strict memory binding, or "preferred" for GPU-local memory with fallback.
+    # TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0 for every memory policy;
+    # an explicit roles.<role>.env value overrides this default. Top-level
+    # environment overrides both role env and the default. Set numa_memory_bind
+    # to "local" for strict memory binding, or "preferred" for GPU-local memory
+    # with fallback.
     numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
@@ -377,7 +374,7 @@ class TRTLLMBackend(Backend):
     )
 
     def __post_init__(self) -> None:
-        if self.numa_memory_bind in NUMA_WRAPPER_MEMORY_POLICIES and not self.numa_cpu_bind:
+        if self.numa_wrapper_policy is not None and not self.numa_cpu_bind:
             raise ValueError(f"numa_memory_bind: {self.numa_memory_bind} requires numa_cpu_bind: true")
 
     @property
@@ -423,11 +420,14 @@ class TRTLLMBackend(Backend):
         return env
 
     @property
-    def numa_worker_affinity(self) -> str:
-        """Default TLLM_NUMA_AWARE_WORKER_AFFINITY under numa_cpu_bind, from the memory policy's table row."""
+    def numa_wrapper_policy(self) -> NumaWrapperPolicy | None:
+        """Resolve the memory policy applied by configs/numa_cpu_bind.sh."""
         policy = self.numa_memory_bind
-        if isinstance(policy, str):
-            return NUMA_WRAPPER_MEMORY_POLICIES[policy].worker_affinity
+        return NUMA_WRAPPER_MEMORY_POLICIES[policy] if isinstance(policy, str) else None
+
+    @property
+    def numa_worker_affinity(self) -> str:
+        """Default TLLM_NUMA_AWARE_WORKER_AFFINITY under numa_cpu_bind, independent of memory policy."""
         return NUMA_CPU_BIND_WORKER_AFFINITY
 
     def get_served_model_name(self, default: str) -> str:
@@ -598,8 +598,8 @@ class TRTLLMBackend(Backend):
         """
         if not self.numa_cpu_bind:
             return cmd
-        policy = self.numa_memory_bind
-        memory_args = [NUMA_WRAPPER_MEMORY_POLICIES[policy].flag] if isinstance(policy, str) else []
+        policy = self.numa_wrapper_policy
+        memory_args = [policy.flag] if policy is not None else []
         return ["bash", "/configs/numa_cpu_bind.sh", *memory_args, *cmd]
 
     def build_worker_command(

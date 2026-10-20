@@ -4467,9 +4467,9 @@ class TestHuggingFaceModelSupport:
         assert cmd[: len(prefix)] == prefix
         assert ("numactl" in cmd) is (expected_policy == "0,1")
 
-        # Only preferred mode keeps TRT-LLM's NUMA-aware worker affinity on.
-        env = backend.get_environment_for_mode("decode")
-        assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == ("1" if expected_policy == "preferred" else "0")
+        # CPU binding disables native worker affinity regardless of the memory policy.
+        env = backend.get_environment_for_mode(mode)
+        assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
 
     def test_trtllm_numa_cpu_bind_wraps_prefill_command(self):
         """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
@@ -4543,9 +4543,10 @@ class TestHuggingFaceModelSupport:
         assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in decode_env
         assert "NUMA_CPU_BIND_RANGES" not in decode_env
 
-    @pytest.mark.parametrize(("memory_bind", "default", "override"), [("preferred", "1", "0"), ("local", "0", "1")])
-    def test_trtllm_numa_cpu_bind_keeps_role_worker_affinity(self, memory_bind, default, override):
-        """An explicit role-env TLLM_NUMA_AWARE_WORKER_AFFINITY wins over the memory policy's default."""
+    @pytest.mark.parametrize("memory_bind", [None, True, False, "local", "preferred"])
+    @pytest.mark.parametrize("override", ["0", "1"])
+    def test_trtllm_numa_cpu_bind_keeps_role_worker_affinity(self, memory_bind, override):
+        """An explicit role-env TLLM_NUMA_AWARE_WORKER_AFFINITY wins under every memory policy."""
         from srtctl.backends import TRTLLMBackend
 
         backend = TRTLLMBackend(
@@ -4557,9 +4558,9 @@ class TestHuggingFaceModelSupport:
             numa_memory_bind=memory_bind,
         )
 
-        assert backend.numa_worker_affinity == default
+        assert backend.numa_worker_affinity == "0"
         assert backend.get_environment_for_mode("prefill")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == override
-        assert backend.get_environment_for_mode("decode")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == default
+        assert backend.get_environment_for_mode("decode")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
 
 
 class TestInfmaxWorkspaceMount:

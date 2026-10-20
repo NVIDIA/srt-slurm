@@ -3314,12 +3314,12 @@
               "type": "null"
             }
           ],
-          "description": "Worker memory policy. None (default) uses `numactl -m 0,1` only for gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type). True uses nodes 0,1 for any GPU type or mode; False leaves the policy unchanged. CPU binding does not change these policies. \"local\" requires numa_cpu_bind=True and strictly binds memory to the task GPU's NUMA node. Local mode fails startup if GPU NUMA affinity is unknown. Local memory exhaustion can fail allocations; existing/shared pages are not migrated. \"preferred\" also requires numa_cpu_bind=True and launches the worker under `numactl --cpunodebind=<node> --preferred=<node>`: same CPU mask, but memory falls back to other nodes when the GPU's node is full, and TRT-LLM's own NUMA-aware worker affinity stays on (TLLM_NUMA_AWARE_WORKER_AFFINITY=1).",
+          "description": "Worker memory policy. None (default) uses `numactl -m 0,1` only for gb200/gb300/vrnvl72 prefill and decode workers (case-sensitive GPU type). True uses nodes 0,1 for any GPU type or mode; False leaves the policy unchanged. CPU binding does not change these policies. \"local\" requires numa_cpu_bind=True and strictly binds memory to the task GPU's NUMA node. Local mode fails startup if GPU NUMA affinity is unknown. Local memory exhaustion can fail allocations; existing/shared pages are not migrated. \"preferred\" also requires numa_cpu_bind=True and launches the worker under `numactl --cpunodebind=<node> --preferred=<node>`: allocations prefer the GPU's NUMA node and fall back to other nodes when it is full.",
           "default": null
         },
         "numa_cpu_bind": {
           "type": "boolean",
-          "description": "Bind worker CPUs with `numactl --cpunodebind=<node>` before exec so child processes and threads inherit GPU-local CPU affinity. Requires numactl. configs/numa_cpu_bind.sh resolves the NUMA node from the task's physical GPU via CUDA_VISIBLE_DEVICES and SLURM_LOCALID, including colocated workers. TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0, or 1 with preferred memory; an explicit roles.<role>.env value wins. Set numa_memory_bind=\"local\" for strict memory binding, or \"preferred\" for GPU-local memory with fallback.",
+          "description": "Bind worker CPUs with `numactl --cpunodebind=<node>` before exec so child processes and threads inherit GPU-local CPU affinity. Requires numactl. configs/numa_cpu_bind.sh resolves the NUMA node from the task's physical GPU via CUDA_VISIBLE_DEVICES and SLURM_LOCALID, including colocated workers. TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0 for every memory policy; an explicit roles.<role>.env value overrides this default. Top-level environment overrides both role env and the default. Set numa_memory_bind to \"local\" for strict memory binding, or \"preferred\" for GPU-local memory with fallback.",
           "default": false
         }
       },
