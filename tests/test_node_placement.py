@@ -8,6 +8,7 @@ node and the benchmark client on the last GEN node, off the CTX/head node.
 """
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
@@ -71,7 +72,13 @@ def test_placed_node_no_decode_workers_raises():
 # --- integration with SweepOrchestrator -------------------------------------
 
 
-def _config(*, orchestrator_placement="head", client_placement="head") -> SrtConfig:
+def _config(
+    *,
+    orchestrator_placement="head",
+    client_placement="head",
+    frontend_type="trtllm_serve",
+    enable_multiple_frontends=False,
+) -> SrtConfig:
     data = {
         "schema": 2,
         "name": "test",
@@ -83,8 +90,8 @@ def _config(*, orchestrator_placement="head", client_placement="head") -> SrtCon
             "decode": {"nodes": 2, "workers": 2, "gpus": 4},
         },
         "frontend": {
-            "type": "trtllm_serve",
-            "enable_multiple_frontends": False,
+            "type": frontend_type,
+            "enable_multiple_frontends": enable_multiple_frontends,
             "placement": {"node": orchestrator_placement},
         },
         "benchmark": {"type": "custom", "command": "true", "placement": {"node": client_placement}},
@@ -123,6 +130,15 @@ def test_frontend_default_head_does_not_touch_processes():
     assert topo.frontend_nodes == ["p0"]
 
 
+def test_public_api_node_on_head_does_not_require_frontend_topology():
+    orch = SweepOrchestrator(config=_config(), runtime=_runtime(["p0", "g0", "g1"]))
+    with (
+        patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_PROCS),
+        patch.object(orch, "_compute_frontend_topology", side_effect=AssertionError("topology is not needed")),
+    ):
+        assert orch._public_api_node() == "p0"
+
+
 def test_frontend_orchestrator_on_first_decode():
     orch = SweepOrchestrator(
         config=_config(orchestrator_placement="first_decode"), runtime=_runtime(["p0", "g0", "g1"])
@@ -140,6 +156,20 @@ def test_benchmark_client_on_last_decode_and_orchestrator_first_decode():
     with patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_PROCS):
         assert orch._orchestrator_node() == "g0"
         assert orch._benchmark_node() == "g1"
+
+
+@pytest.mark.parametrize("placement", ["first_decode", "last_decode"])
+def test_public_api_node_uses_nginx_head_with_non_head_frontend_placement(placement):
+    orch = SweepOrchestrator(
+        config=_config(
+            orchestrator_placement=placement,
+            frontend_type="dynamo",
+            enable_multiple_frontends=True,
+        ),
+        runtime=_runtime(["p0", "g0", "g1"]),
+    )
+    with patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_PROCS):
+        assert orch._public_api_node() == "p0"
 
 
 def test_benchmark_env_injects_frontend_host():
@@ -160,15 +190,19 @@ def test_benchmark_env_injects_frontend_host():
     assert env["SRT_FRONTEND_PORT"] == "8000"
 
 
-def _agg_vllm_config() -> SrtConfig:
+def _agg_config(*, engine="vllm", frontend_type="vllm", frontend_placement="head") -> SrtConfig:
     data = {
         "schema": 2,
         "name": "test",
         "model": {"path": "/models/test", "container": "test.sqsh", "precision": "fp4"},
         "resources": {"gpu_type": "b200", "gpus_per_node": 8},
-        "engine": "vllm",
+        "engine": engine,
         "roles": {"agg": {"nodes": 2, "workers": 1}},
-        "frontend": {"type": "vllm", "enable_multiple_frontends": False},
+        "frontend": {
+            "type": frontend_type,
+            "enable_multiple_frontends": False,
+            "placement": {"node": frontend_placement},
+        },
         "benchmark": {"type": "custom", "command": "true"},
     }
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
@@ -202,7 +236,21 @@ _AGG_PROCS = [
 
 def test_public_api_node_for_direct_vllm_agg_uses_leader_not_head():
     """Direct vLLM serve binds the public port on the agg endpoint leader."""
-    orch = SweepOrchestrator(config=_agg_vllm_config(), runtime=_runtime(["p0", "g0", "g1"]))
+    orch = SweepOrchestrator(config=_agg_config(), runtime=_runtime(["p0", "g0", "g1"]))
+    with patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_AGG_PROCS):
+        assert orch._orchestrator_node() == "p0"
+        assert orch._public_api_node() == "g0"
+
+
+def test_public_api_node_for_direct_trtllm_agg_uses_leader_not_dedicated_head():
+    runtime = replace(
+        _runtime(["p0", "g0", "g1"]),
+        nodes=Nodes(head="p0", bench="p0", infra="p0", worker=("g0", "g1")),
+    )
+    orch = SweepOrchestrator(
+        config=_agg_config(engine="trtllm", frontend_type="trtllm_serve", frontend_placement="dedicated"),
+        runtime=runtime,
+    )
     with patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_AGG_PROCS):
         assert orch._orchestrator_node() == "p0"
         assert orch._public_api_node() == "g0"

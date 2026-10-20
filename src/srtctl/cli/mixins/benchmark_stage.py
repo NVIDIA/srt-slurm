@@ -43,6 +43,7 @@ MANUAL_POLL_SECONDS = 5.0
 
 if TYPE_CHECKING:
     from srtctl.benchmarks.base import BenchmarkRunner
+    from srtctl.cli.mixins.frontend_stage import FrontendTopology
     from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
     from srtctl.core.processes import ManagedProcess, ProcessRegistry
     from srtctl.core.runtime import RuntimeContext
@@ -118,6 +119,10 @@ class BenchmarkStageMixin:
         """Record the GPUs each worker holds for power telemetry (TelemetryStageMixin)."""
         raise NotImplementedError
 
+    def _compute_frontend_topology(self) -> "FrontendTopology":
+        """Frontend and nginx placement (FrontendStageMixin)."""
+        raise NotImplementedError
+
     def _orchestrator_node(self) -> str:
         """Node the frontend/orchestrator runs on (honors frontend.placement.node)."""
         placement = self.config.frontend.placement.location
@@ -140,7 +145,10 @@ class BenchmarkStageMixin:
         direct_nodes = frontend.direct_endpoint_nodes(self.backend_processes) if frontend is not None else []
         if len(direct_nodes) == 1:
             return direct_nodes[0]
-        return self._orchestrator_node()
+        if self.config.frontend.placement.location == "head":
+            return self.runtime.nodes.head
+        topology = self._compute_frontend_topology()
+        return topology.nginx_node or topology.frontend_nodes[0]
 
     def _benchmark_node(self) -> str:
         """Node the benchmark client runs on (honors benchmark.placement.node).

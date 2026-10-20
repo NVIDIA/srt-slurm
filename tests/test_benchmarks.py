@@ -2108,6 +2108,121 @@ class TestRunPostEval:
                     result = orch._run_post_eval(stop)
         assert result == 0
 
+    @staticmethod
+    def _run_eval_with_endpoint_probes(orch, *, eval_only):
+        import os
+        import threading
+        from unittest.mock import MagicMock, patch
+
+        proc = MagicMock()
+        proc.poll.return_value = 0
+        proc.returncode = 0
+        with (
+            patch.dict(
+                os.environ,
+                {"EVAL_ONLY": str(eval_only).lower(), "RUN_EVAL": str(not eval_only).lower()},
+                clear=False,
+            ),
+            patch("srtctl.cli.mixins.benchmark_stage.wait_for_model", return_value=True) as model_ready,
+            patch("srtctl.cli.do_sweep.wait_for_port", return_value=True) as port_ready,
+            patch("srtctl.cli.do_sweep.start_srun_process", return_value=proc) as launch,
+        ):
+            assert orch._run_post_eval(threading.Event()) == 0
+        return model_ready, port_ready, launch.call_args.kwargs
+
+    @pytest.mark.parametrize(
+        ("placement", "expected_node"), [("head", "node0"), ("first_decode", "node1"), ("last_decode", "node2")]
+    )
+    @pytest.mark.parametrize("eval_only", [True, False], ids=["eval-only", "post-benchmark"])
+    @pytest.mark.parametrize("custom_command", [False, True], ids=["lm-eval", "custom-command"])
+    def test_eval_runs_on_the_frontend_it_probes(self, placement, expected_node, eval_only, custom_command):
+        """Local eval URLs reach the same placed frontend as the readiness probe."""
+        from dataclasses import replace
+
+        from srtctl.core.schema import PostEvalConfig
+
+        orch = self._make_orchestrator()
+        orch.config = replace(
+            orch.config,
+            frontend=replace(
+                orch.config.frontend,
+                enable_multiple_frontends=False,
+                placement=PlacementConfig(node=placement),
+            ),
+            post_eval=PostEvalConfig(command=["bash", "/eval.sh", "{endpoint}"])
+            if custom_command
+            else PostEvalConfig(),
+        )
+        topology = orch._compute_frontend_topology()
+        assert topology.frontend_nodes == [expected_node]
+        assert topology.nginx_node is None
+
+        model_ready, port_ready, launch = self._run_eval_with_endpoint_probes(orch, eval_only=eval_only)
+
+        if eval_only:
+            model_ready.assert_called_once()
+            assert model_ready.call_args.kwargs["host"] == expected_node
+            assert model_ready.call_args.kwargs["port"] == topology.public_port
+            port_ready.assert_not_called()
+        else:
+            port_ready.assert_called_once_with(expected_node, topology.public_port, timeout=30)
+            model_ready.assert_not_called()
+        assert launch["nodelist"] == [expected_node]
+        assert launch["step_name"] == "eval"
+        assert launch["command"][2] == f"http://localhost:{topology.public_port}"
+        assert launch["command"][1] == ("/eval.sh" if custom_command else "/srtctl-benchmarks/lm-eval/bench.sh")
+
+    def test_eval_uses_the_frontend_heterogeneous_component(self):
+        """A frontend on the decode side launches eval in the decode Slurm component."""
+        from dataclasses import replace
+
+        orch = self._make_orchestrator()
+        orch.config = replace(
+            orch.config,
+            frontend=replace(
+                orch.config.frontend,
+                enable_multiple_frontends=False,
+                placement=PlacementConfig(node="first_decode"),
+            ),
+        )
+        orch.runtime = replace(
+            orch.runtime,
+            nodes=replace(
+                orch.runtime.nodes,
+                het=True,
+                prefill_group=("node0",),
+                decode_group=("node1", "node2"),
+            ),
+        )
+
+        model_ready, _, launch = self._run_eval_with_endpoint_probes(orch, eval_only=True)
+
+        assert model_ready.call_args.kwargs["host"] == "node1"
+        assert launch["nodelist"] == ["node1"]
+        assert launch["het_group"] == 1
+
+    def test_eval_runs_on_the_direct_worker_public_endpoint(self):
+        """Direct serving uses the aggregate worker's node even when the job head differs."""
+        from dataclasses import replace
+
+        from srtctl.backends import VLLMBackend
+        from srtctl.core.schema import FrontendConfig, RoleConfig
+
+        orch = self._make_orchestrator()
+        orch.config = replace(
+            orch.config,
+            engine=VLLMBackend(),
+            roles={"agg": RoleConfig(nodes=1, workers=1, gpus=8)},
+            frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+        )
+        orch.runtime = replace(orch.runtime, nodes=replace(orch.runtime.nodes, worker=("node1",)))
+
+        model_ready, _, launch = self._run_eval_with_endpoint_probes(orch, eval_only=True)
+
+        assert model_ready.call_args.kwargs["host"] == "node1"
+        assert launch["nodelist"] == ["node1"]
+        assert launch["command"][2] == "http://localhost:8000"
+
     def test_env_var_passthrough(self):
         """Eval env vars are passed through to srun."""
         import os

@@ -22,6 +22,7 @@ from srtctl.core.health import WorkerHealthResult, probe_http_ok, wait_for_healt
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends.base import (
     Frontend,
+    agg_leader_nodes,
     frontend_args_to_cli,
     numactl_prefix,
     register_frontend,
@@ -53,6 +54,9 @@ class TRTLLMServeFrontend(Frontend):
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """The aggregate worker is the endpoint; P/D workers sit behind the disaggregated orchestrator."""
         return "public" if mode == "agg" else "allocated"
+
+    def direct_endpoint_nodes(self, processes: list["Process"]) -> list[str]:
+        return agg_leader_nodes(processes)
 
     # The disaggregated orchestrator serves Prometheus text at /prometheus/metrics, as
     # its trtllm-serve workers do (TRTLLMBackend.prometheus_metrics_path).

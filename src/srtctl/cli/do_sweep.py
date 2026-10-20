@@ -664,6 +664,10 @@ class SweepOrchestrator(
         """Run lm-eval after the main benchmark completes (or directly in eval-only mode)."""
         from srtctl.benchmarks import get_runner
 
+        # The eval harness uses a local HTTP endpoint, so run it beside the
+        # resolved public endpoint (router, nginx or direct worker).
+        eval_node = self._public_api_node()
+
         # In eval-only mode the benchmark health check was skipped, so do the
         # full model-ready wait here.  In post-benchmark mode a quick port
         # check is sufficient since the server already served traffic.
@@ -673,7 +677,7 @@ class SweepOrchestrator(
                 logger.error("Server did not become healthy for eval")
                 return 1
         else:
-            if not wait_for_port(self._public_api_node(), FRONTEND_PUBLIC_PORT, timeout=30):
+            if not wait_for_port(eval_node, FRONTEND_PUBLIC_PORT, timeout=30):
                 logger.error("Server health check failed before eval - skipping")
                 return 1
 
@@ -696,6 +700,7 @@ class SweepOrchestrator(
                 return 1
             cmd = runner.build_command(self.config, self.runtime)
 
+        logger.info("Eval node: %s", eval_node)
         logger.info("Eval command: %s", " ".join(cmd))
         logger.info("Eval log: %s", eval_log)
 
@@ -753,13 +758,14 @@ class SweepOrchestrator(
 
         proc = start_srun_process(
             command=cmd,
-            nodelist=[self.runtime.nodes.head],
+            step_name="eval",
+            nodelist=[eval_node],
             output=str(eval_log),
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
             srun_options=self.runtime.srun_options,
-            het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
+            het_group=self.runtime.nodes.het_group_for(eval_node),
         )
 
         while proc.poll() is None:

@@ -116,7 +116,7 @@ class TestFrontendRegistry:
             ("sglang", "/metrics", (8000, None, None, None), (8000, None, None, 8000), ["n0"], 7500),
             ("sglang-router", "/metrics", (6100, None, None, 6100), (6100, None, None, 6100), [], 7500),
             ("vllm-router", "/metrics", (6100, None, 6132, 6100), (6100, None, 6132, 6100), [], 7500),
-            ("trtllm_serve", "/prometheus/metrics", (None, None, 6132, 6100), (8000, None, None, 6100), [], 6100),
+            ("trtllm_serve", "/prometheus/metrics", (None, None, 6132, 6100), (8000, None, None, 6100), ["n0"], 6100),
         ],
     )
     def test_worker_port_contract(self, frontend_type, metrics_path, metrics, endpoint, direct_nodes, ready):
