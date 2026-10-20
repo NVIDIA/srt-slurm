@@ -14,7 +14,7 @@ import pytest
 from srtctl.backends import TRTLLMBackend
 
 
-@pytest.mark.parametrize("memory_bind", [None, False, True, "local"])
+@pytest.mark.parametrize("memory_bind", [None, False, True, "local", "preferred"])
 def test_memory_policy_round_trip(memory_bind) -> None:
     schema = TRTLLMBackend.Schema()
     settings = {"numa_cpu_bind": True, "numa_memory_bind": memory_bind}
@@ -23,30 +23,36 @@ def test_memory_policy_round_trip(memory_bind) -> None:
     assert schema.dump(backend)["numa_memory_bind"] == memory_bind
 
 
-def test_local_memory_requires_cpu_binding() -> None:
-    with pytest.raises(ValueError, match="numa_memory_bind: local requires numa_cpu_bind: true"):
-        TRTLLMBackend.Schema().load({"numa_memory_bind": "local"})
+@pytest.mark.parametrize("memory_bind", ["local", "preferred"])
+def test_wrapper_memory_policy_requires_cpu_binding(memory_bind) -> None:
+    with pytest.raises(ValueError, match=f"numa_memory_bind: {memory_bind} requires numa_cpu_bind: true"):
+        TRTLLMBackend.Schema().load({"numa_memory_bind": memory_bind})
 
 
 @pytest.mark.parametrize(
-    ("node", "bind_memory", "expected_memory", "expected_cpus", "expected_exit"),
+    ("node", "memory_flag", "expected_memory", "expected_cpus", "expected_exit"),
     [
-        ("0", True, "bind:0", "0-3", 0),
-        ("1", True, "bind:1", "4-7", 0),
-        ("-1", True, None, None, 2),
-        ("missing", True, None, None, 2),
-        ("invalid", True, None, None, 2),
-        ("empty-cpus", True, None, None, 2),
-        ("missing-cpus", True, None, None, 2),
-        ("denied", True, None, None, 42),
-        ("1", False, None, "4-7", 0),
-        ("-1", False, None, None, 0),
+        ("0", "--bind-memory", "bind:0", "0-3", 0),
+        ("1", "--bind-memory", "bind:1", "4-7", 0),
+        ("-1", "--bind-memory", None, None, 2),
+        ("missing", "--bind-memory", None, None, 2),
+        ("invalid", "--bind-memory", None, None, 2),
+        ("empty-cpus", "--bind-memory", None, None, 2),
+        ("missing-cpus", "--bind-memory", None, None, 2),
+        ("denied", "--bind-memory", None, None, 42),
+        ("0", "--prefer-memory", "preferred:0", "0-3", 0),
+        ("1", "--prefer-memory", "preferred:1", "4-7", 0),
+        ("-1", "--prefer-memory", None, None, 2),
+        ("empty-cpus", "--prefer-memory", None, None, 2),
+        ("denied", "--prefer-memory", None, None, 42),
+        ("1", None, None, "4-7", 0),
+        ("-1", None, None, None, 0),
     ],
 )
 def test_worker_inherits_resolved_numa_policy(
     tmp_path: Path,
     node: str,
-    bind_memory: bool,
+    memory_flag: str | None,
     expected_memory: str | None,
     expected_cpus: str | None,
     expected_exit: int,
@@ -80,10 +86,16 @@ elif name == "cat":
             sys.exit(0)
         print({"0": "0-3", "1": "4-7"}[node])
 elif name == "numactl":
-    assert args[0].startswith("--membind=")
     if os.environ["TEST_NUMA_NODE"] == "denied":
         sys.exit(42)
-    os.environ["TEST_MEMORY_POLICY"] = "bind:" + args.pop(0).split("=", 1)[1]
+    if args[0].startswith("--membind="):
+        os.environ["TEST_MEMORY_POLICY"] = "bind:" + args.pop(0).split("=", 1)[1]
+    else:
+        # --preferred mode: numactl sets the CPU mask itself, so no taskset follows.
+        node = args.pop(0).removeprefix("--cpunodebind=")
+        assert args.pop(0) == f"--preferred={node}"
+        os.environ["TEST_MEMORY_POLICY"] = "preferred:" + node
+        os.environ["TEST_CPU_MASK"] = {"0": "0-3", "1": "4-7"}[node]
     os.execvp(args[0], args)
 elif name == "taskset":
     assert args[0] == "-c"
@@ -119,7 +131,7 @@ else:
     env.pop("TEST_MEMORY_POLICY", None)
     env.pop("TEST_CPU_MASK", None)
     result = subprocess.run(
-        ["bash", str(script), *(["--bind-memory"] if bind_memory else []), *worker],
+        ["bash", str(script), *([memory_flag] if memory_flag else []), *worker],
         env=env,
         capture_output=True,
         text=True,
@@ -130,7 +142,7 @@ else:
     if expected_exit:
         assert result.stdout == ""  # The worker must not run after a binding failure.
         if expected_exit == 2:
-            expected_error = "cannot bind CPUs" if node in ("empty-cpus", "missing-cpus") else "cannot bind memory"
+            expected_error = "cannot bind CPUs" if node in ("empty-cpus", "missing-cpus") else "cannot apply memory policy"
             assert expected_error in result.stderr
     else:
         assert json.loads(result.stdout) == [expected_memory, expected_cpus, arguments]

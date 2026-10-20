@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 
 import yaml
 from marshmallow import Schema
@@ -230,6 +230,35 @@ DWDP_RENDEZVOUS_TIMEOUT_S = 3600
 _CONTAINER_LOG_DIR = "/logs"
 
 
+class NumaWrapperPolicy(NamedTuple):
+    """How configs/numa_cpu_bind.sh applies one numa_memory_bind value.
+
+    Attributes:
+        flag: Wrapper flag that selects the memory policy.
+        description: Policy description in dry-run output.
+        worker_affinity: Default ``TLLM_NUMA_AWARE_WORKER_AFFINITY`` for the worker.
+    """
+
+    flag: str
+    description: str
+    worker_affinity: str
+
+
+# numa_memory_bind values whose memory policy configs/numa_cpu_bind.sh applies.
+# "preferred" reproduces the Qwen3.5 GB300 launcher's NUMA_MODE=local, which ran
+# `numactl --cpunodebind=<node> --preferred=<node>` with TRT-LLM's own NUMA-aware
+# worker affinity on (TLLM_NUMA_AWARE_WORKER_AFFINITY=1: the worker pins itself
+# to the GPU's CPUs, the same node numactl chose). The taskset modes keep it off.
+NUMA_WRAPPER_MEMORY_POLICIES: dict[str, NumaWrapperPolicy] = {
+    "local": NumaWrapperPolicy("--bind-memory", "strict GPU-local memory binding", "0"),
+    "preferred": NumaWrapperPolicy(
+        "--prefer-memory", "preferred GPU-local memory (numactl --cpunodebind=<node> --preferred=<node>)", "1"
+    ),
+}
+# TLLM_NUMA_AWARE_WORKER_AFFINITY default under numa_cpu_bind without a wrapper memory policy.
+NUMA_CPU_BIND_WORKER_AFFINITY = "0"
+
+
 @dataclass(frozen=True)
 class TRTLLMBackend(Backend):
     """TRTLLM backend configuration and launch implementation.
@@ -328,7 +357,11 @@ class TRTLLMBackend(Backend):
     # numa_cpu_bind=True and strictly binds memory to the task GPU's NUMA node.
     # Local mode fails startup if GPU NUMA affinity is unknown. Local memory
     # exhaustion can fail allocations; existing/shared pages are not migrated.
-    numa_memory_bind: bool | Literal["local"] | None = None
+    # "preferred" also requires numa_cpu_bind=True and launches the worker under
+    # `numactl --cpunodebind=<node> --preferred=<node>`: same CPU mask, but memory
+    # falls back to other nodes when the GPU's node is full, and TRT-LLM's own
+    # NUMA-aware worker affinity stays on (TLLM_NUMA_AWARE_WORKER_AFFINITY=1).
+    numa_memory_bind: bool | Literal["local", "preferred"] | None = None
 
     # Optional stricter NUMA CPU affinity for the worker process, in addition
     # to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID`
@@ -336,7 +369,9 @@ class TRTLLMBackend(Backend):
     # *after* launch, so secondary threads spawned by Python/UCX/MPI/TRT-LLM
     # can still land cross-socket. When true, srtctl instead:
     #   1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own
-    #      internal NUMA thread-pinning, which fights with the OS-level mask)
+    #      internal NUMA thread-pinning, which fights with the OS-level mask;
+    #      numa_memory_bind="preferred" sets 1 instead) unless the role env
+    #      sets it explicitly
     #   2. wraps the worker command (prefill/decode/agg) in `taskset -c
     #      <cpu_list>`, applied *before* exec so every spawned thread
     #      inherits the mask. The CPU list is discovered at runtime
@@ -345,7 +380,8 @@ class TRTLLMBackend(Backend):
     #      SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two
     #      endpoints share a node (each gets its own srun step, so LOCALID
     #      restarts at 0 for both).
-    # Set numa_memory_bind="local" to also bind memory to that same NUMA node.
+    # Set numa_memory_bind="local" to also bind memory to that same NUMA node,
+    # or "preferred" to prefer it.
     numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
@@ -357,8 +393,8 @@ class TRTLLMBackend(Backend):
     )
 
     def __post_init__(self) -> None:
-        if self.numa_memory_bind == "local" and not self.numa_cpu_bind:
-            raise ValueError("numa_memory_bind: local requires numa_cpu_bind: true")
+        if self.numa_memory_bind in NUMA_WRAPPER_MEMORY_POLICIES and not self.numa_cpu_bind:
+            raise ValueError(f"numa_memory_bind: {self.numa_memory_bind} requires numa_cpu_bind: true")
 
     @property
     def dynamo_metrics_flags(self) -> tuple[str, ...]:
@@ -399,8 +435,16 @@ class TRTLLMBackend(Backend):
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
         env = {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
         if self.numa_cpu_bind:
-            env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
+            env.setdefault("TLLM_NUMA_AWARE_WORKER_AFFINITY", self.numa_worker_affinity)
         return env
+
+    @property
+    def numa_worker_affinity(self) -> str:
+        """Default TLLM_NUMA_AWARE_WORKER_AFFINITY under numa_cpu_bind, from the memory policy's table row."""
+        policy = self.numa_memory_bind
+        if isinstance(policy, str):
+            return NUMA_WRAPPER_MEMORY_POLICIES[policy].worker_affinity
+        return NUMA_CPU_BIND_WORKER_AFFINITY
 
     def get_served_model_name(self, default: str) -> str:
         """Get the configured served model name, or return default."""
@@ -557,7 +601,7 @@ class TRTLLMBackend(Backend):
         # the allocation is uniform and any rank could lead.
         return [replace(p, trtllm_dist_init_port=allocator.next(TRTLLM_DIST_INIT_PORTS)) for p in processes]
 
-    def _wrap_with_numa_cpu_bind(self, cmd: list[str], *, bind_memory: bool) -> list[str]:
+    def _wrap_with_numa_cpu_bind(self, cmd: list[str]) -> list[str]:
         """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which taskset-binds per task.
 
         Applies to all worker modes (prefill/decode/agg) when numa_cpu_bind
@@ -570,7 +614,8 @@ class TRTLLMBackend(Backend):
         """
         if not self.numa_cpu_bind:
             return cmd
-        memory_args = ["--bind-memory"] if bind_memory else []
+        policy = self.numa_memory_bind
+        memory_args = [NUMA_WRAPPER_MEMORY_POLICIES[policy].flag] if isinstance(policy, str) else []
         return ["bash", "/configs/numa_cpu_bind.sh", *memory_args, *cmd]
 
     def build_worker_command(
@@ -616,8 +661,7 @@ class TRTLLMBackend(Backend):
             use_numactl = runtime.gpu_type in ("gb200", "gb300", "vrnvl72") and mode in ("prefill", "decode")
         else:
             use_numactl = self.numa_memory_bind is True
-        # Only explicit local mode moves the memory policy into the CPU wrapper.
-        bind_local_memory = self.numa_memory_bind == "local"
+        # Explicit local or preferred mode moves the memory policy into the CPU wrapper.
         numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
@@ -629,7 +673,6 @@ class TRTLLMBackend(Backend):
                 container_config_path=container_config_path,
                 base_prefix=base_prefix,
                 sidecar_config=sidecar_config,
-                bind_memory=bind_local_memory,
             )
 
         # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
@@ -665,7 +708,7 @@ class TRTLLMBackend(Backend):
             if self.served_model_name:
                 cmd.extend(["--served_model_name", self.served_model_name])
             cmd.extend(self.get_extra_args_for_mode(mode))
-            return self._wrap_with_numa_cpu_bind(cmd, bind_memory=bind_local_memory)
+            return self._wrap_with_numa_cpu_bind(cmd)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
@@ -694,7 +737,7 @@ class TRTLLMBackend(Backend):
 
         cmd.extend(self.dynamo_metrics_flags)
 
-        return self._wrap_with_numa_cpu_bind(cmd, bind_memory=bind_local_memory)
+        return self._wrap_with_numa_cpu_bind(cmd)
 
     def _build_sidecar_command(
         self,
@@ -705,7 +748,6 @@ class TRTLLMBackend(Backend):
         container_config_path: Path,
         base_prefix: list[str],
         sidecar_config: "DynamoConfig",
-        bind_memory: bool,
     ) -> list[str]:
         """Build a lifecycle-coupled TensorRT-LLM native-gRPC and sidecar launch."""
         grpc_port = sidecar_grpc_port(process)
@@ -724,7 +766,6 @@ class TRTLLMBackend(Backend):
                 "--extra_llm_api_options",
                 str(container_config_path),
             ],
-            bind_memory=bind_memory,
         )
 
         sidecar = (
