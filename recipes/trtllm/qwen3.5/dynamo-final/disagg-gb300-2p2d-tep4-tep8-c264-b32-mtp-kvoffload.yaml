@@ -79,6 +79,8 @@ roles:
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
       XDG_CACHE_HOME: /tmp/xdg_cache_qwen35
       DYN_ENGINE_CONV_AFFINITY: '1'
+      DYN_ROUTER_MODE: kv
+      DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
     args:
       allreduce_strategy: TWOSHOT
       attention_dp_config:
@@ -294,6 +296,7 @@ roles:
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
       XDG_CACHE_HOME: /tmp/xdg_cache_qwen35
       DYN_ENGINE_CONV_AFFINITY: '1'
+      DYN_ROUTER_MODE: least-loaded
     args:
       cache_transceiver_config:
         backend: NIXL
@@ -426,7 +429,7 @@ benchmark:
       --stats-interval 30 \
       --trace-idle-gap-cap-seconds 300
   placement:
-    node: last_decode
+    node: head
 setup_script: install_dynamo_wheel.sh
 extra_mount:
 - /lustre/:/lustre/

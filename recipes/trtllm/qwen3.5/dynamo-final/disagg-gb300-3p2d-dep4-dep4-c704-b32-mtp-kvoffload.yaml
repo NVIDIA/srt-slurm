@@ -329,6 +329,8 @@ frontend:
   args:
     router-mode: kv
     router-session-affinity-ttl-secs: '14400'
+  placement:
+    node: first_decode
 benchmark:
   type: custom
   env:

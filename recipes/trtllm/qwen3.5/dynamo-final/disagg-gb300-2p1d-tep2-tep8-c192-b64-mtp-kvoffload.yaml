@@ -431,7 +431,7 @@ benchmark:
       --stats-interval 30 \
       --trace-idle-gap-cap-seconds 300
   placement:
-    node: last_decode
+    node: head
 setup_script: install_dynamo_wheel.sh
 extra_mount:
 - /lustre/:/lustre/
