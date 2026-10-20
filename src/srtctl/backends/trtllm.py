@@ -356,10 +356,12 @@ class TRTLLMBackend(Backend):
     # exec so child processes and threads inherit it. Requires numactl.
     # configs/numa_cpu_bind.sh resolves the NUMA node from the task's physical
     # GPU via CUDA_VISIBLE_DEVICES and SLURM_LOCALID, including colocated workers.
-    # The launcher leaves TLLM_NUMA_AWARE_WORKER_AFFINITY untouched; the worker
-    # runtime may change the CPU mask after launch. Normal role and top-level
-    # environment values pass through. Set numa_memory_bind to "local" for
-    # strict memory binding, or "preferred" for GPU-local memory with fallback.
+    # Defaults TLLM_NUMA_AWARE_WORKER_AFFINITY to 0 for every memory policy so
+    # TRT-LLM preserves the launch CPU mask. Explicit roles.<role>.env values
+    # override this default; top-level environment overrides both. Enabling
+    # native worker affinity explicitly may change the CPU mask after launch.
+    # Set numa_memory_bind to "local" for strict memory binding, or "preferred"
+    # for GPU-local memory with fallback.
     numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
@@ -411,7 +413,10 @@ class TRTLLMBackend(Backend):
 
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
-        return {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        env = {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        if self.numa_cpu_bind:
+            env.setdefault("TLLM_NUMA_AWARE_WORKER_AFFINITY", "0")
+        return env
 
     @property
     def numa_wrapper_policy(self) -> NumaWrapperPolicy | None:

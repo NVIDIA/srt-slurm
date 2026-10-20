@@ -5,9 +5,9 @@ set -euo pipefail
 
 # Set initial NUMA CPU affinity for TRT-LLM workers (see
 # backends/trtllm.py numa_cpu_bind) via `numactl --cpunodebind` before exec.
-# TRT-LLM can change the mask during worker initialization; this wrapper leaves
-# its worker-affinity environment unchanged. See docs/engines.md for behavior
-# at specific TRT-LLM versions.
+# The backend defaults TRT-LLM's worker affinity to 0 to preserve this mask
+# through worker initialization. Explicit recipe environment values can override
+# that default. See docs/engines.md for behavior at specific TRT-LLM versions.
 # Without a memory flag, preserve the inherited memory policy.
 # With --bind-memory, also restrict allocations to the GPU's NUMA node.
 # With --prefer-memory, prefer that node while allowing allocations to fall back

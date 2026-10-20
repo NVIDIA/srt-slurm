@@ -115,7 +115,13 @@ the worker under `numactl --cpunodebind=<node> --preferred=<node>`.
 Allocations prefer the GPU's NUMA node and can fall back to other nodes when
 it is full.
 
-The NUMA launch settings leave `TLLM_NUMA_AWARE_WORKER_AFFINITY` unchanged.
+With `numa_cpu_bind: true`, the launcher defaults
+`TLLM_NUMA_AWARE_WORKER_AFFINITY=0` for every memory policy so TRT-LLM preserves
+the wrapper's CPU mask. An explicit `roles.<role>.env` value overrides the
+default; a top-level `environment:` value overrides both the role value and
+the default. Dry-run shows the effective value for each active role. Without
+CPU binding, the launcher does not supply this default.
+
 TRT-LLM calls `configure_cpu_affinity` during
 [worker initialization](https://github.com/NVIDIA/TensorRT-LLM/blob/cc63e66daf52644f1441e117bb7ba67d20566016/tensorrt_llm/executor/base_worker.py#L149-L174).
 In [v1.4.0rc0](https://github.com/NVIDIA/TensorRT-LLM/blob/cc63e66daf52644f1441e117bb7ba67d20566016/tensorrt_llm/llmapi/utils.py#L713-L775)
@@ -130,11 +136,10 @@ its behavior is:
 
 v1.4.0rc0 applies these changes to existing threads on a best-effort basis;
 v1.3.0rc23 changes only the process's leader thread. Kernel cpuset restrictions
-still apply. Thus, when the variable is unset, these versions attempt to clear
-the wrapper's restricted CPU mask during worker initialization; `numa_cpu_bind`
-alone does not preserve that mask through initialization. The launcher's
-memory policy remains in effect. Explicit environment values follow normal
-recipe precedence: top-level `environment:` overrides `roles.<role>.env`.
+still apply. The launcher's default `0` prevents TRT-LLM from clearing or
+replacing the wrapper's CPU mask during worker initialization. An explicit
+override such as `1` selects TRT-LLM's native affinity instead. CPU affinity
+and the launcher's memory policy remain independent.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
 `numa_memory_bind: true` uses `numactl -m 0,1` for any GPU type or worker mode.

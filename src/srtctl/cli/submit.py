@@ -309,6 +309,9 @@ def show_config_details(config: SrtConfig) -> None:
             if policy := backend.numa_wrapper_policy:
                 description += f" and {policy.description} ({policy.flag})"
             console.print(f"TRT-LLM NUMA ({mode}): {description}")
+            environment = {**backend.get_environment_for_mode(mode), **config.environment}
+            affinity = environment["TLLM_NUMA_AWARE_WORKER_AFFINITY"]
+            console.print(f"{mode}: TLLM_NUMA_AWARE_WORKER_AFFINITY={affinity} (effective)")
         # Engine-yaml statistics keys srtctl defaults at config load
         # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
         # expand_observability). Shown for both frontends so a run that expects

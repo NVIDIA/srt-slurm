@@ -4467,9 +4467,9 @@ class TestHuggingFaceModelSupport:
         assert cmd[: len(prefix)] == prefix
         assert ("numactl" in cmd) is (expected_policy == "0,1")
 
-        # CPU and memory binding leave native worker affinity unconfigured.
+        # Preserve the launch CPU mask under every memory policy.
         env = backend.get_environment_for_mode(mode)
-        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in env
+        assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
 
     def test_trtllm_numa_cpu_bind_wraps_prefill_command(self):
         """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
@@ -4493,7 +4493,7 @@ class TestHuggingFaceModelSupport:
         assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
 
         prefill_env = backend.get_environment_for_mode("prefill")
-        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in prefill_env
+        assert prefill_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
 
     def test_trtllm_numa_cpu_bind_wraps_agg_command(self):
         """numa_cpu_bind=True wraps aggregated-mode commands too."""
@@ -4517,7 +4517,7 @@ class TestHuggingFaceModelSupport:
         assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
 
         agg_env = backend.get_environment_for_mode("agg")
-        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in agg_env
+        assert agg_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
 
     def test_trtllm_numa_cpu_bind_false_leaves_decode_command_unwrapped(self):
         """numa_cpu_bind=False (default) does not wrap the decode command."""
@@ -4559,7 +4559,7 @@ class TestHuggingFaceModelSupport:
         )
 
         assert backend.get_environment_for_mode("prefill")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == override
-        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in backend.get_environment_for_mode("decode")
+        assert backend.get_environment_for_mode("decode")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
 
 
 class TestInfmaxWorkspaceMount:
