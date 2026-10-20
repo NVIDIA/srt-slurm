@@ -154,7 +154,7 @@ def test_benchmark_client_on_last_decode_and_orchestrator_first_decode():
         runtime=_runtime(["p0", "g0", "g1"]),
     )
     with patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_PROCS):
-        assert orch._orchestrator_node() == "g0"
+        assert orch._compute_frontend_topology().frontend_nodes == ["g0"]
         assert orch._benchmark_node() == "g1"
 
 
@@ -238,7 +238,7 @@ def test_public_api_node_for_direct_vllm_agg_uses_leader_not_head():
     """Direct vLLM serve binds the public port on the agg endpoint leader."""
     orch = SweepOrchestrator(config=_agg_config(), runtime=_runtime(["p0", "g0", "g1"]))
     with patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_AGG_PROCS):
-        assert orch._orchestrator_node() == "p0"
+        assert orch._compute_frontend_topology().frontend_nodes == ["p0"]
         assert orch._public_api_node() == "g0"
 
 
@@ -252,5 +252,5 @@ def test_public_api_node_for_direct_trtllm_agg_uses_leader_not_dedicated_head():
         runtime=runtime,
     )
     with patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_AGG_PROCS):
-        assert orch._orchestrator_node() == "p0"
+        assert orch._compute_frontend_topology().frontend_nodes == ["p0"]
         assert orch._public_api_node() == "g0"

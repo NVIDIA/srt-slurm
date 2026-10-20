@@ -210,9 +210,9 @@ use_bash_wrapper: False
 command: |
     tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
 
-## <unnamed>
+## eval
 nodelist: node-02
-output: <output>/logs/benchmark.out
+output: <output>/logs/eval.out
 container_image: trtllm
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
@@ -220,8 +220,8 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    SRTCTL_FRONTEND_TYPE: trtllm_serve
-    SRT_FRONTEND_HOST: 127.0.0.1
-    SRT_FRONTEND_PORT: 8000
+    EVAL_CONC: 8
+    EVAL_ONLY: true
+    MODEL_NAME: Qwen/Qwen3-0.6B
 command: |
-    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4x8 inf /model Qwen/Qwen3-0.6B true 2 1 1 0.8 10 2 '' true random '' false
+    bash /srtctl-benchmarks/lm-eval/bench.sh http://localhost:8000 /infmax-workspace

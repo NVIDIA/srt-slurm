@@ -123,15 +123,6 @@ class BenchmarkStageMixin:
         """Frontend and nginx placement (FrontendStageMixin)."""
         raise NotImplementedError
 
-    def _orchestrator_node(self) -> str:
-        """Node the frontend/orchestrator runs on (honors frontend.placement.node)."""
-        placement = self.config.frontend.placement.location
-        if placement == "head":
-            return self.runtime.nodes.head
-        from srtctl.core.topology import placed_node
-
-        return placed_node(self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.placement.node")
-
     @property
     def frontend(self) -> "Frontend | None":
         """The frontend implementation for ``frontend.type``; ``None`` for a services-only job."""

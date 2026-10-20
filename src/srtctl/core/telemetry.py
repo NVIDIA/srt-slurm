@@ -154,9 +154,9 @@ def generate_tachometer_config(
         )
 
     # A services-only job has no frontend process, so nothing listens on the
-    # frontend port. A frontend whose worker is itself the endpoint (direct vLLM
-    # or SGLang) has no separate process either: the endpoint is the aggregate
-    # leader's node, which may differ from the orchestrator head in FrontendTopology.
+    # frontend port. A frontend whose worker is itself the endpoint (direct vLLM,
+    # SGLang or aggregate trtllm-serve) has no separate process either: the endpoint
+    # is the aggregate leader's node, which may differ from the configured frontend node.
     frontend_nodes: list[str] = []
     if frontend is not None:
         frontend_nodes = frontend.direct_endpoint_nodes(processes) or list(frontend_topology.frontend_nodes)

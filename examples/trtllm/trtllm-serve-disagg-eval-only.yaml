@@ -2,6 +2,7 @@
 # Run with EVAL_ONLY=true and INFMAX_WORKSPACE pointing to an InferenceX checkout.
 # The short benchmark remains available when EVAL_ONLY is not set.
 # A 30-minute allocation provides a small-model diagnostic budget.
+# Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
 schema: 2
 name: "qwen3-0.6b-trtllm-serve-disagg-eval-only"

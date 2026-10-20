@@ -35,6 +35,9 @@ JOB_ID = "4242"
 # Recipes that are not a single runnable job: overrides and sweeps expand into several.
 NOT_A_JOB = {"examples/features/override.yaml", "examples/features/sweep.yaml"}
 
+# Environment required to exercise an example's documented launch mode.
+EXAMPLE_ENV = {"examples/trtllm/trtllm-serve-disagg-eval-only.yaml": {"EVAL_ONLY": "true"}}
+
 # Values generated fresh on every run, replaced by a stable placeholder.
 _RANDOM_VALUES = (
     re.compile(r"moe_shared_[0-9a-f]{32}"),
@@ -163,6 +166,7 @@ def render_launch_plan(recipe: Path) -> str:
             # Capture exporter launches without polling metrics from nonexistent containers.
             with (
                 _isolated_cluster(model_dir, container_file),
+                patch.dict(os.environ, EXAMPLE_ENV.get(recipe.relative_to(REPO_ROOT).as_posix(), {})),
                 patch(
                     "srtctl.core.power.session.PowerTelemetrySession.start_and_wait_for_readiness", return_value=True
                 ),
