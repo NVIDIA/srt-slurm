@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 
-# Optional stricter NUMA CPU affinity for TRT-LLM workers (see
-# backends/trtllm.py numa_cpu_bind). Binds via `numactl --cpunodebind` before exec so
-# secondary threads spawned by Python/UCX/MPI/TRT-LLM inherit the mask too —
-# TRT-LLM's own internal affinity logic only pins the leader thread, leaving
-# the rest to land cross-socket.
+# Set initial NUMA CPU affinity for TRT-LLM workers (see
+# backends/trtllm.py numa_cpu_bind) via `numactl --cpunodebind` before exec.
+# TRT-LLM can change the mask during worker initialization; this wrapper leaves
+# its worker-affinity environment unchanged. See docs/engines.md for behavior
+# at specific TRT-LLM versions.
 # Without a memory flag, preserve the inherited memory policy.
 # With --bind-memory, also restrict allocations to the GPU's NUMA node.
 # With --prefer-memory, prefer that node while allowing allocations to fall back

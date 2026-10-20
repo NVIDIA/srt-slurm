@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Check the worker's effective NUMA policy without changing host placement."""
+"""Check the worker's launch-time NUMA policy without changing host placement."""
 
 import json
 import os

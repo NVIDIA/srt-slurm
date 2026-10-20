@@ -88,7 +88,7 @@ The v1 spelling of this (`backend.type` plus the engine-wide keys under `backend
 
 ### TRT-LLM CPU and memory placement
 
-To place worker CPUs and memory on the NUMA node associated with each task's GPU:
+To set initial worker CPU affinity and a GPU-local memory policy:
 
 ```yaml
 engine:
@@ -99,10 +99,10 @@ engine:
 
 With `numa_cpu_bind: true`, the launcher resolves the GPU through
 `CUDA_VISIBLE_DEVICES` and `SLURM_LOCALID`, then starts the worker under
-`numactl --cpunodebind=<node>` for every memory policy. The worker and its
-child threads inherit the CPU affinity from launch. The container must provide
-`numactl`. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate cluster GPU
-visibility variables are not supported by this wrapper.
+`numactl --cpunodebind=<node>` for every memory policy. This sets CPU affinity
+at launch; TRT-LLM can change it during worker initialization. The container
+must provide `numactl`. The wrapper uses `CUDA_VISIBLE_DEVICES`; alternate
+cluster GPU visibility variables are not supported by this wrapper.
 
 `numa_memory_bind: local` adds `--membind=<node>` to bind memory strictly to
 the GPU's NUMA node. Allocations governed by this policy cannot fall back to
@@ -116,9 +116,25 @@ Allocations prefer the GPU's NUMA node and can fall back to other nodes when
 it is full.
 
 The NUMA launch settings leave `TLLM_NUMA_AWARE_WORKER_AFFINITY` unchanged.
-TRT-LLM's native worker affinity operates independently and may replace the
-CPU mask inherited from the wrapper. Explicit environment values follow the
-normal recipe precedence: top-level `environment:` overrides `roles.<role>.env`.
+TRT-LLM calls `configure_cpu_affinity` during
+[worker initialization](https://github.com/NVIDIA/TensorRT-LLM/blob/cc63e66daf52644f1441e117bb7ba67d20566016/tensorrt_llm/executor/base_worker.py#L149-L174).
+In [v1.4.0rc0](https://github.com/NVIDIA/TensorRT-LLM/blob/cc63e66daf52644f1441e117bb7ba67d20566016/tensorrt_llm/llmapi/utils.py#L713-L775)
+and [v1.3.0rc23](https://github.com/NVIDIA/TensorRT-LLM/blob/d41ab33df16740e18e8ef9c8735dad4efc46afd5/tensorrt_llm/llmapi/utils.py#L638-L685),
+its behavior is:
+
+| Environment value | Native worker-affinity behavior |
+| --- | --- |
+| Unset | If the inherited CPU mask is restricted, attempts to reset it to all CPUs. If initially unrestricted, selects the GPU's NVML CPU-affinity mask instead. |
+| `0` | Preserves the inherited CPU mask. |
+| `1` | Selects the GPU's NVML CPU-affinity mask regardless of the inherited mask. |
+
+v1.4.0rc0 applies these changes to existing threads on a best-effort basis;
+v1.3.0rc23 changes only the process's leader thread. Kernel cpuset restrictions
+still apply. Thus, when the variable is unset, these versions attempt to clear
+the wrapper's restricted CPU mask during worker initialization; `numa_cpu_bind`
+alone does not preserve that mask through initialization. The launcher's
+memory policy remains in effect. Explicit environment values follow normal
+recipe precedence: top-level `environment:` overrides `roles.<role>.env`.
 
 `numa_memory_bind: false` keeps CPU binding without a memory policy change.
 `numa_memory_bind: true` uses `numactl -m 0,1` for any GPU type or worker mode.
