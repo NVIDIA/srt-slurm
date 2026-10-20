@@ -58,6 +58,33 @@ from srtctl.services.implicit import uses_discovery_plane
 
 logger = logging.getLogger(__name__)
 
+# Workflow metadata forwarded into the post-benchmark or eval-only process.
+POST_EVAL_PASSTHROUGH_ENV = (
+    "RUN_EVAL",
+    "EVAL_ONLY",
+    "IS_MULTINODE",
+    "FRAMEWORK",
+    "PRECISION",
+    "MODEL_PREFIX",
+    "RUNNER_TYPE",
+    "RESULT_FILENAME",
+    "SPEC_DECODING",
+    "ISL",
+    "OSL",
+    "MODEL",
+    "MODEL_PATH",
+    "MAX_MODEL_LEN",
+    "EVAL_MAX_MODEL_LEN",
+    "PREFILL_TP",
+    "PREFILL_EP",
+    "PREFILL_DP_ATTN",
+    "PREFILL_NUM_WORKERS",
+    "DECODE_TP",
+    "DECODE_EP",
+    "DECODE_DP_ATTN",
+    "DECODE_NUM_WORKERS",
+)
+
 
 @dataclass
 class SweepOrchestrator(
@@ -710,29 +737,7 @@ class SweepOrchestrator(
         env_to_set = {}
         for var in [
             *self.config.post_eval.passthrough_env,
-            "RUN_EVAL",
-            "EVAL_ONLY",
-            "IS_MULTINODE",
-            "FRAMEWORK",
-            "PRECISION",
-            "MODEL_PREFIX",
-            "RUNNER_TYPE",
-            "RESULT_FILENAME",
-            "SPEC_DECODING",
-            "ISL",
-            "OSL",
-            "MODEL",
-            "MODEL_PATH",
-            "MAX_MODEL_LEN",
-            "EVAL_MAX_MODEL_LEN",
-            "PREFILL_TP",
-            "PREFILL_EP",
-            "PREFILL_DP_ATTN",
-            "PREFILL_NUM_WORKERS",
-            "DECODE_TP",
-            "DECODE_EP",
-            "DECODE_DP_ATTN",
-            "DECODE_NUM_WORKERS",
+            *POST_EVAL_PASSTHROUGH_ENV,
         ]:
             val = os.environ.get(var)
             if val:

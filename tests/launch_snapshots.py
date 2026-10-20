@@ -81,6 +81,18 @@ def snapshot_path(recipe: Path) -> Path:
 
 
 @contextmanager
+def _example_environment(recipe: Path, passthrough_env: list[str]) -> Iterator[None]:
+    """Keep eval workflow inputs out of snapshots unless the example selects them."""
+    from srtctl.cli.do_sweep import POST_EVAL_PASSTHROUGH_ENV
+
+    eval_inputs = {*POST_EVAL_PASSTHROUGH_ENV, *passthrough_env, "EVAL_CONC"}
+    environment = {key: value for key, value in os.environ.items() if key not in eval_inputs}
+    environment.update(EXAMPLE_ENV.get(recipe.relative_to(REPO_ROOT).as_posix(), {}))
+    with patch.dict(os.environ, environment, clear=True):
+        yield
+
+
+@contextmanager
 def _isolated_cluster(model_dir: Path, container_file: Path) -> Iterator[None]:
     """No srtslurm.yaml and no `make setup` binaries; the recipe's model and container-file paths resolve to
     existing placeholders.
@@ -166,20 +178,23 @@ def render_launch_plan(recipe: Path) -> str:
             # Capture exporter launches without polling metrics from nonexistent containers.
             with (
                 _isolated_cluster(model_dir, container_file),
-                patch.dict(os.environ, EXAMPLE_ENV.get(recipe.relative_to(REPO_ROOT).as_posix(), {})),
                 patch(
                     "srtctl.core.power.session.PowerTelemetrySession.start_and_wait_for_readiness", return_value=True
                 ),
             ):
-                nodes = load_config(recipe).total_nodes
-                options = MockOptions(
-                    child_duration_s=0.0,
-                    phase_pause_s=0.0,
-                    nodelist=tuple(f"node-{i:02d}" for i in range(1, nodes + 3)),
-                    on_srun=calls.append,
-                    end_manual_hold=True,
-                )
-                exit_code = run_mock_sweep(config_path=recipe, output_dir=output_dir, job_id=JOB_ID, options=options)
+                config = load_config(recipe)
+                with _example_environment(recipe, config.post_eval.passthrough_env):
+                    nodes = config.total_nodes
+                    options = MockOptions(
+                        child_duration_s=0.0,
+                        phase_pause_s=0.0,
+                        nodelist=tuple(f"node-{i:02d}" for i in range(1, nodes + 3)),
+                        on_srun=calls.append,
+                        end_manual_hold=True,
+                    )
+                    exit_code = run_mock_sweep(
+                        config_path=recipe, output_dir=output_dir, job_id=JOB_ID, options=options
+                    )
         finally:
             os.chdir(prior_cwd)
         body = "\n\n".join(_render_call(c) for c in calls)
