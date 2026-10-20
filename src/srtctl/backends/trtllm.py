@@ -247,8 +247,6 @@ NUMA_WRAPPER_MEMORY_POLICIES: dict[str, NumaWrapperPolicy] = {
     "local": NumaWrapperPolicy("--bind-memory", "strict GPU-local memory binding (numactl --membind=<node>)"),
     "preferred": NumaWrapperPolicy("--prefer-memory", "preferred GPU-local memory (numactl --preferred=<node>)"),
 }
-# TLLM_NUMA_AWARE_WORKER_AFFINITY default under every numa_cpu_bind memory policy.
-NUMA_CPU_BIND_WORKER_AFFINITY = "0"
 
 
 @dataclass(frozen=True)
@@ -354,15 +352,14 @@ class TRTLLMBackend(Backend):
     # GPU's NUMA node and fall back to other nodes when it is full.
     numa_memory_bind: bool | Literal["local", "preferred"] | None = None
 
-    # Bind worker CPUs with `numactl --cpunodebind=<node>` before exec so child
-    # processes and threads inherit GPU-local CPU affinity. Requires numactl.
+    # Set initial worker CPU affinity with `numactl --cpunodebind=<node>` before
+    # exec so child processes and threads inherit it. Requires numactl.
     # configs/numa_cpu_bind.sh resolves the NUMA node from the task's physical
     # GPU via CUDA_VISIBLE_DEVICES and SLURM_LOCALID, including colocated workers.
-    # TLLM_NUMA_AWARE_WORKER_AFFINITY defaults to 0 for every memory policy;
-    # an explicit roles.<role>.env value overrides this default. Top-level
-    # environment overrides both role env and the default. Set numa_memory_bind
-    # to "local" for strict memory binding, or "preferred" for GPU-local memory
-    # with fallback.
+    # The launcher leaves TLLM_NUMA_AWARE_WORKER_AFFINITY untouched; the worker
+    # runtime may change the CPU mask after launch. Normal role and top-level
+    # environment values pass through. Set numa_memory_bind to "local" for
+    # strict memory binding, or "preferred" for GPU-local memory with fallback.
     numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
@@ -414,21 +411,13 @@ class TRTLLMBackend(Backend):
 
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
-        env = {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
-        if self.numa_cpu_bind:
-            env.setdefault("TLLM_NUMA_AWARE_WORKER_AFFINITY", self.numa_worker_affinity)
-        return env
+        return {**role_env(self.roles, mode), "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
 
     @property
     def numa_wrapper_policy(self) -> NumaWrapperPolicy | None:
         """Resolve the memory policy applied by configs/numa_cpu_bind.sh."""
         policy = self.numa_memory_bind
         return NUMA_WRAPPER_MEMORY_POLICIES[policy] if isinstance(policy, str) else None
-
-    @property
-    def numa_worker_affinity(self) -> str:
-        """Default TLLM_NUMA_AWARE_WORKER_AFFINITY under numa_cpu_bind, independent of memory policy."""
-        return NUMA_CPU_BIND_WORKER_AFFINITY
 
     def get_served_model_name(self, default: str) -> str:
         """Get the configured served model name, or return default."""

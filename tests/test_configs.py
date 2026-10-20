@@ -4467,9 +4467,9 @@ class TestHuggingFaceModelSupport:
         assert cmd[: len(prefix)] == prefix
         assert ("numactl" in cmd) is (expected_policy == "0,1")
 
-        # CPU binding disables native worker affinity regardless of the memory policy.
+        # CPU and memory binding leave native worker affinity unconfigured.
         env = backend.get_environment_for_mode(mode)
-        assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in env
 
     def test_trtllm_numa_cpu_bind_wraps_prefill_command(self):
         """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
@@ -4493,7 +4493,7 @@ class TestHuggingFaceModelSupport:
         assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
 
         prefill_env = backend.get_environment_for_mode("prefill")
-        assert prefill_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in prefill_env
 
     def test_trtllm_numa_cpu_bind_wraps_agg_command(self):
         """numa_cpu_bind=True wraps aggregated-mode commands too."""
@@ -4517,7 +4517,7 @@ class TestHuggingFaceModelSupport:
         assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
 
         agg_env = backend.get_environment_for_mode("agg")
-        assert agg_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in agg_env
 
     def test_trtllm_numa_cpu_bind_false_leaves_decode_command_unwrapped(self):
         """numa_cpu_bind=False (default) does not wrap the decode command."""
@@ -4546,7 +4546,7 @@ class TestHuggingFaceModelSupport:
     @pytest.mark.parametrize("memory_bind", [None, True, False, "local", "preferred"])
     @pytest.mark.parametrize("override", ["0", "1"])
     def test_trtllm_numa_cpu_bind_keeps_role_worker_affinity(self, memory_bind, override):
-        """An explicit role-env TLLM_NUMA_AWARE_WORKER_AFFINITY wins under every memory policy."""
+        """Explicit worker affinity passes through unchanged under every memory policy."""
         from srtctl.backends import TRTLLMBackend
 
         backend = TRTLLMBackend(
@@ -4558,9 +4558,8 @@ class TestHuggingFaceModelSupport:
             numa_memory_bind=memory_bind,
         )
 
-        assert backend.numa_worker_affinity == "0"
         assert backend.get_environment_for_mode("prefill")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == override
-        assert backend.get_environment_for_mode("decode")["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in backend.get_environment_for_mode("decode")
 
 
 class TestInfmaxWorkspaceMount:
