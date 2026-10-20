@@ -1,12 +1,13 @@
 # Dynamo counterpart of ../trtllm-serve-final/disagg-gb300-2p1d-tep2-tep8-c192-b64-mtp-kvoffload.yaml
 # Final Pareto point ly t2b64 c192: 2x CTX TP2 (one node) + 1x GEN TEP8 b64, concurrency 192; trtllm-serve job 1127293.
-# Same image (q35repro-09607ea47b), topology, NUMA binding, engine args, worker env and AgentX traffic;
+# Same image (q35repro-09607ea47b), topology, NUMA binding, engine args, worker optimizations and AgentX traffic;
 # dynamo.trtllm workers and the Dynamo frontend (1.6.0.dev20261010 from the mounted /dynamo_wheels).
 # Dropped trtllm-serve-only settings: frontend process pools (num_serve_frontends, num_postprocess_workers),
 # per-conversation frontend affinity and incremental tokenization (Dynamo's tokenizer prefix cache replaces it),
 # ctx/gen routers (Dynamo KV router with session affinity), server_config_extra and per-request perf-metrics JSONL.
 # Benchmark client: the standard dynamo-1019 Dynamo-aware AIPerf client (no run-specific client customization).
 # Engine return_perf_metrics is off; Dynamo publish_metrics is on. Not yet measured under Dynamo.
+# Compiler caches use library defaults; see README.md.
 schema: 2
 name: disagg-gb300-2p1d-tep2-tep8-c192-b64-mtp-kvoffload-dynamo
 model:
@@ -39,11 +40,8 @@ roles:
     workers: 2
     gpus: 2
     env:
-      CUDA_CACHE_PATH: /tmp/cuda_cache_qwen35
       CUDA_SCALE_LAUNCH_QUEUES: 4x
-      CUTE_DSL_CACHE_DIR: /tmp/cute_dsl_cache_qwen35
       ENROOT_ALLOW_DEV: 'yes'
-      FLASHINFER_WORKSPACE_BASE: /tmp/fi_ws_qwen35
       MIMALLOC_ARENA_RESERVE: '0'
       MIMALLOC_PURGE_DELAY: ''
       NCCL_GRAPH_MIXING_SUPPORT: '0'
@@ -52,8 +50,6 @@ roles:
       TLLM_LOG_LEVEL: INFO
       TLLM_PROFILE_LOG_RANKS: all
       TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '3.80'
-      TORCHINDUCTOR_CACHE_DIR: /tmp/inductor_qwen35
-      TRITON_CACHE_DIR: /tmp/triton_cache_qwen35
       TRTLLM_CTX_SCHED_SRPT: '1'
       TRTLLM_DISABLE_OVERLAP_SCHEDULER: '1'
       TRTLLM_EMBED_COMPILE_ONCE: '1'
@@ -78,7 +74,6 @@ roles:
       UCX_CUDA_COPY_MAX_POLL: inf
       UCX_CUDA_IPC_MAX_POLL: inf
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
-      XDG_CACHE_HOME: /tmp/xdg_cache_qwen35
       DYN_ENGINE_CONV_AFFINITY: '1'
     args:
       allreduce_strategy: TWOSHOT
@@ -178,10 +173,7 @@ roles:
     workers: 1
     gpus: 8
     env:
-      CUDA_CACHE_PATH: /tmp/cuda_cache_qwen35
-      CUTE_DSL_CACHE_DIR: /tmp/cute_dsl_cache_qwen35
       ENROOT_ALLOW_DEV: 'yes'
-      FLASHINFER_WORKSPACE_BASE: /tmp/fi_ws_qwen35
       MIMALLOC_ARENA_RESERVE: '0'
       MIMALLOC_PURGE_DELAY: ''
       NCCL_GRAPH_MIXING_SUPPORT: '0'
@@ -190,8 +182,6 @@ roles:
       TLLM_LOG_LEVEL: INFO
       TLLM_PROFILE_LOG_RANKS: all
       TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '3.80'
-      TORCHINDUCTOR_CACHE_DIR: /tmp/inductor_qwen35
-      TRITON_CACHE_DIR: /tmp/triton_cache_qwen35
       TRTLLM_DISAGG_GEN_EMIT_FIRST_STEP: '1'
       TRTLLM_DISAGG_GEN_IDLE_POLL_SKIP: '1'
       TRTLLM_ENABLE_PDL: '1'
@@ -293,7 +283,6 @@ roles:
       UCX_CUDA_COPY_MAX_POLL: inf
       UCX_CUDA_IPC_MAX_POLL: inf
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
-      XDG_CACHE_HOME: /tmp/xdg_cache_qwen35
       DYN_ENGINE_CONV_AFFINITY: '1'
     args:
       cache_transceiver_config:
